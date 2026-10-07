@@ -145,23 +145,18 @@ def test_generated_family_rolls_back_a_partial_replacement(
     assert not list(tmp_path.rglob(".molt-artifact-publication-*.json"))
 
 
-def test_manifest_text_generators_share_canonical_output_io() -> None:
-    """Every generated authority is textual and must use the one newline policy."""
+def test_manifest_generators_implement_the_generator_io_contract() -> None:
+    """Every generated authority renders and publishes through tools/generator_io.py."""
     manifest = CGM.load_manifest(ROOT)
     violations: list[str] = []
     for generator in manifest.generators:
+        if generator.get("discovery_only", False):
+            continue
         tool = str(generator["tool"])
-        source_authority = str(generator.get("source", ""))
-        implementation = (ROOT / tool).read_text(encoding="utf-8")
-        missing = [
-            symbol
-            for symbol in ("generated_file_matches", "write_generated_text")
-            if symbol not in implementation
-        ]
-        if "tools/generator_io.py" not in source_authority:
-            missing.append("manifest source authority")
-        if missing:
-            violations.append(f"{tool}: missing {', '.join(missing)}")
+        if not CGM.implements_generator_contract(ROOT / tool):
+            violations.append(f"{tool}: generated_outputs() + generator_main")
+        if "tools/generator_io.py" not in str(generator.get("source", "")):
+            violations.append(f"{tool}: manifest source authority")
 
     assert violations == []
 
@@ -173,7 +168,7 @@ def test_release_matrix_generator_imports_as_canonical_package() -> None:
         "root = Path(sys.argv[1])\n"
         "sys.path.insert(0, str(root))\n"
         "from tools import gen_release_matrix\n"
-        "assert gen_release_matrix.generated_file_matches.__module__ == "
+        "assert gen_release_matrix.generator_main.__module__ == "
         "'tools.generator_io'\n"
     )
     check_output_guarded_test_process(
@@ -465,7 +460,7 @@ def _mirror_min_tree(tmp_path: Path) -> Path:
     for g in manifest.generators:
         gtool = tmp_path / g["tool"]
         gtool.parent.mkdir(parents=True, exist_ok=True)
-        gtool.write_text("# stub\n", encoding="utf-8")
+        gtool.write_text(_CONTRACT_STUB, encoding="utf-8")
         for out in g["outputs"]:
             op = tmp_path / out
             op.parent.mkdir(parents=True, exist_ok=True)
@@ -486,30 +481,34 @@ def _mirror_min_tree(tmp_path: Path) -> Path:
         dst = tmp_path / cd["enum_file"]
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(ROOT / cd["enum_file"], dst)
-    # The proof plan contains every CI-checkable generator's stable --check
-    # command; workflows retain executor mechanics only.
-    proof_lines = ['schema = "synthetic"']
-    command_ids = {
-        g["tool"]: f"generator-{index}" for index, g in enumerate(manifest.generators)
-    }
-    for g in manifest.generators:
-        if g.get("ci_checkable", True) and not g.get("discovery_only", False):
-            dependencies = [
-                command_ids[tool] for tool in g.get("upstream_generators", [])
-            ]
-            proof_lines.extend(
-                (
-                    "[[command]]",
-                    f'id = "{command_ids[g["tool"]]}"',
-                    f"dependencies = {dependencies!r}".replace("'", '"'),
-                    f'argv = ["python3", "{g["tool"]}", "--check"]',
-                    f"toolchains = {g.get('toolchains', [])!r}".replace("'", '"'),
-                )
-            )
+    # The proof plan gates every CI-checkable generator through the one
+    # in-process runner, whose receipt carries every generator's toolchains.
+    toolchains = sorted(
+        {
+            name
+            for g in manifest.generators
+            if g.get("ci_checkable", True) and not g.get("discovery_only", False)
+            for name in g.get("toolchains", [])
+        }
+    )
     (tmp_path / "tools" / "proof_plan.toml").write_text(
-        "\n".join(proof_lines) + "\n", encoding="utf-8"
+        'schema = "synthetic"\n'
+        "[[command]]\n"
+        'id = "repository.generators"\n'
+        'argv = ["python3", "tools/generators.py", "check"]\n'
+        f"toolchains = {toolchains!r}\n".replace("'", '"'),
+        encoding="utf-8",
     )
     return tmp_path
+
+
+_CONTRACT_STUB = (
+    "from tools.generator_io import generator_main\n"
+    "def generated_outputs():\n"
+    "    return {}\n"
+    "def main(argv=None):\n"
+    "    return generator_main(generated_outputs, argv)\n"
+)
 
 
 def _write_baseline(tmp_path: Path, counts: dict[str, int]) -> None:
@@ -619,25 +618,57 @@ def test_injected_orphan_generated_file_fails_the_gate(tmp_path: Path):
     assert any("ghost_generated.rs" in v.location for v in orphans)
 
 
-def test_generator_dependency_missing_from_proof_plan_fails_gate(tmp_path: Path):
+def test_runner_renders_every_generator_after_its_upstreams() -> None:
+    """tools/generators.py owns generator order: upstreams first, proof plan last."""
+    from tools import generators
+
+    order = [g.tool for g in generators.manifest_generators()]
+    position = {tool: index for index, tool in enumerate(order)}
+    manifest = CGM.load_manifest(ROOT)
+    expected = {
+        g["tool"]
+        for g in manifest.generators
+        if g.get("check_mode") and not g.get("discovery_only", False)
+    }
+    assert set(order) == expected
+    assert order[-1] == generators.PROOF_PLAN
+    for g in manifest.generators:
+        for upstream in g.get("upstream_generators", []):
+            if g["tool"] in position and upstream in position:
+                assert position[upstream] < position[g["tool"]], (g["tool"], upstream)
+
+
+def test_per_generator_check_command_is_flagged_as_duplicate(tmp_path: Path) -> None:
     root = _mirror_min_tree(tmp_path)
     proof_plan_path = root / "tools" / "proof_plan.toml"
-    text = proof_plan_path.read_text(encoding="utf-8")
-    browser_id = next(
-        f"generator-{index}"
-        for index, generator in enumerate(CGM.load_manifest(root).generators)
-        if generator["tool"] == "tools/gen_browser_asset_graph.py"
+    proof_plan_path.write_text(
+        proof_plan_path.read_text(encoding="utf-8") + "[[command]]\n"
+        'id = "repository.op-kinds"\n'
+        'argv = ["python3", "tools/gen_op_kinds.py", "--check"]\n',
+        encoding="utf-8",
     )
-    marker = f'id = "{browser_id}"\ndependencies = '
-    start = text.index(marker) + len(marker)
-    end = text.index("\n", start)
-    proof_plan_path.write_text(text[:start] + "[]" + text[end:], encoding="utf-8")
 
     _violations, _summary, gating = CGM.run_all(root)
     assert any(
         violation.kind == "ungated"
-        and violation.location == "tools/gen_browser_asset_graph.py"
-        and "generator DAG" in violation.detail
+        and violation.location == "tools/gen_op_kinds.py"
+        and "repository.op-kinds" in violation.detail
+        for violation in gating
+    )
+
+
+def test_generator_without_the_contract_fails_gate(tmp_path: Path) -> None:
+    root = _mirror_min_tree(tmp_path)
+    (root / "tools" / "gen_op_kinds.py").write_text(
+        "import sys\nif '--check' in sys.argv:\n    raise SystemExit(0)\n",
+        encoding="utf-8",
+    )
+
+    _violations, _summary, gating = CGM.run_all(root)
+    assert any(
+        violation.kind == "ungated"
+        and violation.location == "tools/gen_op_kinds.py"
+        and "generator_io.py contract" in violation.detail
         for violation in gating
     )
 
@@ -648,18 +679,8 @@ def test_generator_toolchain_missing_from_proof_receipt_fails_gate(
     root = _mirror_min_tree(tmp_path)
     proof_plan_path = root / "tools" / "proof_plan.toml"
     text = proof_plan_path.read_text(encoding="utf-8")
-    generator_id = next(
-        f"generator-{index}"
-        for index, generator in enumerate(CGM.load_manifest(root).generators)
-        if generator["tool"] == "tools/gen_python_effects.py"
-    )
-    marker = f'id = "{generator_id}"\n'
-    command_start = text.index(marker)
-    toolchain_start = text.index("toolchains = ", command_start) + len("toolchains = ")
-    toolchain_end = text.index("\n", toolchain_start)
-    proof_plan_path.write_text(
-        text[:toolchain_start] + "[]" + text[toolchain_end:], encoding="utf-8"
-    )
+    proof_plan_path.write_text(text.replace('"rustfmt", ', ""), encoding="utf-8")
+    assert "rustfmt" not in proof_plan_path.read_text(encoding="utf-8")
 
     _violations, _summary, gating = CGM.run_all(root)
     assert any(
@@ -712,7 +733,6 @@ def test_ungated_generator_is_flagged(tmp_path: Path):
         'source = "x"\n'
         "check_mode = true\n"
         'check_command = "tools/gen_op_kinds.py --check"\n'
-        'generate_command = "tools/gen_op_kinds.py"\n'
         'sync_test_reason = "stub"\n'
         "closed_domains = []\n"
         "discovery_only = false\n",
@@ -744,7 +764,6 @@ def test_phantom_sync_test_fails_loud(tmp_path: Path):
         'source = "s"\n'
         "check_mode = true\n"
         'check_command = "tools/gen_x.py --check"\n'
-        'generate_command = "tools/gen_x.py"\n'
         'sync_test = "tests/test_does_not_exist.py"\n'
         "closed_domains = []\n"
         "discovery_only = false\n",
@@ -769,7 +788,6 @@ def test_malformed_manifest_temp(tmp_path: Path):
         'outputs = ["a"]\n'
         'source = "s"\n'
         "check_mode = true\n"
-        'generate_command = "tools/gen_x.py"\n'
         'sync_test = "t"\n'
         "closed_domains = []\n"
         "discovery_only = false\n"

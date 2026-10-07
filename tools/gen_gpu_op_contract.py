@@ -55,21 +55,21 @@ never hand-edited).
 
 Usage::
 
-    python3 tools/gen_gpu_op_contract.py            # (re)write op_contract.toml
+    python3 tools/gen_gpu_op_contract.py --write     # rewrite op_contract.toml
     python3 tools/gen_gpu_op_contract.py --check     # exit 1 if it is stale
 
 Mirrors ``tools/gen_op_kinds.py --check`` exactly: byte-exact regenerate-and-diff.
+A decision the pinned source contradicts (or a missing pinned source) raises
+``OpContractError``.
 """
 
 from __future__ import annotations
 
-import argparse
 import ast
 import importlib.util as _ilu
-import sys
 from pathlib import Path
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generator_main
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -869,7 +869,7 @@ def render_toml(model: dict) -> str:
         "# The GPU op-contract FACT (doc 67 Phase 1, fact family `gpu_op_contract`):\n"
         "# per molt PrimitiveOp, its disposition against the pinned upstream Ops set +\n"
         "# code_for_op renderer contract. Regenerate with\n"
-        "#   python3 tools/gen_gpu_op_contract.py\n"
+        "#   python3 tools/gen_gpu_op_contract.py --write\n"
         "# and verify in CI with\n"
         "#   python3 tools/gen_gpu_op_contract.py --check\n"
         "# A mis-mapping, a changed upstream C-pattern, or a new upstream ALU op turns\n"
@@ -961,54 +961,18 @@ def render_toml(model: dict) -> str:
 
 
 # ===========================================================================
-# Entry point (mirrors gen_op_kinds.py --check exactly).
+# Entry point: the tools/generator_io.py contract.
 # ===========================================================================
 
 
-def _check(path: Path, rendered: str) -> bool:
-    if not path.exists():
-        print(f"MISSING generated file: {path}", file=sys.stderr)
-        return False
-    if not generated_file_matches(path, rendered):
-        print(
-            f"STALE generated file: {path}\n"
-            f"  run `python3 tools/gen_gpu_op_contract.py` to regenerate from the "
-            f"pinned tinygrad {PINNED_TINYGRAD_VERSION} source",
-            file=sys.stderr,
-        )
-        return False
-    return True
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    return {OUT_TOML: render_toml(reconcile())}
 
 
-def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument(
-        "--check",
-        action="store_true",
-        help="exit 1 if op_contract.toml is stale (CI mode); do not write",
-    )
-    args = ap.parse_args(argv)
-
-    try:
-        model = reconcile()
-        toml_text = render_toml(model)
-    except OpContractError as exc:
-        print(f"gpu op-contract generation FAILED:\n  {exc}", file=sys.stderr)
-        return 1
-
-    if args.check:
-        ok = _check(OUT_TOML, toml_text)
-        if ok:
-            print(
-                "gpu op-contract: in sync with pinned tinygrad "
-                + PINNED_TINYGRAD_VERSION
-            )
-        return 0 if ok else 1
-
-    write_generated_text(OUT_TOML, toml_text)
-    print(f"wrote {OUT_TOML.relative_to(ROOT)}")
-    return 0
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main())

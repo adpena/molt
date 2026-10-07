@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import re
 import shutil
 import sys
@@ -13,7 +12,7 @@ from pathlib import Path
 from collections.abc import Iterable
 from typing import cast
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generator_main
 from molt.cli.build_output_layout import _DEPLOY_PROFILE_CHOICES
 from molt.release_matrix import RELEASE_TARGETS, SUPPORTED_CPYTHON_VERSIONS
 from molt.wasi_sysroot import WASI_TARGET_INCLUDE_DIRS
@@ -917,23 +916,13 @@ def render_all(schema: Schema) -> dict[Path, str]:
     }
 
 
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    return render_all(load_schema())
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--check", action="store_true", help="fail if generated outputs are stale"
-    )
-    args = parser.parse_args(argv)
-    stale = False
-    for path, source in render_all(load_schema()).items():
-        if args.check:
-            if not generated_file_matches(path, source):
-                print(
-                    f"STALE generated file: {path.relative_to(ROOT)}", file=sys.stderr
-                )
-                stale = True
-        else:
-            write_generated_text(path, source)
-    return int(stale)
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":

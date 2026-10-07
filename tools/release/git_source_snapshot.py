@@ -485,8 +485,18 @@ def fenced_git_index(
     if index != snapshot.index_path:
         raise ValueError("Git staged index selection changed during projection")
     lock = index.with_name(index.name + ".lock")
+    # Windows cannot unlink a file through a name while a handle without
+    # delete sharing is open, so there the lock is opened delete-on-close:
+    # closing the descriptor removes it, even if this process dies.
+    delete_on_close = getattr(os, "O_TEMPORARY", 0)
     descriptor = os.open(
-        lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600
+        lock,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | delete_on_close,
+        0o600,
     )
     held = os.fstat(descriptor)
     primary: BaseException | None = None
@@ -501,7 +511,8 @@ def fenced_git_index(
             named = lock.lstat()
             if (named.st_dev, named.st_ino) != (held.st_dev, held.st_ino):
                 raise ValueError(f"Git staged index lock changed ownership: {lock}")
-            lock.unlink()
+            if not delete_on_close:
+                lock.unlink()
         except BaseException as cleanup:
             if primary is None:
                 raise

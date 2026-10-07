@@ -1184,7 +1184,7 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
   - `docs/spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md`
 - Every compatibility claim must include explicit dimensions where relevant: `py312`/`py313`/`py314`, `native`, `wasm_wasi`, `wasm_browser`, and platform notes (`linux`/`macos`/`windows`).
 - Required refresh workflow when compatibility surfaces move:
-  1. `python3 tools/gen_stdlib_module_union.py`
+  1. `python3 tools/gen_stdlib_module_union.py --write`
   2. `python3 tools/sync_stdlib_top_level_stubs.py --write`
   3. `python3 tools/sync_stdlib_submodule_stubs.py --write`
   4. `python3 tools/check_stdlib_intrinsics.py --update-doc`
@@ -1475,7 +1475,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 - `python3 tools/check_stdlib_intrinsics.py`: validate stdlib/intrinsic coverage (use `--fallback-intrinsic-backed-only` for strict checks, `--critical-allowlist` for gating, and `--update-doc` to refresh docs).
 - `python3 tools/check_dynamic_policy.py`: enforce dynamic-execution policy guardrails (no accidental policy drift for `eval`/`exec`, monkeypatching, or unrestricted reflection lanes).
 - `python3 tools/sync_stdlib_top_level_stubs.py --write` and `python3 tools/sync_stdlib_submodule_stubs.py --write`: sync stdlib stub inventories from the manifest.
-- `python3 tools/gen_stdlib_module_union.py`: regenerate the stdlib module union list used by stub syncing and checks.
+- `python3 tools/gen_stdlib_module_union.py --write`: regenerate the stdlib module union list used by stub syncing and checks.
 - `python3 tools/gen_compat_platform_availability.py --write`: regenerate CPython 3.12/3.13/3.14 stdlib Availability matrix at `docs/spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md`.
 - `python3 tools/diff_coverage.py`: generate [tests/differential/COVERAGE_REPORT.md](tests/differential/COVERAGE_REPORT.md).
 - `python3 tools/bench_diff.py <old.json> <new.json> --top 10 --json-out <path>`: diff two benchmark JSON artifacts and emit a summary report.
@@ -1548,7 +1548,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 - Do not add new tests under retired lanes: `tests/differential/planned`, `tests/differential/core`, or `tests/differential/scoping`.
 - After adding or moving differential tests, run lane integrity gates:
   - `python3 tools/check_differential_suite_layout.py`
-  - `python3 tools/gen_diff_lanes.py`
+  - `python3 tools/gen_diff_lanes.py --write`
 - Expected-failure governance for dynamic semantics:
   - Declare each intentional dynamic gap (for example `exec`/`eval`) on its test with `# MOLT_META: verified_subset_scope=dynamic_execution_policy expect_fail=molt expect_fail_reason=too_dynamic_policy`.
   - Keep `tests/test_molt_diff_expected_failures.py` and `tests/test_check_dynamic_policy.py` green so canonical scope projection and `XFAIL`/`XPASS` behavior stay enforced.

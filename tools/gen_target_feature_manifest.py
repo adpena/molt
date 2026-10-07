@@ -8,22 +8,20 @@ and future lowering gates; the TOML remains the reviewable authority.
 
 Usage:
 
-    python3 tools/gen_target_feature_manifest.py
+    python3 tools/gen_target_feature_manifest.py --write
     python3 tools/gen_target_feature_manifest.py --check
 """
 
 from __future__ import annotations
 
-import argparse
 import copy
 import json
 import re
-import sys
 import tomllib
 from pathlib import Path
 from typing import Any
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generator_main
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_TOML = ROOT / "src/molt/target_feature_manifest.toml"
@@ -798,56 +796,19 @@ def render_js(model: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _check_output(path: Path, expected: str) -> bool:
-    if not path.exists():
-        print(f"MISSING generated file: {path.relative_to(ROOT)}", file=sys.stderr)
-        return False
-    if not generated_file_matches(path, expected):
-        print(
-            f"STALE generated file: {path.relative_to(ROOT)}\n"
-            "  run `python3 tools/gen_target_feature_manifest.py`",
-            file=sys.stderr,
-        )
-        return False
-    return True
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    model = build_model()
+    return {
+        OUT_PY: render_python(model),
+        OUT_JSON: render_json(model),
+        OUT_JS: render_js(model),
+    }
 
 
-def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="exit 1 if generated artifacts are stale; do not write",
-    )
-    args = parser.parse_args(argv)
-
-    try:
-        model = build_model()
-        py_text = render_python(model)
-        json_text = render_json(model)
-        js_text = render_js(model)
-    except TargetFeatureManifestError as exc:
-        print(f"target feature manifest generation FAILED:\n  {exc}", file=sys.stderr)
-        return 1
-
-    if args.check:
-        ok = (
-            _check_output(OUT_PY, py_text)
-            and _check_output(OUT_JSON, json_text)
-            and _check_output(OUT_JS, js_text)
-        )
-        if ok:
-            print("target feature manifest: in sync")
-        return 0 if ok else 1
-
-    write_generated_text(OUT_PY, py_text)
-    write_generated_text(OUT_JSON, json_text)
-    write_generated_text(OUT_JS, js_text)
-    print(f"wrote {OUT_PY.relative_to(ROOT)}")
-    print(f"wrote {OUT_JSON.relative_to(ROOT)}")
-    print(f"wrote {OUT_JS.relative_to(ROOT)}")
-    return 0
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main())

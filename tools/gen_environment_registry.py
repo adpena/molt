@@ -8,7 +8,7 @@ Authority: ``src/molt/environment_registry.toml``. Outputs:
 * ``docs/environment-variables.generated.md`` — the reference page.
 
 Usage:
-    python3 tools/gen_environment_registry.py          # rewrite both outputs
+    python3 tools/gen_environment_registry.py --write  # rewrite stale outputs
     python3 tools/gen_environment_registry.py --check  # exit 1 when stale
 
 The generator is the only TOML parser; ``molt.environment_registry`` loads
@@ -18,7 +18,6 @@ projection is current before it scans the source.
 
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 import re
@@ -31,7 +30,7 @@ for _import_root in (ROOT / "tools", ROOT / "src"):
     if str(_import_root) not in sys.path:
         sys.path.insert(0, str(_import_root))
 
-from generator_io import generated_file_matches, write_generated_text  # noqa: E402
+from generator_io import generator_main, stale_outputs  # noqa: E402
 from molt.environment_registry import (  # noqa: E402
     AUDIENCES,
     KINDS,
@@ -633,49 +632,24 @@ def render_doc(payload: dict[str, Any]) -> str:
     return "\n".join(out)
 
 
-def _check_output(path: Path, expected: str) -> bool:
-    if generated_file_matches(path, expected):
-        return True
-    print(
-        f"{path.relative_to(ROOT).as_posix()} is stale; run "
-        "`python3 tools/gen_environment_registry.py`",
-        file=sys.stderr,
-    )
-    return False
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    payload = build_payload(load_source())
+    return {OUT_PY: render_python(payload), OUT_DOC: render_doc(payload)}
 
 
 def projection_is_current() -> bool:
     """True when both outputs match the TOML authority (used by the gate)."""
 
-    payload = build_payload(load_source())
-    return generated_file_matches(
-        OUT_PY, render_python(payload)
-    ) and generated_file_matches(OUT_DOC, render_doc(payload))
+    return not stale_outputs(generated_outputs())
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--check", action="store_true", help="verify outputs; do not write"
-    )
-    args = parser.parse_args(argv)
     try:
-        payload = build_payload(load_source())
+        return generator_main(generated_outputs, argv, description=__doc__)
     except RegistryFormatError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    py_text = render_python(payload)
-    doc_text = render_doc(payload)
-    if args.check:
-        ok = _check_output(OUT_PY, py_text)
-        ok = _check_output(OUT_DOC, doc_text) and ok
-        return 0 if ok else 1
-    write_generated_text(OUT_PY, py_text)
-    write_generated_text(OUT_DOC, doc_text)
-    print(
-        f"wrote {OUT_PY.relative_to(ROOT).as_posix()} and {OUT_DOC.relative_to(ROOT).as_posix()}"
-    )
-    return 0
 
 
 if __name__ == "__main__":

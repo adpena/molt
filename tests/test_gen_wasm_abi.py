@@ -18,6 +18,7 @@ WASM_ABI_GEN_ROOT = ROOT / "tools"
 if str(WASM_ABI_GEN_ROOT) not in sys.path:
     sys.path.insert(0, str(WASM_ABI_GEN_ROOT))
 
+from generator_io import generated_file_matches, stale_outputs  # noqa: E402
 from wasm_abi_gen import manifest  # noqa: E402
 from wasm_abi_gen.paths import (  # noqa: E402
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
@@ -254,7 +255,7 @@ def test_runtime_boxed_abi_projects_semantics_not_integer_carriers() -> None:
     assert "RuntimeBoxedReturn::Void" in rendered
     assert "binary_search_by_key" in rendered
     assert "(abi.arity == arity).then_some(abi)" in rendered
-    assert "rendered_runtime_boxed_abi_rs" in gen.RENDER_CACHE_FIELDS
+    assert OUT_RUNTIME_BOXED_ABI_RS in gen.OUTPUT_PATHS
     assert (
         OUT_RUNTIME_BOXED_ABI_RS
         == ROOT / "runtime/molt-ir/src/runtime_boxed_abi_generated.rs"
@@ -843,7 +844,6 @@ def test_rustfmt_many_materializes_cached_sibling_modules(monkeypatch) -> None:
     }
     seen: dict[str, bool] = {}
 
-    monkeypatch.setattr(gen, "RUSTFMT_CACHE_ENABLED", True)
     monkeypatch.setattr(gen, "_rustfmt_version", lambda: "rustfmt-test")
     monkeypatch.setattr(
         gen,
@@ -869,48 +869,19 @@ def test_rustfmt_many_materializes_cached_sibling_modules(monkeypatch) -> None:
 
 def test_wasm_abi_generated_files_are_in_sync() -> None:
     gen = _load_gen_wasm_abi()
-    data = gen.load_manifest()
-    rendered_rs_modules = gen.render_rs_modules(data)
-    # Use the generator's comparison and diagnostics: pytest's text diff can
-    # take minutes on these megabyte-sized, highly repetitive projections.
-    assert gen._check_rs_modules(rendered_rs_modules)
-    assert gen._check(
-        gen.OUT_RUNTIME_CALLABLES_RS, gen.render_runtime_callables_rs(data)
-    )
-    assert gen._check(
-        gen.OUT_RUNTIME_CALLABLE_ABI_RS,
-        gen._rustfmt(
-            "runtime_callable_abi_generated.rs",
-            gen.render_runtime_callable_abi_rs(data),
-        ),
-    )
-    assert gen._check(
-        gen.OUT_RUNTIME_RAW_ABI_RS,
-        gen._rustfmt(
-            "runtime_raw_abi_generated.rs",
-            gen.render_runtime_raw_abi_rs(data),
-        ),
-    )
-    assert gen._check(
-        gen.OUT_PYTHON_BUILTIN_CALLABLES_RS,
-        gen._rustfmt(
-            "python_builtin_callables_generated.rs",
-            gen.render_python_builtin_callables_rs(data),
-        ),
-    )
-    assert gen._check(gen.OUT_PY, gen.render_py(data))
-    assert gen._check(gen.OUT_JS_ABI, gen.render_js_abi(data))
-    assert gen._check(
-        gen.OUT_JS_CALLABLE_TABLE_ABI, gen.render_js_callable_table_abi(data)
-    )
-    assert gen._check(gen.OUT_TABLE_LAYOUT_INC, gen.render_table_layout_inc(data))
-    for removed_path in gen.REMOVED_GENERATED_FILES:
-        assert gen._check_absent(removed_path)
-    assert gen._check(gen.OUT_ALLOWED_IMPORTS, gen.render_allowed_imports(data))
+    assert gen._stale_generated_files() == []
+    # Render from source (bypassing the render cache) so the renderer itself is
+    # proven, then compare paths rather than text: pytest's text diff can take
+    # minutes on these megabyte-sized, highly repetitive projections.
+    outputs = gen.render_outputs(gen.load_manifest())
+    assert set(outputs) == set(gen.OUTPUT_PATHS)
+    assert stale_outputs(outputs) == []
 
 
 @pytest.mark.parametrize("state", ["missing", "stale", "current-crlf"])
-def test_generated_projection_diagnostic_is_bounded(tmp_path, capsys, state) -> None:
+def test_generated_projection_diagnostic_is_bounded(
+    tmp_path, capsys, monkeypatch, state
+) -> None:
     gen = _load_gen_wasm_abi()
     path = tmp_path / "large_generated.py"
     expected = 'callable = ("i64", "i64")\n' * 60_000
@@ -918,18 +889,69 @@ def test_generated_projection_diagnostic_is_bounded(tmp_path, capsys, state) -> 
         path.write_text(expected + "drift = True\n", encoding="utf-8")
     elif state == "current-crlf":
         path.write_bytes(expected.replace("\n", "\r\n").encode("utf-8"))
+    monkeypatch.setattr(gen, "generated_outputs", lambda: {path: expected})
 
-    assert gen._check(path, expected) is (state == "current-crlf")
+    assert gen.main(["--check"]) == (0 if state == "current-crlf" else 1)
     diagnostic = capsys.readouterr().err
     if state == "current-crlf":
         assert diagnostic == ""
     else:
         assert str(path) in diagnostic
-        assert ("MISSING" if state == "missing" else "STALE") in diagnostic
+        assert "stale:" in diagnostic
+        assert "--write" in diagnostic
         assert len(diagnostic) < len(str(path)) + 160
         assert "callable =" not in diagnostic
-        if state == "stale":
-            assert "tools/gen_wasm_abi.py" in diagnostic
+
+
+@pytest.mark.parametrize("retired", ["legacy", "removed", "unexpected_module"])
+def test_retired_outputs_fail_closed_without_deletion(
+    tmp_path, monkeypatch, retired
+) -> None:
+    gen = _load_gen_wasm_abi()
+    out_dir = tmp_path / "wasm_abi_generated"
+    out_dir.mkdir()
+    legacy = tmp_path / "wasm_abi_generated.rs"
+    removed = tmp_path / "wasm_runtime_callables.inc"
+    monkeypatch.setattr(gen, "OUT_RS_DIR", out_dir)
+    monkeypatch.setattr(gen, "OUT_RS_FILES", {"mod.rs": out_dir / "mod.rs"})
+    monkeypatch.setattr(gen, "LEGACY_OUT_RS", legacy)
+    monkeypatch.setattr(gen, "REMOVED_GENERATED_FILES", (removed,))
+    (out_dir / "mod.rs").write_text("// current\n", encoding="utf-8")
+    assert gen._stale_generated_files() == []
+
+    stale = {
+        "legacy": legacy,
+        "removed": removed,
+        "unexpected_module": out_dir / "retired_module.rs",
+    }[retired]
+    stale.write_text("// stale\n", encoding="utf-8")
+
+    def unreachable(*_args, **_kwargs):
+        raise AssertionError("retired outputs must fail before rendering")
+
+    monkeypatch.setattr(gen, "_rustfmt_version", unreachable)
+    with pytest.raises(RuntimeError, match="no longer renders") as raised:
+        gen.generated_outputs()
+    assert str(stale) in str(raised.value)
+    assert stale.read_text(encoding="utf-8") == "// stale\n"
+
+
+def test_render_cache_round_trips_exactly_the_generated_outputs(
+    tmp_path, monkeypatch
+) -> None:
+    gen = _load_gen_wasm_abi()
+    monkeypatch.setattr(gen, "WASM_ABI_GEN_CACHE", tmp_path / "cache")
+    outputs = {path: f"// {path.name}\n" for path in gen.OUTPUT_PATHS}
+
+    assert gen._load_render_cache("key") is None
+    gen._store_render_cache("key", outputs)
+    assert gen._load_render_cache("key") == outputs
+    assert gen._load_render_cache("other-key") is None
+
+    partial = dict(outputs)
+    partial.pop(gen.OUT_PY)
+    gen._store_render_cache("partial", partial)
+    assert gen._load_render_cache("partial") is None
 
 
 def test_cpython_abi_link_import_discovery_covers_the_complete_crate() -> None:
@@ -2179,7 +2201,9 @@ def test_wasm_abi_manifest_owns_lir_runtime_calls() -> None:
         in rendered_native_rs
     )
     assert 'Some("molt_exception_last_pending")' in rendered_native_rs
-    assert gen._check(OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS, rendered_native_rs)
+    assert generated_file_matches(
+        OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS, rendered_native_rs
+    )
 
     second_marked = copy.deepcopy(data)
     synthetic = copy.deepcopy(finally_observer)

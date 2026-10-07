@@ -2575,9 +2575,9 @@ def test_actual_rust_roots_continue_after_failure_without_overlapping_capacity(
     assert (
         receipt["execution"]["peak_active_by_resource"]["compiler-build-resource"] == 1
     )
-    assert [json.loads(line) for line in marker.read_text().splitlines()] == [
-        [event, identity] for identity in expected for event in ("start", "finish")
-    ]
+    assert [
+        json.loads(line) for line in marker.read_text(encoding="utf-8").splitlines()
+    ] == [[event, identity] for identity in expected for event in ("start", "finish")]
     assert not lease.exists()
 
 

@@ -52,6 +52,7 @@ Wired into ``tools/ci_gate.py`` (tier 1) and the repository-policy family in
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import subprocess
 import sys
@@ -169,20 +170,6 @@ def load_manifest(root: Path) -> Manifest:
             raise ManifestError(f"{tool}: toolchains must be a string list")
         if len(toolchains) != len(set(toolchains)):
             raise ManifestError(f"{tool}: toolchains must be unique")
-        # A check-mode generator declares how to rewrite its outputs, so
-        # repair (`molt_dev.py fix`) never guesses a write flag.
-        if row.get("check_mode", False):
-            generate = row.get("generate_command")
-            if not isinstance(generate, str) or not generate.strip():
-                raise ManifestError(f"{tool}: check_mode requires generate_command")
-            if generate.split()[0] != tool:
-                raise ManifestError(
-                    f"{tool}: generate_command must run its own tool: {generate!r}"
-                )
-            if generate == row.get("check_command"):
-                raise ManifestError(
-                    f"{tool}: generate_command must differ from check_command"
-                )
         # A non-discovery authority that is CI-checkable must justify any skip.
         if not row.get("discovery_only", False):
             if not row.get("ci_checkable", True) and not row.get("ci_skip_reason"):
@@ -381,7 +368,35 @@ def detect_orphans(root: Path, manifest: Manifest, sa) -> list[Violation]:
 # ---------------------------------------------------------------------------
 
 
+RUNNER_COMMAND = ("tools/generators.py", "check")
+
+
+def implements_generator_contract(path: Path) -> bool:
+    """The module defines ``generated_outputs()`` and enters via ``generator_main``."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return False
+    defines = any(
+        isinstance(node, ast.FunctionDef) and node.name == "generated_outputs"
+        for node in tree.body
+    )
+    enters = any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "generator_main"
+        for node in ast.walk(tree)
+    )
+    return defines and enters
+
+
 def check_gating(root: Path, manifest: Manifest) -> list[Violation]:
+    """Every authority implements the generator_io contract and is CI-gated.
+
+    CI gates all CI-checkable generators through one command,
+    ``tools/generators.py check``, which renders them in dependency order in
+    one interpreter; a per-generator check command would duplicate it.
+    """
     violations: list[Violation] = []
     plan_path = root / PROOF_PLAN_REL
     plan_data = (
@@ -394,13 +409,29 @@ def check_gating(root: Path, manifest: Manifest) -> list[Violation]:
         for command in plan_data.get("command", [])
         if isinstance(command, dict)
     ]
-    gated_commands: dict[str, dict] = {}
+    runners = [
+        command
+        for command in plan_commands
+        if tuple(command.get("argv", []))[-2:] == RUNNER_COMMAND
+    ]
+    if len(runners) != 1:
+        violations.append(
+            Violation(
+                kind="ungated",
+                severity="high",
+                location=PROOF_PLAN_REL,
+                detail=(
+                    "expected exactly one `tools/generators.py check` command, "
+                    f"found {len(runners)}"
+                ),
+            )
+        )
+    runner_toolchains = set(runners[0].get("toolchains", [])) if runners else set()
 
     for g in manifest.generators:
         tool = g["tool"]
         if g.get("discovery_only", False):
             continue
-        # The generator file must exist.
         if not (root / tool).is_file():
             violations.append(
                 Violation(
@@ -411,7 +442,6 @@ def check_gating(root: Path, manifest: Manifest) -> list[Violation]:
                 )
             )
             continue
-        # A non-discovery authority MUST support --check.
         if not g.get("check_mode", False):
             violations.append(
                 Violation(
@@ -420,80 +450,52 @@ def check_gating(root: Path, manifest: Manifest) -> list[Violation]:
                     location=tool,
                     detail=(
                         "check_mode = false: a generated authority must support "
-                        "`--check` so its output cannot drift silently. Add a "
-                        "--check flag to the generator."
+                        "`--check` so its output cannot drift silently."
                     ),
                 )
             )
-        # A CI-checkable generator MUST have one stable --check command in the
-        # proof plan. The workflow is executor mechanics and may not duplicate
-        # command spelling.
-        if g.get("ci_checkable", True):
-            needle = f"{tool} --check"
-            matching_commands = []
-            for command in plan_commands:
-                argv = tuple(command.get("argv", []))
-                if (
-                    tool in argv
-                    and "--check" in argv
-                    and argv.index(tool) < argv.index("--check")
-                ):
-                    matching_commands.append(command)
-            if len(matching_commands) != 1:
-                violations.append(
-                    Violation(
-                        kind="ungated",
-                        severity="high",
-                        location=tool,
-                        detail=(
-                            f"expected exactly one `{needle}` command in "
-                            f"{PROOF_PLAN_REL}, found {len(matching_commands)}. Either "
-                            "wire one stable proof command, or set ci_checkable = false "
-                            "with a ci_skip_reason if its source is not reproducible in CI."
-                        ),
-                    )
-                )
-            else:
-                gated_commands[tool] = matching_commands[0]
-
-                required_toolchains = set(g.get("toolchains", []))
-                command_toolchains = set(matching_commands[0].get("toolchains", []))
-                missing_toolchains = required_toolchains - command_toolchains
-                if missing_toolchains:
-                    violations.append(
-                        Violation(
-                            kind="ungated",
-                            severity="high",
-                            location=tool,
-                            detail=(
-                                "generator consumes toolchains absent from its "
-                                f"proof receipt: {sorted(missing_toolchains)!r}"
-                            ),
-                        )
-                    )
-
-    for generator in manifest.generators:
-        tool = str(generator["tool"])
-        command = gated_commands.get(tool)
-        if command is None:
             continue
-        dependencies = set(command.get("dependencies", []))
-        for upstream_tool in generator.get("upstream_generators", []):
-            upstream = gated_commands.get(upstream_tool)
-            upstream_id = None if upstream is None else upstream.get("id")
-            if not isinstance(upstream_id, str) or upstream_id not in dependencies:
+        if not implements_generator_contract(root / tool):
+            violations.append(
+                Violation(
+                    kind="ungated",
+                    severity="high",
+                    location=tool,
+                    detail=(
+                        "does not implement the tools/generator_io.py contract: "
+                        "define generated_outputs() and enter through generator_main"
+                    ),
+                )
+            )
+        if not g.get("ci_checkable", True):
+            continue
+        for command in plan_commands:
+            argv = tuple(command.get("argv", []))
+            if tool in argv and "--check" in argv:
                 violations.append(
                     Violation(
                         kind="ungated",
-                        severity="high",
+                        severity="medium",
                         location=tool,
                         detail=(
-                            f"generator depends on {upstream_tool}, but its proof-plan "
-                            f"command does not depend on {upstream_id!r}; encode the "
-                            "generator DAG so downstream freshness cannot race or drift"
+                            f"proof-plan command {command.get('id')!r} re-checks this "
+                            "generator; tools/generators.py check already gates it"
                         ),
                     )
                 )
+        missing_toolchains = set(g.get("toolchains", [])) - runner_toolchains
+        if missing_toolchains:
+            violations.append(
+                Violation(
+                    kind="ungated",
+                    severity="high",
+                    location=tool,
+                    detail=(
+                        "generator consumes toolchains absent from the "
+                        f"repository.generators receipt: {sorted(missing_toolchains)!r}"
+                    ),
+                )
+            )
     return violations
 
 

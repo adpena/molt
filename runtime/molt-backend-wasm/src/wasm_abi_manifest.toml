@@ -1,6 +1,6 @@
 # Canonical WASM ABI/import manifest.
 # Generated consumers are produced by tools/gen_wasm_abi.py.
-# Edit this file, then run: python tools/gen_wasm_abi.py
+# Edit this file, then run: python tools/gen_wasm_abi.py --write
 
 # Static function type table. Import `type` indices below, exception tags, and
 # dynamic type allocation all depend on this index order.

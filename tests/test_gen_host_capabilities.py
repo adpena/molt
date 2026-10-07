@@ -32,7 +32,7 @@ def test_generated_outputs_are_byte_exact() -> None:
     for path, expected in gen.render_all(gen.load_schema()).items():
         assert path.read_bytes() == expected.encode("utf-8"), (
             f"{path.relative_to(ROOT)} is stale; run "
-            "`python tools/gen_host_capabilities.py`"
+            "`python tools/gen_host_capabilities.py --write`"
         )
 
 

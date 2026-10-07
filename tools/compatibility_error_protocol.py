@@ -8,7 +8,6 @@ Unrecognized contexts, modified projections and raw raises remain obligations.
 
 from __future__ import annotations
 
-import argparse
 import ast
 import json
 from dataclasses import dataclass
@@ -22,7 +21,7 @@ else:
 
 ROOT = bind_repository_imports(__file__)
 
-from tools.generator_io import generated_file_matches, write_generated_text  # noqa: E402
+from tools.generator_io import generated_file_matches, generator_main  # noqa: E402
 
 PYTHON_PATH = "src/molt/stdlib/_compatibility_errors.py"
 RUST_PATH = "runtime/molt-runtime/src/builtins/compatibility_error.rs"
@@ -289,7 +288,8 @@ class InventoryHit:
     detail: str
 
 
-def projection_errors(root: Path) -> list[str]:
+def source_errors(root: Path) -> list[str]:
+    """Pinned CPython source receipts and differential witnesses for every outcome."""
     errors = []
     try:
         receipt = json.loads((root / SOURCE_RECEIPTS).read_text(encoding="utf-8"))
@@ -320,16 +320,31 @@ def projection_errors(root: Path) -> list[str]:
             errors.append("compatibility source coordinates are incomplete or unpinned")
     except (OSError, ValueError, KeyError, TypeError):
         errors.append("compatibility source receipts are missing or malformed")
+    for outcome, facts in OUTCOMES.items():
+        if not (root / facts.witness).is_file():
+            errors.append(f"missing compatibility witness: {outcome}")
+    return errors
+
+
+def projection_errors(root: Path) -> list[str]:
+    errors = source_errors(root)
     for name, expected in projections().items():
         # Canonical Rust is emitted in rustfmt form. The shared generator I/O
         # authority normalizes checkout newlines only; predicates and every
         # diagnostic byte remain exact, with no local equivalence parser.
         if not generated_file_matches(root / name, expected):
             errors.append(f"compatibility projection differs: {name}")
-    for outcome, facts in OUTCOMES.items():
-        if not (root / facts.witness).is_file():
-            errors.append(f"missing compatibility witness: {outcome}")
     return errors
+
+
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    errors = source_errors(ROOT)
+    if errors:
+        raise ValueError(
+            "compatibility error protocol sources invalid:\n" + "\n".join(errors)
+        )
+    return {ROOT / name: text for name, text in projections().items()}
 
 
 def describe(outcome: str) -> str:
@@ -477,19 +492,8 @@ def rust_inventory(text: str, code: str, proved: bool) -> list[InventoryHit]:
     return hits
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true")
-    parser.add_argument("--root", type=Path, default=ROOT)
-    args = parser.parse_args()
-    if args.check:
-        errors = projection_errors(args.root)
-        for error in errors:
-            print(error)
-        return int(bool(errors))
-    for name, source in projections().items():
-        write_generated_text(args.root / name, source)
-    return 0
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":

@@ -562,6 +562,11 @@ def test_staged_snapshot_preserves_index_and_uses_git_semantics(
     assert (root / ".git" / "HEAD").read_bytes() == head
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Win32 path normalization strips trailing spaces, so the "
+    "whitespace-named index is the same file as the plain one",
+)
 def test_staged_snapshot_preserves_external_index_path_whitespace(
     staged_source_repository, tmp_path: Path
 ) -> None:

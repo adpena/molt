@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from tools.generator_io import stale_outputs
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -48,7 +50,7 @@ def test_physical_additions_are_preserved_with_unique_lane_owners(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     gen = _generator(tmp_path, monkeypatch)
-    rendered = gen._render_all()
+    rendered = gen.generated_outputs()
     assert "tests/differential/stdlib/new_program.py" in rendered[gen.STDLIB_MANIFEST]
     assert (
         "tests/differential/pyperformance/new_benchmark.py"
@@ -57,7 +59,7 @@ def test_physical_additions_are_preserved_with_unique_lane_owners(
     assert "tests/differential/basic/language.py" in rendered[gen.CORE_MANIFEST]
     assert "tests/differential/basic/language.py" not in rendered[gen.STDLIB_MANIFEST]
     assert all("\\" not in value for value in rendered.values())
-    assert rendered == gen._render_all()
+    assert rendered == gen.generated_outputs()
 
 
 @pytest.mark.parametrize(
@@ -67,9 +69,9 @@ def test_freshness_rejects_each_stale_sibling(
     lane: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     gen = _generator(tmp_path, monkeypatch)
-    rendered = gen._render_all()
+    rendered = gen.generated_outputs()
     for path, value in rendered.items():
         path.write_text(value, encoding="utf-8")
-    assert gen._check(rendered)
+    assert stale_outputs(rendered) == []
     getattr(gen, lane).write_text("# stale\n", encoding="utf-8")
-    assert not gen._check(rendered)
+    assert stale_outputs(rendered) == [getattr(gen, lane)]

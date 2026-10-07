@@ -178,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     if not proof_plan_fresh:
         print(
             "FF-LAND REFUSED (GENERATED DRIFT): proof-plan projection is stale; "
-            "run `python tools/gen_proof_plan.py`, commit both generated outputs, "
+            "run `python tools/gen_proof_plan.py --write`, commit both generated outputs, "
             "and re-verify."
         )
         if proof_plan_output and not args.quiet:

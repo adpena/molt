@@ -2545,6 +2545,37 @@ def test_compatibility_protocol_inventory_fails_closed(tmp_path):
     assert any(item.probe == "rust_stub_surface" for item in findings)
 
 
+def test_compatibility_protocol_generation_requires_receipts_and_witnesses(
+    tmp_path, monkeypatch
+):
+    protocol = SA.compatibility_errors
+    assert protocol.main(["--check"]) == 0
+    assert set(protocol.generated_outputs()) == {
+        protocol.ROOT / name for name in protocol.projections()
+    }
+    # Receipts and witnesses are generation inputs: without them nothing is
+    # published, so neither --check nor --write can bless an unpinned projection.
+    monkeypatch.setattr(protocol, "ROOT", tmp_path)
+    with pytest.raises(ValueError, match="source receipts are missing"):
+        protocol.main(["--write"])
+    assert not (tmp_path / protocol.RUST_PATH).exists()
+    receipt = tmp_path / protocol.SOURCE_RECEIPTS
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(
+        (ROOT / protocol.SOURCE_RECEIPTS).read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="missing compatibility witness"):
+        protocol.main(["--check"])
+    for facts in protocol.OUTCOMES.values():
+        path = tmp_path / facts.witness
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    assert protocol.main(["--check"]) == 1
+    assert protocol.main(["--write"]) == 0
+    assert protocol.main(["--check"]) == 0
+    assert protocol.projection_errors(tmp_path) == []
+
+
 def test_compatibility_classification_does_not_exempt_raw_raises(tmp_path):
     source = 'raise NotImplementedError("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.")'
     hits = SA._python_stub_surface_hits(tmp_path / "unrelated.py", source)

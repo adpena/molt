@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Generate WASM ABI/import registry artifacts from the canonical manifest."""
+"""Generate WASM ABI/import registry artifacts from the canonical manifest.
+
+Usage::
+
+    python tools/gen_wasm_abi.py --write
+    python tools/gen_wasm_abi.py --check
+"""
 
 from __future__ import annotations
 
-import argparse
 from collections.abc import Mapping
 import ast
 import hashlib
@@ -12,11 +17,10 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 from types import MappingProxyType
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import display_path, generator_main
 
 from wasm_abi_gen import render_python as _render_python
 from wasm_abi_gen.manifest import (
@@ -63,23 +67,23 @@ from wasm_abi_gen.paths import (
 
 FRONTEND_TYPES = ROOT / "src/molt/frontend/_types.py"
 
-GENERATOR_CACHE_VERSION = "wasm-abi-render-v5"
+GENERATOR_CACHE_VERSION = "wasm-abi-render-v6"
 RUSTFMT_CACHE_VERSION = "wasm-abi-rustfmt-v1"
-RUSTFMT_CACHE_ENABLED = True
-RENDER_CACHE_FIELDS = (
-    "rendered_rs_modules",
-    "rendered_native_exception_observer_abi_rs",
-    "rendered_runtime_callables_rs",
-    "rendered_runtime_callable_abi_rs",
-    "rendered_runtime_boxed_abi_rs",
-    "rendered_runtime_raw_abi_rs",
-    "rendered_python_builtin_callables_rs",
-    "rendered_wasm_facts_callable_table_rs",
-    "rendered_py",
-    "rendered_js_abi",
-    "rendered_js_callable_table_abi",
-    "rendered_table_layout_inc",
-    "rendered_allowed_imports",
+# Every path this generator renders; the render cache holds exactly these.
+OUTPUT_PATHS: tuple[Path, ...] = (
+    *OUT_RS_FILES.values(),
+    OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
+    OUT_RUNTIME_CALLABLES_RS,
+    OUT_RUNTIME_CALLABLE_ABI_RS,
+    OUT_RUNTIME_BOXED_ABI_RS,
+    OUT_RUNTIME_RAW_ABI_RS,
+    OUT_PYTHON_BUILTIN_CALLABLES_RS,
+    OUT_WASM_FACTS_CALLABLE_TABLE_RS,
+    OUT_PY,
+    OUT_JS_ABI,
+    OUT_JS_CALLABLE_TABLE_ABI,
+    OUT_TABLE_LAYOUT_INC,
+    OUT_ALLOWED_IMPORTS,
 )
 
 
@@ -142,15 +146,12 @@ def _rustfmt_many(modules: dict[str, str]) -> dict[str, str]:
     rustfmt_version = _rustfmt_version()
     formatted: dict[str, str] = {}
     misses: dict[str, str] = {}
-    if RUSTFMT_CACHE_ENABLED:
-        for name, source in modules.items():
-            cached = _load_rustfmt_cache(name, source, rustfmt_version)
-            if cached is None:
-                misses[name] = source
-            else:
-                formatted[name] = cached
-    else:
-        misses = dict(modules)
+    for name, source in modules.items():
+        cached = _load_rustfmt_cache(name, source, rustfmt_version)
+        if cached is None:
+            misses[name] = source
+        else:
+            formatted[name] = cached
     if not misses:
         return {name: formatted[name] for name in modules}
     with tempfile.TemporaryDirectory(prefix="molt-wasm-abi-rustfmt-") as raw_tmp:
@@ -184,8 +185,7 @@ def _rustfmt_many(modules: dict[str, str]) -> dict[str, str]:
         for name, source in misses.items():
             rustfmt_output = (tmp / name).read_text(encoding="utf-8").rstrip() + "\n"
             formatted[name] = rustfmt_output
-            if RUSTFMT_CACHE_ENABLED:
-                _store_rustfmt_cache(name, source, rustfmt_version, rustfmt_output)
+            _store_rustfmt_cache(name, source, rustfmt_version, rustfmt_output)
     return {name: formatted[name] for name in modules}
 
 
@@ -322,47 +322,41 @@ def _cache_path(cache_key: str) -> Path:
     return WASM_ABI_GEN_CACHE / f"{cache_key}.json"
 
 
-def _validate_cached_bundle(raw: object, cache_key: str) -> dict[str, object] | None:
+def _validate_cached_outputs(raw: object, cache_key: str) -> dict[Path, str] | None:
     if not isinstance(raw, dict):
         return None
     if raw.get("version") != GENERATOR_CACHE_VERSION or raw.get("key") != cache_key:
         return None
-    bundle = raw.get("bundle")
-    if not isinstance(bundle, dict):
+    outputs = raw.get("outputs")
+    if not isinstance(outputs, dict):
         return None
-    modules = bundle.get("rendered_rs_modules")
-    if not isinstance(modules, dict):
+    expected = {_cache_relative_path(path): path for path in OUTPUT_PATHS}
+    if set(outputs) != set(expected):
         return None
-    if not all(
-        isinstance(name, str) and isinstance(text, str)
-        for name, text in modules.items()
-    ):
+    if not all(isinstance(text, str) for text in outputs.values()):
         return None
-    for field in RENDER_CACHE_FIELDS:
-        if field == "rendered_rs_modules":
-            continue
-        if not isinstance(bundle.get(field), str):
-            return None
-    return bundle
+    return {path: outputs[name] for name, path in expected.items()}
 
 
-def _load_render_cache(cache_key: str) -> dict[str, object] | None:
+def _load_render_cache(cache_key: str) -> dict[Path, str] | None:
     path = _cache_path(cache_key)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
-    return _validate_cached_bundle(raw, cache_key)
+    return _validate_cached_outputs(raw, cache_key)
 
 
-def _store_render_cache(cache_key: str, bundle: dict[str, object]) -> None:
+def _store_render_cache(cache_key: str, outputs: Mapping[Path, str]) -> None:
     WASM_ABI_GEN_CACHE.mkdir(parents=True, exist_ok=True)
     path = _cache_path(cache_key)
     tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     payload = {
         "version": GENERATOR_CACHE_VERSION,
         "key": cache_key,
-        "bundle": bundle,
+        "outputs": {
+            _cache_relative_path(output): text for output, text in outputs.items()
+        },
     }
     tmp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     tmp_path.replace(path)
@@ -2545,29 +2539,44 @@ def render_js_callable_table_abi(data: dict) -> str:
     )
 
 
-def _check(path: Path, rendered: str) -> bool:
-    if not path.exists():
-        print(f"MISSING generated file: {path}", file=sys.stderr)
-        return False
-    if not generated_file_matches(path, rendered):
-        print(
-            f"STALE generated file: {path}\n"
-            "  run `python tools/gen_wasm_abi.py` to regenerate.",
-            file=sys.stderr,
+def render_outputs(data: dict) -> dict[Path, str]:
+    """Render every output from a loaded manifest, bypassing the render cache."""
+    rendered_rs_modules = render_rs_modules(data)
+    if set(rendered_rs_modules) != set(OUT_RS_FILES):
+        missing = sorted(set(OUT_RS_FILES) - set(rendered_rs_modules))
+        extra = sorted(set(rendered_rs_modules) - set(OUT_RS_FILES))
+        raise RuntimeError(
+            "BUG: Rust WASM ABI module renderer does not match OUT_RS_FILES "
+            f"(missing={missing}, extra={extra})"
         )
-        return False
-    return True
-
-
-def _check_absent(path: Path) -> bool:
-    if path.exists():
-        print(
-            f"STALE removed generated file: {path}\n"
-            "  run `python tools/gen_wasm_abi.py` to remove it.",
-            file=sys.stderr,
-        )
-        return False
-    return True
+    outputs = {OUT_RS_FILES[name]: text for name, text in rendered_rs_modules.items()}
+    outputs[OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS] = (
+        render_native_exception_observer_abi_rs(data)
+    )
+    outputs[OUT_RUNTIME_CALLABLES_RS] = render_runtime_callables_rs(data)
+    outputs[OUT_RUNTIME_CALLABLE_ABI_RS] = _rustfmt(
+        "runtime_callable_abi_generated.rs", render_runtime_callable_abi_rs(data)
+    )
+    outputs[OUT_RUNTIME_BOXED_ABI_RS] = _rustfmt(
+        "runtime_boxed_abi_generated.rs", render_runtime_boxed_abi_rs(data)
+    )
+    outputs[OUT_RUNTIME_RAW_ABI_RS] = _rustfmt(
+        "runtime_raw_abi_generated.rs", render_runtime_raw_abi_rs(data)
+    )
+    outputs[OUT_PYTHON_BUILTIN_CALLABLES_RS] = _rustfmt(
+        "python_builtin_callables_generated.rs",
+        render_python_builtin_callables_rs(data),
+    )
+    outputs[OUT_WASM_FACTS_CALLABLE_TABLE_RS] = _rustfmt(
+        "callable_table_generated.rs",
+        _render_rs_callable_table(data, include_active_element_role=False),
+    )
+    outputs[OUT_PY] = render_py(data)
+    outputs[OUT_JS_ABI] = render_js_abi(data)
+    outputs[OUT_JS_CALLABLE_TABLE_ABI] = render_js_callable_table_abi(data)
+    outputs[OUT_TABLE_LAYOUT_INC] = render_table_layout_inc(data)
+    outputs[OUT_ALLOWED_IMPORTS] = render_allowed_imports(data)
+    return outputs
 
 
 def _unexpected_rs_files() -> list[Path]:
@@ -2577,245 +2586,42 @@ def _unexpected_rs_files() -> list[Path]:
     return sorted(path for path in OUT_RS_DIR.glob("*.rs") if path not in expected)
 
 
-def _check_rs_modules(rendered_modules: dict[str, str]) -> bool:
-    ok = True
-    if LEGACY_OUT_RS.exists():
-        print(
-            f"STALE legacy generated file: {LEGACY_OUT_RS}\n"
-            "  run `python tools/gen_wasm_abi.py` to regenerate split modules.",
-            file=sys.stderr,
-        )
-        ok = False
-    if set(rendered_modules) != set(OUT_RS_FILES):
-        missing = sorted(set(OUT_RS_FILES) - set(rendered_modules))
-        extra = sorted(set(rendered_modules) - set(OUT_RS_FILES))
-        print(
-            "BUG: Rust WASM ABI module renderer does not match OUT_RS_FILES "
-            f"(missing={missing}, extra={extra})",
-            file=sys.stderr,
-        )
-        ok = False
-    for name, rendered in rendered_modules.items():
-        path = OUT_RS_FILES[name]
-        ok = _check(path, rendered) and ok
-    for path in _unexpected_rs_files():
-        print(
-            f"STALE generated module: {path}\n"
-            "  run `python tools/gen_wasm_abi.py` to remove stale split modules.",
-            file=sys.stderr,
-        )
-        ok = False
-    return ok
+def _stale_generated_files() -> list[Path]:
+    """Retired outputs that still exist: the pre-split single-file module,
+    removed includes, and split modules the renderer no longer produces."""
+    stale = [
+        path for path in (LEGACY_OUT_RS, *REMOVED_GENERATED_FILES) if path.exists()
+    ]
+    stale.extend(_unexpected_rs_files())
+    return stale
 
 
-def _write_rs_modules(rendered_modules: dict[str, str]) -> None:
-    if LEGACY_OUT_RS.exists():
-        LEGACY_OUT_RS.unlink()
-    OUT_RS_DIR.mkdir(parents=True, exist_ok=True)
-    for path in _unexpected_rs_files():
-        path.unlink()
-    for name, rendered in rendered_modules.items():
-        _write_if_changed(OUT_RS_FILES[name], rendered)
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text.
+
+    Rendering is memoized in a cache keyed by the content of every generator
+    input plus the Python and rustfmt versions, so an unchanged tree renders
+    without re-deriving the projections. A retired output is part of the
+    authority: rendering raises while one exists, so ``--check`` and
+    ``--write`` both fail closed naming the files to delete.
+    """
+    stale = _stale_generated_files()
+    if stale:
+        raise RuntimeError(
+            "delete generated files that tools/gen_wasm_abi.py no longer "
+            "renders: " + ", ".join(display_path(path) for path in stale)
+        )
+    cache_key = _render_cache_key(_rustfmt_version())
+    outputs = _load_render_cache(cache_key)
+    if outputs is None:
+        outputs = render_outputs(load_manifest())
+        _store_render_cache(cache_key, outputs)
+    return outputs
 
 
-def _write_if_changed(path: Path, rendered: str) -> None:
-    if generated_file_matches(path, rendered):
-        return
-    write_generated_text(path, rendered)
-
-
-def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true")
-    parser.add_argument(
-        "--no-cache",
-        action="store_true",
-        help="render from source without reading or writing persistent caches",
-    )
-    parser.add_argument(
-        "--timings",
-        action="store_true",
-        help="print generator stage timings to stderr",
-    )
-    args = parser.parse_args(argv)
-
-    global RUSTFMT_CACHE_ENABLED
-    RUSTFMT_CACHE_ENABLED = not args.no_cache
-
-    timings: list[tuple[str, float]] = []
-
-    def timed(label: str, func):
-        start = time.perf_counter()
-        result = func()
-        timings.append((label, time.perf_counter() - start))
-        return result
-
-    rustfmt_version = timed("rustfmt_version", _rustfmt_version)
-    cache_key = timed("cache_key", lambda: _render_cache_key(rustfmt_version))
-    bundle = None
-    if not args.no_cache:
-        bundle = timed("cache_load", lambda: _load_render_cache(cache_key))
-    cache_state = "hit" if bundle is not None else "miss"
-    if bundle is None:
-        data = timed("load_manifest", load_manifest)
-        rendered_rs_modules = timed(
-            "render_rs_modules", lambda: render_rs_modules(data)
-        )
-        rendered_native_exception_observer_abi_rs = timed(
-            "render_native_exception_observer_abi_rs",
-            lambda: render_native_exception_observer_abi_rs(data),
-        )
-        rendered_runtime_callables_rs = timed(
-            "render_runtime_callables_rs", lambda: render_runtime_callables_rs(data)
-        )
-        rendered_runtime_callable_abi_rs = timed(
-            "render_runtime_callable_abi_rs",
-            lambda: _rustfmt(
-                "runtime_callable_abi_generated.rs",
-                render_runtime_callable_abi_rs(data),
-            ),
-        )
-        rendered_runtime_raw_abi_rs = timed(
-            "render_runtime_raw_abi_rs",
-            lambda: _rustfmt(
-                "runtime_raw_abi_generated.rs", render_runtime_raw_abi_rs(data)
-            ),
-        )
-        rendered_runtime_boxed_abi_rs = timed(
-            "render_runtime_boxed_abi_rs",
-            lambda: _rustfmt(
-                "runtime_boxed_abi_generated.rs", render_runtime_boxed_abi_rs(data)
-            ),
-        )
-        rendered_python_builtin_callables_rs = timed(
-            "render_python_builtin_callables_rs",
-            lambda: _rustfmt(
-                "python_builtin_callables_generated.rs",
-                render_python_builtin_callables_rs(data),
-            ),
-        )
-        rendered_wasm_facts_callable_table_rs = timed(
-            "render_wasm_facts_callable_table_rs",
-            lambda: _rustfmt(
-                "callable_table_generated.rs",
-                _render_rs_callable_table(data, include_active_element_role=False),
-            ),
-        )
-        rendered_py = timed("render_py", lambda: render_py(data))
-        rendered_js_abi = timed("render_js_abi", lambda: render_js_abi(data))
-        rendered_js_callable_table_abi = timed(
-            "render_js_callable_table_abi",
-            lambda: render_js_callable_table_abi(data),
-        )
-        rendered_table_layout_inc = timed(
-            "render_table_layout_inc", lambda: render_table_layout_inc(data)
-        )
-        rendered_allowed_imports = timed(
-            "render_allowed_imports", lambda: render_allowed_imports(data)
-        )
-        bundle = {
-            "rendered_rs_modules": rendered_rs_modules,
-            "rendered_native_exception_observer_abi_rs": (
-                rendered_native_exception_observer_abi_rs
-            ),
-            "rendered_runtime_callables_rs": rendered_runtime_callables_rs,
-            "rendered_runtime_callable_abi_rs": rendered_runtime_callable_abi_rs,
-            "rendered_runtime_boxed_abi_rs": rendered_runtime_boxed_abi_rs,
-            "rendered_runtime_raw_abi_rs": rendered_runtime_raw_abi_rs,
-            "rendered_python_builtin_callables_rs": rendered_python_builtin_callables_rs,
-            "rendered_wasm_facts_callable_table_rs": rendered_wasm_facts_callable_table_rs,
-            "rendered_py": rendered_py,
-            "rendered_js_abi": rendered_js_abi,
-            "rendered_js_callable_table_abi": rendered_js_callable_table_abi,
-            "rendered_table_layout_inc": rendered_table_layout_inc,
-            "rendered_allowed_imports": rendered_allowed_imports,
-        }
-        if not args.no_cache:
-            timed("cache_store", lambda: _store_render_cache(cache_key, bundle))
-    rendered_rs_modules = dict(bundle["rendered_rs_modules"])
-    rendered_native_exception_observer_abi_rs = str(
-        bundle["rendered_native_exception_observer_abi_rs"]
-    )
-    rendered_runtime_callables_rs = str(bundle["rendered_runtime_callables_rs"])
-    rendered_runtime_callable_abi_rs = str(bundle["rendered_runtime_callable_abi_rs"])
-    rendered_runtime_boxed_abi_rs = str(bundle["rendered_runtime_boxed_abi_rs"])
-    rendered_runtime_raw_abi_rs = str(bundle["rendered_runtime_raw_abi_rs"])
-    rendered_python_builtin_callables_rs = str(
-        bundle["rendered_python_builtin_callables_rs"]
-    )
-    rendered_wasm_facts_callable_table_rs = str(
-        bundle["rendered_wasm_facts_callable_table_rs"]
-    )
-    rendered_py = str(bundle["rendered_py"])
-    rendered_js_abi = str(bundle["rendered_js_abi"])
-    rendered_js_callable_table_abi = str(bundle["rendered_js_callable_table_abi"])
-    rendered_table_layout_inc = str(bundle["rendered_table_layout_inc"])
-    rendered_allowed_imports = str(bundle["rendered_allowed_imports"])
-    if args.check:
-        ok = (
-            0
-            if _check_rs_modules(rendered_rs_modules)
-            and _check(
-                OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
-                rendered_native_exception_observer_abi_rs,
-            )
-            and _check(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
-            and _check(OUT_RUNTIME_CALLABLE_ABI_RS, rendered_runtime_callable_abi_rs)
-            and _check(OUT_RUNTIME_BOXED_ABI_RS, rendered_runtime_boxed_abi_rs)
-            and _check(OUT_RUNTIME_RAW_ABI_RS, rendered_runtime_raw_abi_rs)
-            and _check(
-                OUT_PYTHON_BUILTIN_CALLABLES_RS, rendered_python_builtin_callables_rs
-            )
-            and _check(
-                OUT_WASM_FACTS_CALLABLE_TABLE_RS,
-                rendered_wasm_facts_callable_table_rs,
-            )
-            and _check(OUT_PY, rendered_py)
-            and _check(OUT_JS_ABI, rendered_js_abi)
-            and _check(OUT_JS_CALLABLE_TABLE_ABI, rendered_js_callable_table_abi)
-            and _check(OUT_TABLE_LAYOUT_INC, rendered_table_layout_inc)
-            and _check(OUT_ALLOWED_IMPORTS, rendered_allowed_imports)
-            and all(_check_absent(path) for path in REMOVED_GENERATED_FILES)
-            else 1
-        )
-        if args.timings:
-            total = sum(elapsed for _label, elapsed in timings)
-            print(f"cache: {cache_state} {cache_key[:12]}", file=sys.stderr)
-            for label, elapsed in timings:
-                print(f"{label}: {elapsed:.3f}s", file=sys.stderr)
-            print(f"total: {total:.3f}s", file=sys.stderr)
-        return ok
-    _write_rs_modules(rendered_rs_modules)
-    _write_if_changed(
-        OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
-        rendered_native_exception_observer_abi_rs,
-    )
-    _write_if_changed(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
-    _write_if_changed(OUT_RUNTIME_CALLABLE_ABI_RS, rendered_runtime_callable_abi_rs)
-    _write_if_changed(OUT_RUNTIME_BOXED_ABI_RS, rendered_runtime_boxed_abi_rs)
-    _write_if_changed(OUT_RUNTIME_RAW_ABI_RS, rendered_runtime_raw_abi_rs)
-    _write_if_changed(
-        OUT_PYTHON_BUILTIN_CALLABLES_RS, rendered_python_builtin_callables_rs
-    )
-    _write_if_changed(
-        OUT_WASM_FACTS_CALLABLE_TABLE_RS,
-        rendered_wasm_facts_callable_table_rs,
-    )
-    _write_if_changed(OUT_PY, rendered_py)
-    _write_if_changed(OUT_JS_ABI, rendered_js_abi)
-    _write_if_changed(OUT_JS_CALLABLE_TABLE_ABI, rendered_js_callable_table_abi)
-    _write_if_changed(OUT_TABLE_LAYOUT_INC, rendered_table_layout_inc)
-    _write_if_changed(OUT_ALLOWED_IMPORTS, rendered_allowed_imports)
-    for path in REMOVED_GENERATED_FILES:
-        path.unlink(missing_ok=True)
-    if args.timings:
-        total = sum(elapsed for _label, elapsed in timings)
-        print(f"cache: {cache_state} {cache_key[:12]}", file=sys.stderr)
-        for label, elapsed in timings:
-            print(f"{label}: {elapsed:.3f}s", file=sys.stderr)
-        print(f"total: {total:.3f}s", file=sys.stderr)
-    return 0
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main())

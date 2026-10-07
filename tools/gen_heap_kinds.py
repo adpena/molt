@@ -9,21 +9,19 @@ enlarging the hot object header.
 
 Usage::
 
-    python tools/gen_heap_kinds.py
+    python tools/gen_heap_kinds.py --write
     python tools/gen_heap_kinds.py --check
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import shutil
-import sys
 import tomllib
 from pathlib import Path
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generator_main
 
 try:
     from tools.command_execution import CommandExecutor
@@ -682,24 +680,13 @@ def render_all(kinds: list[dict[str, object]]) -> dict[Path, str]:
     }
 
 
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    return render_all(load_table())
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--check", action="store_true", help="fail if generated outputs are stale"
-    )
-    args = parser.parse_args(argv)
-    rendered = render_all(load_table())
-    stale = False
-    for path, source in rendered.items():
-        if args.check:
-            if not generated_file_matches(path, source):
-                print(
-                    f"STALE generated file: {path.relative_to(ROOT)}", file=sys.stderr
-                )
-                stale = True
-        else:
-            write_generated_text(path, source)
-    return 1 if stale else 0
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":
