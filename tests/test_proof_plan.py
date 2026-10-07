@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -26,6 +27,7 @@ from tools import (
 from tools.proof_queue_pkg import command_admission, supervisor_custody
 from tools.proof_queue_pkg import custody as proof_queue_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
+from tests.process_guard_common import run_guarded_test_process
 
 
 PLAN = proof_plan.ProofPlan.load()
@@ -3150,26 +3152,28 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
     )
     started = project / "test-started"
     target = project / "target"
+    cargo_env = {"CARGO_TARGET_DIR": str(target), "CARGO_INCREMENTAL": "1"}
+    manifest = ["--manifest-path", str(project / "Cargo.toml"), "--test", "hang"]
+    # Compile outside the timed partition: the 12-second budget then covers only
+    # the hanging test, on any host speed (a cold compile under Rosetta alone
+    # exceeds it).
+    build = run_guarded_test_process(
+        ["cargo", "test", "--offline", "--no-run", *manifest],
+        env={**os.environ, **cargo_env},
+        timeout=600,
+    )
+    assert build.returncode == 0, build.stderr
+    incremental = target / "debug" / "incremental"
+    compiled = sorted(path.name for path in incremental.iterdir())
+    assert compiled
     command = proof_plan.ProofCommand(
         "synthetic.cargo-timeout",
         {
             **_synthetic_executor_command("synthetic.cargo-timeout").data,
             "timeout_seconds": 12,
             "toolchains": ["cargo", "python"],
-            "argv": [
-                "cargo",
-                "test",
-                "--offline",
-                "--manifest-path",
-                str(project / "Cargo.toml"),
-                "--test",
-                "hang",
-            ],
-            "env": {
-                "CARGO_TARGET_DIR": str(target),
-                "CARGO_INCREMENTAL": "1",
-                "MOLT_TEST_STARTED": str(started),
-            },
+            "argv": ["cargo", "test", "--offline", *manifest],
+            "env": {**cargo_env, "MOLT_TEST_STARTED": str(started)},
         },
     )
     plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
@@ -3182,7 +3186,8 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
     assert record["failure_scope"] == (
         "partition" if sys.platform == "win32" else "global"
     ), record
-    assert (target / "debug" / "incremental").is_dir()
+    # The kill leaves the completed incremental cache exactly as it was.
+    assert sorted(path.name for path in incremental.iterdir()) == compiled
 
 
 @pytest.mark.parametrize(
