@@ -2245,6 +2245,22 @@ dependencies = []
 argv = ["uv", "run", "--frozen", "python3", "tools/check_cargo_locks.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
+# The browser SIMD crate ships deploy/browser/simd-ops.wasm but sits outside
+# the workspace; lint it so it cannot silently stop compiling. Cargo reads the
+# crate's .cargo/config.toml (simd128) only from its own directory.
+[[command]]
+id = "rust.clippy.browser-simd"
+family = "rust"
+cell = "linux-x86_64-rust-wasi-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cross-check"
+cache_domain = "cargo-workspace"
+dependencies = []
+cwd = "deploy/browser/simd-ops-rs"
+argv = ["cargo", "clippy", "--locked", "--target", "wasm32-unknown-unknown", "--", "-D", "warnings"]
+toolchains = ["rustc", "cargo"]
+
 [[command]]
 id = "rust.check.math-aarch64"
 family = "rust"

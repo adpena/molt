@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "a4644eac6a6734dd50a0777f8db2b0360f793d26dc8c3182796a8cecc1b0efed",
+  "authority_sha256": "8c1ea2ee8dd172b44df058be515596dd5b76853dd08c31e32ffd7476ff890829",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -3723,6 +3723,36 @@
     {
       "argv": [
         "cargo",
+        "clippy",
+        "--locked",
+        "--target",
+        "wasm32-unknown-unknown",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-rust-wasi-dev",
+      "cwd": "deploy/browser/simd-ops-rs",
+      "dependencies": [],
+      "family": "rust",
+      "id": "rust.clippy.browser-simd",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cross-check",
+      "timeout_seconds": 240,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
         "check",
         "--locked",
         "--target",
@@ -4622,10 +4652,10 @@
       "rust": {
         "budget_seconds": 14400,
         "critical_path_seconds": 9000,
-        "headroom_seconds": 240,
-        "projected_makespan_seconds": 14160,
+        "headroom_seconds": 0,
+        "projected_makespan_seconds": 14400,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 14160
+          "compiler-build-resource": 14400
         }
       },
       "rust_security": {

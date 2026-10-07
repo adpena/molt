@@ -3,9 +3,8 @@
 //! Rust source for the optimized SIMD operations. Compiles to wasm32-unknown-unknown
 //! with SIMD enabled, producing a < 5 KB .wasm binary.
 //!
-//! Build:
-//!   RUSTFLAGS="-C target-feature=+simd128" \
-//!     cargo build --target wasm32-unknown-unknown --release
+//! Build (`.cargo/config.toml` enables simd128):
+//!   cargo build --target wasm32-unknown-unknown --release
 //!
 //! Optimizations over the hand-written WAT:
 //! - Matmul: 4x4 tiled with SIMD f32x4 for cache locality
@@ -39,12 +38,12 @@ fn floor_scalar(x: f32) -> f32 {
 // Max relative error: ~2.3e-8 (vs ~1.5e-4 for the 4th-order WAT version).
 // ---------------------------------------------------------------------------
 const EXP2_C0: f32 = 1.0;
-const EXP2_C1: f32 = 6.931_471_8e-1; // ln(2)
-const EXP2_C2: f32 = 2.402_265_1e-1; // ln(2)^2 / 2!
-const EXP2_C3: f32 = 5.550_411_0e-2; // ln(2)^3 / 3!
-const EXP2_C4: f32 = 9.618_129_1e-3; // ln(2)^4 / 4!
+const EXP2_C1: f32 = core::f32::consts::LN_2;
+const EXP2_C2: f32 = 2.402_265e-1; // ln(2)^2 / 2!
+const EXP2_C3: f32 = 5.550_411e-2; // ln(2)^3 / 3!
+const EXP2_C4: f32 = 9.618_129e-3; // ln(2)^4 / 4!
 const EXP2_C5: f32 = 1.333_355_8e-3; // ln(2)^5 / 5!
-const EXP2_C6: f32 = 1.540_353_0e-4; // ln(2)^6 / 6!
+const EXP2_C6: f32 = 1.540_353e-4; // ln(2)^6 / 6!
 
 /// Scalar exp2(x) via 6th-order Cephes polynomial.
 #[inline(always)]
@@ -66,7 +65,7 @@ fn exp2_scalar(x: f32) -> f32 {
 
 /// SIMD v128 exp2 — 4 lanes, 6th-order polynomial.
 #[inline(always)]
-unsafe fn exp2_v128(x: v128) -> v128 {
+fn exp2_v128(x: v128) -> v128 {
     let xi = f32x4_floor(x);
     let xf = f32x4_sub(x, xi);
 
@@ -92,7 +91,7 @@ unsafe fn exp2_v128(x: v128) -> v128 {
 ///   Round 1: [a,b,c,d] + [c,d,a,b] = [a+c, b+d, c+a, d+b]
 ///   Round 2: [a+c, b+d, ...] + [b+d, a+c, ...] = [a+b+c+d, ...]
 #[inline(always)]
-unsafe fn hsum_f32x4(v: v128) -> f32 {
+fn hsum_f32x4(v: v128) -> f32 {
     // Shuffle high pair to low: [c, d, a, b]
     let hi = i32x4_shuffle::<2, 3, 0, 1>(v, v);
     let sum1 = f32x4_add(v, hi); // [a+c, b+d, ...]
@@ -104,7 +103,7 @@ unsafe fn hsum_f32x4(v: v128) -> f32 {
 
 /// Horizontal max of 4 f32 lanes using pairwise shuffle reduction.
 #[inline(always)]
-unsafe fn hmax_f32x4(v: v128) -> f32 {
+fn hmax_f32x4(v: v128) -> f32 {
     let hi = i32x4_shuffle::<2, 3, 0, 1>(v, v);
     let max1 = f32x4_max(v, hi);
     let odd = i32x4_shuffle::<1, 0, 3, 2>(max1, max1);
@@ -131,7 +130,12 @@ unsafe fn hmax_f32x4(v: v128) -> f32 {
 /// and 4 columns of B simultaneously with 16 f32x4 accumulators.
 /// Inner K loop processes 4 values per iteration for reduced loop overhead
 /// and better instruction-level parallelism.
-#[no_mangle]
+///
+/// # Safety
+///
+/// Each pointer must be non-null, aligned for `f32`, and valid for the reads
+/// and writes that the element counts above imply.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn matmul_f32_tiled(
     a: *const f32,
     b: *const f32,
@@ -140,112 +144,140 @@ pub unsafe extern "C" fn matmul_f32_tiled(
     k: u32,
     n: u32,
 ) {
-    let m = m as usize;
-    let k = k as usize;
-    let n = n as usize;
+    // SAFETY: the caller passes pointers valid for the element counts this
+    // export documents, as its C ABI contract states.
+    unsafe {
+        let m = m as usize;
+        let k = k as usize;
+        let n = n as usize;
 
-    // Zero output
-    let out_bytes = m * n * 4;
-    core::ptr::write_bytes(out as *mut u8, 0, out_bytes);
+        // Zero output
+        let out_bytes = m * n * 4;
+        core::ptr::write_bytes(out as *mut u8, 0, out_bytes);
 
-    let n4 = n & !3; // n rounded down to multiple of 4
-    let k4 = k & !3; // k rounded down to multiple of 4
+        let n4 = n & !3; // n rounded down to multiple of 4
+        let k4 = k & !3; // k rounded down to multiple of 4
 
-    // Process 4 rows at a time
-    let m4 = m & !3;
-    let mut mi = 0usize;
+        // Process 4 rows at a time
+        let m4 = m & !3;
+        let mut mi = 0usize;
 
-    while mi < m4 {
-        // Base pointers for 4 rows of A
-        let a_row0 = a.add(mi * k);
-        let a_row1 = a.add((mi + 1) * k);
-        let a_row2 = a.add((mi + 2) * k);
-        let a_row3 = a.add((mi + 3) * k);
+        while mi < m4 {
+            // Base pointers for 4 rows of A
+            let a_row0 = a.add(mi * k);
+            let a_row1 = a.add((mi + 1) * k);
+            let a_row2 = a.add((mi + 2) * k);
+            let a_row3 = a.add((mi + 3) * k);
 
-        // For each 4-wide column strip of the output
-        let mut ni = 0usize;
-        while ni < n4 {
-            // 4 accumulators: one per row, each holding 4 columns
-            let mut acc0 = f32x4_splat(0.0);
-            let mut acc1 = f32x4_splat(0.0);
-            let mut acc2 = f32x4_splat(0.0);
-            let mut acc3 = f32x4_splat(0.0);
+            // For each 4-wide column strip of the output
+            let mut ni = 0usize;
+            while ni < n4 {
+                // 4 accumulators: one per row, each holding 4 columns
+                let mut acc0 = f32x4_splat(0.0);
+                let mut acc1 = f32x4_splat(0.0);
+                let mut acc2 = f32x4_splat(0.0);
+                let mut acc3 = f32x4_splat(0.0);
 
-            // Unrolled K loop: process 4 K values per iteration
-            let mut ki = 0usize;
-            while ki < k4 {
-                // Iteration 0
-                let b_vec0 = v128_load(b.add(ki * n + ni) as *const v128);
-                let a00 = f32x4_splat(*a_row0.add(ki));
-                let a10 = f32x4_splat(*a_row1.add(ki));
-                let a20 = f32x4_splat(*a_row2.add(ki));
-                let a30 = f32x4_splat(*a_row3.add(ki));
-                acc0 = f32x4_add(acc0, f32x4_mul(a00, b_vec0));
-                acc1 = f32x4_add(acc1, f32x4_mul(a10, b_vec0));
-                acc2 = f32x4_add(acc2, f32x4_mul(a20, b_vec0));
-                acc3 = f32x4_add(acc3, f32x4_mul(a30, b_vec0));
+                // Unrolled K loop: process 4 K values per iteration
+                let mut ki = 0usize;
+                while ki < k4 {
+                    // Iteration 0
+                    let b_vec0 = v128_load(b.add(ki * n + ni) as *const v128);
+                    let a00 = f32x4_splat(*a_row0.add(ki));
+                    let a10 = f32x4_splat(*a_row1.add(ki));
+                    let a20 = f32x4_splat(*a_row2.add(ki));
+                    let a30 = f32x4_splat(*a_row3.add(ki));
+                    acc0 = f32x4_add(acc0, f32x4_mul(a00, b_vec0));
+                    acc1 = f32x4_add(acc1, f32x4_mul(a10, b_vec0));
+                    acc2 = f32x4_add(acc2, f32x4_mul(a20, b_vec0));
+                    acc3 = f32x4_add(acc3, f32x4_mul(a30, b_vec0));
 
-                // Iteration 1
-                let b_vec1 = v128_load(b.add((ki + 1) * n + ni) as *const v128);
-                let a01 = f32x4_splat(*a_row0.add(ki + 1));
-                let a11 = f32x4_splat(*a_row1.add(ki + 1));
-                let a21 = f32x4_splat(*a_row2.add(ki + 1));
-                let a31 = f32x4_splat(*a_row3.add(ki + 1));
-                acc0 = f32x4_add(acc0, f32x4_mul(a01, b_vec1));
-                acc1 = f32x4_add(acc1, f32x4_mul(a11, b_vec1));
-                acc2 = f32x4_add(acc2, f32x4_mul(a21, b_vec1));
-                acc3 = f32x4_add(acc3, f32x4_mul(a31, b_vec1));
+                    // Iteration 1
+                    let b_vec1 = v128_load(b.add((ki + 1) * n + ni) as *const v128);
+                    let a01 = f32x4_splat(*a_row0.add(ki + 1));
+                    let a11 = f32x4_splat(*a_row1.add(ki + 1));
+                    let a21 = f32x4_splat(*a_row2.add(ki + 1));
+                    let a31 = f32x4_splat(*a_row3.add(ki + 1));
+                    acc0 = f32x4_add(acc0, f32x4_mul(a01, b_vec1));
+                    acc1 = f32x4_add(acc1, f32x4_mul(a11, b_vec1));
+                    acc2 = f32x4_add(acc2, f32x4_mul(a21, b_vec1));
+                    acc3 = f32x4_add(acc3, f32x4_mul(a31, b_vec1));
 
-                // Iteration 2
-                let b_vec2 = v128_load(b.add((ki + 2) * n + ni) as *const v128);
-                let a02 = f32x4_splat(*a_row0.add(ki + 2));
-                let a12 = f32x4_splat(*a_row1.add(ki + 2));
-                let a22 = f32x4_splat(*a_row2.add(ki + 2));
-                let a32 = f32x4_splat(*a_row3.add(ki + 2));
-                acc0 = f32x4_add(acc0, f32x4_mul(a02, b_vec2));
-                acc1 = f32x4_add(acc1, f32x4_mul(a12, b_vec2));
-                acc2 = f32x4_add(acc2, f32x4_mul(a22, b_vec2));
-                acc3 = f32x4_add(acc3, f32x4_mul(a32, b_vec2));
+                    // Iteration 2
+                    let b_vec2 = v128_load(b.add((ki + 2) * n + ni) as *const v128);
+                    let a02 = f32x4_splat(*a_row0.add(ki + 2));
+                    let a12 = f32x4_splat(*a_row1.add(ki + 2));
+                    let a22 = f32x4_splat(*a_row2.add(ki + 2));
+                    let a32 = f32x4_splat(*a_row3.add(ki + 2));
+                    acc0 = f32x4_add(acc0, f32x4_mul(a02, b_vec2));
+                    acc1 = f32x4_add(acc1, f32x4_mul(a12, b_vec2));
+                    acc2 = f32x4_add(acc2, f32x4_mul(a22, b_vec2));
+                    acc3 = f32x4_add(acc3, f32x4_mul(a32, b_vec2));
 
-                // Iteration 3
-                let b_vec3 = v128_load(b.add((ki + 3) * n + ni) as *const v128);
-                let a03 = f32x4_splat(*a_row0.add(ki + 3));
-                let a13 = f32x4_splat(*a_row1.add(ki + 3));
-                let a23 = f32x4_splat(*a_row2.add(ki + 3));
-                let a33 = f32x4_splat(*a_row3.add(ki + 3));
-                acc0 = f32x4_add(acc0, f32x4_mul(a03, b_vec3));
-                acc1 = f32x4_add(acc1, f32x4_mul(a13, b_vec3));
-                acc2 = f32x4_add(acc2, f32x4_mul(a23, b_vec3));
-                acc3 = f32x4_add(acc3, f32x4_mul(a33, b_vec3));
+                    // Iteration 3
+                    let b_vec3 = v128_load(b.add((ki + 3) * n + ni) as *const v128);
+                    let a03 = f32x4_splat(*a_row0.add(ki + 3));
+                    let a13 = f32x4_splat(*a_row1.add(ki + 3));
+                    let a23 = f32x4_splat(*a_row2.add(ki + 3));
+                    let a33 = f32x4_splat(*a_row3.add(ki + 3));
+                    acc0 = f32x4_add(acc0, f32x4_mul(a03, b_vec3));
+                    acc1 = f32x4_add(acc1, f32x4_mul(a13, b_vec3));
+                    acc2 = f32x4_add(acc2, f32x4_mul(a23, b_vec3));
+                    acc3 = f32x4_add(acc3, f32x4_mul(a33, b_vec3));
 
-                ki += 4;
+                    ki += 4;
+                }
+
+                // K tail: remaining 0-3 elements
+                while ki < k {
+                    let b_vec = v128_load(b.add(ki * n + ni) as *const v128);
+                    let a0 = f32x4_splat(*a_row0.add(ki));
+                    let a1 = f32x4_splat(*a_row1.add(ki));
+                    let a2 = f32x4_splat(*a_row2.add(ki));
+                    let a3 = f32x4_splat(*a_row3.add(ki));
+                    acc0 = f32x4_add(acc0, f32x4_mul(a0, b_vec));
+                    acc1 = f32x4_add(acc1, f32x4_mul(a1, b_vec));
+                    acc2 = f32x4_add(acc2, f32x4_mul(a2, b_vec));
+                    acc3 = f32x4_add(acc3, f32x4_mul(a3, b_vec));
+                    ki += 1;
+                }
+
+                // Store 4x4 tile to output
+                v128_store(out.add(mi * n + ni) as *mut v128, acc0);
+                v128_store(out.add((mi + 1) * n + ni) as *mut v128, acc1);
+                v128_store(out.add((mi + 2) * n + ni) as *mut v128, acc2);
+                v128_store(out.add((mi + 3) * n + ni) as *mut v128, acc3);
+
+                ni += 4;
             }
 
-            // K tail: remaining 0-3 elements
-            while ki < k {
-                let b_vec = v128_load(b.add(ki * n + ni) as *const v128);
-                let a0 = f32x4_splat(*a_row0.add(ki));
-                let a1 = f32x4_splat(*a_row1.add(ki));
-                let a2 = f32x4_splat(*a_row2.add(ki));
-                let a3 = f32x4_splat(*a_row3.add(ki));
-                acc0 = f32x4_add(acc0, f32x4_mul(a0, b_vec));
-                acc1 = f32x4_add(acc1, f32x4_mul(a1, b_vec));
-                acc2 = f32x4_add(acc2, f32x4_mul(a2, b_vec));
-                acc3 = f32x4_add(acc3, f32x4_mul(a3, b_vec));
-                ki += 1;
+            // Scalar tail for remaining columns
+            for row in mi..mi + 4 {
+                for col in n4..n {
+                    let mut sum = 0.0f32;
+                    for ki in 0..k {
+                        sum += *a.add(row * k + ki) * *b.add(ki * n + col);
+                    }
+                    *out.add(row * n + col) = sum;
+                }
             }
 
-            // Store 4x4 tile to output
-            v128_store(out.add(mi * n + ni) as *mut v128, acc0);
-            v128_store(out.add((mi + 1) * n + ni) as *mut v128, acc1);
-            v128_store(out.add((mi + 2) * n + ni) as *mut v128, acc2);
-            v128_store(out.add((mi + 3) * n + ni) as *mut v128, acc3);
-
-            ni += 4;
+            mi += 4;
         }
 
-        // Scalar tail for remaining columns
-        for row in mi..mi + 4 {
+        // Scalar tail for remaining rows
+        for row in m4..m {
+            let mut ni = 0usize;
+            while ni < n4 {
+                let mut acc = f32x4_splat(0.0);
+                for ki in 0..k {
+                    let a_val = f32x4_splat(*a.add(row * k + ki));
+                    let b_vec = v128_load(b.add(ki * n + ni) as *const v128);
+                    acc = f32x4_add(acc, f32x4_mul(a_val, b_vec));
+                }
+                v128_store(out.add(row * n + ni) as *mut v128, acc);
+                ni += 4;
+            }
             for col in n4..n {
                 let mut sum = 0.0f32;
                 for ki in 0..k {
@@ -253,30 +285,6 @@ pub unsafe extern "C" fn matmul_f32_tiled(
                 }
                 *out.add(row * n + col) = sum;
             }
-        }
-
-        mi += 4;
-    }
-
-    // Scalar tail for remaining rows
-    for row in m4..m {
-        let mut ni = 0usize;
-        while ni < n4 {
-            let mut acc = f32x4_splat(0.0);
-            for ki in 0..k {
-                let a_val = f32x4_splat(*a.add(row * k + ki));
-                let b_vec = v128_load(b.add(ki * n + ni) as *const v128);
-                acc = f32x4_add(acc, f32x4_mul(a_val, b_vec));
-            }
-            v128_store(out.add(row * n + ni) as *mut v128, acc);
-            ni += 4;
-        }
-        for col in n4..n {
-            let mut sum = 0.0f32;
-            for ki in 0..k {
-                sum += *a.add(row * k + ki) * *b.add(ki * n + col);
-            }
-            *out.add(row * n + col) = sum;
         }
     }
 }
@@ -297,55 +305,64 @@ pub unsafe extern "C" fn matmul_f32_tiled(
 ///
 /// Pass 1: Online max tracking + exp accumulation with rescaling.
 /// Pass 2: Normalize by 1/sum.
-#[no_mangle]
+///
+/// # Safety
+///
+/// Each pointer must be non-null, aligned for `f32`, and valid for the reads
+/// and writes that the element counts above imply.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn softmax_f32_fused(a: *const f32, out: *mut f32, n: u32) {
-    let n = n as usize;
-    if n == 0 {
-        return;
-    }
-
-    // --- Pass 1: Online softmax (Milakov & Gimelshein 2018) ---
-    // Track running max and sum. When max increases, rescale sum.
-    let mut max_val = *a;
-    let mut sum = 1.0f32; // exp(a[0] - max) = exp(0) = 1
-
-    for i in 1..n {
-        let x = *a.add(i);
-        if x > max_val {
-            // Rescale existing sum: sum * exp(old_max - new_max)
-            sum *= exp2_scalar((max_val - x) * core::f32::consts::LOG2_E);
-            max_val = x;
-            sum += 1.0; // exp(x - max_val) = exp(0) = 1
-        } else {
-            sum += exp2_scalar((x - max_val) * core::f32::consts::LOG2_E);
+    // SAFETY: the caller passes pointers valid for the element counts this
+    // export documents, as its C ABI contract states.
+    unsafe {
+        let n = n as usize;
+        if n == 0 {
+            return;
         }
-    }
 
-    let inv_sum = 1.0 / sum;
+        // --- Pass 1: Online softmax (Milakov & Gimelshein 2018) ---
+        // Track running max and sum. When max increases, rescale sum.
+        let mut max_val = *a;
+        let mut sum = 1.0f32; // exp(a[0] - max) = exp(0) = 1
 
-    // --- Pass 2: Compute exp(x - max) / sum and write output ---
-    let n4 = n & !3;
-    let max_splat = f32x4_splat(max_val);
-    let inv_sum_splat = f32x4_splat(inv_sum);
-    let log2e_splat = f32x4_splat(core::f32::consts::LOG2_E);
+        for i in 1..n {
+            let x = *a.add(i);
+            if x > max_val {
+                // Rescale existing sum: sum * exp(old_max - new_max)
+                sum *= exp2_scalar((max_val - x) * core::f32::consts::LOG2_E);
+                max_val = x;
+                sum += 1.0; // exp(x - max_val) = exp(0) = 1
+            } else {
+                sum += exp2_scalar((x - max_val) * core::f32::consts::LOG2_E);
+            }
+        }
 
-    let mut i = 0usize;
-    while i < n4 {
-        let x = v128_load(a.add(i) as *const v128);
-        // exp(x - max) = exp2((x - max) * log2(e))
-        let shifted = f32x4_mul(f32x4_sub(x, max_splat), log2e_splat);
-        let exp_val = exp2_v128(shifted);
-        let result = f32x4_mul(exp_val, inv_sum_splat);
-        v128_store(out.add(i) as *mut v128, result);
-        i += 4;
-    }
+        let inv_sum = 1.0 / sum;
 
-    // Scalar tail
-    while i < n {
-        let x = *a.add(i);
-        let exp_val = exp2_scalar((x - max_val) * core::f32::consts::LOG2_E);
-        *out.add(i) = exp_val * inv_sum;
-        i += 1;
+        // --- Pass 2: Compute exp(x - max) / sum and write output ---
+        let n4 = n & !3;
+        let max_splat = f32x4_splat(max_val);
+        let inv_sum_splat = f32x4_splat(inv_sum);
+        let log2e_splat = f32x4_splat(core::f32::consts::LOG2_E);
+
+        let mut i = 0usize;
+        while i < n4 {
+            let x = v128_load(a.add(i) as *const v128);
+            // exp(x - max) = exp2((x - max) * log2(e))
+            let shifted = f32x4_mul(f32x4_sub(x, max_splat), log2e_splat);
+            let exp_val = exp2_v128(shifted);
+            let result = f32x4_mul(exp_val, inv_sum_splat);
+            v128_store(out.add(i) as *mut v128, result);
+            i += 4;
+        }
+
+        // Scalar tail
+        while i < n {
+            let x = *a.add(i);
+            let exp_val = exp2_scalar((x - max_val) * core::f32::consts::LOG2_E);
+            *out.add(i) = exp_val * inv_sum;
+            i += 1;
+        }
     }
 }
 
@@ -354,22 +371,31 @@ pub unsafe extern "C" fn softmax_f32_fused(a: *const f32, out: *mut f32, n: u32)
 // ---------------------------------------------------------------------------
 
 /// exp2(x) for n elements, 6th-order polynomial.
-#[no_mangle]
+///
+/// # Safety
+///
+/// Each pointer must be non-null, aligned for `f32`, and valid for the reads
+/// and writes that the element counts above imply.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn exp2_f32(a: *const f32, out: *mut f32, n: u32) {
-    let n = n as usize;
-    let n4 = n & !3;
+    // SAFETY: the caller passes pointers valid for the element counts this
+    // export documents, as its C ABI contract states.
+    unsafe {
+        let n = n as usize;
+        let n4 = n & !3;
 
-    let mut i = 0usize;
-    while i < n4 {
-        let x = v128_load(a.add(i) as *const v128);
-        let result = exp2_v128(x);
-        v128_store(out.add(i) as *mut v128, result);
-        i += 4;
-    }
+        let mut i = 0usize;
+        while i < n4 {
+            let x = v128_load(a.add(i) as *const v128);
+            let result = exp2_v128(x);
+            v128_store(out.add(i) as *mut v128, result);
+            i += 4;
+        }
 
-    while i < n {
-        *out.add(i) = exp2_scalar(*a.add(i));
-        i += 1;
+        while i < n {
+            *out.add(i) = exp2_scalar(*a.add(i));
+            i += 1;
+        }
     }
 }
 
@@ -377,117 +403,171 @@ pub unsafe extern "C" fn exp2_f32(a: *const f32, out: *mut f32, n: u32) {
 // Elementwise ops: add, mul, neg, sqrt, reciprocal, max.
 // ---------------------------------------------------------------------------
 
-#[no_mangle]
+///
+/// # Safety
+///
+/// Each pointer must be non-null, aligned for `f32`, and valid for the reads
+/// and writes that the element counts above imply.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn add_f32(a: *const f32, b: *const f32, out: *mut f32, n: u32) {
-    let n = n as usize;
-    let n4 = n & !3;
-    let mut i = 0usize;
-    while i < n4 {
-        let va = v128_load(a.add(i) as *const v128);
-        let vb = v128_load(b.add(i) as *const v128);
-        v128_store(out.add(i) as *mut v128, f32x4_add(va, vb));
-        i += 4;
-    }
-    while i < n {
-        *out.add(i) = *a.add(i) + *b.add(i);
-        i += 1;
+    // SAFETY: the caller passes pointers valid for the element counts this
+    // export documents, as its C ABI contract states.
+    unsafe {
+        let n = n as usize;
+        let n4 = n & !3;
+        let mut i = 0usize;
+        while i < n4 {
+            let va = v128_load(a.add(i) as *const v128);
+            let vb = v128_load(b.add(i) as *const v128);
+            v128_store(out.add(i) as *mut v128, f32x4_add(va, vb));
+            i += 4;
+        }
+        while i < n {
+            *out.add(i) = *a.add(i) + *b.add(i);
+            i += 1;
+        }
     }
 }
 
-#[no_mangle]
+///
+/// # Safety
+///
+/// Each pointer must be non-null, aligned for `f32`, and valid for the reads
+/// and writes that the element counts above imply.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn mul_f32(a: *const f32, b: *const f32, out: *mut f32, n: u32) {
-    let n = n as usize;
-    let n4 = n & !3;
-    let mut i = 0usize;
-    while i < n4 {
-        let va = v128_load(a.add(i) as *const v128);
-        let vb = v128_load(b.add(i) as *const v128);
-        v128_store(out.add(i) as *mut v128, f32x4_mul(va, vb));
-        i += 4;
-    }
-    while i < n {
-        *out.add(i) = *a.add(i) * *b.add(i);
-        i += 1;
+    // SAFETY: the caller passes pointers valid for the element counts this
+    // export documents, as its C ABI contract states.
+    unsafe {
+        let n = n as usize;
+        let n4 = n & !3;
+        let mut i = 0usize;
+        while i < n4 {
+            let va = v128_load(a.add(i) as *const v128);
+            let vb = v128_load(b.add(i) as *const v128);
+            v128_store(out.add(i) as *mut v128, f32x4_mul(va, vb));
+            i += 4;
+        }
+        while i < n {
+            *out.add(i) = *a.add(i) * *b.add(i);
+            i += 1;
+        }
     }
 }
 
-#[no_mangle]
+///
+/// # Safety
+///
+/// Each pointer must be non-null, aligned for `f32`, and valid for the reads
+/// and writes that the element counts above imply.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn neg_f32(a: *const f32, out: *mut f32, n: u32) {
-    let n = n as usize;
-    let n4 = n & !3;
-    let mut i = 0usize;
-    while i < n4 {
-        let va = v128_load(a.add(i) as *const v128);
-        v128_store(out.add(i) as *mut v128, f32x4_neg(va));
-        i += 4;
-    }
-    while i < n {
-        *out.add(i) = -*a.add(i);
-        i += 1;
+    // SAFETY: the caller passes pointers valid for the element counts this
+    // export documents, as its C ABI contract states.
+    unsafe {
+        let n = n as usize;
+        let n4 = n & !3;
+        let mut i = 0usize;
+        while i < n4 {
+            let va = v128_load(a.add(i) as *const v128);
+            v128_store(out.add(i) as *mut v128, f32x4_neg(va));
+            i += 4;
+        }
+        while i < n {
+            *out.add(i) = -*a.add(i);
+            i += 1;
+        }
     }
 }
 
-#[no_mangle]
+///
+/// # Safety
+///
+/// Each pointer must be non-null, aligned for `f32`, and valid for the reads
+/// and writes that the element counts above imply.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn sqrt_f32(a: *const f32, out: *mut f32, n: u32) {
-    let n = n as usize;
-    let n4 = n & !3;
-    let mut i = 0usize;
-    while i < n4 {
-        let va = v128_load(a.add(i) as *const v128);
-        v128_store(out.add(i) as *mut v128, f32x4_sqrt(va));
-        i += 4;
-    }
-    while i < n {
-        *out.add(i) = sqrt_scalar(*a.add(i));
-        i += 1;
+    // SAFETY: the caller passes pointers valid for the element counts this
+    // export documents, as its C ABI contract states.
+    unsafe {
+        let n = n as usize;
+        let n4 = n & !3;
+        let mut i = 0usize;
+        while i < n4 {
+            let va = v128_load(a.add(i) as *const v128);
+            v128_store(out.add(i) as *mut v128, f32x4_sqrt(va));
+            i += 4;
+        }
+        while i < n {
+            *out.add(i) = sqrt_scalar(*a.add(i));
+            i += 1;
+        }
     }
 }
 
-#[no_mangle]
+///
+/// # Safety
+///
+/// Each pointer must be non-null, aligned for `f32`, and valid for the reads
+/// and writes that the element counts above imply.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn reciprocal_f32(a: *const f32, out: *mut f32, n: u32) {
-    let n = n as usize;
-    let n4 = n & !3;
-    let ones = f32x4_splat(1.0);
-    let mut i = 0usize;
-    while i < n4 {
-        let va = v128_load(a.add(i) as *const v128);
-        v128_store(out.add(i) as *mut v128, f32x4_div(ones, va));
-        i += 4;
-    }
-    while i < n {
-        *out.add(i) = 1.0 / *a.add(i);
-        i += 1;
+    // SAFETY: the caller passes pointers valid for the element counts this
+    // export documents, as its C ABI contract states.
+    unsafe {
+        let n = n as usize;
+        let n4 = n & !3;
+        let ones = f32x4_splat(1.0);
+        let mut i = 0usize;
+        while i < n4 {
+            let va = v128_load(a.add(i) as *const v128);
+            v128_store(out.add(i) as *mut v128, f32x4_div(ones, va));
+            i += 4;
+        }
+        while i < n {
+            *out.add(i) = 1.0 / *a.add(i);
+            i += 1;
+        }
     }
 }
 
 /// Max with NaN propagation: if either operand is NaN, output is NaN.
-#[no_mangle]
+///
+/// # Safety
+///
+/// Each pointer must be non-null, aligned for `f32`, and valid for the reads
+/// and writes that the element counts above imply.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn max_f32(a: *const f32, b: *const f32, out: *mut f32, n: u32) {
-    let n = n as usize;
-    let n4 = n & !3;
-    let nan_bits = i32x4_splat(0x7FC00000u32 as i32);
-    let mut i = 0usize;
-    while i < n4 {
-        let va = v128_load(a.add(i) as *const v128);
-        let vb = v128_load(b.add(i) as *const v128);
-        let vmax = f32x4_max(va, vb);
-        // NaN propagation: lane is all-1s if a or b is NaN (x != x)
-        let nan_mask = v128_or(f32x4_ne(va, va), f32x4_ne(vb, vb));
-        let result = v128_bitselect(nan_bits, vmax, nan_mask);
-        v128_store(out.add(i) as *mut v128, result);
-        i += 4;
-    }
-    while i < n {
-        let av = *a.add(i);
-        let bv = *b.add(i);
-        *out.add(i) = if av != av || bv != bv {
-            f32::NAN
-        } else if av > bv {
-            av
-        } else {
-            bv
-        };
-        i += 1;
+    // SAFETY: the caller passes pointers valid for the element counts this
+    // export documents, as its C ABI contract states.
+    unsafe {
+        let n = n as usize;
+        let n4 = n & !3;
+        let nan_bits = i32x4_splat(0x7FC00000u32 as i32);
+        let mut i = 0usize;
+        while i < n4 {
+            let va = v128_load(a.add(i) as *const v128);
+            let vb = v128_load(b.add(i) as *const v128);
+            let vmax = f32x4_max(va, vb);
+            // NaN propagation: lane is all-1s if a or b is NaN (x != x)
+            let nan_mask = v128_or(f32x4_ne(va, va), f32x4_ne(vb, vb));
+            let result = v128_bitselect(nan_bits, vmax, nan_mask);
+            v128_store(out.add(i) as *mut v128, result);
+            i += 4;
+        }
+        while i < n {
+            let av = *a.add(i);
+            let bv = *b.add(i);
+            *out.add(i) = if av.is_nan() || bv.is_nan() {
+                f32::NAN
+            } else if av > bv {
+                av
+            } else {
+                bv
+            };
+            i += 1;
+        }
     }
 }
 
@@ -495,56 +575,79 @@ pub unsafe extern "C" fn max_f32(a: *const f32, b: *const f32, out: *mut f32, n:
 // Reductions: sum, max.
 // ---------------------------------------------------------------------------
 
-#[no_mangle]
+///
+/// # Safety
+///
+/// Each pointer must be non-null, aligned for `f32`, and valid for the reads
+/// and writes that the element counts above imply.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn reduce_sum_f32(a: *const f32, n: u32) -> f32 {
-    let n = n as usize;
-    let n4 = n & !3;
-    let mut acc = f32x4_splat(0.0);
-    let mut i = 0usize;
-    while i < n4 {
-        acc = f32x4_add(acc, v128_load(a.add(i) as *const v128));
-        i += 4;
+    // SAFETY: the caller passes pointers valid for the element counts this
+    // export documents, as its C ABI contract states.
+    unsafe {
+        let n = n as usize;
+        let n4 = n & !3;
+        let mut acc = f32x4_splat(0.0);
+        let mut i = 0usize;
+        while i < n4 {
+            acc = f32x4_add(acc, v128_load(a.add(i) as *const v128));
+            i += 4;
+        }
+        let mut sum = hsum_f32x4(acc);
+        while i < n {
+            sum += *a.add(i);
+            i += 1;
+        }
+        sum
     }
-    let mut sum = hsum_f32x4(acc);
-    while i < n {
-        sum += *a.add(i);
-        i += 1;
-    }
-    sum
 }
 
-#[no_mangle]
+///
+/// # Safety
+///
+/// Each pointer must be non-null, aligned for `f32`, and valid for the reads
+/// and writes that the element counts above imply.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn reduce_max_f32(a: *const f32, n: u32) -> f32 {
-    let n = n as usize;
-    let n4 = n & !3;
-    let mut acc = f32x4_splat(f32::NEG_INFINITY);
-    let nan_bits: v128 = i32x4_splat(0x7FC00000u32 as i32);
-    let mut i = 0usize;
-    while i < n4 {
-        let v = v128_load(a.add(i) as *const v128);
-        let nan_mask = f32x4_ne(v, v);
-        acc = v128_bitselect(nan_bits, f32x4_max(acc, v), nan_mask);
-        i += 4;
-    }
-    let mut maxval = hmax_f32x4(acc);
-    while i < n {
-        let v = *a.add(i);
-        if v != v {
-            return f32::NAN;
+    // SAFETY: the caller passes pointers valid for the element counts this
+    // export documents, as its C ABI contract states.
+    unsafe {
+        let n = n as usize;
+        let n4 = n & !3;
+        let mut acc = f32x4_splat(f32::NEG_INFINITY);
+        let nan_bits: v128 = i32x4_splat(0x7FC00000u32 as i32);
+        let mut i = 0usize;
+        while i < n4 {
+            let v = v128_load(a.add(i) as *const v128);
+            let nan_mask = f32x4_ne(v, v);
+            acc = v128_bitselect(nan_bits, f32x4_max(acc, v), nan_mask);
+            i += 4;
         }
-        if v > maxval {
-            maxval = v;
+        let mut maxval = hmax_f32x4(acc);
+        while i < n {
+            let v = *a.add(i);
+            if v.is_nan() {
+                return f32::NAN;
+            }
+            if v > maxval {
+                maxval = v;
+            }
+            i += 1;
         }
-        i += 1;
+        maxval
     }
-    maxval
 }
 
 // ---------------------------------------------------------------------------
 // RMSNorm: out[i] = a[i] * w[i] / sqrt(mean(a^2) + eps)
 // ---------------------------------------------------------------------------
 
-#[no_mangle]
+///
+/// # Safety
+///
+/// Each pointer must be non-null, aligned for `f32`, and valid for the reads
+/// and writes that the element counts above imply.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rms_norm_f32(
     a: *const f32,
     w: *const f32,
@@ -552,42 +655,46 @@ pub unsafe extern "C" fn rms_norm_f32(
     n: u32,
     eps: f32,
 ) {
-    let n = n as usize;
-    let n4 = n & !3;
+    // SAFETY: the caller passes pointers valid for the element counts this
+    // export documents, as its C ABI contract states.
+    unsafe {
+        let n = n as usize;
+        let n4 = n & !3;
 
-    // Pass 1: Sum of squares
-    let mut acc = f32x4_splat(0.0);
-    let mut i = 0usize;
-    while i < n4 {
-        let va = v128_load(a.add(i) as *const v128);
-        acc = f32x4_add(acc, f32x4_mul(va, va));
-        i += 4;
-    }
-    let mut sum_sq = hsum_f32x4(acc);
-    while i < n {
-        let v = *a.add(i);
-        sum_sq += v * v;
-        i += 1;
-    }
+        // Pass 1: Sum of squares
+        let mut acc = f32x4_splat(0.0);
+        let mut i = 0usize;
+        while i < n4 {
+            let va = v128_load(a.add(i) as *const v128);
+            acc = f32x4_add(acc, f32x4_mul(va, va));
+            i += 4;
+        }
+        let mut sum_sq = hsum_f32x4(acc);
+        while i < n {
+            let v = *a.add(i);
+            sum_sq += v * v;
+            i += 1;
+        }
 
-    // scale = 1 / sqrt(sum_sq / n + eps)
-    let scale = 1.0 / sqrt_scalar(sum_sq / n as f32 + eps);
-    let scale_splat = f32x4_splat(scale);
+        // scale = 1 / sqrt(sum_sq / n + eps)
+        let scale = 1.0 / sqrt_scalar(sum_sq / n as f32 + eps);
+        let scale_splat = f32x4_splat(scale);
 
-    // Pass 2: out[i] = a[i] * w[i] * scale
-    i = 0;
-    while i < n4 {
-        let va = v128_load(a.add(i) as *const v128);
-        let vw = v128_load(w.add(i) as *const v128);
-        v128_store(
-            out.add(i) as *mut v128,
-            f32x4_mul(f32x4_mul(va, vw), scale_splat),
-        );
-        i += 4;
-    }
-    while i < n {
-        *out.add(i) = *a.add(i) * *w.add(i) * scale;
-        i += 1;
+        // Pass 2: out[i] = a[i] * w[i] * scale
+        i = 0;
+        while i < n4 {
+            let va = v128_load(a.add(i) as *const v128);
+            let vw = v128_load(w.add(i) as *const v128);
+            v128_store(
+                out.add(i) as *mut v128,
+                f32x4_mul(f32x4_mul(va, vw), scale_splat),
+            );
+            i += 4;
+        }
+        while i < n {
+            *out.add(i) = *a.add(i) * *w.add(i) * scale;
+            i += 1;
+        }
     }
 }
 
@@ -595,7 +702,12 @@ pub unsafe extern "C" fn rms_norm_f32(
 // RoPE rotation
 // ---------------------------------------------------------------------------
 
-#[no_mangle]
+///
+/// # Safety
+///
+/// Each pointer must be non-null, aligned for `f32`, and valid for the reads
+/// and writes that the element counts above imply.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rope_f32(
     q: *const f32,
     freqs_cos: *const f32,
@@ -603,14 +715,18 @@ pub unsafe extern "C" fn rope_f32(
     out: *mut f32,
     n: u32,
 ) {
-    let half_n = (n / 2) as usize;
-    for i in 0..half_n {
-        let q0 = *q.add(2 * i);
-        let q1 = *q.add(2 * i + 1);
-        let c = *freqs_cos.add(i);
-        let s = *freqs_sin.add(i);
-        *out.add(2 * i) = q0 * c - q1 * s;
-        *out.add(2 * i + 1) = q0 * s + q1 * c;
+    // SAFETY: the caller passes pointers valid for the element counts this
+    // export documents, as its C ABI contract states.
+    unsafe {
+        let half_n = (n / 2) as usize;
+        for i in 0..half_n {
+            let q0 = *q.add(2 * i);
+            let q1 = *q.add(2 * i + 1);
+            let c = *freqs_cos.add(i);
+            let s = *freqs_sin.add(i);
+            *out.add(2 * i) = q0 * c - q1 * s;
+            *out.add(2 * i + 1) = q0 * s + q1 * c;
+        }
     }
 }
 

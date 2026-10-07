@@ -1,0 +1,3 @@
+# The crate's kernels are WebAssembly SIMD; every build of it enables simd128.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
