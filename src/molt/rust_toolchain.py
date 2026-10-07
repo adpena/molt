@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
+import sys
 import tomllib
 from typing import Mapping, Sequence
 
@@ -111,6 +112,38 @@ def resolve_rustup_proxy(
                     value, environment=env, label=f"selected Rust {role}"
                 )
     return path
+
+
+# dyld's search list when DYLD_FALLBACK_LIBRARY_PATH is unset.
+_DYLD_DEFAULT_FALLBACK = ("~/lib", "/usr/local/lib", "/usr/lib")
+
+
+def rust_toolchain_library_environment(
+    rustc: Path, env: Mapping[str, str]
+) -> dict[str, str]:
+    """The library path a Rust toolchain needs when run without rustup.
+
+    Rustup's proxies put ``<toolchain>/lib`` on the dynamic-library search
+    path; Molt runs the resolved binaries directly, so it does the same.
+    Rust 1.99's macOS ``rust-lld`` loads ``libLLVM.dylib`` from that
+    directory and carries no rpath to it (the Linux build has one), so every
+    wasm link fails without it. ``<rustc>/../../lib`` is the directory rustc
+    derives its own default sysroot from.
+    """
+    if sys.platform != "darwin":
+        return {}
+    library = Path(rustc).resolve(strict=True).parent.parent / "lib"
+    current = env.get("DYLD_FALLBACK_LIBRARY_PATH")
+    fallback = (
+        current.split(os.pathsep)
+        if current
+        else [os.path.expanduser(entry) for entry in _DYLD_DEFAULT_FALLBACK]
+    )
+    if os.fspath(library) in fallback:
+        return {}
+    return {
+        "DYLD_FALLBACK_LIBRARY_PATH": os.pathsep.join([os.fspath(library), *fallback])
+    }
 
 
 def rustc_host(version: str) -> str:
