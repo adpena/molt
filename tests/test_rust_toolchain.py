@@ -1,6 +1,9 @@
 import os
 
 import pytest
+from pathlib import Path
+
+from molt import rust_toolchain
 
 from molt.rust_toolchain import (
     RustToolSearch,
@@ -234,3 +237,38 @@ def test_rust_relative_tool_path_operands_preserve_bare_linker_search():
         (4, "linker=", "tools/cc"),
         (5, "-Clinker=", "tools/link"),
     ]
+
+
+def _toolchain(tmp_path: Path) -> tuple[Path, Path]:
+    rustc = tmp_path / "toolchain" / "bin" / "rustc"
+    rustc.parent.mkdir(parents=True)
+    rustc.write_text("", encoding="utf-8")
+    library = tmp_path / "toolchain" / "lib"
+    library.mkdir()
+    return rustc, library.resolve()
+
+
+def test_direct_toolchain_runs_get_rustups_library_path_on_macos(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rustc, library = _toolchain(tmp_path)
+    monkeypatch.setattr(rust_toolchain.sys, "platform", "darwin")
+    env = rust_toolchain.rust_toolchain_library_environment(rustc, {})
+    entries = env["DYLD_FALLBACK_LIBRARY_PATH"].split(os.pathsep)
+    # The toolchain lib comes first, then dyld's own defaults stay searchable.
+    assert entries[0] == str(library)
+    assert entries[1:] == [os.path.expanduser("~/lib"), "/usr/local/lib", "/usr/lib"]
+    preset = {"DYLD_FALLBACK_LIBRARY_PATH": "/opt/x"}
+    assert rust_toolchain.rust_toolchain_library_environment(rustc, preset) == {
+        "DYLD_FALLBACK_LIBRARY_PATH": f"{library}{os.pathsep}/opt/x"
+    }
+    present = {"DYLD_FALLBACK_LIBRARY_PATH": str(library)}
+    assert rust_toolchain.rust_toolchain_library_environment(rustc, present) == {}
+
+
+def test_direct_toolchain_library_path_is_macos_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rustc, _library = _toolchain(tmp_path)
+    monkeypatch.setattr(rust_toolchain.sys, "platform", "linux")
+    assert rust_toolchain.rust_toolchain_library_environment(rustc, {}) == {}

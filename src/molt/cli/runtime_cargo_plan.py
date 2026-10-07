@@ -30,7 +30,11 @@ from molt.cli.cargo_target_cfg import (
     select_cargo_target_flags,
 )
 from molt.exact_json import canonical_json_sha256, string_keyed_mapping
-from molt.rust_toolchain import cargo_configuration_paths, resolve_rustup_proxy
+from molt.rust_toolchain import (
+    cargo_configuration_paths,
+    resolve_rustup_proxy,
+    rust_toolchain_library_environment,
+)
 from molt.cli.runtime_identity_schema import (
     RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
     _freeze_json,
@@ -1864,6 +1868,7 @@ def resolve_runtime_cargo_plan(
     rustc = resolve_rustup_proxy(rustc, role="rustc", root=root, env=environment)
     rustc_custody = CargoExecutableCustody.capture("tool/rustc", rustc)
     environment["RUSTC"] = os.fspath(rustc)
+    environment.update(rust_toolchain_library_environment(rustc, environment))
     wrappers: dict[str, Path] = {}
     for name, key in (
         ("RUSTC_WRAPPER", "rustc-wrapper"),
