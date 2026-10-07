@@ -3205,6 +3205,29 @@ def test_active_tier_follows_the_ci_event(environ, expected) -> None:
     assert proof_plan.active_tier(environ) == expected
 
 
+def test_classifier_text_output_names_every_family_and_matrix(capsys) -> None:
+    # CI's classifier runs the text mode; it must print exactly the family and
+    # matrix outputs the family jobs consume, with the computed values.
+    assert proof_plan.main(["--path", "tools/proof_queue.py", "--tier", "pr"]) == 0
+    printed = dict(line.split("=", 1) for line in capsys.readouterr().out.splitlines())
+    expected = proof_plan.family_outputs(
+        PLAN, PLAN.select(["tools/proof_queue.py"]), tier="pr"
+    )
+    names = {family.name for family in PLAN.families} | {
+        proof_plan.family_matrix_output(family.name)
+        for family in PLAN.families
+        if family.data["executor"] == "github-matrix"
+    }
+    assert set(printed) == names
+    assert printed == {name: expected[name] for name in names}
+
+
+def test_empty_verified_selection_fails_with_its_cause(tmp_path, capsys) -> None:
+    status = proof_plan.main(["--verify-selected", "", "--receipt-dir", str(tmp_path)])
+    assert status == 2
+    assert "classifier produced no selection" in capsys.readouterr().err
+
+
 def test_active_tier_rejects_unknown_explicit_tiers() -> None:
     with pytest.raises(ValueError, match="MOLT_PROOF_TIER='weekly'"):
         proof_plan.active_tier({"MOLT_PROOF_TIER": "weekly"})
