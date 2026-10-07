@@ -105,8 +105,8 @@ Executable identities bind resolved path, version text, and the repository-relat
 |---|---|---|---|---|---|---:|
 | `python` | `executable` | — | `^Python 3\.12\.` | `.` | `3.12` | 1 |
 | `source-extension` | `target-derived` | `source-extension` | `^molt-source-extension-toolchain-v2$` | — | — | — |
-| `uv` | `executable` | — | `^uv 0\.11\.24\b` | `.` | `0.11.24` | 1 |
-| `node` | `executable` | — | `^v24\.16\.0$` | `.` | `24.16.0` | 3 |
+| `uv` | `executable` | — | `^uv 0\.12\.23\b` | `.` | `0.12.23` | 1 |
+| `node` | `executable` | — | `^v26\.10\.0$` | `.` | `26.10.0` | 3 |
 | `rustc` | `executable` | — | `^rustc 1\.99\.0\b` | `.` | `1.99.0` | 3 |
 | `lune` | `executable` | — | `^lune 0\.10\.5$` | `.` | `0.10.5` | 2 |
 | `cargo` | `executable` | — | `^cargo 1\.99\.0\b` | `.` | `1.99.0` | 3 |
@@ -127,7 +127,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `llvm-nm` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `llvm-strip` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `wasm-ld` | `executable` | — | `\bLLD 22\.1\.0\b` | `.` | `22.1.0` | 2 |
-| `wasm-tools` | `executable` | — | `^wasm-tools 1\.259\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.259.0` | 2 |
+| `wasm-tools` | `executable` | — | `^wasm-tools 1\.261\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$` | `.` | `1.261.0` | 2 |
 
 ## Cargo execution contracts
 

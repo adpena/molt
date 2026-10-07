@@ -325,7 +325,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "0192de92d1f684bc00fefc6d9ec8e0a4dc20719e32bff482eaf3e1a3cd52ccec",
+  "authority_sha256": "d0c628f4edcc9797f05dc0c0f078b1d20859f252bb8a2288ba5a99bebad417b1",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -6800,27 +6800,27 @@
       "executable": "uv",
       "name": "uv",
       "setup_evidence": [
-        ".github/actions/setup-project/action.yml::version: \"0.11.24\""
+        ".github/actions/setup-project/action.yml::version: \"0.12.23\""
       ],
-      "setup_value": "0.11.24",
+      "setup_value": "0.12.23",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^uv 0\\.11\\.24\\b"
+      "version_pattern": "^uv 0\\.12\\.23\\b"
     },
     {
       "executable": "node",
       "name": "node",
       "setup_evidence": [
-        "config/tool_releases.toml::version = \"24.16.0\"",
+        "config/tool_releases.toml::version = \"26.10.0\"",
         ".github/actions/setup-project/action.yml::uses: actions/setup-node@",
         ".github/workflows/formal.yml::node-version: pinned"
       ],
-      "setup_value": "24.16.0",
+      "setup_value": "26.10.0",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^v24\\.16\\.0$"
+      "version_pattern": "^v26\\.10\\.0$"
     },
     {
       "content_path_command": [
@@ -7122,14 +7122,14 @@
       "executable": "wasm-tools",
       "name": "wasm-tools",
       "setup_evidence": [
-        "config/tool_releases.toml::version = \"1.259.0\"",
+        "config/tool_releases.toml::version = \"1.261.0\"",
         ".github/workflows/molt-wasm-ci.yml::python3 -m molt.tool_releases provision wasm-tools"
       ],
-      "setup_value": "1.259.0",
+      "setup_value": "1.261.0",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^wasm-tools 1\\.259\\.0(?: \\([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\\))?$"
+      "version_pattern": "^wasm-tools 1\\.261\\.0(?: \\([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\\))?$"
     }
   ]
 }

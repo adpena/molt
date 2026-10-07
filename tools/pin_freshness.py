@@ -417,9 +417,15 @@ def rewrite_policy(text: str, name: str, old: str, new: str) -> str:
     if len(matches) != 1:
         raise PinFreshnessError(f"{PROOF_PLAN} has {len(matches)} {name!r} policies")
     block = blocks[matches[0]]
-    blocks[matches[0]] = block.replace(f'"{old}"', f'"{new}"').replace(
-        f'\\"{old}\\"', f'\\"{new}\\"'
-    )
+    # Quoted literals, escaped literals inside evidence strings, and the
+    # regex-escaped version inside `version_pattern`.
+    for before, after in (
+        (f'"{old}"', f'"{new}"'),
+        (f'\\"{old}\\"', f'\\"{new}\\"'),
+        (re.escape(old), re.escape(new)),
+    ):
+        block = block.replace(before, after)
+    blocks[matches[0]] = block
     return "".join(blocks)
 
 

@@ -416,20 +416,20 @@ setup_evidence = [
 name = "uv"
 executable = "uv"
 version_args = ["--version"]
-version_pattern = '^uv 0\.11\.24\b'
-setup_value = "0.11.24"
+version_pattern = '^uv 0\.12\.23\b'
+setup_value = "0.12.23"
 setup_evidence = [
-  ".github/actions/setup-project/action.yml::version: \"0.11.24\"",
+  ".github/actions/setup-project/action.yml::version: \"0.12.23\"",
 ]
 
 [[toolchain_policy]]
 name = "node"
 executable = "node"
 version_args = ["--version"]
-version_pattern = '^v24\.16\.0$'
-setup_value = "24.16.0"
+version_pattern = '^v26\.10\.0$'
+setup_value = "26.10.0"
 setup_evidence = [
-  "config/tool_releases.toml::version = \"24.16.0\"",
+  "config/tool_releases.toml::version = \"26.10.0\"",
   ".github/actions/setup-project/action.yml::uses: actions/setup-node@",
   ".github/workflows/formal.yml::node-version: pinned",
 ]
@@ -632,9 +632,9 @@ setup_evidence = [
 name = "wasm-tools"
 executable = "wasm-tools"
 version_args = ["--version"]
-version_pattern = '^wasm-tools 1\.259\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$'
-setup_value = "1.259.0"
-setup_evidence = ["config/tool_releases.toml::version = \"1.259.0\"", ".github/workflows/molt-wasm-ci.yml::python3 -m molt.tool_releases provision wasm-tools"]
+version_pattern = '^wasm-tools 1\.261\.0(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$'
+setup_value = "1.261.0"
+setup_evidence = ["config/tool_releases.toml::version = \"1.261.0\"", ".github/workflows/molt-wasm-ci.yml::python3 -m molt.tool_releases provision wasm-tools"]
 
 [[matrix_cell]]
 id = "linux-x86_64-py312-repository-policy"
