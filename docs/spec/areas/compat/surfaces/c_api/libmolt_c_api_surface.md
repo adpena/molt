@@ -39,10 +39,11 @@ are statements with borrowed receivers, not owned result values.
 - A versioned C header defines `MOLT_C_API_VERSION` and symbol availability.
 - Symbol availability is tracked in `docs/spec/areas/compat/surfaces/c_api/c_api_symbol_matrix.md`.
 - Current bootstrap implementation:
-  - Runtime symbols: `runtime/molt-runtime/src/c_api.rs`
+  - Runtime symbols: `runtime/molt-runtime/src/c_api/molt_api.rs`
   - Public header: `include/molt/molt.h`
   - CPython-compat shim headers: `include/Python.h`, `include/molt/Python.h`
-  - Current version constant: `MOLT_C_API_VERSION = 3`
+  - Header version authority: `MOLT_C_API_VERSION` in `include/molt/molt.h`;
+    the runtime build generates its matching Rust constant from that header.
 
 ---
 

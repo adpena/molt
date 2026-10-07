@@ -180,7 +180,7 @@ Sibling frontend files are tiny (`cfg_analysis.py` 416, `tv_hooks.py` 260) — t
 core (`molt-runtime`, `molt-backend`, `molt-runtime-core`) + 18 runtime satellites
 (`-http`, `-net`, `-asyncio`, `-math`, `-path`, `-collections`, `-regex`, `-text`,
 `-itertools`, `-serial`, `-difflib`, `-logging`, `-crypto`, `-compression`, `-stringprep`,
-`-xml`, `-ipaddress`, `-zoneinfo`) + capability crates (`molt-gpu`, `molt-ffi`, `molt-db`,
+`-xml`, `-ipaddress`, `-zoneinfo`) + capability crates (`molt-gpu`, `molt-db`,
 `molt-embed`, `molt-python`, `molt-harness`, `molt-worker`,
 `molt-wasm-host`, `molt-obj-model`, `molt-cpython-abi`, `molt-backend-mlir`). **The satellite
 pattern is proven; the backend is the conspicuous monolith.**

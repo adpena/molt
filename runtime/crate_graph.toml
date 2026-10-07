@@ -411,13 +411,7 @@ role = "runtime fan-in over every stdlib satellite + obj-model/db/gpu"
 name = "molt-embed"
 runtime_layer = "outside"
 layer = 5
-role = "runtime embedder over molt-runtime"
-
-[[crate]]
-name = "molt-ffi"
-runtime_layer = "outside"
-layer = 5
-role = "FFI surface over molt-runtime + obj-model"
+role = "compilation SDK invoking the installed CLI; no runtime dependency"
 
 [[crate]]
 name = "molt-wasm-host"

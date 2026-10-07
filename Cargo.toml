@@ -45,7 +45,6 @@ members = [
     "runtime/molt-embed",
     "runtime/molt-harness",
     "runtime/molt-runtime-protobuf",
-    "runtime/molt-ffi",
     "runtime/molt-gpu",
     "runtime/molt-gpu-runtime",
     "runtime/molt-ir",

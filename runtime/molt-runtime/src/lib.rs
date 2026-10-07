@@ -229,9 +229,8 @@ pub use molt_runtime_vfs as vfs;
 pub use molt_runtime_vfs::{molt_vfs_inject_entry, molt_vfs_inject_finish};
 mod wasm_abi_exports;
 
-/// Public Rust API for runtime lifecycle, used by `molt-ffi` and other
-/// dependent crates that need to call init/shutdown without going through
-/// C ABI extern blocks.
+/// Public Rust API for dependent crates that need canonical runtime lifecycle
+/// entry without C ABI extern blocks.
 pub mod lifecycle {
     use crate::concurrency::RuntimeExecutionGuard;
     use crate::state::runtime_state::{molt_runtime_init, molt_runtime_shutdown, runtime_is_ready};
@@ -373,56 +372,6 @@ pub mod lifecycle {
                 (41, false),
                 "resumed entry must detach its worker thread exactly once"
             );
-        }
-    }
-}
-
-/// Bridge module exposing runtime intrinsics for the `molt-ffi` crate.
-///
-/// Functions that are already `pub` via wildcard re-exports (e.g. `molt_len`,
-/// `molt_str_from_obj`, `molt_repr_from_obj`, `molt_math_sqrt`) can be called
-/// directly through `molt_runtime::…`.  This module exposes intrinsics that are
-/// otherwise `pub(crate)` or require GIL-internal helpers.
-pub mod ffi_bridge {
-    use crate::concurrency::RuntimeExecutionGuard;
-    use crate::object::type_ids::TYPE_ID_STRING;
-    use crate::object::{object_type_id, string_bytes, string_len};
-
-    /// Check whether a runtime capability is granted.
-    ///
-    /// `cap_name_bits` must be a NaN-boxed Molt string containing the
-    /// capability name (e.g. `"net"`, `"fs"`, `"env"`).
-    ///
-    /// Returns `1` if the capability is granted, `0` otherwise.
-    pub fn has_capability(cap_name_bits: u64) -> u64 {
-        let _guard = RuntimeExecutionGuard::enter();
-        let py = _guard.token();
-        let py = &py;
-
-        let obj = crate::obj_from_bits(cap_name_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return 0;
-        };
-
-        let type_id = unsafe { object_type_id(ptr) };
-        if type_id != TYPE_ID_STRING {
-            return 0;
-        }
-
-        let bytes = unsafe {
-            let len = string_len(ptr);
-            let data = string_bytes(ptr);
-            std::slice::from_raw_parts(data, len)
-        };
-
-        let Ok(name) = std::str::from_utf8(bytes) else {
-            return 0;
-        };
-
-        if crate::has_capability(py, name) {
-            1
-        } else {
-            0
         }
     }
 }

@@ -10,7 +10,7 @@ Product board for the crate-cut enforcement fact (doc 56 FACT-A / Phase 1a). Gen
 | metric | value |
 | --- | --- |
 | crate_layer_backedges | 0 |
-| max_crate_blast_radius | 31 |
+| max_crate_blast_radius | 30 |
 | undeclared_crates | 0 |
 
 ## Layer back-edges (0)
@@ -21,66 +21,66 @@ None  -  every dependency edge respects the declared layer ordering.
 
 | radius | crate | layer | downstream cone (first 6) |
 | ---: | --- | ---: | --- |
-| 31 | `molt-codegen-abi` | L0 | molt-backend, molt-backend-native, molt-backend-wasm, molt-cext-discovery, molt-embed, molt-ffi... |
-| 27 | `molt-lang-obj-model` | L1 | molt-cext-discovery, molt-embed, molt-ffi, molt-gpu-runtime, molt-lang-cpython-abi, molt-runtime... |
-| 25 | `molt-runtime-core` | L2 | molt-cext-discovery, molt-embed, molt-ffi, molt-gpu-runtime, molt-runtime, molt-runtime-asyncio... |
+| 30 | `molt-codegen-abi` | L0 | molt-backend, molt-backend-native, molt-backend-wasm, molt-cext-discovery, molt-gpu-runtime, molt-lang-cpython-abi... |
+| 25 | `molt-lang-obj-model` | L1 | molt-cext-discovery, molt-gpu-runtime, molt-lang-cpython-abi, molt-runtime, molt-runtime-asyncio, molt-runtime-collections... |
+| 23 | `molt-runtime-core` | L2 | molt-cext-discovery, molt-gpu-runtime, molt-runtime, molt-runtime-asyncio, molt-runtime-collections, molt-runtime-compression... |
 | 7 | `molt-ir` | L0 | molt-backend, molt-backend-luau, molt-backend-native, molt-backend-rust, molt-backend-wasm, molt-passes... |
 | 6 | `molt-passes` | L1 | molt-backend, molt-backend-luau, molt-backend-native, molt-backend-rust, molt-backend-wasm, molt-tir |
-| 5 | `molt-db` | L0 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime, molt-worker |
-| 5 | `molt-gpu` | L0 | molt-cext-discovery, molt-embed, molt-ffi, molt-gpu-runtime, molt-runtime |
-| 5 | `molt-runtime-platform` | L0 | molt-cext-discovery, molt-embed, molt-ffi, molt-lang-cpython-abi, molt-runtime |
-| 5 | `molt-runtime-resource` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime, molt-wasm-host |
 | 5 | `molt-tir` | L2 | molt-backend, molt-backend-luau, molt-backend-native, molt-backend-rust, molt-backend-wasm |
-| 4 | `molt-gpu-runtime` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-lang-cpython-abi` | L2 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-asyncio` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-audit` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-collections` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-compression` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-constants` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-crypto` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-diagnostics` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-http` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-ipaddress` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-itertools` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-logging` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-math` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-net` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-path` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-regex` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-serial` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-stringprep` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-tk` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-vfs` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-xml` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-runtime-zoneinfo` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-stdlib-difflib` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-stdlib-graphlib` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 4 | `molt-stdlib-text` | L3 | molt-cext-discovery, molt-embed, molt-ffi, molt-runtime |
-| 3 | `molt-runtime` | L4 | molt-cext-discovery, molt-embed, molt-ffi |
+| 4 | `molt-runtime-platform` | L0 | molt-cext-discovery, molt-lang-cpython-abi, molt-runtime, molt-wasm-host |
+| 3 | `molt-db` | L0 | molt-cext-discovery, molt-runtime, molt-worker |
+| 3 | `molt-gpu` | L0 | molt-cext-discovery, molt-gpu-runtime, molt-runtime |
+| 3 | `molt-runtime-resource` | L3 | molt-cext-discovery, molt-runtime, molt-wasm-host |
 | 2 | `molt-artifact-publish` | L0 | molt-backend, molt-wasm-host |
+| 2 | `molt-gpu-runtime` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-lang-cpython-abi` | L2 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-asyncio` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-audit` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-collections` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-compression` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-constants` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-crypto` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-diagnostics` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-http` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-ipaddress` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-itertools` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-logging` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-math` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-net` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-path` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-regex` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-serial` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-stringprep` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-tk` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-vfs` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-xml` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-runtime-zoneinfo` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-stdlib-difflib` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-stdlib-graphlib` | L3 | molt-cext-discovery, molt-runtime |
+| 2 | `molt-stdlib-text` | L3 | molt-cext-discovery, molt-runtime |
 | 2 | `molt-wasm-facts` | L0 | molt-backend, molt-wasm-host |
 | 1 | `molt-backend-luau` | L3 | molt-backend |
 | 1 | `molt-backend-native` | L3 | molt-backend |
 | 1 | `molt-backend-rust` | L3 | molt-backend |
 | 1 | `molt-backend-wasm` | L3 | molt-backend |
+| 1 | `molt-runtime` | L4 | molt-cext-discovery |
 | 0 | `molt-backend` | L4 |  |
 | 0 | `molt-cext-discovery` | L5 |  |
 | 0 | `molt-embed` | L5 |  |
-| 0 | `molt-ffi` | L5 |  |
 | 0 | `molt-harness` | L0 |  |
+| 0 | `molt-launcher` | L0 |  |
 | 0 | `molt-runtime-protobuf` | L0 |  |
 | 0 | `molt-wasm-host` | L5 |  |
 | 0 | `molt-worker` | L1 |  |
 
 ## Declared layer map (`runtime/crate_graph.toml`)
 
-- **Layer 0:** `molt-artifact-publish`, `molt-codegen-abi`, `molt-db`, `molt-gpu`, `molt-harness`, `molt-ir`, `molt-runtime-platform`, `molt-runtime-protobuf`, `molt-wasm-facts`
+- **Layer 0:** `molt-artifact-publish`, `molt-codegen-abi`, `molt-db`, `molt-gpu`, `molt-harness`, `molt-ir`, `molt-launcher`, `molt-runtime-platform`, `molt-runtime-protobuf`, `molt-wasm-facts`
 - **Layer 1:** `molt-lang-obj-model`, `molt-passes`, `molt-worker`
 - **Layer 2:** `molt-lang-cpython-abi`, `molt-runtime-core`, `molt-tir`
 - **Layer 3:** `molt-backend-luau`, `molt-backend-native`, `molt-backend-rust`, `molt-backend-wasm`, `molt-gpu-runtime`, `molt-runtime-asyncio`, `molt-runtime-audit`, `molt-runtime-collections`, `molt-runtime-compression`, `molt-runtime-constants`, `molt-runtime-crypto`, `molt-runtime-diagnostics`, `molt-runtime-http`, `molt-runtime-ipaddress`, `molt-runtime-itertools`, `molt-runtime-logging`, `molt-runtime-math`, `molt-runtime-net`, `molt-runtime-path`, `molt-runtime-regex`, `molt-runtime-resource`, `molt-runtime-serial`, `molt-runtime-stringprep`, `molt-runtime-tk`, `molt-runtime-vfs`, `molt-runtime-xml`, `molt-runtime-zoneinfo`, `molt-stdlib-difflib`, `molt-stdlib-graphlib`, `molt-stdlib-text`
 - **Layer 4:** `molt-backend`, `molt-runtime`
-- **Layer 5:** `molt-cext-discovery`, `molt-embed`, `molt-ffi`, `molt-wasm-host`
+- **Layer 5:** `molt-cext-discovery`, `molt-embed`, `molt-wasm-host`
 
 **Allowed same-layer edges:** 
 - `molt-backend-native` -> `molt-backend-llvm`

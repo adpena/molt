@@ -224,7 +224,6 @@ def run_layer_lint(config: HarnessConfig) -> LayerResult:
         "molt-embed",
         "molt-harness",
         "molt-runtime-protobuf",
-        "molt-ffi",
     }
     available = set(workspace_package_names(config.project_root))
     lint_crates = sorted(known_clean & available)
@@ -325,7 +324,6 @@ def run_layer_unit_rust(config: HarnessConfig) -> LayerResult:
         "molt-embed",
         "molt-harness",
         "molt-runtime-protobuf",
-        "molt-ffi",
     ]:
         if crate in available:
             test_runs.append((crate, ["cargo", "test", "-p", crate]))
