@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "4e4d4a346bb049fa8ae79161bf8f7343174d206e7c8831f3366d9877dcc68803",
+  "authority_sha256": "deb2b24983457c49f4c9f306c9a54fd16c15ada7690614f1c0d18e697bb179d5",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1471,6 +1471,102 @@
         "main"
       ],
       "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--no-sync",
+        "python",
+        "-u",
+        "-m",
+        "pytest",
+        "-v",
+        "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-queue-portability",
+      "dependencies": [],
+      "family": "platform_portability",
+      "id": "portability.cargo-link.linux",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--no-sync",
+        "python",
+        "-u",
+        "-m",
+        "pytest",
+        "-v",
+        "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"
+      ],
+      "cache_domain": "pytest",
+      "cell": "macos-arm64-py312-queue-portability",
+      "dependencies": [],
+      "family": "platform_portability",
+      "id": "portability.cargo-link.macos",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--no-sync",
+        "python",
+        "-u",
+        "-m",
+        "pytest",
+        "-v",
+        "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"
+      ],
+      "cache_domain": "pytest",
+      "cell": "windows-x86_64-py312-queue-portability",
+      "dependencies": [],
+      "family": "platform_portability",
+      "id": "portability.cargo-link.windows",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr"
+      ],
+      "timeout_seconds": 120,
       "toolchains": [
         "python",
         "uv",
@@ -4334,9 +4430,7 @@
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-rust-native-dev",
-      "dependencies": [
-        "rust.test.ir-wasm-runtime-authorities"
-      ],
+      "dependencies": [],
       "family": "rust",
       "id": "rust.test.compiler-authorities",
       "resource_class": "compiler-build-resource",
@@ -4400,9 +4494,7 @@
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-rust-native-dev",
-      "dependencies": [
-        "rust.test.default-truth"
-      ],
+      "dependencies": [],
       "family": "rust",
       "id": "rust.test.ir-wasm-runtime-authorities",
       "resource_class": "compiler-build-resource",
@@ -4437,9 +4529,7 @@
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-rust-native-release-output",
-      "dependencies": [
-        "rust.test.ir-wasm-runtime-authorities"
-      ],
+      "dependencies": [],
       "family": "rust",
       "id": "rust.test.runtime-cold-lifecycle",
       "resource_class": "compiler-build-resource",
@@ -5189,7 +5279,7 @@
       },
       "rust": {
         "budget_seconds": 14400,
-        "critical_path_seconds": 11400,
+        "critical_path_seconds": 9000,
         "headroom_seconds": 240,
         "projected_makespan_seconds": 14160,
         "resource_capacity_floor_seconds": {
@@ -5233,7 +5323,7 @@
           "headroom_seconds": 10200,
           "projected_makespan_seconds": 600,
           "resource_capacity_floor_seconds": {
-            "python-tests": 360
+            "python-tests": 420
           }
         },
         "macos-arm64-py312-queue-portability": {
@@ -5242,7 +5332,7 @@
           "headroom_seconds": 10200,
           "projected_makespan_seconds": 600,
           "resource_capacity_floor_seconds": {
-            "python-tests": 420
+            "python-tests": 480
           }
         },
         "macos-arm64-py312-rust-native-dev": {
@@ -5260,7 +5350,7 @@
           "headroom_seconds": 10200,
           "projected_makespan_seconds": 600,
           "resource_capacity_floor_seconds": {
-            "python-tests": 420
+            "python-tests": 480
           }
         }
       },
