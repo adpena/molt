@@ -18,7 +18,7 @@ from molt.llvm_toolchain import (
 )
 from molt.portable_paths import portable_relative_path
 from molt.release_matrix import RUST_TARGET_BY_COORDINATE
-from molt.source_root import compiler_source_root
+from molt.source_root import compiler_source_root, source_file_revision
 
 
 class BinaryenConfigError(RuntimeError):
@@ -83,7 +83,9 @@ def binaryen_manifest_path(root: Path | None = None) -> Path:
 
 
 @lru_cache(maxsize=8)
-def _load_binaryen_manifest_cached(path_text: str) -> BinaryenManifest:
+def _load_binaryen_manifest_cached(
+    path_text: str, _revision: tuple[int, int, int]
+) -> BinaryenManifest:
     path = Path(path_text)
     try:
         raw = path.read_bytes()
@@ -236,7 +238,8 @@ def _load_binaryen_manifest_cached(path_text: str) -> BinaryenManifest:
 
 
 def load_binaryen_manifest(root: Path | None = None) -> BinaryenManifest:
-    return _load_binaryen_manifest_cached(str(binaryen_manifest_path(root)))
+    path = binaryen_manifest_path(root)
+    return _load_binaryen_manifest_cached(str(path), source_file_revision(path))
 
 
 def binaryen_host_asset(

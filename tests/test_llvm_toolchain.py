@@ -25,6 +25,7 @@ from molt.llvm_toolchain import (
     write_llvm_toolchain_attestation,
 )
 from molt.release_matrix import RELEASE_TARGETS, wasi_sdk_host_id
+from molt.source_root import source_file_revision
 from molt.toolchain_identity import stable_regular_file_identity
 from molt.wasi_sdk_identity import (
     INSTALL_RECEIPT_FILENAME,
@@ -36,6 +37,12 @@ from molt.wasi_sdk_identity import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# The pinned WASI SDK, read from its one authority.
+_WASI = llvm_toolchain.load_llvm_releases(ROOT).wasi_sdk
+WASI_ARCHIVE = _WASI.archive_version
+WASI_TAG = int(WASI_ARCHIVE.split(".", 1)[0])
+WASI_SDK_VERSION = _WASI.sdk_version
+WASI_LLVM = _WASI.llvm_version
 
 
 def test_toolchain_bootstrap_import_does_not_load_cli_dependency_graph() -> None:
@@ -88,7 +95,9 @@ def _write(path: Path, text: str) -> None:
 def _write_wasi_sdk_installation(
     toolchain_root: Path,
     *,
-    version_text: str = "33.0+m\nwasi-libc: test\nllvm-version: 22.1.0\n",
+    version_text: str = (
+        f"{WASI_SDK_VERSION}\nwasi-libc: test\nllvm-version: {WASI_LLVM}\n"
+    ),
     include_llvm_nm: bool = True,
 ) -> Path:
     """Lay out one provisioned install exactly as tools/provision_wasi_sdk.py does."""
@@ -494,10 +503,9 @@ def test_complete_prefix_verifier_and_attestation_share_one_contract(
         "targets": ["WebAssembly", "X86"],
         "build_type": "Release",
     }
-    assert (
-        payload["release_manifest_sha256"]
-        == llvm_toolchain.load_llvm_releases(ROOT).digest
-    )
+    # The attestation binds its own release record, not unrelated manifest
+    # sections such as the WASI SDK pin.
+    assert "release_manifest_sha256" not in payload
     assert payload["release"] == {
         "version": "22.1.8",
         "url": (
@@ -607,18 +615,14 @@ def test_debian_installer_identity_is_manifest_owned(tmp_path: Path) -> None:
     assert f"apt_installer_url={installer.url}\n" in projected
     assert f"apt_installer_sha256={installer.sha256}\n" in projected
     assert f"apt_installer_provenance_url={installer.provenance_url}\n" in projected
-    wasi = manifest.wasi_sdk
-    assert (wasi.archive_version, wasi.sdk_version, wasi.llvm_version) == (
-        "33.0",
-        "33.0+m",
-        "22.1.0",
-    )
     # The SDK's LLVM producer line is pinned independently of the backend SDK.
-    assert manifest.default_release == "22.1.8"
+    assert manifest.default_release in {
+        release.version for release in manifest.releases
+    }
     asset = llvm_toolchain.wasi_sdk_host_asset(ROOT)
     assert f"wasi_sdk_asset={asset.id}\n" in projected
-    assert "wasi_sdk_version=33.0+m\n" in projected
-    assert "wasi_sdk_llvm_version=22.1.0\n" in projected
+    assert f"wasi_sdk_version={WASI_SDK_VERSION}\n" in projected
+    assert f"wasi_sdk_llvm_version={WASI_LLVM}\n" in projected
     assert f"wasi_sdk_cache_key=wasi-sdk-{asset.id}-{asset.sha256}\n" in projected
     # The action never downloads or unpacks an SDK archive in shell.
     assert "wasi_sdk_url" not in projected
@@ -628,12 +632,22 @@ def test_debian_installer_identity_is_manifest_owned(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("system", "machine", "asset_id", "archive_root"),
     (
-        ("Linux", "x86_64", "linux-x86_64", "wasi-sdk-33.0-x86_64-linux"),
-        ("Linux", "aarch64", "linux-aarch64", "wasi-sdk-33.0-arm64-linux"),
-        ("Darwin", "x86_64", "macos-x86_64", "wasi-sdk-33.0-x86_64-macos"),
-        ("Darwin", "arm64", "macos-aarch64", "wasi-sdk-33.0-arm64-macos"),
-        ("Windows", "AMD64", "windows-x86_64", "wasi-sdk-33.0-x86_64-windows"),
-        ("Windows", "ARM64", "windows-aarch64", "wasi-sdk-33.0-arm64-windows"),
+        ("Linux", "x86_64", "linux-x86_64", f"wasi-sdk-{WASI_ARCHIVE}-x86_64-linux"),
+        ("Linux", "aarch64", "linux-aarch64", f"wasi-sdk-{WASI_ARCHIVE}-arm64-linux"),
+        ("Darwin", "x86_64", "macos-x86_64", f"wasi-sdk-{WASI_ARCHIVE}-x86_64-macos"),
+        ("Darwin", "arm64", "macos-aarch64", f"wasi-sdk-{WASI_ARCHIVE}-arm64-macos"),
+        (
+            "Windows",
+            "AMD64",
+            "windows-x86_64",
+            f"wasi-sdk-{WASI_ARCHIVE}-x86_64-windows",
+        ),
+        (
+            "Windows",
+            "ARM64",
+            "windows-aarch64",
+            f"wasi-sdk-{WASI_ARCHIVE}-arm64-windows",
+        ),
     ),
 )
 def test_wasi_sdk_host_asset_covers_every_release_coordinate(
@@ -647,10 +661,10 @@ def test_wasi_sdk_host_asset_covers_every_release_coordinate(
     assert asset.id == asset_id
     assert asset.archive_root == archive_root
     assert asset.url == (
-        "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/"
-        f"{archive_root}.tar.gz"
+        "https://github.com/WebAssembly/wasi-sdk/releases/download/"
+        f"wasi-sdk-{WASI_TAG}/{archive_root}.tar.gz"
     )
-    assert (asset.sdk_version, asset.llvm_version) == ("33.0+m", "22.1.0")
+    assert (asset.sdk_version, asset.llvm_version) == (WASI_SDK_VERSION, WASI_LLVM)
 
 
 def test_wasi_sdk_assets_match_the_shipped_release_matrix() -> None:
@@ -673,15 +687,19 @@ def test_wasi_sdk_host_asset_rejects_uncovered_host() -> None:
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     (
-        ('sdk_version = "33.0+m"', 'sdk_version = "34.0+m"', "release identity"),
         (
-            "releases/tags/wasi-sdk-33",
-            "releases/tags/wasi-sdk-34",
+            f'sdk_version = "{WASI_SDK_VERSION}"',
+            f'sdk_version = "{WASI_TAG + 1}.0"',
             "release identity",
         ),
         (
-            "download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz",
-            "download/wasi-sdk-32/wasi-sdk-33.0-x86_64-linux.tar.gz",
+            f"releases/tags/wasi-sdk-{WASI_TAG}",
+            f"releases/tags/wasi-sdk-{WASI_TAG + 1}",
+            "release identity",
+        ),
+        (
+            f"download/wasi-sdk-{WASI_TAG}/wasi-sdk-{WASI_ARCHIVE}-x86_64-linux.tar.gz",
+            f"download/wasi-sdk-{WASI_TAG - 1}/wasi-sdk-{WASI_ARCHIVE}-x86_64-linux.tar.gz",
             "linux-x86_64 identity is invalid",
         ),
     ),
@@ -695,7 +713,9 @@ def test_wasi_sdk_manifest_binds_versions_and_assets_to_provenance(
     manifest.write_text(source.replace(old, new), encoding="utf-8")
 
     with pytest.raises(LlvmToolchainConfigError, match=message):
-        llvm_toolchain._load_llvm_releases_cached(str(manifest))
+        llvm_toolchain._load_llvm_releases_cached(
+            str(manifest), source_file_revision(manifest)
+        )
 
 
 def test_wasi_sdk_manifest_requires_the_complete_release_matrix(tmp_path: Path) -> None:
@@ -714,7 +734,9 @@ def test_wasi_sdk_manifest_requires_the_complete_release_matrix(tmp_path: Path) 
     with pytest.raises(
         LlvmToolchainConfigError, match="complete shipped release matrix"
     ):
-        llvm_toolchain._load_llvm_releases_cached(str(manifest))
+        llvm_toolchain._load_llvm_releases_cached(
+            str(manifest), source_file_revision(manifest)
+        )
 
 
 @pytest.mark.parametrize(
@@ -785,13 +807,16 @@ def test_wasm_ci_profile_verifies_and_projects_one_sdk_tool_family(
     sdk = installed / "sdk"
     wasm_ld = sdk / "bin" / verified.installation.wasm_ld.name
     llvm_nm = sdk / "bin" / verified.installation.llvm_nm.name
-    # Both WebAssembly tools are held to the SDK's LLVM line, not the 22.1.8
-    # native backend release.
+    # Both WebAssembly tools are held to the SDK's LLVM line, not the native
+    # backend release.
     assert seen == [
-        ("wasm-ld", wasm_ld, "22.1.0", True),
-        ("llvm-nm", llvm_nm, "22.1.0", True),
+        ("wasm-ld", wasm_ld, WASI_LLVM, True),
+        ("llvm-nm", llvm_nm, WASI_LLVM, True),
     ]
-    assert (verified.sdk_version, verified.llvm_version) == ("33.0+m", "22.1.0")
+    assert (verified.sdk_version, verified.llvm_version) == (
+        WASI_SDK_VERSION,
+        WASI_LLVM,
+    )
     sysroot = str(sdk / "share" / "wasi-sysroot")
     assert projected["MOLT_WASI_SYSROOT"] == sysroot
     assert projected["WASI_SYSROOT"] == sysroot
@@ -886,9 +911,13 @@ def test_apply_provisioned_wasm_toolchain_never_guesses_without_an_sdk(
 @pytest.mark.parametrize(
     ("version_text", "include_llvm_nm", "message"),
     (
-        ("33.0+m\nllvm-version: 22.1.8\n", True, "VERSION identity"),
-        ("32.0+m\nllvm-version: 22.1.0\n", True, "VERSION identity"),
-        ("33.0+m\nllvm-version: 22.1.0\n", False, "installation is incomplete"),
+        (f"{WASI_SDK_VERSION}\nllvm-version: 1.0.0\n", True, "VERSION identity"),
+        (f"{WASI_TAG - 1}.0\nllvm-version: {WASI_LLVM}\n", True, "VERSION identity"),
+        (
+            f"{WASI_SDK_VERSION}\nllvm-version: {WASI_LLVM}\n",
+            False,
+            "installation is incomplete",
+        ),
     ),
 )
 def test_wasm_ci_profile_rejects_mismatched_or_incomplete_sdk(
@@ -1023,7 +1052,7 @@ def test_wasm_llvm_nm_explicit_override_uses_manifest_version_verifier(
     assert verification.path == override
     assert verification.fact.role == "llvm-nm"
     # An explicit reader is still held to the wasi-sdk LLVM release.
-    assert seen == [(tmp_path, "llvm-nm", override, "22.1.0", True)]
+    assert seen == [(tmp_path, "llvm-nm", override, WASI_LLVM, True)]
 
 
 def test_wasm_llvm_nm_defaults_to_the_custody_provisioned_sdk(
@@ -1046,7 +1075,7 @@ def test_wasm_llvm_nm_defaults_to_the_custody_provisioned_sdk(
 
     llvm_nm = prefix.resolve() / "sdk" / "bin" / verification.path.name
     assert verification.path == llvm_nm
-    assert seen == [("llvm-nm", llvm_nm, "22.1.0", True)]
+    assert seen == [("llvm-nm", llvm_nm, WASI_LLVM, True)]
 
 
 def test_wasm_llvm_nm_lookup_never_provisions(
@@ -1628,13 +1657,17 @@ def test_compile_link_probe_uses_verified_host_linker_by_absolute_path(
     library = prefix / "lib" / "LLVMCore.lib"
     for path in (clangxx, linker, library):
         _write(path, "")
-    commands: list[list[str]] = []
+    commands: list[tuple[list[str], dict[str, str]]] = []
 
-    def run(command, **_kwargs):
-        commands.append(command)
+    def run(command, **kwargs):
+        commands.append((command, kwargs["env"]))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("molt.llvm_toolchain.subprocess.run", run)
+    monkeypatch.setattr(
+        "molt.platform_toolchain.select_darwin_toolchain",
+        lambda _env: SimpleNamespace(environment=lambda: {"SDKROOT": "/pinned-sdk"}),
+    )
     proof = llvm_toolchain._compile_link_probe(
         prefix,
         clangxx,
@@ -1642,8 +1675,11 @@ def test_compile_link_probe_uses_verified_host_linker_by_absolute_path(
         ("lib/LLVMCore.lib",),
     )
 
-    assert f"--ld-path={linker}" in commands[0]
+    [(command, env)] = commands
+    assert f"--ld-path={linker}" in command
     assert proof[1] == f"linker:bin/{linker.name}"
+    # Upstream clang finds the macOS SDK only through SDKROOT.
+    assert (env.get("SDKROOT") == "/pinned-sdk") == (sys.platform == "darwin")
 
 
 def test_windows_style_llvm_config_link_closure_resolves_dot_lib(

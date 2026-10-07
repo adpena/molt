@@ -37,34 +37,26 @@ resolvers in `molt.cli.wasm_toolchain` fall back to these copies when the sysroo
 lib dir (and, for builtins, a full wasi-sdk compiler-rt resource dir) does not
 have them.
 
-## Provenance (pinned)
+## Provenance and bumping
 
-Both from wasi-sdk-33 (`33.0+m`): LLVM 22.1.0 (`llvm: 4434dabb6991`), wasi-libc
-`161b3195fc25`.
+`provenance.toml` records the WASI SDK release the archives came from, each
+archive's path inside that SDK, its size and SHA-256. Each host's SDK embeds
+its own build paths (compiler-rt's `__FILE__` abort strings), so hosts never
+agree byte for byte; the copies come from the CI reference host's SDK archive,
+whose digest matches the upstream release record, and every host's SDK must
+ship the same archive members.
 
-| file | target | size (bytes) | sha256 |
-| --- | --- | --- | --- |
-| `libc-printscan-long-double.a` | `wasm32-wasip1` | 111146 | `744a4c150a0352732923c167ba284f435947f5836205d9470827bb84256148b9` |
-| `libclang_rt.builtins-wasm32.a` | `wasm32-wasi` (used for `wasm32-wasip1`) | 456060 | `b1e23c0376609e09052ff225f290d971b0f8eabd3ffd0737e5d0ebb10f1880d1` |
-
-Each is byte-identical to the corresponding archive shipped inside the
-`wasi-sysroot-33.0+m` toolchain (verified equal sha256). NOTE: the
-`wasm32-wasip1` and legacy `wasm32-wasi` multilib variants of
-`libc-printscan-long-double.a` are **not** identical — the `wasm32-wasip1`
-variant is vendored to match Molt's `--target wasm32-wasip1` link.
-
-## Regenerating / bumping
-
-From a wasi-sdk-33 install (matching the `wasi-sysroot-33.0+m` toolchain):
+The archives move only with the WASI SDK pin:
 
 ```
-cp <wasi-sdk>/share/wasi-sysroot/lib/wasm32-wasip1/libc-printscan-long-double.a \
-   vendor/wasm-builtins/libc-printscan-long-double.a
-cp <wasi-sdk>/lib/clang/22/lib/wasip1/libclang_rt.builtins-wasm32.a \
-   vendor/wasm-builtins/libclang_rt.builtins-wasm32.a
+uv run python3 tools/pin_freshness.py --update wasi-sdk
 ```
 
-When bumping, update the sha256 + versions in this table and in
-`tests/test_wasm_longdouble_printf_link.py`. The reloc runtime fingerprint folds
-each archive's `(name, size, mtime)` (`_reloc_link_archive_fingerprint_token`),
-so a swapped archive correctly invalidates the cached reloc runtime.
+That one command verifies every host's SDK archive, rewrites
+`config/llvm_toolchain_releases.toml`, these archives and `provenance.toml`
+together, and restores all of them if the manifest loader rejects the result.
+`tests/test_wasm_longdouble_durable_provisioning.py` fails when the archives,
+`provenance.toml` and the pinned SDK disagree. The reloc runtime fingerprint
+folds each archive's `(name, size, mtime)`
+(`_reloc_link_archive_fingerprint_token`), so a swapped archive invalidates
+the cached reloc runtime.
