@@ -884,13 +884,17 @@ the native supervisor runs each exact probe in non-evidence inventory mode and
 records every kernel-observed executable by path, size, and SHA-256. That sealed
 image set is the single authority consumed by both pre-spawn child custody and
 the proof supervisor; no install-directory or basename allowlist is inferred.
-Inventory is lossless on Windows and Linux. On macOS the native supervisor
-admits only leaf closure (Seatbelt fork/exec denial plus a ptrace-traced root
-with pre-entry exec classification), so Python and Node leaf rows execute on
-the primary development host; inventory and declared-tree rows remain
-fail-closed until an entitlement-backed Endpoint Security process backend
-exists, because no unprivileged macOS kernel primitive observes descendant
-creation before entry.
+Inventory is lossless only under qualified native process/image custody. The
+macOS Seatbelt/ptrace leaf implementation remains unqualified: the recorded
+blocked-SIGTRAP/re-exec negative counted one exec while two images executed.
+Its current preflight availability and a complete receipt do not establish
+release acceptance. Declared-tree and inventory-tree modes reject before launch.
+Every admitted mode needs independently demonstrated pre-entry creation/image
+custody and supervisor-death closure; neither an Endpoint Security entitlement
+nor polling/kqueue observations alone establish those guarantees. Track the
+open platform contract in [HF-07](V1_HANDOFF_FINDINGS.md). This qualification
+boundary belongs to developer proof execution and does not change the compiler's
+macOS target support.
 
 One queue-owned memory guard contains interpreter/tool identity probes,
 toolchain preflight, the proof command, and both source snapshots. The guarded

@@ -197,23 +197,15 @@ identity and size are preserved in the image records.
   events. Exec images are classified at the kernel stop before user code runs.
   An unreadable `PTRACE_EVENT_CLONE` thread-group identity is a terminal
   violation, and a run cannot complete without an admitted root exec event.
-- macOS admits only `leaf` closure, through two kernel authorities that need
-  no entitlement. The root is forked, traced with `PT_TRACE_ME`, and confined by
-  a Seatbelt profile that denies `process-fork` and every `process-exec*`
-  outside the sealed fixed-image paths, each denial killing the attempting
-  process with `SIGKILL` before a child or image exists. ptrace stops the root
-  with `SIGTRAP` at every kernel exec boundary, where the mapped text vnode is
-  identified (`proc_pidpath` plus the region vnode) and hashed before the first
-  user instruction; `NOTE_EXEC` on a kqueue distinguishes exec stops from
-  program `SIGTRAP`s. XNU kills a traced process when its tracer exits, so
-  supervisor death tears the root down. XNU keeps no exit reason for a traced
-  target, so a `SIGKILL` the supervisor did not request is recorded as a typed
-  `kernel-policy-termination` violation naming both the sealed denial and an
-  external kill. `declared-tree` and `inventory-tree` reject before launch:
-  without Endpoint Security, macOS cannot observe descendant creation before
-  entry (`EVFILT_PROC` rejects `NOTE_TRACK`, `NOTE_FORK` carries no child pid,
-  ptrace does not follow fork, `PT_ATTACHEXC` is denied for platform binaries),
-  and no polling or kqueue substitute is admitted for recursive authority.
+- macOS has a Seatbelt/ptrace leaf implementation, but its pre-entry image
+  claim is unqualified. A recorded blocked-SIGTRAP/re-exec negative counted one
+  exec while two images executed. Positive preflight availability, sandbox
+  installation and a complete receipt cannot establish release acceptance.
+  `declared-tree` and `inventory-tree` reject before launch. Every admitted
+  closure mode needs independent pre-entry creation/image and supervisor-death
+  controls; entitlement availability or polling/kqueue observations alone do
+  not establish them. [HF-07](../../docs/agent/V1_HANDOFF_FINDINGS.md) owns this
+  open developer-apparatus contract.
 
 Receipts follow one enforced lifecycle:
 `CREATED -> POLICY_SEALED -> RUNNING -> DRAINING -> COMPLETE|INCOMPLETE`, with
