@@ -139,3 +139,61 @@ fn main() {
         "text family preserved"
     );
 }
+
+/// `missing` needs no runtime capability, so every target admits it and the
+/// Rust backend must lower it rather than reach its unsupported-op catch-all.
+#[test]
+fn admitted_missing_sentinel_lowers_to_a_distinct_truthy_singleton() {
+    let functions = vec![
+        value_function(
+            "sentinel",
+            vec![
+                OpIR {
+                    kind: "missing".into(),
+                    out: Some("value".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "copy".into(),
+                    args: Some(vec!["value".into()]),
+                    out: Some("result".into()),
+                    ..OpIR::default()
+                },
+            ],
+            "result",
+        ),
+        FunctionIR {
+            name: "molt_main".into(),
+            return_abi: molt_ir::FunctionReturnAbi::Void,
+            ops: vec![OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            }],
+            ..FunctionIR::default()
+        },
+    ];
+    let source = RustBackend::new()
+        .compile_checked(&SimpleIR {
+            functions,
+            profile: None,
+        })
+        .expect("the admitted missing sentinel must lower");
+    let mut source = source.replacen("fn main() {", "fn main() { check_missing();", 1);
+    source.push_str(r#"
+fn check_missing() {
+    let sentinel = sentinel(&mut vec![]);
+    assert!(matches!(sentinel, MoltValue::Missing));
+    assert!(sentinel == sentinel.clone());
+    for other in [MoltValue::None, MoltValue::Ellipsis, MoltValue::NotImplemented, MoltValue::Bool(false)] {
+        assert!(sentinel != other && other != sentinel);
+    }
+    assert!(molt_bool(&sentinel));
+    assert_eq!(molt_str(&sentinel), "<object object>");
+    println!("missing sentinel preserved");
+}
+"#);
+    assert_eq!(
+        compile_and_run_emitted(&source, "missing_sentinel").trim(),
+        "missing sentinel preserved"
+    );
+}

@@ -94,6 +94,12 @@ impl RustBackend {
         self.emit_literal_value(op, "MoltValue::NotImplemented");
     }
 
+    /// The runtime's absent-value sentinel. Natively it is a plain `object`
+    /// instance, so it is truthy and equal only to itself.
+    pub(super) fn emit_op_missing(&mut self, op: &OpIR) {
+        self.emit_literal_value(op, "MoltValue::Missing");
+    }
+
     pub(super) fn emit_op_representation_copy(&mut self, op: &OpIR) {
         // compile_checked admits every spelling through the shared wire shape;
         // dispatch's typed round trip preserves this unary operand transport.

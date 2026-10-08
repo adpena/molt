@@ -47,6 +47,7 @@ impl RustBackend {
         match op.kind.as_str() {
             "const_not_implemented" => self.emit_op_const_not_implemented(op),
             "const_ellipsis" => self.emit_op_const_ellipsis(op),
+            "missing" => self.emit_op_missing(op),
             "box" | "box_from_raw_int" | "unbox" | "unbox_to_raw_int" => {
                 self.emit_op_representation_copy(op)
             }
