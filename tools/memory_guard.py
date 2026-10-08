@@ -563,7 +563,9 @@ def _write_child_started_fd(fd: int | None) -> None:
         os.close(fd)
 
 
-def _resolve_relative_executable(command: Sequence[str]) -> list[str]:
+def _resolve_relative_executable(
+    command: Sequence[str], *, parent_cwd: str | Path | None = None
+) -> list[str]:
     """Resolve a relative, path-bearing ``command[0]`` against the PARENT cwd.
 
     POSIX ``subprocess.Popen``/``os.execvpe`` with ``cwd=`` set exec a relative
@@ -591,7 +593,8 @@ def _resolve_relative_executable(command: Sequence[str]) -> list[str]:
     candidate = Path(cmd0)
     if candidate.is_absolute():
         return list(command)
-    resolved = (Path.cwd() / candidate).resolve(strict=False)
+    base = Path.cwd() if parent_cwd is None else Path(parent_cwd)
+    resolved = (base / candidate).resolve(strict=False)
     if not resolved.exists():
         return list(command)
     return [str(resolved), *command[1:]]

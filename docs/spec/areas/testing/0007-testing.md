@@ -257,6 +257,25 @@ failed dependency identity; unrelated running or ready commands remain subject
 to the existing dependency, resource, and custody limits. The enclosing receipt
 remains failed even if all independent commands succeed.
 
+Cancellation requests use the existing `GuardedCommand` launch capability and
+its sticky cancellation file. The guard remains the sole descendant owner,
+including the Windows Job. The five-second cancellation observation window is
+not a cleanup deadline and never authorizes terminating the guard. A pending
+observation yields a global infrastructure outcome, with the unique launch,
+startup, summary, cancellation and custody references in the ordinary failed
+receipt. The library preserves the exact handle on its custody exception; the
+CLI returns failure while the autonomous guard continues to own cleanup. A
+later terminal receipt must match the launch and child identities and attest
+`descendants_closed` before closure is claimed. A missing or failed terminal
+report cannot become an accepted cancellation merely because stop was requested.
+The raw guard cancellation code remains 137; the executor projects code 130
+only from an admitted cancelled terminal outcome and retains `guard_returncode`
+in its command record.
+The current native sampling and reaper calls do not establish a hard upper bound
+on actual cleanup; observation expiry reports unresolved closure, not cleanup
+failure. An eventual close does not retroactively turn the failed proof into a
+successful receipt.
+
 Global cancellation covers unsafe memory pressure, missing or invalid guard
 metrics, unresolved guard or Cargo-quarantine ownership, uncertain descendant
 closure, source changes, guard or child signals and host exceptions, lost

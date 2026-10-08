@@ -8,10 +8,12 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 import re
+import subprocess
 import sys
 import threading
 import time
 from typing import Any
+from types import SimpleNamespace
 
 import pytest
 
@@ -2218,7 +2220,7 @@ def test_provisioned_lean_fingerprint_admits_formal_build_receipt(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, current, _metrics, _cancel: _successful_synthetic_record(current),
+        lambda _plan, current, _cancel: _successful_synthetic_record(current),
     )
     receipt_path = tmp_path / "formal-lean-receipt.json"
 
@@ -2389,7 +2391,6 @@ def test_executor_schedules_dependencies_and_resources_with_deterministic_receip
     def fake_run(
         _plan: proof_plan.ProofPlan,
         command: proof_plan.ProofCommand,
-        _metrics: Path,
         _cancel: threading.Event,
     ) -> dict[str, object]:
         resource = str(command.data["resource_class"])
@@ -2454,7 +2455,7 @@ def test_executor_partition_failure_preserves_independent_work_and_blocks_depend
     )
     live_started = threading.Event()
 
-    def fake_run(_plan, command, _metrics, cancel):
+    def fake_run(_plan, command, cancel):
         if command.id == "synthetic.fail":
             assert live_started.wait(timeout=1)
             return {
@@ -2596,7 +2597,6 @@ def test_executor_does_not_convert_control_plane_interrupts_into_records(
     def interrupt(
         _plan: proof_plan.ProofPlan,
         _command: proof_plan.ProofCommand,
-        _metrics: Path,
         _cancel: threading.Event,
     ) -> dict[str, object]:
         raise KeyboardInterrupt
@@ -2742,7 +2742,7 @@ def test_executor_rejects_source_mutation_during_partition(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, command, _metrics, _cancel: {
+        lambda _plan, command, _cancel: {
             "id": command.id,
             "status": "success",
             "returncode": 0,
@@ -3088,7 +3088,10 @@ def test_executor_failure_scope_uses_guard_and_quarantine_authority(
     metrics, returncode, expected
 ) -> None:
     scope, reason = proof_plan._guarded_failure_scope(
-        metrics, metrics_valid=True, returncode=returncode, cancelled=False
+        {"descendants_closed": True, **metrics},
+        metrics_valid=True,
+        returncode=returncode,
+        cancelled=False,
     )
     assert scope == expected
     assert reason
@@ -3096,10 +3099,11 @@ def test_executor_failure_scope_uses_guard_and_quarantine_authority(
 
 def _job_cleanup_with_survivor(image: Path) -> dict[str, object]:
     return {
+        "descendants_closed": True,
         "windows_job_cleanup": {
             "completed": True,
             "remaining_processes": [{"pid": 720, "image": str(image)}],
-        }
+        },
     }
 
 
@@ -3182,7 +3186,7 @@ def test_executor_stops_on_candidate_change_even_when_checkout_is_clean(
     )
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
 
-    def run(_plan, command, _metrics, _cancel):
+    def run(_plan, command, _cancel):
         current[field] = "c" * 40
         return _successful_synthetic_record(command)
 
@@ -3217,7 +3221,7 @@ def test_executor_control_plane_interrupt_cancels_siblings_before_join(
     live_started = threading.Event()
     closed = threading.Event()
 
-    def run(_plan, command, _metrics, cancel):
+    def run(_plan, command, cancel):
         if command.id == "interrupt":
             assert live_started.wait(1)
             raise KeyboardInterrupt
@@ -3288,7 +3292,7 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
         },
     )
     plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
-    record = proof_plan._run_command(plan, command, tmp_path / "metrics.json")
+    record = proof_plan._run_command(plan, command)
     assert started.read_bytes() == b"started", record
     assert record["status"] == "timeout"
     assert record["returncode"] == 124
@@ -3549,3 +3553,307 @@ def test_setup_contract_inputs_and_native_portability_routes_are_complete() -> N
             "tests/tools/test_rust_toolchain_contract.py",
         ):
             assert commands[name].argv.count(path) == 1
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        None,
+        "missing",
+        "unclosed",
+        "startup",
+        "infrastructure",
+        "refusal",
+        "wrong-returncode",
+        "noncanonical-code",
+        "not-cancelled",
+    ],
+)
+def test_executor_cancellation_requires_exact_terminal_closure(
+    tmp_path, monkeypatch, defect
+):
+    from tools.command_execution import GuardedCommand
+
+    command = _synthetic_executor_command("synthetic.cancel")
+    plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
+    event = threading.Event()
+    startup = {
+        "launch_id": "a" * 32,
+        "guard_pid": 410,
+        "command": list(command.argv),
+        "child_process": {"pid": 411, "started_at": "fixture-birth"},
+    }
+    terminal = {
+        **startup,
+        "schema": "molt.guarded-command-metrics.v1",
+        "returncode": 137,
+        "child_returncode": -15,
+        "duration_seconds": 0.2,
+        "peak_tree_rss_bytes": 1024,
+        "cancelled": True,
+        "descendants_closed": True,
+    }
+    startup_path = tmp_path / "startup.json"
+    summary_path = tmp_path / "summary.json"
+    if defect == "unclosed":
+        terminal["descendants_closed"] = False
+    elif defect == "startup":
+        startup["launch_id"] = "b" * 32
+    elif defect == "infrastructure":
+        terminal["infrastructure_failure"] = {"phase": "temporary_artifact_custody"}
+    elif defect == "refusal":
+        terminal["termination_reports"] = [
+            {"remaining_pids": [411], "remaining_pgids": []}
+        ]
+    elif defect == "noncanonical-code":
+        terminal["returncode"] = 130
+    elif defect == "not-cancelled":
+        terminal["cancelled"] = False
+    elif defect == "wrong-returncode":
+        terminal["returncode"] = 0
+    startup_path.write_text(json.dumps(startup), encoding="utf-8")
+    if defect != "missing":
+        summary_path.write_text(json.dumps(terminal), encoding="utf-8")
+
+    class Process:
+        pid = 409  # Launcher identity deliberately differs from the guard.
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = 130 if defect == "noncanonical-code" else 137
+            return self.returncode
+
+        def terminate(self):
+            pytest.fail("guard owner must remain alive until its own closure")
+
+        kill = terminate
+
+    owned = GuardedCommand(
+        Process(),
+        tmp_path / "cancel",
+        summary_path,
+        tmp_path / "custody.json",
+        "a" * 32,
+        startup_path,
+        command.argv,
+    )
+
+    def start(*_args, **kwargs):
+        assert kwargs["harness"] is True
+        assert "summary_json" not in kwargs  # A unique owner directory survives retry.
+        event.set()
+        return owned
+
+    monkeypatch.setattr(proof_plan, "_COMMANDS", SimpleNamespace(start_guarded=start))
+    if defect in {"missing", "unclosed", "startup"}:
+        with pytest.raises(RuntimeError) as caught:
+            proof_plan._run_command(plan, command, event)
+        assert caught.value.guard_command is owned
+        record = caught.value.proof_record
+    else:
+        record = proof_plan._run_command(plan, command, event)
+    assert record["guard_returncode"] == (130 if defect == "noncanonical-code" else 137)
+    assert record["failure_scope"] == "global"
+    assert record["status"] == ("cancelled" if defect is None else "failure")
+    assert record["returncode"] == (130 if defect is None else 2)
+    assert record["guard_custody"]["launch_id"] == owned.launch_id
+    assert record["guard_custody"]["summary_path"] == str(summary_path)
+    assert owned.cancellation_path.exists()
+    assert summary_path.exists() is (defect != "missing")
+
+
+def test_executor_retains_owner_in_failure_receipt_and_library_exception(
+    tmp_path, monkeypatch
+):
+    from tools.command_execution import GuardedCommand
+
+    command = _synthetic_executor_command("synthetic.unresolved")
+    plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
+    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(
+        proof_plan,
+        "toolchain_fingerprints",
+        lambda *_: {"python": {"identity_sha256": "0" * 64}},
+    )
+    process = SimpleNamespace(pid=31, returncode=None)
+    owned = GuardedCommand(
+        process,
+        tmp_path / "cancel",
+        tmp_path / "summary.json",
+        tmp_path / "custody.json",
+        "c" * 32,
+        tmp_path / "startup.json",
+        command.argv,
+    )
+    error = subprocess.TimeoutExpired("guard", 5)
+    error.guard_command = owned
+    record = {
+        **_successful_synthetic_record(command),
+        "status": "failure",
+        "returncode": 2,
+        "failure_scope": "global",
+        "failure_reason": "guard outcome unavailable or inconsistent",
+        "guard_custody": {
+            "launch_id": owned.launch_id,
+            "summary_path": str(owned.summary_path),
+            "startup_path": str(owned.startup_path),
+            "evidence_path": str(owned.evidence_path),
+            "cancellation_path": str(owned.cancellation_path),
+            "terminal": False,
+        },
+    }
+    error.proof_record = record
+
+    def run(*_args):
+        raise error
+
+    monkeypatch.setattr(proof_plan, "_run_command", run)
+    receipt_path = tmp_path / "receipt.json"
+    with pytest.raises(ExceptionGroup) as caught:
+        proof_plan.execute_commands(plan, (command,), receipt_path)
+    assert caught.value.exceptions == (error,)
+    assert caught.value.exceptions[0].guard_command is owned
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["status"] == "failure"
+    assert receipt["executed_partitions"] == []
+    assert receipt["commands"][0]["guard_custody"] == record["guard_custody"]
+    # The CLI may release its Python objects: ordinary durable custody references
+    # remain in the failure receipt and the autonomous guard owns eventual close.
+    monkeypatch.setattr(proof_plan.ProofPlan, "load", lambda _: plan)
+    monkeypatch.setattr(
+        proof_plan, "_topological_commands", lambda *_a, **_k: (command,)
+    )
+    assert (
+        proof_plan.main(["--run-command", command.id, "--receipt", str(receipt_path)])
+        == 2
+    )
+    assert (
+        json.loads(receipt_path.read_text(encoding="utf-8"))["commands"][0][
+            "guard_custody"
+        ]["launch_id"]
+        == owned.launch_id
+    )
+
+
+def test_cli_process_exit_preserves_autonomous_guard_and_eventual_closure(tmp_path):
+    """The CLI's interpreter exits while its existing guard still owns closure."""
+    from tools.command_execution import CommandExecutor
+    from tools import memory_guard
+
+    root = Path(proof_plan.__file__).resolve().parents[1]
+    release = tmp_path / "release"
+    entered = tmp_path / "entered"
+    ready = tmp_path / "ready"
+    receipt = tmp_path / "receipt.json"
+    worker = tmp_path / "held_worker.py"
+    worker.write_text(
+        "import os,pathlib,sys,time\n"
+        f"sys.path.insert(0, {str(root)!r})\n"
+        "from tools import guarded_exec\n"
+        "if os.environ.get('MOLT_TEST_HOLD_CLOSURE') == '1':\n"
+        " guard=guarded_exec.harness_memory_guard.memory_guard\n"
+        " original=guard._temporary_artifact_descendant_closure\n"
+        " def held(**kwargs):\n"
+        f"  pathlib.Path({str(entered)!r}).write_text('entered', encoding='utf-8')\n"
+        "  deadline=time.monotonic()+30\n"
+        f"  while not pathlib.Path({str(release)!r}).exists() and time.monotonic()<deadline: time.sleep(.02)\n"
+        "  return original(**kwargs)\n"
+        " guard._temporary_artifact_descendant_closure=held\n"
+        "raise SystemExit(guarded_exec.main())\n",
+        encoding="utf-8",
+    )
+    live_code = f"import pathlib,time; pathlib.Path({str(ready)!r}).write_text('ready', encoding='utf-8'); time.sleep(30)"
+    fail_code = (
+        "import pathlib,time; deadline=time.monotonic()+15\n"
+        f"while not pathlib.Path({str(ready)!r}).exists() and time.monotonic()<deadline: time.sleep(.02)\n"
+        "raise SystemExit(130)"
+    )
+    commands = (
+        replace(
+            _synthetic_executor_command("synthetic.fail"),
+            data={
+                **_synthetic_executor_command("synthetic.fail").data,
+                "argv": [sys.executable, "-c", fail_code],
+                "timeout_seconds": 20,
+            },
+        ),
+        replace(
+            _synthetic_executor_command("synthetic.live", resource_class="resource-b"),
+            data={
+                **_synthetic_executor_command(
+                    "synthetic.live", resource_class="resource-b"
+                ).data,
+                "argv": [sys.executable, "-c", live_code],
+                "timeout_seconds": 20,
+                "env": {"MOLT_TEST_HOLD_CLOSURE": "1"},
+            },
+        ),
+    )
+    cli = tmp_path / "proof_cli.py"
+    cli.write_text(
+        "import sys\nfrom dataclasses import replace\nfrom pathlib import Path\n"
+        f"sys.path.insert(0, {str(root)!r})\n"
+        "from tools import proof_plan as p\nfrom tools.command_execution import CommandExecutor\n"
+        "base=p.ProofPlan.load()\n"
+        f"commands=tuple(p.ProofCommand(identity,data) for identity,data in {[(c.id, c.data) for c in commands]!r})\n"
+        "plan=replace(base,commands=commands,executor_max_workers=2,resource_policies=(p.ResourcePolicy('resource-a',1),p.ResourcePolicy('resource-b',1)))\n"
+        "p.ProofPlan.load=lambda _:plan\np._topological_commands=lambda *a,**k:commands\n"
+        "p._source_tree_state=lambda:'clean'\np.toolchain_fingerprints=lambda *a:{}\n"
+        "p._source_identity=lambda:{'commit':'a'*40,'tree':'b'*40}\n"
+        "start=CommandExecutor.start_owned\n"
+        "def held_start(self,args,**kwargs):\n"
+        f" return start(self,[args[0],{str(worker)!r},*args[2:]],**kwargs)\n"
+        "CommandExecutor.start_owned=held_start\n"
+        f"raise SystemExit(p.main(['--run-family','synthetic','--receipt',{str(receipt)!r}]))\n",
+        encoding="utf-8",
+    )
+    executor = CommandExecutor(prefix="MOLT_TEST_CLI_EXIT", repo_root=root)
+    with (tmp_path / "cli.log").open("wb") as output:
+        process = executor.start_owned(
+            [sys.executable, str(cli)],
+            cwd=root,
+            env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "state")},
+            stdout=output,
+            stderr=output,
+        )
+        try:
+            assert process.wait(timeout=20) == 2
+            payload = json.loads(receipt.read_text(encoding="utf-8"))
+            assert payload["status"] == "failure"
+            live = next(r for r in payload["commands"] if r["id"] == "synthetic.live")
+            custody = live["guard_custody"]
+            assert live["status"] == "failure"
+            assert custody["terminal"] is False
+            assert custody["observation_error"]["type"] == "TimeoutExpired"
+            assert entered.is_file()
+            startup = json.loads(
+                Path(custody["startup_path"]).read_text(encoding="utf-8")
+            )
+            assert startup["launch_id"] == custody["launch_id"]
+            assert startup["guard_pid"] in memory_guard.sample_processes()
+            release.write_text("release", encoding="utf-8")
+            deadline = time.monotonic() + 10
+            terminal = {}
+            while time.monotonic() < deadline:
+                terminal = json.loads(
+                    Path(custody["summary_path"]).read_text(encoding="utf-8")
+                )
+                if terminal.get("descendants_closed") is True:
+                    break
+                time.sleep(0.02)
+            assert terminal["descendants_closed"] is True
+            assert terminal["cancelled"] is True
+            assert terminal["launch_id"] == custody["launch_id"]
+            assert terminal["child_process"] == startup["child_process"]
+            assert (
+                startup["child_process"]["pid"] not in memory_guard.sample_processes()
+            )
+            assert (
+                json.loads(receipt.read_text(encoding="utf-8"))["status"] == "failure"
+            )
+        finally:
+            release.write_text("release", encoding="utf-8")
+            process.wait(timeout=30)

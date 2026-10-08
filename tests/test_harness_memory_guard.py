@@ -37,21 +37,28 @@ def test_guarded_completed_process_defaults_temporary_artifacts_to_none() -> Non
 
 @pytest.mark.parametrize("tempfiles", [False, True])
 @pytest.mark.parametrize("child_returncode", [0, 7, 137])
+@pytest.mark.parametrize("cancelled", [False, True])
 def test_guarded_result_transports_child_and_infrastructure_outcomes(
-    tmp_path, monkeypatch, tempfiles, child_returncode
+    tmp_path, monkeypatch, tempfiles, child_returncode, cancelled
 ):
     guard = harness_memory_guard.memory_guard
     failure = guard.GuardInfrastructureFailure(
         phase="temporary_artifact_custody",
         details=("fixture invalid retained index",),
     )
-    final_returncode = child_returncode or guard.INFRASTRUCTURE_RETURN_CODE
+    final_returncode = (
+        guard.GUARD_RETURN_CODE
+        if cancelled
+        else child_returncode or guard.INFRASTRUCTURE_RETURN_CODE
+    )
     child_output = b"retained output\n" if tempfiles else "retained output\n"
     child_error = b"custody incomplete\n" if tempfiles else "custody incomplete\n"
     guarded = guard.GuardResult(
         returncode=final_returncode,
         child_returncode=child_returncode,
         infrastructure_failure=failure,
+        cancelled=cancelled,
+        descendants_closed=True,
         violation=None,
         peak=None,
         peak_total=None,
@@ -82,6 +89,8 @@ def test_guarded_result_transports_child_and_infrastructure_outcomes(
         env={"MOLT_GUARD_PROFILE_LOG": str(profile)},
     )
     assert result.returncode == final_returncode
+    assert result.cancelled is cancelled
+    assert result.descendants_closed is True
     assert result.child_returncode == child_returncode
     assert result.infrastructure_failure is failure
     assert result.stdout == child_output
@@ -89,7 +98,7 @@ def test_guarded_result_transports_child_and_infrastructure_outcomes(
     assert result.child_stderr == child_error
     stderr = result.stderr.decode() if tempfiles else result.stderr
     assert "fixture-repro" in stderr
-    assert ("SIGKILL" in stderr) is (child_returncode == 137)
+    assert ("SIGKILL" in stderr) is (not cancelled and child_returncode == 137)
     event = json.loads(profile.read_text(encoding="utf-8"))
     assert event["status"] == "infrastructure_error"
     assert event["owned_process_identities"] == [{"pid": 321, "started_at_ns": 123456}]
@@ -98,7 +107,9 @@ def test_guarded_result_transports_child_and_infrastructure_outcomes(
     assert event["infrastructure_failure"] == guard.infrastructure_failure_payload(
         failure
     )
-    assert event["exit_signal"] == guard.exit_signal_payload(child_returncode)
+    assert event["exit_signal"] == (
+        None if cancelled else guard.exit_signal_payload(child_returncode)
+    )
 
 
 @pytest.mark.parametrize(
@@ -3396,3 +3407,56 @@ def test_suite_event_publication_failure_remains_typed_after_bounded_scan(
     assert (
         "event disk fixture unavailable" in sentinel.infrastructure_failure.details[0]
     )
+
+
+def test_harness_forwards_cancellation_and_projects_closure(tmp_path, monkeypatch):
+    guard = harness_memory_guard.memory_guard
+    captured = {}
+
+    def cancellation():
+        return True
+
+    worker_env = {"launch": "fixture"}
+    summary = str(tmp_path / "guard.json")
+    result = guard.GuardResult(
+        returncode=137,
+        child_returncode=-15,
+        cancelled=True,
+        descendants_closed=True,
+        violation=None,
+        peak=None,
+        peak_total=None,
+        stdout="",
+        stderr="",
+    )
+
+    def run(_command, **kwargs):
+        captured.update(kwargs)
+        return result
+
+    monkeypatch.setattr(guard, "run_guarded", run)
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "_auto_repo_sentinel",
+        lambda **_: contextlib.nullcontext(),
+    )
+    profile = tmp_path / "profile.jsonl"
+    context = harness_memory_guard.HarnessExecutionContext.from_env(
+        "MOLT_TEST", {"MOLT_GUARD_PROFILE_LOG": str(profile)}
+    )
+    completed = context.run(
+        [sys.executable, "-c", "pass"],
+        cancellation_requested=cancellation,
+        running_summary_json=summary,
+        running_summary_environ=worker_env,
+    )
+    assert captured["cancellation_requested"] is cancellation
+    assert captured["running_summary_json"] == summary
+    assert captured["running_summary_environ"] is worker_env
+    assert completed.cancelled is True
+    assert completed.descendants_closed is True
+    payload = json.loads(profile.read_text(encoding="utf-8"))
+    assert payload["status"] == "cancelled"
+    assert payload["cancelled"] is True
+    assert payload["descendants_closed"] is True
+    assert payload["exit_signal"] is None
