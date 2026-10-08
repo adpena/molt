@@ -29,7 +29,14 @@ def resolve_venv(
     explicit: str | None = None,
 ) -> Path:
     source = os.environ if env is None else env
-    raw = explicit or source.get("MOLT_VENV")
+    # UV_PROJECT_ENVIRONMENT is where uv sync placed the project environment
+    # (CI custody puts it outside the checkout); the checkout .venv is uv's
+    # default only when nothing names another location.
+    raw = (
+        explicit
+        or source.get("MOLT_VENV")
+        or source.get("UV_PROJECT_ENVIRONMENT", "").strip()
+    )
     if raw:
         return _resolve_path(raw, repo_root=repo_root)
     default = (repo_root / ".venv").resolve()

@@ -30,6 +30,29 @@ def test_resolve_venv_uses_repo_default(tmp_path: Path) -> None:
     assert venv_exec.resolve_venv(repo_root=root, env={}) == root / ".venv"
 
 
+def test_resolve_venv_follows_the_uv_project_environment(tmp_path: Path) -> None:
+    # CI custody syncs the project into UV_PROJECT_ENVIRONMENT outside the
+    # checkout; the checkout has no .venv at all.
+    root = tmp_path / "repo"
+    custody = tmp_path / "custody" / "venv"
+    assert (
+        venv_exec.resolve_venv(
+            repo_root=root, env={"UV_PROJECT_ENVIRONMENT": str(custody)}
+        )
+        == custody.resolve()
+    )
+    assert (
+        venv_exec.resolve_venv(
+            repo_root=root,
+            env={
+                "UV_PROJECT_ENVIRONMENT": str(custody),
+                "MOLT_VENV": str(tmp_path / "m"),
+            },
+        )
+        == (tmp_path / "m").resolve()
+    )
+
+
 def test_resolve_venv_ignores_unrelated_active_virtualenv(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     root.mkdir()
