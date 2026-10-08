@@ -2,7 +2,11 @@ from pathlib import Path
 import pytest
 
 from molt.build_state_layout import build_state_root
-from molt.memory_guard_paths import harness_guard_artifact_dir
+from molt.memory_guard_paths import (
+    harness_guard_artifact_dir,
+    memory_guard_state_root,
+    pytest_guard_summary_dir,
+)
 from molt.dx import development_artifact_env
 from molt.backend_daemon_custody import backend_daemon_build_state_root_from_env
 from molt.cli.runtime_paths import _build_state_root_cached
@@ -64,7 +68,12 @@ def test_ci_build_control_output_uses_admitted_consumer_root(
         line.split("=", 1)
         for line in build_control_output(env, repo_root=repo).splitlines()
     )
-    assert outputs == {"root": str(expected), "profile_log": str(expected_profile)}
+    assert outputs == {
+        "root": str(expected),
+        "profile_log": str(expected_profile),
+        "guard_state_root": str(memory_guard_state_root(repo, admitted)),
+        "pytest_guard_root": str(pytest_guard_summary_dir(repo, admitted)),
+    }
     assert not expected_profile.exists(), "profile projection must not create evidence"
     assert expected.is_relative_to(tmp_path / "canonical")
     assert not expected.exists(), "path projection must not create control directories"

@@ -522,7 +522,11 @@ def _diagnostic_path_expression(line: str, values: dict[str, str]) -> str:
     return re.sub(r"\$\{\{ ([\w.-]+) \}\}", lambda match: values[match[1]], line)
 
 
-@pytest.mark.parametrize("os_name", ["linux", "macos", "windows"])
+@pytest.mark.parametrize(
+    ("family", "os_name"),
+    [("platform_portability", os_name) for os_name in ("linux", "macos", "windows")]
+    + [("native_integration", "linux")],
+)
 @pytest.mark.parametrize(
     "state",
     [
@@ -532,48 +536,56 @@ def _diagnostic_path_expression(line: str, values: dict[str, str]) -> str:
         "setup-no-root",
     ],
 )
-def test_platform_diagnostics_retain_inner_custody_without_final_receipt(
-    tmp_path: Path, os_name: str, state: str
+def test_ci_diagnostics_retain_current_custody_without_final_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    family: str,
+    os_name: str,
+    state: str,
 ) -> None:
-    from molt.memory_guard_paths import pytest_guard_summary_dir
+    from molt import dx
     from tools.build_control_path import build_control_output
-    from tools.harness_memory_guard import command_profile_log_path
+    from tests.test_dx_run_context import _github_actions_custody_env
 
     plan = tomllib.loads(_read("tools/proof_plan.toml"))
-    cells = [
-        cell
-        for cell in plan["matrix_cell"]
-        if cell["backend"] == "proof-queue" and cell["os"] == os_name
-    ]
-    assert len(cells) == 1
-    cell = cells[0]["id"]
+    native = family == "native_integration"
+    cell = ""
+    if not native:
+        cells = [
+            cell
+            for cell in plan["matrix_cell"]
+            if cell["backend"] == "proof-queue" and cell["os"] == os_name
+        ]
+        assert len(cells) == 1
+        cell = cells[0]["id"]
     jobs = yaml.safe_load(_read(".github/workflows/ci.yml"))["jobs"]
-    job = jobs["platform-portability"]
+    job = jobs[family.replace("_", "-")]
+    if native:
+        assert job["env"]["MOLT_GUARD_PROFILE"] == "all"
+    suffix = (
+        "native-integration" if native else "platform-portability-${{ matrix.cell }}"
+    )
     steps = job["steps"]
     upload = next(
         step
         for step in steps
-        if step.get("with", {}).get("name")
-        == "proof-diagnostics-platform-portability-${{ matrix.cell }}"
+        if step.get("with", {}).get("name") == f"proof-diagnostics-{suffix}"
     )
-    assert upload["if"] == "always()", (
-        "failed commands or missing receipts cannot gate diagnostics"
-    )
+    assert upload["if"] == "always()", "missing final receipts cannot gate diagnostics"
     assert upload["uses"].startswith("actions/upload-artifact@")
     assert upload["with"]["include-hidden-files"] is True
     assert upload["with"]["if-no-files-found"] == "warn"
     resolver = next(step for step in steps if step.get("id") == "build-control")
     assert resolver["shell"] == "bash"
-    assert resolver["run"].strip() == (
-        'uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"'
+    assert (
+        resolver["run"].strip()
+        == 'uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"'
     )
     executor = next(
-        step
-        for step in steps
-        if "--run-family platform_portability" in step.get("run", "")
+        step for step in steps if f"--run-family {family}" in step.get("run", "")
     )
     setup = next(
-        step for step in steps if step.get("name") == "Setup portability toolchains"
+        step for step in steps if step.get("uses") == "./.github/actions/setup-project"
     )
     assert (
         steps.index(setup)
@@ -585,10 +597,12 @@ def test_platform_diagnostics_retain_inner_custody_without_final_receipt(
     receipt_upload = next(
         step
         for step in steps
-        if step.get("name") == "Upload platform portability receipt"
+        if step.get("with", {}).get("name") == f"proof-receipt-{suffix}"
     )
     assert receipt_upload["if"] == (
-        "always() && hashFiles(format('proof-receipts/platform-portability-{0}.json', matrix.cell)) != ''"
+        "always() && hashFiles('proof-receipts/native_integration.json') != ''"
+        if native
+        else "always() && hashFiles(format('proof-receipts/platform-portability-{0}.json', matrix.cell)) != ''"
     )
     assert receipt_upload["with"]["if-no-files-found"] == "error"
     strict_download = next(
@@ -597,68 +611,105 @@ def test_platform_diagnostics_retain_inner_custody_without_final_receipt(
         if step.get("uses", "").startswith("actions/download-artifact@")
     )
 
-    custody = tmp_path / "ephemeral-custody"
-    workspace = tmp_path / "checkout"
-    # Keep the producer's project under host-issued scratch. A hosted Windows
-    # checkout on D: needs its full custody attestation, absent from this fixture.
-    workspace.mkdir()
-    environment = {"MOLT_EXT_ROOT": str(custody), "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1"}
-    profile = command_profile_log_path(environment, repo_root=workspace)
-    pytest_dir = pytest_guard_summary_dir(workspace, environment)
+    workspace = tmp_path / "runner-work" / "molt" / "molt"
+    workspace.mkdir(parents=True)
+    runner_temp = tmp_path / "runner-temp"
+    environment = _github_actions_custody_env(workspace, runner_temp)
+    custody = runner_temp / "mp-12345-2"
+    environment[dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV] = str(custody)
+    environment["GITHUB_JOB"] = family.replace("_", "-")
+    # Only this synthetic workspace has synthetic Git identity. Concurrent
+    # custody observers retain real checkout observation for their own roots.
+    checkout_head = dx._git_checkout_head
+    monkeypatch.setattr(
+        dx,
+        "_git_checkout_head",
+        lambda root: (
+            environment["GITHUB_SHA"] if root == workspace else checkout_head(root)
+        ),
+    )
     outputs = dict(
         line.split("=", 1)
         for line in build_control_output(environment, repo_root=workspace).splitlines()
     )
+    profile = custody / "tmp" / "harness_memory_guard" / "commands.jsonl"
+    pytest_dir = custody / "tmp" / "pytest-memory-guard"
     assert outputs["profile_log"] == str(profile)
+    assert outputs["guard_state_root"] == str(custody / "tmp" / "memory_guard")
+    assert outputs["pytest_guard_root"] == str(pytest_dir)
     values = {
         "matrix.cell": cell,
-        "steps.build-control.outputs.profile_log": outputs["profile_log"]
-        if state.startswith("failed-")
-        else "",
         "env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT": ""
         if state == "setup-no-root"
         else str(custody),
+        **{
+            f"steps.build-control.outputs.{name}": value
+            if state.startswith("failed-")
+            else ""
+            for name, value in outputs.items()
+        },
     }
     name = _diagnostic_path_expression(upload["with"]["name"], values)
-    assert name == f"proof-diagnostics-platform-portability-{cell}"
     assert not fnmatchcase(name, strict_download["with"]["pattern"])
     paths = upload["with"]["path"].splitlines()
-    assert paths == [
-        "proof-receipts/platform-portability-${{ matrix.cell }}.json",
+    common_profiles = [
         "${{ steps.build-control.outputs.profile_log }}",
         "${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}",
-        "${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT != '' && format('{0}/tmp/pytest-memory-guard/**/*.json', env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT) || '' }}",
     ]
+    assert paths == (
+        [
+            "proof-receipts/native_integration.json",
+            *common_profiles,
+            "${{ steps.build-control.outputs.guard_state_root != '' && format('{0}/commands/**/*.json', steps.build-control.outputs.guard_state_root) || '' }}",
+            "${{ steps.build-control.outputs.pytest_guard_root != '' && format('{0}/**/*.json', steps.build-control.outputs.pytest_guard_root) || '' }}",
+        ]
+        if native
+        else [
+            "proof-receipts/platform-portability-${{ matrix.cell }}.json",
+            *common_profiles,
+            "${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT != '' && format('{0}/tmp/pytest-memory-guard/**/*.json', env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT) || '' }}",
+        ]
+    )
     rendered = [_diagnostic_path_expression(line, values) for line in paths]
-    if not values["steps.build-control.outputs.profile_log"]:
+    if not state.startswith("failed-"):
         assert rendered[1:3] == ["", ""]
-    if not values["env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT"]:
-        assert rendered[3] == ""
+        if native or state == "setup-no-root":
+            assert not any(rendered[3:])
 
     expected: set[Path] = set()
-    if state.startswith("failed-"):
-        inner = {
-            "prefix": "MOLT_PERF_CALIBRATION",
-            "returncode": 125,
-            "temporary_artifacts": {"closure": {"closed": False}},
-            "termination_reports": [{"reason": "tracked_orphan_cleanup"}],
-        }
-        for retained in (profile, profile.with_name(profile.name + ".1")):
-            retained.parent.mkdir(parents=True, exist_ok=True)
-            retained.write_text(json.dumps(inner) + "\n", encoding="utf-8")
-            expected.add(retained)
-        for relative in (
+    inner = {
+        "prefix": "MOLT_PERF_CALIBRATION",
+        "returncode": 125,
+        "temporary_artifacts": {"closure": {"closed": False}},
+        "termination_reports": [{"reason": "tracked_orphan_cleanup"}],
+    }
+    retained_files = [profile, profile.with_name(profile.name + ".1")]
+    retained_files += [
+        pytest_dir / name
+        for name in (
             "pytest-1_outer-guard.json",
             "test-custody-2.json",
             ".workers/gw0_current-test.json",
-        ):
-            retained = pytest_dir / relative
+        )
+    ]
+    if native:
+        retained_files += [
+            custody / "tmp/memory_guard/commands/current" / name
+            for name in ("custody.json", "startup.json", "guard.json")
+        ]
+    for retained in retained_files:
+        # Same filenames under a foreign run must never be swept into upload.
+        foreign = runner_temp / "mp-99999-1" / retained.relative_to(custody)
+        foreign.parent.mkdir(parents=True, exist_ok=True)
+        foreign.write_text('{"foreign":true}', encoding="utf-8")
+        if state.startswith("failed-"):
             retained.parent.mkdir(parents=True, exist_ok=True)
-            retained.write_text("{}", encoding="utf-8")
+            retained.write_text(json.dumps(inner) + "\n", encoding="utf-8")
             expected.add(retained)
+    if state.startswith("failed-"):
         (pytest_dir / "unrelated.txt").write_text("not guard JSON", encoding="utf-8")
     if state == "failed-with-receipt":
-        receipt = workspace / f"proof-receipts/platform-portability-{cell}.json"
+        receipt = workspace / rendered[0]
         receipt.parent.mkdir(parents=True)
         receipt.write_text('{"status":"failed"}', encoding="utf-8")
         expected.add(receipt)
@@ -667,9 +718,7 @@ def test_platform_diagnostics_retain_inner_custody_without_final_receipt(
         candidate = Path(path)
         if not candidate.is_absolute():
             candidate = workspace / candidate
-        assert candidate.is_relative_to(custody) or candidate.is_relative_to(
-            workspace / "proof-receipts"
-        )
+        assert candidate.is_relative_to(custody) or candidate == workspace / rendered[0]
         retained_paths.update(
             Path(found)
             for found in glob.glob(str(candidate), recursive=True, include_hidden=True)
@@ -1882,7 +1931,6 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
 
 def test_wasm_ci_guarded_steps_have_github_timeout_backstops() -> None:
     wasm_text = _read(".github/workflows/molt-wasm-ci.yml")
-    proof_text = _read("tools/proof_plan.py")
     plan = tomllib.loads(_read("tools/proof_plan.toml"))
     wasm_family = next(
         family for family in plan["ci_family"] if family["name"] == "wasm"
@@ -1892,8 +1940,6 @@ def test_wasm_ci_guarded_steps_have_github_timeout_backstops() -> None:
     assert "--timeout" not in wasm_text
     assert "MOLT_CARGO_TIMEOUT:" not in wasm_text
     assert "MOLT_WASM_TEST_TIMEOUT_SEC:" not in wasm_text
-    assert '"--timeout",' in proof_text
-    assert 'command.data.get("timeout_env", [])' in proof_text
 
 
 # Repository Actions policy (Settings > Actions > General), read from

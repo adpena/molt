@@ -222,7 +222,17 @@ def test_waiting_unobserved_cargo_preserves_all_incremental_state(tmp_path):
     assert receipt.ownership_status == "deferred" and receipt.moved_paths == ()
 
 
-def test_completed_cache_retention_requires_complete_interruption_inventory(tmp_path):
+@pytest.mark.parametrize(
+    ("guard_closure", "expected_scope"),
+    [
+        pytest.param({}, "global", id="missing-guard-closure"),
+        pytest.param({"descendants_closed": False}, "global", id="unclosed-guard-tree"),
+        pytest.param({"descendants_closed": True}, "partition", id="closed-guard-tree"),
+    ],
+)
+def test_completed_cache_retention_requires_complete_interruption_inventory(
+    tmp_path, guard_closure, expected_scope
+):
     from tools import proof_plan
 
     target = tmp_path / "target"
@@ -239,6 +249,7 @@ def test_completed_cache_retention_requires_complete_interruption_inventory(tmp_
     assert receipt.ownership_status == "not_required"
     assert receipt.errors == () and receipt.moved_paths == ()
     metrics = {
+        **guard_closure,
         "timed_out": True,
         "termination_reports": [{"remaining_pids": [], "remaining_pgids": []}],
         "cargo_incremental_quarantine": cargo._cargo_incremental_quarantine_payload(
@@ -249,7 +260,7 @@ def test_completed_cache_retention_requires_complete_interruption_inventory(tmp_
         proof_plan._guarded_failure_scope(
             metrics, metrics_valid=True, returncode=124, cancelled=False
         )[0]
-        == "partition"
+        == expected_scope
     )
 
 

@@ -277,6 +277,8 @@ jobs:
     if: needs.classify-changes.outputs.native_integration == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      MOLT_GUARD_PROFILE: all
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -294,6 +296,13 @@ jobs:
         with:
           profile: "full"
           wasi: "true"
+      - name: Resolve native command evidence custody
+        id: build-control
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"
       - name: Execute selected native integration partitions
         run: python3 tools/proof_plan.py --run-family native_integration --receipt proof-receipts/native_integration.json
       - name: Upload native integration receipt
@@ -303,6 +312,19 @@ jobs:
           name: proof-receipt-native-integration
           path: proof-receipts/native_integration.json
           if-no-files-found: error
+      - name: Upload native integration command diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-diagnostics-native-integration
+          path: |
+            proof-receipts/native_integration.json
+            ${{ steps.build-control.outputs.profile_log }}
+            ${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}
+            ${{ steps.build-control.outputs.guard_state_root != '' && format('{0}/commands/**/*.json', steps.build-control.outputs.guard_state_root) || '' }}
+            ${{ steps.build-control.outputs.pytest_guard_root != '' && format('{0}/**/*.json', steps.build-control.outputs.pytest_guard_root) || '' }}
+          include-hidden-files: true
+          if-no-files-found: warn
       - name: Save Cargo dependency cache
         if: ${{ !cancelled() }}
         uses: ./.github/actions/save-cargo-cache
