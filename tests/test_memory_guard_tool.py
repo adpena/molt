@@ -1588,6 +1588,149 @@ def test_codex_app_and_cli_are_host_control_plane_on_all_platform_shapes() -> No
     assert all(memory_guard.is_host_control_plane_process(sample) for sample in samples)
 
 
+@pytest.mark.parametrize("typed_argv", [False, True])
+@pytest.mark.parametrize(
+    ("argv", "protected"),
+    [
+        (
+            ("/home/operator/.codex/worktrees/molt/.venv/bin/python", "-c", "pass"),
+            False,
+        ),
+        (
+            ("/home/operator/.claude/worktrees/molt/.venv/bin/python", "worker.py"),
+            False,
+        ),
+        ((r"C:\Users\operator\.codex\worktrees\molt\.venv\Scripts\python.exe",), False),
+        ((r"C:\Users\operator\.claude\worktrees\molt\target\molt-backend.exe",), False),
+        (
+            (
+                "/usr/bin/python",
+                "worker.py",
+                "/home/operator/.codex/worktrees/input.py",
+            ),
+            False,
+        ),
+        (
+            (
+                "/usr/bin/python",
+                "worker.py",
+                "/home/operator/.claude/worktrees/input.py",
+            ),
+            False,
+        ),
+        ((r"C:\Users\operator\.codex\tmp\python.exe", "worker.py"), False),
+        (("/home/operator/.codex/plugins-other/python", "worker.py"), False),
+        (("/home/operator/.claude/plugins-other/python", "worker.py"), False),
+        (("/home/operator/.codex/plugins/cache/host/node", "server.js"), True),
+        (("/home/operator/.claude/plugins/cache/host/python", "server.py"), True),
+        (("/home/operator/.codex/runtimes/node/bin/node", "helper.js"), True),
+        (("/home/operator/.claude/runtimes/node/bin/node", "helper.js"), True),
+        ((r"C:\Users\operator\.codex\vendor_imports\node.exe", "helper.js"), True),
+        (("/bin/zsh", "/home/operator/.codex/shell_snapshots/host.sh"), True),
+        (("/bin/zsh", "/home/operator/.claude/shell-snapshots/host.sh"), True),
+        # A genuine host executable inside a checkout remains protected.
+        (("/home/operator/.codex/worktrees/tool/codex", "app-server"), True),
+        (("/home/operator/.claude/worktrees/tool/node_repl", "--stdio"), True),
+    ],
+)
+def test_agent_home_is_not_a_host_identity(
+    typed_argv: bool, argv: tuple[str, ...], protected: bool
+) -> None:
+    sample = memory_guard.ProcessSample(
+        200,
+        1,
+        1,
+        " ".join(argv),
+        started_at_ns=2000,
+        argv=argv if typed_argv else None,
+    )
+    assert memory_guard.is_host_control_plane_process(sample) is protected
+
+
+@pytest.mark.parametrize("agent_home", [".codex", ".claude"])
+def test_checkout_classification_preserves_instance_and_host_protections(
+    agent_home: str,
+) -> None:
+    sample = memory_guard.ProcessSample
+    interpreter = f"/home/operator/{agent_home}/worktrees/molt/.venv/bin/python"
+    samples = {
+        50: sample(50, 1, 1, "codex app-server", pgid=50, started_at_ns=50),
+        100: sample(
+            100,
+            50,
+            1,
+            f"{interpreter} tools/memory_guard.py",
+            pgid=100,
+            started_at_ns=100,
+        ),
+        200: sample(200, 100, 1, f"{interpreter} -c pass", pgid=200, started_at_ns=200),
+        201: sample(201, 50, 1, f"{interpreter} -c pass", pgid=201, started_at_ns=201),
+        202: sample(202, 777, 1, f"{interpreter} -c pass", pgid=202, started_at_ns=202),
+        300: sample(
+            300,
+            100,
+            1,
+            f"/home/operator/{agent_home}/plugins/cache/host/python server.py",
+            pgid=300,
+            started_at_ns=300,
+        ),
+        301: sample(
+            301,
+            100,
+            1,
+            f"/home/operator/{agent_home}/worktrees/tool/codex app-server",
+            pgid=301,
+            started_at_ns=301,
+        ),
+    }
+    protected = process_model.protected_process_group_ids(
+        samples, self_pid=100, self_pgid=100, owned_pids={200, 300, 301}
+    )
+    assert protected == {50, 100, 201, 202, 300, 301}
+    assert process_model.filter_protected_watched_pids(
+        samples, {200, 201, 202, 300, 301}, protected_pgids=protected, current_pid=100
+    ) == {200}
+
+    # Mere placement under a checkout cannot exempt an unknown generation from
+    # host ancestry protection, even when the caller supplies its numeric PID.
+    unbound = {**samples, 200: dataclasses.replace(samples[200], started_at_ns=None)}
+    assert 200 in process_model.protected_process_group_ids(
+        unbound, self_pid=100, self_pgid=100, owned_pids={200, 300, 301}
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/home/operator/.codex/plugins/cache/host/node server.js",
+        "/home/operator/.claude/plugins/cache/host/python server.py",
+        "/home/operator/.codex/runtimes/node/bin/node helper.js",
+        "/home/operator/.claude/worktrees/tool/codex app-server",
+    ],
+)
+def test_retained_host_helper_identity_never_reaches_signal_boundary(
+    monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    sample = memory_guard.ProcessSample(
+        300, 999, 1, command, pgid=300, started_at_ns=300
+    )
+    sent: list[tuple[int, int]] = []
+
+    def forbidden_send(pid: int, signum: int):
+        sent.append((pid, signum))
+        raise AssertionError("host helper reached signal boundary")
+
+    monkeypatch.setattr(process_custody, "_send_pid_signal_action", forbidden_send)
+    action = process_custody._send_pid_signal_if_identity_action(
+        sample.pid,
+        memory_guard.process_identity(sample),
+        signal.SIGTERM,
+        sampler=lambda: {sample.pid: sample},
+    )
+    assert action.result == "skipped_host_control_plane"
+    assert sent == []
+
+
 def test_host_command_cache_reuses_text_but_not_process_or_lineage_verdicts() -> None:
     process_model._cached_host_control_plane_command.cache_clear()
     worker = memory_guard.ProcessSample(100, 1, 20, "/usr/bin/worker", pgid=100)
