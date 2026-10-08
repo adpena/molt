@@ -2,9 +2,10 @@
 
 Regression guard for the R73.3 metabug — sccache was configured but its absence
 degraded SILENTLY to cold, memory-saturating builds. `_ensure_sccache_wrapper`
-must (a) wire RUSTC_WRAPPER when sccache is available, (b) DEGRADE LOUDLY (stderr
-warning) when it cannot be provisioned, and (c) respect an explicit opt-out /
-pre-set wrapper. If this test regresses, the cache silently turned off again.
+must (a) wire RUSTC_WRAPPER when the pinned sccache is provisioned, (b) DEGRADE
+LOUDLY (stderr warning naming the provisioning command) when it is not, (c) never
+download it, and (d) respect an explicit opt-out / pre-set wrapper. If this test
+regresses, the cache silently turned off again or Molt installed a tool unasked.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import molt.dx as dx
 
 
 def test_wires_rustc_wrapper_when_sccache_available(monkeypatch):
-    monkeypatch.setattr(dx, "_provision_sccache", lambda root: "/opt/sccache")
+    monkeypatch.setattr(dx, "pinned_sccache", lambda env: "/opt/sccache")
     monkeypatch.setattr(dx, "_sccache_degrade_warned", False, raising=False)
     env = {"MOLT_USE_SCCACHE": "1"}
     dx._ensure_sccache_wrapper(env)
@@ -26,45 +27,37 @@ def test_wires_rustc_wrapper_when_sccache_available(monkeypatch):
     assert env.get("CARGO_INCREMENTAL") == "0"
 
 
-def test_failed_provision_attempts_download_at_most_once(monkeypatch, tmp_path):
-    # Guard against re-hanging every build's env setup: a failed network download
-    # must be memoized per process, not retried on each _install_dx_defaults call.
-    monkeypatch.setattr(dx, "_sccache_download_failed", False, raising=False)
-    monkeypatch.setattr(dx, "_sccache_provision_error", "", raising=False)
-    calls = {"n": 0}
-
-    def _boom(*a, **k):
-        calls["n"] += 1
-        raise OSError("offline")
-
+def test_a_missing_pinned_sccache_is_never_downloaded(monkeypatch, tmp_path):
+    # Molt never installs a tool on its own: discovery finds nothing under an
+    # empty toolchain root, and no network request is made.
     import urllib.request
 
-    monkeypatch.setattr(urllib.request, "urlopen", _boom)
-    results = [dx._provision_sccache(tmp_path / "target-root") for _ in range(4)]
-    assert all(r is None for r in results)
-    assert calls["n"] == 1  # attempted exactly once, then short-circuits
-    assert "offline" in dx._sccache_provision_error
+    def _no_network(*args, **kwargs):
+        raise AssertionError("sccache discovery must not download")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _no_network)
+    env = {"MOLT_TARGET_ROOT": str(tmp_path / "target-root")}
+    assert dx.pinned_sccache(env) is None
+    assert not (tmp_path / "target-root").exists()
 
 
-def test_provisioning_without_a_toolchain_root_fails_closed(monkeypatch):
-    monkeypatch.setattr(dx, "_sccache_download_failed", False, raising=False)
-    monkeypatch.setattr(dx, "_sccache_provision_error", "", raising=False)
-    assert dx._provision_sccache(None) is None
-    assert "MOLT_TARGET_ROOT" in dx._sccache_provision_error
+def test_no_toolchain_root_means_no_pinned_sccache():
+    assert dx.pinned_sccache({}) is None
 
 
 def test_degrades_loudly_when_unavailable(monkeypatch, capsys):
-    monkeypatch.setattr(dx, "_provision_sccache", lambda root: None)
+    monkeypatch.setattr(dx, "pinned_sccache", lambda env: None)
     monkeypatch.setattr(dx, "_sccache_degrade_warned", False, raising=False)
     env = {"MOLT_USE_SCCACHE": "1"}
     dx._ensure_sccache_wrapper(env)
     err = capsys.readouterr().err
-    assert "sccache unavailable" in err and "cache is OFF" in err
+    assert "not provisioned" in err and "cache is OFF" in err
+    assert "python -m molt.tool_releases provision sccache" in err
     assert "RUSTC_WRAPPER" not in env  # must NOT fake a wrapper
 
 
 def test_explicit_off_is_silent_noop(monkeypatch, capsys):
-    monkeypatch.setattr(dx, "_provision_sccache", lambda root: None)
+    monkeypatch.setattr(dx, "pinned_sccache", lambda env: None)
     monkeypatch.setattr(dx, "_sccache_degrade_warned", False, raising=False)
     env = {"MOLT_USE_SCCACHE": "0"}
     dx._ensure_sccache_wrapper(env)
@@ -75,15 +68,15 @@ def test_explicit_off_is_silent_noop(monkeypatch, capsys):
 def test_respects_preset_wrapper(monkeypatch):
     called = {"n": 0}
 
-    def _boom(root):
+    def _boom(env):
         called["n"] += 1
         return None
 
-    monkeypatch.setattr(dx, "_provision_sccache", _boom)
+    monkeypatch.setattr(dx, "pinned_sccache", _boom)
     env = {"MOLT_USE_SCCACHE": "1", "RUSTC_WRAPPER": "/custom/wrap"}
     dx._ensure_sccache_wrapper(env)
     assert env["RUSTC_WRAPPER"] == "/custom/wrap"
-    assert called["n"] == 0  # short-circuits before provisioning
+    assert called["n"] == 0  # short-circuits before discovery
 
 
 def test_windows_auto_disables_sccache(monkeypatch, capsys):
@@ -93,18 +86,18 @@ def test_windows_auto_disables_sccache(monkeypatch, capsys):
     monkeypatch.setattr(dx, "_sccache_degrade_warned", False, raising=False)
     tried = {"n": 0}
     monkeypatch.setattr(
-        dx, "_provision_sccache", lambda root: tried.__setitem__("n", tried["n"] + 1)
+        dx, "pinned_sccache", lambda env: tried.__setitem__("n", tried["n"] + 1)
     )
     env: dict[str, str] = {}  # mode defaults to "auto"
     dx._ensure_sccache_wrapper(env)
     assert "RUSTC_WRAPPER" not in env
-    assert tried["n"] == 0  # must not even attempt provisioning
+    assert tried["n"] == 0  # must not even look for it
     assert "disabled by default on Windows" in capsys.readouterr().err
 
 
 def test_windows_explicit_on_forces_sccache(monkeypatch):
     install_module_os_view(monkeypatch, dx, name="nt")
-    monkeypatch.setattr(dx, "_provision_sccache", lambda root: "/opt/sccache")
+    monkeypatch.setattr(dx, "pinned_sccache", lambda env: "/opt/sccache")
     monkeypatch.setattr(dx, "_sccache_degrade_warned", False, raising=False)
     env = {"MOLT_USE_SCCACHE": "1"}  # power-user override
     dx._ensure_sccache_wrapper(env)
@@ -113,7 +106,7 @@ def test_windows_explicit_on_forces_sccache(monkeypatch):
 
 def test_non_windows_auto_enables_sccache(monkeypatch):
     install_module_os_view(monkeypatch, dx, name="posix")
-    monkeypatch.setattr(dx, "_provision_sccache", lambda root: "/opt/sccache")
+    monkeypatch.setattr(dx, "pinned_sccache", lambda env: "/opt/sccache")
     monkeypatch.setattr(dx, "_sccache_degrade_warned", False, raising=False)
     env: dict[str, str] = {}  # auto → on where sccache works
     dx._ensure_sccache_wrapper(env)
@@ -154,7 +147,7 @@ def test_cargo_build_env_incremental_off_when_sccache_wrapper(monkeypatch):
 def test_maybe_enable_sccache_forces_incremental_off(monkeypatch):
     import molt.cli.cargo_execution as ce
 
-    monkeypatch.setattr(ce, "_pinned_sccache", lambda env: "/opt/sccache")
+    monkeypatch.setattr(ce, "pinned_sccache", lambda env: "/opt/sccache")
     monkeypatch.setattr(ce, "_sccache_server_responsive", lambda p: True)
     monkeypatch.setattr(ce, "_SCCACHE_DIAG_EMITTED", True, raising=False)
     env = {"MOLT_USE_SCCACHE": "1"}  # forced on

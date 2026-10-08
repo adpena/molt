@@ -29,6 +29,7 @@ from molt.dx import (
     _memory_bounded_cargo_jobs,
     development_artifact_env,
     development_artifacts_requested,
+    pinned_sccache,
 )
 from molt.file_locks import _release_file_lock, _try_acquire_file_lock
 from molt.cli import progress as _progress
@@ -322,19 +323,6 @@ def _sccache_server_responsive(sccache: str) -> bool:
         return False
 
 
-def _pinned_sccache(env: Mapping[str, str]) -> str | None:
-    """The attested pinned sccache under this environment's toolchain root."""
-    raw_target_root = env.get("MOLT_TARGET_ROOT", "").strip()
-    if not raw_target_root:
-        return None
-    from molt import tool_releases
-
-    discovery = tool_releases.discover_tool(
-        tool_releases.tool_release("sccache"), Path(raw_target_root).expanduser()
-    )
-    return None if discovery is None else str(discovery.executable)
-
-
 def _maybe_enable_sccache(env: dict[str, str]) -> None:
     if cargo_compiler_wrappers(env):
         normalized, _applied = normalize_cargo_environment(env)
@@ -344,7 +332,7 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
     if mode in {"0", "false", "no", "off"}:
         return
     forced = mode in {"1", "true", "yes", "on"}
-    sccache = _pinned_sccache(env)
+    sccache = pinned_sccache(env)
     if sccache is None:
         if forced:
             _sccache_diag(
