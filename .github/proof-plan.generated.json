@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "39cbb43a447e87d1947b2b8ba19297b3daacbfee693d98ca143f84d4b70efe23",
+  "authority_sha256": "046ea7df7a97bf4f68602d003b62e169b8779def2eeb991fbdbdd384186755db",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2094,6 +2094,31 @@
         "uv",
         "run",
         "python3",
+        "tools/check_test_ownership.py",
+        "--check"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.test-ownership",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
         "tools/check_environment_registry.py",
         "--check"
       ],
@@ -2258,6 +2283,7 @@
         "tests/test_bench_report.py",
         "tests/test_check_docs_architecture.py",
         "tests/test_dependabot_config.py",
+        "tests/tools/test_check_test_ownership.py",
         "tests/test_compatibility_contract_docs.py",
         "tests/test_ecosystem_compat.py",
         "tests/test_check_suite_honesty.py",
@@ -4653,7 +4679,7 @@
         "headroom_seconds": 1500,
         "projected_makespan_seconds": 2100,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 1530
+          "repository-policy": 1560
         }
       },
       "rust": {
