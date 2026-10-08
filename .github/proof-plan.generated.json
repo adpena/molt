@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "85d4432ea56d2b0bcd0e8d17a5b0765926fd1bdd6bd25e0b8b166b9a57f4f9e2",
+  "authority_sha256": "577437bc809e00bdb5152ed56ea86d82623be1757ac4a72e5ee560db2f3bfb8b",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2345,6 +2345,60 @@
         "python",
         "uv",
         "rustfmt"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "tests/test_agent_coordination.py",
+        "tests/tools/test_anti_recurrence_gate.py",
+        "tests/tools/test_apparatus_agent_safety.py",
+        "tests/tools/test_check_commit_attribution.py",
+        "tests/tools/test_check_gate_flips.py",
+        "tests/tools/test_check_gate_liveness.py",
+        "tests/tools/test_check_instruction_hierarchy.py",
+        "tests/tools/test_check_sister_landed.py",
+        "tests/tools/test_claim_lane.py",
+        "tests/tools/test_claims_status.py",
+        "tests/tools/test_commit_serializer.py",
+        "tests/tools/test_custody_apparatus.py",
+        "tests/tools/test_dirty_tree_landing_audit.py",
+        "tests/tools/test_ff_land.py",
+        "tests/tools/test_forbidden_checkout_guard.py",
+        "tests/tools/test_hooks_bash_guard.py",
+        "tests/tools/test_hooks_fail_open.py",
+        "tests/tools/test_hooks_landing_gate.py",
+        "tests/tools/test_hooks_session_digest.py",
+        "tests/tools/test_hooks_session_learning.py",
+        "tests/tools/test_hooks_waivers.py",
+        "tests/tools/test_install_git_hooks.py",
+        "tests/tools/test_magnitude_dismissal_gate.py",
+        "tests/tools/test_subagent_contract.py",
+        "tests/tools/test_triality.py",
+        "tests/tools/test_triality_gate.py"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.agent-coordination",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv"
       ]
     },
     {
@@ -4676,10 +4730,10 @@
       "repository_policy": {
         "budget_seconds": 3600,
         "critical_path_seconds": 1500,
-        "headroom_seconds": 1500,
-        "projected_makespan_seconds": 2100,
+        "headroom_seconds": 1380,
+        "projected_makespan_seconds": 2220,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 1560
+          "repository-policy": 1710
         }
       },
       "rust": {
