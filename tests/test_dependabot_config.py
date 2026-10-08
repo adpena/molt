@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import yaml
+
+from tests.process_guard_common import check_output_custody_subject_process
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / ".github" / "dependabot.yml"
@@ -15,14 +16,14 @@ FIXTURE_PREFIX = "tests/fixtures/"
 
 
 def _tracked(*patterns: str) -> list[str]:
-    result = subprocess.run(
+    output = check_output_custody_subject_process(
         ["git", "ls-files", "-z", "--", *patterns],
         cwd=ROOT,
-        check=True,
-        capture_output=True,
         text=True,
+        encoding="utf-8",
     )
-    return [path for path in result.stdout.split("\0") if path]
+    assert isinstance(output, str)
+    return [path for path in output.split("\0") if path]
 
 
 def _manifest_dirs(*patterns: str) -> set[str]:
