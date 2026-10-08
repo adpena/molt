@@ -427,7 +427,7 @@ impl RuntimeWebGpuDevice {
         rx.recv()
             .map_err(|_| "map channel dropped".to_string())?
             .map_err(|err| err.to_string())?;
-        let mapped = slice.get_mapped_range();
+        let mapped = slice.get_mapped_range().map_err(|err| err.to_string())?;
         let mut out = vec![0u8; size_bytes];
         out.copy_from_slice(&mapped[..size_bytes]);
         drop(mapped);
