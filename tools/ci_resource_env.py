@@ -208,6 +208,38 @@ def write_github_env(path: Path, plan: CiResourcePlan) -> None:
             handle.write(f"{line}\n")
 
 
+def darwin_memory_breakdown(vm_stat_text: str) -> str | None:
+    """Name the macOS page classes behind the plan's available-memory figure.
+
+    The guard counts only some page classes as available; logging all of them
+    lets a small runner's budget be judged from evidence (HF-68).
+    """
+    parsed = memory_guard.parse_darwin_vm_stat(vm_stat_text)
+    if parsed is None:
+        return None
+    page_size, pages = parsed
+    rows = (
+        ("free", "Pages free"),
+        ("inactive", "Pages inactive"),
+        ("speculative", "Pages speculative"),
+        ("purgeable", "Pages purgeable"),
+        ("active", "Pages active"),
+        ("wired", "Pages wired down"),
+        ("file-backed", "File-backed pages"),
+        ("anonymous", "Anonymous pages"),
+        ("compressor", "Pages occupied by compressor"),
+    )
+    parts = [
+        f"{label}={pages[name] * page_size / 2**30:.2f}"
+        for label, name in rows
+        if name in pages
+    ]
+    counted = "+".join(
+        label for label, name in rows if name in memory_guard.DARWIN_AVAILABLE_PAGE_ROWS
+    )
+    return f"macOS memory pages (GiB): {' '.join(parts)}; available counts {counted}"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Emit adaptive CI resource defaults for GitHub Actions jobs."
@@ -235,6 +267,11 @@ def main(argv: list[str] | None = None) -> int:
             f"Configured CARGO_BUILD_JOBS={plan.cargo_build_jobs} ({plan.reason})",
             flush=True,
         )
+        if sys.platform == "darwin":
+            text = memory_guard.darwin_vm_stat_text()
+            breakdown = None if text is None else darwin_memory_breakdown(text)
+            if breakdown is not None:
+                print(breakdown, flush=True)
     return 0
 
 
