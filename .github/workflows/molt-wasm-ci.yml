@@ -22,14 +22,11 @@ jobs:
     env:
       PYTHONPATH: ${{ github.workspace }}/src
       MOLT_EXT_ROOT: /tmp/molt-ext
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci
-      MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci
       MOLT_CACHE: /tmp/molt-ext/molt_cache
       MOLT_DIFF_ROOT: /tmp/molt-ext/diff
       MOLT_DIFF_TMPDIR: /tmp/molt-ext/tmp
       MOLT_HOME: /tmp/molt-ext
       MOLT_WASM_RUNTIME_DIR: /tmp/molt-ext/wasm
-      MOLT_WASM_TEST_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci
       MOLT_WASM_TEST_USE_EXTERNAL: "1"
       MOLT_WASM_TEST_KEEPALIVE_SEC: "20"
       MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC: "2"
@@ -48,7 +45,6 @@ jobs:
           mkdir -p /tmp/molt-ext/diff
           mkdir -p /tmp/molt-ext/molt_cache
           mkdir -p /tmp/molt-ext/uv-cache
-          mkdir -p "$CARGO_TARGET_DIR"
           mkdir -p /tmp/molt-ext/wasm
 
       - name: Setup WASM project toolchains
@@ -64,6 +60,11 @@ jobs:
 
       - name: Configure adaptive Rust parallelism
         run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
+
+      # setup-project placed CARGO_TARGET_DIR under RUNNER_TEMP, outside the
+      # checkout; the WASM parity tests build into the same cached target.
+      - name: Share the Cargo target with the WASM tests
+        run: printf 'MOLT_WASM_TEST_CARGO_TARGET_DIR=%s\n' "$CARGO_TARGET_DIR" >> "$GITHUB_ENV"
 
       - name: Install WASM validator
         run: python3 -m molt.tool_releases provision wasm-tools --github-path "$GITHUB_PATH"

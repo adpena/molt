@@ -19,11 +19,6 @@ jobs:
       # One exclusive evidence directory per job attempt: the stack creates it
       # before startup and the regression check reads nothing else.
       MOLT_DEMO_RUN_DIR: ${{ github.workspace }}/bench/results/demo-runs/perf-demo-${{ github.run_id }}-${{ github.run_attempt }}
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perf-demo
-      MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perf-demo
-      MOLT_CACHE: ${{ github.workspace }}/.molt_cache
-      TMPDIR: ${{ github.workspace }}/tmp
-      UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
       MOLT_UV_SYNC: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,7 +60,7 @@ jobs:
             ${{ env.MOLT_DEMO_RUN_DIR }}/
             logs/molt_django.log
             logs/molt_worker.log
-            tmp/harness_memory_guard/
+            ${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT }}/tmp/harness_memory_guard/
             tmp/bench/demo/
       - name: Save Cargo dependency cache
         if: ${{ !cancelled() }}

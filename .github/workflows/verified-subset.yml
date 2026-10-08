@@ -56,10 +56,6 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
-      MOLT_CACHE: ${{ github.workspace }}/tmp/verified-subset/cache
-      MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target/verified-subset
-      MOLT_DIFF_ROOT: ${{ github.workspace }}/tmp/verified-subset/diff
-      MOLT_DIFF_TMPDIR: ${{ github.workspace }}/tmp/verified-subset/tmp
       MOLT_HOME: ${{ github.workspace }}/tmp/verified-subset/home
       MOLT_VERIFIED_SUBSET_RUNNER: ${{ matrix.runner }}
     steps:
