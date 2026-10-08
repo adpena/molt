@@ -2606,10 +2606,15 @@ def test_executor_does_not_convert_control_plane_interrupts_into_records(
         proof_plan.execute_commands(plan, (command,), tmp_path / "receipt.json")
 
 
+@pytest.mark.parametrize("agent_home", [".codex", ".claude"])
 def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, agent_home: str
 ) -> None:
-    child_pid_path = tmp_path / "guarded-child.pid"
+    # Keep the real child cancellation oracle active from ordinary CI checkouts:
+    # a project data path in argv is not a host-helper identity. The actual
+    # interpreter may itself also live under an agent-managed worktree.
+    child_pid_path = tmp_path / agent_home / "worktrees" / "molt" / "guarded-child.pid"
+    child_pid_path.parent.mkdir(parents=True)
     fail = _synthetic_executor_command("synthetic.fail")
     live = _synthetic_executor_command("synthetic.live", resource_class="resource-b")
     fail = replace(
@@ -2619,7 +2624,21 @@ def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
             "argv": [
                 sys.executable,
                 "-c",
-                "import time; time.sleep(0.75); raise SystemExit(130)",
+                "import pathlib, sys, time\n"
+                f"marker = pathlib.Path({str(child_pid_path)!r})\n"
+                "deadline = time.monotonic() + 5.0\n"
+                "while True:\n"
+                "    try:\n"
+                "        ready = marker.read_text().strip().isdecimal()\n"
+                "    except FileNotFoundError:\n"
+                "        ready = False\n"
+                "    if ready:\n"
+                "        break\n"
+                "    if time.monotonic() >= deadline:\n"
+                "        print('live child readiness deadline expired', file=sys.stderr)\n"
+                "        raise SystemExit(97)\n"
+                "    time.sleep(0.01)\n"
+                "raise SystemExit(130)\n",
             ],
         },
     )
