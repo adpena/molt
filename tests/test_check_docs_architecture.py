@@ -475,3 +475,51 @@ def test_checker_passes_for_valid_repo(
     module.ROOT = tmp_path
 
     assert module.check_repo() == []
+
+
+def _write_ledger(root: Path, rows: list[str]) -> None:
+    _write_file(
+        root / "docs/agent/V1_HANDOFF_FINDINGS.md",
+        "# Ledger\n\n| ID | Finding | Fix |\n|----|----|----|\n"
+        + "".join(f"{row}\n" for row in rows),
+    )
+
+
+def test_checker_rejects_one_finding_id_on_two_ledger_rows(tmp_path: Path) -> None:
+    module = _load_module()
+    _seed_valid_repo(tmp_path)
+    _write_ledger(
+        tmp_path,
+        [
+            "| HF-F59 | A sentinel race. | Fixed. |",
+            "| HF-F60 | A target dir. | Fixed. |",
+            "| HF-F59 (was HF-70) | A drift gate. | Fixed. |",
+        ],
+    )
+    module.ROOT = tmp_path
+
+    errors = module.check_repo()
+
+    assert [error for error in errors if "names 2 rows" in error] == [
+        "docs/agent/V1_HANDOFF_FINDINGS.md: finding HF-F59 names 2 rows "
+        "(lines 5, 7); give each finding one ID"
+    ]
+
+
+def test_checker_accepts_distinct_ledger_ids_and_prose_mentions(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    _seed_valid_repo(tmp_path)
+    _write_ledger(
+        tmp_path,
+        [
+            "| HF-12 | Runtime suite. | See HF-12 and V1-25. |",
+            "| HF-F57 (was HF-33) | Generators. | Fixed. |",
+            "| V1-25 | Publication. | Open. |",
+            "| V1-25 (output custody) | One fixed part. | Fixed. |",
+        ],
+    )
+    module.ROOT = tmp_path
+
+    assert not [error for error in module.check_repo() if "names" in error]
