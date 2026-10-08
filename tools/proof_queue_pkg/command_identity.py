@@ -17,6 +17,7 @@ from typing import Any, BinaryIO, Iterable, Mapping, Sequence, cast
 
 from molt import file_publication
 from molt.dx import _reject_onedrive
+from molt.toolchain_identity import executable_environment_value
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
 from molt.rust_toolchain import cargo_config_arguments, cargo_configuration_paths
 from molt.python_environment_identity import (
@@ -236,6 +237,46 @@ def _resolve_outer_executable(token: str, *, cwd: Path, env: Mapping[str, str]) 
     return lexical
 
 
+def _cargo_executable_path(
+    envelope: Mapping[str, object],
+    exact: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    token: str | None = None,
+) -> Path:
+    """Select Cargo once, preserving a typed command's explicit executable.
+
+    Bare Cargo roles use CARGO before command-effective PATH. Once bound, the
+    actual payload path owns both capture and execution, including Rust probes.
+    Python families merely declaring Cargo retain their environment selection.
+    """
+    cargo_names = admission._executable_registry_names("cargo")
+    if token is None:
+        delegated = envelope.get("delegated")
+        payload_owner = delegated if isinstance(delegated, Mapping) else envelope
+        submitted = payload_owner.get("argv")
+        if (
+            not isinstance(payload_owner.get("python"), Mapping)
+            and isinstance(submitted, list)
+            and submitted
+            and admission._basename(str(submitted[0])) in cargo_names
+        ):
+            payload = (
+                admission._nested_command(exact) if delegated is not None else exact
+            )
+            if not payload:
+                raise ValueError("typed Cargo command has no exact payload")
+            token = str(payload[0])
+    if token is None or token.casefold() in cargo_names:
+        selected = executable_environment_value(env, "CARGO")
+        if selected:
+            return _resolve_outer_executable(selected, cwd=cwd, env=env)
+        token = token or "cargo"
+        return _which_in_command_environment(token, envelope, exact, cwd=cwd, env=env)
+    return _resolve_outer_executable(token, cwd=cwd, env=env)
+
+
 def _exact_command(
     envelope: Mapping[str, object], *, cwd: Path, env: Mapping[str, str]
 ) -> list[str]:
@@ -257,7 +298,13 @@ def _exact_command(
         raw_prefix = python.get("prefix")
         assert isinstance(raw_prefix, list)
         argv = [*prefix, *argv[len(raw_prefix) :]]
-    argv[0] = str(_resolve_outer_executable(argv[0], cwd=cwd, env=env))
+    argv[0] = str(
+        _cargo_executable_path(envelope, argv, cwd=cwd, env=env, token=argv[0])
+        if not isinstance(python, Mapping)
+        and admission._basename(argv[0])
+        in admission._executable_registry_names("cargo")
+        else _resolve_outer_executable(argv[0], cwd=cwd, env=env)
+    )
     if isinstance(python, Mapping) and python.get("kind") == "uv-console-script":
         prefix = python.get("prefix")
         assert isinstance(prefix, list)
@@ -353,8 +400,15 @@ def _bind_delegated_command(
         delegated_index -= 1
     else:
         raise ValueError("unknown guarded_exec invocation mode")
-    delegated_path = _which_in_command_environment(
-        exact[delegated_index], envelope, exact, cwd=cwd, env=env
+    delegated_path = (
+        _cargo_executable_path(
+            envelope, exact, cwd=cwd, env=env, token=exact[delegated_index]
+        )
+        if admission._basename(str(delegated["argv"][0]))  # type: ignore[index]
+        in admission._executable_registry_names("cargo")
+        else _which_in_command_environment(
+            exact[delegated_index], envelope, exact, cwd=cwd, env=env
+        )
     )
     exact[delegated_index] = str(delegated_path)
     return _file_identity(guarded_exec_path), _executable_identity(delegated_path)
@@ -967,6 +1021,7 @@ def _tool_identity_reuse_key(
     cwd: Path,
     probe_cwd: Path,
     launcher: Path,
+    selected_content_path: Path | None,
     env: Mapping[str, str],
 ) -> dict[str, object]:
     python_authority = envelope.get("python")
@@ -990,6 +1045,9 @@ def _tool_identity_reuse_key(
             else None
         ),
         "launcher": _executable_identity(launcher),
+        "selected_content_path": str(selected_content_path)
+        if selected_content_path is not None
+        else None,
         "environment": _probe_environment_selection(env),
     }
 
@@ -1120,16 +1178,32 @@ def _tool_identity(
             raise ValueError(f"{name} toolchain probe cwd must be repository-relative")
         probe_cwd = (proof_plan.ROOT / relative_probe_cwd).resolve(strict=True)
     python_authority = envelope.get("python")
-    if (
+    if name == "cargo":
+        path = _cargo_executable_path(envelope, exact, cwd=probe_cwd, env=env)
+    elif (
         not isinstance(python_authority, Mapping)
         and exact
         and admission._basename(exact[0])
         in admission._executable_registry_names(requested)
     ):
         path = _resolve_outer_executable(exact[0], cwd=probe_cwd, env=env)
+    elif name == "rustc" and (
+        selected := executable_environment_value(env, "RUSTC")
+        or executable_environment_value(env, "CARGO_BUILD_RUSTC")
+    ):
+        path = _resolve_outer_executable(selected, cwd=probe_cwd, env=env)
     else:
         path = _which_in_command_environment(
             requested, envelope, exact, cwd=probe_cwd, env=env
+        )
+    selected_content_path = None
+    if name in {"rustc", "cargo"}:
+        from molt.rust_toolchain import resolve_rustup_proxy
+
+        # Rustup overrides can change while proxy bytes and environment stay
+        # fixed. Resolve before reuse; physical tools need no rustup lookup.
+        selected_content_path = resolve_rustup_proxy(
+            path, role=name, root=probe_cwd, env=env
         )
     policy_sha256 = hashlib.sha256(
         json.dumps(policy.data, sort_keys=True, separators=(",", ":")).encode()
@@ -1147,6 +1221,7 @@ def _tool_identity(
             cwd=cwd,
             probe_cwd=probe_cwd,
             launcher=path,
+            selected_content_path=selected_content_path,
             env=env,
         )
         key_sha256 = canonical_json_sha256(key)
@@ -1191,6 +1266,7 @@ def _tool_identity(
         envelope,
         exact,
         path=path,
+        selected_content_path=selected_content_path,
         probe_cwd=probe_cwd,
         policy_sha256=policy_sha256,
         cwd=cwd,
@@ -1211,6 +1287,7 @@ def _capture_tool_identity(
     exact: Sequence[str],
     *,
     path: Path,
+    selected_content_path: Path | None,
     probe_cwd: Path,
     policy_sha256: str,
     cwd: Path,
@@ -1223,16 +1300,18 @@ def _capture_tool_identity(
         raise ValueError(f"{name} toolchain policy has no typed version command")
     version_args = tuple(raw_version_args)
     completed = _run_captured(
-        _in_python_environment(envelope, exact, (str(path), *version_args)),
+        _in_python_environment(
+            envelope, exact, (str(selected_content_path or path), *version_args)
+        ),
         cwd=probe_cwd,
         env=env,
     )
     if completed.returncode != 0:
         raise ValueError(f"{name} version probe failed: {completed.stderr.strip()}")
-    content_path = path
+    content_path = selected_content_path or path
     content_command = policy.data.get("content_path_command")
     content_resolver_identity: dict[str, object] | None = None
-    if content_command is not None:
+    if selected_content_path is None and content_command is not None:
         if not isinstance(content_command, list) or not all(
             isinstance(value, str) and value for value in content_command
         ):
@@ -1291,9 +1370,7 @@ def _capture_tool_identity(
         requested_toolchains = envelope.get("toolchains")
         cargo_path = None
         if isinstance(requested_toolchains, list) and "cargo" in requested_toolchains:
-            cargo_path = _which_in_command_environment(
-                "cargo", envelope, exact, cwd=probe_cwd, env=env
-            )
+            cargo_path = _cargo_executable_path(envelope, exact, cwd=probe_cwd, env=env)
         linker_images, linker_telemetry = (
             toolchain_capture.capture_rust_link_process_images(
                 rustc=content_path,

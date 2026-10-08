@@ -4054,52 +4054,83 @@ def test_guarded_rust_capture_failure_preserves_primary_error_and_durable_detail
         assert detail["artifact"]["path"] in output
 
 
+@pytest.mark.parametrize("role", ["cargo", "rustc"])
 def test_rustup_content_resolution_uses_exact_cargo_execution_environment(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str
 ) -> None:
-    observed: list[tuple[str, str]] = []
-    execution_env = {
-        "PATH": str(Path(sys.executable).parent),
-        "RUSTUP_TOOLCHAIN": "1.96.1-x86_64-pc-windows-msvc",
-    }
+    from molt import rust_toolchain
 
-    def fake_which(
-        name: str,
-        _envelope: object,
-        _exact: object,
-        *,
-        cwd: Path,
-        env: dict[str, str],
-    ) -> Path:
-        del cwd
-        observed.append((name, env["RUSTUP_TOOLCHAIN"]))
-        return Path(sys.executable)
-
-    def fake_run(
-        command: object, *, cwd: Path, env: dict[str, str], timeout: float = 30.0
-    ) -> subprocess.CompletedProcess[str]:
-        del cwd, timeout
-        assert env["RUSTUP_TOOLCHAIN"] == execution_env["RUSTUP_TOOLCHAIN"]
-        argv = list(command)
-        if "which" in argv:
-            return subprocess.CompletedProcess(argv, 0, str(Path(sys.executable)), "")
-        return subprocess.CompletedProcess(argv, 0, "cargo 1.96.1", "")
-
-    monkeypatch.setattr(command_identity, "_which_in_command_environment", fake_which)
-    monkeypatch.setattr(command_identity, "_run_captured", fake_run)
-    identity = command_identity._tool_identity(
-        proof_plan.ProofPlan.load(),
-        "cargo",
-        {"python": None},
-        [sys.executable],
-        cwd=Path.cwd(),
-        env=execution_env,
+    suffix = ".exe" if os.name == "nt" else ""
+    proxy_dir = tmp_path / "proxies"
+    proxy_dir.mkdir()
+    proxy, rustup = (proxy_dir / (name + suffix) for name in (role, "rustup"))
+    for path in (proxy, rustup):
+        path.write_bytes(b"identical rustup proxy bytes")
+        path.chmod(0o755)
+    first, replacement = (
+        tmp_path / (name + suffix) for name in ("first", "replacement")
     )
-    assert observed == [
-        ("cargo", execution_env["RUSTUP_TOOLCHAIN"]),
-        ("rustup", execution_env["RUSTUP_TOOLCHAIN"]),
-    ]
-    assert identity["version"] == "cargo 1.96.1"
+    for path in (first, replacement):
+        path.write_bytes(path.name.encode())
+        path.chmod(0o755)
+    selected = [first]
+    environment = {"PATH": str(proxy_dir), "RUSTUP_TOOLCHAIN": "selected-by-override"}
+    resolutions, versions = [], []
+
+    def resolve(argv, **kwargs):
+        assert argv == [str(rustup), "which", role]
+        assert kwargs["env"] == environment and kwargs["cwd"] == tmp_path
+        resolutions.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, str(selected[0]) + "\n", "")
+
+    def version(argv, **kwargs):
+        assert argv[0] == str(selected[0]) and kwargs["env"] == environment
+        versions.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, f"{role} 1.99.0", "")
+
+    monkeypatch.setattr(rust_toolchain.process_guard, "run_completed_command", resolve)
+    monkeypatch.setattr(command_identity, "_run_captured", version)
+    monkeypatch.setattr(
+        toolchain_capture, "capture_rust_link_process_images", lambda **kwargs: ([], {})
+    )
+    command = [sys.executable, "-c", "pass"]
+    envelope = command_admission.envelope_for_command(command)
+    plan = proof_plan.ProofPlan.load()
+
+    def capture():
+        telemetry = []
+        identity = command_identity._tool_identity(
+            plan,
+            role,
+            envelope,
+            command,
+            cwd=tmp_path,
+            env=environment,
+            reuse_root=tmp_path / "reuse",
+            reuse_telemetry=telemetry,
+        )
+        return identity, telemetry
+
+    initial, miss = capture()
+    warm, hit = capture()
+    assert initial == warm and hit[0]["state"] == "hit"
+    assert len(resolutions) == 2 and len(versions) == 1
+    selected[0] = replacement
+    changed, changed_telemetry = capture()
+    assert changed_telemetry[0]["state"] == "miss"
+    assert changed_telemetry[0]["key_sha256"] != miss[0]["key_sha256"]
+    assert changed["launcher_sha256"] == initial["launcher_sha256"]
+    assert changed["content_path"] == str(replacement)
+    assert changed["executable_sha256"] != initial["executable_sha256"]
+    assert len(resolutions) == 3 and len(versions) == 2
+    for _ in range(2):
+        assert (
+            rust_toolchain.resolve_rustup_proxy(
+                replacement, role=role, root=tmp_path, env=environment
+            )
+            == replacement
+        )
+    assert len(resolutions) == 3
 
 
 def test_unavailable_executable_and_input_hashes_are_never_evidence(
@@ -16399,3 +16430,128 @@ def test_cached_python_authority_never_redirects_supervisor_build_layout(
     assert authority.recaptures == 0
     assert not hasattr(authority, "supervisor_target")
     assert supervisor_generation.provision is provision
+
+
+@pytest.mark.parametrize("mode", ["direct", "relative", "absolute", "module"])
+@pytest.mark.parametrize("name", ["cargo", "cargo.exe"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
+    tmp_path, monkeypatch, mode, name, explicit
+):
+    selected_dir, proxy_dir, explicit_dir = (
+        tmp_path / "selected",
+        tmp_path / "proxy",
+        tmp_path / "explicit",
+    )
+    for directory in (selected_dir, proxy_dir, explicit_dir):
+        directory.mkdir()
+    selected, proxy, supplied = (
+        directory / name for directory in (selected_dir, proxy_dir, explicit_dir)
+    )
+    for path, content in (
+        (selected, b"selected Cargo"),
+        (proxy, b"PATH proxy"),
+        (supplied, b"explicit Cargo"),
+    ):
+        path.write_bytes(content)
+        path.chmod(0o755)
+    token = str(supplied) if explicit else name
+    payload = [
+        token,
+        "build",
+        "--locked",
+        "--profile",
+        "dev-fast",
+        "-p",
+        "molt-wasm-host",
+    ]
+    if mode == "direct":
+        command = payload
+    else:
+        target = (
+            ["-m", "tools.guarded_exec"]
+            if mode == "module"
+            else [str(state.ROOT / "tools/guarded_exec.py")]
+            if mode == "absolute"
+            else ["tools/guarded_exec.py"]
+        )
+        command = [sys.executable, *target, "--", *payload]
+    env = {"CARGO": str(selected), "PATH": str(proxy_dir)}
+    envelope = command_admission.envelope_for_command(command)
+    exact = command_identity._exact_command(envelope, cwd=state.ROOT, env=env)
+    _guarded, delegated = command_identity._bind_delegated_command(
+        envelope, exact, cwd=state.ROOT, env=env
+    )
+    expected = supplied if explicit else selected
+    actual = command_admission._nested_command(exact) or exact
+    assert actual == [str(expected), *payload[1:]]
+    if mode != "direct":
+        assert delegated["path"] == str(expected)
+        assert delegated["sha256"] == hashlib.sha256(expected.read_bytes()).hexdigest()
+    # Exercise the Cargo identity owner too, stopping only before its version probe.
+    monkeypatch.setattr(
+        command_identity,
+        "_capture_tool_identity",
+        lambda *args, **kwargs: {"selected": str(kwargs["path"])},
+    )
+    captured = command_identity._tool_identity(
+        proof_plan.ProofPlan.load(), "cargo", envelope, exact, cwd=state.ROOT, env=env
+    )
+    assert captured == {"selected": str(expected)}
+
+
+@pytest.mark.parametrize("selector", [None, "", "missing"])
+def test_cargo_selection_has_no_missing_selector_path_fallback(tmp_path, selector):
+    proxy = tmp_path / ("cargo.exe" if os.name == "nt" else "cargo")
+    proxy.write_bytes(b"PATH Cargo")
+    proxy.chmod(0o755)
+    env = {"PATH": str(tmp_path)}
+    if selector is not None:
+        env["CARGO"] = str(tmp_path / "missing") if selector else ""
+    command = ["cargo", "build"]
+    envelope = command_admission.envelope_for_command(command)
+    if selector == "missing":
+        with pytest.raises(ValueError, match="unavailable"):
+            command_identity._exact_command(envelope, cwd=state.ROOT, env=env)
+    else:
+        exact = command_identity._exact_command(envelope, cwd=state.ROOT, env=env)
+        assert exact[0] == str(proxy)
+
+
+def test_bound_cargo_executes_selected_child_instead_of_path_decoy(tmp_path):
+    if os.name == "nt":
+        pytest.skip(
+            "POSIX executable-script discriminator; native Windows qualification remains separate"
+        )
+    from tools import harness_memory_guard
+
+    selected_dir, path_dir = tmp_path / "selected", tmp_path / "path"
+    selected_dir.mkdir()
+    path_dir.mkdir()
+    selected_marker, decoy_marker = tmp_path / "selected-ran", tmp_path / "decoy-ran"
+    selected, decoy = selected_dir / "cargo", path_dir / "cargo"
+    for path, marker in ((selected, selected_marker), (decoy, decoy_marker)):
+        path.write_text(
+            "#!"
+            + sys.executable
+            + "\nfrom pathlib import Path\n"
+            + f"Path({str(marker)!r}).write_text('ran')\n"
+        )
+        path.chmod(0o755)
+    env = {**os.environ, "CARGO": str(selected), "PATH": str(path_dir)}
+    command = [sys.executable, "tools/guarded_exec.py", "--", "cargo", "--version"]
+    envelope = command_admission.envelope_for_command(command)
+    exact = command_identity._exact_command(envelope, cwd=state.ROOT, env=env)
+    command_identity._bind_delegated_command(envelope, exact, cwd=state.ROOT, env=env)
+    result = harness_memory_guard.guarded_completed_process(
+        exact,
+        prefix="MOLT_TEST_SUITE",
+        cwd=state.ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == result.child_returncode == 0, result.stderr
+    assert selected_marker.read_text() == "ran"
+    assert not decoy_marker.exists()

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 
 import pytest
@@ -210,3 +211,163 @@ def test_compile_environment_selection_is_one_authority() -> None:
         "CC_x86_64_unknown_linux_gnu",
         "PATH",
     }
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_cargo_capture_reuse_and_rust_link_probe_share_bound_payload(
+    tmp_path, monkeypatch, explicit
+):
+    from tools.proof_queue_pkg import toolchain_capture
+
+    suffix = ".exe" if os.name == "nt" else ""
+    paths = {}
+    for role in ("selected", "explicit", "decoy"):
+        directory = tmp_path / role
+        directory.mkdir()
+        path = directory / ("cargo" + suffix)
+        path.write_bytes((role + " cargo image").encode())
+        path.chmod(0o755)
+        paths[role] = path
+    rustc = tmp_path / ("rustc" + suffix)
+    rustc.write_bytes(b"independent rustc image")
+    rustc.chmod(0o755)
+    payload = [str(paths["explicit"]) if explicit else "cargo", "build"]
+    command = [sys.executable, "tools/guarded_exec.py", "--", *payload]
+    env = {
+        "CARGO": str(paths["selected"]),
+        "RUSTC": str(rustc),
+        "PATH": str(paths["decoy"].parent),
+    }
+    envelope = command_admission.envelope_for_command(command)
+    exact = command_identity._exact_command(envelope, cwd=proof_plan.ROOT, env=env)
+    command_identity._bind_delegated_command(
+        envelope, exact, cwd=proof_plan.ROOT, env=env
+    )
+    expected = paths["explicit"] if explicit else paths["selected"]
+    versions = []
+
+    def version(argv, **kwargs):
+        versions.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "cargo 1.99.0\n", "")
+
+    monkeypatch.setattr(command_identity, "_run_captured", version)
+    plan = proof_plan.ProofPlan.load()
+    telemetry = []
+    first = command_identity._tool_identity(
+        plan,
+        "cargo",
+        envelope,
+        exact,
+        cwd=proof_plan.ROOT,
+        env=env,
+        reuse_root=tmp_path / "reuse",
+        reuse_telemetry=telemetry,
+    )
+    second = command_identity._tool_identity(
+        plan,
+        "cargo",
+        envelope,
+        exact,
+        cwd=proof_plan.ROOT,
+        env=env,
+        reuse_root=tmp_path / "reuse",
+        reuse_telemetry=telemetry,
+    )
+    assert first == second and first["path"] == str(expected)
+    assert [row["state"] for row in telemetry] == ["miss", "hit"]
+    assert versions == [[str(expected), "--version"]]
+    # The Rust link capture must use that same executable for metadata/build
+    # probes, even though CARGO and PATH conflict with an explicit payload.
+    probes = []
+
+    def capture(**kwargs):
+        probes.append(kwargs)
+        return [], {}
+
+    monkeypatch.setattr(toolchain_capture, "capture_rust_link_process_images", capture)
+    policy = next(row for row in plan.toolchain_policies if row.name == "rustc")
+    command_identity._capture_tool_identity(
+        policy,
+        "rustc",
+        envelope,
+        exact,
+        path=rustc,
+        selected_content_path=rustc,
+        probe_cwd=proof_plan.ROOT,
+        policy_sha256=command_identity.canonical_json_sha256(policy.data),
+        cwd=proof_plan.ROOT,
+        env=env,
+    )
+    assert len(probes) == 1
+    assert probes[0]["cargo"] == expected
+    assert probes[0]["command_argv"][0] == str(expected)
+    # Content mutation defeats warm reuse rather than preserving a stale image.
+    expected.write_bytes(expected.read_bytes() + b" changed")
+    changed = []
+    third = command_identity._tool_identity(
+        plan,
+        "cargo",
+        envelope,
+        exact,
+        cwd=proof_plan.ROOT,
+        env=env,
+        reuse_root=tmp_path / "reuse",
+        reuse_telemetry=changed,
+    )
+    assert changed[0]["state"] == "miss"
+    assert third["executable_sha256"] != first["executable_sha256"]
+
+
+def test_python_declaring_cargo_keeps_selected_environment_semantics(
+    tmp_path, monkeypatch
+):
+    selected = tmp_path / ("cargo.exe" if os.name == "nt" else "cargo")
+    selected.write_bytes(b"declared dependency Cargo")
+    selected.chmod(0o755)
+    command = [sys.executable, "-c", "pass"]
+    envelope = command_admission.envelope_for_command(command)
+    monkeypatch.setattr(
+        command_identity,
+        "_capture_tool_identity",
+        lambda *args, **kwargs: {"path": str(kwargs["path"])},
+    )
+    identity = command_identity._tool_identity(
+        proof_plan.ProofPlan.load(),
+        "cargo",
+        envelope,
+        command,
+        cwd=tmp_path,
+        env={"CARGO": str(selected), "PATH": ""},
+    )
+    assert identity == {"path": str(selected)}
+
+
+@pytest.mark.parametrize("primary", [False, True])
+def test_cargo_rustc_environment_selector_precedence(tmp_path, monkeypatch, primary):
+    lower, higher = tmp_path / "cargo-rustc", tmp_path / "primary-rustc"
+    for path in (lower, higher):
+        path.write_bytes(b"selected physical compiler")
+        path.chmod(0o755)
+    env = {"CARGO_BUILD_RUSTC": str(lower)}
+    if primary:
+        env["RUSTC"] = str(higher)
+    monkeypatch.setattr(
+        command_identity,
+        "_which_in_command_environment",
+        lambda *args, **kwargs: pytest.fail("explicit Rust selection used PATH"),
+    )
+    monkeypatch.setattr(
+        command_identity,
+        "_capture_tool_identity",
+        lambda *args, **kwargs: {"content_path": str(kwargs["selected_content_path"])},
+    )
+    command = ["cargo", "build"]
+    result = command_identity._tool_identity(
+        proof_plan.ProofPlan.load(),
+        "rustc",
+        command_admission.envelope_for_command(command),
+        command,
+        cwd=tmp_path,
+        env=env,
+    )
+    assert result["content_path"] == str(higher if primary else lower)
