@@ -19,13 +19,11 @@ Usage::
     # Log progress / release / complete (claimant only)
     python tools/claim_lane.py E1-WITNESS-TO-GREEN --append PROGRESS --agent codex-xyz --note "seal regenerated, run 2026...-abc"
 
-A claim with no PROGRESS/CLAIMED row for >STALE_HOURS is treated as STALE
-(reclaimable). Any TERMINAL status frees the lane: the positive COMPLETE /
-RELEASED, or the APPARATUS A11 self-retirement vocabulary a claimant appends with
-evidence -- FALSIFIED, MEASURED_IMPLEMENTATION_RETIRED, STALE_ASSUMED_DEAD,
-SUPERSEDED -- so stale custody cannot silently block a lane. See CLAIMS.md §5-7
-for the completion bar + terminal vocabulary, and tools/claims_status.py for the
-live-vs-retired classifier.
+A claim with no PROGRESS/CLAIMED row for >claims_status.STALE_HOURS is STALE
+(reclaimable). Any TERMINAL status frees the lane. tools/claims_status.py owns
+the status vocabulary, the log parser and the live/stale/retired classifier;
+this tool only applies them to one lane. See CLAIMS.md §5-7 for the completion
+bar and the meaning of each status.
 """
 
 from __future__ import annotations
@@ -37,29 +35,15 @@ import sys
 from pathlib import Path
 
 try:
+    from tools import claims_status as cs
     from tools.command_execution import CommandExecutor
 except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
+    import claims_status as cs  # type: ignore
     from command_execution import CommandExecutor  # type: ignore
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
-CLAIMS_REL = "docs/agent/CLAIMS.md"
-STALE_HOURS = 4.0
-LIVE_STATUSES = {"CLAIMED", "PROGRESS", "RECLAIM"}
-# Positive terminals + the APPARATUS A11 self-retirement vocabulary (a claim
-# retires ITSELF with evidence): FALSIFIED (premise disproven),
-# MEASURED_IMPLEMENTATION_RETIRED (built, measured, retired), STALE_ASSUMED_DEAD
-# (no objective liveness), SUPERSEDED (another lane subsumed it). Any terminal
-# frees the lane. See docs/agent/CLAIMS.md §7 + tools/claims_status.py.
-FREEING_STATUSES = {
-    "RELEASED",
-    "COMPLETE",
-    "FALSIFIED",
-    "MEASURED_IMPLEMENTATION_RETIRED",
-    "STALE_ASSUMED_DEAD",
-    "SUPERSEDED",
-}
-ALL_STATUSES = LIVE_STATUSES | FREEING_STATUSES
+CLAIMS_REL = cs.CLAIMS_REL
 
 
 def _git(
@@ -83,54 +67,15 @@ def _utc_now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _parse_rows(claims_text: str, lane: str) -> list[dict[str, str]]:
-    """Return the log rows for `lane`, oldest→newest."""
-    rows: list[dict[str, str]] = []
-    in_log = False
-    for line in claims_text.splitlines():
-        if line.startswith("## Log"):
-            in_log = True
-            continue
-        if not in_log or not line.startswith("|"):
-            continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if (
-            len(cells) < 4
-            or cells[0].lower() in {"lane", "------"}
-            or cells[0].startswith("-")
-        ):
-            continue
-        if cells[3] not in ALL_STATUSES:  # skip header/placeholder rows
-            continue
-        if cells[0] != lane:
-            continue
-        rows.append(
-            {
-                "lane": cells[0],
-                "agent": cells[1],
-                "utc": cells[2],
-                "status": cells[3],
-                "note": cells[4] if len(cells) > 4 else "",
-            }
-        )
-    return rows
-
-
-def _latest_state(rows: list[dict[str, str]]) -> tuple[str, dict[str, str] | None]:
-    if not rows:
+def _lane_state(claims_text: str, lane: str) -> tuple[str, cs.Row | None]:
+    """The lane's state: UNCLAIMED, STALE, CLAIMED-ALIVE, or its terminal status."""
+    last = cs.latest_by_lane(cs.parse_rows(claims_text)).get(lane)
+    if last is None:
         return "UNCLAIMED", None
-    last = rows[-1]
-    if last["status"] in FREEING_STATUSES:
-        return last["status"], last
-    # live claim — check staleness against the newest live row's timestamp
-    try:
-        ts = _dt.datetime.strptime(last["utc"], "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=_dt.timezone.utc
-        )
-        age_h = (_dt.datetime.now(_dt.timezone.utc) - ts).total_seconds() / 3600.0
-    except ValueError:
-        age_h = 0.0
-    return ("STALE" if age_h > STALE_HOURS else "CLAIMED-ALIVE"), last
+    klass, _ = cs.classify_status(last, _dt.datetime.now(_dt.timezone.utc))
+    if klass == cs.RETIRED:
+        return last.status, last
+    return ("STALE" if klass == cs.STALE else "CLAIMED-ALIVE"), last
 
 
 def _read_claims_at_origin(root: Path) -> str:
@@ -144,15 +89,15 @@ def _read_claims_at_origin(root: Path) -> str:
 
 
 def _claimable(state: str) -> bool:
-    return state in ({"UNCLAIMED", "STALE"} | FREEING_STATUSES)
+    return state in ({"UNCLAIMED", "STALE"} | cs.TERMINAL_STATUSES)
 
 
-def _report(lane: str, state: str, row: dict[str, str] | None) -> None:
+def _report(lane: str, state: str, row: cs.Row | None) -> None:
     if row is None:
         print(f"CLAIM {lane}: {state}")
     else:
         print(
-            f"CLAIM {lane}: {state} — by {row['agent']} @ {row['utc']} ({row['status']}) — {row['note']}"
+            f"CLAIM {lane}: {state} — by {row.agent} @ {row.utc} ({row.status}) — {row.note}"
         )
 
 
@@ -200,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     action.add_argument(
         "--append",
         metavar="STATUS",
-        choices=sorted(ALL_STATUSES),
+        choices=sorted(cs.ALL_STATUSES),
         help="append a status row + ff_land",
     )
     parser.add_argument("--agent", help="your agent id (required for --claim/--append)")
@@ -208,23 +153,37 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     root = _repo_root()
-    state, row = _latest_state(_parse_rows(_read_claims_at_origin(root), args.lane))
+    try:
+        state, row = _lane_state(_read_claims_at_origin(root), args.lane)
+    except cs.ClaimsLogError as exc:
+        print(f"claim_lane: {CLAIMS_REL} at origin/main: {exc}", file=sys.stderr)
+        return 2
 
     if args.claim or args.append:
         if not args.agent:
             print("claim_lane: --agent is required for --claim/--append")
             return 2
+        cells = {"lane": args.lane, "--agent": args.agent, "--note": args.note}
+        broken = [
+            name for name, value in cells.items() if "|" in value or "\n" in value
+        ]
+        if broken:
+            print(
+                f"claim_lane: {', '.join(broken)} must not contain '|' or a newline; "
+                "either one breaks the log table"
+            )
+            return 2
 
     if args.append:
         # progress/complete/release/reclaim: allow, but guard silent takeovers
         if (
-            args.append in LIVE_STATUSES
+            args.append in cs.LIVE_STATUSES
             and state == "CLAIMED-ALIVE"
             and row
-            and row["agent"] != args.agent
+            and row.agent != args.agent
         ):
             print(
-                f"REFUSED: {args.lane} is held by {row['agent']} (alive). Do not take over a live claim; "
+                f"REFUSED: {args.lane} is held by {row.agent} (alive). Do not take over a live claim; "
                 f"escalate to the orchestrator (CLAIMS.md §6)."
             )
             return 1
@@ -243,9 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         rc = _append_row_and_land(root, args.lane, args.agent, "CLAIMED", args.note)
         if rc != 0:
             # someone raced us to the fast-forward — re-check and back off if now held
-            state2, row2 = _latest_state(
-                _parse_rows(_read_claims_at_origin(root), args.lane)
-            )
+            state2, row2 = _lane_state(_read_claims_at_origin(root), args.lane)
             _report(args.lane, state2, row2)
             print(
                 "BACK OFF: lost the claim race (ff_land refused). Reset to origin/main and pick another lane."

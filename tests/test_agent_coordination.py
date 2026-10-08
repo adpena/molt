@@ -1277,3 +1277,23 @@ def test_codex_crash_classifies_unsupported_exec_interrupt(
     assert any(
         "proof_queue prune-stale" in action for action in payload["next_actions"]
     )
+
+
+def test_agent_context_reports_a_claims_row_outside_the_vocabulary(
+    tmp_path: Path,
+) -> None:
+    claims = tmp_path / "docs" / "agent" / "CLAIMS.md"
+    claims.parent.mkdir(parents=True)
+    claims.write_text(
+        "## Log\n| L | a | 2026-10-01T00:00:00Z | BLOCKED | stopped |\n",
+        encoding="utf-8",
+    )
+    errors: list[dict[str, object]] = []
+
+    context = agent_coordination._claims_context(tmp_path, errors)
+
+    assert context["counts"] is None
+    assert [(error["source"], error["kind"]) for error in errors] == [
+        ("claims.records", "invalid_status")
+    ]
+    assert "'BLOCKED'" in str(errors[0]["message"])
