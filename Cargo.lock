@@ -1180,17 +1180,6 @@ dependencies = [
 
 [[package]]
 name = "cranelift-native"
-version = "0.133.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7107a4ae4a2ba48b5df8648365e638b08322fa1da11e86206bf5eddb862b21dd"
-dependencies = [
- "cranelift-codegen 0.133.3",
- "libc",
- "target-lexicon",
-]
-
-[[package]]
-name = "cranelift-native"
 version = "0.136.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "397508a8d817dc74019603ac5a4c4e40b4df627e5aed4f2f8088345d4c01d401"
@@ -2895,7 +2884,7 @@ dependencies = [
  "cranelift-codegen 0.133.3",
  "cranelift-frontend 0.133.3",
  "cranelift-module",
- "cranelift-native 0.133.3",
+ "cranelift-native",
  "cranelift-object",
  "inkwell",
  "libc",
@@ -6080,7 +6069,7 @@ dependencies = [
  "cranelift-control 0.136.2",
  "cranelift-entity 0.136.2",
  "cranelift-frontend 0.136.2",
- "cranelift-native 0.136.2",
+ "cranelift-native",
  "gimli",
  "itertools 0.14.0",
  "log",

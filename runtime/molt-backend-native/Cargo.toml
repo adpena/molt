@@ -20,7 +20,7 @@ cranelift-codegen = { version = "0.133.1", optional = true, default-features = f
 cranelift-frontend = { version = "0.133.1", optional = true }
 cranelift-module = { version = "0.133.1", optional = true }
 cranelift-object = { version = "0.133.1", optional = true }
-cranelift-native = { version = "0.133.1", optional = true }
+cranelift-native = { version = "0.136.2", optional = true }
 target-lexicon = { version = "0.13.5", optional = true }
 rayon = "1.12"
 serde = { version = "1.0", features = ["derive"] }
