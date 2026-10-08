@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import tomllib
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -2485,6 +2486,7 @@ _REAL_METADATA_CASES = frozenset(
         "test_python_bootstrap_installs_custody_under_isolated_startup",
         "test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
         "test_python_leaf_blocks_exec_replacement_before_launch",
+        "test_guarded_identity_timeout_is_terminal_before_command_launch",
         "test_proof_queue_non_wasm_exec_does_not_load_wasm_toolchain",
         "test_proof_queue_exec_records_passed_run",
         "test_proof_queue_exec_preserves_command_help_after_delimiter",
@@ -2495,6 +2497,10 @@ _REAL_METADATA_CASES = frozenset(
         "test_proof_queue_guarded_identity_failure_is_explicit_nonexecution",
         "test_proof_queue_wasm_rows_check_rust_target_before_run",
         "test_proof_queue_wasm_preflight_fails_before_command",
+        "test_proof_queue_run_id_executes_only_selected_queued_row",
+        "test_proof_queue_run_id_executes_selected_dispatched_row",
+        "test_proof_queue_submit_run_executes_queued_row_in_place",
+        "test_proof_queue_submit_records_dag_edges_and_runs_ready_order",
     ]
 )
 
@@ -2538,6 +2544,15 @@ def _real_queue_output_arguments() -> list[str]:
     return [] if root is None else ["--cargo-output-root", root]
 
 
+def _real_queue_output_toml() -> list[str]:
+    root = _real_cargo_output_root()
+    return (
+        []
+        if root is None
+        else [f"cargo_output_root = {json.dumps(root, ensure_ascii=False)}"]
+    )
+
+
 def test_real_queue_windows_output_root_requires_owner_selection(monkeypatch):
     monkeypatch.delenv("MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT", raising=False)
     monkeypatch.setattr(sys, "platform", "win32")
@@ -2551,13 +2566,19 @@ def test_real_queue_output_root_is_declared_not_created(tmp_path, monkeypatch):
     with pytest.raises((ValueError, FileNotFoundError)):
         _real_cargo_output_root()
     assert not missing.exists()
-    owned = tmp_path / "owned-root"
+    # TOML forbids JSON surrogate-pair escapes. Windows also forbids literal
+    # quotes/backslashes in a component; its path separators still need escaping.
+    owned_name = "owned-\U0001f680-root" + ('-"\\' if os.name != "nt" else "")
+    owned = tmp_path / owned_name
     owned.mkdir()
     monkeypatch.setenv("MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT", str(owned))
     assert _real_queue_output_arguments() == [
         "--cargo-output-root",
         str(owned.resolve()),
     ]
+    assert tomllib.loads("\n".join(_real_queue_output_toml())) == {
+        "cargo_output_root": str(owned.resolve())
+    }
     assert list(owned.iterdir()) == []
 
 
@@ -3940,7 +3961,9 @@ def test_guarded_identity_timeout_is_terminal_before_command_launch(
         "-c",
         "from pathlib import Path; Path(r'" + str(marker) + "').touch()",
     ]
-    envelope = command_admission.envelope_for_command(command)
+    envelope = command_admission.envelope_for_command(
+        command, cargo_output_root=_real_cargo_output_root()
+    )
     request = result.with_suffix(".request.json")
     request.write_text(
         json.dumps(
@@ -7950,6 +7973,7 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(
             scopes=[],
             log_path=logs / f"{run_id}.log",
             summary_json=logs / f"{run_id}.memory_guard.json",
+            cargo_output_root=_real_cargo_output_root(),
         )
 
     rc = cli.main(
@@ -7995,6 +8019,7 @@ def test_proof_queue_run_id_executes_selected_dispatched_row(
             scopes=[],
             log_path=logs / f"{run_id}.log",
             summary_json=logs / f"{run_id}.memory_guard.json",
+            cargo_output_root=_real_cargo_output_root(),
         )
     state._update_run(
         conn,
@@ -9422,6 +9447,7 @@ def test_proof_queue_submit_run_executes_queued_row_in_place(
         "\n".join(
             [
                 "[[proof]]",
+                *_real_queue_output_toml(),
                 'id = "queued-proof"',
                 'reason = "prove queued row"',
                 'resource_family = "python"',
@@ -9556,6 +9582,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
         "\n".join(
             [
                 "[[proof]]",
+                *_real_queue_output_toml(),
                 'id = "child-proof"',
                 'reason = "prove child waits"',
                 'resource_family = "python"',
@@ -9569,6 +9596,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
                 "",
                 "[[proof]]",
                 'id = "parent-proof"',
+                *_real_queue_output_toml(),
                 'reason = "prove parent first"',
                 'resource_family = "python"',
                 'contention_key = "python:parent-child"',

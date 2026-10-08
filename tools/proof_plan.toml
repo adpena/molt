@@ -934,7 +934,8 @@ admission_job = "native-integration"
 admission_needs = ["classify-changes"]
 tiers = ["pr", "main"]
 required = true
-timeout_minutes = 25
+# The two cold compiler rows serialize on main; the Python row runs beside them.
+timeout_minutes = 40
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -2227,7 +2228,9 @@ family = "native_integration"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_budget = "warm"
+# The first CLI build may compile its selected runtime and host compiler.
+# Dependency cache restoration does not establish prepared artifact receipts.
+timeout_budget = "cold"
 cache_domain = "cargo-workspace"
 dependencies = []
 # Dump a Python stack during a slow test without ending it or changing the

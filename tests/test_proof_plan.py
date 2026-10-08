@@ -538,7 +538,7 @@ def test_native_receipt_contract_selects_existing_integration_batch(path: str) -
     command = owners[0]
     assert command.family == "native_integration"
     assert command.data["resource_class"] == "compiler-build-resource"
-    assert command.data["timeout_budget"] == "warm"
+    assert command.data["timeout_budget"] == "cold"
 
 
 def test_runtime_leaf_change_runs_rust_without_llvm_or_formal() -> None:
@@ -779,6 +779,25 @@ def test_github_job_timeout_covers_resource_aware_dag_envelope() -> None:
         assert max(envelope.resource_capacity_floor_seconds.values()) <= (
             envelope.projected_makespan_seconds
         )
+
+    # Both first-build fixtures may compile from an empty dependency cache.
+    # On main they serialize under the same compiler resource; the unrelated
+    # Python custody row runs beside them and cannot make either build warm.
+    native_builds = [
+        command
+        for command in PLAN.commands
+        if command.id
+        in {"native.integration.bench-cli", "native.integration.capability-manifest"}
+    ]
+    native_build_seconds = sum(
+        int(command.data["timeout_seconds"]) for command in native_builds
+    )
+    native_envelope = PLAN.timeout_envelope("native_integration")
+    assert native_envelope.projected_makespan_seconds == native_build_seconds
+    assert (
+        native_envelope.resource_capacity_floor_seconds["compiler-build-resource"]
+        == native_build_seconds
+    )
 
     repository_declared = sum(
         int(command.data["timeout_seconds"])
@@ -1220,7 +1239,7 @@ def test_compiler_build_commands_use_shared_timeout_budgets() -> None:
     } == {
         "wasm.build.host": ("cold", 1200),
         "native.integration.bench-cli": ("cold", 1200),
-        "native.integration.capability-manifest": ("warm", 300),
+        "native.integration.capability-manifest": ("cold", 1200),
         "rust.clippy.wasi32": ("cold", 1200),
         "rust.test.default-truth": ("suite", 1800),
         "llvm.build.backend": ("cold", 1200),
