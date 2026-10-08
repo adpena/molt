@@ -3906,8 +3906,8 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "string",
       "name": "MOLT_HASH_SEED",
-      "owner": "src/molt/cli/__init__.py",
-      "summary": "PYTHONHASHSEED value the molt CLI re-executes itself with for deterministic builds; off, disable, or random skip the re-exec, empty means 0, and the value also keys the molt-run wrapper build cache.",
+      "owner": "src/molt/cli_entry.py",
+      "summary": "PYTHONHASHSEED value the molt launcher restarts itself with, before the CLI loads, for deterministic builds; off, disable, or random skip the re-exec, empty means 0, and the value also keys the molt-run wrapper build cache.",
       "values": []
     },
     {
@@ -3915,7 +3915,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_HASH_SEED_APPLIED",
-      "owner": "src/molt/cli/__init__.py",
+      "owner": "src/molt/cli_entry.py",
       "summary": "The molt CLI sets it to 1 in the environment of its own PYTHONHASHSEED re-exec; the child reads it and exits 127 when the seed still does not match instead of re-executing again.",
       "values": []
     },

@@ -469,10 +469,6 @@ from molt.cli._lazy_facade import (
 )
 
 
-_HASH_SEED_SENTINEL_ENV = "MOLT_HASH_SEED_APPLIED"
-_HASH_SEED_OVERRIDE_ENV = "MOLT_HASH_SEED"
-
-
 def build(
     file_path: str | None,
     target: Target = "native",

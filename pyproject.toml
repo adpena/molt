@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-molt = "molt.cli:main"
+molt = "molt.cli_entry:main"
 
 [tool.uv]
 managed = true
