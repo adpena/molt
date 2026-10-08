@@ -65,6 +65,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.73.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "787ef8ef523575546b106a58213d6e6b06198a05c2f757258c68a74273670cfa"
+dependencies = [
+ "bitflags",
+ "cexpr",
+ "clang-sys",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash",
+ "shlex 2.0.1",
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -135,9 +154,9 @@ dependencies = [
 
 [[package]]
 name = "comrak"
-version = "0.51.0"
+version = "0.55.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f07383e7799d964bf7ffa6fc4457d177c54a44614661c7458bb0bd91b108e32"
+checksum = "daa3d1ea6b01ce72405fa3f826768f51c7a44917527c89b37856ffdd17ee57e4"
 dependencies = [
  "caseless",
  "entities",
@@ -158,9 +177,9 @@ checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
 name = "convert_case"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "affbf0190ed2caf063e3def54ff444b449371d55c58e513a95ab98eca50adb49"
+checksum = "1af709f1f33454bf52eadfc8c78b3b9ef9cb26fb54d16dc9cd9a7299f899fd1b"
 dependencies = [
  "unicode-segmentation",
 ]
@@ -557,16 +576,16 @@ dependencies = [
 
 [[package]]
 name = "melior-macro"
-version = "0.20.0"
+version = "0.28.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7aac876dfce9f514df46c6d4b7267f1fc513126ddc34dfde11909584fdfc87bd"
+checksum = "c6329f3c86e84b9a813cd68ffc48e935fd87c3c8e0b25d20a5e029f02869bb8a"
 dependencies = [
  "comrak",
  "convert_case",
  "proc-macro2",
  "quote",
  "regex",
- "syn 2.0.119",
+ "syn 3.0.6",
  "tblgen",
  "unindent",
 ]
@@ -597,7 +616,7 @@ name = "mlir-sys"
 version = "220.0.2"
 source = "git+https://github.com/joa/mlir-sys?rev=f7dba297b15875a4976315c39c5f2260709c9b2f#f7dba297b15875a4976315c39c5f2260709c9b2f"
 dependencies = [
- "bindgen",
+ "bindgen 0.72.1",
 ]
 
 [[package]]
@@ -1013,10 +1032,11 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "tblgen"
-version = "0.9.1"
-source = "git+https://github.com/mlir-rs/tblgen-rs?rev=777dc4ec89b3e717ade3a992f9ab30b2f5148c18#777dc4ec89b3e717ade3a992f9ab30b2f5148c18"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6559c84cdfb38bbcbd74eca4dc8a064141887f049c4f6516ccc3130954730bee"
 dependencies = [
- "bindgen",
+ "bindgen 0.73.2",
  "cc",
  "paste",
  "thiserror",
@@ -1117,3 +1137,8 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[patch.unused]]
+name = "tblgen"
+version = "0.9.1"
+source = "git+https://github.com/mlir-rs/tblgen-rs?rev=777dc4ec89b3e717ade3a992f9ab30b2f5148c18#777dc4ec89b3e717ade3a992f9ab30b2f5148c18"

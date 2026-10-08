@@ -39,7 +39,7 @@ name = "melior"
 path = "src/lib.rs"
 
 [dependencies.melior-macro]
-version = "=0.20.0"
+version = "=0.28.2"
 
 [dependencies.mlir-sys]
 version = "220.0.1"
