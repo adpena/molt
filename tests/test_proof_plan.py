@@ -2964,7 +2964,7 @@ def test_cas_placement_models_remain_mandatory_on_unit_and_all_portability_cells
         command = commands[cid]
         assert "tests/tools/test_proof_queue_output_layout.py" in command.argv
         assert command.data["timeout_seconds"] == (
-            900 if cid == "python.unit.harness" else 600
+            900 if cid == "python.unit.harness" else 1800
         )
 
 
