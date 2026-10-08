@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import importlib.util
 from pathlib import Path
 from tests.process_guard_common import install_module_os_view
@@ -7,6 +9,9 @@ import sys
 
 from molt import backend_daemon_custody as custody
 from molt.dx import session_artifact_component
+
+# These tests fake process data the session sentinel also reads.
+pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

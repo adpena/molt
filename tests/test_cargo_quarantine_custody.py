@@ -30,6 +30,9 @@ from tests.process_guard_common import (
     start_owned_test_process,
 )
 
+# These tests fake process data the session sentinel also reads.
+pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
+
 # Real cargo runs use the repository's pinned toolchain, never a stale literal.
 RUST_CHANNEL = rust_channel(
     (Path(__file__).resolve().parents[1] / "rust-toolchain.toml").read_bytes()

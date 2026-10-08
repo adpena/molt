@@ -16,6 +16,9 @@ from tools import memory_guard
 
 from tests.process_guard_common import run_custody_subject_process
 
+# These tests fake process data the session sentinel also reads.
+pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
+
 
 def sample(pid, parent, group, born, command="owned worker"):
     return memory_guard.ProcessSample(
