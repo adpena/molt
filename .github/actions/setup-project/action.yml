@@ -263,6 +263,14 @@ runs:
         fi
         uv "${args[@]}"
 
+    # Molt never downloads a tool on its own, so setup provisions the pinned
+    # sccache that Molt's Cargo builds then discover. Windows builds run
+    # without it by default.
+    - name: Provision pinned sccache
+      if: steps.inputs.outputs.rust-toolchain != '' && steps.inputs.outputs.sync == 'true' && runner.os != 'Windows'
+      shell: bash
+      run: uv run --no-sync python3 -m molt.tool_releases provision sccache
+
     # Python downloads belong to setup, never to later test discovery, so the
     # target lines install here; afterwards UV_PYTHON_DOWNLOADS stays never.
     - name: Install supported target CPython lines

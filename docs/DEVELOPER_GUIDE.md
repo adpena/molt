@@ -710,9 +710,11 @@ cargo nextest run -p molt-runtime --all-targets
 ```
 
 ### Build caching (Rust)
+Molt never downloads a tool on its own. Provision the pinned `sccache` once;
+Molt then sets `RUSTC_WRAPPER` for its Cargo builds, and warns with this command
+while the release is missing. Set `MOLT_USE_SCCACHE=0` to build without it.
 ```bash
-export RUSTC_WRAPPER=sccache
-sccache -s
+python -m molt.tool_releases provision sccache
 ```
 
 ### Binary size + WASM size analysis
