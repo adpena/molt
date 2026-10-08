@@ -40,6 +40,11 @@ inputs:
   actionlint:
     description: Provision the exact cached actionlint release
     default: "false"
+  target-pythons:
+    description: >-
+      Install every supported target CPython line (molt.target_python) during
+      setup; requires sync, because the authority imports project dependencies
+    default: "false"
   sync:
     description: Synchronize project dependencies with uv
     default: "false"
@@ -107,6 +112,7 @@ runs:
         INPUT_CACHE_LEAN: ${{ inputs.cache-lean }}
         INPUT_CACHE_NAMESPACE: ${{ inputs.cache-namespace }}
         INPUT_ACTIONLINT: ${{ inputs.actionlint }}
+        INPUT_TARGET_PYTHONS: ${{ inputs.target-pythons }}
         INPUT_RUST_TOOLCHAIN: ${{ inputs.rust-toolchain }}
         INPUT_NODE_VERSION: ${{ inputs.node-version }}
         INPUT_NODE_CACHE_DEPENDENCY_PATH: ${{ inputs.node-cache-dependency-path }}
@@ -249,3 +255,13 @@ runs:
           done
         fi
         uv "${args[@]}"
+
+    # Python downloads belong to setup, never to later test discovery, so the
+    # target lines install here; afterwards UV_PYTHON_DOWNLOADS stays never.
+    - name: Install supported target CPython lines
+      if: steps.inputs.outputs.target-pythons == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        read -r -a versions <<< "$(uv run --no-sync python3 -c 'from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS as versions; print(" ".join(versions))')"
+        UV_PYTHON_DOWNLOADS=manual uv python install "${versions[@]}"
