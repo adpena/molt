@@ -8,7 +8,7 @@ license = "Apache-2.0"
 
 [dependencies]
 arrow = "59"
-base64 = "0.22"
+base64 = "0.23"
 chrono = "=0.4.45"
 crossbeam-channel = "0.5"
 # Temporary upstream split: tokio-postgres/postgres-protocol are still on
