@@ -263,6 +263,53 @@ def observed_build(
     }
 
 
+FAILURE_NAME_LIMIT = 40
+STDERR_TAIL_LINES = 40
+
+
+def child_failure_summary(
+    name: str, returncode: int, receipts: list[dict], stderr: str
+) -> str:
+    """Name what failed in one child so a red gate is actionable from its log.
+
+    The receipts keep the full record; this bounded summary is what CI prints.
+    """
+    failing = sorted(
+        {
+            identity
+            for receipt in receipts
+            for identity in (
+                receipt.get("failure_identities")
+                or receipt.get("reported_failures")
+                or []
+            )
+            if isinstance(identity, str)
+        }
+    )
+    terminations = [
+        receipt["baseline_termination"]
+        for receipt in receipts
+        if isinstance(receipt.get("baseline_termination"), dict)
+        and receipt["baseline_termination"].get("kind") != "exit"
+    ]
+    lines = [f"runtime-gate: child {name} failed with exit code {returncode}"]
+    if failing:
+        shown = failing[:FAILURE_NAME_LIMIT]
+        lines.append(f"  {len(failing)} failing test(s):")
+        lines.extend(f"    {identity}" for identity in shown)
+        if len(failing) > len(shown):
+            lines.append(f"    ... {len(failing) - len(shown)} more in the receipts")
+    for termination in terminations:
+        lines.append(
+            f"  abnormal termination: {json.dumps(termination, sort_keys=True)}"
+        )
+    tail = stderr.splitlines()[-STDERR_TAIL_LINES:]
+    if tail:
+        lines.append(f"  driver stderr (last {len(tail)} lines):")
+        lines.extend(f"    {line}" for line in tail)
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", default="release-output")
@@ -439,6 +486,12 @@ def main(argv: list[str] | None = None) -> int:
             }
             if child.returncode:
                 failures.append(name)
+                print(
+                    child_failure_summary(
+                        name, child.returncode, children[name], child.stderr
+                    ),
+                    file=sys.stderr,
+                )
         if failures:
             raise RuntimeError(f"failed child processes: {failures}")
         aggregate["runtime_descendants"] = validate_children(

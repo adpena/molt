@@ -408,3 +408,46 @@ def test_build_rustflags_cannot_override_shipping_assertions():
             "release-output",
             {"CARGO_BUILD_RUSTFLAGS": "-Cdebug-assertions=yes"},
         )
+
+
+def test_child_failure_summary_names_failing_tests_and_abnormal_exits():
+    receipts = [
+        {
+            "failure_identities": ["object::tests::b", "attr::tests::a"],
+            "baseline_termination": {"kind": "exit", "returncode": 101},
+        },
+        {
+            "reported_failures": ["attr::tests::a"],
+            "baseline_termination": {
+                "kind": "signal",
+                "name": "SIGABRT",
+                "returncode": -6,
+                "signal": 6,
+            },
+        },
+    ]
+    stderr = "\n".join(f"line {index}" for index in range(60))
+
+    summary = gate.child_failure_summary("parallel", 101, receipts, stderr)
+
+    lines = summary.splitlines()
+    assert lines[0] == "runtime-gate: child parallel failed with exit code 101"
+    assert lines[1:4] == [
+        "  2 failing test(s):",
+        "    attr::tests::a",
+        "    object::tests::b",
+    ]
+    assert '"name": "SIGABRT"' in lines[4]
+    assert lines[5] == "  driver stderr (last 40 lines):"
+    assert lines[6] == "    line 20" and lines[-1] == "    line 59"
+
+
+def test_child_failure_summary_bounds_long_failure_lists():
+    receipts = [{"failure_identities": [f"t::{index:03}" for index in range(45)]}]
+
+    lines = gate.child_failure_summary("fresh", 1, receipts, "").splitlines()
+
+    assert lines[1] == "  45 failing test(s):"
+    assert lines[2] == "    t::000" and lines[41] == "    t::039"
+    assert lines[42] == "    ... 5 more in the receipts"
+    assert len(lines) == 43
