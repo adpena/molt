@@ -235,7 +235,9 @@ def test_declared_module_owns_frontend_namespace_exclusion() -> None:
 
 
 def test_platform_alias_is_in_the_target_superset_without_host_filtering() -> None:
-    names = GATE._parse_builtin_exception_names(GATE.EXCEPTION_SCHEMA_RS.read_text())
+    names = GATE._parse_builtin_exception_names(
+        GATE.EXCEPTION_SCHEMA_RS.read_text(encoding="utf-8")
+    )
     assert {"WindowsError", "EnvironmentError", "IOError", "OSError"} <= names
     assert "CancelledError" not in names
     assert "UnsupportedOperation" not in names
