@@ -152,6 +152,12 @@ def _locked_artifact(row: Mapping[str, object]) -> dict[str, object]:
     }
 
 
+# uv.lock format revisions this reader understands. Revisions 4 and 5 (uv 0.12)
+# keep revision 3's table and key shape; resolution markers stay required from
+# revision 3 on.
+SUPPORTED_UV_LOCK_REVISIONS = frozenset({1, 2, 3, 4, 5})
+
+
 @identity_validator("uv.lock group selection")
 def selected_uv_lock_group_closure(
     repo_root: Path,
@@ -192,7 +198,7 @@ def selected_uv_lock_group_closure(
         type(lock_version) is not int
         or lock_version != 1
         or type(lock_revision) is not int
-        or lock_revision not in {1, 2, 3}
+        or lock_revision not in SUPPORTED_UV_LOCK_REVISIONS
         or not isinstance(requires_python, str)
         or not requires_python
     ):
@@ -417,7 +423,7 @@ def validate_uv_lock_group_closure(payload: object) -> dict[str, object]:
         type(payload.get("lock_version")) is not int
         or payload.get("lock_version") != 1
         or type(payload.get("lock_revision")) is not int
-        or payload.get("lock_revision") not in {1, 2, 3}
+        or payload.get("lock_revision") not in SUPPORTED_UV_LOCK_REVISIONS
         or not isinstance(payload.get("requires_python"), str)
         or not payload.get("requires_python")
         or not isinstance(payload.get("dependency_group"), str)
