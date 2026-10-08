@@ -55,6 +55,8 @@ class CiResourcePlan:
     reserve_gb: float
     reason: str
     resource_plan: resource_pressure.ResourcePressurePlan
+    guard_max_process_rss_gb: float | None
+    guard_max_total_rss_gb: float | None
 
 
 def _positive_int(raw: str | None, *, default: int) -> int:
@@ -126,6 +128,7 @@ def plan_ci_resources(
         cargo_build_measurement_commit=measurement_commit,
         cargo_build_measurement_command=measurement_command,
     )
+    process_cap, total_cap = _guard_caps(memory_budget, pressure_plan)
     return CiResourcePlan(
         cargo_build_jobs=pressure_plan.cargo_build_jobs,
         cpu_count=cpus,
@@ -142,7 +145,31 @@ def plan_ci_resources(
         reserve_gb=memory_budget.reserve_gb,
         reason=pressure_plan.reason,
         resource_plan=pressure_plan,
+        guard_max_process_rss_gb=process_cap,
+        guard_max_total_rss_gb=total_cap,
     )
+
+
+def _guard_caps(
+    budget: memory_guard.AdaptiveMemoryBudget,
+    plan: resource_pressure.ResourcePressurePlan,
+) -> tuple[float | None, float | None]:
+    """The memory guard caps that admit every job this plan admits.
+
+    The guard's own caps are fixed fractions of available memory, which on a
+    small runner fall below one admitted Cargo job (7 GB macOS: 1.5 GB per
+    process against a 2.2 GB usable budget), so the guard killed a job the
+    plan had sized. The caps rise to the usable memory each admitted job may
+    take and never above the usable total; they never fall below the guard's
+    defaults, which the guard still clamps to its hard and global ceilings.
+    """
+    usable = plan.usable_gb
+    if usable is None or usable <= 0:
+        return None, None
+    per_job = usable / max(1, plan.cargo_build_jobs)
+    process_cap = min(usable, max(budget.max_process_rss_gb, per_job))
+    total_cap = min(usable, max(budget.max_total_rss_gb, process_cap))
+    return process_cap, total_cap
 
 
 def _github_env_lines(plan: CiResourcePlan) -> list[str]:
@@ -151,12 +178,17 @@ def _github_env_lines(plan: CiResourcePlan) -> list[str]:
         sort_keys=True,
         separators=(",", ":"),
     )
-    return [
+    lines = [
         f"CARGO_BUILD_JOBS={plan.cargo_build_jobs}",
         f"MOLT_CI_RESOURCE_CPU_COUNT={plan.cpu_count}",
         f"MOLT_CI_RESOURCE_REASON={plan.reason}",
         f"MOLT_CI_RESOURCE_PLAN_JSON={plan_json}",
     ]
+    if plan.guard_max_process_rss_gb is not None:
+        lines.append(f"MOLT_MAX_PROCESS_RSS_GB={plan.guard_max_process_rss_gb:.6f}")
+    if plan.guard_max_total_rss_gb is not None:
+        lines.append(f"MOLT_MAX_TOTAL_RSS_GB={plan.guard_max_total_rss_gb:.6f}")
+    return lines
 
 
 def write_github_env(path: Path, plan: CiResourcePlan) -> None:

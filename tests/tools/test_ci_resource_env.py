@@ -245,3 +245,49 @@ def test_plan_rejects_invalid_resource_overrides(environ: dict[str, str]) -> Non
                 reserve_gb=1.0,
             ),
         )
+
+
+def test_guard_caps_admit_the_single_job_a_small_runner_plans() -> None:
+    # The 7 GB macOS runner: 3.24 GB available, 1 GB reserve. The guard's own
+    # 40% process cap (1.30 GB) killed one admitted Cargo job at 1.92 GB.
+    module = _load_ci_resource_env()
+    budget = _budget(module, physical_gb=7.0, available_gb=3.24, reserve_gb=1.0)
+    plan = module.plan_ci_resources(environ={}, cpu_count=3, budget=budget)
+
+    assert plan.cargo_build_jobs == 1
+    usable = plan.resource_plan.usable_gb
+    assert plan.guard_max_process_rss_gb == pytest.approx(usable)
+    assert plan.guard_max_total_rss_gb == pytest.approx(usable)
+    assert plan.guard_max_process_rss_gb > budget.max_process_rss_gb
+
+
+def test_guard_caps_never_fall_below_the_guard_defaults() -> None:
+    # A 16 GB runner with four jobs: usable / jobs is below the guard's own
+    # process cap, which stays.
+    module = _load_ci_resource_env()
+    budget = _budget(module, physical_gb=16.0, available_gb=14.0, reserve_gb=1.0)
+    plan = module.plan_ci_resources(environ={}, cpu_count=4, budget=budget)
+
+    assert plan.cargo_build_jobs == 4
+    assert plan.guard_max_process_rss_gb == pytest.approx(budget.max_process_rss_gb)
+    assert plan.guard_max_total_rss_gb == pytest.approx(budget.max_total_rss_gb)
+
+
+def test_github_env_carries_the_guard_caps(tmp_path: Path) -> None:
+    module = _load_ci_resource_env()
+    plan = module.plan_ci_resources(
+        environ={},
+        cpu_count=3,
+        budget=_budget(module, physical_gb=7.0, available_gb=3.24, reserve_gb=1.0),
+    )
+    env_file = tmp_path / "github-env"
+    module.write_github_env(env_file, plan)
+    lines = dict(
+        line.split("=", 1) for line in env_file.read_text(encoding="utf-8").splitlines()
+    )
+    assert float(lines["MOLT_MAX_PROCESS_RSS_GB"]) == pytest.approx(
+        plan.guard_max_process_rss_gb
+    )
+    assert float(lines["MOLT_MAX_TOTAL_RSS_GB"]) == pytest.approx(
+        plan.guard_max_total_rss_gb
+    )

@@ -117,7 +117,6 @@ jobs:
         with:
           persist-credentials: false
 
-
       - name: Configure proof-queue test roots
         shell: pwsh
         run: |
@@ -141,10 +140,6 @@ jobs:
           sync: "true"
           sync-frozen: "true"
           sync-groups: dev
-
-      - name: Configure adaptive Rust parallelism
-        shell: bash
-        run: python tools/ci_resource_env.py --github-env "$GITHUB_ENV"
 
       - name: Resolve portability command evidence custody
         id: build-control
@@ -294,8 +289,6 @@ jobs:
           sync: "true"
           sync-frozen: "true"
           sync-groups: dev
-      - name: Configure adaptive Rust parallelism
-        run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
       - name: Setup canonical native linker SDK
         uses: ./.github/actions/setup-llvm
         with:
@@ -332,9 +325,6 @@ jobs:
           node-version: pinned
           rust-targets: wasm32-wasip1, wasm32-unknown-unknown, aarch64-unknown-linux-gnu
           cache-cargo: "true"
-
-      - name: Configure adaptive Rust parallelism
-        run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
 
       - name: Setup canonical native LLVM and WASI SDK
         uses: ./.github/actions/setup-llvm
@@ -398,14 +388,10 @@ jobs:
           sync-frozen: "true"
           sync-groups: dev
 
-      - name: Configure adaptive Rust parallelism
-        run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
-
       # One local action owns package projection, versioned llvm-config
       # discovery, complete SDK verification, and environment projection.
       - name: Setup LLVM backend SDK
         uses: ./.github/actions/setup-llvm
-
 
       - name: Resolve build-control evidence custody
         id: build-control

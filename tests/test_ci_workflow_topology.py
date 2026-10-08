@@ -380,17 +380,19 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "classify-changes.outputs.matrix" not in ci_text
     assert "Swatinem/rust-cache@" not in ci_text
     assert "uses: ./.github/actions/setup-project" in ci_text
-    # Four rust-bearing jobs configure adaptive parallelism: python-tooling-smoke,
-    # rust-build-unit-smoke, the LLVM backend job, and platform-portability
-    # (its macOS Rust cell). The portability matrix runs on Windows too, so its
-    # step spells the interpreter `python` rather than `python3`.
-    assert ci_text.count("Configure adaptive Rust parallelism") == 4
-    assert (
-        ci_text.count('python tools/ci_resource_env.py --github-env "$GITHUB_ENV"') == 1
+    # setup-project plans every job's resources once; no workflow restates it.
+    for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
+        assert "ci_resource_env.py" not in workflow.read_text(encoding="utf-8")
+    setup_steps = yaml.safe_load(_read(".github/actions/setup-project/action.yml"))[
+        "runs"
+    ]["steps"]
+    names = [step.get("name") for step in setup_steps]
+    plan_step = setup_steps[names.index("Plan job resources")]
+    assert plan_step["run"] == (
+        'python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"'
     )
-    assert (
-        ci_text.count('python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"')
-        == 3
+    assert names.index("Plan job resources") > names.index(
+        "Provision and bind repository Python"
     )
     assert 'CARGO_BUILD_JOBS: "1"' not in ci_text
     assert 'sync: "true"' in ci_text
@@ -1159,10 +1161,6 @@ def test_rust_security_reuses_cached_tool_builds() -> None:
         "MOLT_SESSION_ID: rust-security-${{ github.run_id }}-${{ github.run_attempt }}"
         in rust_security
     )
-    assert "Configure adaptive Rust parallelism" in rust_security
-    assert 'python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"' in (
-        rust_security
-    )
     assert "uses: ./.github/actions/setup-project" in rust_security
     assert "rust-toolchain: pinned" in rust_security
     assert 'cache-cargo: "true"' in rust_security
@@ -1857,8 +1855,6 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert 'MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC: "2"' in wasm_text
     assert "CARGO_INCREMENTAL:" not in wasm_text
     assert 'CARGO_BUILD_JOBS: "1"' not in wasm_text
-    assert "Configure adaptive Rust parallelism" in wasm_text
-    assert 'python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"' in wasm_text
     assert "MOLT_WASM_TEST_TIMEOUT_SEC:" not in wasm_text
     assert "MOLT_CARGO_TIMEOUT:" not in wasm_text
     assert "MOLT_BACKEND_DAEMON_SOCKET_DIR" not in wasm_text

@@ -136,6 +136,13 @@ runs:
       shell: bash
       run: bash .github/actions/setup-project/provision-python.sh
 
+    # One resource plan per job, from this runner's measured memory and CPUs,
+    # sizes Cargo parallelism and the memory guard caps every later step uses.
+    - name: Plan job resources
+      if: steps.inputs.outputs.python == 'true'
+      shell: bash
+      run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
+
     - name: Install exact Node with npm cache
       if: steps.inputs.outputs.node-version != '' && inputs.node-cache-dependency-path != ''
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
