@@ -304,3 +304,29 @@ def test_github_env_carries_the_guard_caps(tmp_path: Path) -> None:
     assert float(lines["MOLT_MAX_TOTAL_RSS_GB"]) == pytest.approx(
         plan.guard_max_total_rss_gb
     )
+
+
+@pytest.mark.parametrize(
+    ("physical_gb", "available_gb", "cpus"),
+    [(7.0, 3.22, 3), (16.0, 14.25, 4)],
+)
+def test_github_env_sizes_pytest_auto_workers_from_the_plan(
+    tmp_path: Path, physical_gb: float, available_gb: float, cpus: int
+) -> None:
+    # `pytest -n auto` reads this variable, so one plan sizes test workers.
+    module = _load_ci_resource_env()
+    plan = module.plan_ci_resources(
+        environ={},
+        cpu_count=cpus,
+        budget=_budget(
+            module, physical_gb=physical_gb, available_gb=available_gb, reserve_gb=1.0
+        ),
+    )
+    env_file = tmp_path / "github-env"
+    module.write_github_env(env_file, plan)
+    lines = dict(
+        line.split("=", 1) for line in env_file.read_text(encoding="utf-8").splitlines()
+    )
+    workers = int(lines["PYTEST_XDIST_AUTO_NUM_WORKERS"])
+    assert workers == plan.resource_plan.diff_max_jobs
+    assert 1 <= workers <= cpus
