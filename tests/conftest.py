@@ -34,6 +34,25 @@ def _restore_process_environment() -> Iterator[None]:
         os.environ.update(snapshot)
 
 
+# Guard caps a CI job plan or an outer guard exports to its children.
+AMBIENT_GUARD_CAP_KEYS = (
+    "MOLT_MAX_PROCESS_RSS_GB",
+    "MOLT_MAX_TOTAL_RSS_GB",
+    "MOLT_MAX_GLOBAL_RSS_GB",
+)
+
+
+@pytest.fixture
+def no_ambient_guard_caps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve guard limits as if no CI plan or outer guard had set caps.
+
+    CI exports plan-derived caps for every guarded child, so a test of how
+    limits resolve must not inherit them; it sets the caps it means to test.
+    """
+    for key in AMBIENT_GUARD_CAP_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
 @pytest.fixture
 def isolated_molt_cache(tmp_path_factory, monkeypatch) -> Path:
     """Opt-in disposable cache outside a test's compiler/project source tree."""

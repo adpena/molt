@@ -17,6 +17,9 @@ from molt import custody_layout
 from molt.memory_guard_paths import harness_guard_artifact_dir
 from tools import harness_memory_guard
 
+# Limit resolution here must not inherit the CI plan's guard caps.
+pytestmark = pytest.mark.usefixtures("no_ambient_guard_caps")
+
 
 def test_guarded_completed_process_defaults_temporary_artifacts_to_none() -> None:
     result = harness_memory_guard.GuardedCompletedProcess(
@@ -377,12 +380,7 @@ def test_limits_from_env_uses_adaptive_defaults(monkeypatch) -> None:
     monkeypatch.delenv("MOLT_BENCH_MAX_PROCESS_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_BENCH_MAX_TOTAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_BENCH_MAX_GLOBAL_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_BENCH_MAX_GLOBAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_BENCH_MEMORY_GUARD_POLL_SEC", raising=False)
-    monkeypatch.delenv("MOLT_MAX_PROCESS_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_MAX_TOTAL_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_MAX_GLOBAL_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_MAX_GLOBAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_MEMORY_GUARD_POLL_SEC", raising=False)
     monkeypatch.delenv("CODEX_SHELL", raising=False)
     monkeypatch.delenv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", raising=False)
@@ -413,9 +411,6 @@ def test_limits_from_env_caps_dynamic_defaults_for_codex_shell(monkeypatch) -> N
     monkeypatch.delenv("MOLT_BUILD_MAX_PROCESS_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_BUILD_MAX_TOTAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_BUILD_MAX_GLOBAL_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_MAX_PROCESS_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_MAX_TOTAL_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_MAX_GLOBAL_RSS_GB", raising=False)
     limits = harness_memory_guard.limits_from_env(
         "MOLT_BUILD",
         {
@@ -448,9 +443,6 @@ def test_limits_from_env_caps_dynamic_defaults_for_codex_shell(monkeypatch) -> N
 def test_limits_from_env_keeps_explicit_codex_rss_overrides_authoritative(
     monkeypatch,
 ) -> None:
-    monkeypatch.delenv("MOLT_MAX_PROCESS_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_MAX_TOTAL_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_MAX_GLOBAL_RSS_GB", raising=False)
     limits = harness_memory_guard.limits_from_env(
         "MOLT_BUILD",
         {
