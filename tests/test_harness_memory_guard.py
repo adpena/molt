@@ -16,9 +16,28 @@ import molt.dx as molt_dx
 from molt import custody_layout
 from molt.memory_guard_paths import harness_guard_artifact_dir
 from tools import harness_memory_guard
+from tests.process_guard_common import current_thread_only
 
 # Limit resolution here must not inherit the CI plan's guard caps.
 pytestmark = pytest.mark.usefixtures("no_ambient_guard_caps")
+
+
+def _patch_guard_operation(monkeypatch, target, name, replacement, *, sentinel=None):
+    """Keep fixture observations and actions off the live session sentinel.
+
+    Synchronous fixtures reuse the shared thread-owned double. An asynchronous
+    fixture explicitly owns its sentinel's Thread object, never a thread name
+    or a numeric identity that another worker could reuse.
+    """
+    original = getattr(target, name)
+    synchronous = current_thread_only(replacement, original)
+
+    def dispatch(*args, **kwargs):
+        if sentinel is not None and threading.current_thread() is sentinel._thread:
+            return replacement(*args, **kwargs)
+        return synchronous(*args, **kwargs)
+
+    monkeypatch.setattr(target, name, dispatch)
 
 
 def test_guarded_completed_process_defaults_temporary_artifacts_to_none() -> None:
@@ -336,12 +355,14 @@ def test_force_close_process_group_uses_custody_termination(monkeypatch) -> None
             actions=(),
         )
 
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.memory_guard,
         "sample_processes",
         lambda: samples,
     )
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.memory_guard,
         "terminate_watched_processes",
         fake_terminate_watched_processes,
@@ -1008,7 +1029,8 @@ def test_guarded_completed_process_profiles_incident_by_default(
         "command_profile_log_path",
         lambda _env: profile_log,
     )
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.memory_guard,
         "sample_processes",
         lambda: {},
@@ -1641,8 +1663,8 @@ def test_guarded_completed_process_profiles_secondary_guard_signal(
     monkeypatch.setattr(
         harness_memory_guard, "command_profile_log_path", lambda _env: profile_log
     )
-    monkeypatch.setattr(
-        harness_memory_guard.memory_guard, "sample_processes", lambda: {}
+    _patch_guard_operation(
+        monkeypatch, harness_memory_guard.memory_guard, "sample_processes", lambda: {}
     )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
@@ -2193,8 +2215,8 @@ def test_batch_process_group_kwargs_can_disable_child_rlimit() -> None:
 def test_repo_process_sentinel_records_and_terminates_violation(
     monkeypatch, tmp_path: Path
 ) -> None:
-    harness_memory_guard._TERMINATED_PGIDS.clear()
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "process_groups",
         lambda *args, **kwargs: [
@@ -2213,11 +2235,12 @@ def test_repo_process_sentinel_records_and_terminates_violation(
             )
         ],
     )
-    monkeypatch.setattr(
-        harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
+    _patch_guard_operation(
+        monkeypatch, harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
     )
     terminated: list[int] = []
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "terminate_group",
         _record_terminated_pgids(terminated),
@@ -2288,8 +2311,8 @@ def test_repo_process_sentinel_records_and_terminates_violation(
 def test_repo_process_sentinel_records_observer_when_claim_already_taken(
     monkeypatch, tmp_path: Path
 ) -> None:
-    harness_memory_guard._TERMINATED_PGIDS.clear()
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "process_groups",
         lambda *args, **kwargs: [
@@ -2308,11 +2331,12 @@ def test_repo_process_sentinel_records_observer_when_claim_already_taken(
             )
         ],
     )
-    monkeypatch.setattr(
-        harness_memory_guard, "_claim_terminated_pgid", lambda pgid: False
+    _patch_guard_operation(
+        monkeypatch, harness_memory_guard, "_claim_terminated_pgid", lambda pgid: False
     )
     terminated: list[int] = []
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "terminate_group",
         _record_terminated_pgids(terminated),
@@ -2349,6 +2373,121 @@ def test_repo_process_sentinel_records_observer_when_claim_already_taken(
     assert "already claimed by another guard" in event["action"]
 
 
+def test_repo_process_sentinel_fixture_keeps_inflight_observer_on_its_owner(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Replacing a fixture cannot redirect an already sampled observer's action."""
+    guard = harness_memory_guard
+    sampled = threading.Event()
+    release = threading.Event()
+    original_actions: list[int] = []
+    replacement_actions: list[int] = []
+    observed_after: list[int] = []
+    failures: list[BaseException] = []
+
+    def group(pgid):
+        return guard.process_sentinel.ProcessGroup(
+            pgid=pgid,
+            matched=True,
+            samples=(
+                guard.memory_guard.ProcessSample(
+                    pid=pgid + 1,
+                    ppid=1,
+                    pgid=pgid,
+                    rss_kb=5 * 1024 * 1024,
+                    command="molt-backend --fixture",
+                ),
+            ),
+        )
+
+    older = group(765432)
+    newer = group(876543)
+    limits = guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=1,
+        max_total_rss_gb=2,
+        max_global_rss_gb=3,
+        poll_interval=0.01,
+    )
+
+    def retain_observation(groups, _limits, _elapsed):
+        assert [item.pgid for item in groups] == [765432]
+        sampled.set()
+        assert release.wait(timeout=30)
+
+    observer = guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="older-observer",
+        limits=limits,
+        scope_to_current_tree=False,
+        drain_on_exit=False,
+        on_scan=retain_observation,
+    )
+
+    def observe():
+        try:
+            observer.scan_once()
+            observed_after.extend(item.pgid for item in observer._current_groups())
+        except BaseException as exc:
+            failures.append(exc)
+
+    observer._thread = threading.Thread(target=observe)
+    # This layer models the earlier observer's backend, while preserving every
+    # unrelated thread's real backend. The second layer models the next test.
+    for target, name, replacement in (
+        (guard.process_sentinel, "process_groups", lambda *a, **kw: [older]),
+        (guard, "_claim_terminated_pgid", lambda pgid: False),
+        (
+            guard.process_sentinel,
+            "terminate_group",
+            _record_terminated_pgids(original_actions),
+        ),
+    ):
+        _patch_guard_operation(
+            monkeypatch, target, name, replacement, sentinel=observer
+        )
+    observer._thread.start()
+    try:
+        assert sampled.wait(timeout=30)
+        for target, name, replacement in (
+            (guard.process_sentinel, "process_groups", lambda *a, **kw: [newer]),
+            (guard, "_claim_terminated_pgid", lambda pgid: True),
+            (
+                guard.process_sentinel,
+                "terminate_group",
+                _record_terminated_pgids(replacement_actions),
+            ),
+        ):
+            _patch_guard_operation(monkeypatch, target, name, replacement)
+        release.set()
+        observer._thread.join(timeout=30)
+        assert not observer._thread.is_alive()
+        assert failures == []
+        assert replacement_actions == []
+        assert observed_after == [765432]
+        assert original_actions == []
+        event = json.loads(observer.events_path.read_text(encoding="utf-8"))
+        assert event["violation"]["pgid"] == 765432
+        assert event["claim_status"] == "already_claimed"
+
+        current = guard.repo_process_sentinel(
+            repo_root=tmp_path,
+            artifact_root=tmp_path,
+            label="newer-observer",
+            limits=limits,
+            scope_to_current_tree=False,
+            drain_on_exit=False,
+        )
+        current.scan_once()
+        assert current.tripped
+        assert replacement_actions == [876543]
+    finally:
+        release.set()
+        observer._thread.join(timeout=30)
+        assert not observer._thread.is_alive()
+
+
 def test_repo_process_sentinel_scan_in_flight_at_exit_cannot_kill_later(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -2358,7 +2497,6 @@ def test_repo_process_sentinel_scan_in_flight_at_exit_cannot_kill_later(
     finishes later would otherwise kill a group, or trip a sentinel whose owner
     already read its verdict, long after the guarded scope closed.
     """
-    harness_memory_guard._TERMINATED_PGIDS.clear()
     late_group = harness_memory_guard.process_sentinel.ProcessGroup(
         pgid=876543,
         matched=True,
@@ -2377,22 +2515,12 @@ def test_repo_process_sentinel_scan_in_flight_at_exit_cannot_kill_later(
 
     def groups(*args, **kwargs):  # type: ignore[no-untyped-def]
         # Only the background scan stalls; the entry baseline sees nothing.
-        if threading.current_thread().name != "unit-late-scan-memory-sentinel":
+        if threading.current_thread() is not sentinel._thread:
             return []
         scanning.set()
         release.wait(timeout=30)
         return [late_group]
 
-    monkeypatch.setattr(harness_memory_guard.process_sentinel, "process_groups", groups)
-    monkeypatch.setattr(
-        harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
-    )
-    terminated: list[int] = []
-    monkeypatch.setattr(
-        harness_memory_guard.process_sentinel,
-        "terminate_group",
-        _record_terminated_pgids(terminated),
-    )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
         max_process_rss_gb=1,
@@ -2409,14 +2537,39 @@ def test_repo_process_sentinel_scan_in_flight_at_exit_cannot_kill_later(
         suppress_auto_guard=False,
         scope_to_current_tree=False,
     )
-    with sentinel:
-        assert scanning.wait(timeout=30)
-    thread = sentinel._thread
-    assert thread is not None and thread.is_alive()
-    release.set()
-    thread.join(timeout=30)
+    _patch_guard_operation(
+        monkeypatch,
+        harness_memory_guard.process_sentinel,
+        "process_groups",
+        groups,
+        sentinel=sentinel,
+    )
+    _patch_guard_operation(
+        monkeypatch,
+        harness_memory_guard,
+        "_claim_terminated_pgid",
+        lambda pgid: True,
+        sentinel=sentinel,
+    )
+    terminated: list[int] = []
+    _patch_guard_operation(
+        monkeypatch,
+        harness_memory_guard.process_sentinel,
+        "terminate_group",
+        _record_terminated_pgids(terminated),
+        sentinel=sentinel,
+    )
+    try:
+        with sentinel:
+            assert scanning.wait(timeout=30)
+        thread = sentinel._thread
+        assert thread is not None and thread.is_alive()
+    finally:
+        release.set()
+        if sentinel._thread is not None:
+            sentinel._thread.join(timeout=30)
+            assert not sentinel._thread.is_alive()
 
-    assert not thread.is_alive()
     assert terminated == []
     assert sentinel.tripped is False
 
@@ -2425,7 +2578,6 @@ def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    harness_memory_guard._TERMINATED_PGIDS.clear()
     owned_pgid = 246810
     peer_pgid = 246811
     self_pid = os.getpid()
@@ -2455,16 +2607,18 @@ def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
             started_at_ns=peer_pgid,
         ),
     }
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.memory_guard,
         "sample_processes",
         lambda: samples,
     )
-    monkeypatch.setattr(
-        harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
+    _patch_guard_operation(
+        monkeypatch, harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
     )
     terminated: list[int] = []
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "terminate_group",
         _record_terminated_pgids(terminated),
@@ -2510,7 +2664,6 @@ def test_repo_process_sentinel_does_not_churn_codex_helper_descendant(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    harness_memory_guard._TERMINATED_PGIDS.clear()
     self_pid = os.getpid()
     helper_pgid = 135790
     samples = {
@@ -2536,13 +2689,15 @@ def test_repo_process_sentinel_does_not_churn_codex_helper_descendant(
             command=f"git -C {tmp_path} status --short",
         ),
     }
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.memory_guard,
         "sample_processes",
         lambda: samples,
     )
     terminated: list[int] = []
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "terminate_group",
         _record_terminated_pgids(terminated),
@@ -2572,7 +2727,6 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    harness_memory_guard._TERMINATED_PGIDS.clear()
     owned_pgid = 314159
     peer_pgid = 314160
     self_pid = os.getpid()
@@ -2621,16 +2775,18 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
     def fake_sample_processes():
         return sample_sets[sample_index]
 
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.memory_guard,
         "sample_processes",
         fake_sample_processes,
     )
-    monkeypatch.setattr(
-        harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
+    _patch_guard_operation(
+        monkeypatch, harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
     )
     terminated: list[int] = []
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "terminate_group",
         _record_terminated_pgids(terminated),
@@ -2668,7 +2824,6 @@ def test_repo_process_sentinel_rejects_codex_parented_sibling_group(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    harness_memory_guard._TERMINATED_PGIDS.clear()
     app_server_pid = 424200
     ambient_pgid = 424000
     sibling_pid = 424301
@@ -2699,16 +2854,18 @@ def test_repo_process_sentinel_rejects_codex_parented_sibling_group(
             ),
         ),
     }
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.memory_guard,
         "sample_processes",
         lambda: samples,
     )
-    monkeypatch.setattr(
-        harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
+    _patch_guard_operation(
+        monkeypatch, harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
     )
     terminated: list[int] = []
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "terminate_group",
         _record_terminated_pgids(terminated),
@@ -2743,7 +2900,6 @@ def test_repo_process_sentinel_rejects_reused_current_tree_pgid_without_repo_ide
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    harness_memory_guard._TERMINATED_PGIDS.clear()
     reused_pgid = 271828
     sample_sets = [
         {
@@ -2774,16 +2930,18 @@ def test_repo_process_sentinel_rejects_reused_current_tree_pgid_without_repo_ide
     def fake_sample_processes():
         return sample_sets[sample_index]
 
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.memory_guard,
         "sample_processes",
         fake_sample_processes,
     )
-    monkeypatch.setattr(
-        harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
+    _patch_guard_operation(
+        monkeypatch, harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
     )
     terminated: list[int] = []
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "terminate_group",
         _record_terminated_pgids(terminated),
@@ -2853,13 +3011,15 @@ def test_repo_process_sentinel_drains_only_groups_started_after_baseline(
             return [baseline_group, new_group]
         return [baseline_group]
 
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.RepoProcessMemorySentinel,
         "_current_groups",
         fake_current_groups,
     )
     terminated: list[int] = []
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "terminate_group",
         _record_terminated_pgids(terminated),
@@ -2930,13 +3090,15 @@ def test_repo_process_sentinel_drain_skips_protected_codex_group(
             command=f"{tmp_path}/target/release-fast/molt-backend",
         ),
     }
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.memory_guard,
         "sample_processes",
         lambda: samples,
     )
     terminated: list[int] = []
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "terminate_group",
         _record_terminated_pgids(terminated),
@@ -3048,17 +3210,20 @@ def test_auto_repo_sentinel_preflight_requires_explicit_owned_custody(
             return []
         return [group]
 
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.memory_guard,
         "sample_processes",
         lambda: {},
     )
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "process_groups",
         fake_process_groups,
     )
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "terminate_group",
         _record_terminated_pgids(terminated),
@@ -3127,12 +3292,14 @@ def test_auto_repo_sentinel_ignores_reused_host_pgid_without_molt_identity(
         sentinel_calls.append(kwargs)
         yield object()
 
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.memory_guard,
         "sample_processes",
         lambda: {reused_pgid: sample},
     )
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "terminate_group",
         _record_terminated_pgids(terminated),
@@ -3197,7 +3364,8 @@ def test_repo_process_sentinel_remembers_observed_child_groups(
             )
         ]
 
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "process_groups",
         fake_process_groups,
@@ -3388,9 +3556,12 @@ def test_suite_event_publication_failure_remains_typed_after_bounded_scan(
         ),
     )
     monkeypatch.setattr(sentinel, "_current_groups", lambda: [group])
-    monkeypatch.setattr(harness_memory_guard, "_claim_terminated_pgid", lambda _: True)
+    _patch_guard_operation(
+        monkeypatch, harness_memory_guard, "_claim_terminated_pgid", lambda _: True
+    )
     terminated = []
-    monkeypatch.setattr(
+    _patch_guard_operation(
+        monkeypatch,
         harness_memory_guard.process_sentinel,
         "terminate_group",
         lambda pgid, **kwargs: terminated.append(pgid),
