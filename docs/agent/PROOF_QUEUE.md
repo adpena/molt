@@ -548,9 +548,12 @@ reads derive their paths from the effective command environment at use time,
 never import-time directory constants. Hosted CI custody projection can occur
 after guard modules import; the parent and child must still select the same root.
 The current-test snapshot names the active or last-observed node, not prior
-failures. Portability CI uses unbuffered verbose pytest output so completed
-node outcomes survive in the CI transcript even if timeout prevents the final
-summary. Full tracebacks may still require replay of the named failed nodes.
+failures. The pytest controller immediately formats and flushes completed
+failures into the existing output stream, preserving details if later termination
+prevents the final summary. Workers forward reports through xdist; they do not
+install another formatter. Native traceback and captured-output options remain
+effective, including `--tb=no` and `--show-capture=no`. The final pytest summary,
+exit status and guard closure remain independent acceptance requirements.
 Source and test-local `sitecustomize.py` files are adapters into that package,
 not repository-wide import-path authorities. Non-test startup must leave the
 checkout root absent unless the caller already selected it. Only a confirmed pytest, test-module, or

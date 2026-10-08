@@ -144,6 +144,14 @@ mutation and deferred-body analysis, and relative statements retain module
 context analysis. Live module resolution and exact source-byte identities remain
 mandatory on cache hits; no whole-graph freshness assumption replaces them.
 
+The walk retains captured source bytes for identity, while each analysis owns
+its AST only for the duration of that projection. Aliased module contexts reuse
+the captured bytes and independently derive their import facts. Persisted
+analysis rows pass strict decoding and dynamic-contract validation before reuse;
+valid hits keep their serialized storage, and misses replace only their selected
+variant. Pruning remains independent of misses, and a failed traversal publishes
+no partial cache. This compiler-side cache adds no checks to emitted binaries.
+
 Private-name mangling is owned by `molt.python_private_names`, shared by
 custody, discovery, binding analysis and lowering. Importing this primitive
 does not initialize compiler analysis. Capture-source and proof-authority

@@ -699,6 +699,99 @@ def test_non_mapping_graph_cache_is_ignored_and_replaced(tmp_path: Path) -> None
     )
 
 
+@pytest.mark.parametrize("unknown_fields", [False, True])
+def test_validated_graph_hit_reuses_storage_and_changed_bytes_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unknown_fields: bool
+) -> None:
+    seed, helper = tmp_path / "entry.py", tmp_path / "helper.py"
+    seed.write_bytes(b"import helper\n")
+    helper.write_bytes(b"VALUE = 1\n")
+    original = local_python_import_closure(tmp_path, (seed,))
+    cache_path = graph.python_source_closure_cache_path(tmp_path)
+    if unknown_fields:
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        row = next(iter(cache["entries"]["entry.py"].values()))
+        # Unknown storage metadata cannot become a graph request, even when a
+        # valid row is retained instead of round-tripped through its projection.
+        row["future_requests"] = ["unowned"]
+        row["requests"][0]["future_candidates"] = ["unowned"]
+        (tmp_path / "unowned.py").write_text("VALUE = 9\n", encoding="utf-8")
+        cache_path.write_text(json.dumps(cache), encoding="utf-8")
+    before = cache_path.read_bytes()
+
+    def unnecessary(*_args, **_kwargs):
+        raise AssertionError("validated hit must not reanalyze, reserialize or publish")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(graph, "analyze_local_imports", unnecessary)
+        patch.setattr(graph, "_analysis_payload", unnecessary)
+        patch.setattr(graph, "_write_graph_cache", unnecessary)
+        hit = local_python_import_closure(tmp_path, (seed,))
+    assert hit == original
+    assert set(hit.paths) == {seed, helper}
+    assert hit.source_sha256[helper] == hashlib.sha256(b"VALUE = 1\n").hexdigest()
+    assert cache_path.read_bytes() == before
+
+    helper.write_bytes(b"VALUE = 2\n")
+    changed = local_python_import_closure(tmp_path, (seed,))
+    assert set(changed.paths) == {seed, helper}
+    assert changed.content_digest != original.content_digest
+    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    row = next(iter(cache["entries"]["helper.py"].values()))
+    assert row["source_sha256"] == hashlib.sha256(b"VALUE = 2\n").hexdigest()
+    assert cache_path.read_bytes() != before
+
+
+@pytest.mark.parametrize(
+    "field, invalid_row",
+    [
+        ("requests", {"kind": "direct", "candidates": [], "line": 1, "column": 0}),
+        (
+            "discovery_requests",
+            {"kind": "direct", "candidates": ["unowned"], "line": True, "column": 0},
+        ),
+        ("unresolved_dynamic_imports", {"line": 1, "column": 0, "message": None}),
+        (
+            "relative_source_obligations",
+            {
+                "kind": "statement",
+                "name": "",
+                "level": True,
+                "fromlist": [],
+                "line": 1,
+                "column": 0,
+            },
+        ),
+    ],
+)
+def test_malformed_known_graph_fields_reanalyze_and_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, invalid_row: dict
+) -> None:
+    seed, helper = tmp_path / "entry.py", tmp_path / "helper.py"
+    seed.write_text("import helper\n", encoding="utf-8")
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
+    original = local_python_import_closure(tmp_path, (seed,))
+    cache_path = graph.python_source_closure_cache_path(tmp_path)
+    original_cache = cache_path.read_bytes()
+    cache = json.loads(original_cache)
+    row = next(iter(cache["entries"]["entry.py"].values()))
+    row[field] = [invalid_row]
+    cache_path.write_text(json.dumps(cache), encoding="utf-8")
+    analyze = graph.analyze_local_imports
+    analyzed = []
+
+    def record(snapshot, *args, **kwargs):
+        analyzed.append(snapshot.path)
+        return analyze(snapshot, *args, **kwargs)
+
+    monkeypatch.setattr(graph, "analyze_local_imports", record)
+    repaired = local_python_import_closure(tmp_path, (seed,))
+    assert repaired == original
+    assert set(repaired.paths) == {seed, helper}
+    assert analyzed == [seed]
+    assert json.loads(cache_path.read_bytes()) == json.loads(original_cache)
+
+
 @pytest.mark.parametrize("include_attribute", [False, True])
 @pytest.mark.parametrize("full_first", [False, True])
 def test_grouped_fromlist_graph_preserves_distinct_consumer_policies(
@@ -806,7 +899,9 @@ def test_source_capture_keys_and_parses_the_same_byte_generation(
     monkeypatch.setattr(
         graph.LocalPythonModuleResolver, "capture_source", capture_then_edit
     )
-    assert set(local_python_import_closure(tmp_path, (seed,)).paths) == {seed, first}
+    receipt = local_python_import_closure(tmp_path, (seed,))
+    assert set(receipt.paths) == {seed, first}
+    assert receipt.source_sha256[seed] == hashlib.sha256(original).hexdigest()
     assert captures.count(seed) == 1
     cache = json.loads(
         (graph.python_source_closure_cache_path(tmp_path)).read_text(encoding="utf-8")
@@ -843,6 +938,17 @@ def test_graph_replaces_contract_generations_and_prunes_deleted_sources(
     assert len(cache["entries"]["tools/entry.py"]) == 1
     row = next(iter(cache["entries"]["tools/entry.py"].values()))
     assert len(row["unresolved_dynamic_imports"]) == 1
+    # A well-typed cached diagnostic still has to satisfy the dynamic contract.
+    # Hit storage reuse must not turn successful decoding into semantic approval.
+    cache_path = graph.python_source_closure_cache_path(tmp_path)
+    accepted_bytes = cache_path.read_bytes()
+    row["unresolved_dynamic_imports"].append(dict(row["unresolved_dynamic_imports"][0]))
+    cache_path.write_text(json.dumps(cache), encoding="utf-8")
+    invalid_bytes = cache_path.read_bytes()
+    with pytest.raises(ValueError, match="manifest drift"):
+        local_python_import_closure(tmp_path, (seed,))
+    assert cache_path.read_bytes() == invalid_bytes
+    cache_path.write_bytes(accepted_bytes)
     # A changed contract cannot reuse the accepted unresolved-call row.
     manifest.write_text(
         "schema_version = 1\n[[source]]\npath = 'tools/entry.py'\n"
@@ -1198,9 +1304,107 @@ def test_manifest_tool_package_tree_preserves_declared_qualified_names(
     )
 
 
+@pytest.mark.parametrize("failure_stage", ["lazy_targets", "import_analysis"])
+def test_lazy_manifest_views_keep_captured_generation_and_release_failed_analysis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_stage: str
+) -> None:
+    import ast
+    import gc
+    import weakref
+
+    package = tmp_path / "src" / "molt" / "cli"
+    package.mkdir(parents=True)
+    for parent in (package, package.parent):
+        (parent / "__init__.py").write_text("", encoding="utf-8")
+    seed = package / "_lazy_facade.py"
+    original = (
+        b"_LAZY_REEXPORTS = {'entry': ('first', 'VALUE')}\n"
+        b"proxy = _LazyPostLoweringModule('proxy')\n__import__(name)\n"
+    )
+    changed = original.replace(b"'first'", b"'later'")
+    seed.write_bytes(original)
+    first, later, proxy = (
+        package / f"{name}.py" for name in ("first", "later", "proxy")
+    )
+    for path in (first, later, proxy):
+        path.write_text("VALUE = 1\n", encoding="utf-8")
+    manifest = tmp_path / graph._DYNAMIC_IMPORT_MANIFEST
+    manifest.write_text(
+        "schema_version = 1\n[[source]]\npath = 'src/molt/cli/_lazy_facade.py'\n"
+        "nonliteral_calls = 1\nderive_molt_cli_lazy_targets = true\n",
+        encoding="utf-8",
+    )
+    capture = graph.LocalPythonModuleResolver.capture_source
+    analyze = graph.analyze_local_imports
+    parse = ast.parse
+    captured = []
+    trees = []
+
+    def capture_then_edit(resolver, path):
+        snapshot = capture(resolver, path)
+        if path == seed:
+            captured.append(snapshot)
+            if snapshot.content == original:
+                seed.write_bytes(changed)
+        return snapshot
+
+    def record_tree(*args, **kwargs):
+        tree = parse(*args, **kwargs)
+        if kwargs.get("filename") == str(seed):
+            trees.append(weakref.ref(tree))
+        return tree
+
+    def bounded_analysis(*args, **kwargs):
+        gc.collect()
+        assert all(tree() is None for tree in trees)
+        return analyze(*args, **kwargs)
+
+    monkeypatch.setattr(
+        graph.LocalPythonModuleResolver, "capture_source", capture_then_edit
+    )
+    monkeypatch.setattr(graph, "analyze_local_imports", bounded_analysis)
+    monkeypatch.setattr(ast, "parse", record_tree)
+    before = local_python_import_closure(tmp_path, (seed,))
+    assert {seed, first, proxy, manifest} <= set(before.paths)
+    assert later not in before.paths
+    assert before.source_sha256[seed] == hashlib.sha256(original).hexdigest()
+    assert len(captured) == 1 and captured[0].content == original
+    after = local_python_import_closure(tmp_path, (seed,))
+    assert {later, proxy} <= set(after.paths) and first not in after.paths
+    assert after.source_sha256[seed] == hashlib.sha256(changed).hexdigest()
+    assert after.content_digest != before.content_digest
+    assert len(captured) == 2 and captured[1].content == changed
+    gc.collect()
+    assert trees and all(tree() is None for tree in trees)
+
+    cache_path = graph.python_source_closure_cache_path(tmp_path)
+    cache_before_failure = cache_path.read_bytes()
+    if failure_stage == "lazy_targets":
+        seed.write_bytes(changed.replace(b"{'entry': ('later', 'VALUE')}", b"None"))
+        message = "lazy reexport registry is not a literal dict"
+    else:
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8").replace(
+                "nonliteral_calls = 1", "nonliteral_calls = 2"
+            ),
+            encoding="utf-8",
+        )
+        message = "manifest drift"
+    with pytest.raises(ValueError, match=message):
+        local_python_import_closure(tmp_path, (seed,))
+    # Exception tracebacks may own the failing view while observed. Once that
+    # observation ends, retaining captured bytes must not retain any AST.
+    gc.collect()
+    assert all(tree() is None for tree in trees)
+    assert cache_path.read_bytes() == cache_before_failure
+
+
 def test_import_alias_contexts_share_bytes_not_analysis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import ast
+    import gc
+    import weakref
     from molt.cli.python_import_resolution import LocalPythonModuleResolver
 
     package = tmp_path / "tools" / "pkg"
@@ -1215,19 +1419,34 @@ def test_import_alias_contexts_share_bytes_not_analysis(
     contexts: list[str] = []
     capture = LocalPythonModuleResolver.capture_source
     analyze = graph.analyze_local_imports
+    parse = ast.parse
+    trees = []
+
+    def record_tree(*args, **kwargs):
+        tree = parse(*args, **kwargs)
+        if kwargs.get("filename") == str(helper):
+            trees.append(weakref.ref(tree))
+        return tree
 
     def record_capture(self, path):
         captures.append(path)
         return capture(self, path)
 
     def record_analysis(snapshot, module_source, *args, **kwargs):
+        # Prior projections may keep compact facts, never a previous AST. Collect
+        # cycles so the ownership oracle does not depend on reference counting.
+        gc.collect()
+        assert all(tree() is None for tree in trees)
         if snapshot.path == helper:
             contexts.append(module_source.name)
         return analyze(snapshot, module_source, *args, **kwargs)
 
     monkeypatch.setattr(LocalPythonModuleResolver, "capture_source", record_capture)
     monkeypatch.setattr(graph, "analyze_local_imports", record_analysis)
+    monkeypatch.setattr(ast, "parse", record_tree)
     assert child in local_python_import_closure(tmp_path, (seed,)).paths
+    gc.collect()
+    assert trees and all(tree() is None for tree in trees)
     assert set(contexts) == {"pkg.helper", "tools.pkg.helper"}
     assert captures.count(helper) == 1
     cache = json.loads(
@@ -1583,3 +1802,165 @@ def test_manifest_root_contract_rejects_invalid_domains(
     )
     with pytest.raises(ValueError, match=message):
         local_python_import_closure(tmp_path, (seed,))
+
+
+@pytest.mark.parametrize("cache_state", ["cold", "warm"])
+@pytest.mark.parametrize("instrumentation", ["none", "tracemalloc"])
+@pytest.mark.parametrize("workers", [1, 4])
+def test_closure_profile_measures_explicit_cases_with_captured_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cache_state: str,
+    instrumentation: str,
+    workers: int,
+) -> None:
+    from threading import get_ident
+    from tools import profile_python_source_closure as profiler
+
+    sources = {"entry.py": b"import leaf\n", "leaf.py": b"VALUE = 1\n"}
+    expected_digest = hashlib.sha256()
+    for name, content in sorted(sources.items()):
+        (tmp_path / name).write_bytes(content)
+        expected_digest.update(name.encode() + b"\0" + content + b"\0")
+    calls: list[int] = []
+
+    def observe(root: Path, seeds: tuple[Path, ...]):
+        if cache_state == "warm" and instrumentation == "tracemalloc" and not calls:
+            # A discarded preparation allocation must not become the measured
+            # batch peak. Forgetting reset_peak preserves this independent marker.
+            preparation = bytearray(8 * 1024 * 1024)
+            del preparation
+        calls.append(get_ident())
+        return local_python_import_closure(root, seeds)
+
+    monkeypatch.setattr(profiler, "local_python_import_closure", observe)
+    iterations = 1 if cache_state == "cold" else 2
+    result = profiler.profile_closure(
+        tmp_path,
+        tmp_path / "entry.py",
+        cache_state=cache_state,
+        instrumentation=instrumentation,
+        workers=workers,
+        iterations=iterations,
+    )
+    assert result["closure_content_digest"] == expected_digest.hexdigest()
+    assert result["closure_count"] == len(sources)
+    assert result["closure_source_bytes"] == sum(map(len, sources.values()))
+    assert result["cache_state"] == cache_state
+    assert result["cache_existed_before_warmup"] is False
+    assert result["instrumentation"] == instrumentation
+    assert result["workers"] == workers
+    assert result["measured_calls"] == workers * iterations
+    assert result["warmup_calls"] == int(cache_state == "warm")
+    assert len(calls) == workers * iterations + int(cache_state == "warm")
+    assert len(set(calls)) >= workers
+    assert len(result["samples"]) == iterations
+    for sample in result["samples"]:
+        assert sample["wall_ns"] > 0
+        assert sample["process_cpu_ns"] >= 0
+        if instrumentation == "tracemalloc":
+            assert sample["traced_peak_bytes"] >= sample["traced_baseline_bytes"] >= 0
+            assert sample["traced_peak_bytes"] >= sample["traced_current_bytes"] >= 0
+        else:
+            assert sample["traced_peak_bytes"] is None
+            assert sample["traced_baseline_bytes"] is None
+            assert sample["traced_current_bytes"] is None
+    if cache_state == "warm" and instrumentation == "tracemalloc":
+        assert result["warmup_traced_peak_bytes"] > 0
+        assert result["samples"][0]["traced_baseline_bytes"] > 0
+        assert all(
+            sample["traced_peak_bytes"] < result["warmup_traced_peak_bytes"]
+            for sample in result["samples"]
+        )
+    else:
+        assert result["warmup_traced_peak_bytes"] is None
+
+
+def test_closure_profile_rejects_mislabeled_cold_without_clearing_cache(
+    tmp_path: Path,
+) -> None:
+    from tools import profile_python_source_closure as profiler
+
+    seed = tmp_path / "entry.py"
+    seed.write_text("VALUE = 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="cold requires one batch"):
+        profiler.profile_closure(
+            tmp_path,
+            seed,
+            cache_state="cold",
+            instrumentation="none",
+            workers=1,
+            iterations=2,
+        )
+    local_python_import_closure(tmp_path, (seed,))
+    cache = graph.python_source_closure_cache_path(tmp_path)
+    before = cache.read_bytes()
+    with pytest.raises(ValueError, match="absent graph cache"):
+        profiler.profile_closure(
+            tmp_path,
+            seed,
+            cache_state="cold",
+            instrumentation="none",
+            workers=1,
+            iterations=1,
+        )
+    assert cache.read_bytes() == before
+
+
+def test_closure_profile_rejects_source_drift_and_releases_tracing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tracemalloc
+    from tools import profile_python_source_closure as profiler
+
+    seed = tmp_path / "entry.py"
+    leaf = tmp_path / "leaf.py"
+    seed.write_text("import leaf\n", encoding="utf-8")
+    leaf.write_text("VALUE = 1\n", encoding="utf-8")
+    calls = 0
+
+    def mutate(root: Path, seeds: tuple[Path, ...]):
+        nonlocal calls
+        result = local_python_import_closure(root, seeds)
+        calls += 1
+        if calls == 2:  # Warmup and first measured batch captured the old bytes.
+            leaf.write_text("VALUE = 2\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(profiler, "local_python_import_closure", mutate)
+    with pytest.raises(RuntimeError, match="closure changed"):
+        profiler.profile_closure(
+            tmp_path,
+            seed,
+            cache_state="warm",
+            instrumentation="tracemalloc",
+            workers=1,
+            iterations=2,
+        )
+    assert calls == 3
+    assert not tracemalloc.is_tracing()
+
+
+@pytest.mark.parametrize("instrumentation", ["none", "tracemalloc"])
+def test_closure_profile_preserves_another_tracing_owner(
+    tmp_path: Path,
+    instrumentation: str,
+) -> None:
+    import tracemalloc
+    from tools import profile_python_source_closure as profiler
+
+    tracemalloc.start()
+    try:
+        with pytest.raises(ValueError, match="exclusive ownership"):
+            profiler.profile_closure(
+                tmp_path,
+                tmp_path / "entry.py",
+                cache_state="cold",
+                instrumentation=instrumentation,
+                workers=1,
+                iterations=1,
+            )
+        assert tracemalloc.is_tracing()
+    finally:
+        tracemalloc.stop()

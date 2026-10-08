@@ -930,6 +930,23 @@ MOLT_USE_SCCACHE=1 \
 uv run --python 3.12 python3 -m molt.cli build examples/hello.py --build-profile dev --cache-report
 ```
 
+### Python Source-Closure Cost
+
+`tools/profile_python_source_closure.py` measures the source graph rooted at
+`tools/wasm_link.py`. Run each case in a fresh interpreter under the existing
+memory guard, with explicit `--cache-state cold|warm`,
+`--instrumentation none|tracemalloc`, `--workers` and `--iterations`. Cold cases
+require an absent graph cache in a fresh `MOLT_CACHE` and one batch; the tool
+never clears an existing cache. Warm cases perform one untimed closure first.
+
+The JSON receipt records captured source identity, batch latency and optional
+allocation peaks. Concurrent batch time includes pool startup and shutdown.
+Tracing starts after imports and resets its peak before each measured batch;
+warmup-retained allocations remain visible. Use uninstrumented cases for latency
+comparisons and separate traced cases for allocation analysis. The outer guard
+owns process-tree RSS, including interpreter startup and warmup. Cold here means
+an absent graph cache, not cold operating-system file pages.
+
 ### Throughput Matrix Harness
 
 Use the dedicated matrix harness to compare single-agent vs concurrent throughput
