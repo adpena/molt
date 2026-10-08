@@ -78,8 +78,6 @@ jobs:
           cache-uv: "false"
           rust-toolchain: pinned
           cache-cargo: "true"
-      - name: Configure adaptive Rust parallelism
-        run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
       - name: Install cargo-deny and cargo-audit
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- cargo install cargo-deny --version 0.20.2 --locked

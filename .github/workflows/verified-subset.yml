@@ -80,10 +80,6 @@ jobs:
           TARGET_PYTHON: ${{ matrix.reference_python }}
         run: uv sync --frozen --python "$TARGET_PYTHON"
 
-      - name: Configure adaptive Rust parallelism
-        shell: bash
-        run: uv run --project . --no-sync python tools/ci_resource_env.py --github-env "$GITHUB_ENV"
-
       - name: Setup canonical WebAssembly linker and WASI sysroot
         if: matrix.backend == 'wasm'
         uses: ./.github/actions/setup-llvm

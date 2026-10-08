@@ -58,9 +58,6 @@ jobs:
           sync: "true"
           sync-frozen: "true"
 
-      - name: Configure adaptive Rust parallelism
-        run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
-
       # setup-project placed CARGO_TARGET_DIR under RUNNER_TEMP, outside the
       # checkout; the WASM parity tests build into the same cached target.
       - name: Share the Cargo target with the WASM tests

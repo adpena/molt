@@ -69,9 +69,6 @@ jobs:
           sync-frozen: "true"
           sync-groups: bench, dev
 
-      - name: Configure adaptive Rust parallelism
-        run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
-
       - name: Setup LLVM backend SDK
         if: matrix.backend == 'llvm'
         uses: ./.github/actions/setup-llvm
