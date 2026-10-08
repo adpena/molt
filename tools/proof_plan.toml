@@ -2230,7 +2230,9 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest", "tests/tools/test_proof_queue_native_receipts.py"]
+# Dump a Python stack during a slow test without ending it or changing the
+# owning row budget. Live node/output and guard profiles survive forced exit.
+argv = ["uv", "run", "--python", "3.12", "pytest", "-vv", "-s", "-o", "faulthandler_timeout=30", "--durations=0", "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest", "tests/tools/test_proof_queue_native_receipts.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
 [[command]]
