@@ -6112,7 +6112,10 @@ def test_proof_queue_prioritizes_running_pytest_failure_progress(
     )
     assert "failures=9" in diagnose_out
     assert "errors=0" in diagnose_out
-    assert "Keep the row running for the full pytest failure report" in diagnose_out
+    assert "Inspect the immediately flushed pytest failure details" in diagnose_out
+    assert (
+        "Keep the row running for remaining results and custody closure" in diagnose_out
+    )
     assert "running-pytest-current-test-missing" in diagnose_out
 
 

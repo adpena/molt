@@ -312,7 +312,10 @@ def _molt_cli_lazy_targets(
 ) -> set[str]:
     """Derive finite ``molt.cli`` lazy imports from their source authorities."""
 
-    source, tree = snapshot.path, snapshot.tree
+    # The graph owns captured bytes for the whole walk, but this derivation owns
+    # its AST only until the finite target projection is complete.
+    source = snapshot.path
+    tree = PythonSourceSnapshot(source, snapshot.content).tree
     targets: set[str] = set()
     registry_found = False
     for node in tree.body:
@@ -597,16 +600,19 @@ def local_python_import_closure(
             contract_digest = _dynamic_contract_digest(
                 expected_dynamic_imports, dynamic_targets
             )
-            variants = dict(next_entries.get(cache_key, {}))
+            variants = next_entries.get(cache_key)
             analysis = _cached_analysis(
-                variants.get(policy_digest),
+                variants.get(policy_digest) if variants is not None else None,
                 snapshot.sha256,
                 contract_digest,
                 analysis_digest,
             )
+            analysis_missed = analysis is None
             if analysis is None:
                 analysis = analyze_local_imports(
-                    snapshot,
+                    # Share captured bytes without retaining the analysis AST
+                    # (or decoded text) in the walk's byte-identity owner.
+                    PythonSourceSnapshot(snapshot.path, snapshot.content),
                     module_source,
                     policy,
                     expected_nonliteral_dynamic_imports=expected_dynamic_imports,
@@ -615,13 +621,17 @@ def local_python_import_closure(
             # Reapply the contract even on a cache hit; accepted unresolved sites
             # are retained, never silently converted into a complete analysis.
             analysis.validate_dynamic_contract(source, policy, expected_dynamic_imports)
-            variants[policy_digest] = {
-                "source_sha256": snapshot.sha256,
-                "dynamic_contract_sha256": contract_digest,
-                "analysis_authority_sha256": analysis_digest,
-                **_analysis_payload(analysis),
-            }
-            next_entries[cache_key] = variants
+            if analysis_missed:
+                # A validated hit already owns its serialized storage. Rebuild
+                # only misses, merging aliases without mutating cached_entries.
+                variants = dict(variants or {})
+                variants[policy_digest] = {
+                    "source_sha256": snapshot.sha256,
+                    "dynamic_contract_sha256": contract_digest,
+                    "analysis_authority_sha256": analysis_digest,
+                    **_analysis_payload(analysis),
+                }
+                next_entries[cache_key] = variants
             dependencies = resolve_local_import_requests(
                 analysis,
                 resolver,
