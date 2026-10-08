@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -258,3 +259,26 @@ def test_all_inactive_roots_have_an_empty_realized_closure(tmp_path: Path) -> No
     closure = _select(tmp_path, requirements)
     assert closure["packages"] == []
     assert environment_matches_lock_closure({"distributions": []}, closure)
+
+
+def test_repository_lock_revision_is_supported_and_unknown_ones_fail_closed(
+    tmp_path: Path,
+) -> None:
+    from molt import python_uv_lock_identity as identity
+
+    repository_lock = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "uv.lock").read_text(encoding="utf-8")
+    )
+    assert repository_lock["revision"] in identity.SUPPORTED_UV_LOCK_REVISIONS
+
+    requirements = _project(tmp_path)
+    lock = tmp_path / "uv.lock"
+    lock.write_text(
+        lock.read_text(encoding="utf-8").replace(
+            "revision = 1",
+            f"revision = {max(identity.SUPPORTED_UV_LOCK_REVISIONS) + 1}",
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(identity.PythonEnvironmentIdentityError, match="schema"):
+        _select(tmp_path, requirements)
