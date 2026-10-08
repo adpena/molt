@@ -156,19 +156,25 @@ def _guard_caps(
 ) -> tuple[float | None, float | None]:
     """The memory guard caps that admit every job this plan admits.
 
-    The guard's own caps are fixed fractions of available memory, which on a
-    small runner fall below one admitted Cargo job (7 GB macOS: 1.5 GB per
-    process against a 2.2 GB usable budget), so the guard killed a job the
-    plan had sized. The caps rise to the usable memory each admitted job may
-    take and never above the usable total; they never fall below the guard's
-    defaults, which the guard still clamps to its hard and global ceilings.
+    Each admitted Cargo job may use its share of usable memory and at least its
+    receipt-calibrated need. A small runner still admits one job when that need
+    exceeds the usable snapshot (7 GB macOS: 2.2 GB usable, 3.06 GB calibrated),
+    and a cap below the need killed that job at 2.23 GB. The host ceiling is
+    physical memory less the reserve; the guard's own dynamic global budget
+    still protects the host at run time. The caps never fall below the guard's
+    defaults, which the guard clamps to its hard and global ceilings.
     """
     usable = plan.usable_gb
     if usable is None or usable <= 0:
         return None, None
-    per_job = usable / max(1, plan.cargo_build_jobs)
-    process_cap = min(usable, max(budget.max_process_rss_gb, per_job))
-    total_cap = min(usable, max(budget.max_total_rss_gb, process_cap))
+    ceiling = (
+        max(usable, plan.physical_gb - plan.reserve_gb)
+        if plan.physical_gb is not None
+        else usable
+    )
+    per_job = max(usable / max(1, plan.cargo_build_jobs), plan.cargo_build_gb_per_job)
+    process_cap = min(ceiling, max(budget.max_process_rss_gb, per_job))
+    total_cap = min(ceiling, max(budget.max_total_rss_gb, process_cap))
     return process_cap, total_cap
 
 
