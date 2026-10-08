@@ -76,7 +76,7 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
         return value
 
     def _is_canonicalization_barrier_op(self, op_kind: str) -> bool:
-        if op_kind in {"RETURN", "RAISE", "RAISE_CAUSE", "RERAISE"}:
+        if op_kind in {"ret", "ret_void", "RAISE", "RAISE_CAUSE", "RERAISE"}:
             return True
         if op_kind.startswith("EXCEPTION_"):
             return True

@@ -74,12 +74,12 @@ def test_jump_join_uses_all_predecessors() -> None:
 @pytest.mark.parametrize("route", ["TRY_START", "CHECK_EXCEPTION", "STATE_SWITCH"])
 def test_guard_success_does_not_flow_to_exception_or_resume_entry(route: str) -> None:
     if route == "STATE_SWITCH":
-        ops = [guard(), op(route), op("RETURN"), op("STATE_LABEL", "resume"), guard()]
+        ops = [guard(), op(route), op("ret"), op("STATE_LABEL", "resume"), guard()]
     else:
         ops = [guard(), op(route, "handler")]
         if route == "TRY_START":
             ops.extend([op("CALL", MoltValue("mutate")), op("TRY_END")])
-        ops.extend([op("RETURN"), op("LABEL", "handler"), guard()])
+        ops.extend([op("ret"), op("LABEL", "handler"), guard()])
     assert elide(ops)[-1] is ops[-1]
 
 
@@ -102,11 +102,11 @@ def test_cfg_records_complete_edge_modes_at_the_edge_authority() -> None:
         op("TRY_START", "handler"),
         op("CALL", MoltValue("callback")),
         op("TRY_END"),
-        op("RETURN"),
+        op("ret"),
         op("LABEL", "handler"),
         op("STATE_SWITCH"),
         op("STATE_LABEL", "resume"),
-        op("RETURN"),
+        op("ret"),
     ]
     cfg = build_cfg(ops)
     assert set(cfg.edge_kinds) == {
