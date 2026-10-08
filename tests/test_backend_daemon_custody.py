@@ -8,6 +8,9 @@ import pytest
 from molt import backend_daemon_custody as custody
 from tools import memory_guard
 
+# These tests fake process data the session sentinel also reads.
+pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
+
 
 def _identity(tmp_path: Path, *, pid: int = 101) -> custody.BackendDaemonIdentity:
     backend_bin = tmp_path / "target" / "debug" / "molt-backend"

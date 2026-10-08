@@ -18,7 +18,7 @@ from molt.memory_guard_paths import harness_guard_artifact_dir
 from tools import harness_memory_guard
 
 # Limit resolution here must not inherit the CI plan's guard caps.
-pytestmark = pytest.mark.usefixtures("no_ambient_guard_caps")
+pytestmark = pytest.mark.usefixtures("no_ambient_guard_caps", "session_sentinel_paused")
 
 
 def test_guarded_completed_process_defaults_temporary_artifacts_to_none() -> None:
@@ -2408,6 +2408,82 @@ def test_repo_process_sentinel_scan_in_flight_at_exit_cannot_kill_later(
     assert not thread.is_alive()
     assert terminated == []
     assert sentinel.tripped is False
+
+
+def test_paused_repo_sentinel_does_not_act_on_faked_process_data(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A pause withholds authority from a scan in flight, and only while paused.
+
+    The serial pytest session sentinel shares the module functions that unit
+    tests patch; without a pause it saw one test's fake groups and terminated
+    them during the next test.
+    """
+    harness_memory_guard._TERMINATED_PGIDS.clear()
+    fake_group = harness_memory_guard.process_sentinel.ProcessGroup(
+        pgid=876500,
+        matched=True,
+        samples=(
+            harness_memory_guard.memory_guard.ProcessSample(
+                pid=876501,
+                ppid=1,
+                pgid=876500,
+                rss_kb=5 * 1024 * 1024,
+                command="molt-backend --daemon --faked",
+            ),
+        ),
+    )
+    scanning = threading.Event()
+    release = threading.Event()
+    stall_first_scan = [True]
+
+    def groups(*args, **kwargs):  # type: ignore[no-untyped-def]
+        if threading.current_thread().name != "unit-paused-memory-sentinel":
+            return []
+        if stall_first_scan[0]:
+            stall_first_scan[0] = False
+            scanning.set()
+            release.wait(timeout=30)
+        return [fake_group]
+
+    monkeypatch.setattr(harness_memory_guard.process_sentinel, "process_groups", groups)
+    monkeypatch.setattr(
+        harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
+    )
+    terminated: list[int] = []
+    acted = threading.Event()
+
+    def record(pgid, *, grace, expected_identities=None):  # type: ignore[no-untyped-def]
+        terminated.append(pgid)
+        acted.set()
+
+    monkeypatch.setattr(
+        harness_memory_guard.process_sentinel, "terminate_group", record
+    )
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="unit-paused",
+        limits=harness_memory_guard.HarnessMemoryLimits(
+            enabled=True,
+            max_process_rss_gb=1,
+            max_total_rss_gb=2,
+            max_global_rss_gb=3,
+            poll_interval=0.01,
+        ),
+        drain_on_exit=False,
+        suppress_auto_guard=False,
+        scope_to_current_tree=False,
+    )
+    with sentinel:
+        assert scanning.wait(timeout=30)
+        with sentinel.paused():
+            release.set()
+            assert not acted.wait(timeout=0.5)
+            assert terminated == [] and sentinel.tripped is False
+        assert acted.wait(timeout=30)
+
+    assert terminated[0] == 876500
 
 
 def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(

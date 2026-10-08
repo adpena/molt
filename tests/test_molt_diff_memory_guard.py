@@ -8,6 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
+# These tests fake process data the session sentinel also reads.
+pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tests" / "molt_diff.py"

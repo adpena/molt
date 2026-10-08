@@ -54,6 +54,21 @@ def no_ambient_guard_caps(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def session_sentinel_paused(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Pause the serial session's repo sentinel while a test fakes process data.
+
+    The sentinel's thread reads the same module functions these tests patch, so
+    it could see one test's fake groups and act on them during the next test.
+    """
+    sentinel = getattr(request.config, _PYTEST_SENTINEL_ATTR, None)
+    if sentinel is None:
+        yield
+        return
+    with sentinel.paused():
+        yield
+
+
+@pytest.fixture
 def isolated_molt_cache(tmp_path_factory, monkeypatch) -> Path:
     """Opt-in disposable cache outside a test's compiler/project source tree."""
     cache = tmp_path_factory.mktemp("molt-cache")
