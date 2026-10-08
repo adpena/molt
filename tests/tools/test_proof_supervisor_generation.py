@@ -456,3 +456,44 @@ def test_cargo_content_inputs_exclude_transport_but_bind_compile_environment(tmp
         {"RUSTFLAGS": "-C opt-level=2", "COMPILED_VALUE": "two"},
     ):
         assert all(value != capture(changed)[key] for key, value in first.items())
+
+
+def test_build_inputs_bind_dispatch_and_probes_to_selected_cargo(tmp_path, monkeypatch):
+    from tools.proof_queue_pkg import toolchain_capture
+
+    selected, decoy = tmp_path / "selected", tmp_path / "path"
+    for directory in (selected, decoy):
+        directory.mkdir()
+        for role in ("cargo", "rustc"):
+            image = directory / (role + (".exe" if os.name == "nt" else ""))
+            image.write_bytes((directory.name + role).encode())
+            image.chmod(0o755)
+    suffix = ".exe" if os.name == "nt" else ""
+    cargo = selected / ("cargo" + suffix)
+    rustc = selected / ("rustc" + suffix)
+    environment = {"CARGO": str(cargo), "RUSTC": str(rustc), "PATH": str(decoy)}
+    version_commands, link_commands = [], []
+
+    def version(argv, **kwargs):
+        version_commands.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "selected tool version", "")
+
+    def link_probe(**kwargs):
+        link_commands.append(kwargs)
+        return [], {}
+
+    monkeypatch.setattr(command_identity, "_run_captured", version)
+    monkeypatch.setattr(
+        toolchain_capture, "capture_rust_link_process_images", link_probe
+    )
+    inputs, identities = generation._build_inputs(environment, profile="debug")
+    assert inputs["command"][0] == str(cargo)
+    assert inputs["toolchains"]["cargo"]["path"] == str(cargo)
+    assert version_commands == [
+        [str(cargo), "--version"],
+        [str(rustc), "--version", "--verbose"],
+    ]
+    assert len(link_commands) == 1
+    assert link_commands[0]["cargo"] == cargo
+    assert link_commands[0]["command_argv"] == inputs["command"]
+    assert identities

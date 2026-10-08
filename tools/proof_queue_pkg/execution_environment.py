@@ -246,6 +246,19 @@ def _bind_cargo_build_tool_environment(
     command = [str(value) for value in envelope["argv"]]
     command = admission._nested_command(command) or command
     invocation = admission.cargo_invocation_for_envelope(envelope)
+    if invocation is not None:
+        # Cargo forwards CARGO to build scripts and external subcommands. An
+        # explicit typed payload therefore owns this selector too, even when
+        # the inherited environment points to another installation.
+        cargo = command_identity._cargo_executable_path(
+            envelope, command, cwd=cwd, env=selected, token=command[0]
+        )
+        selected = {
+            name: value
+            for name, value in selected.items()
+            if (name.upper() if os.name == "nt" else name) != "CARGO"
+        }
+        selected["CARGO"] = str(cargo)
     if invocation is not None and invocation.toolchain_selector is not None:
         selected = {
             name: value
@@ -356,6 +369,9 @@ def _require_cargo_build_tool_environment_context(
         "RUSTFMT",
         "RUSTDOC",
         "CARGO_BUILD_RUSTDOC",
+        "CARGO",
+        "RUSTC",
+        "CARGO_BUILD_RUSTC",
         "PATH",
         *cargo_output_environment.TEMPORARY_VARIABLE_NAMES,
         *outputs.names,
@@ -377,18 +393,20 @@ def _require_cargo_build_tool_environment_context(
             raise ValueError(
                 f"Cargo {origin} redirects output outside declared placement"
             )
-        if (
-            isinstance(build, Mapping)
-            and "rustdoc" in build
-            and not any(
-                (name.upper() if os.name == "nt" else name) == "RUSTDOC" and value
-                for name, value in env.items()
-            )
-        ):
-            raise ValueError(
-                f"unsupported Cargo build-tool environment context: {origin} defines build.rustdoc; "
-                "select the documentation tool through explicit RUSTDOC before capture"
-            )
+        for role in ("rustc", "rustdoc"):
+            if (
+                isinstance(build, Mapping)
+                and role in build
+                and not any(
+                    (name.upper() if os.name == "nt" else name) == role.upper()
+                    and value
+                    for name, value in env.items()
+                )
+            ):
+                raise ValueError(
+                    f"unsupported Cargo build-tool environment context: {origin} defines build.{role}; "
+                    f"select the tool through explicit {role.upper()} before capture"
+                )
         environment = payload.get("env") if isinstance(payload, Mapping) else None
         if not isinstance(environment, Mapping):
             continue
@@ -435,9 +453,27 @@ def _execution_environment_executable_identities(
         identity = command_identity._executable_identity(path)
         if not command_identity._content_identity_available(identity):
             raise ValueError(f"executable environment {name} has no content identity")
+        images = [
+            process_image_capture.capture_image(f"env:{name}", path, preserve_path=True)
+        ]
+        resolved = Path(str(identity["resolved_path"]))
+        if resolved != path:
+            images.append(process_image_capture.capture_image(f"env:{name}", resolved))
+        rust_role = upper.removeprefix("CARGO_BUILD_").lower()
+        if rust_role in {"cargo", "rustc", "rustdoc", "rustfmt"}:
+            from molt.rust_toolchain import resolve_rustup_proxy
+
+            content = resolve_rustup_proxy(
+                path, role=rust_role, root=cwd, env=env
+            ).resolve(strict=True)
+            if content != resolved:
+                images.append(
+                    process_image_capture.capture_image(f"env:{name}", content)
+                )
         identities[name] = {
             "executable": identity,
             "argument_count": len(parts) - 1,
+            "process_images": process_image_capture.canonical_images(images),
         }
     return identities
 
@@ -507,7 +543,7 @@ def _capture_toolchains(
         if name == "rustc":
             toolchain_capture.revalidate_rust_link_process_images(
                 located,
-                target=command_identity._rust_target(exact, env),
+                target=command_identity._rust_target(envelope, env),
                 command_argv=admission._nested_command(exact) or exact,
             )
         for frozen in toolchain_capture.frozen_files({name: located}):

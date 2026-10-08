@@ -11,8 +11,19 @@ explicit executable path in a typed direct or delegated Cargo command takes
 precedence over `CARGO`; a bare Cargo role uses `CARGO` before the command's
 execution `PATH`. Once the command is bound, Cargo identity and Rust metadata/link
 probes use that exact payload executable. Python families that only declare Cargo
-as a dependency retain their selected-environment lookup. A missing selected
-executable is an admission error; the queue does not substitute a PATH proxy.
+as a dependency use PATH for that dependency and independently capture an explicit
+`CARGO` hook. Native supervision and Python child custody consume the same
+executable-environment image closure, including selected Rust proxy components. The bound typed Cargo
+payload also owns the child `CARGO` value; an inherited selector cannot redirect
+its build scripts. A missing selected executable fails during execution setup,
+before the proof child starts; the queue does not substitute a PATH proxy.
+
+Executable lookup uses captured environment values and the command working
+directory, including relative PATH entries and explicit `./tool` paths. Windows
+suffix candidates follow CPython `shutil.which` with executable access required.
+Python child audit custody preserves CPython's distinction between inherited,
+missing, and empty PATH. Generator dependencies resolve `rustfmt` through PATH;
+the Cargo-specific `RUSTFMT` hook remains a separate captured build-tool input.
 
 Rust tool identity resolves the selected physical component before reuse. A change
 to a rustup override invalidates reuse even when proxy bytes are unchanged. Explicit

@@ -292,17 +292,22 @@ def executable_name_candidates(
     if not windows:
         return (command,)
     extensions = tuple(
-        extension
-        for extension in executable_environment_value(
-            environment, "PATHEXT", ".COM;.EXE;.BAT;.CMD", windows=True
+        extension.rstrip(".")
+        for extension in (
+            executable_environment_value(environment, "PATHEXT", windows=True)
+            or ".COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC"
         ).split(";")
         if extension
     )
+    suffixed = tuple(command + extension for extension in extensions)
+    # CPython shutil.which's X_OK policy admits the direct spelling only
+    # when it already has a PATHEXT suffix. A sibling POSIX launcher must not
+    # shadow the executable Windows command (for example npm beside npm.cmd).
     if any(
         command.casefold().endswith(extension.casefold()) for extension in extensions
     ):
-        return (command,)
-    return (command, *(command + extension for extension in extensions))
+        return (command, *suffixed)
+    return suffixed
 
 
 def executable_search_directories(

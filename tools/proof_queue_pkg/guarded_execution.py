@@ -804,7 +804,12 @@ def execute_guarded_request(request_path: Path) -> int:
             result_path=result_path,
             cargo_cache=cargo_cache.provenance if cargo_cache is not None else None,
         )
-        frozen = toolchain_capture.frozen_files(toolchains_full)
+        frozen = toolchain_capture.frozen_files(
+            {
+                "toolchains": toolchains_full,
+                "environment_executables": environment_executables_pre,
+            }
+        )
         uncovered = [
             row.path
             for row in frozen
@@ -816,7 +821,10 @@ def execute_guarded_request(request_path: Path) -> int:
                 + ", ".join(uncovered[:3])
             )
         child_policy = execution_custody.child_policy(
-            envelope, toolchains_full, derived_roots=derived_root_provenance
+            envelope,
+            toolchains_full,
+            environment_executables=environment_executables_pre,
+            derived_roots=derived_root_provenance,
         )
         child_event_server = execution_custody.ChildCustodyEventServer(
             expected_child_runtime, child_policy
@@ -898,11 +906,15 @@ def execute_guarded_request(request_path: Path) -> int:
         )
         custody_session.mark_captured()
         del _proof_python_full, toolchains_full, frozen
-        environment_executables_pre = (
+        environment_executables_armed = (
             environment._execution_environment_executable_identities(
                 execution_env, cwd=cwd
             )
         )
+        if environment_executables_armed != environment_executables_pre:
+            raise ValueError(
+                "executable environment selection changed while arming custody"
+            )
         custody_authorities_pre = [
             command_identity._file_identity(path) for path in custody_authority_paths
         ]

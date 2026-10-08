@@ -14,7 +14,7 @@ Index mode executes the captured staged generator with its staged manifest, poli
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 330 |
+| Hashed executable authority inputs | 1 | 334 |
 | Local path rules | 35 | 43 |
 | Unique local commands | 73 | 98 |
 | Handwritten Python classifier rule tables | 5 | 0 |

@@ -409,19 +409,8 @@ def _supervisor_fixed_images(
                 image["sha256"],
                 image.get("root_exit_disposition"),
             )
-    for name, raw in environment_executables.items():
-        if not isinstance(raw, Mapping):
-            continue
-        executable = raw.get("executable")
-        if isinstance(executable, Mapping):
-            add(f"env:{name}", executable.get("path"), executable.get("sha256"))
-            # The invocation spelling can select driver mode, while the kernel
-            # reports the resolved image. Both come from the same capture.
-            add(
-                f"env:{name}",
-                executable.get("resolved_path"),
-                executable.get("sha256"),
-            )
+    for image in process_image_capture.environment_images(environment_executables):
+        add(str(image["role"]), image["path"], image["sha256"])
     for image in platform_process_images:
         add(
             str(image.get("role") or "platform-process"),

@@ -67,6 +67,15 @@ def _build_inputs(
     if target:
         command.extend(("--target", target))
     envelope = admission.envelope_for_command(command)
+    execution_environment._require_cargo_build_tool_environment_context(
+        command,
+        outputs=execution_environment.cargo_output_environment.CargoOutputEnvironment.for_envelope(
+            envelope
+        ),
+        cwd=crate,
+        env=env,
+    )
+    command = command_identity._exact_command(envelope, cwd=crate, env=env)
     plan = proof_plan.ProofPlan.load()
     # Probe transcripts are reused beside the shared bootstrap store; every
     # recorded image is rehashed before reuse and Cargo still owns freshness.
