@@ -46,7 +46,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2220 s | 1380 s | `repository-policy` | none | `docs-gates` needs none | 1 |
 | `wasm` | pr, main | yes | `github-job` | 160 min | 9600 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 18 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
-| `python_unit` | pre-push, pr, main | yes | `github-matrix` | 20 min | 1200 s per cell | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
+| `python_unit` | pre-push, pr, main | yes | `github-matrix` | 25 min | 1500 s per cell | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `native_integration` | pr, main | yes | `github-job` | 25 min | 1500 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 19 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 240 min | 14400 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
 | `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 25 |
@@ -220,6 +220,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `python.unit.python-custody.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
 | `python.unit.binding-authority` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
 | `python.unit.binding-authority.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
+| `python.unit.frontend-lowering` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
+| `python.unit.frontend-lowering.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
 | `python.unit.runtime-artifacts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.runtime-artifacts.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.runtime-library-boundary` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 120 s | `python-tests` | 0 |
