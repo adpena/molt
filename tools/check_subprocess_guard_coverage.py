@@ -198,28 +198,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git status metadata proving executable receipts are commit-backed",
     ),
     AllowedRawSubprocessUse(
-        "tools/proof_plan.py",
-        "_run_command",
-        "Popen",
-        "owns only the canonical guarded_exec wrapper so the DAG scheduler can "
-        "observe fail-fast cancellation; child timeout, sampling, and process-tree "
-        "cleanup remain exclusively owned by guarded_exec",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/proof_plan.py",
-        "_terminate_guarded_executor",
-        "process.terminate",
-        "fail-fast sends graceful termination only to the exact guarded_exec owner; "
-        "its signal handler or Windows kill-on-close job reaps the guarded subtree",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/proof_plan.py",
-        "_terminate_guarded_executor",
-        "process.kill",
-        "fail-fast escalation targets only an unreaped guarded_exec owner after a "
-        "bounded grace period; guarded subtree custody remains with its memory guard",
-    ),
-    AllowedRawSubprocessUse(
         "tools/batch_compile_client.py",
         "BatchCompileServerClient.__init__",
         "Popen",

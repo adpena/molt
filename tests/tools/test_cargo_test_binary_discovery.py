@@ -8,6 +8,7 @@ import pytest
 
 from tools import cargo_test_binary_runner as runner
 from tools import run_cargo_test_truth as truth
+from tools.command_execution import CommandExecutor
 
 
 def captured_execution(tmp_path, text, args):
@@ -85,14 +86,26 @@ def test_cargo_artifact_inventory_retains_early_artifact_outside_tail(
     }
     text = json.dumps(artifact) + "\n" + ("compiler diagnostics only\n" * 3000)
 
+    waits = []
+
     class Process:
         stdout = StringIO(text)
 
-        def wait(self):
+        def wait(self, *, timeout):
+            # The full stream must be drained before the canonical owner wait.
+            assert self.stdout.tell() == len(text)
+            waits.append(timeout)
             return 0
 
+    process = Process()
+    executor = CommandExecutor(prefix="MOLT_TEST", repo_root=truth.ROOT)
     monkeypatch.setattr(
-        truth, "_COMMANDS", SimpleNamespace(start_guarded=lambda *a, **k: Process())
+        truth,
+        "_COMMANDS",
+        SimpleNamespace(
+            start_guarded=lambda *a, **k: process,
+            wait_owned=executor.wait_owned,
+        ),
     )
     result = truth.run_streamed(
         ("cargo", "test"),
@@ -100,6 +113,8 @@ def test_cargo_artifact_inventory_retains_early_artifact_outside_tail(
         retain_cargo_artifacts=True,
     )
     assert result.returncode == 0
+    assert waits == [10.0]
+    assert process.stdout.closed
     assert "early.exe" not in result.evidence["tail"]
     inventory = truth.expected_test_binaries_from_artifacts(
         result.cargo_test_artifacts, {"runtime-id": "molt-runtime@0.1.0"}

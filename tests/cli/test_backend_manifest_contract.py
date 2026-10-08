@@ -104,8 +104,15 @@ def test_backend_manifest_keeps_wasmparser_test_only() -> None:
 
     assert "wasmparser" not in dependencies
     assert "wasm-encoder" not in dependencies
-    assert dev_dependencies["wasmparser"] == "0.259.0"
-    assert dev_dependencies["wasm-encoder"] == "0.259.0"
+    # Version selection belongs to Cargo manifests/lock. The tests must use
+    # the same parser/encoder generation as the owning artifact-facts crate.
+    facts = tomllib.loads(
+        (ROOT / "runtime/molt-wasm-facts/Cargo.toml").read_text(encoding="utf-8")
+    )
+    for package in ("wasmparser", "wasm-encoder"):
+        dependency = facts["dependencies"][package]
+        version = dependency["version"] if isinstance(dependency, dict) else dependency
+        assert dev_dependencies[package] == version
 
 
 def test_backend_manifest_uses_serde_with_derive_feature() -> None:
@@ -392,7 +399,30 @@ def test_runtime_manifest_dedupes_unicode_names2_version() -> None:
     )
     text_version = text_dep["version"] if isinstance(text_dep, dict) else text_dep
 
-    assert runtime_version == text_version == "3.1"
+    assert runtime_version == text_version
+    # These direct consumers must share one resolved table. Other transitive
+    # dependency families can legitimately select an older table generation.
+    lock = tomllib.loads((ROOT / "Cargo.lock").read_text(encoding="utf-8"))
+    selected_edges = []
+    for name in ("molt-runtime", "molt-stdlib-text"):
+        owners = [p for p in lock["package"] if p["name"] == name]
+        assert len(owners) == 1
+        edges = [
+            dep
+            for dep in owners[0]["dependencies"]
+            if dep.split()[0] == "unicode_names2"
+        ]
+        assert len(edges) == 1
+        selected_edges.append(edges[0])
+    assert selected_edges[0] == selected_edges[1]
+    selector = selected_edges[0].split()
+    resolved = [
+        p
+        for p in lock["package"]
+        if p["name"] == selector[0]
+        and (len(selector) == 1 or p["version"] == selector[1])
+    ]
+    assert len(resolved) == 1
 
 
 def test_runtime_manifest_declares_vfs_bundle_tar_feature() -> None:

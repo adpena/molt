@@ -22,6 +22,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 import tomllib
 from typing import Any, Collection, Iterable, Mapping
 
@@ -31,11 +32,16 @@ for import_root in (ROOT, SRC):
     if str(import_root) not in sys.path:
         sys.path.insert(0, str(import_root))
 
-from tools.command_execution import bind_repository_imports  # noqa: E402
+from tools.command_execution import (  # noqa: E402
+    CommandExecutor,
+    GUARD_CANCELLATION_OBSERVATION_SECONDS,
+    bind_repository_imports,
+)
 from tools.toolchain_probe import resolve_single_file_path  # noqa: E402
 from tools.git_identity import clean_checkout_status_arguments, require_git_object_id  # noqa: E402
 
 bind_repository_imports(__file__)
+_COMMANDS = CommandExecutor(prefix="MOLT_PROOF", repo_root=ROOT)
 
 from molt.cargo_execution_policy import (  # noqa: E402
     PROOF_COMMAND_TIMEOUT_ENV,
@@ -2452,27 +2458,6 @@ def _command_environment(
     return normalize_cargo_environment(child_env)
 
 
-def _terminate_guarded_executor(process: subprocess.Popen[Any]) -> bool:
-    """Terminate one guarded-exec owner; its existing custody reaps descendants.
-
-    On POSIX, ``terminate`` delivers SIGTERM to guarded_exec, whose memory guard
-    records the interruption and terminates its tracked process tree. On Windows,
-    terminating guarded_exec closes its sole KILL_ON_JOB_CLOSE handle, so the OS
-    reaps the guarded subtree. Escalation remains scoped to that exact owner PID.
-    """
-
-    if process.poll() is not None:
-        return False
-    process.terminate()
-    try:
-        process.wait(timeout=5.0)
-        return False
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5.0)
-        return True
-
-
 def _admitted_linker_helpers(plan: ProofPlan) -> dict[str, frozenset[str]]:
     """Declared linker helper basename -> the linker basenames it may outlive.
 
@@ -2510,12 +2495,12 @@ def _guarded_failure_scope(
     admitted_linker_helpers: Mapping[str, Collection[str]] | None = None,
 ) -> tuple[str, str | None]:
     """Classify the existing guard's evidence, never infer safe timeout from 124."""
-    if cancelled:
-        return "global", "executor cancellation"
     if not metrics_valid:
         return "global", "guard outcome unavailable or inconsistent"
     if metrics.get("infrastructure_failure") is not None:
         return "global", "guard infrastructure or ownership failure"
+    if metrics.get("descendants_closed") is not True:
+        return "global", "guard descendant closure is uncertain"
     if metrics.get("memory_violation") is not None:
         return "global", "unsafe memory pressure"
     if metrics.get("guard_signal") is not None:
@@ -2558,6 +2543,12 @@ def _guarded_failure_scope(
         )
     ):
         return "global", "Cargo quarantine ownership or recovery is unresolved"
+    if cancelled:
+        from tools.memory_guard import GUARD_RETURN_CODE
+
+        if metrics.get("cancelled") is not True or returncode != GUARD_RETURN_CODE:
+            return "global", "executor cancellation lacks matching terminal outcome"
+        return "global", "executor cancellation"
     if returncode == 124 or metrics.get("timed_out") is True:
         closed = bool(reports) or (
             isinstance(cleanup, dict) and cleanup.get("completed") is True
@@ -2573,7 +2564,6 @@ def _guarded_failure_scope(
 def _run_command(
     plan: ProofPlan,
     command: ProofCommand,
-    metrics_path: Path,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     relative_cwd = str(command.data.get("cwd", "."))
@@ -2618,57 +2608,76 @@ def _run_command(
             "failure_reason": "evidence publication failed before launch",
             "environment_policies_applied": list(applied_environment_policies),
         }
-    wrapped = [
-        sys.executable,
-        str(ROOT / "tools" / "guarded_exec.py"),
-        "--prefix",
-        "MOLT_PROOF",
-        "--timeout",
-        str(timeout),
-        "--metrics-json",
-        str(metrics_path),
-    ]
-    if relative_cwd != ".":
-        wrapped.extend(("--cwd", relative_cwd))
-    wrapped.extend(("--", *command.argv))
-    process = subprocess.Popen(
-        wrapped,
-        cwd=ROOT,
-        env=child_env,
-    )
+    process = None
     cancelled = False
-    termination_escalated = False
-    while process.poll() is None:
-        if cancel_event is not None and cancel_event.wait(0.05):
-            if process.poll() is None:
-                cancelled = True
-                termination_escalated = _terminate_guarded_executor(process)
-            break
-    if process.poll() is None:
-        process.wait()
-    completed_returncode = int(process.returncode or 0)
+    custody_error: Exception | None = None
+    cancellation_started: float | None = None
+    cancellation_elapsed: float | None = None
     try:
-        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        process = _COMMANDS.start_guarded(
+            command.argv,
+            cwd=ROOT / relative_cwd,
+            env=child_env,
+            timeout=timeout,
+            harness=True,
+        )
+        while process.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                cancellation_started = time.monotonic()
+                process.cancel_and_wait()
+                cancellation_elapsed = time.monotonic() - cancellation_started
+                break
+            try:
+                # Poll only the owned launcher; terminal admission belongs to wait.
+                process.process.wait(timeout=0.05)
+            except subprocess.TimeoutExpired:
+                pass
+        if not process.terminal:
+            process.wait(timeout=0)
+    except Exception as exc:
+        launch_error = process is None
+        process = getattr(exc, "guard_command", process)
+        if process is None:
+            raise
+        exc.guard_command = process
+        if (
+            process.returncode is None
+            and cancellation_started is None
+            and not launch_error
+        ):
+            # Observer failure does not abandon a running command. Preserve the
+            # original error even if the owner's bounded observation also fails.
+            cancellation_started = time.monotonic()
+            try:
+                process.cancel_and_wait()
+            except Exception as cleanup_error:
+                exc.cleanup_error = cleanup_error
+                exc.add_note(f"guard cancellation unresolved: {cleanup_error}")
+        custody_error = exc
+        if cancellation_started is not None:
+            cancellation_elapsed = time.monotonic() - cancellation_started
+    completed_returncode = None if process is None else process.returncode
+    try:
+        metrics = json.loads(process.summary_path.read_text(encoding="utf-8"))
+        if not isinstance(metrics, dict):
+            metrics = {}
     except (OSError, json.JSONDecodeError):
         metrics = {}
-    finally:
-        metrics_path.unlink(missing_ok=True)
+    # Keep the canonical summary: an unresolved live owner may still replace it.
     metrics_valid = (
-        metrics.get("schema") == "molt.guarded-command-metrics.v1"
+        custody_error is None
+        and process is not None
+        and process.terminal
+        and metrics.get("schema") == "molt.guarded-command-metrics.v1"
         and metrics.get("returncode") == completed_returncode
         and isinstance(metrics.get("duration_seconds"), (int, float))
         and isinstance(metrics.get("peak_tree_rss_bytes"), int)
     )
-    returncode = (
-        130
-        if cancelled
-        else completed_returncode
-        if metrics_valid
-        else completed_returncode or 2
-    )
+    returncode = int(completed_returncode) if metrics_valid else 2
     status = (
         "cancelled"
-        if cancelled
+        if cancelled and metrics_valid and metrics.get("cancelled") is True
         else "timeout"
         if returncode == 124
         else "success"
@@ -2682,7 +2691,13 @@ def _run_command(
         cancelled=cancelled,
         admitted_linker_helpers=_admitted_linker_helpers(plan),
     )
-    if failure_scope == "global" and status == "success":
+    if failure_reason == "executor cancellation":
+        # Raw guard cancellation remains 137. Only its admitted terminal
+        # outcome becomes the executor's public cancellation code.
+        status, returncode = "cancelled", 130
+    elif failure_scope == "global" and (
+        cancelled or status in {"success", "cancelled"}
+    ):
         status, returncode = "failure", 2
     evidence_outputs: list[dict[str, Any]] = []
     evidence_error: str | None = None
@@ -2722,6 +2737,9 @@ def _run_command(
         "guard_outcome": {
             name: metrics.get(name)
             for name in (
+                "cancelled",
+                "descendants_closed",
+                "temporary_artifacts",
                 "timed_out",
                 "memory_violation",
                 "guard_signal",
@@ -2731,12 +2749,47 @@ def _run_command(
                 "cargo_incremental_quarantine",
             )
         },
-        "termination_escalated": termination_escalated,
+        "termination_escalated": False,
+        "guard_returncode": completed_returncode,
+        "guard_custody": {
+            "launch_id": process.launch_id,
+            "launch_pid": process.pid,
+            "guard_pid": process.guard_pid,
+            "startup_path": str(process.startup_path),
+            "summary_path": str(process.summary_path),
+            "cancellation_path": str(process.cancellation_path),
+            "evidence_path": str(process.evidence_path),
+            "terminal": process.terminal,
+            "cancellation_observation_seconds": cancellation_elapsed,
+            "cancellation_observation_budget_seconds": (
+                GUARD_CANCELLATION_OBSERVATION_SECONDS
+                if cancellation_started is not None
+                else None
+            ),
+            "observation_error": None
+            if custody_error is None
+            else {
+                "type": type(custody_error).__name__,
+                "message": str(custody_error),
+                "closure": "confirmed" if process.terminal else "unresolved",
+                "cleanup_error": (
+                    None
+                    if getattr(custody_error, "cleanup_error", None) is None
+                    else {
+                        "type": type(custody_error.cleanup_error).__name__,
+                        "message": str(custody_error.cleanup_error),
+                    }
+                ),
+            },
+        },
         "environment_policies_applied": list(applied_environment_policies),
         "evidence_outputs": evidence_outputs,
     }
     if evidence_error is not None:
         record["evidence_error"] = evidence_error
+    if custody_error is not None:
+        custody_error.proof_record = record
+        raise custody_error
     return record
 
 

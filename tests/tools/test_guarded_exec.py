@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -32,16 +31,32 @@ def _install_fake_context(module, monkeypatch, result=None):
             captured["repo_root"] = repo_root
             return cls()
 
-        def run(self, command, *, cwd, env, capture_output, timeout):
+        def run(
+            self,
+            command,
+            *,
+            cwd,
+            env,
+            capture_output,
+            timeout,
+            cancellation_requested,
+            running_summary_json,
+            running_summary_environ,
+        ):
             captured["command"] = list(command)
             captured["cwd"] = cwd
             captured["run_env"] = dict(env)
             captured["capture_output"] = capture_output
             captured["timeout"] = timeout
+            captured["cancellation_requested"] = cancellation_requested
+            captured["running_summary_json"] = running_summary_json
+            captured["running_summary_environ"] = running_summary_environ
             return (
                 result
                 if result is not None
-                else SimpleNamespace(returncode=0, stderr="")
+                else module.harness_memory_guard.GuardedCompletedProcess(
+                    command, 0, "", "", elapsed_s=0, descendants_closed=True
+                )
             )
 
     monkeypatch.setattr(
@@ -93,7 +108,9 @@ def test_guarded_exec_signal_metrics_drive_executor_failure_scope(
 
     module = _load_guarded_exec()
     for returncode, expected in ((128, "partition"), (143, "global")):
-        result = SimpleNamespace(returncode=returncode, stderr="")
+        result = module.harness_memory_guard.GuardedCompletedProcess(
+            ["fixture"], returncode, "", "", elapsed_s=0, descendants_closed=True
+        )
         _install_fake_context(module, monkeypatch, result)
         metrics = tmp_path / f"metrics-{returncode}.json"
         assert (
@@ -325,3 +342,24 @@ def test_guarded_exec_metrics_preserve_deadline_and_cargo_ownership(
         "compiler ownership unavailable"
     ]
     assert payload["termination_reports"] == []
+
+
+def test_guarded_exec_forwards_sticky_cancel_and_worker_custody(tmp_path, monkeypatch):
+    module = _load_guarded_exec()
+    guard = module.harness_memory_guard.memory_guard
+    cancel = tmp_path / "cancel"
+    startup = tmp_path / "startup.json"
+    command = ["fixture"]
+    worker_env = guard._worker_env(
+        {}, command, launch_id="a" * 32, startup_json=str(startup)
+    )
+    for key, value in worker_env.items():
+        monkeypatch.setenv(key, value)
+    captured = _install_fake_context(module, monkeypatch)
+    assert module.main(["--cancel-file", str(cancel)]) == 0
+    callback = captured["cancellation_requested"]
+    assert callback() is False
+    cancel.write_text("cancel", encoding="utf-8")
+    assert callback() is True
+    assert guard._load_internal_command(captured["run_env"]) is None
+    assert guard._load_internal_command(captured["running_summary_environ"]) == command

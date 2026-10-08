@@ -1815,7 +1815,9 @@ def test_python_identity_failed_close_revokes_admission(python_session):
 def test_python_identity_timeout_revokes_without_retry(python_session, monkeypatch):
     admission, selected, session, calls = python_session
     session.lines.get_nowait()
-    monkeypatch.setattr(admission, "_RESPONSE_TIMEOUT", 0.001)
+    # Initial content capture owns the admission budget; later verify requests
+    # use the separate response budget. Exercise the boundary capture calls.
+    monkeypatch.setattr(admission, "_ADMISSION_TIMEOUT", 0.001)
     owner = admission.BuildPythonAdmission()
     with pytest.raises(ValueError, match="timed out"):
         owner.capture({"MOLT_BUILD_PYTHON": str(selected)})
