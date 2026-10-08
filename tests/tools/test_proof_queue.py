@@ -16309,8 +16309,10 @@ def test_metadata_case_identity_and_root_replacement_are_failclosed(
     declaration = _real_metadata_root()
     case = _owned_metadata_case(declaration, "module::case[coordinate]", "a" * 32)
     owner = json.loads((case / "metadata-owner.json").read_text(encoding="utf-8"))
-    assert len(case.name) == 64
-    assert owner["namespace_sha256"] == case.name
+    # The directory uses the 24-hex namespace width; the owner keeps all 64.
+    assert len(case.name) == 24
+    assert len(owner["namespace_sha256"]) == 64
+    assert owner["namespace_sha256"].startswith(case.name)
     assert owner["identity"]["nodeid"] == "module::case[coordinate]"
     assert (
         owner["identity"]["test_source_sha256"]

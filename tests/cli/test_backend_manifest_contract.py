@@ -104,8 +104,13 @@ def test_backend_manifest_keeps_wasmparser_test_only() -> None:
 
     assert "wasmparser" not in dependencies
     assert "wasm-encoder" not in dependencies
-    assert dev_dependencies["wasmparser"] == "0.259.0"
-    assert dev_dependencies["wasm-encoder"] == "0.259.0"
+    # The workspace uses one wasm-tools crate version, owned by the WASM facts
+    # crate; automation moves it, so the test names no literal version.
+    facts = tomllib.loads(
+        (ROOT / "runtime/molt-wasm-facts/Cargo.toml").read_text(encoding="utf-8")
+    )["dependencies"]
+    assert dev_dependencies["wasmparser"] == facts["wasmparser"]
+    assert dev_dependencies["wasm-encoder"] == facts["wasm-encoder"]["version"]
 
 
 def test_backend_manifest_uses_serde_with_derive_feature() -> None:
@@ -392,7 +397,7 @@ def test_runtime_manifest_dedupes_unicode_names2_version() -> None:
     )
     text_version = text_dep["version"] if isinstance(text_dep, dict) else text_dep
 
-    assert runtime_version == text_version == "3.1"
+    assert runtime_version == text_version
 
 
 def test_runtime_manifest_declares_vfs_bundle_tar_feature() -> None:
