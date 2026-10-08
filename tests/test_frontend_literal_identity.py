@@ -135,7 +135,7 @@ def _phi_result(left: object, right: object) -> dict[str, object]:
         MoltOp("JUMP", ["join"], MoltValue("none")),
         MoltOp("PHI", [MoltValue("left"), MoltValue("right")], MoltValue("joined")),
         MoltOp("TYPE_OF", [MoltValue("joined")], MoltValue("joined_type")),
-        MoltOp("RETURN", [MoltValue("joined")], MoltValue("none")),
+        MoltOp("ret", [MoltValue("joined")], MoltValue("none")),
     ]
     blocks = [
         BasicBlock(0, 0, 4),
@@ -204,7 +204,7 @@ def test_region_markers_preserve_immutable_lattice_admission() -> None:
         MoltOp("CONST", [0], MoltValue("index")),
         MoltOp("INDEX", [MoltValue("mutable"), MoltValue("index")], MoltValue("item")),
         MoltOp("TRY_END", [], MoltValue("none")),
-        MoltOp("RETURN", [MoltValue("item")], MoltValue("none")),
+        MoltOp("ret", [MoltValue("item")], MoltValue("none")),
     ]
     cfg = build_cfg(ops)
     result = SimpleTIRGenerator()._compute_sccp(ops, cfg)
@@ -253,7 +253,7 @@ def test_sccp_is_never_uses_host_interning(
         MoltOp("CONST", [left], MoltValue("left")),
         MoltOp("CONST", [right], MoltValue("right")),
         MoltOp("IS", [MoltValue("left"), MoltValue("right")], MoltValue("identity")),
-        MoltOp("RETURN", [MoltValue("identity")], MoltValue("none")),
+        MoltOp("ret", [MoltValue("identity")], MoltValue("none")),
     ]
     result = SimpleTIRGenerator()._compute_sccp(ops, build_cfg(ops))
     assert result.out_values[0]["identity"] is expected

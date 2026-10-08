@@ -116,7 +116,8 @@ def _build_basic_blocks(
         "TRY_START",
         "TRY_END",
         "JUMP",
-        "RETURN",
+        "ret",
+        "ret_void",
         "RAISE",
         "RAISE_CAUSE",
         "RERAISE",
@@ -291,7 +292,7 @@ def _compute_successors(
             target = str(op.args[0]) if op.args else ""
             add_succ(block_id, label_to_block.get(target), CFGEdgeKind.EXCEPTION)
             continue
-        if op.kind == "RETURN":
+        if op.kind in {"ret", "ret_void"}:
             continue
         if op.kind in {"RAISE", "RAISE_CAUSE", "RERAISE"}:
             # molt's exception model lowers `raise` to "set the pending
@@ -312,7 +313,7 @@ def _compute_successors(
             # STATE_YIELD suspends the generator (returns to caller).
             # The block after it is only reachable via STATE_SWITCH on
             # the next call to next()/send()/throw(), NOT via fall-through.
-            # Treat it like a RETURN (no successors).
+            # Treat it like a return (no successors).
             continue
         if op.kind == "STATE_SWITCH":
             # STATE_SWITCH dispatches to any resume block in the function:

@@ -166,7 +166,8 @@ class MidendCFGMixin(GeneratorMixinBase):
             "TRY_START",
             "TRY_END",
             "JUMP",
-            "RETURN",
+            "ret",
+            "ret_void",
             "RAISE",
             "RAISE_CAUSE",
             "RERAISE",
@@ -869,7 +870,7 @@ class MidendCFGMixin(GeneratorMixinBase):
             # appear unterminated and, more importantly, placed executable
             # control markers on no reachable function-exit path.
             terminal_start = len(rewritten)
-            if rewritten and rewritten[-1].kind in {"ret", "ret_void", "RETURN"}:
+            if rewritten and rewritten[-1].kind in {"ret", "ret_void"}:
                 terminal_start -= 1
                 if (
                     terminal_start > 0

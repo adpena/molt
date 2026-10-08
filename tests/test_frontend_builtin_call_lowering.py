@@ -1527,9 +1527,11 @@ def test_module_control_flow_promotion_flushes_only_unpublished_values(
     generator._prepare_mutable_control_flow_bindings({"flag"})
     generator._prepare_mutable_control_flow_bindings({"flag"})
     generator._flush_deferred_module_attrs()
+    # The probe emits after the module's return, which the mid-end prunes as
+    # unreachable; the flush contract is a lowering fact.
     ops = next(
         fn["ops"]
-        for fn in generator.to_json()["functions"]
+        for fn in generator.to_json(midend_stage="pre-midend")["functions"]
         if fn["name"] == "molt_main"
     )
     assert len(_module_attr_accesses(ops, "module_set_attr", "flag")) == 1
