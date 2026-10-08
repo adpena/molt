@@ -40,8 +40,8 @@ molt-codegen-abi = { path = "../molt-codegen-abi" }
 # value-range) that molt-tir exposes only under #[cfg(any(test, feature = "test-util"))].
 molt-tir = { path = "../molt-tir", features = ["test-util"] }
 molt-backend-wasm = { path = "../molt-backend-wasm", default-features = false, features = ["test-util"] }
-wasm-encoder = "0.259.0"
-wasmparser = "0.259.0"
+wasm-encoder = "0.261.0"
+wasmparser = "0.261.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
