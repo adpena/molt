@@ -21,7 +21,6 @@ num-bigint = "0.5"
 num-traits = "0.2"
 
 # Optional crypto deps (gated by default feature)
-blake2 = { version = "0.10", optional = true }
 blake2b_simd = { version = "1.0", optional = true }
 blake2s_simd = { version = "1.0", optional = true }
 hmac = { version = "0.13", optional = true }
@@ -39,7 +38,7 @@ default = ["full"]
 # including stdlib_server. Does NOT include legacy/deprecated digest algorithms.
 full = [
     "dep:sha3", "dep:shake",
-    "dep:blake2", "dep:blake2b_simd", "dep:blake2s_simd",
+    "dep:blake2b_simd", "dep:blake2s_simd",
     "dep:hmac", "dep:pbkdf2", "dep:scrypt", "dep:subtle",
 ]
 # Legacy crypto: deprecated or weak algorithms (MD4, RIPEMD-160).
