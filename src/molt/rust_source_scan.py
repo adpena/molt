@@ -494,7 +494,14 @@ class _RustItemProjection(NamedTuple):
 
 
 def _rust_item_projection(text: str) -> _RustItemProjection:
-    """One operation-local lexical receipt for both item consumers."""
+    """One operation-local lexical receipt for both item consumers.
+
+    Consumers only read the projection, so a scan shares one per file text.
+    """
+    return _memoized("items", None, text, lambda: _compute_rust_item_projection(text))
+
+
+def _compute_rust_item_projection(text: str) -> _RustItemProjection:
     spans = tuple(_non_code_spans(text))
     code = (
         _project_rust_source(
