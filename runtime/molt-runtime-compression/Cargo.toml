@@ -15,7 +15,7 @@ flate2 = { version = "1.1", default-features = false, features = ["rust_backend"
 zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-xz2 = { version = "0.1", optional = true }
+xz2 = { version = "0.1", optional = true, features = ["static"] }
 
 [features]
 default = ["bzip2", "flate2", "xz2", "zip"]
