@@ -53,6 +53,7 @@ cache_uv=${INPUT_CACHE_UV:?}
 cache_cargo=${INPUT_CACHE_CARGO:?}
 cache_lean=${INPUT_CACHE_LEAN:?}
 actionlint=${INPUT_ACTIONLINT:?}
+target_pythons=${INPUT_TARGET_PYTHONS:?}
 sync=${INPUT_SYNC:?}
 sync_frozen=${INPUT_SYNC_FROZEN:?}
 sync_dev=${INPUT_SYNC_DEV:?}
@@ -103,7 +104,7 @@ if [[ -n "${INPUT_NODE_CACHE_DEPENDENCY_PATH:-}" && -z "$node_version" ]]; then
   exit 2
 fi
 
-for bool_name in python uv cache_uv cache_cargo cache_lean actionlint sync sync_frozen sync_dev; do
+for bool_name in python uv cache_uv cache_cargo cache_lean actionlint target_pythons sync sync_frozen sync_dev; do
   validate_bool "${bool_name//_/-}" "${!bool_name}"
 done
 validate_atom cache-namespace "$namespace"
@@ -144,6 +145,10 @@ if [[ "$actionlint" == "true" && "$python" != "true" ]]; then
   echo "actionlint requires python" >&2
   exit 2
 fi
+if [[ "$target_pythons" == "true" && "$sync" != "true" ]]; then
+  echo "target-pythons requires sync" >&2
+  exit 2
+fi
 if [[ -z "$toolchain" && ( -n "$components" || -n "$targets" ) ]]; then
   echo "Rust components and targets require rust-toolchain" >&2
   exit 2
@@ -169,6 +174,7 @@ rust_cache_token=$(
   printf 'cache-cargo=%s\n' "$cache_cargo"
   printf 'cache-lean=%s\n' "$cache_lean"
   printf 'actionlint=%s\n' "$actionlint"
+  printf 'target-pythons=%s\n' "$target_pythons"
   printf 'sync=%s\n' "$sync"
   printf 'sync-frozen=%s\n' "$sync_frozen"
   printf 'sync-dev=%s\n' "$sync_dev"

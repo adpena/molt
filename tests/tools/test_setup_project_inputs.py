@@ -225,6 +225,7 @@ def _run_normalizer(
     job: str = "fixture-job",
     python: str = "true",
     uv: str = "true",
+    target_pythons: str = "false",
 ) -> dict[str, str]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     output = tmp_path / "github-output"
@@ -237,6 +238,7 @@ def _run_normalizer(
         "INPUT_CACHE_LEAN": "false",
         "INPUT_CACHE_NAMESPACE": namespace,
         "INPUT_ACTIONLINT": "false",
+        "INPUT_TARGET_PYTHONS": target_pythons,
         "INPUT_RUST_TOOLCHAIN": toolchain,
         "INPUT_NODE_VERSION": node_version,
         "INPUT_NODE_CACHE_DEPENDENCY_PATH": node_cache_dependency_path,
@@ -354,6 +356,7 @@ def test_control_characters_and_empty_atoms_fail_closed(tmp_path: Path) -> None:
             "INPUT_CACHE_LEAN": "false",
             "INPUT_CACHE_NAMESPACE": "project",
             "INPUT_ACTIONLINT": "false",
+            "INPUT_TARGET_PYTHONS": "false",
             "INPUT_RUST_TOOLCHAIN": "pinned",
             "INPUT_RUST_COMPONENTS": components,
             "INPUT_RUST_TARGETS": "wasm32-wasip1",
@@ -399,6 +402,7 @@ def test_sync_argv_is_typed_normalized_and_requires_sync(tmp_path: Path) -> None
         "INPUT_CACHE_LEAN": "false",
         "INPUT_CACHE_NAMESPACE": "project",
         "INPUT_ACTIONLINT": "false",
+        "INPUT_TARGET_PYTHONS": "false",
         "INPUT_RUST_TOOLCHAIN": "",
         "INPUT_RUST_COMPONENTS": "",
         "INPUT_RUST_TARGETS": "",
@@ -420,6 +424,21 @@ def test_sync_argv_is_typed_normalized_and_requires_sync(tmp_path: Path) -> None
     assert not output.exists()
 
 
+def test_target_pythons_install_only_after_sync(tmp_path: Path) -> None:
+    # The target-line authority imports project dependencies, so the install
+    # step needs the synchronized environment.
+    normalized = _normalize(
+        tmp_path / "valid", toolchain="", sync="true", target_pythons="true"
+    )
+    assert normalized["target-pythons"] == "true"
+    returncode, stderr, outputs = _run_normalizer(
+        tmp_path / "invalid", toolchain="", target_pythons="true"
+    )
+    assert returncode == 2
+    assert "target-pythons requires sync" in stderr
+    assert outputs == {}
+
+
 def test_shell_metacharacters_never_execute_before_validation(tmp_path: Path) -> None:
     marker = tmp_path / "executed"
     malicious = f'project"; touch "{marker}"; #'
@@ -434,6 +453,7 @@ def test_shell_metacharacters_never_execute_before_validation(tmp_path: Path) ->
         "INPUT_CACHE_LEAN": "false",
         "INPUT_CACHE_NAMESPACE": malicious,
         "INPUT_ACTIONLINT": "false",
+        "INPUT_TARGET_PYTHONS": "false",
         "INPUT_RUST_TOOLCHAIN": "",
         "INPUT_RUST_COMPONENTS": "",
         "INPUT_RUST_TARGETS": "",
