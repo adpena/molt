@@ -2913,7 +2913,7 @@ dependencies = [
  "molt-stdlib-difflib",
  "molt-stdlib-graphlib",
  "molt-stdlib-text",
- "num-bigint 0.4.8",
+ "num-bigint 0.5.1",
  "num-integer",
  "num-traits",
  "num_cpus",
@@ -2983,7 +2983,7 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "molt-lang-obj-model",
- "num-bigint 0.4.8",
+ "num-bigint 0.5.1",
  "num-traits",
 ]
 
@@ -3000,7 +3000,7 @@ dependencies = [
  "md4",
  "molt-lang-obj-model",
  "molt-runtime-core",
- "num-bigint 0.4.8",
+ "num-bigint 0.5.1",
  "num-traits",
  "pbkdf2",
  "ripemd",
@@ -3023,7 +3023,7 @@ dependencies = [
  "libc",
  "molt-lang-obj-model",
  "molt-runtime-core",
- "num-bigint 0.4.8",
+ "num-bigint 0.5.1",
  "num-traits",
  "rustls",
  "webpki-roots 1.0.9",
@@ -3035,7 +3035,7 @@ version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-core",
- "num-bigint 0.4.8",
+ "num-bigint 0.5.1",
 ]
 
 [[package]]
@@ -3062,7 +3062,7 @@ dependencies = [
  "libm",
  "molt-lang-obj-model",
  "molt-runtime-core",
- "num-bigint 0.4.8",
+ "num-bigint 0.5.1",
  "num-integer",
  "num-traits",
  "sha2 0.11.0",
@@ -3136,7 +3136,7 @@ dependencies = [
  "memchr",
  "molt-lang-obj-model",
  "molt-runtime-core",
- "num-bigint 0.4.8",
+ "num-bigint 0.5.1",
  "num-traits",
  "serde_json",
 ]

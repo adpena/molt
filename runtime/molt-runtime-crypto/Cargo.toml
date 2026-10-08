@@ -17,7 +17,7 @@ digest = "0.11"
 md-5 = "0.11"
 sha1 = "0.11"
 sha2 = "0.11"
-num-bigint = "0.4"
+num-bigint = "0.5"
 num-traits = "0.2"
 
 # Optional crypto deps (gated by default feature)
