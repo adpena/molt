@@ -57,6 +57,7 @@ class CiResourcePlan:
     resource_plan: resource_pressure.ResourcePressurePlan
     guard_max_process_rss_gb: float | None
     guard_max_total_rss_gb: float | None
+    python_test_workers: int
 
 
 def _positive_int(raw: str | None, *, default: int) -> int:
@@ -147,6 +148,9 @@ def plan_ci_resources(
         resource_plan=pressure_plan,
         guard_max_process_rss_gb=process_cap,
         guard_max_total_rss_gb=total_cap,
+        # Python test processes share the differential scheduler's memory and
+        # CPU sizing; `pytest -n auto` reads it from the exported variable.
+        python_test_workers=pressure_plan.diff_max_jobs,
     )
 
 
@@ -189,6 +193,7 @@ def _github_env_lines(plan: CiResourcePlan) -> list[str]:
         f"MOLT_CI_RESOURCE_CPU_COUNT={plan.cpu_count}",
         f"MOLT_CI_RESOURCE_REASON={plan.reason}",
         f"MOLT_CI_RESOURCE_PLAN_JSON={plan_json}",
+        f"PYTEST_XDIST_AUTO_NUM_WORKERS={plan.python_test_workers}",
     ]
     if plan.guard_max_process_rss_gb is not None:
         lines.append(f"MOLT_MAX_PROCESS_RSS_GB={plan.guard_max_process_rss_gb:.6f}")

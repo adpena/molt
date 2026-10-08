@@ -386,8 +386,9 @@ retained — additive, never changes a normal build or any speedup number.
   `.venv`/session interpreters before any benchmark cell runs. The accepted
   executable, OS, normalized architecture, and pointer width are recorded in
   `host.cpython_oracle`.
-- `MOLT_SESSION_ID=perfscore` + `CARGO_TARGET_DIR=target/sessions/perfscore`
-  isolate the build cache (the constitution's concurrent-dev contract).
+- `MOLT_SESSION_ID=perfscore` isolates the build cache (the constitution's
+  concurrent-dev contract): the DX authority places its `CARGO_TARGET_DIR` at
+  `<artifact root>/target/sessions/perfscore`, outside the checkout.
 - The LLVM lane forces `MOLT_BACKEND=llvm` and resolves the required
   `LLVM_SYS_<ver>_PREFIX` from the same `molt.llvm_toolchain` authority used by
   CI and setup diagnostics. For the current `llvm22-1` inkwell pin, that is

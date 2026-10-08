@@ -16,7 +16,6 @@ if str(_SRC_ROOT) not in sys.path:
 import bench  # noqa: E402
 import bench_suites  # noqa: E402
 import harness_memory_guard  # noqa: E402
-from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
 from perf_schema import RED_THRESHOLD, output_parity_evidence  # noqa: E402
 from perf_scoreboard_model import (  # noqa: E402
     PERFSCORE_SESSION_ID,
@@ -55,9 +54,9 @@ def _perfscore_build_env(spec: BackendSpec, profile: str) -> dict[str, str]:
     base["MOLT_PROFILE"] = "0"
     base["MOLT_ASSERT_NO_LEAK"] = "0"
     base["MOLT_SESSION_ID"] = PERFSCORE_SESSION_ID
-    base["CARGO_TARGET_DIR"] = str(
-        cargo_target_dir_for_artifact_root(REPO_ROOT, PERFSCORE_SESSION_ID)
-    )
+    # The canonical bench env derives this session's target dir under the
+    # custody-selected artifact root; an ambient one would share build state.
+    base.pop("CARGO_TARGET_DIR", None)
     if spec.molt_backend is not None:
         base["MOLT_BACKEND"] = spec.molt_backend
     else:
