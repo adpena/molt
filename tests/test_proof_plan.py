@@ -758,11 +758,12 @@ def test_matrix_family_budget_binds_each_cell() -> None:
         for command in PLAN.commands
     )
     errors = replace(PLAN, commands=commands).validate()
-    # Harness (1501 s) holds one slot; the other five partitions share the
-    # second and the last starts at 1500 s: a 1620 s makespan. The Linux job
-    # is unchanged, so only the macOS cell exceeds its budget.
+    # Harness (1501 s) holds one slot; custody, binding, frontend, CLI and
+    # runtime-artifacts fill the second until 1800 s while the boundary
+    # partition follows the harness: an 1800 s makespan. The Linux job is
+    # unchanged, so only the macOS cell exceeds its budget.
     assert [error for error in errors if "timeout envelope" in error] == [
-        "python_unit: projected resource-aware timeout envelope 1620s in matrix "
+        "python_unit: projected resource-aware timeout envelope 1800s in matrix "
         "cell macos-arm64-py312-unit exceeds GitHub job budget 1500s"
     ]
 

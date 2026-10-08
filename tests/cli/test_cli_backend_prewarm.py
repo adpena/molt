@@ -105,6 +105,9 @@ def _isolated_molt_root(
     for name in _AMBIENT_ENV:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MOLT_USE_SCCACHE", "0")
+    # The real Cargo capacity boundary stays in the path, but how full the
+    # host disk is must not decide a unit test; capacity tests set their own.
+    monkeypatch.setenv("MOLT_DISK_GUARD_HIGH_WATER_GB", "1")
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     write_compiler_lock(root)
