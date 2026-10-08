@@ -1156,10 +1156,6 @@ def test_rust_security_reuses_cached_tool_builds() -> None:
     rust_security = workflow_text.split("  rust-security:", 1)[1]
 
     assert (
-        "CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/rust-security"
-        in rust_security
-    )
-    assert (
         "MOLT_SESSION_ID: rust-security-${{ github.run_id }}-${{ github.run_attempt }}"
         in rust_security
     )
@@ -1746,12 +1742,6 @@ def test_release_and_perf_workflows_exist_for_hosted_validation() -> None:
     assert "fromJSON(needs.plan.outputs.matrix)" in release_text
     assert "schedule:" in perf_text
     assert "MOLT_SESSION_ID: perfscore-${{ matrix.backend }}" in perf_text
-    assert (
-        "CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perfscore-${{ matrix.backend }}"
-        in perf_text
-    )
-    assert "MOLT_CACHE: ${{ github.workspace }}/.molt_cache" in perf_text
-    assert "TMPDIR: ${{ github.workspace }}/tmp" in perf_text
     assert "tools/guarded_exec.py --prefix MOLT_BENCH" in perf_text
     assert "tools/perf_scoreboard.py" in perf_text
     assert "backend: [native, llvm]" in perf_text
@@ -1775,17 +1765,6 @@ def test_perf_demo_workflow_uses_canonical_env_and_single_uv_sync() -> None:
     run_stack_text = _read("bench/scripts/run_stack.sh")
 
     assert "MOLT_SESSION_ID: perf-demo-${{ github.run_id }}" in perf_demo_text
-    assert (
-        "CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perf-demo"
-        in perf_demo_text
-    )
-    assert (
-        "MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perf-demo"
-        in perf_demo_text
-    )
-    assert "MOLT_CACHE: ${{ github.workspace }}/.molt_cache" in perf_demo_text
-    assert "TMPDIR: ${{ github.workspace }}/tmp" in perf_demo_text
-    assert "UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache" in perf_demo_text
     assert 'MOLT_UV_SYNC: "0"' in perf_demo_text
     assert 'if [[ "${MOLT_UV_SYNC:-1}" != "0" ]]' in run_stack_text
     assert 'cargo build --profile "$CARGO_PROFILE" -p molt-worker' in run_stack_text
@@ -1854,13 +1833,6 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "workflow_call:" in wasm_text
     assert "push:" not in wasm_text
     assert "pull_request:" not in wasm_text
-    assert (
-        "CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci" in wasm_text
-    )
-    assert (
-        "MOLT_DIFF_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci"
-        in wasm_text
-    )
     assert "MOLT_CACHE: /tmp/molt-ext/molt_cache" in wasm_text
     assert "MOLT_DIFF_ROOT: /tmp/molt-ext/diff" in wasm_text
     assert "MOLT_DIFF_TMPDIR: /tmp/molt-ext/tmp" in wasm_text
@@ -1870,10 +1842,6 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
         wasm_text
     )
     assert "MOLT_CI_PYTHON" not in wasm_text
-    assert (
-        "MOLT_WASM_TEST_CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/wasm-ci"
-        in wasm_text
-    )
     assert "uses: ./.github/actions/setup-project" in wasm_text
     assert 'cache-cargo: "true"' in wasm_text
     assert "cache-namespace: wasm-ci" in wasm_text
@@ -2021,3 +1989,28 @@ def test_bootstrap_binds_managed_python_before_repository_or_rust_consumers() ->
         if "--run-family python_unit" in step.get("run", "")
     )
     assert job["steps"].index(setup) < job["steps"].index(execute)
+
+
+def test_workflows_root_no_artifact_state_inside_the_checkout() -> None:
+    """setup-project gives every job custody under RUNNER_TEMP; dx rejects a
+    canonical root (target, caches, scratch) that points into the checkout."""
+    import sys
+
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+    from molt.dx import CANONICAL_ROOT_ENV_KEYS
+
+    keys = set(CANONICAL_ROOT_ENV_KEYS) | {"MOLT_WASM_TEST_CARGO_TARGET_DIR"}
+    offenders = []
+    for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
+        for number, line in enumerate(
+            workflow.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            match = re.match(r"^\s+([A-Z_]+):\s*(.*)$", line)
+            if match and match[1] in keys and "github.workspace" in match[2]:
+                offenders.append(f"{workflow.name}:{number}: {line.strip()}")
+    assert offenders == []
+    wasm_text = _read(".github/workflows/molt-wasm-ci.yml")
+    assert (
+        "printf 'MOLT_WASM_TEST_CARGO_TARGET_DIR=%s\\n' \"$CARGO_TARGET_DIR\""
+        in wasm_text
+    )

@@ -51,13 +51,6 @@ jobs:
         backend: [native, llvm]
     env:
       MOLT_SESSION_ID: perfscore-${{ matrix.backend }}
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target/sessions/perfscore-${{ matrix.backend }}
-      MOLT_EXT_ROOT: ${{ github.workspace }}
-      MOLT_CACHE: ${{ github.workspace }}/.molt_cache
-      MOLT_DIFF_ROOT: ${{ github.workspace }}/tmp/diff
-      MOLT_DIFF_TMPDIR: ${{ github.workspace }}/tmp
-      UV_CACHE_DIR: ${{ github.workspace }}/.uv-cache
-      TMPDIR: ${{ github.workspace }}/tmp
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
