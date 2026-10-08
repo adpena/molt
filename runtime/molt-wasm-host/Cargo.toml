@@ -18,7 +18,7 @@ wasmtime = "49.0.2"
 wasmtime-wasi = "49.0.2"
 socket2 = { version = "0.6", features = ["all"] }
 libc = "0.2"
-tungstenite = { version = "0.29", default-features = false, features = ["handshake", "rustls-tls-webpki-roots", "url"] }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake", "rustls-tls-webpki-roots", "url"] }
 url = "2.5"
 os_pipe = "1.2"
 molt-runtime-resource = { path = "../molt-runtime-resource" }
