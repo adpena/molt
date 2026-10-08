@@ -27,7 +27,7 @@ molt-wasm-facts = { path = "../molt-wasm-facts", optional = true }
 rmp-serde = "1"
 ciborium = { version = "0.2", optional = true }
 egg = { version = "0.11", optional = true }
-wgpu = { version = "29", optional = true }
+wgpu = { version = "30", optional = true }
 pollster = { version = "0.4", optional = true }
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["driver", "dynamic-loading", "cuda-12080"] }
 mlx-rs = { version = "0.25", optional = true }
