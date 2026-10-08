@@ -20,7 +20,7 @@ tikv-jemallocator = { version = "0.7", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = "0.11"
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "std"] }
 ar_archive_writer = { version = "0.5.2", optional = true }
 memmap2 = { version = "0.9", optional = true }
 molt-wasm-facts = { path = "../molt-wasm-facts", optional = true }
@@ -33,7 +33,7 @@ cudarc = { version = "0.19", optional = true, default-features = false, features
 mlx-rs = { version = "0.25", optional = true }
 
 [dev-dependencies]
-object = { version = "0.39", default-features = false, features = ["read", "write", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "write", "std"] }
 molt-codegen-abi = { path = "../molt-codegen-abi" }
 # Re-import molt-tir with the test-util feature so molt-backend's own tests can
 # reach the crate-private accessor seams (representation-plan / tir-cache /
