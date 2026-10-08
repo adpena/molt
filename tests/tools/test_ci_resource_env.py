@@ -247,18 +247,31 @@ def test_plan_rejects_invalid_resource_overrides(environ: dict[str, str]) -> Non
         )
 
 
-def test_guard_caps_admit_the_single_job_a_small_runner_plans() -> None:
-    # The 7 GB macOS runner: 3.24 GB available, 1 GB reserve. The guard's own
-    # 40% process cap (1.30 GB) killed one admitted Cargo job at 1.92 GB.
+def test_guard_caps_admit_the_calibrated_need_of_the_job_a_small_runner_plans() -> None:
+    # The 7 GB macOS runner: 3.22 GB available, 1 GB reserve. Capping the one
+    # admitted Cargo job at the 2.22 GB usable snapshot killed it at 2.23 GB,
+    # below its receipt-calibrated 3.06 GB need.
     module = _load_ci_resource_env()
-    budget = _budget(module, physical_gb=7.0, available_gb=3.24, reserve_gb=1.0)
+    budget = _budget(module, physical_gb=7.0, available_gb=3.22, reserve_gb=1.0)
     plan = module.plan_ci_resources(environ={}, cpu_count=3, budget=budget)
 
     assert plan.cargo_build_jobs == 1
-    usable = plan.resource_plan.usable_gb
-    assert plan.guard_max_process_rss_gb == pytest.approx(usable)
-    assert plan.guard_max_total_rss_gb == pytest.approx(usable)
-    assert plan.guard_max_process_rss_gb > budget.max_process_rss_gb
+    need = plan.cargo_build_gb_per_job
+    assert need > plan.resource_plan.usable_gb
+    assert plan.guard_max_process_rss_gb == pytest.approx(need)
+    assert plan.guard_max_total_rss_gb == pytest.approx(need)
+
+
+def test_guard_caps_stay_below_physical_memory_less_the_reserve() -> None:
+    # A runner too small for even the calibrated need: the caps stop at the
+    # host ceiling rather than at the need.
+    module = _load_ci_resource_env()
+    budget = _budget(module, physical_gb=3.0, available_gb=2.5, reserve_gb=1.0)
+    plan = module.plan_ci_resources(environ={}, cpu_count=2, budget=budget)
+
+    assert plan.cargo_build_gb_per_job > 2.0
+    assert plan.guard_max_process_rss_gb == pytest.approx(2.0)
+    assert plan.guard_max_total_rss_gb == pytest.approx(2.0)
 
 
 def test_guard_caps_never_fall_below_the_guard_defaults() -> None:
@@ -278,7 +291,7 @@ def test_github_env_carries_the_guard_caps(tmp_path: Path) -> None:
     plan = module.plan_ci_resources(
         environ={},
         cpu_count=3,
-        budget=_budget(module, physical_gb=7.0, available_gb=3.24, reserve_gb=1.0),
+        budget=_budget(module, physical_gb=7.0, available_gb=3.22, reserve_gb=1.0),
     )
     env_file = tmp_path / "github-env"
     module.write_github_env(env_file, plan)
