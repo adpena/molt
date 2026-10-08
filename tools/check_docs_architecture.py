@@ -408,6 +408,38 @@ def _check_local_markdown_links(errors: list[str]) -> None:
                 )
 
 
+# A ledger row's leading cell names its finding. "(was HF-n)" records a
+# renumbering of the same finding; any other parenthetical names a sub-part.
+LEDGER_ROW_ID_RE = re.compile(
+    r"^\| ((?:HF-F?|V1-)\d+(?: \([^)|]*\))?) \|", re.MULTILINE
+)
+LEDGER_RENUMBERING_RE = re.compile(r" \(was [^)]*\)$")
+
+
+def _check_handoff_ledger_ids(errors: list[str]) -> None:
+    """Each finding ID names exactly one ledger row.
+
+    Parallel lanes allocate IDs independently, so a collision silently merges
+    two findings' history.
+    """
+    path = ROOT / "docs/agent/V1_HANDOFF_FINDINGS.md"
+    if not path.exists():
+        return
+    rows: dict[str, list[int]] = {}
+    text = _read_text(path)
+    for match in LEDGER_ROW_ID_RE.finditer(text):
+        line = text.count("\n", 0, match.start()) + 1
+        finding_id = LEDGER_RENUMBERING_RE.sub("", match.group(1))
+        rows.setdefault(finding_id, []).append(line)
+    for finding_id, lines in sorted(rows.items()):
+        if len(lines) > 1:
+            errors.append(
+                f"docs/agent/V1_HANDOFF_FINDINGS.md: finding {finding_id} names "
+                f"{len(lines)} rows (lines {', '.join(map(str, lines))}); give each "
+                "finding one ID"
+            )
+
+
 def check_repo() -> list[str]:
     errors: list[str] = []
     _check_readme(errors)
@@ -418,6 +450,7 @@ def check_repo() -> list[str]:
     _check_support_story_refs(errors)
     _check_long_horizon_routing(errors)
     _check_foundation_portfolio_numbering(errors)
+    _check_handoff_ledger_ids(errors)
     _check_local_markdown_links(errors)
     return errors
 
