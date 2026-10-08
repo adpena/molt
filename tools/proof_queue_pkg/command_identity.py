@@ -17,7 +17,7 @@ from typing import Any, BinaryIO, Iterable, Mapping, Sequence, cast
 
 from molt import file_publication
 from molt.dx import _reject_onedrive
-from molt.toolchain_identity import executable_environment_value
+from molt.toolchain_identity import executable_environment_value, find_executable
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
 from molt.rust_toolchain import cargo_config_arguments, cargo_configuration_paths
 from molt.python_environment_identity import (
@@ -218,23 +218,33 @@ def _resolve_outer_executable(token: str, *, cwd: Path, env: Mapping[str, str]) 
             )
         except LlvmToolchainConfigError as exc:
             raise ValueError(f"wasm-ld toolchain selection failed: {exc}") from exc
-    candidate = Path(token)
-    if candidate.is_absolute() or candidate.parent != Path("."):
-        path = candidate if candidate.is_absolute() else cwd / candidate
-        try:
-            lexical = Path(os.path.abspath(path))
-            if not lexical.is_file():
-                raise FileNotFoundError(lexical)
-            return lexical
-        except OSError as exc:
-            raise ValueError(f"proof executable {token!r} is unavailable") from exc
-    found = shutil.which(token, path=env.get("PATH"))
-    if found is None:
+    selected = find_executable(token, environment=env, cwd=cwd)
+    if selected is None:
+        if Path(token).is_absolute() or any(separator in token for separator in "/\\"):
+            raise ValueError(f"proof executable {token!r} is unavailable")
         raise ValueError(f"proof executable {token!r} is not on the execution PATH")
-    lexical = Path(os.path.abspath(found))
-    if not lexical.is_file():
-        raise ValueError(f"proof executable {token!r} is unavailable")
-    return lexical
+    return selected
+
+
+def _bound_tool_payload(
+    envelope: Mapping[str, object], exact: Sequence[str], requested: str
+) -> str | None:
+    """Use the admitted role, before executable binding changes its basename."""
+    delegated = envelope.get("delegated")
+    owner = delegated if isinstance(delegated, Mapping) else envelope
+    submitted = owner.get("argv")
+    if (
+        isinstance(owner.get("python"), Mapping)
+        or not isinstance(submitted, list)
+        or not submitted
+        or admission._basename(str(submitted[0]))
+        not in admission._executable_registry_names(requested)
+    ):
+        return None
+    payload = admission._nested_command(exact) if delegated is not None else exact
+    if not payload:
+        raise ValueError(f"typed {requested} command has no exact payload")
+    return str(payload[0])
 
 
 def _cargo_executable_path(
@@ -249,26 +259,19 @@ def _cargo_executable_path(
 
     Bare Cargo roles use CARGO before command-effective PATH. Once bound, the
     actual payload path owns both capture and execution, including Rust probes.
-    Python families merely declaring Cargo retain their environment selection.
+    Python families also capture their environment-selected Cargo dependency.
     """
     cargo_names = admission._executable_registry_names("cargo")
     if token is None:
-        delegated = envelope.get("delegated")
-        payload_owner = delegated if isinstance(delegated, Mapping) else envelope
-        submitted = payload_owner.get("argv")
-        if (
-            not isinstance(payload_owner.get("python"), Mapping)
-            and isinstance(submitted, list)
-            and submitted
-            and admission._basename(str(submitted[0])) in cargo_names
-        ):
-            payload = (
-                admission._nested_command(exact) if delegated is not None else exact
+        token = _bound_tool_payload(envelope, exact, "cargo")
+        if token is None:
+            # Python drivers can invoke literal cargo as well as an explicit
+            # CARGO hook. PATH owns the declared dependency; executable-env
+            # custody independently captures the hook and its physical image.
+            return _which_in_command_environment(
+                "cargo", envelope, exact, cwd=cwd, env=env
             )
-            if not payload:
-                raise ValueError("typed Cargo command has no exact payload")
-            token = str(payload[0])
-    if token is None or token.casefold() in cargo_names:
+    if token.casefold() in cargo_names:
         selected = executable_environment_value(env, "CARGO")
         if selected:
             return _resolve_outer_executable(selected, cwd=cwd, env=env)
@@ -853,10 +856,12 @@ def _tool_configuration_identities(
 _RUST_TOOL_NAMES = frozenset({"cargo", "cargo.exe", "rustc", "rustc.exe"})
 
 
-def _rust_target(exact: Sequence[str], env: Mapping[str, str]) -> str | None:
-    selected_command = admission._nested_command(exact) or [
-        str(value) for value in exact
-    ]
+def _rust_target(envelope: Mapping[str, object], env: Mapping[str, str]) -> str | None:
+    delegated = envelope.get("delegated")
+    owner = delegated if isinstance(delegated, Mapping) else envelope
+    selected_command = owner.get("argv")
+    if not isinstance(selected_command, list) or not selected_command:
+        raise ValueError("Rust target selection requires an admitted command envelope")
     selected: list[str] = []
     before_separator = True
     index = 1
@@ -898,6 +903,7 @@ TOOL_IDENTITY_REUSE_SCHEMA = "molt.proof-tool-identity-reuse.v1"
 # probe reuse; operational output placement is transport, never an input.
 COMPILE_ENVIRONMENT_NAMES = frozenset(
     {
+        "CARGO",
         "RUSTC",
         "RUSTC_WRAPPER",
         "RUSTC_WORKSPACE_WRAPPER",
@@ -1022,6 +1028,7 @@ def _tool_identity_reuse_key(
     probe_cwd: Path,
     launcher: Path,
     selected_content_path: Path | None,
+    path_dependency_images: Sequence[Mapping[str, object]],
     env: Mapping[str, str],
 ) -> dict[str, object]:
     python_authority = envelope.get("python")
@@ -1048,6 +1055,7 @@ def _tool_identity_reuse_key(
         "selected_content_path": str(selected_content_path)
         if selected_content_path is not None
         else None,
+        "path_dependency_images": list(path_dependency_images),
         "environment": _probe_environment_selection(env),
     }
 
@@ -1177,16 +1185,10 @@ def _tool_identity(
         if relative_probe_cwd.is_absolute():
             raise ValueError(f"{name} toolchain probe cwd must be repository-relative")
         probe_cwd = (proof_plan.ROOT / relative_probe_cwd).resolve(strict=True)
-    python_authority = envelope.get("python")
     if name == "cargo":
         path = _cargo_executable_path(envelope, exact, cwd=probe_cwd, env=env)
-    elif (
-        not isinstance(python_authority, Mapping)
-        and exact
-        and admission._basename(exact[0])
-        in admission._executable_registry_names(requested)
-    ):
-        path = _resolve_outer_executable(exact[0], cwd=probe_cwd, env=env)
+    elif payload := _bound_tool_payload(envelope, exact, requested):
+        path = _resolve_outer_executable(payload, cwd=probe_cwd, env=env)
     elif name == "rustc" and (
         selected := executable_environment_value(env, "RUSTC")
         or executable_environment_value(env, "CARGO_BUILD_RUSTC")
@@ -1197,14 +1199,43 @@ def _tool_identity(
             requested, envelope, exact, cwd=probe_cwd, env=env
         )
     selected_content_path = None
-    if name in {"rustc", "cargo"}:
+    if policy.data.get("fingerprint_domain") == "rustup":
         from molt.rust_toolchain import resolve_rustup_proxy
 
         # Rustup overrides can change while proxy bytes and environment stay
         # fixed. Resolve before reuse; physical tools need no rustup lookup.
         selected_content_path = resolve_rustup_proxy(
             path, role=name, root=probe_cwd, env=env
+        ).resolve(strict=True)
+    path_dependency_images: list[dict[str, object]] = []
+    delegated = envelope.get("delegated")
+    owner = delegated if isinstance(delegated, Mapping) else envelope
+    if name == "rustc" and isinstance(owner.get("python"), Mapping):
+        # Registered Python build drivers query literal PATH rustc for host
+        # metadata even when Cargo uses an explicit compiler. Capture those
+        # executable bytes separately; the primary compiler still owns all
+        # version/sysroot/linker metadata and no second linker is implied.
+        dependency = _which_in_command_environment(
+            "rustc", envelope, exact, cwd=probe_cwd, env=env
         )
+        if dependency != path:
+            dependency_content = resolve_rustup_proxy(
+                dependency, role="rustc", root=probe_cwd, env=env
+            ).resolve(strict=True)
+            path_dependency_images.append(
+                process_image_capture.capture_image(
+                    "rustc-path-metadata", dependency, preserve_path=True
+                )
+            )
+            if dependency_content != dependency:
+                path_dependency_images.append(
+                    process_image_capture.capture_image(
+                        "rustc-path-metadata", dependency_content
+                    )
+                )
+            path_dependency_images = process_image_capture.canonical_images(
+                path_dependency_images
+            )
     policy_sha256 = hashlib.sha256(
         json.dumps(policy.data, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -1222,6 +1253,7 @@ def _tool_identity(
             probe_cwd=probe_cwd,
             launcher=path,
             selected_content_path=selected_content_path,
+            path_dependency_images=path_dependency_images,
             env=env,
         )
         key_sha256 = canonical_json_sha256(key)
@@ -1272,6 +1304,12 @@ def _tool_identity(
         cwd=cwd,
         env=env,
     )
+    if path_dependency_images:
+        material["process_images"] = process_image_capture.canonical_images(
+            [*material["process_images"], *path_dependency_images]
+        )
+        material.pop("identity_sha256", None)
+        material["identity_sha256"] = canonical_json_sha256(material)
     if record_path is not None and set(material) <= _REUSABLE_IDENTITY_FIELDS:
         _store_reuse_record(
             record_path,
@@ -1378,7 +1416,7 @@ def _capture_tool_identity(
                 cargo=cargo_path,
                 cwd=probe_cwd,
                 env=env,
-                target=_rust_target(exact, env),
+                target=_rust_target(envelope, env),
                 command_argv=admission._nested_command(exact) or exact,
                 linker_process_helpers=(
                     policy.data.get("linker_process_helpers")
@@ -1669,6 +1707,7 @@ _ENVIRONMENT_PREFIXES = (
 )
 _ENVIRONMENT_BUILD_NAMES = frozenset(
     {
+        "CARGO",
         "AR",
         "BINDGEN_EXTRA_CLANG_ARGS",
         "CC",
@@ -1747,6 +1786,7 @@ _QUEUE_CUSTODY_ENV_NAMES = frozenset(
 )
 _EXECUTABLE_ENV_NAMES = frozenset(
     {
+        "CARGO",
         "AR",
         "CC",
         "CMAKE",

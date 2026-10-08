@@ -820,6 +820,7 @@ def child_policy(
     envelope: Mapping[str, object],
     toolchains: Mapping[str, object],
     *,
+    environment_executables: Mapping[str, object],
     derived_roots: Sequence[Mapping[str, object]] = (),
 ) -> dict[str, object]:
     closure = envelope.get("process_closure")
@@ -859,6 +860,14 @@ def child_policy(
                         "sha256": str(image["sha256"]),
                     }
                 )
+        for image in process_image_capture.environment_images(environment_executables):
+            allowed.append(
+                {
+                    "toolchain": str(image["role"]),
+                    "path": _norm(Path(str(image["path"]))),
+                    "sha256": str(image["sha256"]),
+                }
+            )
     allowed = [
         dict(row)
         for row in {
@@ -1388,17 +1397,10 @@ def _resolve_child_executable(
         if isinstance(child_cwd, (str, bytes)) and child_cwd
         else Path.cwd()
     )
-    if candidate.is_absolute() or candidate.parent != Path("."):
+    if candidate.is_absolute() or any(separator in token for separator in "/\\"):
         return Path(os.path.abspath(cwd / candidate))
-    path_value = None
-    if isinstance(child_env, Mapping):
-        path_value = _environment_value(child_env, "PATH")
-        if isinstance(path_value, bytes):
-            path_value = os.fsdecode(path_value)
-    path_entries = (
-        path_value.split(os.pathsep)
-        if isinstance(path_value, str)
-        else os.get_exec_path()
+    path_entries = os.get_exec_path(
+        child_env if isinstance(child_env, Mapping) else None
     )
     extensions = [""]
     if os.name == "nt" and not candidate.suffix:

@@ -235,6 +235,7 @@ def test_bindgen_inputs_survive_filter_and_selected_driver_reaches_supervisor(
     _no_processes(monkeypatch)
     inherited = {
         "PATH": str(driver.parent),
+        "CARGO": str(cargo),
         "LIBCLANG_PATH": str(driver.parent),
         "LIBCLANG_STATIC_PATH": str(driver.parent),
         "BINDGEN_EXTRA_CLANG_ARGS": "-DPROJECT=1",
@@ -257,7 +258,7 @@ def test_bindgen_inputs_survive_filter_and_selected_driver_reaches_supervisor(
     identities = execution_environment._execution_environment_executable_identities(
         env, cwd=tmp_path
     )
-    assert set(identities) == {"CLANG_PATH"}
+    assert set(identities) == {"CLANG_PATH", "CARGO"}
     _, fixed = supervisor_custody._supervisor_fixed_images({}, identities, [str(cargo)])
     selected = [row for row in fixed if row["role"] == "env:CLANG_PATH"]
     assert len(selected) == 1
@@ -280,9 +281,10 @@ def test_bindgen_binding_normalizes_environment_case_without_duplicate_keys(
     tmp_path, monkeypatch, hook, tool
 ):
     driver = _tool(tmp_path, tool)
+    cargo = _tool(tmp_path, "cargo")
     _no_processes(monkeypatch)
     env, contract = execution_environment._deterministic_execution_environment(
-        {hook.lower(): str(driver)}, override_names=[hook.lower()]
+        {hook.lower(): str(driver), "cargo": str(cargo)}, override_names=[hook.lower()]
     )
     env, contract = execution_environment._bind_cargo_build_tool_environment(
         command_admission.envelope_for_command(["cargo", "build"]),
@@ -290,7 +292,7 @@ def test_bindgen_binding_normalizes_environment_case_without_duplicate_keys(
         contract,
         cwd=tmp_path,
     )
-    assert env == {hook: str(driver)}
+    assert env == {hook: str(driver), "CARGO": str(cargo)}
     assert contract["override_names"] == [hook]
 
 
@@ -317,6 +319,9 @@ def test_non_build_command_does_not_select_bindgen(command, tmp_path, monkeypatc
     [
         "CLANG_PATH",
         "LLVM_CONFIG_PATH",
+        "CARGO",
+        "RUSTC",
+        "CARGO_BUILD_RUSTC",
         "RUSTFMT",
         "RUSTDOC",
         "CARGO_BUILD_RUSTDOC",
@@ -477,16 +482,21 @@ def test_relative_llvm_config_cannot_borrow_invocation_cwd(tmp_path, monkeypatch
     ],
 )
 def test_environment_image_projection_keeps_selection_and_resolved_paths(tmp_path, key):
-    selected = _tool(tmp_path / "selected", "compiler")
     resolved = _tool(tmp_path / "resolved", "compiler")
+    selected = tmp_path / "selected" / "compiler"
+    selected.parent.mkdir()
+    try:
+        selected.symlink_to(resolved)
+    except OSError as exc:
+        if os.name == "nt" and exc.winerror == 1314:
+            pytest.skip("Windows host lacks symbolic-link creation privilege")
+        raise
     root = _tool(tmp_path, "cargo")
-    # Exercise projection of the shared executable identity. No second capture
-    # or driver-specific process authority is needed for a resolved image.
-    identity = command_identity._executable_identity(selected)
-    identity.update(resolved_path=str(resolved), symlinked=True)
-    _, images = supervisor_custody._supervisor_fixed_images(
-        {}, {key: {"executable": identity}}, [str(root)]
+    # Real producer capture, including the independently observable alias target.
+    identities = execution_environment._execution_environment_executable_identities(
+        {key: str(selected)}, cwd=tmp_path
     )
+    _, images = supervisor_custody._supervisor_fixed_images({}, identities, [str(root)])
     assert {row["path"] for row in images if row["role"] == f"env:{key}"} == {
         str(selected),
         str(resolved),
@@ -671,7 +681,8 @@ def test_cargo_selector_owns_environment_before_all_build_tool_capture(
         toolchain_capture, "select_cargo_build_tool_environment", capture
     )
     env, contract = execution_environment._deterministic_execution_environment(
-        {"RUSTUP_TOOLCHAIN": "older-context"}, override_names=[]
+        {"RUSTUP_TOOLCHAIN": "older-context", "CARGO": str(_tool(tmp_path, "cargo"))},
+        override_names=[],
     )
     env, contract = execution_environment._bind_cargo_build_tool_environment(
         command_admission.envelope_for_command(["cargo", "+selected-context", "test"]),
@@ -693,7 +704,7 @@ def test_cargo_documentation_tool_reaches_exact_image_custody(
     cargo = _tool(tmp_path, "cargo")
     _no_processes(monkeypatch)
     env, contract = execution_environment._deterministic_execution_environment(
-        {hook: str(documenter)}, override_names=[hook]
+        {hook: str(documenter), "CARGO": str(cargo)}, override_names=[hook]
     )
     env, contract = execution_environment._bind_cargo_build_tool_environment(
         command_admission.envelope_for_command(["cargo", "test"]),
@@ -760,7 +771,11 @@ def test_documenter_proxy_binds_selected_component_in_cargo_context(
         return subprocess.CompletedProcess(command, 0, str(actual) + "\n", "")
 
     monkeypatch.setattr(rust_toolchain.process_guard, "run_completed_command", run)
-    inherited = {"RUSTUP_TOOLCHAIN": "older-context", "PATH": str(proxy.parent)}
+    inherited = {
+        "RUSTUP_TOOLCHAIN": "older-context",
+        "PATH": str(proxy.parent),
+        "CARGO": str(_tool(tmp_path, "cargo")),
+    }
     if explicit:
         inherited["RUSTDOC"] = str(proxy)
     env, contract = execution_environment._deterministic_execution_environment(
@@ -806,10 +821,11 @@ def test_documenter_explicit_path_must_be_absolute_and_available(
 
 
 @pytest.mark.parametrize("inline", [False, True])
-def test_cargo_owned_documenter_config_requires_explicit_selection(
-    tmp_path, monkeypatch, inline
+@pytest.mark.parametrize("role", ["rustc", "rustdoc"])
+def test_cargo_owned_compiler_config_requires_explicit_selection(
+    tmp_path, monkeypatch, inline, role
 ):
-    definition = 'build.rustdoc = "configured-documenter"'
+    definition = f'build.{role} = "configured-tool"'
     config = tmp_path / "cargo.toml"
     config.write_text(definition, encoding="utf-8")
     monkeypatch.setattr(
@@ -818,8 +834,8 @@ def test_cargo_owned_documenter_config_requires_explicit_selection(
         lambda *_args, **_kwargs: [] if inline else [{"path": str(config)}],
     )
     command = ["cargo", "--config", definition if inline else str(config), "test"]
-    for env in ({}, {"CARGO_BUILD_RUSTDOC": "potentially-shadowed-documenter"}):
-        with pytest.raises(ValueError, match="defines build.rustdoc"):
+    for env in ({}, {f"CARGO_BUILD_{role.upper()}": "potentially-shadowed-tool"}):
+        with pytest.raises(ValueError, match=f"defines build.{role}"):
             execution_environment._require_cargo_build_tool_environment_context(
                 command, outputs=_outputs(command), cwd=tmp_path, env=env
             )
@@ -827,7 +843,7 @@ def test_cargo_owned_documenter_config_requires_explicit_selection(
         command,
         outputs=_outputs(command),
         cwd=tmp_path,
-        env={"RUSTDOC": "explicit-documenter"},
+        env={role.upper(): "explicit-tool"},
     )
 
 

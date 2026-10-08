@@ -26,6 +26,11 @@ def _filesystem_path(path: Path) -> Path:
     return path
 
 
+def _image_path_key(path: Path) -> str:
+    """Compare OS-equivalent spellings without resolving selection aliases."""
+    return os.path.normcase(os.path.abspath(_filesystem_path(path)))
+
+
 def capture_image(
     role: str,
     path: Path,
@@ -141,7 +146,7 @@ def canonical_images(
         path = Path(raw_path)
         if not path.is_file():
             raise ValueError(f"process image is unavailable: {path}")
-        normalized = os.path.normcase(os.path.abspath(path))
+        normalized = _image_path_key(path)
         identity = (digest, disposition)
         prior = identities.get(normalized)
         if prior is not None and prior != identity:
@@ -212,9 +217,9 @@ def toolchain_images(
     for raw_path, digest, label in required:
         if not isinstance(raw_path, str) or not isinstance(digest, str):
             raise ValueError(f"{name} toolchain has no {label} image identity")
-        normalized = os.path.normcase(os.path.abspath(raw_path))
+        normalized = _image_path_key(Path(raw_path))
         if not any(
-            os.path.normcase(os.path.abspath(str(image["path"]))) == normalized
+            _image_path_key(Path(str(image["path"]))) == normalized
             and image["sha256"] == digest
             for image in images
         ):
@@ -222,6 +227,39 @@ def toolchain_images(
                 f"{name} toolchain {label} image is outside its process closure"
             )
     return images
+
+
+def environment_images(identities: Mapping[str, object]) -> list[dict[str, object]]:
+    """Project captured executable environment closure for both custody consumers."""
+    images: list[dict[str, object]] = []
+    for name, raw in identities.items():
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"environment executable {name} has no identity")
+        executable, captured = raw.get("executable"), raw.get("process_images")
+        if (
+            not isinstance(executable, Mapping)
+            or not isinstance(captured, list)
+            or not captured
+        ):
+            raise ValueError(
+                f"environment executable {name} has no process-image closure"
+            )
+        current = canonical_images(captured)
+        if any(row["role"] != f"env:{name}" for row in current):
+            raise ValueError(f"environment executable {name} has a foreign image role")
+        for field in ("path", "resolved_path"):
+            raw_path = executable.get(field)
+            if not isinstance(raw_path, str) or not any(
+                _image_path_key(Path(str(row["path"])))
+                == _image_path_key(Path(raw_path))
+                and row["sha256"] == executable.get("sha256")
+                for row in current
+            ):
+                raise ValueError(
+                    f"environment executable {name} {field} is outside its process closure"
+                )
+        images.extend(current)
+    return canonical_images(images)
 
 
 def platform_auxiliary_images(descendants: object) -> list[dict[str, object]]:

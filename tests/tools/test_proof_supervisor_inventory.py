@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -188,7 +189,9 @@ def test_process_image_inventory_captures_distinct_runtime_and_projects_once(
             "toolchains": ["fixture"],
         }
     }
-    child = execution_custody.child_policy(envelope, {"fixture": identity})
+    child = execution_custody.child_policy(
+        envelope, {"fixture": identity}, environment_executables={}
+    )
     _root_role, fixed = supervisor_custody._supervisor_fixed_images(
         {"fixture": identity}, {}, [str(supervisor)]
     )
@@ -238,7 +241,9 @@ def test_python_generated_child_matches_native_execution_identity(tmp_path: Path
         result_path=receipt_path,
     )
     envelope = {"process_closure": {"descendants": "declared-toolchains"}}
-    child_policy = execution_custody.child_policy(envelope, {}, derived_roots=roots)
+    child_policy = execution_custody.child_policy(
+        envelope, {}, environment_executables={}, derived_roots=roots
+    )
     generated = scratch / supervisor.name
     # Materialize the candidate after admission, then launch through the actual
     # Python hook. The OS supervisor must observe the same path and bytes.
@@ -354,3 +359,63 @@ def test_real_git_launcher_runtime_closure_is_kernel_observed(tmp_path: Path) ->
     assert telemetry["observed_image_count"] == len(images)
     assert any(Path(str(image["path"])).samefile(git) for image in images)
     assert process_image_capture.revalidate_images(images) == images
+
+
+@pytest.mark.parametrize(
+    "extended,ordinary",
+    [
+        (r"\\?\C:\Tools\Compiler.EXE", r"c:\tools\compiler.exe"),
+        (r"\\?\UNC\Server\Share\Compiler.EXE", r"\\server\share\compiler.exe"),
+    ],
+)
+def test_image_membership_normalizes_windows_device_spelling(
+    monkeypatch, extended, ordinary
+):
+    import ntpath
+    from types import SimpleNamespace
+    from tools.proof_queue_pkg import process_image_capture
+
+    # Only the path-platform boundary is simulated, not shared os module state.
+    monkeypatch.setattr(
+        process_image_capture,
+        "os",
+        SimpleNamespace(name="nt", path=ntpath, fspath=os.fspath),
+    )
+    assert process_image_capture._image_path_key(Path(extended)) == ntpath.normcase(
+        ordinary
+    )
+    assert process_image_capture._image_path_key(
+        Path(extended)
+    ) == process_image_capture._image_path_key(Path(ordinary))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="actual Windows extended path capture")
+def test_extended_windows_environment_tool_reaches_both_consumers(tmp_path):
+    from tools.proof_queue_pkg import execution_environment
+
+    executable = tmp_path / "selected.exe"
+    shutil.copyfile(sys.executable, executable)
+    extended = "\\\\?\\" + str(executable)
+    configured = execution_environment._execution_environment_executable_identities(
+        {"CC": extended}, cwd=tmp_path
+    )
+    policy = execution_custody.child_policy(
+        {"process_closure": {"descendants": "declared-toolchains"}},
+        {},
+        environment_executables=configured,
+    )
+    _, native = supervisor_custody._supervisor_fixed_images(
+        {}, configured, [sys.executable]
+    )
+    expected = {
+        (
+            execution_custody._norm(executable),
+            hashlib.sha256(executable.read_bytes()).hexdigest(),
+        )
+    }
+    assert {(row["path"], row["sha256"]) for row in policy["allowed"]} == expected
+    assert {
+        (execution_custody._norm(row["path"]), row["sha256"])
+        for row in native
+        if row["role"] == "env:CC"
+    } == expected

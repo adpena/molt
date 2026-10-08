@@ -1157,10 +1157,16 @@ def test_delegated_cargo_target_is_the_rust_linker_selection_authority() -> None
         "--target",
         "wasm32-wasip1",
     ]
-    assert command_identity._rust_target(command, {}) == "wasm32-wasip1"
+    assert (
+        command_identity._rust_target(
+            command_admission.envelope_for_command(command), {}
+        )
+        == "wasm32-wasip1"
+    )
     with pytest.raises(ValueError, match="ambiguous"):
         command_identity._rust_target(
-            command, {"CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu"}
+            command_admission.envelope_for_command(command),
+            {"CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu"},
         )
 
 
@@ -4054,9 +4060,10 @@ def test_guarded_rust_capture_failure_preserves_primary_error_and_durable_detail
         assert detail["artifact"]["path"] in output
 
 
-@pytest.mark.parametrize("role", ["cargo", "rustc"])
-def test_rustup_content_resolution_uses_exact_cargo_execution_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str
+@pytest.mark.parametrize("role", ["cargo", "rustc", "rustfmt"])
+@pytest.mark.parametrize("retarget", [False, True])
+def test_rustup_role_content_resolution_tracks_physical_component_before_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str, retarget: bool
 ) -> None:
     from molt import rust_toolchain
 
@@ -4073,7 +4080,10 @@ def test_rustup_content_resolution_uses_exact_cargo_execution_environment(
     for path in (first, replacement):
         path.write_bytes(path.name.encode())
         path.chmod(0o755)
-    selected = [first]
+    alias = tmp_path / "selected-component"
+    if retarget:
+        alias.symlink_to(first)
+    selected = [alias if retarget else first]
     environment = {"PATH": str(proxy_dir), "RUSTUP_TOOLCHAIN": "selected-by-override"}
     resolutions, versions = [], []
 
@@ -4084,7 +4094,7 @@ def test_rustup_content_resolution_uses_exact_cargo_execution_environment(
         return subprocess.CompletedProcess(argv, 0, str(selected[0]) + "\n", "")
 
     def version(argv, **kwargs):
-        assert argv[0] == str(selected[0]) and kwargs["env"] == environment
+        assert argv[0] == str(selected[0].resolve()) and kwargs["env"] == environment
         versions.append(list(argv))
         return subprocess.CompletedProcess(argv, 0, f"{role} 1.99.0", "")
 
@@ -4115,7 +4125,11 @@ def test_rustup_content_resolution_uses_exact_cargo_execution_environment(
     warm, hit = capture()
     assert initial == warm and hit[0]["state"] == "hit"
     assert len(resolutions) == 2 and len(versions) == 1
-    selected[0] = replacement
+    if retarget:
+        alias.unlink()
+        alias.symlink_to(replacement)
+    else:
+        selected[0] = replacement
     changed, changed_telemetry = capture()
     assert changed_telemetry[0]["state"] == "miss"
     assert changed_telemetry[0]["key_sha256"] != miss[0]["key_sha256"]
@@ -16477,7 +16491,31 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
         )
         command = [sys.executable, *target, "--", *payload]
     env = {"CARGO": str(selected), "PATH": str(proxy_dir)}
+    assert (
+        execution_environment.environment_override_policy_error(
+            {"CARGO": str(selected)}
+        )
+        is None
+    )
+    env, contract = execution_environment._deterministic_execution_environment(
+        env, override_names=["CARGO"]
+    )
     envelope = command_admission.envelope_for_command(command)
+    monkeypatch.setattr(
+        execution_environment.toolchain_capture,
+        "select_cargo_build_tool_environment",
+        lambda **_kwargs: ({}, {}),
+    )
+    env, contract = execution_environment._bind_cargo_build_tool_environment(
+        envelope, env, contract, cwd=state.ROOT
+    )
+    assert env["CARGO"] == str(supplied if explicit else selected)
+    assert "CARGO" in contract["passed_names"]
+    assert "CARGO" in command_identity.compile_environment_selection(env)
+    configured = execution_environment._execution_environment_executable_identities(
+        env, cwd=state.ROOT
+    )
+    assert configured["CARGO"]["executable"]["path"] == env["CARGO"]
     exact = command_identity._exact_command(envelope, cwd=state.ROOT, env=env)
     _guarded, delegated = command_identity._bind_delegated_command(
         envelope, exact, cwd=state.ROOT, env=env
@@ -16535,11 +16573,15 @@ def test_bound_cargo_executes_selected_child_instead_of_path_decoy(tmp_path):
             "#!"
             + sys.executable
             + "\nfrom pathlib import Path\n"
-            + f"Path({str(marker)!r}).write_text('ran')\n"
+            + f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')\n",
+            encoding="utf-8",
         )
         path.chmod(0o755)
     env = {**os.environ, "CARGO": str(selected), "PATH": str(path_dir)}
     command = [sys.executable, "tools/guarded_exec.py", "--", "cargo", "--version"]
+    env, _contract = execution_environment._deterministic_execution_environment(
+        env, override_names=["CARGO"]
+    )
     envelope = command_admission.envelope_for_command(command)
     exact = command_identity._exact_command(envelope, cwd=state.ROOT, env=env)
     command_identity._bind_delegated_command(envelope, exact, cwd=state.ROOT, env=env)
@@ -16553,5 +16595,72 @@ def test_bound_cargo_executes_selected_child_instead_of_path_decoy(tmp_path):
         timeout=30,
     )
     assert result.returncode == result.child_returncode == 0, result.stderr
-    assert selected_marker.read_text() == "ran"
+    assert selected_marker.read_text(encoding="utf-8") == "ran"
     assert not decoy_marker.exists()
+
+
+@pytest.mark.parametrize("token", ["./cargo", "sub/../cargo"])
+def test_explicit_relative_executable_uses_command_cwd_not_path(
+    tmp_path, monkeypatch, token
+):
+    selected_dir, ambient = tmp_path / "selected", tmp_path / "ambient"
+    for directory in (selected_dir, ambient):
+        directory.mkdir()
+        image = directory / "cargo"
+        image.write_bytes(directory.name.encode())
+        image.chmod(0o755)
+    (selected_dir / "sub").mkdir()
+    monkeypatch.chdir(ambient)
+    environment = {"PATH": str(ambient)}
+    expected = selected_dir / "cargo"
+    assert (
+        command_identity._resolve_outer_executable(
+            token, cwd=selected_dir, env=environment
+        )
+        == expected
+    )
+    assert (
+        execution_custody._resolve_child_executable(
+            token, environment, str(selected_dir)
+        )
+        == expected
+    )
+
+
+def test_relative_execution_path_entries_use_command_cwd(tmp_path, monkeypatch):
+    selected, ambient = tmp_path / "selected", tmp_path / "ambient"
+    for directory in (selected, ambient):
+        (directory / "bin").mkdir(parents=True)
+        image = directory / "bin/cargo"
+        image.write_bytes(directory.name.encode())
+        image.chmod(0o755)
+    monkeypatch.chdir(ambient)
+    environment = {"PATH": "bin"}
+    expected = selected / "bin/cargo"
+    assert (
+        command_identity._resolve_outer_executable(
+            "cargo", cwd=selected, env=environment
+        )
+        == expected
+    )
+    assert (
+        execution_custody._resolve_child_executable("cargo", environment, str(selected))
+        == expected
+    )
+
+
+def test_child_explicit_environment_without_path_does_not_inherit_parent_path(
+    tmp_path, monkeypatch
+):
+    # CPython os.get_exec_path({}) selects os.defpath, not the parent's PATH.
+    name = "molt-only-in-parent-path" + (".exe" if os.name == "nt" else "")
+    decoy = tmp_path / name
+    decoy.write_bytes(b"ambient executable must not be selected")
+    decoy.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert os.get_exec_path({}) == os.defpath.split(os.pathsep)
+    assert execution_custody._resolve_child_executable(name, {}, str(tmp_path)) is None
+    assert (
+        execution_custody._resolve_child_executable(name, None, str(tmp_path))
+        == decoy.resolve()
+    )

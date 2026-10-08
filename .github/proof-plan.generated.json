@@ -317,6 +317,10 @@
     "tests/tools/test_ci_gate.py",
     "tests/tools/test_guarded_exec.py",
     "tests/tools/test_proof_queue.py",
+    "tests/tools/test_proof_supervisor_generation.py",
+    "tests/tools/test_proof_queue_execution_custody_p0.py",
+    "tests/tools/test_cargo_bindgen_toolchain.py",
+    "tests/tools/test_tool_identity_reuse.py",
     "tests/tools/test_proof_queue_execution_receipt_details.py",
     "tests/tools/test_proof_queue_cargo_cache_custody.py",
     "tests/tools/test_proof_queue_cargo_reclamation.py",
@@ -332,7 +336,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "b67b90eeec93af215a0b49edcf36c812aa302b8ad14101554b6ec1505e4c3f56",
+  "authority_sha256": "7c3f36fc7d4fd1a9e02d641eb91aa3c7098984de3b5e05dc368cecc68411d674",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1341,7 +1345,11 @@
         "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
         "tests/tools/test_proof_queue_output_layout.py",
         "tests/tools/test_setup_project_inputs.py",
-        "tests/tools/test_rust_toolchain_contract.py"
+        "tests/tools/test_rust_toolchain_contract.py",
+        "tests/tools/test_tool_identity_reuse.py",
+        "tests/tools/test_cargo_bindgen_toolchain.py",
+        "tests/tools/test_proof_queue_execution_custody_p0.py",
+        "tests/tools/test_proof_supervisor_generation.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-queue-portability",
@@ -1403,7 +1411,11 @@
         "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
         "tests/tools/test_proof_queue_output_layout.py",
         "tests/tools/test_setup_project_inputs.py",
-        "tests/tools/test_rust_toolchain_contract.py"
+        "tests/tools/test_rust_toolchain_contract.py",
+        "tests/tools/test_tool_identity_reuse.py",
+        "tests/tools/test_cargo_bindgen_toolchain.py",
+        "tests/tools/test_proof_queue_execution_custody_p0.py",
+        "tests/tools/test_proof_supervisor_generation.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-queue-portability",
@@ -1465,7 +1477,11 @@
         "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
         "tests/tools/test_proof_queue_output_layout.py",
         "tests/tools/test_setup_project_inputs.py",
-        "tests/tools/test_rust_toolchain_contract.py"
+        "tests/tools/test_rust_toolchain_contract.py",
+        "tests/tools/test_tool_identity_reuse.py",
+        "tests/tools/test_cargo_bindgen_toolchain.py",
+        "tests/tools/test_proof_queue_execution_custody_p0.py",
+        "tests/tools/test_proof_supervisor_generation.py"
       ],
       "cache_domain": "pytest",
       "cell": "windows-x86_64-py312-queue-portability",
