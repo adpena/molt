@@ -1830,6 +1830,9 @@ class RepoProcessMemorySentinel:
         self._on_scan = on_scan
         self._on_violation = on_violation
         self._stop = threading.Event()
+        # Guards trip/kill authority: exit sets _stop under it, and a scan acts
+        # on violations only while holding it with _stop clear.
+        self._authority = threading.Lock()
         self._thread: threading.Thread | None = None
         self._daemon_suite_lease = None
         self._daemon_suite_lease_previous = None
@@ -1907,7 +1910,10 @@ class RepoProcessMemorySentinel:
         if self._tree_tracker.root_pid != os.getpid():
             return  # A fork child never drains its parent's suite.
         try:
-            self._stop.set()
+            # A scan still in flight after the bounded join below must not
+            # trip or kill once the guarded scope has closed.
+            with self._authority:
+                self._stop.set()
             if self._thread is not None:
                 self._thread.join(timeout=max(0.5, self._limits.poll_interval * 2))
             try:
@@ -2210,79 +2216,82 @@ class RepoProcessMemorySentinel:
             )
             if not violations:
                 return
-            self.tripped = True
-            global_total_kb = sum(group.total_rss_kb for group in groups)
-            active_pgids = [group.pgid for group in groups]
-            for violation in violations:
-                claimed = False
-                if violation.pgid not in self._terminated_pgids:
-                    claimed = _claim_terminated_pgid(violation.pgid)
-                claim_status = "claimed" if claimed else "already_claimed"
-                observed_at = _utc_timestamp()
-                if claimed:
-                    action = (
-                        "terminated process group to prevent orphaned Molt "
-                        "subprocesses; inspect this JSONL event, child logs, and "
-                        "guard limits before rerun"
+            with self._authority:
+                if self._stop.is_set():
+                    return
+                self.tripped = True
+                global_total_kb = sum(group.total_rss_kb for group in groups)
+                active_pgids = [group.pgid for group in groups]
+                for violation in violations:
+                    claimed = False
+                    if violation.pgid not in self._terminated_pgids:
+                        claimed = _claim_terminated_pgid(violation.pgid)
+                    claim_status = "claimed" if claimed else "already_claimed"
+                    observed_at = _utc_timestamp()
+                    if claimed:
+                        action = (
+                            "terminated process group to prevent orphaned Molt "
+                            "subprocesses; inspect this JSONL event, child logs, and "
+                            "guard limits before rerun"
+                        )
+                    else:
+                        action = (
+                            "process group was already claimed by another guard; inspect "
+                            "the first matching guard event for kill details"
+                        )
+                    payload = {
+                        "event": "repo_process_guard_tripped",
+                        "observed_at_ns": self._sample_observed_at_ns,
+                        "custody_ancestry": self._tree_tracker.custody_ancestry_payload(
+                            {sample.pid: sample for sample in violation.samples},
+                            excluded_roots=self._suite_adopted_pids,
+                        ),
+                        "violation": process_sentinel.violation_payload(violation),
+                        "limits": memory_guard.memory_limits_payload(current_limits),
+                        "guard_started_at": self._started_at,
+                        "observed_at": observed_at,
+                        "elapsed_s": self._elapsed_s(),
+                        "global_total_kb": global_total_kb,
+                        "global_total_gb": global_total_kb / (1024 * 1024),
+                        "active_pgids": active_pgids,
+                        "repro": _repo_sentinel_repro_payload(
+                            command=violation.command,
+                            cwd=self._repo_root,
+                            env=None,
+                            limits=self._limits,
+                            resolved_limits=current_limits,
+                            label=self._label,
+                            accounted_rss_kb=accounted_rss_kb,
+                        ),
+                        **self._termination_attribution(
+                            victim_pgid=violation.pgid,
+                            victim_command=violation.command,
+                            grace_sec=0.25,
+                            rss_triggered=True,
+                            attempted=claimed,
+                            claim_status=claim_status,
+                        ),
+                        "action": action,
+                    }
+                    if claimed:
+                        payload["killed_at"] = observed_at
+                    try:
+                        self._record(payload)
+                    except Exception as exc:  # noqa: BLE001
+                        self._retain_trip_failure(
+                            f"suite RSS event publication failed: {exc}", error=exc
+                        )
+                    self._notify_violation(violation, current_limits, payload)
+                    if not claimed:
+                        continue
+                    process_sentinel.terminate_group(
+                        violation.pgid,
+                        grace=0.25,
+                        expected_identities=process_sentinel.process_group_expected_identities(
+                            violation
+                        ),
                     )
-                else:
-                    action = (
-                        "process group was already claimed by another guard; inspect "
-                        "the first matching guard event for kill details"
-                    )
-                payload = {
-                    "event": "repo_process_guard_tripped",
-                    "observed_at_ns": self._sample_observed_at_ns,
-                    "custody_ancestry": self._tree_tracker.custody_ancestry_payload(
-                        {sample.pid: sample for sample in violation.samples},
-                        excluded_roots=self._suite_adopted_pids,
-                    ),
-                    "violation": process_sentinel.violation_payload(violation),
-                    "limits": memory_guard.memory_limits_payload(current_limits),
-                    "guard_started_at": self._started_at,
-                    "observed_at": observed_at,
-                    "elapsed_s": self._elapsed_s(),
-                    "global_total_kb": global_total_kb,
-                    "global_total_gb": global_total_kb / (1024 * 1024),
-                    "active_pgids": active_pgids,
-                    "repro": _repo_sentinel_repro_payload(
-                        command=violation.command,
-                        cwd=self._repo_root,
-                        env=None,
-                        limits=self._limits,
-                        resolved_limits=current_limits,
-                        label=self._label,
-                        accounted_rss_kb=accounted_rss_kb,
-                    ),
-                    **self._termination_attribution(
-                        victim_pgid=violation.pgid,
-                        victim_command=violation.command,
-                        grace_sec=0.25,
-                        rss_triggered=True,
-                        attempted=claimed,
-                        claim_status=claim_status,
-                    ),
-                    "action": action,
-                }
-                if claimed:
-                    payload["killed_at"] = observed_at
-                try:
-                    self._record(payload)
-                except Exception as exc:  # noqa: BLE001
-                    self._retain_trip_failure(
-                        f"suite RSS event publication failed: {exc}", error=exc
-                    )
-                self._notify_violation(violation, current_limits, payload)
-                if not claimed:
-                    continue
-                process_sentinel.terminate_group(
-                    violation.pgid,
-                    grace=0.25,
-                    expected_identities=process_sentinel.process_group_expected_identities(
-                        violation
-                    ),
-                )
-                self._terminated_pgids.add(violation.pgid)
+                    self._terminated_pgids.add(violation.pgid)
         except Exception as exc:  # noqa: BLE001
             if self.tripped:
                 self._retain_trip_failure(

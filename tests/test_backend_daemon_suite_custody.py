@@ -358,18 +358,22 @@ def test_inherited_python_lease_cannot_teardown_parent(tmp_path, monkeypatch):
 def test_guardian_failure_still_runs_bounded_suite_fallback(tmp_path, monkeypatch):
     monkeypatch.setenv(suite.LEASE_ENV, "isolated-test-lease")
     from types import SimpleNamespace
-    from tools.harness_memory_guard import RepoProcessMemorySentinel
+    from tools import harness_memory_guard
 
-    sentinel = object.__new__(RepoProcessMemorySentinel)
-    import threading
-
-    sentinel._tree_tracker = memory_guard.ProcessTreeTracker(os.getpid())
-    sentinel._stop = threading.Event()
-    sentinel._thread = None
-    sentinel._drain_max_runtime_sec = 5.0
-    sentinel._drain_on_exit = True
-    sentinel._suppress_auto_guard = False
-    sentinel._daemon_suite_lease_previous = None
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="guardian-failure",
+        limits=harness_memory_guard.HarnessMemoryLimits(
+            enabled=True,
+            max_process_rss_gb=1,
+            max_total_rss_gb=2,
+            max_global_rss_gb=3,
+            poll_interval=0.01,
+        ),
+        drain_max_runtime_sec=5.0,
+        suppress_auto_guard=False,
+    )
     calls = []
 
     def fail(**kwargs):
