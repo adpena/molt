@@ -36,13 +36,18 @@ def _isolate_unit_paths_from_hosted_checkout_contract(
 
 
 def _clear_run_context_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The hosted custody contract describes this test process's own checkout,
-    # not the run context under test. Clearing it turns a hosted Windows
-    # checkout into forbidden durable D: custody.
-    for key in (set(CANONICAL_RUN_ENV_KEYS) | set(DX_ENV_KEYS)) - {
-        dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV
-    }:
+    for key in set(CANONICAL_RUN_ENV_KEYS) | set(DX_ENV_KEYS):
         monkeypatch.delenv(key, raising=False)
+
+
+def _without_compiler_wasm_toolchain(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `--dx` also projects the compiler checkout's own WASI SDK, whose custody
+    # needs the hosted contract the autouse fixture removes; on a hosted
+    # Windows runner the checkout then reads as forbidden durable D: custody.
+    # These cases check run-context keys, and the WASM projection has its own.
+    monkeypatch.setattr(
+        run_context_env, "apply_provisioned_wasm_toolchain", lambda _root, _env: ()
+    )
 
 
 def _github_actions_custody_env(
@@ -544,6 +549,7 @@ def test_run_context_env_dx_uses_stable_uv_project_environment(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _clear_run_context_env(monkeypatch)
+    _without_compiler_wasm_toolchain(monkeypatch)
     monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
     ambient_pythonpath = tmp_path / "ambient-pythonpath"
     monkeypatch.setenv("PYTHONPATH", str(ambient_pythonpath))
@@ -582,6 +588,7 @@ def test_run_context_env_session_id_scopes_cargo_not_uv_project_environment(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _clear_run_context_env(monkeypatch)
+    _without_compiler_wasm_toolchain(monkeypatch)
     monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
 
     assert (
@@ -618,6 +625,7 @@ def test_run_context_env_preserves_explicit_uv_project_environment(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    _without_compiler_wasm_toolchain(monkeypatch)
     explicit = tmp_path / "custom-venv"
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(explicit))
     monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")

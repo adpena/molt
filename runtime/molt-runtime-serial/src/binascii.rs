@@ -1002,13 +1002,22 @@ pub extern "C" fn molt_binascii_b2a_uu(data_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_binascii_crc32(data_bits: u64) -> u64 {
+pub extern "C" fn molt_binascii_crc32(data_bits: u64, value_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let raw = match bytes_like_arg(_py, data_bits, "crc32") {
             Ok(v) => v,
             Err(bits) => return bits,
         };
-        let crc = molt_runtime_core::crc32::crc32(&raw, 0);
+        let msg = format!(
+            "'{}' object cannot be interpreted as an integer",
+            type_name(_py, obj_from_bits(value_bits))
+        );
+        let value = index_i64_from_obj(_py, value_bits, msg.as_str());
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        // CPython takes the running value bitwise as an unsigned 32-bit int.
+        let crc = molt_runtime_core::crc32::crc32(&raw, value as u32);
         MoltObject::from_int(i64::from(crc)).bits()
     })
 }

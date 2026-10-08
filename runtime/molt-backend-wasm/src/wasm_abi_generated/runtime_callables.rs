@@ -6016,7 +6016,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_crc32",
         import: WasmRuntimeImport::BinasciiCrc32,
-        arity: 1,
+        arity: 2,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_binascii_crc_hqx",
