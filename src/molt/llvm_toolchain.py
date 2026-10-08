@@ -2548,6 +2548,10 @@ def mlir_toolchain_environment(
     return project_llvm_toolchain_environment(root, verification, environ=result)
 
 
+# The selected Xcode SDK that upstream clang and libclang need on macOS.
+DARWIN_SDK_ENV_KEYS = ("DEVELOPER_DIR", "SDKROOT")
+
+
 def project_llvm_toolchain_environment(
     root: Path,
     verification: LlvmPrefixVerification,
@@ -2592,6 +2596,16 @@ def project_llvm_toolchain_environment(
         for part in path_parts
     ):
         result["PATH"] = os.pathsep.join([bin_text, *path_parts])
+    if sys.platform == "darwin":
+        # Upstream clang and libclang (bindgen in llvm-sys and mlir-sys) find
+        # the macOS SDK only through SDKROOT, so project the selected Xcode SDK.
+        # The deployment target stays a per-build policy and is not projected.
+        # (platform_toolchain imports this module, so import here.)
+        from molt.platform_toolchain import select_darwin_toolchain
+
+        selected = select_darwin_toolchain(result).environment()
+        for key in DARWIN_SDK_ENV_KEYS:
+            result[key] = selected[key]
     return result
 
 
@@ -2726,6 +2740,7 @@ def main(argv: list[str] | None = None) -> int:
                 tablegen_prefix_env_var(pin.major),
                 "LLVM_CONFIG_PATH",
                 "PATH",
+                *(DARWIN_SDK_ENV_KEYS if sys.platform == "darwin" else ()),
             )
             with args.github_env.open("a", encoding="utf-8") as fh:
                 for key in keys:

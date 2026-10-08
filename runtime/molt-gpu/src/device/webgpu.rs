@@ -214,7 +214,9 @@ impl Allocator for WebGpuDevice {
             .map_err(|_| DeviceError::ExecutionFailed("buffer map channel closed".into()))?
             .map_err(|e| DeviceError::ExecutionFailed(format!("buffer map failed: {}", e)))?;
 
-        let mapped = slice.get_mapped_range();
+        let mapped = slice
+            .get_mapped_range()
+            .map_err(|e| DeviceError::ExecutionFailed(format!("buffer view failed: {e}")))?;
         data[..len as usize].copy_from_slice(&mapped[..len as usize]);
         drop(mapped);
         staging.unmap();

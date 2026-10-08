@@ -2469,6 +2469,11 @@ class GuardedExecutionAuthorities:
         return identity
 
 
+# A real supervised execution costs 20-40 s on CI before parallel load
+# (HF-08); the inner budget must sit well above that so the rows test
+# queue behaviour, not runner speed.
+_REAL_EXECUTION_TIMEOUT = "120"
+
 _REAL_METADATA_CASES = frozenset(
     [
         "test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity",
@@ -4750,7 +4755,7 @@ def test_proof_queue_exec_records_passed_run(
             "--note",
             "changed queue smoke to verify note capture",
             "--timeout",
-            "30",
+            _REAL_EXECUTION_TIMEOUT,
             "--",
             str(custody_python),
             "-c",
@@ -4878,7 +4883,7 @@ def test_proof_queue_exec_preserves_command_help_after_delimiter(
                 "--note",
                 "test: delimiter preflight must not consume proof command help",
                 "--timeout",
-                "30",
+                _REAL_EXECUTION_TIMEOUT,
                 "--",
                 str(custody_python),
                 "-c",
@@ -4998,7 +5003,7 @@ def test_proof_queue_exec_honors_explicit_memory_guard_poll_override(
             "--note",
             "synthetic override: queue wrapper must route the operator poll interval into memory_guard.py",
             "--timeout",
-            "30",
+            _REAL_EXECUTION_TIMEOUT,
             "--",
             str(custody_python),
             "-c",
@@ -5159,7 +5164,7 @@ def test_proof_queue_exec_rejects_invalid_memory_guard_poll_before_detach(
             "--note",
             "synthetic violation: invalid poll interval must fail before detached runner launch",
             "--timeout",
-            "30",
+            _REAL_EXECUTION_TIMEOUT,
             "--detach",
             "--",
             sys.executable,
@@ -5210,7 +5215,7 @@ def test_proof_queue_evidence_accepts_positional_run_id(
                 "--contention-key",
                 "python:evidence-smoke",
                 "--timeout",
-                "30",
+                _REAL_EXECUTION_TIMEOUT,
                 "--",
                 str(custody_python),
                 "-c",
@@ -9614,7 +9619,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
                 str(repo),
                 "run",
                 "--timeout",
-                "30",
+                _REAL_EXECUTION_TIMEOUT,
                 "--limit",
                 "1",
             ]
@@ -9640,7 +9645,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
                 str(repo),
                 "run",
                 "--timeout",
-                "30",
+                _REAL_EXECUTION_TIMEOUT,
             ]
         )
         == 0

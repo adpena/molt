@@ -456,7 +456,7 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard_core/memory_limits.py",
-        "_darwin_available_memory_bytes",
+        "darwin_vm_stat_text",
         "run",
         "memory guard vm_stat platform probe for adaptive host budgets",
     ),

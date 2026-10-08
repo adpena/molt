@@ -36,7 +36,12 @@ def _isolate_unit_paths_from_hosted_checkout_contract(
 
 
 def _clear_run_context_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in set(CANONICAL_RUN_ENV_KEYS) | set(DX_ENV_KEYS):
+    # The hosted custody contract describes this test process's own checkout,
+    # not the run context under test. Clearing it turns a hosted Windows
+    # checkout into forbidden durable D: custody.
+    for key in (set(CANONICAL_RUN_ENV_KEYS) | set(DX_ENV_KEYS)) - {
+        dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV
+    }:
         monkeypatch.delenv(key, raising=False)
 
 
@@ -770,6 +775,13 @@ def test_dx_project_rejects_templated_scratch_roots(tmp_path: Path, key: str) ->
         DxProject(project_root).canonical_env({"PATH": "/usr/bin"}, create_dirs=False)
 
 
+@pytest.mark.skipif(
+    os.name == "nt" and bool(os.environ.get(dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV)),
+    reason=(
+        "a hosted Windows checkout lives on the runner's D: work drive, which "
+        "durable custody forbids; its only custody is the hosted contract"
+    ),
+)
 def test_dx_project_scratch_stays_out_of_an_in_checkout_artifact_root() -> None:
     root = DxProject.from_current_repo().root
     env = DxProject(root).canonical_env(

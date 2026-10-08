@@ -42,7 +42,10 @@ def owned_metadata_case(
         "nonce": nonce,
     }
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-    case = Path(str(declaration["path"])) / digest
+    # Windows caps a Cargo target plus its tool descendants at 260 units, so the
+    # case name uses the layout's 24-hex namespace width; the owner record keeps
+    # the full digest, and a colliding name fails closed in mkdir.
+    case = Path(str(declaration["path"])) / digest[:24]
     case.mkdir()
     (case / "metadata-owner.json").write_text(
         json.dumps(

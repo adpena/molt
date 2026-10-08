@@ -1223,7 +1223,7 @@ fn active_element_publication_is_last_wins_and_ref_null_clears() {
 fn extracts_function_type_from_recursive_gc_group_with_typed_reference() {
     let array = SubType {
         is_final: true,
-        supertype_idx: None,
+        supertype_idxs: Vec::new(),
         composite_type: EncoderCompositeType {
             inner: EncoderCompositeInnerType::Array(ArrayType(FieldType {
                 element_type: StorageType::I8,
@@ -1236,7 +1236,7 @@ fn extracts_function_type_from_recursive_gc_group_with_typed_reference() {
     };
     let function_type = SubType {
         is_final: true,
-        supertype_idx: None,
+        supertype_idxs: Vec::new(),
         composite_type: EncoderCompositeType {
             inner: EncoderCompositeInnerType::Func(FuncType::new(
                 [ValType::Ref(RefType {

@@ -7,8 +7,8 @@ rust-version.workspace = true
 license = "Apache-2.0"
 
 [dependencies]
-arrow = "59"
-base64 = "0.22"
+arrow = "60"
+base64 = "0.23"
 chrono = "=0.4.45"
 crossbeam-channel = "0.5"
 # Temporary upstream split: tokio-postgres/postgres-protocol are still on
@@ -22,7 +22,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
 serde_json = { workspace = true }
-sqlparser = "0.62"
+sqlparser = "0.63"
 tokio = { version = "1.52", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-postgres = { version = "0.7.18", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
 uuid = "1"

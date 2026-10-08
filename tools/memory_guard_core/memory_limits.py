@@ -146,7 +146,8 @@ def _darwin_physical_memory_bytes() -> int | None:
     return None
 
 
-def _parse_darwin_vm_stat_available_bytes(text: str) -> int | None:
+def parse_darwin_vm_stat(text: str) -> tuple[int, dict[str, int]] | None:
+    """Return vm_stat's page size and its page counts by row name."""
     page_size: int | None = None
     pages: dict[str, int] = {}
     for raw_line in text.splitlines():
@@ -169,21 +170,30 @@ def _parse_darwin_vm_stat_available_bytes(text: str) -> int | None:
             pages[name.strip().strip('"')] = int(digits)
     if page_size is None or page_size <= 0:
         return None
-    available_pages = sum(
-        pages.get(name, 0)
-        for name in (
-            "Pages free",
-            "Pages inactive",
-            "Pages speculative",
-            "Pages purgeable",
-        )
-    )
+    return page_size, pages
+
+
+# The vm_stat rows the guard counts as available memory.
+DARWIN_AVAILABLE_PAGE_ROWS = (
+    "Pages free",
+    "Pages inactive",
+    "Pages speculative",
+    "Pages purgeable",
+)
+
+
+def _parse_darwin_vm_stat_available_bytes(text: str) -> int | None:
+    parsed = parse_darwin_vm_stat(text)
+    if parsed is None:
+        return None
+    page_size, pages = parsed
+    available_pages = sum(pages.get(name, 0) for name in DARWIN_AVAILABLE_PAGE_ROWS)
     if available_pages <= 0:
         return None
     return available_pages * page_size
 
 
-def _darwin_available_memory_bytes() -> int | None:
+def darwin_vm_stat_text() -> str | None:
     try:
         result = subprocess.run(
             ["vm_stat"],
@@ -195,9 +205,12 @@ def _darwin_available_memory_bytes() -> int | None:
         )
     except (OSError, subprocess.TimeoutExpired, TypeError):
         return None
-    if result.returncode != 0:
-        return None
-    return _parse_darwin_vm_stat_available_bytes(result.stdout)
+    return result.stdout if result.returncode == 0 else None
+
+
+def _darwin_available_memory_bytes() -> int | None:
+    text = darwin_vm_stat_text()
+    return None if text is None else _parse_darwin_vm_stat_available_bytes(text)
 
 
 def physical_memory_bytes(
