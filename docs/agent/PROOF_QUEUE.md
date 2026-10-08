@@ -6,6 +6,18 @@ exact command and git snapshot, writes guarded logs, enforces proof DAG
 dependencies, and projects each noted or linked run into a deterministic marimo
 notebook for collaborative inspection.
 
+Queued Cargo executable selection is shared by dispatch and tool capture. An
+explicit executable path in a typed direct or delegated Cargo command takes
+precedence over `CARGO`; a bare Cargo role uses `CARGO` before the command's
+execution `PATH`. Once the command is bound, Cargo identity and Rust metadata/link
+probes use that exact payload executable. Python families that only declare Cargo
+as a dependency retain their selected-environment lookup. A missing selected
+executable is an admission error; the queue does not substitute a PATH proxy.
+
+Rust tool identity resolves the selected physical component before reuse. A change
+to a rustup override invalidates reuse even when proxy bytes are unchanged. Explicit
+physical Rust tools do not require a rustup proxy.
+
 ## Registered source-extension producers
 
 `source-extension-produce` submits one registered package/version/module-set and
