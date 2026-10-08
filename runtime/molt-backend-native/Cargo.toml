@@ -32,7 +32,7 @@ inkwell = { version = "0.10", default-features = false, features = [
 
 [dev-dependencies]
 molt-tir = { path = "../molt-tir", features = ["test-util"] }
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "std"] }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 inkwell = { version = "0.10", default-features = false, features = ["target-aarch64"], optional = true }
