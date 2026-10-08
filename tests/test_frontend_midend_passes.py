@@ -319,44 +319,30 @@ def test_exact_container_provenance_rejects_malformed_shapes(
     assert gen._op_effect_class(op) == "writes_heap"
 
 
-@pytest.mark.parametrize("callback_result", ["unused", "none"])
-@pytest.mark.parametrize("callback_is_primitive", [False, True])
-def test_sccp_callback_kills_current_type_but_keeps_observed_tag(
-    callback_result: str, callback_is_primitive: bool
-) -> None:
+def test_sccp_guard_tag_establishes_no_type_fact() -> None:
+    # A runtime guard returns its source unchanged even on a mismatch; it
+    # neither proves the source's tag nor traps the block, so SCCP must not
+    # fold a later TYPE_OF or comparison from it.
     gen = SimpleTIRGenerator()
-    obj, callback = MoltValue("obj"), MoltValue("callback")
-    expected = MoltValue("expected")
-    old, current = MoltValue("old"), MoltValue("current")
+    obj, expected = MoltValue("obj"), MoltValue("expected")
     ops = [
         MoltOp(kind="MISSING", args=[], result=obj),
-        MoltOp(
-            kind="CONST" if callback_is_primitive else "MISSING",
-            args=[7] if callback_is_primitive else [],
-            result=callback,
-        ),
         MoltOp(kind="CONST", args=[1], result=expected),
         MoltOp(kind="GUARD_TAG", args=[obj, expected], result=MoltValue("none")),
-        MoltOp(kind="TYPE_OF", args=[obj], result=old),
-        MoltOp(kind="NEG", args=[callback], result=MoltValue(callback_result)),
-        MoltOp(kind="EQ", args=[old, expected], result=MoltValue("old_matches")),
-        MoltOp(kind="TYPE_OF", args=[obj], result=current),
-        MoltOp(kind="EQ", args=[current, expected], result=MoltValue("now_matches")),
+        MoltOp(kind="TYPE_OF", args=[obj], result=MoltValue("observed")),
+        MoltOp(
+            kind="EQ",
+            args=[MoltValue("observed"), expected],
+            result=MoltValue("matches"),
+        ),
     ]
     gen._op_by_result = {op.result.name: op for op in ops if op.result.name != "none"}
     cfg = build_cfg(ops)
     sccp = gen._compute_sccp(ops, cfg)
     state = sccp.out_values[cfg.index_to_block[len(ops) - 1]]
-    assert state["old"] == 1
-    assert state["old_matches"] is True
-    if callback_is_primitive:
-        assert state["current"] == 1
-        assert state["now_matches"] is True
-        assert state["__tag__:obj"] == 1
-    else:
-        assert state["current"] is _SCCP_OVERDEFINED
-        assert state["now_matches"] is _SCCP_OVERDEFINED
-        assert "__tag__:obj" not in state
+    assert "__tag__:obj" not in state
+    assert state["observed"] is _SCCP_OVERDEFINED
+    assert state["matches"] is _SCCP_OVERDEFINED
 
 
 def test_sccp_heap_facts_must_survive_every_join_predecessor() -> None:
@@ -1232,7 +1218,7 @@ def test_source_line_serializes_and_survives_split_field_rewrites() -> None:
     )
 
     const_op = next(op for op in lowered if op.get("kind") == "const")
-    ret_op = next(op for op in lowered if op.get("kind") == "ret_void")
+    ret_op = next(op for op in lowered if op.get("kind") == "ret")
     assert const_op["source_line"] == 17
     assert ret_op["source_line"] == 17
 
@@ -3677,7 +3663,12 @@ def test_runtime_callable_capability_is_preserved_at_every_frontend_acquisition(
                     slots.discard(op["var"])
             elif op["kind"] == "load_var" and op.get("var") in slots:
                 acquired.add(op["out"])
-            elif op["kind"] == "copy" and args and args[0] in acquired:
+            elif (
+                op["kind"] in {"copy", "frame_home_store"}
+                and args
+                and args[0] in acquired
+            ):
+                # A frame-home store yields the value it stored.
                 acquired.add(op["out"])
             elif op["kind"] in {"call_bind", "call_indirect", "call_func"}:
                 if args and args[0] in acquired:
@@ -4702,8 +4693,10 @@ def f(callback):
     ops = _lowered_function(source, "__f", target_python=target_python)["ops"]
     loads = _home_slots(ops, "frame_home_load")
     if target_python >= (3, 13):
-        # A PEP 667 frame proxy may have rebound it during the callback.
-        assert loads == {slot}
+        # A PEP 667 frame proxy may have rebound it during the callback. Any
+        # dynamic call can do that, so `callback` itself reloads after the
+        # unproven `object()` call as well.
+        assert slot in loads
     else:
         assert loads == set()
 
@@ -4909,16 +4902,28 @@ def main():
         and str(op.get("var", "")).startswith("__molt_static_class_")
     ]
     assert not cache_vars
-    loop_start = next(
-        i for i, op in enumerate(func_ops) if op.get("kind") == "loop_start"
-    )
     assert not _module_attr_reads_named(func_ops, "Point")
-    (callee,) = _module_global_reads_named(func_ops, "Point")
-    assert func_ops.index(callee) > loop_start
-    assert any(
-        op["kind"] == "call_func" and op.get("args", [None])[0] == callee["out"]
-        for op in func_ops[loop_start + 1 :]
-    )
+    reads = _module_global_reads_named(func_ops, "Point")
+    assert reads
+    # Loop versioning may clone the body; every clone reads the class inside
+    # its own loop and calls it there, never before the loop runs.
+    for callee in reads:
+        position = func_ops.index(callee)
+        starts = [
+            i
+            for i, op in enumerate(func_ops[:position])
+            if op.get("kind") == "loop_start"
+        ]
+        assert starts, f"class read before any loop: {callee}"
+        end = next(
+            i
+            for i, op in enumerate(func_ops)
+            if i > position and op.get("kind") == "loop_end"
+        )
+        assert any(
+            op["kind"] == "call_func" and op.get("args", [None])[0] == callee["out"]
+            for op in func_ops[starts[-1] + 1 : end]
+        )
 
 
 def test_dynamic_getattr_generic_obj_cannot_be_reused_without_callback_proof() -> None:

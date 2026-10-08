@@ -86,6 +86,12 @@ def _reference_result_join(
             value=first.value if exact else None,
             value_known=exact,
             kind=kind,
+            # Alternatives that are all exact scalars may be any of their kinds.
+            scalar_kinds=(
+                frozenset().union(*(result.scalar_kinds for result in current))
+                if all(result.is_exact_scalar for result in current)
+                else frozenset()
+            ),
             evaluation_required=any(result.evaluation_required for result in current),
             items=(
                 first.items
