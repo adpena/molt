@@ -11,9 +11,9 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 ## Summary
 
 - `compile-error`: `7`
-- `implemented-exact`: `195`
+- `implemented-exact`: `196`
 - `implemented-target-limited`: `15`
-- `not-admitted`: `207`
+- `not-admitted`: `206`
 - `total`: `424`
 
 ## Matrix
@@ -308,7 +308,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `lt` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `matmul` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `memoryview_cast` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `missing` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `missing` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `mod` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `mod_` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `module_cache_del` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
