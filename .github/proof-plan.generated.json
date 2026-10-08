@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "70f0d5ae756a4c17d0815c155956ce68cf58231f2c15d83d2c90ea2150489f04",
+  "authority_sha256": "c94eed6e441938c75c65284ffa23f04556176a04e1e0468e256dbd026dc80365",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -3439,7 +3439,11 @@
         "tests/test_frontend_sema.py",
         "tests/test_frontend_split_dispatch.py",
         "tests/test_function_annotation_lowering.py",
-        "tests/test_python_binding_mutation_frontier.py"
+        "tests/test_python_binding_mutation_frontier.py",
+        "tests/test_frontend_midend_passes.py",
+        "tests/test_frontend_inline_frame_legality.py",
+        "tests/test_python_binding_join_frontier.py",
+        "tests/test_class_annotation_namespace_lowering.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -3491,7 +3495,11 @@
         "tests/test_frontend_sema.py",
         "tests/test_frontend_split_dispatch.py",
         "tests/test_function_annotation_lowering.py",
-        "tests/test_python_binding_mutation_frontier.py"
+        "tests/test_python_binding_mutation_frontier.py",
+        "tests/test_frontend_midend_passes.py",
+        "tests/test_frontend_inline_frame_legality.py",
+        "tests/test_python_binding_join_frontier.py",
+        "tests/test_class_annotation_namespace_lowering.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
