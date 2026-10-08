@@ -752,17 +752,18 @@ def test_matrix_job_must_consume_its_own_family_matrix(tmp_path) -> None:
 
 def test_matrix_family_budget_binds_each_cell() -> None:
     commands = tuple(
-        replace(command, data={**command.data, "timeout_seconds": 1201})
+        replace(command, data={**command.data, "timeout_seconds": 1501})
         if command.id == "python.unit.harness.macos"
         else command
         for command in PLAN.commands
     )
     errors = replace(PLAN, commands=commands).validate()
-    # Harness (1201 s) runs beside the other four partitions: a 1320 s makespan.
-    # The Linux job is unchanged, so only the macOS cell exceeds its budget.
+    # Harness (1501 s) holds one slot; the other five partitions share the
+    # second and the last starts at 1500 s: a 1620 s makespan. The Linux job
+    # is unchanged, so only the macOS cell exceeds its budget.
     assert [error for error in errors if "timeout envelope" in error] == [
-        "python_unit: projected resource-aware timeout envelope 1320s in matrix "
-        "cell macos-arm64-py312-unit exceeds GitHub job budget 1200s"
+        "python_unit: projected resource-aware timeout envelope 1620s in matrix "
+        "cell macos-arm64-py312-unit exceeds GitHub job budget 1500s"
     ]
 
 

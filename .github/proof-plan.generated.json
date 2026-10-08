@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "577437bc809e00bdb5152ed56ea86d82623be1757ac4a72e5ee560db2f3bfb8b",
+  "authority_sha256": "2689cb01fd854b384236ee8e35b37ecb861b6eff79107a98fd7871814de17daf",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -487,7 +487,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 20,
+      "timeout_minutes": 25,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -3420,6 +3420,110 @@
         "2",
         "-m",
         "not slow",
+        "tests/test_frontend_builtin_call_lowering.py",
+        "tests/test_frontend_builtin_shape_authority.py",
+        "tests/test_frontend_class_imports.py",
+        "tests/test_frontend_class_namespace.py",
+        "tests/test_frontend_compile_warnings.py",
+        "tests/test_frontend_condition_semantics.py",
+        "tests/test_frontend_context_unwind.py",
+        "tests/test_frontend_diagnostics.py",
+        "tests/test_frontend_exact_class_authority.py",
+        "tests/test_frontend_frame_home_exception_edges.py",
+        "tests/test_frontend_guard_availability.py",
+        "tests/test_frontend_literal_exception_edges.py",
+        "tests/test_frontend_literal_identity.py",
+        "tests/test_frontend_module_publication.py",
+        "tests/test_frontend_native_export_dispatch.py",
+        "tests/test_frontend_op_kind_registry.py",
+        "tests/test_frontend_sema.py",
+        "tests/test_frontend_split_dispatch.py",
+        "tests/test_function_annotation_lowering.py",
+        "tests/test_python_binding_mutation_frontier.py"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-unit",
+      "dependencies": [],
+      "family": "python_unit",
+      "id": "python.unit.frontend-lowering",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "2",
+        "-m",
+        "not slow",
+        "tests/test_frontend_builtin_call_lowering.py",
+        "tests/test_frontend_builtin_shape_authority.py",
+        "tests/test_frontend_class_imports.py",
+        "tests/test_frontend_class_namespace.py",
+        "tests/test_frontend_compile_warnings.py",
+        "tests/test_frontend_condition_semantics.py",
+        "tests/test_frontend_context_unwind.py",
+        "tests/test_frontend_diagnostics.py",
+        "tests/test_frontend_exact_class_authority.py",
+        "tests/test_frontend_frame_home_exception_edges.py",
+        "tests/test_frontend_guard_availability.py",
+        "tests/test_frontend_literal_exception_edges.py",
+        "tests/test_frontend_literal_identity.py",
+        "tests/test_frontend_module_publication.py",
+        "tests/test_frontend_native_export_dispatch.py",
+        "tests/test_frontend_op_kind_registry.py",
+        "tests/test_frontend_sema.py",
+        "tests/test_frontend_split_dispatch.py",
+        "tests/test_function_annotation_lowering.py",
+        "tests/test_python_binding_mutation_frontier.py"
+      ],
+      "cache_domain": "pytest",
+      "cell": "macos-arm64-py312-unit",
+      "dependencies": [],
+      "family": "python_unit",
+      "id": "python.unit.frontend-lowering.macos",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "2",
+        "-m",
+        "not slow",
         "tests/cli/test_backend_manifest_contract.py",
         "tests/test_cargo_workspace.py",
         "tests/test_cli_build_profile_policy.py",
@@ -4815,21 +4919,21 @@
       },
       "python_unit": {
         "linux-x86_64-py312-unit": {
-          "budget_seconds": 1200,
+          "budget_seconds": 1500,
           "critical_path_seconds": 900,
           "headroom_seconds": 0,
-          "projected_makespan_seconds": 1200,
+          "projected_makespan_seconds": 1500,
           "resource_capacity_floor_seconds": {
-            "python-tests": 1110
+            "python-tests": 1260
           }
         },
         "macos-arm64-py312-unit": {
-          "budget_seconds": 1200,
+          "budget_seconds": 1500,
           "critical_path_seconds": 900,
           "headroom_seconds": 0,
-          "projected_makespan_seconds": 1200,
+          "projected_makespan_seconds": 1500,
           "resource_capacity_floor_seconds": {
-            "python-tests": 1110
+            "python-tests": 1260
           }
         }
       }
