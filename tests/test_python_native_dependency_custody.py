@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import struct
 from dataclasses import replace
 from pathlib import Path
@@ -939,7 +941,13 @@ def test_outer_capture_verification_rechecks_native_census_after_inventory(
     pool.capture_context.verify()
     assert snapshots == 3
     inventory_finished = True
-    with pytest.raises(PythonEnvironmentIdentityError, match="census changed"):
+    # The error names the change, so a CI failure shows which image moved.
+    expected = {
+        "paths": rf"added \[{re.escape(repr(str(extra)))}\]; removed none",
+        "aliases": "same images, changed aliases",
+        "contracts": "same images, changed contracts",
+    }[change]
+    with pytest.raises(PythonEnvironmentIdentityError, match=expected):
         pool.capture_context.verify()
     assert snapshots == 4
 
