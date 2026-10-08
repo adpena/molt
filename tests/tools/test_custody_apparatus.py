@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from molt.custody_layout import unconfigured_state_root  # noqa: E402
 from molt.memory_guard_paths import (  # noqa: E402
     harness_guard_artifact_dir,
     pytest_guard_summary_dir,
@@ -129,10 +130,12 @@ def test_apparatus_events_are_part_of_the_receipt_identity(tmp_path: Path) -> No
     assert quiet.receipt()["identity_sha256"] != refreshed.receipt()["identity_sha256"]
 
 
-def test_guard_summary_dir_defaults_to_the_repository_tmp_root(tmp_path: Path) -> None:
-    assert pytest_guard_summary_dir(tmp_path, environ={}) == (
-        tmp_path / "tmp" / "pytest-memory-guard"
-    )
+def test_guard_summary_dir_defaults_to_the_custody_root_outside_the_tree(
+    tmp_path: Path,
+) -> None:
+    summary = pytest_guard_summary_dir(tmp_path, environ={})
+    assert summary == unconfigured_state_root(tmp_path) / "tmp" / "pytest-memory-guard"
+    assert not summary.is_relative_to(tmp_path.resolve())
 
 
 def test_guard_summary_dir_follows_the_admitted_state_root(tmp_path: Path) -> None:
@@ -156,14 +159,14 @@ def test_guard_summary_dir_resolves_a_relative_state_root_against_the_repo(
 def test_guard_summary_dir_ignores_a_blank_state_root(tmp_path: Path) -> None:
     environ = {"MOLT_MEMORY_GUARD_STATE_ROOT": "   "}
     assert pytest_guard_summary_dir(tmp_path, environ=environ) == (
-        tmp_path / "tmp" / "pytest-memory-guard"
+        pytest_guard_summary_dir(tmp_path, environ={})
     )
 
 
 def test_harness_command_log_follows_the_admitted_state_root(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     assert harness_guard_artifact_dir(repo, environ={}) == (
-        repo / "tmp" / "harness_memory_guard"
+        unconfigured_state_root(repo) / "tmp" / "harness_memory_guard"
     )
     state_root = tmp_path / "state"
     assert harness_guard_artifact_dir(
