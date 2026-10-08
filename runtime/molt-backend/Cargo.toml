@@ -27,10 +27,6 @@ molt-wasm-facts = { path = "../molt-wasm-facts", optional = true }
 rmp-serde = "1"
 ciborium = { version = "0.2", optional = true }
 egg = { version = "0.11", optional = true }
-wgpu = { version = "29", optional = true }
-pollster = { version = "0.4", optional = true }
-cudarc = { version = "0.19", optional = true, default-features = false, features = ["driver", "dynamic-loading", "cuda-12080"] }
-mlx-rs = { version = "0.25", optional = true }
 
 [dev-dependencies]
 object = { version = "0.39", default-features = false, features = ["read", "write", "std"] }
@@ -40,8 +36,8 @@ molt-codegen-abi = { path = "../molt-codegen-abi" }
 # value-range) that molt-tir exposes only under #[cfg(any(test, feature = "test-util"))].
 molt-tir = { path = "../molt-tir", features = ["test-util"] }
 molt-backend-wasm = { path = "../molt-backend-wasm", default-features = false, features = ["test-util"] }
-wasm-encoder = "0.259.0"
-wasmparser = "0.259.0"
+wasm-encoder = "0.261.0"
+wasmparser = "0.261.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -70,7 +66,6 @@ native-backend = [
 ]
 cbor = ["dep:ciborium"]
 rust-backend = ["dep:molt-backend-rust", "molt-backend-rust/rust-backend"]
-mlx = ["dep:mlx-rs"]
 wasm-backend = [
     "dep:molt-backend-wasm",
     "dep:memmap2",

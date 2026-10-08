@@ -293,7 +293,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `table-drift` | 12 | 2 | no |
 | `findings-registry` | 4 | 1 | no |
 | `memory-graph` | 5 | 2 | no |
-| `ci-wiring` | 51 | 2 | no |
+| `ci-wiring` | 56 | 2 | no |
 | `apparatus-hooks` | 11 | 3 | no |
 | `apparatus-learning-protection` | 15 | 3 | no |
 | `apparatus-a11` | 10 | 5 | no |
