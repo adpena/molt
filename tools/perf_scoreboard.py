@@ -33,7 +33,7 @@ Methodology (pyperf discipline)
   * median + stdev + coefficient-of-variation outlier/instability detection.
   * COLD (first cold-cache run) AND WARM (steady-state) both captured — the
     constitution forbids warm-only wins.
-  * MOLT_SESSION_ID=perfscore, CARGO_TARGET_DIR=target/sessions/perfscore.
+  * MOLT_SESSION_ID=perfscore; its CARGO_TARGET_DIR is <artifact root>/target/sessions/perfscore.
 
 Backends / profiles (baseline run)
 ----------------------------------

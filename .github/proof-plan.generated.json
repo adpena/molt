@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "c02994450cb0ba7958e82c7b947cd48f013187f9bc8a42f5851382ddf283159f",
+  "authority_sha256": "b67b90eeec93af215a0b49edcf36c812aa302b8ad14101554b6ec1505e4c3f56",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1311,6 +1311,8 @@
         "-m",
         "pytest",
         "-v",
+        "-n",
+        "auto",
         "tests/test_dx_run_context.py",
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
@@ -1350,7 +1352,7 @@
       "tiers": [
         "main"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 1800,
       "toolchains": [
         "python",
         "uv",
@@ -1371,6 +1373,8 @@
         "-m",
         "pytest",
         "-v",
+        "-n",
+        "auto",
         "tests/test_dx_run_context.py",
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
@@ -1410,7 +1414,7 @@
       "tiers": [
         "main"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 1800,
       "toolchains": [
         "python",
         "uv",
@@ -1431,6 +1435,8 @@
         "-m",
         "pytest",
         "-v",
+        "-n",
+        "auto",
         "tests/test_dx_run_context.py",
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
@@ -1470,7 +1476,7 @@
       "tiers": [
         "main"
       ],
-      "timeout_seconds": 600,
+      "timeout_seconds": 1800,
       "toolchains": [
         "python",
         "uv",
@@ -4691,20 +4697,20 @@
         },
         "linux-x86_64-py312-queue-portability": {
           "budget_seconds": 10800,
-          "critical_path_seconds": 600,
-          "headroom_seconds": 10200,
-          "projected_makespan_seconds": 600,
+          "critical_path_seconds": 1800,
+          "headroom_seconds": 9000,
+          "projected_makespan_seconds": 1800,
           "resource_capacity_floor_seconds": {
-            "python-tests": 420
+            "python-tests": 1020
           }
         },
         "macos-arm64-py312-queue-portability": {
           "budget_seconds": 10800,
-          "critical_path_seconds": 600,
-          "headroom_seconds": 10200,
-          "projected_makespan_seconds": 600,
+          "critical_path_seconds": 1800,
+          "headroom_seconds": 9000,
+          "projected_makespan_seconds": 1800,
           "resource_capacity_floor_seconds": {
-            "python-tests": 480
+            "python-tests": 1080
           }
         },
         "macos-arm64-py312-rust-native-dev": {
@@ -4718,11 +4724,11 @@
         },
         "windows-x86_64-py312-queue-portability": {
           "budget_seconds": 10800,
-          "critical_path_seconds": 600,
-          "headroom_seconds": 10200,
-          "projected_makespan_seconds": 600,
+          "critical_path_seconds": 1800,
+          "headroom_seconds": 9000,
+          "projected_makespan_seconds": 1800,
           "resource_capacity_floor_seconds": {
-            "python-tests": 480
+            "python-tests": 1080
           }
         }
       },
