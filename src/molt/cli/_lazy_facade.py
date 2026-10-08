@@ -282,7 +282,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     "_cargo_build_env": ("cargo_execution", "_cargo_build_env"),
     "_cargo_setup_advice": ("setup_readiness", "_cargo_setup_advice"),
     "_clang_setup_advice": ("setup_readiness", "_clang_setup_advice"),
-    "_cli_hash_seed_reexec_argv": ("arg_helpers", "_cli_hash_seed_reexec_argv"),
     "_codesign_binary": ("native_toolchain", "_codesign_binary"),
     "_collect_cargo_native_link_deps": (
         "native_link_deps",
@@ -330,7 +329,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "_emitted_name_matches_module_symbol",
     ),
     "_encode_stdlib_module_symbols": ("backend_cache", "_encode_stdlib_module_symbols"),
-    "_ensure_cli_hash_seed": ("arg_helpers", "_ensure_cli_hash_seed"),
     "_ensure_mlir_backend_binary": ("mlir_backend", "_ensure_mlir_backend_binary"),
     "_env_requests_backend_diagnostics": (
         "backend_diagnostics",
@@ -344,7 +342,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     "_extract_out_dir_arg": ("arg_helpers", "_extract_out_dir_arg"),
     "_extract_output_arg": ("arg_helpers", "_extract_output_arg"),
     "_find_mlir_backend_binary": ("mlir_backend", "_find_mlir_backend_binary"),
-    "_flush_standard_streams": ("arg_helpers", "_flush_standard_streams"),
     "_format_validate_guard_summary": (
         "toolchain_validation",
         "_format_validate_guard_summary",
@@ -370,7 +367,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "runtime_fingerprints",
         "_is_valid_static_library_artifact",
     ),
-    "_is_windows_process_model": ("arg_helpers", "_is_windows_process_model"),
     "_llvm_backend_advice": ("setup_readiness", "_llvm_backend_advice"),
     "_llvm_sys_prefix_env_var": ("setup_readiness", "_llvm_sys_prefix_env_var"),
     "_load_artifact_cleanup_module": ("maintenance", "_load_artifact_cleanup_module"),
@@ -410,7 +406,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     "_pid_alive": ("backend_execution", "_pid_alive"),
     "_planned_update_steps": ("toolchain_validation", "_planned_update_steps"),
     "_planned_validate_steps": ("toolchain_validation", "_planned_validate_steps"),
-    "_process_exit_code": ("arg_helpers", "_process_exit_code"),
     "_publish_immutable_backend_cache_artifact": (
         "backend_cache",
         "_publish_immutable_backend_cache_artifact",
@@ -439,7 +434,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "wrapper_build",
         "_read_wrapper_build_cache_contract",
     ),
-    "_reexec_cli_with_hash_seed": ("arg_helpers", "_reexec_cli_with_hash_seed"),
     "_remove_backend_daemon_identity": (
         "backend_execution",
         "_remove_backend_daemon_identity",
