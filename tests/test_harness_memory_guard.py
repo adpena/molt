@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -2343,6 +2344,78 @@ def test_repo_process_sentinel_records_observer_when_claim_already_taken(
     assert event["termination"]["attempted"] is False
     assert event["termination"]["rss_triggered"] is True
     assert "already claimed by another guard" in event["action"]
+
+
+def test_repo_process_sentinel_scan_in_flight_at_exit_cannot_kill_later(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A scan that outlives the bounded exit join must not act afterwards.
+
+    Exiting the guard ends its authority. A slow process-table scan that
+    finishes later would otherwise kill a group, or trip a sentinel whose owner
+    already read its verdict, long after the guarded scope closed.
+    """
+    harness_memory_guard._TERMINATED_PGIDS.clear()
+    late_group = harness_memory_guard.process_sentinel.ProcessGroup(
+        pgid=876543,
+        matched=True,
+        samples=(
+            harness_memory_guard.memory_guard.ProcessSample(
+                pid=876544,
+                ppid=1,
+                pgid=876543,
+                rss_kb=5 * 1024 * 1024,
+                command="molt-backend --daemon --late",
+            ),
+        ),
+    )
+    scanning = threading.Event()
+    release = threading.Event()
+
+    def groups(*args, **kwargs):  # type: ignore[no-untyped-def]
+        # Only the background scan stalls; the entry baseline sees nothing.
+        if threading.current_thread().name != "unit-late-scan-memory-sentinel":
+            return []
+        scanning.set()
+        release.wait(timeout=30)
+        return [late_group]
+
+    monkeypatch.setattr(harness_memory_guard.process_sentinel, "process_groups", groups)
+    monkeypatch.setattr(
+        harness_memory_guard, "_claim_terminated_pgid", lambda pgid: True
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        harness_memory_guard.process_sentinel,
+        "terminate_group",
+        _record_terminated_pgids(terminated),
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=1,
+        max_total_rss_gb=2,
+        max_global_rss_gb=3,
+        poll_interval=0.01,
+    )
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="unit-late-scan",
+        limits=limits,
+        drain_on_exit=False,
+        suppress_auto_guard=False,
+        scope_to_current_tree=False,
+    )
+    with sentinel:
+        assert scanning.wait(timeout=30)
+    thread = sentinel._thread
+    assert thread is not None and thread.is_alive()
+    release.set()
+    thread.join(timeout=30)
+
+    assert not thread.is_alive()
+    assert terminated == []
+    assert sentinel.tripped is False
 
 
 def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
