@@ -20,6 +20,7 @@ from molt.frontend.diagnostics import (
 )
 from molt.frontend.frontend_diagnostics_generated import (
     FRONTEND_DIAGNOSTIC_METADATA,
+    RETIRED_FRONTEND_DIAGNOSTIC_CODES,
 )
 
 
@@ -67,11 +68,35 @@ def test_frontend_diagnostic_generator_is_registered_and_ci_gated() -> None:
 
 def test_frontend_diagnostic_codes_are_unique_contiguous_and_complete() -> None:
     diagnostics = tuple(FrontendDiagnostic)
-    assert [item.value for item in diagnostics] == [
-        f"MOLT-FE{index:03d}" for index in range(1, len(diagnostics) + 1)
+    active = [item.value for item in diagnostics]
+    assert active == sorted(active)
+    assert not set(active) & RETIRED_FRONTEND_DIAGNOSTIC_CODES
+    assert sorted(set(active) | RETIRED_FRONTEND_DIAGNOSTIC_CODES) == [
+        f"MOLT-FE{index:03d}"
+        for index in range(1, len(active) + len(RETIRED_FRONTEND_DIAGNOSTIC_CODES) + 1)
     ]
     assert set(FRONTEND_DIAGNOSTIC_METADATA) == set(diagnostics)
     assert all(metadata.title for metadata in FRONTEND_DIAGNOSTIC_METADATA.values())
+
+
+def test_a_retired_code_stays_reserved(tmp_path: Path) -> None:
+    authority = tmp_path / "frontend_diagnostics.toml"
+    active = (
+        'schema_version = 1\n[[diagnostic]]\nname = "first"\ncode = "MOLT-FE001"\n'
+        'title = "t"\ntier = "bridge"\nimpact = "high"\n'
+    )
+    authority.write_text(
+        active + '[[retired]]\nname = "old"\ncode = "MOLT-FE001"\nreason = "r"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate diagnostic code: MOLT-FE001"):
+        GEN.load_authority(authority)
+    authority.write_text(
+        active + '[[retired]]\nname = "old"\ncode = "MOLT-FE003"\nreason = "r"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="missing MOLT-FE002"):
+        GEN.load_authority(authority)
 
 
 def test_every_frontend_rejection_uses_the_generated_authority() -> None:
@@ -112,29 +137,60 @@ def test_consumer_gate_rejects_stringly_rejection(tmp_path: Path) -> None:
 
 
 def test_rejection_conversion_has_stable_code_and_location() -> None:
-    node = ast.parse("value = len()\n").body[0]
+    node = ast.parse("value = getattr(obj, name)\n").body[0]
     reporter = CompatibilityReporter("error", "probe.py")
     rejection = FrontendRejection(
-        FrontendDiagnostic.CALL_SIGNATURE,
-        "len() takes exactly one argument (0 given)",
+        FrontendDiagnostic.OPERAND_VALUE, "getattr expects object and name"
     )
     with pytest.raises(CompatibilityError) as raised:
         raise_compatibility_error(reporter, node, rejection)
     message = str(raised.value)
-    assert "MOLT-FE002: call signature is outside the lowered contract" in message
+    assert "MOLT-FE003: operand or value cannot be lowered" in message
     assert "location: probe.py:1:0" in message
 
 
-def test_real_call_dispatch_rejection_is_deterministic() -> None:
-    source = "value = len()\n"
+def test_real_frontend_rejection_is_deterministic() -> None:
+    # CPython also rejects this at compile time.
+    source = "nonlocal value\n"
     messages: list[str] = []
     for _ in range(2):
         with pytest.raises(CompatibilityError) as raised:
             SimpleTIRGenerator(source_path="deterministic.py").visit(ast.parse(source))
         messages.append(str(raised.value))
     assert messages[0] == messages[1]
-    assert "MOLT-FE002" in messages[0]
-    assert "feature: len() takes exactly one argument (0 given)" in messages[0]
+    assert "MOLT-FE005" in messages[0]
+    assert "feature: nonlocal declarations at module scope" in messages[0]
+
+
+CALL_SHAPE_ERRORS = (
+    "value = len()\n",
+    "value = len([1], [2])\n",
+    "value = isinstance(1)\n",
+    "value = getattr(object())\n",
+    "setattr(object(), 'a')\n",
+    "value = ord()\n",
+    "value = enumerate([], 0, 1)\n",
+    "value = enumerate([], step=1)\n",
+    "value = classmethod()\n",
+    "value = slice()\n",
+    "items = set()\nitems.add()\n",
+    "items = [1]\nitems.pop(0, 1)\n",
+    "items = [1]\nvalue = items.index()\n",
+    "table = {}\nvalue = table.get()\n",
+    "value = 'a'.lower(1)\n",
+    "value = 'a'.strip(' ', ' ')\n",
+    "value = 'a'.startswith()\n",
+    "def gen():\n    yield 1\nvalue = gen().send()\n",
+)
+
+
+@pytest.mark.parametrize("source", CALL_SHAPE_ERRORS)
+def test_call_shape_errors_reach_the_runtime_binder(source: str) -> None:
+    # CPython compiles each call and raises TypeError only when it runs, so a
+    # program can catch it. The frontend must lower it, not reject it.
+    with pytest.raises(TypeError):
+        exec(compile(source, "probe.py", "exec"), {})
+    SimpleTIRGenerator(source_path="probe.py").visit(ast.parse(source))
 
 
 def test_native_and_wasm_cli_share_the_frontend_diagnostic(
@@ -144,8 +200,8 @@ def test_native_and_wasm_cli_share_the_frontend_diagnostic(
 ) -> None:
     import molt.cli as cli
 
-    source = tmp_path / "unsupported_call.py"
-    source.write_text("value = len()\n", encoding="utf-8")
+    source = tmp_path / "unsupported_nonlocal.py"
+    source.write_text("nonlocal value\n", encoding="utf-8")
     monkeypatch.setenv("MOLT_COMPAT_WARNINGS", "0")
     monkeypatch.setenv("PYTHONHASHSEED", "0")
     errors: list[list[str]] = []
@@ -162,4 +218,4 @@ def test_native_and_wasm_cli_share_the_frontend_diagnostic(
         assert payload["status"] == "error"
         errors.append(payload["errors"])
     assert errors[0] == errors[1]
-    assert "MOLT-FE002" in errors[0][0]
+    assert "MOLT-FE005" in errors[0][0]

@@ -107,10 +107,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
             if receiver.type_hint == "generator":
                 if method == "send":
                     if len(node.args) != 1:
-                        raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
-                            "generator.send expects 1 argument",
-                        )
+                        return self._emit_dynamic_call(node, load_attr_callee())
                     arg = self.visit(node.args[0])
                     pair = MoltValue(self.next_var(), type_hint="tuple")
                     self.emit(
@@ -130,21 +127,18 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                     return value
                 if method == "throw":
                     if len(node.args) not in {1, 2, 3}:
-                        raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
-                            "generator.throw expects 1 to 3 arguments",
-                        )
+                        return self._emit_dynamic_call(node, load_attr_callee())
                     exc_type = self.visit(node.args[0])
                     if exc_type is None:
                         raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
+                            Diagnostic.OPERAND_VALUE,
                             "generator.throw expects exception",
                         )
                     if len(node.args) > 1:
                         value = self.visit(node.args[1])
                         if value is None:
                             raise FrontendRejection(
-                                Diagnostic.CALL_SIGNATURE,
+                                Diagnostic.OPERAND_VALUE,
                                 "generator.throw expects exception value",
                             )
                         callargs = MoltValue(self.next_var(), type_hint="callargs")
@@ -168,7 +162,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                             tb_val = self.visit(node.args[2])
                             if tb_val is None:
                                 raise FrontendRejection(
-                                    Diagnostic.CALL_SIGNATURE,
+                                    Diagnostic.OPERAND_VALUE,
                                     "generator.throw expects traceback value",
                                 )
                             self.emit(
@@ -188,10 +182,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                     return res
                 if method == "close":
                     if node.args:
-                        raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
-                            "generator.close expects 0 arguments",
-                        )
+                        return self._emit_dynamic_call(node, load_attr_callee())
                     res = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="GEN_CLOSE", args=[receiver], result=res))
                     return res
@@ -218,29 +209,21 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return self._emit_dynamic_call(node, callee)
             if method == "add" and receiver.type_hint == "set":
                 if len(node.args) != 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "set.add expects 1 argument"
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 arg = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="SET_ADD", args=[receiver, arg], result=res))
                 return res
             if method == "discard" and receiver.type_hint == "set":
                 if len(node.args) != 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "set.discard expects 1 argument",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 arg = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="SET_DISCARD", args=[receiver, arg], result=res))
                 return res
             if method == "remove" and receiver.type_hint == "set":
                 if len(node.args) != 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "set.remove expects 1 argument",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 arg = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="SET_REMOVE", args=[receiver, arg], result=res))
@@ -402,47 +385,32 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "clear" and receiver.type_hint == "list":
                 if node.args or node.keywords:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "list.clear expects 0 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="LIST_CLEAR", args=[receiver], result=res))
                 return res
             if method == "copy" and receiver.type_hint == "list":
                 if node.args or node.keywords:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "list.copy expects 0 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 res = MoltValue(self.next_var(), type_hint="list")
                 self.emit(MoltOp(kind="LIST_COPY", args=[receiver], result=res))
                 return res
             if method == "reverse" and receiver.type_hint == "list":
                 if node.args or node.keywords:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "list.reverse expects 0 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="LIST_REVERSE", args=[receiver], result=res))
                 return res
             if method == "count" and receiver.type_hint == "list":
                 if len(node.args) != 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "list.count expects 1 argument",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 val = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="LIST_COUNT", args=[receiver, val], result=res))
                 return res
             if method == "index" and receiver.type_hint == "list":
                 if len(node.args) not in (1, 2, 3):
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "list.index expects 1 to 3 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 val = self.visit(node.args[0])
                 start = None
                 end = None
@@ -459,42 +427,6 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                         raise FrontendRejection(
                             Diagnostic.OPERAND_VALUE,
                             "Unsupported list.index end",
-                        )
-                for keyword in node.keywords:
-                    if keyword.arg is None:
-                        raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
-                            "list.index does not support **kwargs",
-                        )
-                    if keyword.arg == "start":
-                        if start is not None:
-                            return self._emit_type_error_value(
-                                "list.index() got multiple values for argument 'start'",
-                                "int",
-                            )
-                        start = self.visit(keyword.value)
-                        if start is None:
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                "Unsupported list.index start",
-                            )
-                    elif keyword.arg == "end":
-                        if end is not None:
-                            return self._emit_type_error_value(
-                                "list.index() got multiple values for argument 'end'",
-                                "int",
-                            )
-                        end = self.visit(keyword.value)
-                        if end is None:
-                            raise FrontendRejection(
-                                Diagnostic.OPERAND_VALUE,
-                                "Unsupported list.index end",
-                            )
-                    else:
-                        return self._emit_type_error_value(
-                            "list.index() got an unexpected keyword argument "
-                            f"'{keyword.arg}'",
-                            "int",
                         )
                 if start is None and end is None:
                     res = MoltValue(self.next_var(), type_hint="int")
@@ -521,10 +453,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "pop" and receiver.type_hint == "dict":
                 if len(node.args) not in (1, 2):
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "dict.pop expects 1 or 2 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 key = self.visit(node.args[0])
                 if len(node.args) == 2:
                     default = self.visit(node.args[1])
@@ -551,18 +480,13 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "pop" and receiver.type_hint == "set":
                 if node.args:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "set.pop expects 0 arguments"
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 res = MoltValue(self.next_var(), type_hint="Any")
                 self.emit(MoltOp(kind="SET_POP", args=[receiver], result=res))
                 return res
             if method == "pop" and receiver.type_hint == "list":
                 if len(node.args) > 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "list.pop expects 0 or 1 argument",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 if node.args:
                     idx = self.visit(node.args[0])
                 else:
@@ -573,10 +497,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "get" and receiver.type_hint == "dict":
                 if len(node.args) not in (1, 2):
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "dict.get expects 1 or 2 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 key = self.visit(node.args[0])
                 if len(node.args) == 2:
                     default = self.visit(node.args[1])
@@ -595,10 +516,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "setdefault" and receiver.type_hint == "dict":
                 if node.keywords or len(node.args) not in (1, 2):
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "dict.setdefault expects 1 or 2 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 key = self.visit(node.args[0])
                 if (
                     len(node.args) == 2
@@ -665,28 +583,19 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "clear" and receiver.type_hint == "dict":
                 if node.args or node.keywords:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "dict.clear expects 0 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="DICT_CLEAR", args=[receiver], result=res))
                 return res
             if method == "copy" and receiver.type_hint == "dict":
                 if node.args or node.keywords:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "dict.copy expects 0 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 res = MoltValue(self.next_var(), type_hint="dict")
                 self.emit(MoltOp(kind="DICT_COPY", args=[receiver], result=res))
                 return res
             if method == "popitem" and receiver.type_hint == "dict":
                 if node.args or node.keywords:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "dict.popitem expects 0 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 res = MoltValue(self.next_var(), type_hint="tuple")
                 self.emit(MoltOp(kind="DICT_POPITEM", args=[receiver], result=res))
                 return res
@@ -704,10 +613,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 return res
             if method == "count" and receiver.type_hint == "tuple":
                 if len(node.args) != 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "tuple.count expects 1 argument",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 val = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="int")
                 self.emit(MoltOp(kind="TUPLE_COUNT", args=[receiver, val], result=res))
@@ -912,10 +818,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 "bytearray",
             }:
                 if len(node.args) not in (1, 2, 3):
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "startswith expects 1-3 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 needle = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="bool")
                 if receiver.type_hint == "str":
@@ -1026,10 +929,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 "bytearray",
             }:
                 if len(node.args) not in (1, 2, 3):
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "endswith expects 1-3 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 needle = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="bool")
                 if receiver.type_hint == "str":
@@ -1147,35 +1047,25 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                     return res
             if method == "lower" and receiver.type_hint == "str":
                 if node.args:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "lower expects 0 arguments"
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 res = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="STRING_LOWER", args=[receiver], result=res))
                 return res
             if method == "upper" and receiver.type_hint == "str":
                 if node.args:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "upper expects 0 arguments"
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 res = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="STRING_UPPER", args=[receiver], result=res))
                 return res
             if method == "capitalize" and receiver.type_hint == "str":
                 if node.args:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "capitalize expects 0 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 res = MoltValue(self.next_var(), type_hint="str")
                 self.emit(MoltOp(kind="STRING_CAPITALIZE", args=[receiver], result=res))
                 return res
             if method == "strip" and receiver.type_hint == "str":
                 if len(node.args) > 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "strip expects 0 or 1 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 if node.args:
                     chars = self.visit(node.args[0])
                 else:
@@ -1189,10 +1079,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                     return res
             if method == "lstrip" and receiver.type_hint == "str":
                 if len(node.args) > 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "lstrip expects 0 or 1 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 if node.args:
                     chars = self.visit(node.args[0])
                 else:
@@ -1206,10 +1093,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                     return res
             if method == "rstrip" and receiver.type_hint == "str":
                 if len(node.args) > 1:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "rstrip expects 0 or 1 arguments",
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 if node.args:
                     chars = self.visit(node.args[0])
                 else:
@@ -1283,9 +1167,7 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                                     return res
             if method == "find" and receiver.type_hint in {"str", "bytes", "bytearray"}:
                 if len(node.args) not in (1, 2, 3):
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "find expects 1-3 arguments"
-                    )
+                    return self._emit_dynamic_call(node, load_attr_callee())
                 needle = self.visit(node.args[0])
                 res = MoltValue(self.next_var(), type_hint="int")
                 if receiver.type_hint == "bytes":

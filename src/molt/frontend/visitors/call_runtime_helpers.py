@@ -194,11 +194,6 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
                     expanded.append(kw)
             if all_resolved:
                 node.keywords = expanded
-        if node.args:
-            raise FrontendRejection(
-                Diagnostic.CALL_SIGNATURE,
-                "field does not support positional arguments",
-            )
         func_val = self._emit_module_attr_get_on(module_name, "field")
         callargs = self._emit_call_args_builder(node)
         res = MoltValue(self.next_var(), type_hint="Any")

@@ -213,7 +213,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
                 obj = self.visit(target.value)
                 if obj is None:
                     raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "del expects attribute owner"
+                        Diagnostic.OPERAND_VALUE, "del expects attribute owner"
                     )
                 target_name = (
                     target.value.id if isinstance(target.value, ast.Name) else None
@@ -245,7 +245,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
                 target_obj = self.visit(target.value)
                 if target_obj is None:
                     raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "del expects subscript owner"
+                        Diagnostic.OPERAND_VALUE, "del expects subscript owner"
                     )
                 target_name = (
                     target.value.id if isinstance(target.value, ast.Name) else None
