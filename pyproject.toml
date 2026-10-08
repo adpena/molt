@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools==83.0.0", "wheel==0.47.0"]
+requires = ["setuptools==83.0.0", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -230,34 +230,34 @@ demo = [
 ]
 release = [
     "auditwheel==6.8.2; sys_platform == 'linux'",
-    "build==1.5.0",
+    "build==1.6.1",
     "delocate==0.13.0; sys_platform == 'darwin'",
     "setuptools==83.0.0",
-    "wheel==0.47.0",
+    "wheel==0.48.0",
 ]
 deployment = [
-    "modal==1.5.2",
+    "modal==1.6.1",
 ]
 # Locked oracle environment for the Pact witness lanes: their CPython
 # reference numerics run inside the attested environment provisioned from
 # this group (tools/pact_witness_acceptance.py, tools/pact_witness_oracle.py).
 pact-witness = [
-    "numpy==2.5.1",
-    "scipy==1.18.0",
+    "numpy==2.5.3",
+    "scipy==1.18.1",
 ]
 source-build-numpy = [
     "Cython==3.2.8",
-    "meson-python==0.20.0",
-    "ninja==1.13.0",
+    "meson-python==0.22.1",
+    "ninja==1.13.2",
 ]
 source-build-scipy = [
     "Cython==3.2.8",
-    "meson-python==0.20.0",
-    "ninja==1.13.0",
-    "numpy==2.5.1",
-    "pkgconf==3.0.1.post0",
-    "pybind11==3.0.4",
-    "pythran==0.18.1",
+    "meson-python==0.22.1",
+    "ninja==1.13.2",
+    "numpy==2.5.3",
+    "pkgconf==3.0.7.post0",
+    "pybind11==3.1.0",
+    "pythran==0.19.0",
 ]
 
 [tool.setuptools]
