@@ -1060,7 +1060,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_binascii_crc32",
-        arity: 1,
+        arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {

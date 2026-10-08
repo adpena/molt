@@ -25,8 +25,14 @@ a2b_qp = _require_intrinsic("molt_binascii_a2b_qp")
 b2a_qp = _require_intrinsic("molt_binascii_b2a_qp")
 a2b_uu = _require_intrinsic("molt_binascii_a2b_uu")
 b2a_uu = _require_intrinsic("molt_binascii_b2a_uu")
-crc32 = _require_intrinsic("molt_binascii_crc32")
+_crc32 = _require_intrinsic("molt_binascii_crc32")
 crc_hqx = _require_intrinsic("molt_binascii_crc_hqx")
+
+
+def crc32(data, value=0, /):
+    """Compute a CRC-32 of *data*, continuing from the running *value*."""
+    return _crc32(data, value)
+
 
 hexlify = b2a_hex
 unhexlify = a2b_hex

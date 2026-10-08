@@ -4681,7 +4681,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_binascii_crc32",
         symbol: "molt_binascii_crc32",
-        arity: 1,
+        arity: 2,
         defaults: &[],
     },
     IntrinsicSpec {
