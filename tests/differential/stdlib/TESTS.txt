@@ -167,6 +167,7 @@ tests/differential/stdlib/asyncio_wrap_future_loop_binding.py
 tests/differential/stdlib/atexit_core_behaviors.py
 tests/differential/stdlib/atexit_exception_unraisable.py
 tests/differential/stdlib/atexit_unraisablehook_custom.py
+tests/differential/stdlib/binascii_crc32_value.py
 tests/differential/stdlib/binascii_simd_paths.py
 tests/differential/stdlib/bisect_api_surface.py
 tests/differential/stdlib/bisect_basic.py

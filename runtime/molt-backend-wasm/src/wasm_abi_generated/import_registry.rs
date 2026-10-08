@@ -8037,7 +8037,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiCrc32,
         name: "binascii_crc32",
-        type_idx: 2,
+        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::BinasciiCrcHqx,

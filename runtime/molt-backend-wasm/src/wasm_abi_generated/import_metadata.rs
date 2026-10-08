@@ -7762,7 +7762,7 @@ impl WasmRuntimeImport {
             Self::BinasciiB2aQp => 2,
             Self::BinasciiA2bUu => 2,
             Self::BinasciiB2aUu => 2,
-            Self::BinasciiCrc32 => 2,
+            Self::BinasciiCrc32 => 3,
             Self::BinasciiCrcHqx => 3,
             Self::UuCodecEncode => 5,
             Self::UuCodecDecode => 2,
