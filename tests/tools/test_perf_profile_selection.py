@@ -35,6 +35,26 @@ def test_profile_selection_is_explicit(monkeypatch, spec, profile, ambient):
     assert env["MOLT_RUNTIME_WASM_INCREMENTAL"] == "0"
 
 
+def test_perfscore_lets_the_canonical_env_place_its_session_target(
+    monkeypatch, tmp_path
+):
+    # Under hosted custody the checkout may own no Cargo target dir, so the
+    # session's target must come from the canonical env authority, never from
+    # the repository path or an ambient value.
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "ambient"))
+    received: list[dict[str, str]] = []
+
+    def canonical(base):
+        received.append(dict(base))
+        return dict(base)
+
+    monkeypatch.setattr(measure.bench, "_canonical_bench_env", canonical)
+    measure._perfscore_build_env(NATIVE_CRANELIFT, "release-fast")
+
+    assert received[0]["MOLT_SESSION_ID"] == "perfscore"
+    assert "CARGO_TARGET_DIR" not in received[0]
+
+
 @pytest.mark.parametrize("profile", ["release-fast", "release-output", "dev-fast"])
 def test_backend_resolver_uses_controlled_host_profile(monkeypatch, tmp_path, profile):
     controlled = tmp_path / "controlled"
