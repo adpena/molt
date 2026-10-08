@@ -10,7 +10,7 @@ license = "Apache-2.0"
 molt-runtime-core = { path = "../molt-runtime-core" }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../molt-obj-model" }
 libc = "0.2"
-num-bigint = "0.4"
+num-bigint = "0.5"
 memchr = "2"
 num-traits = "0.2"
 libm = "0.2"

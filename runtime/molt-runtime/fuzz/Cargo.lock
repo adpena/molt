@@ -911,7 +911,7 @@ dependencies = [
  "molt-stdlib-difflib",
  "molt-stdlib-graphlib",
  "molt-stdlib-text",
- "num-bigint",
+ "num-bigint 0.5.1",
  "num-integer",
  "num-traits",
  "num_cpus",
@@ -980,7 +980,7 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "molt-lang-obj-model",
- "num-bigint",
+ "num-bigint 0.5.1",
  "num-traits",
 ]
 
@@ -997,7 +997,7 @@ dependencies = [
  "md4",
  "molt-lang-obj-model",
  "molt-runtime-core",
- "num-bigint",
+ "num-bigint 0.5.1",
  "num-traits",
  "pbkdf2",
  "ripemd",
@@ -1029,7 +1029,7 @@ dependencies = [
  "libc",
  "molt-lang-obj-model",
  "molt-runtime-core",
- "num-bigint",
+ "num-bigint 0.5.1",
  "num-traits",
  "rustls",
  "webpki-roots 1.0.9",
@@ -1041,7 +1041,7 @@ version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-core",
- "num-bigint",
+ "num-bigint 0.5.1",
 ]
 
 [[package]]
@@ -1068,7 +1068,7 @@ dependencies = [
  "libm",
  "molt-lang-obj-model",
  "molt-runtime-core",
- "num-bigint",
+ "num-bigint 0.5.1",
  "num-integer",
  "num-traits",
  "sha2",
@@ -1135,7 +1135,7 @@ dependencies = [
  "memchr",
  "molt-lang-obj-model",
  "molt-runtime-core",
- "num-bigint",
+ "num-bigint 0.5.1",
  "num-traits",
  "serde_json",
 ]
@@ -1208,6 +1208,16 @@ name = "num-bigint"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
 dependencies = [
  "num-integer",
  "num-traits",
@@ -1619,7 +1629,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cdaf8ee5c1473b993b398c174641d3aa9da847af36e8d5eb8291930b72f31a5"
 dependencies = [
  "is-macro",
- "num-bigint",
+ "num-bigint 0.4.8",
  "rustpython-parser-core",
  "static_assertions",
 ]
@@ -1635,7 +1645,7 @@ dependencies = [
  "itertools",
  "lalrpop-util",
  "log",
- "num-bigint",
+ "num-bigint 0.4.8",
  "num-traits",
  "phf",
  "phf_codegen",
