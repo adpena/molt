@@ -317,7 +317,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 value = self.visit(node.args[0])
                 if value is None:
                     raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
+                        Diagnostic.OPERAND_VALUE,
                         "abs expects a lowerable operand",
                     )
                 if value.type_hint in {"bool", "int"}:
@@ -354,7 +354,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 obj = self.visit(node.args[0])
                 if obj is None:
                     raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
+                        Diagnostic.OPERAND_VALUE,
                         "vars expects a simple object",
                     )
                 callee = self._emit_builtin_function("vars")
@@ -411,7 +411,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 obj = self.visit(node.args[0])
                 if obj is None:
                     raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "dir expects a simple object"
+                        Diagnostic.OPERAND_VALUE, "dir expects a simple object"
                     )
                 callee = self._emit_builtin_function("dir")
                 res = MoltValue(self.next_var(), type_hint="list")
@@ -419,15 +419,12 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 return res
             if func_id == "getattr":
                 if len(node.args) not in {2, 3} or node.keywords:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "getattr expects 2 or 3 arguments",
-                    )
+                    return CALL_NOT_HANDLED
                 obj = self.visit(node.args[0])
                 name = self.visit(node.args[1])
                 if obj is None or name is None:
                     raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
+                        Diagnostic.OPERAND_VALUE,
                         "getattr expects object and name",
                     )
                 default = None
@@ -531,15 +528,13 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 return res
             if func_id == "setattr":
                 if len(node.args) != 3 or node.keywords:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "setattr expects 3 arguments"
-                    )
+                    return CALL_NOT_HANDLED
                 obj = self.visit(node.args[0])
                 name = self.visit(node.args[1])
                 val = self.visit(node.args[2])
                 if obj is None or name is None or val is None:
                     raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
+                        Diagnostic.OPERAND_VALUE,
                         "setattr expects object, name, value",
                     )
                 attr_name = None
@@ -573,14 +568,12 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 return res
             if func_id == "delattr":
                 if len(node.args) != 2 or node.keywords:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "delattr expects 2 arguments"
-                    )
+                    return CALL_NOT_HANDLED
                 obj = self.visit(node.args[0])
                 name = self.visit(node.args[1])
                 if obj is None or name is None:
                     raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
+                        Diagnostic.OPERAND_VALUE,
                         "delattr expects object and name",
                     )
                 if isinstance(node.args[1], ast.Constant) and isinstance(
@@ -627,14 +620,12 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 return res
             if func_id == "hasattr":
                 if len(node.args) != 2 or node.keywords:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE, "hasattr expects 2 arguments"
-                    )
+                    return CALL_NOT_HANDLED
                 obj = self.visit(node.args[0])
                 name = self.visit(node.args[1])
                 if obj is None or name is None:
                     raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
+                        Diagnostic.OPERAND_VALUE,
                         "hasattr expects object and name",
                     )
                 res = MoltValue(self.next_var(), type_hint="bool")
@@ -657,14 +648,11 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 return CALL_NOT_HANDLED
             if func_id == "classmethod":
                 if len(node.args) != 1 or node.keywords:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "classmethod expects 1 argument",
-                    )
+                    return CALL_NOT_HANDLED
                 func_val = self.visit(node.args[0])
                 if func_val is None:
                     raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
+                        Diagnostic.OPERAND_VALUE,
                         "classmethod expects a function",
                     )
                 res = MoltValue(self.next_var(), type_hint="classmethod")
@@ -672,14 +660,11 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 return res
             if func_id == "staticmethod":
                 if len(node.args) != 1 or node.keywords:
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "staticmethod expects 1 argument",
-                    )
+                    return CALL_NOT_HANDLED
                 func_val = self.visit(node.args[0])
                 if func_val is None:
                     raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
+                        Diagnostic.OPERAND_VALUE,
                         "staticmethod expects a function",
                     )
                 res = MoltValue(self.next_var(), type_hint="staticmethod")
@@ -687,10 +672,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 return res
             if func_id == "property":
                 if any(kw.arg is None for kw in node.keywords):
-                    raise FrontendRejection(
-                        Diagnostic.CALL_SIGNATURE,
-                        "property does not support **kwargs",
-                    )
+                    return CALL_NOT_HANDLED
                 if len(node.args) > 4:
                     return self._emit_type_error_value(
                         "property expected at most 4 arguments", "property"
@@ -740,7 +722,7 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     getter = self.visit(getter_expr)
                     if getter is None:
                         raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
+                            Diagnostic.OPERAND_VALUE,
                             "property expects a getter",
                         )
                 if setter_expr is None:

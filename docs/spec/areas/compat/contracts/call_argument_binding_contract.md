@@ -45,6 +45,11 @@ This spec defines:
   - Multiple values for the same parameter
   - Non-string keys in `**kwargs`
   - Passing positional-only params as keywords
+- The runtime binder raises these errors when the call runs, as CPython does,
+  so a program can catch them. The frontend never rejects a call for its
+  argument count or keywords: a typed fast path whose shape does not match
+  lowers the call through the generic binder instead. The retired diagnostic
+  code MOLT-FE002 once rejected such calls at compile time.
 
 ### 2.2 Not in scope (initially)
 - Exact CPython `TypeError` message text parity (we target message-class + key name inclusion; exact wording can be a later tightening gate).
