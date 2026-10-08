@@ -184,6 +184,20 @@ CALL_SHAPE_ERRORS = (
 )
 
 
+CLASS_CREATION_ERRORS = (
+    "class Twice(int, int):\n    pass\n",
+    "class Base:\n    pass\nAlias = Base\nclass Twice(Base, Alias):\n    pass\n",
+)
+
+
+@pytest.mark.parametrize("source", CLASS_CREATION_ERRORS)
+def test_class_creation_errors_reach_the_runtime(source: str) -> None:
+    # CPython raises TypeError when the class statement runs.
+    with pytest.raises(TypeError, match="duplicate base class"):
+        exec(compile(source, "probe.py", "exec"), {})
+    SimpleTIRGenerator(source_path="probe.py").visit(ast.parse(source))
+
+
 @pytest.mark.parametrize("source", CALL_SHAPE_ERRORS)
 def test_call_shape_errors_reach_the_runtime_binder(source: str) -> None:
     # CPython compiles each call and raises TypeError only when it runs, so a
