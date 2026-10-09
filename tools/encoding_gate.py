@@ -64,6 +64,7 @@ import argparse
 import ast
 import json
 from pathlib import Path
+import re
 import sys
 
 # Dogfood the runtime backstop: this gate prints subprocess-style diagnostics and
@@ -234,8 +235,32 @@ def _check_call(call: ast.Call, relpath: str, out: list[Violation]) -> None:
         return
 
 
+# Every rule needs a call whose name is one of these identifiers, and the
+# subprocess rule also needs a text-mode keyword.
+_CHECKED_CALL_NAME = re.compile(r"\b(?:open|read_text|write_text)\b")
+_SUBPROCESS_CALL_NAME = re.compile(
+    r"\b(?:" + "|".join(sorted(_SUBPROCESS_TEXT_FUNCS)) + r")\b"
+)
+_TEXT_MODE_KEYWORD = re.compile(r"\b(?:text|universal_newlines)\b")
+
+
+def _may_violate(source: str) -> bool:
+    """Whether ``source`` can hold a violation; a False is exact and skips the parse.
+
+    An identifier in ASCII source appears literally. Non-ASCII source may spell
+    one through NFKC normalization, so it is always parsed.
+    """
+    if not source.isascii() or _CHECKED_CALL_NAME.search(source):
+        return True
+    return bool(
+        _SUBPROCESS_CALL_NAME.search(source) and _TEXT_MODE_KEYWORD.search(source)
+    )
+
+
 def scan_source(source: str, relpath: str) -> list[Violation]:
     """All violations in a single source string. Pure — the unit the teeth test drives."""
+    if not _may_violate(source):
+        return []
     try:
         tree = ast.parse(source, filename=relpath)
     except SyntaxError:

@@ -232,3 +232,15 @@ def test_positional_encodings_and_foreign_read_text_are_not_violations() -> None
     )
     assert eg.scan_source(source, "tools/fixture.py") == []
     assert eg.fix_source(source, "tools/fixture.py") == (source, 0)
+
+
+def test_identifier_prefilter_never_hides_a_violation() -> None:
+    # Non-ASCII source can spell an identifier through NFKC normalization, so
+    # the prefilter must still parse it; ASCII source without a checked name or
+    # without a text-mode keyword has no violation to find.
+    assert _rules('ｏｐｅｎ("p")\n') == ["open-no-encoding"]
+    assert _rules('subprocess.run(["x"], text=True)\n') == [
+        "subprocess-text-no-encoding"
+    ]
+    assert eg._may_violate("x = 1\n") is False
+    assert eg._may_violate('subprocess.run(["x"])\n') is False
