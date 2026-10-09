@@ -190,67 +190,6 @@ fn ir_with_escaped_call_guarded() -> SimpleIR {
     }
 }
 
-#[allow(dead_code)]
-fn ir_with_socket_ops() -> SimpleIR {
-    let mut sock = op("socket_new");
-    sock.args = Some(vec![
-        "p0".to_string(),
-        "p1".to_string(),
-        "p2".to_string(),
-        "p3".to_string(),
-        "p4".to_string(),
-        "p5".to_string(),
-        "p6".to_string(),
-    ]);
-    sock.out = Some("v0".to_string());
-
-    SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "molt_main".to_string(),
-            params: vec![
-                "p0".to_string(),
-                "p1".to_string(),
-                "p2".to_string(),
-                "p3".to_string(),
-                "p4".to_string(),
-                "p5".to_string(),
-                "p6".to_string(),
-            ],
-            ops: vec![sock, op("ret_void")],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            parameter_custody: Vec::new(),
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    }
-}
-
-#[allow(dead_code)]
-fn ir_with_time_ops() -> SimpleIR {
-    let mut time = op("time_monotonic");
-    time.out = Some("v0".to_string());
-
-    SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "molt_main".to_string(),
-            params: vec![],
-            ops: vec![time, op("ret_void")],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            parameter_custody: Vec::new(),
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    }
-}
-
 fn compile_with_profile(ir: SimpleIR, profile: WasmProfile) -> Vec<u8> {
     WasmBackend::with_options(WasmCompileOptions {
         wasm_profile: profile,

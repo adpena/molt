@@ -32,10 +32,6 @@ pub extern "C" fn molt_datetime_runtime_ready() -> u64 {
 // Calendar helper types
 // ---------------------------------------------------------------------------
 
-/// Proleptic Gregorian ordinal where day 1 = 0001-01-01.
-#[allow(dead_code)]
-type Ordinal = i64;
-
 /// Parsed datetime components:
 /// (year, month, day, hour, minute, second, microsecond, utc_offset_seconds).
 type DateTimeParts = (i32, i32, i32, i32, i32, i32, i32, Option<i64>);
