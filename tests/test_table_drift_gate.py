@@ -23,6 +23,7 @@ Run:
 from __future__ import annotations
 import importlib.util
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -73,18 +74,20 @@ def test_gate_green_on_current_tree(key: str) -> None:
 
 
 class _Mutation:
-    """Temporarily replace one substring in a source file, restore on exit.
+    """Point the gate at a copy of one source file with one substring replaced.
 
-    Operates on raw bytes so the restored file is byte-identical to the
-    original (no platform newline translation), keeping the working tree
-    clean after the test regardless of the checked-out line endings.
+    The copy lives in a temporary directory and the gate's path constant is
+    redirected to it for the duration; the repository file is never written,
+    because every test and proof command running beside this one reads it.
+    Operates on raw bytes so line endings match the checked-out file.
     """
 
-    def __init__(self, path: Path, old: str, new: str) -> None:
-        self.path = path
+    def __init__(self, attribute: str, old: str, new: str) -> None:
+        self.attribute = attribute
+        self.path: Path = getattr(GATE, attribute)
         self._old = old
         self._new = new
-        self._original: bytes | None = None
+        self._scratch: tempfile.TemporaryDirectory[str] | None = None
 
     def __enter__(self) -> "_Mutation":
         data = self.path.read_bytes()
@@ -94,13 +97,16 @@ class _Mutation:
         old = self._old.encode("utf-8").replace(b"\n", newline)
         new = self._new.encode("utf-8").replace(b"\n", newline)
         assert old in data, f"mutation anchor not found in {self.path}: {old!r}"
-        self._original = data
-        self.path.write_bytes(data.replace(old, new, 1))
+        self._scratch = tempfile.TemporaryDirectory()
+        mutated = Path(self._scratch.name) / self.path.name
+        mutated.write_bytes(data.replace(old, new, 1))
+        setattr(GATE, self.attribute, mutated)
         return self
 
     def __exit__(self, *exc: object) -> None:
-        if self._original is not None:
-            self.path.write_bytes(self._original)
+        setattr(GATE, self.attribute, self.path)
+        if self._scratch is not None:
+            self._scratch.cleanup()
 
 
 def _assert_mutation_fails(category: str, mutation: _Mutation) -> None:
@@ -120,7 +126,7 @@ def test_mutation_type_tag_int_value_caught() -> None:
     # #1 frontend side: change the int for `int` (1 -> 99).
     _assert_mutation_fails(
         "type-tags",
-        _Mutation(GATE.FRONTEND_TYPES_PY, '    "int": 1,', '    "int": 99,'),
+        _Mutation("FRONTEND_TYPES_PY", '    "int": 1,', '    "int": 99,'),
     )
 
 
@@ -129,7 +135,7 @@ def test_mutation_type_tag_runtime_const_caught() -> None:
     _assert_mutation_fails(
         "type-tags",
         _Mutation(
-            GATE.TYPE_IDS_RS,
+            "TYPE_IDS_RS",
             "const TYPE_TAG_INT: i64 = 1;",
             "const TYPE_TAG_INT: i64 = 42;",
         ),
@@ -141,7 +147,7 @@ def test_mutation_exception_ordinal_shift_caught() -> None:
     _assert_mutation_fails(
         "exception-ordinals",
         _Mutation(
-            GATE.FRONTEND_TYPES_PY,
+            "FRONTEND_TYPES_PY",
             '            "KeyError",\n            "IndexError",',
             '            "IndexError",\n            "KeyError",',
         ),
@@ -153,7 +159,7 @@ def test_mutation_exception_ordinal_runtime_name_caught() -> None:
     _assert_mutation_fails(
         "exception-ordinals",
         _Mutation(
-            GATE.EXCEPTIONS_RS,
+            "EXCEPTIONS_RS",
             '        3 => Some("KeyError"),',
             '        3 => Some("ValueError"),',
         ),
@@ -165,7 +171,7 @@ def test_mutation_exception_name_frontend_only_caught() -> None:
     _assert_mutation_fails(
         "exception-names",
         _Mutation(
-            GATE.FRONTEND_TYPES_PY,
+            "FRONTEND_TYPES_PY",
             "BUILTIN_EXCEPTION_NAMES = {\n",
             'BUILTIN_EXCEPTION_NAMES = {\n    "TotallyFakeError",\n',
         ),
@@ -179,7 +185,7 @@ def test_mutation_exception_name_runtime_only_caught() -> None:
     _assert_mutation_fails(
         "exception-names",
         _Mutation(
-            GATE.EXCEPTION_SCHEMA_RS,
+            "EXCEPTION_SCHEMA_RS",
             '    exception_spec(\n        "ModuleNotFoundError",',
             '    exception_spec("TotallyFakeRuntimeError", ExceptionBaseSpec::One("Exception"), None),\n'
             '    exception_spec(\n        "ModuleNotFoundError",',
@@ -191,7 +197,7 @@ def test_commented_exception_row_cannot_preserve_a_removed_declaration() -> None
     _assert_mutation_fails(
         "exception-names",
         _Mutation(
-            GATE.EXCEPTION_SCHEMA_RS,
+            "EXCEPTION_SCHEMA_RS",
             '    exception_spec("MemoryError", ExceptionBaseSpec::One("Exception"), None),',
             '    // exception_spec("MemoryError", ExceptionBaseSpec::One("Exception"), None),',
         ),
@@ -202,7 +208,7 @@ def test_missing_canonical_alias_is_rejected() -> None:
     _assert_mutation_fails(
         "exception-names",
         _Mutation(
-            GATE.EXCEPTION_SCHEMA_RS,
+            "EXCEPTION_SCHEMA_RS",
             'exception_alias("IOError", "OSError")',
             'exception_alias("IOError", "MissingError")',
         ),
@@ -216,7 +222,7 @@ def test_alias_target_must_be_canonical(target: str) -> None:
     _assert_mutation_fails(
         "exception-names",
         _Mutation(
-            GATE.EXCEPTION_SCHEMA_RS,
+            "EXCEPTION_SCHEMA_RS",
             'exception_alias("IOError", "OSError")',
             f'exception_alias("IOError", "{target}")',
         ),
@@ -227,7 +233,7 @@ def test_declared_module_owns_frontend_namespace_exclusion() -> None:
     _assert_mutation_fails(
         "exception-names",
         _Mutation(
-            GATE.EXCEPTION_SCHEMA_RS,
+            "EXCEPTION_SCHEMA_RS",
             '.with_heap_class("asyncio.exceptions")',
             '.with_heap_class("builtins")',
         ),
@@ -312,7 +318,7 @@ def test_mutation_target_python_baseline_bump_caught() -> None:
     _assert_mutation_fails(
         "target-python",
         _Mutation(
-            GATE.STDLIB_UNION_PY,
+            "STDLIB_UNION_PY",
             'BASELINE_PYTHON_VERSIONS = ("3.12", "3.13", "3.14")',
             'BASELINE_PYTHON_VERSIONS = ("3.12", "3.13", "3.15")',
         ),
@@ -324,7 +330,7 @@ def test_mutation_target_python_generator_redeclare_caught() -> None:
     _assert_mutation_fails(
         "target-python",
         _Mutation(
-            GATE.GEN_STDLIB_UNION_PY,
+            "GEN_STDLIB_UNION_PY",
             "DEFAULT_PYTHONS = SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS",
             'DEFAULT_PYTHONS = ("3.12", "3.13", "3.14")',
         ),
