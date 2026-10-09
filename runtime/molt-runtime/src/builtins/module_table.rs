@@ -1819,20 +1819,129 @@ mod tests {
             .unwrap_or_else(|| panic!("test registry misses {name}"))
     }
 
+    // Test scopes borrow stable rows, retaining their displaced slot through
+    // the production execution snapshot. Synthetic initializer owners must not
+    // survive an assertion unwind and strand another test in the import wait.
+    struct ModuleTestRestore<'a, 'py> {
+        py: &'a PyToken<'py>,
+        snapshot: Option<ModuleExecutionSnapshot>,
+        cache: Option<(u64, Option<u64>)>,
+    }
+
+    impl<'a, 'py> ModuleTestRestore<'a, 'py> {
+        fn capture(py: &'a PyToken<'py>, name: &str) -> Self {
+            let id = test_registry_id(name);
+            let table = module_table(py).expect("test module table");
+            let index = id as usize;
+            assert_eq!(table.owners[index].load(Ordering::Acquire), 0);
+            let state = table.states[index].load(Ordering::Acquire);
+            assert!(!matches!(
+                state,
+                STATE_INITIALIZING | STATE_EXECUTION_RESERVED
+            ));
+            let name_bits = crate::attr_name_bits_from_bytes(py, name.as_bytes()).unwrap();
+            let previous = legacy_cache_lookup(py, name);
+            if let Some(bits) = previous {
+                inc_ref_bits(py, bits);
+            }
+            let bits = table.slots[index].load(Ordering::Acquire);
+            if bits != 0 {
+                inc_ref_bits(py, bits);
+            }
+            Self {
+                py,
+                snapshot: Some(ModuleExecutionSnapshot { id, state, bits }),
+                cache: Some((name_bits, previous)),
+            }
+        }
+
+        fn execution(py: &'a PyToken<'py>, snapshot: ModuleExecutionSnapshot) -> Self {
+            Self {
+                py,
+                snapshot: Some(snapshot),
+                cache: None,
+            }
+        }
+
+        fn restore(mut self) {
+            self.restore_inner();
+        }
+
+        fn restore_inner(&mut self) {
+            let Some(snapshot) = self.snapshot.take() else {
+                return;
+            };
+            molt_cpython_abi::api::errors::with_preserved_error(|| {
+                if let Some((name, previous)) = self.cache.take() {
+                    // Revoke synthetic initializer custody before cache teardown
+                    // or publication can run callbacks or bootstrap a namespace.
+                    // Keep the original snapshot owner through publication: the
+                    // prior cache and prior table slot may be different objects.
+                    if snapshot.bits != 0 {
+                        inc_ref_bits(self.py, snapshot.bits);
+                    }
+                    restore_module_execution(
+                        self.py,
+                        Some(ModuleExecutionSnapshot {
+                            id: snapshot.id,
+                            state: snapshot.state,
+                            bits: snapshot.bits,
+                        }),
+                    );
+                    crate::builtins::modules::module_cache_remove(name, None);
+                    if let Some(bits) = previous {
+                        crate::builtins::modules::module_cache_publish(
+                            name,
+                            bits,
+                            crate::builtins::modules::ModuleCachePublication::Extension,
+                        );
+                        dec_ref_bits(self.py, bits);
+                    }
+                    dec_ref_bits(self.py, name);
+                }
+                // Extension publication projects the cache into the table.
+                // Restore the exact prior slot/state, consuming its saved owner.
+                restore_module_execution(self.py, Some(snapshot));
+            });
+        }
+    }
+
+    impl Drop for ModuleTestRestore<'_, '_> {
+        fn drop(&mut self) {
+            self.restore_inner();
+        }
+    }
+
+    extern "C" fn init_test_io() -> u64 {
+        let module = publish_test_module("_io");
+        crate::with_gil_entry_nopanic!(py, {
+            dec_ref_bits(py, module);
+        });
+        0
+    }
+
     /// Install the synthetic registry exactly once per test process.  Rows
     /// are pre-sorted; ids are their positions.
     pub(super) fn install_test_registry() {
         static INSTALL: std::sync::Once = std::sync::Once::new();
         INSTALL.call_once(|| {
             // Ids are declaration positions (rows pre-sorted; the builder
-            // asserts the order): 0 builtins, 1 g4_alias, 2 g4_cycle_a,
-            // 3 g4_cycle_b, 4 g4_fail, 5 g4_noinit, 6 g4_pkg,
-            // 7 g4_pkg.sub, 8 g4_src, 9 g4_target, 10 g4_tomb,
-            // 11 g4_tomb_ext, 12 g4_z_static_ext_fail.
+            // asserts the order): 0 _io, 1 builtins, 2 g4_alias, 3 g4_cycle_a,
+            // 4 g4_cycle_b, 5 g4_fail, 6 g4_noinit, 7 g4_pkg,
+            // 8 g4_pkg.sub, 9 g4_src, 10 g4_target, 11 g4_tomb,
+            // 12 g4_tomb_ext, 13 g4_z_static_ext_fail, 14 sys.
             let mut builder = BlobBuilder::new();
             builder
+                .row(
+                    "_io",
+                    init_test_io as *const () as usize as u64,
+                    None,
+                    None,
+                    MODULE_KIND_RUNTIME_BUILTIN,
+                    0,
+                )
                 .row("builtins", 0, None, None, MODULE_KIND_RUNTIME_BUILTIN, 0)
-                .row("g4_alias", 0, None, Some(9), MODULE_KIND_ALIAS, 0)
+                .row("g4_alias", 0, None, Some(10), MODULE_KIND_ALIAS, 0)
                 .row(
                     "g4_cycle_a",
                     init_g4_cycle_a as *const () as usize as u64,
@@ -1869,7 +1978,7 @@ mod tests {
                 .row(
                     "g4_pkg.sub",
                     init_g4_pkg_sub as *const () as usize as u64,
-                    Some(6),
+                    Some(7),
                     None,
                     MODULE_KIND_SOURCE,
                     0,
@@ -1924,6 +2033,109 @@ mod tests {
                 );
             let blob: &'static [u8] = Box::leak(builder.build().into_boxed_slice());
             assert_eq!(molt_module_registry_install(blob.as_ptr()), 0);
+        });
+    }
+
+    #[test]
+    fn synthetic_initializer_scope_restores_cache_and_row_after_unwind() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        install_test_registry();
+        crate::with_gil_entry_nopanic!(py, {
+            let _outer = ModuleTestRestore::capture(py, "g4_src");
+            let module = publish_test_module("g4_src");
+            let _module_owner = crate::PtrDropGuard::new(obj_from_bits(module).as_ptr().unwrap());
+            let index = test_registry_id("g4_src") as usize;
+            let table = module_table(py).unwrap();
+            let state = table.states[index].load(Ordering::Acquire);
+            let bits = table.slots[index].load(Ordering::Acquire);
+            let owner = table.owners[index].load(Ordering::Acquire);
+            let cached = legacy_cache_lookup(py, "g4_src");
+            let outcome = crate::test_support::catch_expected_unwind(|| {
+                let _restore = ModuleTestRestore::capture(py, "g4_src");
+                table.states[index].store(STATE_INITIALIZING, Ordering::Release);
+                table.owners[index].store(
+                    crate::concurrency::current_thread_id().wrapping_add(1),
+                    Ordering::Release,
+                );
+                panic!("synthetic initializer failure");
+            });
+            assert!(outcome.is_err());
+            assert_eq!(table.states[index].load(Ordering::Acquire), state);
+            assert_eq!(table.slots[index].load(Ordering::Acquire), bits);
+            assert_eq!(table.owners[index].load(Ordering::Acquire), owner);
+            assert_eq!(legacy_cache_lookup(py, "g4_src"), cached);
+            assert!(!exception_pending(py));
+        });
+    }
+
+    #[test]
+    fn synthetic_builtin_scope_preserves_distinct_cache_and_slot_after_unwind() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        install_test_registry();
+        crate::with_gil_entry_nopanic!(py, {
+            let _io_restore = ModuleTestRestore::capture(py, "_io");
+            let _outer = ModuleTestRestore::capture(py, "builtins");
+            let name = crate::attr_name_bits_from_bytes(py, b"builtins").unwrap();
+            let _name_owner = crate::PtrDropGuard::new(obj_from_bits(name).as_ptr().unwrap());
+            let key = crate::attr_name_bits_from_bytes(py, b"len").unwrap();
+            let _key_owner = crate::PtrDropGuard::new(obj_from_bits(key).as_ptr().unwrap());
+            let prior_cache = crate::molt_module_new(name);
+            let cache_ptr = obj_from_bits(prior_cache).as_ptr().unwrap();
+            let _cache_owner = crate::PtrDropGuard::new(cache_ptr);
+            let prior_slot = crate::molt_module_new(name);
+            let _slot_owner = crate::PtrDropGuard::new(obj_from_bits(prior_slot).as_ptr().unwrap());
+            assert_ne!(prior_cache, prior_slot);
+            let dict = obj_from_bits(unsafe { crate::module_dict_bits(cache_ptr) })
+                .as_ptr()
+                .unwrap();
+            let user_value = MoltObject::from_int(42).bits();
+            unsafe { crate::dict_set_in_place(py, dict, key, user_value) };
+            crate::builtins::modules::module_cache_publish(
+                name,
+                prior_cache,
+                crate::builtins::modules::ModuleCachePublication::Extension,
+            );
+            let id = test_registry_id("builtins");
+            module_table_view_replace(py, id, prior_slot);
+            assert!(!exception_pending(py));
+            let index = id as usize;
+            let table = module_table(py).unwrap();
+            assert_eq!(table.states[index].load(Ordering::Acquire), STATE_REPLACED);
+            assert_eq!(table.owners[index].load(Ordering::Acquire), 0);
+            assert_eq!(legacy_cache_lookup(py, "builtins"), Some(prior_cache));
+            assert_eq!(
+                unsafe { crate::dict_get_in_place(py, dict, key) },
+                Some(user_value)
+            );
+
+            let outcome = crate::test_support::catch_expected_unwind(|| {
+                let _restore = ModuleTestRestore::capture(py, "builtins");
+                let displaced = table.slots[index].swap(0, Ordering::AcqRel);
+                table.owners[index]
+                    .store(crate::concurrency::current_thread_id(), Ordering::Release);
+                table.states[index].store(STATE_INITIALIZING, Ordering::Release);
+                if displaced != 0 {
+                    dec_ref_bits(py, displaced);
+                }
+                assert!(module_initialization_awaits_publication(py, "builtins"));
+                panic!("same-thread builtin initializer failure");
+            });
+            let payload = outcome.expect_err("the synthetic initializer must unwind");
+            assert_eq!(
+                payload.downcast_ref::<&str>().copied(),
+                Some("same-thread builtin initializer failure"),
+                "a setup assertion must not satisfy the unwind oracle"
+            );
+            assert!(!exception_pending(py));
+            assert_eq!(table.states[index].load(Ordering::Acquire), STATE_REPLACED);
+            assert_eq!(table.owners[index].load(Ordering::Acquire), 0);
+            assert_eq!(table.slots[index].load(Ordering::Acquire), prior_slot);
+            assert_eq!(legacy_cache_lookup(py, "builtins"), Some(prior_cache));
+            assert_eq!(
+                unsafe { crate::dict_get_in_place(py, dict, key) },
+                Some(user_value),
+                "restoring a retained namespace must preserve the user's builtin replacement"
+            );
         });
     }
 
@@ -2081,6 +2293,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         install_test_registry();
         crate::with_gil_entry_nopanic!(py, {
+            let _g4_src_restore = ModuleTestRestore::capture(py, "g4_src");
             legacy_cache_del(py, "sys");
             let sys = publish_test_module("sys");
             let id = test_registry_id("g4_src");
@@ -2145,6 +2358,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         install_test_registry();
         crate::with_gil_entry_nopanic!(py, {
+            let _g4_src_restore = ModuleTestRestore::capture(py, "g4_src");
             let previous_sys = legacy_cache_lookup(py, "sys");
             if let Some(bits) = previous_sys {
                 inc_ref_bits(py, bits);
@@ -2219,9 +2433,17 @@ mod tests {
         });
     }
 
-    fn pending_exception_text(_py: &PyToken<'_>) -> String {
+    fn pending_exception_text(_py: &PyToken<'_>, expected_kind: &str) -> String {
         assert!(exception_pending(_py), "expected a pending exception");
         let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
+        assert!(
+            crate::builtins::exceptions::exception_matches_builtin_name(
+                _py,
+                exc_bits,
+                expected_kind
+            ),
+            "expected {expected_kind} before clearing its owned exception"
+        );
         let text = obj_from_bits(exc_bits)
             .as_ptr()
             .map(|ptr| crate::format_exception_with_traceback(_py, ptr))
@@ -2259,6 +2481,8 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         install_test_registry();
         crate::with_gil_entry_nopanic!(py, {
+            let _io_restore = ModuleTestRestore::capture(py, "_io");
+            let _builtins_restore = ModuleTestRestore::capture(py, "builtins");
             legacy_cache_del(py, "builtins");
             let idx = test_registry_id("builtins") as usize;
             let table = module_table(py).expect("table");
@@ -2278,7 +2502,14 @@ mod tests {
             table.owners[idx].store(crate::concurrency::current_thread_id(), Ordering::Release);
             assert!(module_initialization_awaits_publication(py, "builtins"));
             let result = crate::molt_module_cache_set(name, module);
-            assert!(!exception_pending(py));
+            assert!(
+                !exception_pending(py),
+                "builtins first publication: {}",
+                crate::exception_last_bits_noinc(py)
+                    .and_then(|bits| obj_from_bits(bits).as_ptr())
+                    .map(|ptr| crate::format_exception_with_traceback(py, ptr))
+                    .unwrap_or_default()
+            );
             if !is_none_bits(result) {
                 dec_ref_bits(py, result);
             }
@@ -2294,6 +2525,21 @@ mod tests {
                 );
                 dec_ref_bits(py, key);
             }
+            let io = module_ensure(py, test_registry_id("_io"));
+            assert!(!exception_pending(py));
+            let io_ptr = obj_from_bits(io).as_ptr().expect("native provider module");
+            let io_dict = obj_from_bits(unsafe { crate::module_dict_bits(io_ptr) })
+                .as_ptr()
+                .unwrap();
+            let open_name = crate::attr_name_bits_from_bytes(py, b"open").unwrap();
+            let provider_open = unsafe { crate::dict_get_in_place(py, io_dict, open_name) };
+            assert!(provider_open.is_some(), "admitted provider publishes open");
+            assert_eq!(
+                unsafe { crate::dict_get_in_place(py, dict, open_name) },
+                provider_open
+            );
+            dec_ref_bits(py, open_name);
+            dec_ref_bits(py, io);
             let unrelated = crate::molt_module_new(name);
             for builtin in [
                 "property",
@@ -2330,7 +2576,7 @@ mod tests {
                 }
                 let value = crate::molt_module_get_global(unrelated, key);
                 assert!(is_none_bits(value));
-                assert!(pending_exception_text(py).contains("NameError"));
+                assert!(pending_exception_text(py, "NameError").contains("NameError"));
                 assert!(unsafe { crate::dict_get_in_place(py, dict, key) }.is_none());
                 dec_ref_bits(py, key);
             }
@@ -2345,6 +2591,8 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         install_test_registry();
         crate::with_gil_entry_nopanic!(_py, {
+            let _io_restore = ModuleTestRestore::capture(_py, "_io");
+            let _builtins_restore = ModuleTestRestore::capture(_py, "builtins");
             let builtins_id = test_registry_id("builtins");
             let table = module_table(_py).expect("table");
             let idx = builtins_id as usize;
@@ -2377,13 +2625,17 @@ mod tests {
 
             // Adopt the published namespace, then reserve a real re-execution
             // transaction. Reservation alone owns no namespace; publication
-            // while initializing grants privilege to exactly that slot object.
+            // while initializing owns exactly that slot object. Name lookup
+            // remains the captured dictionary; it never synthesizes intrinsics.
             let ready_bits = module_ensure(_py, builtins_id);
             assert_eq!(ready_bits, builtins_bits);
             dec_ref_bits(_py, ready_bits);
-            let snapshot = begin_module_execution(_py, "builtins")
-                .expect("reserve builtins execution")
-                .expect("builtins registry row");
+            let snapshot = ModuleTestRestore::execution(
+                _py,
+                begin_module_execution(_py, "builtins")
+                    .expect("reserve builtins execution")
+                    .expect("builtins registry row"),
+            );
             let owner = crate::concurrency::current_thread_id();
             for state in [STATE_EXECUTION_RESERVED, STATE_INITIALIZING] {
                 table.states[idx].store(state, Ordering::Release);
@@ -2397,26 +2649,16 @@ mod tests {
                 );
                 for through_frame in [false, true] {
                     let value = lookup_test_global(_py, builtins_bits, name_bits, through_frame);
-                    if namespace_published {
-                        assert!(!exception_pending(_py));
-                        let value_ptr = obj_from_bits(value).as_ptr().expect("lazy builtin len");
-                        assert_eq!(
-                            unsafe { crate::object_type_id(value_ptr) },
-                            crate::TYPE_ID_FUNCTION
-                        );
-                        dec_ref_bits(_py, value);
-                    } else {
-                        assert!(is_none_bits(value));
-                        assert!(pending_exception_text(_py).contains("NameError"));
-                    }
+                    assert!(is_none_bits(value));
+                    assert!(pending_exception_text(_py, "NameError").contains("NameError"));
 
                     let unrelated =
                         lookup_test_global(_py, unrelated_bits, name_bits, through_frame);
                     assert!(is_none_bits(unrelated));
-                    assert!(pending_exception_text(_py).contains("NameError"));
+                    assert!(pending_exception_text(_py, "NameError").contains("NameError"));
 
-                    // Published values win even during bootstrap; the resolver
-                    // must never replace a real binding with its intrinsic.
+                    // Actual captured builtins values supply both the module
+                    // namespace and ordinary fallback lookup during bootstrap.
                     let override_bits = MoltObject::from_int(42).bits();
                     unsafe {
                         crate::object::ops::dict_set_in_place(
@@ -2438,6 +2680,12 @@ mod tests {
                         ))
                     };
 
+                    for module in [builtins_bits, unrelated_bits] {
+                        let deleted = lookup_test_global(_py, module, name_bits, through_frame);
+                        assert!(is_none_bits(deleted));
+                        assert!(pending_exception_text(_py, "NameError").contains("NameError"));
+                    }
+
                     table.owners[idx].store(
                         owner.checked_add(1).expect("foreign thread id"),
                         Ordering::Release,
@@ -2450,7 +2698,7 @@ mod tests {
                     let foreign = lookup_test_global(_py, builtins_bits, name_bits, through_frame);
                     table.owners[idx].store(owner, Ordering::Release);
                     assert!(is_none_bits(foreign));
-                    assert!(pending_exception_text(_py).contains("NameError"));
+                    assert!(pending_exception_text(_py, "NameError").contains("NameError"));
                 }
             }
             // A replaced visible cache entry cannot borrow the old table
@@ -2477,7 +2725,7 @@ mod tests {
             for through_frame in [false, true] {
                 let replacement = lookup_test_global(_py, unrelated_bits, name_bits, through_frame);
                 assert!(is_none_bits(replacement));
-                assert!(pending_exception_text(_py).contains("NameError"));
+                assert!(pending_exception_text(_py, "NameError").contains("NameError"));
             }
             {
                 let cache = crate::builtins::exceptions::internals::module_cache(_py);
@@ -2488,7 +2736,7 @@ mod tests {
                     .expect("replacement builtins");
                 dec_ref_bits(_py, displaced);
             }
-            restore_module_execution(_py, Some(snapshot));
+            snapshot.restore();
             assert_eq!(table.states[idx].load(Ordering::Acquire), STATE_READY);
             for state in [STATE_READY, STATE_TOMBSTONE] {
                 if state == STATE_TOMBSTONE {
@@ -2507,7 +2755,7 @@ mod tests {
                 for through_frame in [false, true] {
                     let missing = lookup_test_global(_py, builtins_bits, name_bits, through_frame);
                     assert!(is_none_bits(missing));
-                    assert!(pending_exception_text(_py).contains("NameError"));
+                    assert!(pending_exception_text(_py, "NameError").contains("NameError"));
                 }
                 table.owners[idx].store(0, Ordering::Release);
             }
@@ -2551,13 +2799,13 @@ mod tests {
             let fail_id = test_registry_id("g4_fail");
             let failed = module_ensure(_py, fail_id);
             assert!(is_none_bits(failed));
-            let text = pending_exception_text(_py);
+            let text = pending_exception_text(_py, "ValueError");
             assert!(text.contains("g4 init failure"), "{text}");
             // The row must be back to Uninit: a retry re-enters init and
             // fails identically instead of returning a phantom module.
             let retry = module_ensure(_py, fail_id);
             assert!(is_none_bits(retry));
-            let text = pending_exception_text(_py);
+            let text = pending_exception_text(_py, "ValueError");
             assert!(text.contains("g4 init failure"), "{text}");
 
             // ── Static-extension failure unwind: Initializing → Uninit ──
@@ -2565,7 +2813,7 @@ mod tests {
             let ext_runs_before = EXT_FAIL_RUNS.load(Ordering::SeqCst);
             let ext_failed = module_ensure(_py, ext_fail_id);
             assert!(is_none_bits(ext_failed));
-            let text = pending_exception_text(_py);
+            let text = pending_exception_text(_py, "ImportError");
             assert!(text.contains("ImportError"), "{text}");
             assert!(
                 text.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"),
@@ -2584,7 +2832,7 @@ mod tests {
             );
             let ext_retry = module_ensure(_py, ext_fail_id);
             assert!(is_none_bits(ext_retry));
-            let text = pending_exception_text(_py);
+            let text = pending_exception_text(_py, "ImportError");
             assert!(
                 text.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"),
                 "{text}"
@@ -2664,7 +2912,7 @@ mod tests {
             // ── No init lane: fail closed with CPython's exact message ──
             let missing = module_ensure(_py, test_registry_id("g4_noinit"));
             assert!(is_none_bits(missing));
-            let text = pending_exception_text(_py);
+            let text = pending_exception_text(_py, "ModuleNotFoundError");
             assert!(
                 text.contains("No module named 'g4_noinit'"),
                 "registry rows without an init lane fail closed: {text}"
@@ -2721,7 +2969,7 @@ mod tests {
             module_table_view_replace(_py, src_id, none_bits());
             let halted = module_ensure(_py, src_id);
             assert!(is_none_bits(halted));
-            let text = pending_exception_text(_py);
+            let text = pending_exception_text(_py, "ModuleNotFoundError");
             assert!(
                 text.contains("import of g4_src halted; None in sys.modules"),
                 "row 5.2 exact message: {text}"
@@ -2773,7 +3021,7 @@ mod tests {
             let runs_before = EXT_FAIL_RUNS.load(Ordering::SeqCst);
             let failed = module_ensure(_py, ext_fail_id);
             assert!(is_none_bits(failed));
-            let text = pending_exception_text(_py);
+            let text = pending_exception_text(_py, "ImportError");
             assert!(
                 text.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"),
                 "{text}"
@@ -2793,7 +3041,7 @@ mod tests {
 
             let retry = module_ensure(_py, ext_fail_id);
             assert!(is_none_bits(retry));
-            let text = pending_exception_text(_py);
+            let text = pending_exception_text(_py, "ImportError");
             assert!(
                 text.contains("static-link PyModuleDef Py_mod_exec slot returned non-zero"),
                 "{text}"

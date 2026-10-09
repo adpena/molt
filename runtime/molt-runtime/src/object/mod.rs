@@ -4801,7 +4801,7 @@ mod tests {
     }
 
     #[test]
-    fn bare_object_constructor_preselects_replaceable_owned_class_edge() {
+    fn bare_object_constructor_owns_class_edge_and_rejects_immutable_reassignment() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         let obj_bits = crate::molt_object_new();
         let (class_bits, initial_class_rc) = crate::with_gil_entry_nopanic!(_py, {
@@ -4825,6 +4825,34 @@ mod tests {
             let class_ptr = crate::alloc_class_obj(_py, name_bits);
             dec_ref_bits(_py, name_bits);
             assert!(!class_ptr.is_null());
+            let allocated_class_rc =
+                unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() };
+            unsafe { super::class_finish_definition(_py, class_ptr) }
+                .expect("seal replacement class before measuring assignment ownership");
+            assert!(unsafe { super::class_definition_is_finished(class_ptr) });
+            let dict_name = crate::attr_name_bits_from_bytes(_py, b"__dict__")
+                .expect("instance dictionary descriptor name");
+            let namespace = crate::obj_from_bits(unsafe { crate::class_dict_bits(class_ptr) })
+                .as_ptr()
+                .expect("replacement class namespace");
+            let descriptor = unsafe { crate::dict_get_in_place(_py, namespace, dict_name) }
+                .expect("sealed class owns an instance dictionary descriptor");
+            let descriptor_ptr = crate::obj_from_bits(descriptor).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { super::layout::native_descriptor_flavor(descriptor_ptr) },
+                Some(super::layout::NativeDescriptorFlavor::InstanceDictionary),
+            );
+            assert_eq!(
+                unsafe { super::layout::native_descriptor_owner_bits(descriptor_ptr) },
+                crate::MoltObject::from_ptr(class_ptr).bits(),
+            );
+            dec_ref_bits(_py, dict_name);
+            assert!(!crate::exception_pending(_py));
+            assert_eq!(
+                unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
+                allocated_class_rc + 1,
+                "sealing publishes the descriptor's class owner before the baseline"
+            );
             (crate::MoltObject::from_ptr(class_ptr).bits(), unsafe {
                 (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot()
             })
@@ -4842,8 +4870,18 @@ mod tests {
         assert_eq!(result, crate::MoltObject::none().bits());
 
         crate::with_gil_entry_nopanic!(_py, {
-            assert!(!crate::exception_pending(_py));
-            assert_eq!(unsafe { object_class_bits(obj_ptr) }, class_bits);
+            assert!(crate::exception_pending(_py));
+            let exception = crate::molt_exception_last();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                _py,
+                exception,
+                "TypeError",
+            ));
+            assert_eq!(
+                unsafe { object_class_bits(obj_ptr) },
+                crate::builtin_classes(_py).object,
+                "immutable object reassignment must preserve the original class edge"
+            );
             let class_rc = unsafe {
                 (*super::header_from_obj_ptr(
                     crate::obj_from_bits(class_bits)
@@ -4853,10 +4891,11 @@ mod tests {
                 .ref_count_snapshot()
             };
             assert_eq!(
-                class_rc,
-                initial_class_rc + 1,
-                "object replacement must acquire exactly one owned class edge"
+                class_rc, initial_class_rc,
+                "rejected replacement must not acquire the candidate class edge"
             );
+            crate::molt_exception_clear();
+            dec_ref_bits(_py, exception);
             dec_ref_bits(_py, obj_bits);
             assert_eq!(
                 unsafe {
@@ -4868,9 +4907,17 @@ mod tests {
                     .ref_count_snapshot()
                 },
                 initial_class_rc,
-                "object teardown must discharge exactly its owned class edge"
+                "object teardown must leave the rejected candidate class untouched"
+            );
+            let class_ptr = crate::obj_from_bits(class_bits).as_ptr().unwrap();
+            unsafe { super::heap_lifecycle::clear_cycle_edges(_py, class_ptr) };
+            assert_eq!(
+                unsafe { (*super::header_from_obj_ptr(class_ptr)).ref_count_snapshot() },
+                initial_class_rc - 1,
+                "fixture teardown releases the descriptor-owned class reference"
             );
             dec_ref_bits(_py, class_bits);
+            assert!(!crate::exception_pending(_py));
         });
     }
 

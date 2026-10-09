@@ -115,10 +115,19 @@ fn c_api_tuple_new_size_getitem_setitem() {
         assert_ne!(tuple, 0);
         assert_eq!(PyTuple_Size(tuple), 3);
 
-        // The internal handle API uses the canonical missing singleton. The
-        // public pointer ABI translates it to NULL, not float +0.0 (bits 0).
+        // This borrowed-handle helper returns 0 without an error for an
+        // uninitialized slot. The typed ABI hook, tested separately with the
+        // public pointer API, distinguishes absence from valid float +0.0.
         let item0 = PyTuple_GetItem(tuple, 0);
-        assert_eq!(item0, crate::missing_bits(_py));
+        assert_eq!(item0, 0);
+        assert!(!exception_pending(_py));
+
+        let none = MoltObject::none().bits();
+        inc_ref_bits(_py, none);
+        assert_eq!(PyTuple_SetItem(tuple, 0, none), 0);
+        assert_eq!(PyTuple_GetItem(tuple, 0), none);
+        assert_ne!(none, 0, "Python None is a present borrowed value");
+        assert_eq!(PyTuple_GetItem(tuple, 1), 0);
         assert!(!exception_pending(_py));
 
         // SetItem steals the ref, so inc_ref the value first.
@@ -131,16 +140,14 @@ fn c_api_tuple_new_size_getitem_setitem() {
         // Out-of-bounds
         let bad = PyTuple_GetItem(tuple, 5);
         assert_eq!(bad, 0);
-        assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        assert_pending_exception_class(_py, "IndexError");
 
         // Negative index in SetItem should fail (CPython tuple uses non-negative only).
         let steal_val = MoltObject::from_int(1).bits();
         inc_ref_bits(_py, steal_val);
         let rc = PyTuple_SetItem(tuple, -1, steal_val);
         assert_eq!(rc, -1);
-        assert!(exception_pending(_py));
-        let _ = molt_exception_clear();
+        assert_pending_exception_class(_py, "IndexError");
 
         dec_ref_bits(_py, tuple);
     });

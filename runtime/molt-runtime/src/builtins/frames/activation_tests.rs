@@ -88,11 +88,52 @@ fn register(py: &PyToken<'_>, poll: u64, names: &[u64], fields: [u64; 4]) {
     dec_ref_bits(py, names);
 }
 
+fn activation_code(
+    py: &PyToken<'_>,
+    varnames: &[u64],
+    cellvars: &[u64],
+    freevars: &[u64],
+    parameters: u64,
+) -> (*mut u8, u64) {
+    let filename = string(py, b"<activation-test>");
+    let name = string(py, b"activation_test");
+    let varnames = tuple(py, varnames);
+    let cellvars = tuple(py, cellvars);
+    let freevars = tuple(py, freevars);
+    let names = tuple(py, &[]);
+    let code = crate::object::builders::alloc_code_obj(
+        py,
+        filename,
+        name,
+        7,
+        MoltObject::none().bits(),
+        varnames,
+        names,
+        parameters,
+        0,
+        0,
+    );
+    assert!(!code.is_null());
+    assert!(unsafe { crate::code_publish_lexical_metadata(py, code, freevars, cellvars) });
+    for bits in [filename, name, varnames, cellvars, freevars, names] {
+        dec_ref_bits(py, bits);
+    }
+    (code, MoltObject::from_ptr(code).bits())
+}
+
 #[test]
 fn created_and_suspended_generator_locals_follow_the_registered_layout() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let (code_ptr, code) = super::tests::alloc_test_code(py);
+        let names = [
+            string(py, b"x"),
+            string(py, b"c"),
+            string(py, b"body"),
+            string(py, b"boxed"),
+            string(py, b"free"),
+        ];
+        let [x, c, body, boxed, free] = names;
+        let (code_ptr, code) = activation_code(py, &[x, c, body, boxed], &[c, boxed], &[free], 2);
         unsafe { code_set_frame_slot_id(code_ptr, 0) };
         let globals = dict(py);
         let builtins = dict(py);
@@ -106,14 +147,6 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
                 py, ptr, globals, builtins, code,
             )
         });
-        let names = [
-            string(py, b"x"),
-            string(py, b"c"),
-            string(py, b"body"),
-            string(py, b"boxed"),
-            string(py, b"free"),
-        ];
-        let [x, c, body, boxed, free] = names;
         register(
             py,
             GEN_POLL,
@@ -369,118 +402,170 @@ fn malformed_locals_layouts_fail_before_publication() {
 fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwind() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let (code_ptr, code) = super::tests::alloc_test_code(py);
-        unsafe { code_set_frame_slot_id(code_ptr, 0) };
-        let globals = dict(py);
-        let builtins = dict(py);
-        let task = crate::molt_task_new(GEN_POLL, (BASE + 16) as u64, crate::TASK_KIND_GENERATOR);
-        let ptr = obj_from_bits(task).as_ptr().unwrap();
-        assert!(unsafe {
-            crate::object::aux_header::object_init_frame_context_unpublished(
-                py, ptr, globals, builtins, code,
-            )
-        });
-        let x = string(py, b"x");
-        let body = string(py, b"body");
-        register(
-            py,
-            GEN_POLL,
-            &[x, body],
-            [
-                int(1),
-                tuple(py, &[int(BASE), int(BASE + 8)]),
-                tuple(py, &[int(0), int(1)]),
-                MoltObject::none().bits(),
-            ],
-        );
-        // A Python cell is itself a lawful argument value. Before prologue
-        // publication it must not be confused with the argument's own cell.
-        let raw_cell = cell(int(19));
-        unsafe { crate::object::payload_refs::store_borrowed(py, ptr, BASE, raw_cell) };
-        unsafe {
-            (*crate::header_from_obj_ptr(ptr)).fetch_or_flags(crate::HEADER_FLAG_GEN_STARTED)
-        };
-        let baseline = refs(task);
-        let guard =
-            FrameInvocationGuard::for_activation_namespace(py, code, globals, builtins, task)
+        for minor in [12, 13, 14] {
+            _transaction.with_target_python_minor(py, minor, || {
+                let x = string(py, b"x");
+                let body = string(py, b"body");
+                // Live projection reads the activation layout; retirement moves
+                // those bindings into the code object's matching localsplus slots.
+                let (code_ptr, code) = activation_code(py, &[x, body], &[x, body], &[], 1);
+                unsafe { code_set_frame_slot_id(code_ptr, 0) };
+                let globals = dict(py);
+                let builtins = dict(py);
+                let task =
+                    crate::molt_task_new(GEN_POLL, (BASE + 16) as u64, crate::TASK_KIND_GENERATOR);
+                let ptr = obj_from_bits(task).as_ptr().unwrap();
+                assert!(unsafe {
+                    crate::object::aux_header::object_init_frame_context_unpublished(
+                        py, ptr, globals, builtins, code,
+                    )
+                });
+                register(
+                    py,
+                    GEN_POLL,
+                    &[x, body],
+                    [
+                        int(1),
+                        tuple(py, &[int(BASE), int(BASE + 8)]),
+                        tuple(py, &[int(0), int(1)]),
+                        MoltObject::none().bits(),
+                    ],
+                );
+                // A Python cell is itself a lawful argument value. Before prologue
+                // publication it must not be confused with the argument's own cell.
+                let raw_cell = cell(int(19));
+                unsafe { crate::object::payload_refs::store_borrowed(py, ptr, BASE, raw_cell) };
+                unsafe {
+                    (*crate::header_from_obj_ptr(ptr))
+                        .fetch_or_flags(crate::HEADER_FLAG_GEN_STARTED)
+                };
+                let baseline = refs(task);
+                let guard = FrameInvocationGuard::for_activation_namespace(
+                    py, code, globals, builtins, task,
+                )
                 .unwrap();
-        assert_eq!(refs(task), baseline + 1);
-        crate::molt_trace_enter_slot(0);
-        assert_eq!(frame_stack_active_activation_bits(), task);
-        assert!(take_invocation_namespace(0).is_none());
-        let before = unsafe { activation_locals_bits(py, ptr) }.unwrap();
-        assert_eq!(lookup(py, before, x), Some(raw_cell));
-        assert_eq!(lookup(py, before, body), None);
-        dec_ref_bits(py, before);
-        // Constructor admission is checked before any prologue stores. A
-        // non-None body owner cannot be discarded by allocation-free init.
-        store_owned(py, ptr, BASE + 8, int(77));
-        molt_frame_locals_begin();
-        take_error(py, "SystemError");
-        assert_eq!(crate::object::aux_header::object_frame_locals_phase(ptr), 0);
-        assert_eq!(unsafe { *ptr.add(BASE + 8).cast::<u64>() }, int(77));
-        store_owned(py, ptr, BASE + 8, MoltObject::none().bits());
-        molt_frame_locals_begin();
-        assert!(!crate::exception_pending(py));
-        // This observation has exactly the state seen by a finalizer reentering
-        // during CELL_NEW, before the first canonical cell is published.
-        let partial = unsafe { activation_locals_bits(py, ptr) }.unwrap();
-        assert_eq!(lookup(py, partial, x), Some(raw_cell));
-        assert_eq!(lookup(py, partial, body), None);
-        dec_ref_bits(py, partial);
-        let x_cell = cell(raw_cell);
-        molt_frame_cell_publish(int(BASE), x_cell);
-        dec_ref_bits(py, x_cell);
-        let partial = unsafe { activation_locals_bits(py, ptr) }.unwrap();
-        assert_eq!(lookup(py, partial, x), Some(raw_cell));
-        assert_eq!(lookup(py, partial, body), None);
-        dec_ref_bits(py, partial);
-        let body_cell = cell(int(29));
-        molt_frame_cell_publish(int(BASE + 8), body_cell);
-        dec_ref_bits(py, body_cell);
-        assert!(!crate::exception_pending(py));
-        // Once published, a cell role cannot silently revert to a raw word.
-        // Error capture must also avoid recursively projecting this bad slot.
-        let published = unsafe { *ptr.add(BASE).cast::<u64>() };
-        inc_ref_bits(py, published);
-        store_owned(py, ptr, BASE, int(99));
-        assert!(frame_at_depth(py, 0).is_err());
-        take_error(py, "SystemError");
-        store_owned(py, ptr, BASE, published);
-        // Marking a task terminal does not invalidate the live compiled frame's
-        // owned payload. Suspended views are empty; unwind snapshots keep locals.
-        unsafe {
-            crate::object::payload_refs::store_borrowed(
-                py,
-                ptr,
-                crate::GEN_CLOSED_OFFSET,
-                flag(true),
-            )
-        };
-        let terminal = unsafe { activation_locals_bits(py, ptr) }.unwrap();
-        assert_eq!(lookup(py, terminal, x), None);
-        dec_ref_bits(py, terminal);
-        let payload = frame_stack_trace_payload_bits(py, None, false).unwrap();
-        let entry =
-            unsafe { traceback_payload_frame_entry(obj_from_bits(payload).as_ptr().unwrap()) };
-        let unwind_locals =
-            || bindings::frame_bindings_snapshot(py, entry.bindings.payload_bits).expect("locals");
-        let recorded = unwind_locals();
-        assert_eq!(lookup(py, recorded, x), Some(raw_cell));
-        assert_eq!(lookup(py, recorded, body), Some(int(29)));
-        dec_ref_bits(py, recorded);
-        crate::molt_trace_exit();
-        drop(guard);
-        assert_eq!(refs(task), baseline);
-        dec_ref_bits(py, task);
-        // The traceback's frame took the dead activation's bindings over.
-        let recorded = unwind_locals();
-        assert_eq!(lookup(py, recorded, x), Some(raw_cell));
-        dec_ref_bits(py, recorded);
-        dec_ref_bits(py, payload);
-        unregister(py, GEN_POLL);
-        for bits in [raw_cell, x, body, code, globals, builtins] {
-            dec_ref_bits(py, bits);
+                assert_eq!(refs(task), baseline + 1);
+                crate::molt_trace_enter_slot(0);
+                assert_eq!(frame_stack_active_activation_bits(), task);
+                assert!(take_invocation_namespace(0).is_none());
+                let before = unsafe { activation_locals_bits(py, ptr) }.unwrap();
+                assert_eq!(lookup(py, before, x), Some(raw_cell));
+                assert_eq!(lookup(py, before, body), None);
+                dec_ref_bits(py, before);
+                // Constructor admission is checked before any prologue stores. A
+                // non-None body owner cannot be discarded by allocation-free init.
+                store_owned(py, ptr, BASE + 8, int(77));
+                molt_frame_locals_begin();
+                take_error(py, "SystemError");
+                assert_eq!(crate::object::aux_header::object_frame_locals_phase(ptr), 0);
+                assert_eq!(unsafe { *ptr.add(BASE + 8).cast::<u64>() }, int(77));
+                store_owned(py, ptr, BASE + 8, MoltObject::none().bits());
+                molt_frame_locals_begin();
+                assert!(!crate::exception_pending(py));
+                // This observation has exactly the state seen by a finalizer reentering
+                // during CELL_NEW, before the first canonical cell is published.
+                let partial = unsafe { activation_locals_bits(py, ptr) }.unwrap();
+                assert_eq!(lookup(py, partial, x), Some(raw_cell));
+                assert_eq!(lookup(py, partial, body), None);
+                dec_ref_bits(py, partial);
+                let x_cell = cell(raw_cell);
+                molt_frame_cell_publish(int(BASE), x_cell);
+                dec_ref_bits(py, x_cell);
+                let partial = unsafe { activation_locals_bits(py, ptr) }.unwrap();
+                assert_eq!(lookup(py, partial, x), Some(raw_cell));
+                assert_eq!(lookup(py, partial, body), None);
+                dec_ref_bits(py, partial);
+                let body_cell = cell(int(29));
+                molt_frame_cell_publish(int(BASE + 8), body_cell);
+                dec_ref_bits(py, body_cell);
+                assert!(!crate::exception_pending(py));
+                // Once published, a cell role cannot silently revert to a raw word.
+                // Error capture must also avoid recursively projecting this bad slot.
+                let published = unsafe { *ptr.add(BASE).cast::<u64>() };
+                inc_ref_bits(py, published);
+                store_owned(py, ptr, BASE, int(99));
+                let mut observed_source = None;
+                for _ in 0..2 {
+                    // Frame identity and binding attachment remain valid. Projection
+                    // is the boundary that observes the malformed canonical cell.
+                    let frame = frame_at_depth(py, 0)
+                        .expect("lazy frame materialization")
+                        .expect("live Python frame");
+                    assert!(!crate::exception_pending(py));
+                    let frame_ptr = obj_from_bits(frame).as_ptr().expect("frame object");
+                    let mut sources = Vec::new();
+                    unsafe {
+                        locals_proxy::frame_object_visit(frame_ptr, |source| sources.push(source))
+                    };
+                    assert_eq!(sources.len(), 1);
+                    assert_ne!(sources[0], 0);
+                    if let Some(source) = observed_source {
+                        assert_eq!(
+                            sources[0], source,
+                            "reattachment must retain the same bindings"
+                        );
+                    } else {
+                        observed_source = Some(sources[0]);
+                    }
+                    let locals =
+                        locals_proxy::molt_frame_f_locals_get(MoltObject::none().bits(), frame);
+                    if minor >= 13 {
+                        assert!(!obj_from_bits(locals).is_none());
+                        assert!(
+                            !crate::exception_pending(py),
+                            "PEP 667 proxy construction is lazy"
+                        );
+                        let projected = locals_proxy::molt_frame_locals_proxy_getitem(locals, x);
+                        assert!(obj_from_bits(projected).is_none());
+                        dec_ref_bits(py, projected);
+                    } else {
+                        assert!(obj_from_bits(locals).is_none());
+                    }
+                    take_error(py, "SystemError");
+                    dec_ref_bits(py, locals);
+                    dec_ref_bits(py, frame);
+                }
+                store_owned(py, ptr, BASE, published);
+                // Marking a task terminal does not invalidate the live compiled frame's
+                // owned payload. Suspended views are empty; unwind snapshots keep locals.
+                unsafe {
+                    crate::object::payload_refs::store_borrowed(
+                        py,
+                        ptr,
+                        crate::GEN_CLOSED_OFFSET,
+                        flag(true),
+                    )
+                };
+                let terminal = unsafe { activation_locals_bits(py, ptr) }.unwrap();
+                assert_eq!(lookup(py, terminal, x), None);
+                dec_ref_bits(py, terminal);
+                let payload = frame_stack_trace_payload_bits(py, None, false).unwrap();
+                let entry = unsafe {
+                    traceback_payload_frame_entry(obj_from_bits(payload).as_ptr().unwrap())
+                };
+                let unwind_locals = || {
+                    bindings::frame_bindings_snapshot(py, entry.bindings.payload_bits)
+                        .expect("locals")
+                };
+                let recorded = unwind_locals();
+                assert_eq!(lookup(py, recorded, x), Some(raw_cell));
+                assert_eq!(lookup(py, recorded, body), Some(int(29)));
+                dec_ref_bits(py, recorded);
+                crate::molt_trace_exit();
+                drop(guard);
+                assert_eq!(refs(task), baseline);
+                dec_ref_bits(py, task);
+                // The traceback's frame took the dead activation's bindings over.
+                let recorded = unwind_locals();
+                assert_eq!(lookup(py, recorded, x), Some(raw_cell));
+                assert_eq!(lookup(py, recorded, body), Some(int(29)));
+                dec_ref_bits(py, recorded);
+                dec_ref_bits(py, payload);
+                unregister(py, GEN_POLL);
+                for bits in [raw_cell, x, body, code, globals, builtins] {
+                    dec_ref_bits(py, bits);
+                }
+            });
         }
     });
 }

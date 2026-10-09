@@ -377,7 +377,8 @@ fn call_extension_exec_boundary(_py: &PyToken<'_>, module_name: &str, path: &str
 }
 
 fn extension_spec_bits_for_tests(_py: &PyToken<'_>, module_name: &str, origin: &str) -> u64 {
-    let spec_bits = unsafe { call_callable0(_py, builtin_classes(_py).object) };
+    let spec_bits =
+        unsafe { call_callable0(_py, crate::builtins::types::simplenamespace_class(_py)) };
     assert!(
         !obj_from_bits(spec_bits).is_none(),
         "failed to create synthetic spec object"
@@ -420,6 +421,72 @@ fn extension_spec_bits_for_tests(_py: &PyToken<'_>, module_name: &str, origin: &
     );
     dec_ref_bits(_py, origin_bits);
     spec_bits
+}
+
+#[test]
+fn pending_exception_diagnostic_preserves_message_identity_and_owner() {
+    let _guard = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        assert!(pending_exception_kind_and_message(py).is_none());
+        let _ = raise_exception::<u64>(py, "ImportError", "extension metadata: exact diagnostic");
+        let original =
+            crate::builtins::exceptions::ExceptionValue::adopt(py, molt_exception_last_pending());
+        let ptr = obj_from_bits(original.bits())
+            .as_ptr()
+            .expect("raised error");
+        let bridge = &molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+        // The native __str__ slot can lazily acquire a canonical C-view hold.
+        // Reuse the collector's owner accounting, then require actual view
+        // retirement below, as the unraisable exception tests do.
+        let refs = || {
+            (unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() }) as isize
+                + bridge.gc_ref_adjustment(original.bits())
+        };
+        let baseline = refs();
+        for _ in 0..2 {
+            assert_eq!(
+                pending_exception_kind_and_message(py),
+                Some((
+                    "ImportError".to_owned(),
+                    "extension metadata: exact diagnostic".to_owned(),
+                ))
+            );
+            assert!(exception_pending(py));
+            let restored = crate::builtins::exceptions::ExceptionValue::adopt(
+                py,
+                molt_exception_last_pending(),
+            );
+            assert_eq!(
+                restored.bits(),
+                original.bits(),
+                "restore the exact raised owner"
+            );
+            drop(restored);
+            assert_eq!(
+                refs(),
+                baseline,
+                "diagnostic observation must not retain an owner"
+            );
+            assert!(
+                !bridge.has_direct_c_refs(original.bits()),
+                "diagnostic C owners must retire"
+            );
+        }
+        let view = unsafe { bridge.handle_to_borrowed_pyobj(original.bits()) };
+        assert!(!view.is_null());
+        clear_exception(py);
+        assert!(pending_exception_kind_and_message(py).is_none());
+        assert_eq!(
+            refs(),
+            baseline - 1,
+            "clearing releases the exact raised owner"
+        );
+        drop(original);
+        assert!(
+            bridge.managed_handle_for_pyobj(view).is_none(),
+            "the final diagnostic owner must retire its canonical C view"
+        );
+    });
 }
 
 fn assert_pending_exception_contains(_py: &PyToken<'_>, expected_kind: &str, fragments: &[&str]) {

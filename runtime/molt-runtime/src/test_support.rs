@@ -198,6 +198,24 @@ pub(crate) struct RuntimeTestTransaction {
     _process_state: MutexGuard<'static, ()>,
 }
 
+/// Private restoration for one synchronous target operation. Callers cannot
+/// retain or reorder guards; nested operations restore in lexical order.
+struct RuntimeTargetPython<'transaction, 'token, 'gil> {
+    _transaction: &'transaction RuntimeTestTransaction,
+    py: &'token crate::PyToken<'gil>,
+    prior: Option<crate::state::runtime_state::PythonVersionInfo>,
+}
+
+impl Drop for RuntimeTargetPython<'_, '_, '_> {
+    fn drop(&mut self) {
+        let mut target = crate::runtime_state(self.py)
+            .sys_version_info
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *target = self.prior.take();
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum RuntimeTestLifecycleMode {
     TrustedFresh,
@@ -211,6 +229,52 @@ impl RuntimeTestTransaction {
 
     pub(crate) fn with_gc_isolation() -> Self {
         Self::enter(true)
+    }
+
+    /// Borrow the runtime's exact target for one synchronous operation.
+    ///
+    /// The storage lock is released before the body, including nested GIL
+    /// entries. Private restoration preserves both normal results and the
+    /// original panic payload without initializing a missing prior target.
+    pub(crate) fn with_target_python<R>(
+        &self,
+        py: &crate::PyToken<'_>,
+        target: Option<crate::state::runtime_state::PythonVersionInfo>,
+        operation: impl FnOnce() -> R,
+    ) -> R {
+        let prior = std::mem::replace(
+            &mut *crate::runtime_state(py)
+                .sys_version_info
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            target,
+        );
+        let _target = RuntimeTargetPython {
+            _transaction: self,
+            py,
+            prior,
+        };
+        operation()
+    }
+
+    /// The shared fixture for versioned Python 3 minor semantics.
+    pub(crate) fn with_target_python_minor<R>(
+        &self,
+        py: &crate::PyToken<'_>,
+        minor: i64,
+        operation: impl FnOnce() -> R,
+    ) -> R {
+        self.with_target_python(
+            py,
+            Some(crate::state::runtime_state::PythonVersionInfo {
+                major: 3,
+                minor,
+                micro: 0,
+                releaselevel: "final".to_string(),
+                serial: 0,
+            }),
+            operation,
+        )
     }
 
     /// Run one test against a freshly bootstrapped trusted runtime.
@@ -453,6 +517,78 @@ where
     F: FnOnce() -> R,
 {
     with_expected_panic(|| std::panic::catch_unwind(AssertUnwindSafe(operation)))
+}
+
+#[test]
+fn target_python_custody_restores_missing_and_complete_targets_after_unwind() {
+    use crate::state::runtime_state::PythonVersionInfo;
+
+    let transaction = RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let state = crate::runtime_state(py);
+        let original = state.sys_version_info.lock().unwrap().clone();
+        let prior = PythonVersionInfo {
+            major: 3,
+            minor: 13,
+            micro: 7,
+            releaselevel: "candidate".to_string(),
+            serial: 2,
+        };
+        transaction.with_target_python(py, None, || {
+            transaction.with_target_python(py, Some(prior.clone()), || {
+                assert_eq!(crate::object::ops_sys::runtime_target_minor(py), 13);
+                let marker = Box::new(7_u64);
+                let marker_address = (&*marker as *const u64).addr();
+                let returned = transaction.with_target_python_minor(py, 12, || {
+                    assert_eq!(crate::object::ops_sys::runtime_target_minor(py), 12);
+                    transaction.with_target_python_minor(py, 14, || {
+                        crate::with_gil_entry_nopanic!(nested_py, {
+                            assert_eq!(crate::object::ops_sys::runtime_target_minor(nested_py), 14);
+                        });
+                    });
+                    if crate::object::ops_sys::runtime_target_minor(py) == 12 {
+                        return marker;
+                    }
+                    panic!("nested target was not restored before early return");
+                });
+                assert_eq!((&*returned as *const u64).addr(), marker_address);
+                assert_eq!(*returned, 7);
+                assert!(state.sys_version_info.lock().unwrap().as_ref() == Some(&prior));
+
+                let marker = Box::new(42_u64);
+                let marker_address = (&*marker as *const u64).addr();
+                let failure = catch_expected_unwind(|| -> () {
+                    transaction.with_target_python_minor(py, 14, || {
+                        assert_eq!(crate::object::ops_sys::runtime_target_minor(py), 14);
+                        std::panic::resume_unwind(marker);
+                    });
+                })
+                .expect_err("the inner panic must escape target custody");
+                let restored_marker = failure.downcast::<u64>().expect("original panic payload");
+                assert_eq!((&*restored_marker as *const u64).addr(), marker_address);
+                assert_eq!(*restored_marker, 42);
+                assert!(state.sys_version_info.lock().unwrap().as_ref() == Some(&prior));
+            });
+            assert!(state.sys_version_info.lock().unwrap().is_none());
+
+            let marker = Box::new(99_u64);
+            let marker_address = (&*marker as *const u64).addr();
+            let failure = catch_expected_unwind(|| -> () {
+                transaction.with_target_python(py, Some(prior.clone()), || {
+                    transaction.with_target_python_minor(py, 12, || {
+                        assert_eq!(crate::object::ops_sys::runtime_target_minor(py), 12);
+                        std::panic::resume_unwind(marker);
+                    });
+                });
+            })
+            .expect_err("the original panic must escape all nested target operations");
+            let restored_marker = failure.downcast::<u64>().expect("original panic payload");
+            assert_eq!((&*restored_marker as *const u64).addr(), marker_address);
+            assert_eq!(*restored_marker, 99);
+            assert!(state.sys_version_info.lock().unwrap().is_none());
+        });
+        assert!(*state.sys_version_info.lock().unwrap() == original);
+    });
 }
 
 #[test]
