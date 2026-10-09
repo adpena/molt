@@ -436,7 +436,10 @@ def test_build_wasm_linked_treats_symlinked_ext_root_as_repo_local(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    root = Path(__file__).resolve().parents[1]
+    # This is a durable/local project contract. A real hosted checkout is
+    # source-only, and deliberately rejects artifact roots inside its tree.
+    root = tmp_path / "repo"
+    root.mkdir()
     alias_root = tmp_path / "repo-alias"
     try:
         alias_root.symlink_to(root, target_is_directory=True)

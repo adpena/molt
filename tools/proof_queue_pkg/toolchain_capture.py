@@ -1996,7 +1996,7 @@ def _capture_rust_link_unit(
             selected_build_tools.append(tool.absolute())
             image = capture_image(role, tool, root_exit_disposition="require-exit")
             images.append(image)
-            if str(tool.absolute()) != image["path"]:
+            if _image_path_key(tool) != image["path"]:
                 images.append(capture_image(role, tool, preserve_path=True))
         images = canonical_images(images)
         telemetry = {
@@ -3038,15 +3038,17 @@ def sdk_required(data: Mapping[str, object], identity: Mapping[str, object]) -> 
 
 def capture_wasi_sdk_images(selection: Mapping[str, object]) -> list[dict[str, object]]:
     """Project shared finite SDK file capture into guarded process-image roles."""
-    return [
-        {
-            **row,
-            "schema": PROCESS_IMAGE_SCHEMA,
-            "role": "wasi-sdk-" + str(row["role"]),
-            "path_kind": "selection",
-        }
-        for row in capture_wasi_sdk_tool_files(selection)
-    ]
+    return canonical_images(
+        [
+            {
+                **row,
+                "schema": PROCESS_IMAGE_SCHEMA,
+                "role": "wasi-sdk-" + str(row["role"]),
+                "path_kind": "selection",
+            }
+            for row in capture_wasi_sdk_tool_files(selection)
+        ]
+    )
 
 
 def validate_wasi_sdk_closure(
@@ -3073,10 +3075,12 @@ def validate_wasi_sdk_closure(
         fact = generation["facts"]["tools"].get(selected_role)
         if not isinstance(fact, Mapping):
             raise ValueError("WASI SDK selected tool role is invalid")
-        if identity.get("path") != str(sdk / fact["path"]):
+        if identity.get("path") != _image_path_key(sdk / fact["path"]):
             raise ValueError("WASI SDK compiler selection differs from its role")
         expected_images = {
-            "wasi-sdk-" + role: str(sdk / generation["facts"]["tools"][role]["path"])
+            "wasi-sdk-" + role: _image_path_key(
+                sdk / generation["facts"]["tools"][role]["path"]
+            )
             for role in SDK_BUILD_TOOL_NAMES
         }
         images = identity.get("process_images")

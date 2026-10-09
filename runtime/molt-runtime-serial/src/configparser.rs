@@ -454,7 +454,7 @@ pub extern "C" fn molt_configparser_new(defaults_bits: u64, interpolation_bits: 
                 unsafe {
                     if object_type_id(ptr) == TYPE_ID_DICT {
                         // The snapshot pins insertion-ordered key/value pairs through conversion.
-                        let Some(order) = (dict_snapshot(_py, ptr)) else {
+                        let Some(order) = dict_snapshot(_py, ptr) else {
                             return MoltObject::none().bits();
                         };
                         for pair in order.chunks(2) {

@@ -338,7 +338,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "fee00a3f9b4355e6521f2aad435178a1e3ca8cfa33022d873cb06affae911d26",
+  "authority_sha256": "3bbbc9917febe6ce3e69d5d6f992da615b06484b785663a796133860d20168a4",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -819,6 +819,9 @@
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_environment.py",
         "tests/tools/test_proof_supervisor_inventory.py",
+        "tests/tools/test_target_derived_toolchains.py",
+        "tests/tools/test_tool_identity_reuse.py",
+        "tests/tools/test_toolchain_capture.py",
         "tests/tools/test_win_job.py",
         "tests/tools/test_win_job_contract.py",
         "tests/tools/test_windows_process_api.py",
@@ -1323,7 +1326,6 @@
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_environment.py",
-        "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_windows_process_api.py",
         "tests/tools/test_scientific_stack_versions.py",
         "tests/cli/test_external_native_scipy_package_seal.py",
@@ -1348,7 +1350,6 @@
         "tests/tools/test_proof_queue_output_layout.py",
         "tests/tools/test_setup_project_inputs.py",
         "tests/tools/test_rust_toolchain_contract.py",
-        "tests/tools/test_tool_identity_reuse.py",
         "tests/tools/test_cargo_bindgen_toolchain.py",
         "tests/tools/test_proof_queue_execution_custody_p0.py",
         "tests/tools/test_proof_supervisor_generation.py"
@@ -1389,7 +1390,6 @@
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_environment.py",
-        "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_windows_process_api.py",
         "tests/tools/test_scientific_stack_versions.py",
         "tests/cli/test_external_native_scipy_package_seal.py",
@@ -1414,7 +1414,6 @@
         "tests/tools/test_proof_queue_output_layout.py",
         "tests/tools/test_setup_project_inputs.py",
         "tests/tools/test_rust_toolchain_contract.py",
-        "tests/tools/test_tool_identity_reuse.py",
         "tests/tools/test_cargo_bindgen_toolchain.py",
         "tests/tools/test_proof_queue_execution_custody_p0.py",
         "tests/tools/test_proof_supervisor_generation.py"
@@ -1455,7 +1454,6 @@
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_environment.py",
-        "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_windows_process_api.py",
         "tests/tools/test_scientific_stack_versions.py",
         "tests/cli/test_external_native_scipy_package_seal.py",
@@ -1480,7 +1478,6 @@
         "tests/tools/test_proof_queue_output_layout.py",
         "tests/tools/test_setup_project_inputs.py",
         "tests/tools/test_rust_toolchain_contract.py",
-        "tests/tools/test_tool_identity_reuse.py",
         "tests/tools/test_cargo_bindgen_toolchain.py",
         "tests/tools/test_proof_queue_execution_custody_p0.py",
         "tests/tools/test_proof_supervisor_generation.py"
@@ -1599,6 +1596,9 @@
       "cache_domain": "pytest",
       "cell": "windows-x86_64-py312-queue-portability",
       "dependencies": [],
+      "env": {
+        "MOLT_GUARD_PROFILE": "all"
+      },
       "family": "platform_portability",
       "id": "portability.cargo-link.windows",
       "resource_class": "python-tests",
@@ -4652,7 +4652,10 @@
         "tests/test_child_clock_custody.py",
         "tests/test_perf_calibration.py",
         "tests/test_exception_diagnostics.py",
-        "tests/tools/test_memory_guard_windows_sampling.py"
+        "tests/tools/test_memory_guard_windows_sampling.py",
+        "tests/tools/test_proof_supervisor_inventory.py",
+        "tests/tools/test_target_derived_toolchains.py",
+        "tests/tools/test_tool_identity_reuse.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-queue-portability",
@@ -4664,7 +4667,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 120,
+      "timeout_seconds": 1800,
       "toolchains": [
         "python",
         "uv",
@@ -4689,7 +4692,10 @@
         "tests/test_child_clock_custody.py",
         "tests/test_perf_calibration.py",
         "tests/test_exception_diagnostics.py",
-        "tests/tools/test_memory_guard_windows_sampling.py"
+        "tests/tools/test_memory_guard_windows_sampling.py",
+        "tests/tools/test_proof_supervisor_inventory.py",
+        "tests/tools/test_target_derived_toolchains.py",
+        "tests/tools/test_tool_identity_reuse.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-queue-portability",
@@ -4701,7 +4707,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 120,
+      "timeout_seconds": 1800,
       "toolchains": [
         "python",
         "uv",
@@ -4726,7 +4732,11 @@
         "tests/test_child_clock_custody.py",
         "tests/test_perf_calibration.py",
         "tests/test_exception_diagnostics.py",
-        "tests/tools/test_memory_guard_windows_sampling.py"
+        "tests/tools/test_memory_guard_windows_sampling.py",
+        "tests/tools/test_proof_supervisor_inventory.py",
+        "tests/tools/test_target_derived_toolchains.py",
+        "tests/tools/test_tool_identity_reuse.py",
+        "tests/tools/test_toolchain_capture.py"
       ],
       "cache_domain": "pytest",
       "cell": "windows-x86_64-py312-queue-portability",
@@ -4738,12 +4748,46 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 120,
+      "timeout_seconds": 1800,
       "toolchains": [
         "python",
         "uv",
         "rustc",
         "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--frozen",
+        "python",
+        "tools/run_candidate_runtime_costs.py"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_native_c_units": [
+        "target"
+      ],
+      "cell": "linux-x86_64-rust-native-release",
+      "dependencies": [],
+      "evidence_outputs": [
+        "proof-receipts/evidence/candidate-runtime-costs"
+      ],
+      "family": "runtime_candidate_costs",
+      "id": "runtime.cost.candidate",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "scheduled"
+      ],
+      "timeout_budget": "shipping",
+      "timeout_seconds": 9000,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "clang",
+        "ld.lld"
       ]
     }
   ],
@@ -4840,19 +4884,19 @@
         "linux-x86_64-py312-queue-portability": {
           "budget_seconds": 10800,
           "critical_path_seconds": 1800,
-          "headroom_seconds": 9000,
-          "projected_makespan_seconds": 1800,
+          "headroom_seconds": 8880,
+          "projected_makespan_seconds": 1920,
           "resource_capacity_floor_seconds": {
-            "python-tests": 1020
+            "python-tests": 1860
           }
         },
         "macos-arm64-py312-queue-portability": {
           "budget_seconds": 10800,
           "critical_path_seconds": 1800,
-          "headroom_seconds": 9000,
-          "projected_makespan_seconds": 1800,
+          "headroom_seconds": 8760,
+          "projected_makespan_seconds": 2040,
           "resource_capacity_floor_seconds": {
-            "python-tests": 1080
+            "python-tests": 1920
           }
         },
         "macos-arm64-py312-rust-native-dev": {
@@ -4867,10 +4911,10 @@
         "windows-x86_64-py312-queue-portability": {
           "budget_seconds": 10800,
           "critical_path_seconds": 1800,
-          "headroom_seconds": 9000,
-          "projected_makespan_seconds": 1800,
+          "headroom_seconds": 8760,
+          "projected_makespan_seconds": 2040,
           "resource_capacity_floor_seconds": {
-            "python-tests": 1080
+            "python-tests": 1920
           }
         }
       },
@@ -4995,6 +5039,15 @@
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 1200,
           "scheduled-suite": 1800
+        }
+      },
+      "runtime_candidate_costs": {
+        "budget_seconds": 10800,
+        "critical_path_seconds": 9000,
+        "headroom_seconds": 1800,
+        "projected_makespan_seconds": 9000,
+        "resource_capacity_floor_seconds": {
+          "compiler-build-resource": 9000
         }
       }
     }
@@ -6368,6 +6421,16 @@
       "python": "3.12",
       "runner": "windows-2022",
       "target": "host"
+    },
+    {
+      "arch": "x86_64",
+      "backend": "rust",
+      "id": "linux-x86_64-rust-native-release",
+      "os": "linux",
+      "profile": "release",
+      "python": "none",
+      "runner": "ubuntu-latest",
+      "target": "x86_64-unknown-linux-gnu"
     }
   ],
   "receipt_schema": "molt.proof-receipt.v4",
@@ -6460,6 +6523,17 @@
       ],
       "timeout_minutes": 90,
       "workflow": ".github/workflows/nightly.yml"
+    },
+    {
+      "description": "Controlled candidate-only numeric/list/shared-storage measurements; no comparative or release PASS.",
+      "job": "candidate-runtime-costs",
+      "name": "runtime_candidate_costs",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "scheduled"
+      ],
+      "timeout_minutes": 180,
+      "workflow": ".github/workflows/perf-gate.yml"
     }
   ],
   "schema": "molt.proof-plan-projection.v6",

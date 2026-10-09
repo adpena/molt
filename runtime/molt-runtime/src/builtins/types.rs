@@ -1293,7 +1293,7 @@ mod tests {
             assert!(!exception_pending(py), "receiver __hash__ must not run");
             assert_eq!(to_i64(obj_from_bits(hashed)), Some(expected));
 
-            let dict = unsafe { alloc_dict_with_pairs(py, &[first, function]) };
+            let dict = alloc_dict_with_pairs(py, &[first, function]);
             assert!(!dict.is_null());
             assert_eq!(unsafe { dict_get_in_place(py, dict, same) }, Some(function));
             assert_eq!(unsafe { dict_get_in_place(py, dict, different) }, None);

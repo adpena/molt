@@ -465,13 +465,11 @@ fn abc_collect_abstractmethods_frozenset(
     if let Some(dict_ptr) = maybe_ptr_from_bits(dict_bits) {
         unsafe {
             if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                let entries = unsafe {
-                    crate::object::ops_dict::dict_snapshot(
-                        _py,
-                        dict_ptr,
-                        crate::object::ops_dict::DictSnapshotKind::Entries,
-                    )
-                }
+                let entries = crate::object::ops_dict::dict_snapshot(
+                    _py,
+                    dict_ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                )
                 .ok_or_else(|| {
                     dec_ref_bits(_py, abstracts_bits);
                     MoltObject::none().bits()
@@ -1285,13 +1283,11 @@ fn protocol_collect_own_members(
     if let Some(dict_ptr) = maybe_ptr_from_bits(dict_bits) {
         unsafe {
             if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                let entries = unsafe {
-                    crate::object::ops_dict::dict_snapshot(
-                        _py,
-                        dict_ptr,
-                        crate::object::ops_dict::DictSnapshotKind::Entries,
-                    )
-                }
+                let entries = crate::object::ops_dict::dict_snapshot(
+                    _py,
+                    dict_ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                )
                 .ok_or_else(|| MoltObject::none().bits())?;
                 for pair in entries.chunks(2) {
                     if pair.len() < 2 {

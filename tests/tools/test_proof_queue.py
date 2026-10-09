@@ -3943,7 +3943,6 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
 def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    guarded_execution_authorities: GuardedExecutionAuthorities,
 ) -> None:
     repo = tmp_path / "minimal-cargo-link"
     _initialize_clean_git_repo(repo)
@@ -3992,7 +3991,6 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
         execution_path,
         ["cargo", "build", "--offline"],
         resource_family="rust",
-        authorities=guarded_execution_authorities,
     )
     elapsed = time.perf_counter() - started
 

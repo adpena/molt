@@ -811,7 +811,6 @@
   "tests/tools/test_startup_bench.py",
   "tests/tools/test_subagent_contract.py",
   "tests/tools/test_subprocess_guard_coverage.py",
-  "tests/tools/test_target_derived_toolchains.py",
   "tests/tools/test_throughput_env.py",
   "tests/tools/test_throughput_matrix.py",
   "tests/tools/test_throughput_measurement.py",

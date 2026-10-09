@@ -1204,18 +1204,27 @@ def test_github_checkout_custody_rejects_root_outside_runner_temp(
         dx.checkout_custody(repo_root, env)
 
 
+@pytest.mark.parametrize("key", ["MOLT_TARGET_ROOT", "MOLT_EXT_ROOT"])
+@pytest.mark.parametrize("symlinked", [False, True])
 def test_ephemeral_checkout_rejects_canonical_root_inside_source_tree(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, key: str, symlinked: bool
 ) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     runner_temp = tmp_path / "runner-temp"
     sha = "f" * 40
     env = _github_actions_custody_env(repo_root, runner_temp, sha=sha)
-    env["MOLT_TARGET_ROOT"] = str(repo_root / "target-root")
+    selected = repo_root
+    if symlinked:
+        selected = tmp_path / "repo-alias"
+        try:
+            selected.symlink_to(repo_root, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"directory symlinks are unavailable: {exc}")
+    env[key] = str(selected / "artifacts")
     monkeypatch.setattr(dx, "_git_checkout_head", lambda _root: sha)
 
-    with pytest.raises(dx.DxConfigError, match="cannot own MOLT_TARGET_ROOT"):
+    with pytest.raises(dx.DxConfigError, match=f"cannot own {key}"):
         RunContext(repo_root).canonical_env(env, create_dirs=False)
 
 

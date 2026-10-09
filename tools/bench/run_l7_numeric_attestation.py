@@ -365,14 +365,11 @@ def _normalize_affinity_mask(value: str) -> str:
         ) from exc
     if mask <= 0 or mask & (mask - 1):
         raise ValueError("affinity mask must select exactly one logical CPU")
-    if mask > sys.maxsize:
+    # The child uses usize / a native unsigned affinity mask. CPU availability
+    # is owned by _allowed_affinity_mask, not the count (or override) returned
+    # by os.cpu_count: a count is not a bound on sparse logical CPU IDs.
+    if mask.bit_length() > sys.maxsize.bit_length() + 1:
         raise ValueError("affinity mask exceeds the native pointer width")
-    logical_cpus = os.cpu_count()
-    if logical_cpus is not None and mask.bit_length() > logical_cpus:
-        raise ValueError(
-            f"affinity mask selects CPU {mask.bit_length() - 1}, but only "
-            f"{logical_cpus} logical CPUs are visible"
-        )
     return f"0x{mask:x}"
 
 

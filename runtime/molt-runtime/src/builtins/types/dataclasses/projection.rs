@@ -298,13 +298,11 @@ fn dataclasses_asdict_inner(
             }
             TYPE_ID_DICT => {
                 let mut pair_bits: Vec<u64> = Vec::new();
-                let Some(order) = (unsafe {
-                    crate::object::ops_dict::dict_snapshot(
-                        _py,
-                        value_ptr,
-                        crate::object::ops_dict::DictSnapshotKind::Entries,
-                    )
-                }) else {
+                let Some(order) = crate::object::ops_dict::dict_snapshot(
+                    _py,
+                    value_ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                ) else {
                     return MoltObject::none().bits();
                 };
                 for pair in order.chunks(2) {
@@ -438,13 +436,11 @@ fn dataclasses_astuple_inner(
             }
             TYPE_ID_DICT => {
                 let mut pair_bits: Vec<u64> = Vec::new();
-                let Some(order) = (unsafe {
-                    crate::object::ops_dict::dict_snapshot(
-                        _py,
-                        value_ptr,
-                        crate::object::ops_dict::DictSnapshotKind::Entries,
-                    )
-                }) else {
+                let Some(order) = crate::object::ops_dict::dict_snapshot(
+                    _py,
+                    value_ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                ) else {
                     return MoltObject::none().bits();
                 };
                 for pair in order.chunks(2) {

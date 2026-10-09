@@ -1141,6 +1141,9 @@ inputs = [
   "tests/tools/test_proof_queue.py",
   "tests/tools/test_proof_supervisor_environment.py",
   "tests/tools/test_proof_supervisor_inventory.py",
+  "tests/tools/test_target_derived_toolchains.py",
+  "tests/tools/test_tool_identity_reuse.py",
+  "tests/tools/test_toolchain_capture.py",
   "tests/tools/test_win_job.py",
   "tests/tools/test_win_job_contract.py",
   "tests/tools/test_windows_process_api.py",
@@ -1164,7 +1167,7 @@ tiers = ["pr", "main"]
 required = true
 # The macOS Rust cell serializes its workspace lint (suite budget) and runtime
 # gate (shipping budget) on one compiler-build resource; the Python cells keep
-# their own 600-second command envelopes inside this backstop.
+# their declared per-command envelopes inside this backstop.
 timeout_minutes = 180
 resource_class = "python-tests"
 dependencies = []
@@ -1437,7 +1440,7 @@ resource_class = "python-tests"
 timeout_seconds = 1800
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "-n", "auto", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_supervisor_generation.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "-n", "auto", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_supervisor_generation.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1449,7 +1452,7 @@ resource_class = "python-tests"
 timeout_seconds = 1800
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "-n", "auto", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_supervisor_generation.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "-n", "auto", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_supervisor_generation.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1461,7 +1464,7 @@ resource_class = "python-tests"
 timeout_seconds = 1800
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "-n", "auto", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_supervisor_generation.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "-n", "auto", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_supervisor_generation.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1503,6 +1506,8 @@ resource_class = "python-tests"
 timeout_seconds = 120
 cache_domain = "pytest"
 dependencies = []
+# Retain successful nested command costs while diagnosing the prior timeout.
+env = { MOLT_GUARD_PROFILE = "all" }
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
@@ -3739,10 +3744,11 @@ family = "platform_portability"
 cell = "linux-x86_64-py312-queue-portability"
 tiers = ["pr", "main"]
 resource_class = "python-tests"
-timeout_seconds = 120
+# Complete image-custody consumers retain their prior queue-family envelope.
+timeout_seconds = 1800
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_target_derived_toolchains.py", "tests/tools/test_tool_identity_reuse.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -3751,10 +3757,11 @@ family = "platform_portability"
 cell = "macos-arm64-py312-queue-portability"
 tiers = ["pr", "main"]
 resource_class = "python-tests"
-timeout_seconds = 120
+# Complete image-custody consumers retain their prior queue-family envelope.
+timeout_seconds = 1800
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_target_derived_toolchains.py", "tests/tools/test_tool_identity_reuse.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -3763,8 +3770,44 @@ family = "platform_portability"
 cell = "windows-x86_64-py312-queue-portability"
 tiers = ["pr", "main"]
 resource_class = "python-tests"
-timeout_seconds = 120
+# Complete image-custody consumers retain their prior queue-family envelope.
+timeout_seconds = 1800
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_target_derived_toolchains.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_toolchain_capture.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+
+
+[[matrix_cell]]
+id = "linux-x86_64-rust-native-release"
+runner = "ubuntu-latest"
+os = "linux"
+arch = "x86_64"
+python = "none"
+backend = "rust"
+target = "x86_64-unknown-linux-gnu"
+profile = "release"
+
+# Explicit workflow_dispatch mode only; no changed-path or scheduled allocation.
+[[scheduled_family]]
+name = "runtime_candidate_costs"
+description = "Controlled candidate-only numeric/list/shared-storage measurements; no comparative or release PASS."
+workflow = ".github/workflows/perf-gate.yml"
+job = "candidate-runtime-costs"
+tiers = ["scheduled"]
+timeout_minutes = 180
+resource_class = "compiler-build-resource"
+
+[[command]]
+id = "runtime.cost.candidate"
+cargo_native_c_units = ["target"]
+family = "runtime_candidate_costs"
+cell = "linux-x86_64-rust-native-release"
+tiers = ["scheduled"]
+resource_class = "compiler-build-resource"
+timeout_budget = "shipping"
+cache_domain = "cargo-workspace"
+dependencies = []
+evidence_outputs = ["proof-receipts/evidence/candidate-runtime-costs"]
+argv = ["uv", "run", "--frozen", "python", "tools/run_candidate_runtime_costs.py"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang", "ld.lld"]

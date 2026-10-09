@@ -3,6 +3,7 @@
 use super::*;
 use molt_cpython_abi::abi_types::{METH_O, METH_STATIC, METH_VARARGS};
 use molt_cpython_abi::api::{mapping, numbers as numeric, sequences, strings};
+use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use std::cell::RefCell;
 
 #[test]

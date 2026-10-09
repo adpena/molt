@@ -5375,10 +5375,10 @@ mod tests {
     use super::*;
     use crate::TYPE_ID_BYTEARRAY;
     use molt_cpython_abi::abi_types::{
-        PyBaseExceptionObject, PyExc_IndexError, PyExc_LookupError, PyExc_MemoryError,
-        PyExc_RuntimeError, PyExc_TypeError, PyExc_UnicodeDecodeError, PyExc_UnicodeEncodeError,
-        PyExc_ValueError, PyListObject, PyMethodDef, PyModuleDef_Base, PyModuleDef_Slot, PyObject,
-        PyTypeObject,
+        PyBaseExceptionObject, PyExc_AttributeError, PyExc_IndexError, PyExc_LookupError,
+        PyExc_MemoryError, PyExc_RuntimeError, PyExc_TypeError, PyExc_UnicodeDecodeError,
+        PyExc_UnicodeEncodeError, PyExc_ValueError, PyListObject, PyMethodDef, PyModuleDef_Base,
+        PyModuleDef_Slot, PyObject, PyTypeObject,
     };
     use molt_cpython_abi::api::refcount::OwnedPyObject;
     use std::cell::UnsafeCell;
