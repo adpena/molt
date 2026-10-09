@@ -530,14 +530,39 @@ def validate_manifest(
     actual_runtime_build_identity = _validated_runtime_build_identity(
         manifest.get("runtime_build_identity")
     )
-    if actual_runtime_build_identity != _validated_runtime_build_identity(
-        expected_runtime_build_identity
-    ):
+    expected = _validated_runtime_build_identity(expected_runtime_build_identity)
+    if actual_runtime_build_identity != expected:
+        differences = json_differences(
+            actual_runtime_build_identity.to_dict(), expected.to_dict()
+        )
         raise NightlyRuntimeBundleError(
-            "bundle runtime build identity does not match this job"
+            "bundle runtime build identity does not match this job; "
+            f"differing fields: {', '.join(differences)}"
         )
     _require_bundle_runtime_identity(actual_identity, actual_runtime_build_identity)
     return _validated_file_records(manifest.get("files"))
+
+
+def json_differences(
+    left: object, right: object, *, path: str = "$", limit: int = 12
+) -> list[str]:
+    """Paths where two JSON values differ, deepest first found, at most ``limit``."""
+    found: list[str] = []
+
+    def walk(a: object, b: object, at: str) -> None:
+        if len(found) >= limit or a == b:
+            return
+        if isinstance(a, dict) and isinstance(b, dict):
+            for key in sorted(set(a) | set(b), key=str):
+                walk(a.get(key), b.get(key), f"{at}.{key}")
+        elif isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
+            for index, (x, y) in enumerate(zip(a, b, strict=True)):
+                walk(x, y, f"{at}[{index}]")
+        else:
+            found.append(at)
+
+    walk(left, right, path)
+    return found
 
 
 def _copy_member_exact(
