@@ -377,22 +377,6 @@ pub(in crate::object) fn wtf8_codepoint_at(bytes: &[u8], idx: usize) -> Option<C
     wtf8_from_bytes(bytes).code_points().nth(idx)
 }
 
-#[allow(dead_code)]
-fn wtf8_codepoint_count_scan(bytes: &[u8]) -> i64 {
-    let mut idx = 0usize;
-    let mut count = 0i64;
-    while idx < bytes.len() {
-        let width = utf8_char_width(bytes[idx]);
-        if width == 0 {
-            idx = idx.saturating_add(1);
-        } else {
-            idx = idx.saturating_add(width);
-        }
-        count += 1;
-    }
-    count
-}
-
 pub(in crate::object) fn wtf8_has_surrogates(bytes: &[u8]) -> bool {
     wtf8_from_bytes(bytes).as_str().is_none()
 }
