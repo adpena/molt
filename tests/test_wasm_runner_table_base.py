@@ -873,6 +873,98 @@ def test_direct_split_runner_uses_runtime_export_signature_for_missing_wit(
     assert result.stdout == "ok"
 
 
+def test_direct_split_runner_passes_pointer_imports_with_their_exact_types(
+    tmp_path: Path,
+) -> None:
+    # The runner converts each runtime import by the runtime export's own
+    # type. These imports carry a pointer as an i64, so a u32 reading would
+    # turn the BigInt into a Number that an i64 parameter rejects.
+    runtime_path = _execution_wasm_from_wat(
+        tmp_path,
+        "molt_runtime_pointer_imports",
+        """
+        (module
+          (import "env" "memory" (memory 1))
+          (import "env" "__indirect_function_table" (table 1 funcref))
+          (func (export "molt_set_wasm_table_base") (param i64))
+          (func (export "molt_runtime_init") (result i64)
+            i64.const 0)
+          (func (export "molt_closure_load") (param i64 i64) (result i64)
+            local.get 0
+            i64.const 4096
+            i64.ne
+            if
+              unreachable
+            end
+            local.get 0
+            local.get 1
+            i64.add)
+          (func (export "molt_object_set_class") (param i64 i64) (result i64)
+            local.get 0
+            local.get 1
+            i64.add)
+        )
+        """,
+    )
+    app_path = _wasm_from_wat(
+        tmp_path,
+        "split_app_pointer_imports",
+        """
+        (module
+          (import "env" "memory" (memory 1))
+          (import "env" "__indirect_function_table" (table 1 funcref))
+          (import "molt_runtime" "runtime_init" (func $rt (result i64)))
+          (import "molt_runtime" "closure_load"
+            (func $closure_load (param i64 i64) (result i64)))
+          (import "molt_runtime" "object_set_class"
+            (func $set_class (param i64 i64) (result i64)))
+          (import "wasi_snapshot_preview1" "fd_write"
+            (func $fd_write (param i32 i32 i32 i32) (result i32)))
+          (data (i32.const 16) "\\40\\00\\00\\00\\02\\00\\00\\00")
+          (data (i32.const 64) "ok")
+          (func (export "molt_main")
+            call $rt
+            drop
+            i64.const 4096
+            i64.const 8
+            call $closure_load
+            i64.const 4104
+            i64.ne
+            if
+              unreachable
+            end
+            i64.const 4096
+            i64.const 32
+            call $set_class
+            i64.const 4128
+            i64.ne
+            if
+              unreachable
+            end
+            i32.const 1
+            i32.const 16
+            i32.const 1
+            i32.const 32
+            call $fd_write
+            drop)
+        )
+        """,
+    )
+
+    result = _run_wasm_test_process(
+        ["node", "wasm/run_wasm.js", str(_split_manifest(app_path, runtime_path))],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "NODE_NO_WARNINGS": "1",
+        },
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "ok"
+
+
 def test_direct_split_runner_coerces_call_indirect_table_ref_i64_args(
     tmp_path: Path,
 ) -> None:

@@ -148,14 +148,15 @@ Payload:
 ---
 
 ## 8. WASM host interface (db_query/db_exec)
-WASM builds must call the host via WIT intrinsics that mirror the IPC request
+WASM builds must call the host through the `db_query` and `db_exec` imports
+that `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` declares; they mirror the IPC request
 shape. The host is responsible for executing the query and streaming the
 response bytes back into the module.
 
-### 8.1 WIT signatures
+### 8.1 Import signatures
 ```
-db_query(ptr: molt-ptr, len: u64, out: molt-ptr, cancel_token: molt-object) -> s32
-db_exec(ptr: molt-ptr, len: u64, out: molt-ptr, cancel_token: molt-object) -> s32
+db_query(ptr: i32, len: i64, out: i32, cancel_token: i64) -> i32
+db_exec(ptr: i32, len: i64, out: i32, cancel_token: i64) -> i32
 ```
 - `ptr/len`: MsgPack-encoded request payload (same schema as section 2).
 - `out`: pointer to a `u64` where the host writes a stream handle.

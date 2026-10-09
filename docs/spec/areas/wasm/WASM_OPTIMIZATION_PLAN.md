@@ -17,7 +17,7 @@ instructions directly from Molt's IR (`SimpleIR` / `OpIR`). This is a significan
 architectural distinction from the native backend, which uses Cranelift's
 `ObjectModule`.
 
-The WASM host (`runtime/molt-wasm-host/src/main.rs`, ~4550 lines) runs on wasmtime 41.0.3 with WASI Preview 1 support. It provides 620+ host-imported intrinsic functions under the `molt_runtime` namespace, plus WASI syscalls and indirect call trampolines.
+The WASM host (`runtime/molt-wasm-host/src/main.rs`) runs on wasmtime, at the version `Cargo.lock` pins, with WASI Preview 1 support. It provides the intrinsic functions that the `[[import]]` rows of `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` declare under the `molt_runtime` namespace, plus WASI syscalls and indirect call trampolines.
 
 Key characteristics of the current implementation:
 - **Direct WASM emission**: Custom `WasmBackend` struct builds WASM modules section by section (types, imports, functions, code, data, tables, exports).
@@ -163,7 +163,7 @@ The host links against WASI Preview 1 (`wasi_snapshot_preview1`) and exposes 22 
 
 ### 2.3 WASI Preview 2/3 Migration Plan
 
-Wasmtime 41.0.3 uses WASI P1. WASI 0.2 (Preview 2) has been stable since January 2024.
+The host links WASI P1. WASI 0.2 (Preview 2) has been stable since January 2024.
 
 Research update, 2026-07-03: WASI 0.3.0 has shipped. The live WASI roadmap
 states that it was released on 2026-06-11, adds native async Component Model
@@ -589,7 +589,7 @@ Every operation that touches the Python object model goes through a host import 
 3. Host function execution.
 4. Native-to-WASM return trampoline.
 
-Measured overhead: approximately 50-100 ns per host call (empty function). With 620+ importable functions and typical programs making millions of calls, host call overhead dominates execution time.
+Measured overhead: approximately 50-100 ns per host call (empty function). With every runtime operation a host import and typical programs making millions of calls, host call overhead dominates execution time.
 
 ### 7.2 Optimization Strategies
 
@@ -681,14 +681,14 @@ WASM never builds) are absent by construction.
 
 ### 9.1 Current State
 
-Molt currently uses raw wasmtime imports via `Linker::func_wrap()`. The WIT definition at `wit/molt-runtime.wit` serves as documentation only; actual binding is manual. The current wasmtime version (41.0.3) predates stable Component Model support.
+Molt uses raw wasmtime imports via `Linker::func_wrap()`. `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` declares every import's name and type; no WIT file exists yet. `Cargo.lock` pins the wasmtime version.
 
 ### 9.2 Migration Plan (from spec 0400 Section 13)
 
 **Phase 1 (current)**: Raw imports, WASI P1. Complete.
 
-**Phase 2 (target: wasmtime 42+)**: Component Model migration.
-- Split `wit/molt-runtime.wit` into capability-scoped interfaces:
+**Phase 2**: Component Model migration.
+- Generate capability-scoped WIT interfaces from the WASM ABI manifest:
   - `molt:runtime/core` -- lifecycle, object model, arithmetic, type system
   - `molt:runtime/io` -- file, socket, process, stream operations
   - `molt:runtime/codec` -- JSON, MsgPack, CBOR, Arrow IPC serialization
@@ -745,7 +745,7 @@ Molt currently uses raw wasmtime imports via `Linker::func_wrap()`. The WIT defi
 
 11. **Arena allocation** for function-scoped temporaries.
 12. **Inline type checks and float arithmetic**.
-13. **Component Model migration** (wasmtime upgrade + WIT split).
+13. **Component Model migration** (WIT generated from the WASM ABI manifest).
 14. **SIMD for stdlib intrinsics** (bytes.find, list reductions).
 15. **Snapshot artifacts** for edge/worker deployment.
 
@@ -790,10 +790,10 @@ Results must be recorded in `bench/results/` and summarized through the generate
 
 ### Implementation Files
 - `runtime/molt-backend-wasm/src/wasm.rs` -- WASM code emitter facade
-- `runtime/molt-wasm-host/src/main.rs` -- Wasmtime host runner (4551 lines)
-- `runtime/molt-wasm-host/Cargo.toml` -- wasmtime 41.0.3, wasmtime-wasi 41.0.3
+- `runtime/molt-wasm-host/src/main.rs` -- Wasmtime host runner
+- `runtime/molt-wasm-host/Cargo.toml` -- wasmtime and wasmtime-wasi (versions pinned in `Cargo.lock`)
 - `tools/bench_wasm.py` -- WASM benchmark harness
-- `wit/molt-runtime.wit` -- WIT interface definition (622+ intrinsics)
+- `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` -- WASM import names and types
 
 ### External References
 - [WebAssembly 3.0 Standard](https://webassembly.org/news/2025-09-17-wasm-3.0/) -- Tail calls, exception handling, relaxed SIMD, memory64

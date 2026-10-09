@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "c87bc366b4719bd54ef39eb9fb4d3313b6653f4b5fec8957c60716ccb4705f07",
+  "authority_sha256": "08f1f89e3cd02c9a81f21c0e4ffc319df3fff04a8b61850a8a2b7dc7001b80a7",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2606,6 +2606,36 @@
         "cargo",
         "ld.lld",
         "wasm-ld"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_wasm_runner_table_base.py"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [],
+      "family": "wasm",
+      "id": "wasm.host.runner-fixtures",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv",
+        "node",
+        "wasm-tools"
       ]
     },
     {
@@ -6083,6 +6113,7 @@
         "projected_makespan_seconds": 9600,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 9600,
+          "python-tests": 150,
           "wasm-runtime": 450
         }
       }

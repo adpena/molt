@@ -1890,6 +1890,21 @@ env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-backend-build", "--target", "wasm", "--json"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld"]
 
+# The Node runner and loader bridge against synthetic WAT modules: table
+# bases, callable tables, split-runtime import conversion. Needs only Node
+# and wasm-tools, so it runs without the WASM builds.
+[[command]]
+id = "wasm.host.runner-fixtures"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 300
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "tests/test_wasm_runner_table_base.py"]
+toolchains = ["python", "uv", "node", "wasm-tools"]
+
 [[command]]
 id = "wasm.build.host"
 family = "wasm"

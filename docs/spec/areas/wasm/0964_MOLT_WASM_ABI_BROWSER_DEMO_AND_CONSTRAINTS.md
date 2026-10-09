@@ -35,13 +35,14 @@ No direct memory access, no object proxies, no dynamic symbol lookup.
 
 ---
 
-### 2.1 WIT contract and table conventions
-- The canonical ABI definition lives at `wit/molt-runtime.wit` and is the
-  source of truth for WASM intrinsics and host/runtime signatures.
+### 2.1 ABI contract and table conventions
+- The canonical ABI definition lives at
+  `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` and is the source of truth
+  for WASM import names and host/runtime signatures.
 - WASM outputs export `molt_memory`, `molt_table`, and `molt_call_indirect1`;
   the runtime imports them to drive poll and async control flow.
 - Function table index `0` is reserved as a sentinel (`no poll`), and
-  `molt_call_indirect1` dispatches a single `molt-object` argument to a table
+  `molt_call_indirect1` dispatches a single i64 object-bits argument to a table
   entry so the runtime can safely invoke poll functions.
 
 ---

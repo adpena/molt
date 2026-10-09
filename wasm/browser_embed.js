@@ -34,7 +34,6 @@ const {
   callRuntimeObjectArrayArgImport,
   callWithWasmSignature: callWithSignature,
   installWasmTagImports,
-  normalizeImportResult,
   normalizeValueForKind,
   parseWasmImports: parseMoltWasmImports,
   planReservedRuntimeDispatch,
@@ -766,7 +765,7 @@ const buildRuntimeImports = (appModule, runtimeInstance, manifest, browserAbi, o
             new DataView(memory.buffer).setBigUint64(outPtr, value, true);
           },
         });
-        return normalizeImportResult(bridgedResult, resultKind);
+        return normalizeValueForKind(bridgedResult, resultKind);
       }
       if (runtimeImportObjectArrayArgNames.has(entry.name) && appMemory) {
         const bridgedResult = callRuntimeObjectArrayArgImport({
@@ -780,9 +779,9 @@ const buildRuntimeImports = (appModule, runtimeInstance, manifest, browserAbi, o
           allocRuntimeTempBytes,
           freeRuntimeTempBytes,
         });
-        return normalizeImportResult(bridgedResult, resultKind);
+        return normalizeValueForKind(bridgedResult, resultKind);
       }
-      return normalizeImportResult(fn(...callArgs), resultKind);
+      return normalizeValueForKind(fn(...callArgs), resultKind);
     };
   }
   return imports;
