@@ -80,6 +80,7 @@ CANONICALIZATION_METRICS = frozenset(
 )
 STRUCTURAL_AUDIT_METRICS = frozenset(
     {
+        "build_failure_test_skips",
         "critical_hand_classifications",
         "debt_markers_total",
         "duplicate_authorities",
