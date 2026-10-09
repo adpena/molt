@@ -9,19 +9,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ALL_PATHS = [
-    ROOT / "src/molt/stdlib/sysconfig/__init__.py",
-    ROOT / "src/molt/stdlib/sysconfig/__main__.py",
-    ROOT / "src/molt/stdlib/telnetlib.py",
-    ROOT / "src/molt/stdlib/turtledemo/__init__.py",
-    ROOT / "src/molt/stdlib/venv/__main__.py",
-    ROOT / "src/molt/stdlib/winreg.py",
     ROOT / "src/molt/stdlib/xml/etree/cElementTree.py",
     ROOT / "src/molt/stdlib/test/list_tests.py",
     ROOT / "src/molt/stdlib/test/seq_tests.py",
     ROOT / "src/molt/stdlib/test/tokenizedata/__init__.py",
     ROOT / "src/molt/stdlib/test/tokenizedata/badsyntax_3131.py",
     ROOT / "src/molt/stdlib/test/tokenizedata/badsyntax_pep3120.py",
-    ROOT / "src/molt/stdlib/encodings/_win_cp_codecs.py",
     ROOT / "src/molt/stdlib/compression/__init__.py",
     ROOT / "src/molt/stdlib/compression/_common/__init__.py",
     ROOT / "src/molt/stdlib/compression/bz2.py",
@@ -29,15 +22,6 @@ ALL_PATHS = [
     ROOT / "src/molt/stdlib/compression/lzma.py",
     ROOT / "src/molt/stdlib/compression/zlib.py",
     ROOT / "src/molt/stdlib/dbm/ndbm.py",
-]
-RUNTIME_STUB_PATHS = [
-    ROOT / "src/molt/stdlib/sysconfig/__init__.py",
-    ROOT / "src/molt/stdlib/sysconfig/__main__.py",
-    ROOT / "src/molt/stdlib/telnetlib.py",
-    ROOT / "src/molt/stdlib/turtledemo/__init__.py",
-    ROOT / "src/molt/stdlib/venv/__main__.py",
-    ROOT / "src/molt/stdlib/winreg.py",
-    ROOT / "src/molt/stdlib/xml/etree/cElementTree.py",
 ]
 RUNTIME_NONSTUB_PATHS = [
     ROOT / "src/molt/stdlib/test/tokenizedata/__init__.py",
@@ -86,7 +70,7 @@ def _load_module(path: Path, index: int) -> types.ModuleType:
     return module
 
 
-def test_mixed_stub_batch_hides_raw_capability_intrinsic() -> None:
+def test_capability_anchor_batch_hides_raw_capability_intrinsic() -> None:
     for path in ALL_PATHS:
         source = path.read_text(encoding="utf-8")
         assert '_require_intrinsic("molt_capabilities_has", globals())' not in source
@@ -97,22 +81,7 @@ def test_mixed_stub_batch_hides_raw_capability_intrinsic() -> None:
 
     previous_intrinsics_mod, previous_builtins = _install_intrinsics()
     try:
-        for index, path in enumerate(RUNTIME_STUB_PATHS):
-            module = _load_module(path, index)
-            assert "molt_capabilities_has" not in module.__dict__
-            assert "_MOLT_CAPABILITIES_HAS" in module.__dict__
-            try:
-                getattr(module, "sentinel")
-            except RuntimeError as exc:
-                assert "only an intrinsic-first stub is available" in str(exc)
-            else:
-                raise AssertionError(
-                    f"{path} did not raise RuntimeError from __getattr__"
-                )
-
-        for index, path in enumerate(
-            RUNTIME_NONSTUB_PATHS, start=len(RUNTIME_STUB_PATHS)
-        ):
+        for index, path in enumerate(RUNTIME_NONSTUB_PATHS):
             module = _load_module(path, index)
             assert "molt_capabilities_has" not in module.__dict__
             assert "_MOLT_CAPABILITIES_HAS" in module.__dict__

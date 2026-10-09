@@ -773,6 +773,45 @@ def test_phantom_sync_test_fails_loud(tmp_path: Path):
         CGM.load_manifest(tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("outputs", "family", "error"),
+    [
+        ('["a"]', None, None),
+        ("[]", '"stub files"', None),
+        ("[]", None, "exactly one of a non-empty outputs list or an output_family"),
+        ('["a"]', '"stub files"', "exactly one of"),
+        ("[]", '"  "', "output_family must be a non-empty string"),
+    ],
+)
+def test_generator_declares_fixed_outputs_or_an_output_family(
+    tmp_path: Path, outputs: str, family: str | None, error: str | None
+) -> None:
+    """A row names the files it writes, or the dynamic family it owns, never
+    neither and never both; an unexplained empty outputs list is a lie."""
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text("", encoding="utf-8")
+    (tmp_path / "tools" / "generator_manifest.toml").write_text(
+        "schema_version = 1\n"
+        'generated_scan_roots = ["runtime"]\n'
+        "[[generator]]\n"
+        'tool = "tools/gen_x.py"\n'
+        f"outputs = {outputs}\n"
+        + ("" if family is None else f"output_family = {family}\n")
+        + 'source = "s"\n'
+        "check_mode = true\n"
+        'sync_test = "tests/test_x.py"\n'
+        "closed_domains = []\n"
+        "discovery_only = false\n",
+        encoding="utf-8",
+    )
+    if error is None:
+        CGM.load_manifest(tmp_path)
+        return
+    with pytest.raises(CGM.ManifestError, match=error):
+        CGM.load_manifest(tmp_path)
+
+
 def test_malformed_manifest_temp(tmp_path: Path):
     """Concrete fail-loud check via a temp manifest (the closed_domain owner does
     not declare the domain)."""

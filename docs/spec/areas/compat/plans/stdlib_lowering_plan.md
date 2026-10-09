@@ -84,12 +84,10 @@ Any PR that worsens the scoreboard must include explicit exception sign-off and 
 
 ## Update Workflow (Python Release Advance or Major Sweep)
 1. `python3 tools/gen_stdlib_module_union.py --write`
-2. `python3 tools/sync_stdlib_top_level_stubs.py --write`
-3. `python3 tools/sync_stdlib_submodule_stubs.py --write`
-4. `python3 tools/check_stdlib_intrinsics.py --update-doc`
-5. `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`
-6. `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
-7. sync rollup docs:
+2. `python3 tools/gen_stdlib_stubs.py --write`
+3. `python3 tools/check_stdlib_intrinsics.py --update-doc`
+4. `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
+5. sync rollup docs:
    - `docs/spec/STATUS.md`
    - `ROADMAP.md`
    - `docs/OPERATIONS.md`

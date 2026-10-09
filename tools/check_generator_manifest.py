@@ -163,6 +163,16 @@ def load_manifest(root: Path) -> Manifest:
             isinstance(o, str) for o in row["outputs"]
         ):
             raise ManifestError(f"{tool}: outputs must be a list of strings")
+        output_family = row.get("output_family")
+        if output_family is not None and (
+            not isinstance(output_family, str) or not output_family.strip()
+        ):
+            raise ManifestError(f"{tool}: output_family must be a non-empty string")
+        if bool(row["outputs"]) == (output_family is not None):
+            raise ManifestError(
+                f"{tool}: declare exactly one of a non-empty outputs list or an "
+                "output_family"
+            )
         toolchains = row.get("toolchains", [])
         if not isinstance(toolchains, list) or not all(
             isinstance(name, str) and name for name in toolchains
