@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "435469cf26a431f3640ad4e201656d7d0605df236fd8f83fd150c208d185b79c",
+  "authority_sha256": "3650dca6fc6a3e8cce754d2eedc55019ccc7ddf28281fa15dc92f859b891abf6",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -409,7 +409,6 @@
         "tools/wasm_*.py",
         "tests/test_wasm_*.py",
         "tests/cli/test_native_symbol_authority.py",
-        "tests/wasm_harness.py",
         "tests/wasm_linked_runner.py",
         "wasm/**",
         "examples/*.py"

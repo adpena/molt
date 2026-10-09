@@ -44,7 +44,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---|---|---|---:|
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2340 s | 1260 s | `repository-policy` | none | `docs-gates` needs none | 1 |
-| `wasm` | pr, main | yes | `github-job` | 160 min | 9600 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 18 |
+| `wasm` | pr, main | yes | `github-job` | 160 min | 9600 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 17 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 900 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 40 min | 2400 s per cell | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `native_integration` | pr, main | yes | `github-job` | 40 min | 2400 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 19 |

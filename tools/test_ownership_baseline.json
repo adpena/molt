@@ -145,7 +145,6 @@
   "tests/test_wasm_browser_gpu_host.py",
   "tests/test_wasm_build_policy_authority.py",
   "tests/test_wasm_determinism.py",
-  "tests/test_wasm_harness_data_end.py",
   "tests/test_wasm_importlib_package_bootstrap.py",
   "tests/test_wasm_linked_runner_node_flags.py",
   "tests/test_wasm_optimization.py",
