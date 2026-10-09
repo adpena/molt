@@ -12,6 +12,8 @@ Tests verify:
 import json
 import time
 
+import pytest
+
 from tests.process_guard_common import run_guarded_test_process
 
 # Tiny valid 2x2 PNG (base64-encoded) for minimal-cost test requests.
@@ -292,13 +294,13 @@ def test_batch_endpoint():
     stdout = result.stdout.strip()
     lines = stdout.rsplit("\n", 1)
     if len(lines) != 2:
-        return  # Network failure, skip
+        pytest.skip(f"live worker unreachable at {ENDPOINT}")
     body_str, status_str = lines
     try:
         status = int(status_str)
         body = json.loads(body_str)
     except (ValueError, json.JSONDecodeError):
-        return  # Parse failure, skip
+        pytest.fail(f"batch endpoint returned an unparsable reply: {stdout[:200]!r}")
 
     if status == 200:
         assert "results" in body, f"Batch response missing 'results': {body}"
