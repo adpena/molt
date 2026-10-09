@@ -26,6 +26,7 @@ from molt import python_file_node_custody as files
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
 from tests.python_environment_test_support import runtime_identity_manifest
+from tests.process_guard_common import install_module_view
 
 
 _COMMANDS = CommandExecutor.for_file(__file__)
@@ -810,7 +811,7 @@ def test_tree_membership_is_closed_once_by_the_final_fence(tmp_path, monkeypatch
         scanned.append(Path(path))
         return scandir(path)
 
-    monkeypatch.setattr(files.os, "scandir", scan)
+    install_module_view(monkeypatch, "os", os, files, scandir=scan)
     context = files.PythonFileCaptureContext()
     pool = files._FileNodePool(capture_context=context)
     bind_many = pool.bind_many
@@ -1162,7 +1163,7 @@ def test_selected_tree_batch_fences_earlier_files_and_shares_enumeration(
             first.write_bytes(b"other")
         return identity(path, **kw)
 
-    monkeypatch.setattr(files.os, "scandir", scan)
+    install_module_view(monkeypatch, "os", os, files, scandir=scan)
     monkeypatch.setattr(files, "stable_regular_file_identity", capture)
 
     def verify():

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import tools.compile_governor as compile_governor
+from tests.process_guard_common import install_module_view
 
 
 def test_compile_governor_authority_is_not_duplicated_in_runtime_async() -> None:
@@ -192,7 +193,7 @@ def test_governor_default_target_matches_cli_and_daemon_with_artifact_root(
 
 
 def test_compile_slot_defaults_use_resource_pressure_plan(monkeypatch) -> None:
-    monkeypatch.setattr(compile_governor.os, "cpu_count", lambda: 16)
+    install_module_view(monkeypatch, "os", os, compile_governor, cpu_count=lambda: 16)
     env = {
         "MOLT_COMPILE_GUARD_MEMORY_TOTAL_GB": "64",
         "MOLT_COMPILE_GUARD_MEMORY_AVAILABLE_GB": "8",

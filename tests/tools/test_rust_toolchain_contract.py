@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+import platform
 
 import pytest
 from tests.process_guard_common import install_module_view
@@ -492,10 +493,14 @@ def test_rust_setup_rejects_unadmitted_python_before_repository_import(
     (tmp_path / ".python-version").write_text(
         "3.12\n" if failure == "pin" else "3.12.15\n", encoding="utf-8"
     )
-    monkeypatch.setattr(
-        provisioner.platform,
-        "python_implementation",
-        lambda: "PyPy" if failure == "implementation" else "CPython",
+    install_module_view(
+        monkeypatch,
+        "platform",
+        platform,
+        provisioner,
+        python_implementation=lambda: (
+            "PyPy" if failure == "implementation" else "CPython"
+        ),
     )
     monkeypatch.setattr(
         provisioner.platform,

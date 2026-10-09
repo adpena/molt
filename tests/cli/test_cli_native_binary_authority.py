@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 import os
 from pathlib import Path
+import platform
+import sys
 
 import pytest
 import molt.cli as cli
@@ -14,6 +16,7 @@ from tests.native_artifact_fixtures import (
     macho_header,
     fat_macho,
 )
+from tests.process_guard_common import install_module_view
 
 _NATIVE_BINARY_NAMES = (
     "_NativeBinaryInvalid",
@@ -143,8 +146,10 @@ def test_expected_binary_format_for_explicit_targets() -> None:
 
 
 def test_smoke_probe_requires_exact_host_shape_and_does_not_assume_rosetta(monkeypatch):
-    monkeypatch.setattr(native_link_plan.sys, "platform", "darwin")
-    monkeypatch.setattr(native_link_plan.platform, "machine", lambda: "arm64")
+    install_module_view(monkeypatch, "sys", sys, native_link_plan, platform="darwin")
+    install_module_view(
+        monkeypatch, "platform", platform, native_link_plan, machine=lambda: "arm64"
+    )
     assert native_binary._target_is_host_executable("aarch64-apple-darwin")
     assert not native_binary._target_is_host_executable("x86_64-apple-darwin")
     assert not native_binary._target_is_host_executable("aarch64_32-apple-darwin")
@@ -155,8 +160,10 @@ def test_darwin_post_link_hook_uses_same_bounded_header_authority(
 ):
     binary = tmp_path / "image"
     binary.write_bytes(macho_header())
-    monkeypatch.setattr(native_link_plan.sys, "platform", "darwin")
-    monkeypatch.setattr(native_link_plan.platform, "machine", lambda: "x86_64")
+    install_module_view(monkeypatch, "sys", sys, native_link_plan, platform="darwin")
+    install_module_view(
+        monkeypatch, "platform", platform, native_link_plan, machine=lambda: "x86_64"
+    )
     monkeypatch.setattr(Path, "read_bytes", lambda path: pytest.fail("whole-file read"))
     assert native_binary._darwin_binary_magic_error(binary) is None
     binary.write_bytes(macho_header(cpu=0x0100000C))

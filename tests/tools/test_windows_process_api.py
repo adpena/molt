@@ -9,11 +9,12 @@ import pytest
 
 from tools import windows_process_api
 from tools.proof_queue_pkg import custody
+from tests.process_guard_common import install_module_view
 
 
 def test_process_query_api_rejects_non_windows_before_loading(monkeypatch) -> None:
     windows_process_api.process_query_api.cache_clear()
-    monkeypatch.setattr(windows_process_api.sys, "platform", "linux")
+    install_module_view(monkeypatch, "sys", sys, windows_process_api, platform="linux")
     with pytest.raises(OSError, match="require Windows"):
         windows_process_api.process_query_api()
 

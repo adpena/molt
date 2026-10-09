@@ -34,6 +34,7 @@ from tools.proof_queue_pkg import (
     supervisor_custody,
     state,
 )
+from tests.process_guard_common import install_module_view
 
 
 pytestmark = pytest.mark.usefixtures("cargo_output_implementation_source")
@@ -133,7 +134,7 @@ def test_actual_supervisor_provisioning_checks_target_before_launch(
 ):
     target = tmp_path / ("long-supervisor-output-" * 10)
     calls = []
-    monkeypatch.setattr(layout.sys, "platform", "win32")
+    install_module_view(monkeypatch, "sys", sys, layout, platform="win32")
     monkeypatch.setattr(
         supervisor_custody.command_identity,
         "_run_captured",

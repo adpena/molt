@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+import platform
 
 import pytest
 
@@ -1296,7 +1297,9 @@ def test_update_plan_bootstraps_missing_cargo_tool_helpers(
 def test_llvm_backend_advice_names_exact_prefix_and_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Windows")
+    install_module_view(
+        monkeypatch, "platform", platform, SETUP_READINESS, system=lambda: "Windows"
+    )
 
     advice = SETUP_READINESS._llvm_backend_advice(22)
 
@@ -1309,7 +1312,9 @@ def test_llvm_backend_advice_names_exact_prefix_and_config(
 def test_llvm_report_distinguishes_windows_clang_without_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Windows")
+    install_module_view(
+        monkeypatch, "platform", platform, SETUP_READINESS, system=lambda: "Windows"
+    )
     monkeypatch.setattr(
         SETUP_READINESS,
         "_required_llvm_backend_pin",
@@ -1390,7 +1395,9 @@ def test_llvm_report_distinguishes_windows_clang_without_config(
 def test_windows_msvc_env_reports_inactive_dev_shell(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Windows")
+    install_module_view(
+        monkeypatch, "platform", platform, SETUP_READINESS, system=lambda: "Windows"
+    )
     monkeypatch.setattr(
         SETUP_READINESS,
         "_windows_vsdevcmd_path",
@@ -1457,7 +1464,9 @@ def test_windows_vsdevcmd_advice_uses_shared_installation_selection(
         selected.append(component)
         return installation
 
-    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Windows")
+    install_module_view(
+        monkeypatch, "platform", platform, SETUP_READINESS, system=lambda: "Windows"
+    )
     monkeypatch.setattr(platform_toolchain, "visual_studio_installation", discover)
     assert SETUP_READINESS._windows_vsdevcmd_path() == script
     assert selected == ["Microsoft.VisualStudio.Component.VC.Tools.x86.x64"]

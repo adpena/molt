@@ -5,18 +5,20 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
 from molt.cli import source_build_environment as authority
 from molt.cli import source_build_environment_schema as authority_schema
 from tests.python_environment_test_support import runtime_identity_manifest
+from tests.process_guard_common import install_module_view
 
 
 def test_recipe_captures_selected_base_with_isolated_probe(monkeypatch, tmp_path):
     base = tmp_path / "base-python"
     base.write_bytes(b"synthetic; never executed")
-    monkeypatch.setattr(authority.sys, "_base_executable", str(base))
+    install_module_view(monkeypatch, "sys", sys, authority, _base_executable=str(base))
     monkeypatch.setenv("PYTHONHOME", "unowned-home")
     monkeypatch.setenv("PYTHONPATH", "unowned-imports")
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "0")

@@ -11,6 +11,7 @@ import pytest
 from molt.cli.python_source_closure import local_python_import_closure
 from molt.cli import python_source_closure as graph
 from molt.cli.python_import_resolution import PythonImportPolicy
+from tests.process_guard_common import install_module_view
 
 
 pytestmark = pytest.mark.usefixtures("isolated_molt_cache")
@@ -1498,7 +1499,7 @@ def test_declared_source_domain_bounds_inventory_and_qualified_tool_aliases(
         assert not Path(path).is_relative_to(tmp_path / "tmp")
         return real_scandir(path)
 
-    monkeypatch.setattr(resolution.os, "scandir", admitted_scandir)
+    install_module_view(monkeypatch, "os", os, resolution, scandir=admitted_scandir)
     before = local_python_import_closure(tmp_path, (seed,))
     assert set(before.paths) == {seed, helper, initializer, leaf, manifest}
     assert before.topology_digest

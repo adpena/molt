@@ -10,6 +10,7 @@ import pytest
 from molt import temporary_artifacts as scratch
 from molt import file_locks
 from molt.exact_json import canonical_json_sha256, read_exact, write_exact
+from tests.process_guard_common import install_module_view
 
 
 def _lease(root: Path, number: int = 1):
@@ -829,8 +830,12 @@ def test_terminal_publication_requires_actual_live_parent_lock(
         elif invalidity == "closed":
             handle.file.close()
         elif invalidity == "wrong-process":
-            monkeypatch.setattr(
-                file_locks.os, "getpid", lambda: handle.owner_process_id + 1
+            install_module_view(
+                monkeypatch,
+                "os",
+                os,
+                file_locks,
+                getpid=lambda: handle.owner_process_id + 1,
             )
         else:
             original_key = handle.registry_key
