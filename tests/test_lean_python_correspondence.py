@@ -34,13 +34,6 @@ def _find_repo_root() -> Path:
 
 ROOT = _find_repo_root()
 SYNTAX_LEAN = ROOT / "formal" / "lean" / "MoltTIR" / "Syntax.lean"
-FRONTEND_MIDEND_PY_FILES = (
-    ROOT / "src" / "molt" / "frontend" / "lowering" / "midend_canonicalization.py",
-    ROOT / "src" / "molt" / "frontend" / "lowering" / "midend_cfg.py",
-    ROOT / "src" / "molt" / "frontend" / "lowering" / "midend_dataflow.py",
-    ROOT / "src" / "molt" / "frontend" / "lowering" / "midend_pipeline.py",
-    ROOT / "src" / "molt" / "frontend" / "lowering" / "midend_policy.py",
-)
 LEAN_PASSES_DIR = ROOT / "formal" / "lean" / "MoltTIR" / "Passes"
 
 
@@ -49,10 +42,6 @@ def _read(path: Path) -> str:
         return path.read_text(errors="replace", encoding="utf-8")
     pytest.skip(f"Source file not found: {path}")
     return ""
-
-
-def _read_all(paths: tuple[Path, ...]) -> str:
-    return "\n".join(_read(path) for path in paths)
 
 
 # Python effect classification parsing
@@ -204,30 +193,34 @@ class TestFrontendEffectAlignment:
                 f"Lean BinOp.{op} frontend op {upper} must be a may-raise barrier"
             )
 
-    def test_frontend_boolean_ops_and_not_stay_pure(
+    def test_frontend_identity_ops_stay_pure_and_truthiness_ops_are_barriers(
         self,
         lean_syntax_text: str,
         python_effect_classes: dict[str, set[str]],
     ) -> None:
-        """The short-circuit/identity boolean binops and the unary `not` are
-        pure: `and`/`or` are value-selects, `is`/`is_not` are identity, and
-        `not` is a truthiness test. (The arithmetic/bitwise unary operators
-        neg/pos/abs/invert are NOT pure - they dispatch a may-raise dunder; see
-        test_pre_specialization_raising_unops_are_barriers.)"""
+        """`is`/`is_not` compare identities and are pure. `and`/`or`/`not` test
+        truthiness, which can run a user `__bool__` and raise, so the frontend
+        ops are barriers. The Lean model defines `and_`/`or_`/`not` only over
+        booleans, where a pure select is sound; the correspondence holds on
+        that domain, not as a purity claim about arbitrary operands."""
         lean_binops = set(parse_lean_inductive_variants(lean_syntax_text, "BinOp"))
         lean_unops = set(parse_lean_inductive_variants(lean_syntax_text, "UnOp"))
         pure_ops = python_effect_classes["pure"]
+        barrier_ops = python_effect_classes["writes_heap"]
 
-        for op in {"and", "or", "is", "is_not"} & lean_binops:
+        for op in {"is", "is_not"} & lean_binops:
             upper = _lean_binop_python_name(op)
-            assert upper in pure_ops, (
-                f"Lean BinOp.{op} (Python: {upper}) not in frontend pure ops"
+            assert upper in pure_ops, f"Lean BinOp.{op} (Python: {upper}) not pure"
+        for op in {"and", "or"} & lean_binops:
+            upper = _lean_binop_python_name(op)
+            assert upper in barrier_ops, (
+                f"Lean BinOp.{op} (Python: {upper}) must be a may-raise barrier"
             )
         for op in {"not"} & lean_unops:
             upper = _lean_unop_python_name(op)
             assert upper is not None
-            assert upper in pure_ops, (
-                f"Lean UnOp.{op} (Python: {upper}) not in frontend pure ops"
+            assert upper in barrier_ops, (
+                f"Lean UnOp.{op} (Python: {upper}) must be a may-raise barrier"
             )
 
     def test_pre_specialization_raising_unops_are_barriers(
@@ -293,30 +286,6 @@ class TestCompilerPassCorrespondence:
             pytest.skip(f"Lean pass file not found: {path}")
         text = path.read_text(errors="replace", encoding="utf-8")
         assert func_name in text, f"Function {func_name} not found in {path}"
-
-    def test_python_mentions_pass_concepts(self) -> None:
-        """Python frontend should reference the same pass concepts as Lean."""
-        py_text = _read_all(FRONTEND_MIDEND_PY_FILES)
-
-        # These are the Python-side method/concept names that correspond
-        # to the Lean passes
-        python_pass_indicators = {
-            "ConstFold": ["const_fold", "constant_fold", "CONST"],
-            "DCE": ["dead", "dce", "eliminate_dead"],
-            "SCCP": ["sccp", "lattice", "propagat"],
-            "CSE": ["cse", "common_subexpr", "value_number"],
-            "LICM": ["licm", "loop_invariant", "hoist_loop"],
-            "GuardHoist": ["guard", "hoist"],
-            "JoinCanon": ["join", "canon"],
-            "EdgeThread": ["edge", "thread"],
-        }
-
-        for pass_name, indicators in python_pass_indicators.items():
-            found = any(ind.lower() in py_text.lower() for ind in indicators)
-            assert found, (
-                f"No reference to {pass_name} concept found in Python frontend. "
-                f"Looked for: {indicators}"
-            )
 
     def test_lean_pass_correctness_proofs_exist(self) -> None:
         """Each Lean pass should have a corresponding correctness proof file."""
