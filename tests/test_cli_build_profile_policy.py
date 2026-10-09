@@ -81,6 +81,7 @@ def test_public_runtime_profile_request_preserves_target_policy(
         monkeypatch.delenv(name, raising=False)
     prepared, error = cli_build_inputs._prepare_build_config(
         project_root=tmp_path,
+        codegen=CodegenSelection(),
         warnings=[],
         json_output=False,
         target=target,
@@ -126,6 +127,7 @@ def test_explicit_runtime_profile_survives_public_selection(
             monkeypatch.setenv(name, value)
     prepared, error = cli_build_inputs._prepare_build_config(
         project_root=tmp_path,
+        codegen=CodegenSelection(),
         warnings=[],
         json_output=False,
         target=target,
@@ -150,6 +152,7 @@ def test_invalid_public_runtime_profile_is_rejected_for_every_target(
     monkeypatch.setenv("MOLT_RELEASE_CARGO_PROFILE", "bad profile")
     prepared, error = cli_build_inputs._prepare_build_config(
         project_root=tmp_path,
+        codegen=CodegenSelection(),
         warnings=[],
         json_output=False,
         target=target,

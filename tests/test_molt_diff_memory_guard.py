@@ -414,7 +414,7 @@ def test_diff_default_jobs_use_guard_budget_under_memory_pressure(
 
 
 def test_diff_jobs_fit_the_tree_budget_of_the_guard_that_wraps_the_suite(
-    monkeypatch,
+    monkeypatch, generous_host_memory
 ) -> None:
     # HF-105: a guard whose tree budget was 37.7 GB wrapped a differential run
     # that sized its parallelism from the global budget; the guard killed the
@@ -437,11 +437,13 @@ def test_diff_jobs_fit_the_tree_budget_of_the_guard_that_wraps_the_suite(
     jobs = module._default_jobs()
     per_job = module._memory_guard_scheduler_per_job_gb(config)
 
-    assert outer.max_total_rss_gb == pytest.approx(37.7)
-    assert config.max_tree_gb == pytest.approx(outer.max_total_rss_gb)
-    assert per_job == pytest.approx(3.5)  # 63 GB global over 18 CPUs
-    assert jobs * per_job <= outer.max_total_rss_gb
-    assert jobs == 10  # the global division admitted 18 (63 GB) jobs
+    tree = outer.max_total_rss_gb
+    assert tree == pytest.approx(37.7)
+    assert config.max_tree_gb == pytest.approx(tree)
+    # The most jobs whose per-job budgets fit the tree, and fewer than the
+    # global division admitted, which is what overran the tree.
+    assert jobs * per_job <= tree < (jobs + 1) * per_job
+    assert int(config.global_gb // per_job) > jobs
 
 
 def test_diff_memory_guard_inherits_shared_parent_overrides(monkeypatch) -> None:
