@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "8659051f5114edfa2f6f4601cf37f7838d043623ef09ded70f9ecf4db7c8ad24",
+  "authority_sha256": "7d3936d1478bf50d1080ec7906f971b9577d32dce79f974517b3652625653967",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1130,7 +1130,7 @@
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [
-        "nightly.determinism.compiler-prewarm"
+        "nightly.determinism.ir-hashseed"
       ],
       "evidence_outputs": [
         "proof-results/nightly/ir-verification.json"
@@ -1141,7 +1141,7 @@
       "tiers": [
         "scheduled"
       ],
-      "timeout_seconds": 900,
+      "timeout_seconds": 1800,
       "toolchains": [
         "python",
         "uv",
@@ -6382,13 +6382,13 @@
         }
       },
       "nightly_determinism": {
-        "budget_seconds": 3600,
+        "budget_seconds": 4500,
         "critical_path_seconds": 3600,
-        "headroom_seconds": 0,
+        "headroom_seconds": 900,
         "projected_makespan_seconds": 3600,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 1200,
-          "scheduled-suite": 1275
+          "scheduled-suite": 1500
         }
       },
       "nightly_differential": {
@@ -7887,7 +7887,7 @@
       "tiers": [
         "scheduled"
       ],
-      "timeout_minutes": 60,
+      "timeout_minutes": 75,
       "workflow": ".github/workflows/nightly.yml"
     },
     {

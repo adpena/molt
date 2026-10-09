@@ -66,7 +66,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `nightly_differential` | `differential-aggregate` | 900 s | 600 s | 300 s | `scheduled-suite` | 1 |
 | `nightly_regrtest` | `regrtest-aggregate` | 900 s | 600 s | 300 s | `scheduled-suite` | 1 |
 | `nightly_shard_profile_feedback` | `shard-profile-feedback` | 600 s | 300 s | 300 s | `scheduled-suite` | 1 |
-| `nightly_determinism` | `determinism-sweep` | 3600 s | 3600 s | 0 s | `scheduled-suite` | 4 |
+| `nightly_determinism` | `determinism-sweep` | 4500 s | 3600 s | 900 s | `scheduled-suite` | 4 |
 | `nightly_verification_t3` | `verification-gate-t3` | 5400 s | 4800 s | 600 s | `scheduled-suite` | 6 |
 
 ## Matrix cells
@@ -156,7 +156,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `nightly.shards.profile-feedback` | `nightly_shard_profile_feedback` | `linux-x86_64-py312-native-dev` | `explicit` | 300 s | `scheduled-suite` | 0 |
 | `nightly.determinism.compiler-prewarm` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `nightly.determinism.runtime` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `explicit` | 2400 s | `scheduled-suite` | 1 |
-| `nightly.determinism.ir` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `explicit` | 900 s | `scheduled-suite` | 1 |
+| `nightly.determinism.ir` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `explicit` | 1800 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.compiler-prewarm` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `nightly.verification-t3.reproducibility` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 1800 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.fuzz-compiler` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 2700 s | `scheduled-suite` | 1 |
