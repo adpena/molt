@@ -615,9 +615,7 @@ pub use crate::builtins::functions_textwrap::*;
 pub use crate::builtins::functools::*;
 pub use crate::builtins::inspect::*;
 pub use crate::builtins::io::*;
-pub(crate) use crate::builtins::io::{
-    close_payload, file_handle_enter, file_handle_exit, path_from_bits,
-};
+pub(crate) use crate::builtins::io::{file_handle_enter, file_handle_exit, path_from_bits};
 #[cfg(not(feature = "stdlib_itertools"))]
 pub use crate::builtins::itertools::*;
 pub use crate::builtins::json::*;
