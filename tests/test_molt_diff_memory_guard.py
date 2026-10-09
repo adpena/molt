@@ -409,6 +409,10 @@ def test_diff_default_jobs_use_guard_budget_under_memory_pressure(
 
 def test_diff_memory_guard_inherits_shared_parent_overrides(monkeypatch) -> None:
     module = _load_diff_module()
+    # The guard lowers every limit to the host's available memory; a large
+    # host keeps these overrides from meeting that floor on a small runner.
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "96")
     monkeypatch.delenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", raising=False)
@@ -428,6 +432,10 @@ def test_diff_memory_guard_inherits_shared_parent_overrides(monkeypatch) -> None
 
 def test_diff_memory_guard_family_overrides_parent_controls(monkeypatch) -> None:
     module = _load_diff_module()
+    # The guard lowers every limit to the host's available memory; a large
+    # host keeps these overrides from meeting that floor on a small runner.
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "96")
     monkeypatch.setenv("MOLT_MAX_PROCESS_RSS_GB", "7")
     monkeypatch.setenv("MOLT_MAX_TOTAL_RSS_GB", "8")
     monkeypatch.setenv("MOLT_MAX_GLOBAL_RSS_GB", "9")
