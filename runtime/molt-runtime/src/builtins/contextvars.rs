@@ -8,7 +8,8 @@ mod native;
 mod tests;
 pub(crate) mod trie;
 use crate::object::builders::PtrDropGuard;
-use crate::object::{ObjectShapeId, TYPE_ID_OBJECT, object_shape_id, object_type_id};
+use crate::object::type_ids::TYPE_ID_OBJECT;
+use crate::object::{ObjectShapeId, object_shape_id, object_type_id};
 use crate::{
     MoltObject, PyToken, dec_ref_bits, exception_pending, inc_ref_bits, obj_from_bits,
     raise_exception,

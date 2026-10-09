@@ -66,6 +66,122 @@ const PY_TP_NEW: c_int = 65;
 const PY_TP_REPR: c_int = 66;
 const PY_NB_ADD: c_int = 7;
 
+#[test]
+fn fromspec_relative_members_are_normalized_before_descriptor_dispatch() {
+    use molt_cpython_abi::api::{errors, numbers, object, refcount, strings, typeobj};
+    install_hooks();
+    let mut declarations = [
+        PyMemberDef {
+            name: c"number".as_ptr(),
+            type_: 1, // T_INT
+            offset: 0,
+            flags: Py_RELATIVE_OFFSET,
+            doc: ptr::null(),
+        },
+        PyMemberDef {
+            name: c"inline_text".as_ptr(),
+            type_: 13, // T_STRING_INPLACE
+            offset: 8,
+            flags: Py_RELATIVE_OFFSET | 1, // READONLY survives normalization.
+            doc: ptr::null(),
+        },
+        unsafe { std::mem::zeroed() },
+    ];
+    let mut slots = [
+        PyType_Slot {
+            slot: 72, // Py_tp_members
+            pfunc: declarations.as_mut_ptr().cast(),
+        },
+        PyType_Slot {
+            slot: 0,
+            pfunc: ptr::null_mut(),
+        },
+    ];
+    let mut spec = PyType_Spec {
+        name: c"molt.RelativeMembers".as_ptr(),
+        basicsize: -32,
+        itemsize: 0,
+        flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_BASETYPE),
+        slots: slots.as_mut_ptr(),
+    };
+    unsafe {
+        let owner = refcount::OwnedPyObject::from_owned(typeobj::PyType_FromSpec(&raw mut spec));
+        assert!(
+            !owner.as_ptr().is_null(),
+            "{:?}",
+            support::take_current_error_text()
+        );
+        let class = owner.as_ptr().cast::<PyTypeObject>();
+        let members = (*class).tp_members;
+        assert!(!members.is_null());
+        assert_ne!(members, declarations.as_mut_ptr());
+        assert_eq!((*members).flags, 0);
+        assert_eq!((*members.add(1)).flags, 1);
+        let number_offset = (*members).offset;
+        let text_offset = (*members.add(1)).offset;
+        assert!(number_offset >= std::mem::size_of::<PyObject>() as isize);
+        assert_eq!(text_offset - number_offset, 8);
+        assert!((*class).tp_basicsize >= number_offset + 32);
+        assert_eq!(declarations[0].flags, Py_RELATIVE_OFFSET);
+        assert_eq!(declarations[0].offset, 0);
+        assert_eq!(declarations[1].flags, Py_RELATIVE_OFFSET | 1);
+        assert_eq!(declarations[1].offset, 8);
+
+        let instance = refcount::OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(class, 0));
+        assert!(!instance.as_ptr().is_null());
+        let data = instance.as_ptr().cast::<u8>();
+        let text = b"inline value\0";
+        ptr::copy_nonoverlapping(text.as_ptr(), data.offset(text_offset), text.len());
+        let value = refcount::OwnedPyObject::from_owned(numbers::PyLong_FromLong(137));
+        assert!(!value.as_ptr().is_null());
+        assert_eq!(
+            object::PyObject_SetAttrString(instance.as_ptr(), c"number".as_ptr(), value.as_ptr()),
+            0
+        );
+        assert_eq!(
+            ptr::read_unaligned(data.offset(number_offset).cast::<c_int>()),
+            137
+        );
+        let number = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+            instance.as_ptr(),
+            c"number".as_ptr(),
+        ));
+        assert!(!number.as_ptr().is_null());
+        assert_eq!(numbers::PyLong_AsLong(number.as_ptr()), 137);
+        let inline = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+            instance.as_ptr(),
+            c"inline_text".as_ptr(),
+        ));
+        assert!(!inline.as_ptr().is_null());
+        let utf8 = strings::PyUnicode_AsUTF8(inline.as_ptr());
+        assert!(!utf8.is_null());
+        assert_eq!(CStr::from_ptr(utf8).to_bytes(), b"inline value");
+        for replacement in [value.as_ptr(), ptr::null_mut()] {
+            assert_eq!(
+                object::PyObject_SetAttrString(
+                    instance.as_ptr(),
+                    c"inline_text".as_ptr(),
+                    replacement,
+                ),
+                -1
+            );
+            assert_eq!(
+                errors::PyErr_ExceptionMatches((&raw mut PyExc_AttributeError).cast()),
+                1
+            );
+            assert_eq!(
+                support::take_current_error_text().as_deref(),
+                Some("readonly attribute")
+            );
+            assert_eq!(
+                std::slice::from_raw_parts(data.offset(text_offset), text.len()),
+                text
+            );
+        }
+        assert!(errors::PyErr_Occurred().is_null());
+    }
+}
+
 // ===========================================================================
 // (1) Every representative slot is installed and PyType_Ready runs fully.
 // ===========================================================================

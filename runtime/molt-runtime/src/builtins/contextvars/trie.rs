@@ -148,16 +148,12 @@ fn merge_pairs(
     let am = bit(a.2, shift);
     let bm = bit(b.2, shift);
     if am != bm {
-        return bitmap(
-            py,
-            am | bm,
-            0,
-            if am < bm {
-                &[a.0, a.1, b.0, b.1]
-            } else {
-                &[b.0, b.1, a.0, a.1]
-            },
-        );
+        let values = if am < bm {
+            [a.0, a.1, b.0, b.1]
+        } else {
+            [b.0, b.1, a.0, a.1]
+        };
+        return bitmap(py, am | bm, 0, &values);
     }
     let child = merge_pairs(py, a, b, shift + 5)?;
     let _guard = PtrDropGuard::preserving(ptr(child));

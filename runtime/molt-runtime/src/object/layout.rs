@@ -1811,7 +1811,11 @@ pub(crate) unsafe fn code_publish_gpu_descriptor(
     use crate::object::heap_kinds_generated::HeapAcyclicSlot;
     unsafe {
         if !crate::object::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeGpuDescriptor, bits) {
-            raise_exception::<u64>(py, "TypeError", "GPU code descriptor must be str or None");
+            crate::raise_exception::<u64>(
+                py,
+                "TypeError",
+                "GPU code descriptor must be str or None",
+            );
             return false;
         }
         let slot = ptr.cast::<u64>().add(22);
@@ -1819,7 +1823,7 @@ pub(crate) unsafe fn code_publish_gpu_descriptor(
             if *slot == bits {
                 return true;
             }
-            raise_exception::<u64>(
+            crate::raise_exception::<u64>(
                 py,
                 "RuntimeError",
                 "GPU code descriptor is already published",

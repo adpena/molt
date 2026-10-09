@@ -104,6 +104,7 @@ class ExpandedAllowedUse:
 @dataclass(frozen=True, slots=True)
 class SubprocessGuardAudit:
     scanned_files: int
+    allowlist_entries: int
     raw_calls: tuple[RawSubprocessCall, ...]
     unexpected: tuple[RawSubprocessCall, ...]
     stale_allowlist: tuple[AllowedRawSubprocessUse, ...]
@@ -1093,7 +1094,11 @@ def _iter_python_files(paths: Sequence[Path], *, root: Path) -> Iterable[Path]:
         else:
             candidates = sorted(path.rglob("*.py"))
         for candidate in candidates:
-            if candidate in seen or _is_excluded(candidate, root=root):
+            if (
+                candidate in seen
+                or candidate.suffix != ".py"
+                or _is_excluded(candidate, root=root)
+            ):
                 continue
             seen.add(candidate)
             yield candidate
@@ -1156,15 +1161,49 @@ def _scan_text_file(path: Path, *, root: Path) -> tuple[RawSubprocessCall, ...]:
     return tuple(calls)
 
 
+def _scoped_allowlist(
+    paths: Sequence[Path],
+    text_paths: Sequence[Path],
+    *,
+    root: Path,
+) -> tuple[AllowedRawSubprocessUse, ...]:
+    python_targets = tuple((root / path).resolve() for path in paths)
+    text_targets = tuple((root / path).resolve() for path in text_paths)
+    selected: list[AllowedRawSubprocessUse] = []
+    for entry in ALLOWLIST:
+        path = (root / entry.path).resolve()
+        if path.suffix == ".py":
+            targets = python_targets
+        elif _is_guard_text_file(path):
+            targets = text_targets
+        else:
+            continue
+        # Select by requested scope, not observed calls or existing files:
+        # removing a permitted call or its file must still report a stale entry.
+        if not _is_excluded(path, root=root) and any(
+            path == target or target in path.parents for target in targets
+        ):
+            selected.append(entry)
+    return tuple(selected)
+
+
 def audit_paths(
     paths: Sequence[Path] = DEFAULT_TARGETS,
     *,
     root: Path = REPO_ROOT,
-    allowlist: Sequence[AllowedRawSubprocessUse] = ALLOWLIST,
+    allowlist: Sequence[AllowedRawSubprocessUse] | None = None,
     text_paths: Sequence[Path] | None = None,
 ) -> SubprocessGuardAudit:
+    """Audit the selected inventory; explicit allowlists are checked in full."""
+    default_scope = tuple(paths) == DEFAULT_TARGETS
     if text_paths is None:
-        text_paths = DEFAULT_TEXT_TARGETS if tuple(paths) == DEFAULT_TARGETS else ()
+        text_paths = DEFAULT_TEXT_TARGETS if default_scope else paths
+    if allowlist is None:
+        allowlist = (
+            ALLOWLIST
+            if default_scope
+            else _scoped_allowlist(paths, text_paths, root=root)
+        )
     scanned_files = 0
     raw_calls: list[RawSubprocessCall] = []
     for path in _iter_python_files(paths, root=root):
@@ -1187,6 +1226,7 @@ def audit_paths(
     )
     return SubprocessGuardAudit(
         scanned_files=scanned_files,
+        allowlist_entries=len(allowlist),
         raw_calls=tuple(raw_calls),
         unexpected=unexpected,
         stale_allowlist=stale,
@@ -1198,6 +1238,7 @@ def _audit_to_dict(audit: SubprocessGuardAudit) -> dict[str, object]:
     return {
         "ok": audit.ok,
         "scanned_files": audit.scanned_files,
+        "allowlist_entries": audit.allowlist_entries,
         "raw_call_count": len(audit.raw_calls),
         "unexpected": [asdict(call) for call in audit.unexpected],
         "stale_allowlist": [asdict(entry) for entry in audit.stale_allowlist],
@@ -1218,7 +1259,7 @@ def _format_text(audit: SubprocessGuardAudit) -> str:
             "OK: subprocess guard coverage audit passed "
             f"(scanned_files={audit.scanned_files}, "
             f"raw_calls={len(audit.raw_calls)}, "
-            f"allowlist_entries={len(ALLOWLIST)})"
+            f"allowlist_entries={audit.allowlist_entries})"
         )
         return "\n".join(lines) + "\n"
     lines.append("ERROR: subprocess guard coverage audit failed")
@@ -1261,7 +1302,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "paths",
         nargs="*",
         type=Path,
-        help="Files or directories to scan (defaults to dev/test/CLI surfaces).",
+        help=(
+            "Files or directories whose Python and guard-text inventory and "
+            "allowlist entries are audited (defaults to all dev/test/CLI surfaces)."
+        ),
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON output.")
     return parser.parse_args(argv)

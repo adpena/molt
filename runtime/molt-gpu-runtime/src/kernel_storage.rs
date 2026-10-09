@@ -420,8 +420,10 @@ impl KernelStoragePlan {
             }
             if index >= self.groups.len()
                 && output
-                    .chunks_exact(4)
-                    .any(|word| !matches!(u32::from_le_bytes(word.try_into().unwrap()), 0 | 1))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|word| !matches!(u32::from_le_bytes(*word), 0 | 1))
             {
                 return Err(fail("GPU store-occurrence flag is invalid"));
             }
@@ -440,11 +442,13 @@ impl KernelStoragePlan {
             let format = group.format.expect("only buffer groups are writable");
             let index = self.bindings[&group.name];
             for (element, chunk) in outputs[&index]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .take(group.elements)
                 .enumerate()
             {
-                let value = i32::from_le_bytes(chunk.try_into().unwrap());
+                let value = i32::from_le_bytes(*chunk);
                 // The compiler certificate requires every stored intermediate
                 // in the exact float island, independent of transport integrity.
                 if i64::from(value).unsigned_abs() >= 1u64 << 24 {

@@ -2994,6 +2994,7 @@ const PY_T_UBYTE: c_int = 9;
 const PY_T_USHORT: c_int = 10;
 const PY_T_UINT: c_int = 11;
 const PY_T_ULONG: c_int = 12;
+const PY_T_STRING_INPLACE: c_int = 13;
 const PY_T_BOOL: c_int = 14;
 const PY_T_OBJECT_EX: c_int = 16;
 const PY_T_LONGLONG: c_int = 17;
@@ -3015,6 +3016,13 @@ pub unsafe extern "C" fn PyMember_GetOne(
         return ptr::null_mut();
     }
     unsafe {
+        if (*member).flags & crate::abi_types::Py_RELATIVE_OFFSET != 0 {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                c"PyMember_GetOne used with Py_RELATIVE_OFFSET".as_ptr(),
+            );
+            return ptr::null_mut();
+        }
         let field = addr.offset((*member).offset) as *const c_void;
         // Width-correct constructors: `c_long` is 32-bit on Windows MSVC, so
         // 64-bit members must route through the LongLong/Ssize_t constructors to
@@ -3080,15 +3088,27 @@ pub unsafe extern "C" fn PyMember_GetOne(
                     crate::api::strings::PyUnicode_FromString(s)
                 }
             }
+            PY_T_STRING_INPLACE => crate::api::strings::PyUnicode_FromString(field.cast()),
             PY_T_OBJECT | PY_T_OBJECT_EX => {
                 let v = *(field as *const *mut PyObject);
                 if v.is_null() {
                     if (*member).type_ == PY_T_OBJECT_EX {
-                        crate::api::errors::PyErr_SetString(
-                            (&raw mut crate::abi_types::PyExc_AttributeError)
-                                .cast::<crate::abi_types::PyObject>(),
-                            (*member).name,
-                        );
+                        let exception = (&raw mut crate::abi_types::PyExc_AttributeError).cast();
+                        if (crate::hooks::hooks_or_stubs().target_python_minor)() < 13 {
+                            crate::api::errors::PyErr_Format(
+                                exception,
+                                c"'%.200s' object has no attribute '%s'".as_ptr(),
+                                (*(*addr.cast::<PyObject>()).ob_type).tp_name,
+                                (*member).name,
+                            );
+                        } else {
+                            crate::api::errors::PyErr_Format(
+                                exception,
+                                c"'%T' object has no attribute '%s'".as_ptr(),
+                                addr.cast::<PyObject>(),
+                                (*member).name,
+                            );
+                        }
                         return ptr::null_mut();
                     }
                     let none = &raw mut crate::abi_types::Py_None;
@@ -3108,7 +3128,7 @@ pub unsafe extern "C" fn PyMember_GetOne(
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_SystemError)
                         .cast::<crate::abi_types::PyObject>(),
-                    c"bad member type in PyMember_GetOne".as_ptr(),
+                    c"bad memberdescr type".as_ptr(),
                 );
                 ptr::null_mut()
             }
@@ -3130,6 +3150,13 @@ pub unsafe extern "C" fn PyMember_SetOne(
         return -1;
     }
     unsafe {
+        if (*member).flags & crate::abi_types::Py_RELATIVE_OFFSET != 0 {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                c"PyMember_SetOne used with Py_RELATIVE_OFFSET".as_ptr(),
+            );
+            return -1;
+        }
         if (*member).flags & PY_READONLY != 0 {
             crate::api::errors::PyErr_SetString(
                 (&raw mut crate::abi_types::PyExc_AttributeError)
@@ -3390,7 +3417,7 @@ pub unsafe extern "C" fn PyMember_SetOne(
                 *(field as *mut c_char) = *s;
                 0
             }
-            PY_T_STRING => {
+            PY_T_STRING | PY_T_STRING_INPLACE => {
                 // T_STRING / T_STRING_INPLACE are readonly (CPython raises here).
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_TypeError)
@@ -3412,22 +3439,11 @@ pub unsafe extern "C" fn PyMember_SetOne(
                 0
             }
             _ => {
-                // Unknown member type: SystemError "bad memberdescr type for %s".
-                let name = if (*member).name.is_null() {
-                    "?".to_string()
-                } else {
-                    std::ffi::CStr::from_ptr((*member).name)
-                        .to_string_lossy()
-                        .into_owned()
-                };
-                let msg = format!("bad memberdescr type for {name}");
-                if let Ok(c) = std::ffi::CString::new(msg) {
-                    crate::api::errors::PyErr_SetString(
-                        (&raw mut crate::abi_types::PyExc_SystemError)
-                            .cast::<crate::abi_types::PyObject>(),
-                        c.as_ptr(),
-                    );
-                }
+                crate::api::errors::PyErr_Format(
+                    (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                    c"bad memberdescr type for %s".as_ptr(),
+                    (*member).name,
+                );
                 -1
             }
         }

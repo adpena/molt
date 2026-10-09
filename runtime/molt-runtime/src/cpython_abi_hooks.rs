@@ -39,13 +39,12 @@ use molt_cpython_abi::{
 };
 use molt_obj_model::MoltObject;
 use num_bigint::{BigInt, Sign};
-use num_traits::ToPrimitive;
 
 use crate::builtins::containers::{dict_len, dict_next_entry, list_len, tuple_len};
 use crate::builtins::numbers::{
     INT_BYTES_INVALID, bigint_from_bytes, bigint_from_f64_trunc, bigint_num_bits,
     bigint_ptr_from_bits, bigint_ref, int_bits_from_bigint, int_bits_from_i64, int_bits_from_i128,
-    to_bigint, to_i64,
+    to_bigint,
 };
 #[cfg(test)]
 use crate::concurrency::GilGuard;
