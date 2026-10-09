@@ -441,3 +441,20 @@ def test_bundle_rejects_noninteger_schema_version(
             expected_identity=IDENTITY,
             expected_runtime_build_identity=runtime_identity(),
         )
+
+
+def test_json_differences_name_each_differing_leaf() -> None:
+    left = {"a": {"b": 1, "c": [1, 2]}, "d": "x"}
+    right = {"a": {"b": 2, "c": [1, 3]}, "d": "x", "e": True}
+    assert bundle.json_differences(left, right) == ["$.a.b", "$.a.c[1]", "$.e"]
+
+
+def test_extract_names_the_runtime_identity_fields_that_differ(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, _manifest = _pack(tmp_path, monkeypatch)
+    consumer = _consumer(tmp_path, monkeypatch)
+    with pytest.raises(
+        bundle.NightlyRuntimeBundleError, match=r"differing fields: \$\."
+    ):
+        _extract(archive, consumer, runtime_build_identity=runtime_identity("changed"))
