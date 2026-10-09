@@ -1225,7 +1225,7 @@ description = "Runtime determinism and typed IR verification after one runtime b
 workflow = ".github/workflows/nightly.yml"
 job = "determinism-sweep"
 tiers = ["scheduled"]
-timeout_minutes = 75
+timeout_minutes = 95
 resource_class = "scheduled-suite"
 
 [[scheduled_family]]
@@ -1340,7 +1340,9 @@ toolchains = ["python", "uv", "rustc", "cargo"]
 # The typed-IR verification and the IR hash-seed suite are CPU-bound Python
 # suites. Run beside each other on the 4-core runner, the verification ran
 # past 900 s in Nightly run 37947710312 and its timeout stopped the runtime
-# sweep; it now follows the hash-seed suite while the build chain runs.
+# sweep; in run 37953183680 its verifier child overran the RSS limit (HF-96)
+# and stopped the sweep again. It now starts after both the hash-seed suite and
+# the runtime sweep, so its failure cannot hide their results.
 [[command]]
 id = "nightly.determinism.ir"
 family = "nightly_determinism"
@@ -1349,7 +1351,7 @@ tiers = ["scheduled"]
 resource_class = "scheduled-suite"
 timeout_seconds = 1800
 cache_domain = "cargo-workspace"
-dependencies = ["nightly.determinism.ir-hashseed"]
+dependencies = ["nightly.determinism.ir-hashseed", "nightly.determinism.runtime"]
 evidence_outputs = ["proof-results/nightly/ir-verification.json"]
 argv = ["uv", "run", "python3", "tools/verify_ir_suite.py", "--dir", "tests/differential/basic", "--examples", "--json-out", "proof-results/nightly/ir-verification.json"]
 toolchains = ["python", "uv", "rustc", "cargo"]
