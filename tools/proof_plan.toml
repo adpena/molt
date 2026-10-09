@@ -2016,10 +2016,12 @@ family = "repository_policy"
 cell = "linux-x86_64-py312-repository-policy"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "repository-policy"
-timeout_seconds = 300
+# Serial runs measured ~520 s on hosted Linux (2026-10-09, PR 146); two
+# workers fit well inside this budget.
+timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/tools/test_release_supply_chain.py", "tests/tools/test_release_sealed_replay.py", "tests/tools/test_release_matrix_acceptance.py", "tests/tools/test_release_matrix_consumer.py", "tests/tools/test_release_archive.py", "tests/tools/test_release_remote.py", "tests/tools/test_provision_wasi_sdk.py", "tests/test_release_lanes.py", "tests/tools/test_release_native_build.py", "tests/tools/test_release_installed_distribution.py", "tests/tools/test_release_exit_gate.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "2", "tests/tools/test_release_supply_chain.py", "tests/tools/test_release_sealed_replay.py", "tests/tools/test_release_matrix_acceptance.py", "tests/tools/test_release_matrix_consumer.py", "tests/tools/test_release_archive.py", "tests/tools/test_release_remote.py", "tests/tools/test_provision_wasi_sdk.py", "tests/test_release_lanes.py", "tests/tools/test_release_native_build.py", "tests/tools/test_release_installed_distribution.py", "tests/tools/test_release_exit_gate.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
