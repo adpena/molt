@@ -68,6 +68,7 @@ AUTHORITY_INPUTS = (
     "tools/nightly_shard_profile.py",
     "tools/nightly_sharding.py",
     "tools/nightly_runtime_bundle.py",
+    "src/molt/cli/native_toolchain_transfer.py",
     "config/nightly_shard_profile.json",
     "tests/harness/run_molt_conformance.py",
     "tests/molt_diff.py",

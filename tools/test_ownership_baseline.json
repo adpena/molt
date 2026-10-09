@@ -7,7 +7,6 @@
   "tests/cli/test_cli_smoke.py",
   "tests/cli/test_compiler_source_root.py",
   "tests/cli/test_llvm_wasi_tools.py",
-  "tests/cli/test_runtime_native_generation.py",
   "tests/cli/test_source_extension_reproducibility.py",
   "tests/cli/test_traceback_carets.py",
   "tests/e2e/test_adversarial_ocr.py",

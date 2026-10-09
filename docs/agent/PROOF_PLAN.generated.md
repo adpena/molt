@@ -14,7 +14,7 @@ Index mode executes the captured staged generator with its staged manifest, poli
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 330 |
+| Hashed executable authority inputs | 1 | 331 |
 | Local path rules | 35 | 43 |
 | Unique local commands | 73 | 98 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -307,7 +307,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `table-drift` | 12 | 2 | no |
 | `findings-registry` | 4 | 1 | no |
 | `memory-graph` | 5 | 2 | no |
-| `ci-wiring` | 56 | 2 | no |
+| `ci-wiring` | 57 | 2 | no |
 | `apparatus-hooks` | 11 | 3 | no |
 | `apparatus-learning-protection` | 15 | 3 | no |
 | `apparatus-a11` | 10 | 5 | no |
