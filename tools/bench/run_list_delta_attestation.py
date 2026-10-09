@@ -159,6 +159,7 @@ def _validate_payload(
     if sample_count != l7.SAMPLE_COUNT:
         raise RuntimeError("container attestation sample-count drift")
 
+    timing_errors: list[str] = []
     for case in cases:
         name = case["name"]
         samples = case.get("samples")
@@ -202,14 +203,25 @@ def _validate_payload(
                 _finite_nonnegative(
                     metric_summary.get(field), f"{name}/{metric}/{field}"
                 )
+            summary_errors: list[str] = []
+            l7._summary_matches(
+                metric_summary,
+                l7._summary([float(sample[metric]) for sample in samples]),
+                context=f"{name}/{metric}",
+                errors=summary_errors,
+            )
+            if summary_errors:
+                raise RuntimeError("; ".join(summary_errors))
         timing_robust_cv = _finite_nonnegative(
             summary["ns_per_op"]["robust_cv"], f"{name}/ns_per_op/robust_cv"
         )
         if timing_robust_cv > MAX_TIMING_ROBUST_CV:
-            raise RuntimeError(
+            timing_errors.append(
                 f"{name}: timing robust CV {timing_robust_cv:.4f} exceeds "
                 f"{MAX_TIMING_ROBUST_CV:.4f}"
             )
+    if timing_errors:
+        raise l7.EvidenceRejected("; ".join(timing_errors))
 
 
 def _capsule_paths(run_nonce: str, run_index: int) -> tuple[Path, Path]:
@@ -242,6 +254,13 @@ def _aggregate(attestations: list[dict[str, Any]]) -> dict[str, Any]:
             ]["required"],
         }
     return aggregate
+
+
+def _require_unchanged_source(source_start: dict[str, Any]) -> dict[str, Any]:
+    source_end = l7._source_snapshot()
+    if source_end != source_start:
+        raise RuntimeError("repository source changed during container attestation")
+    return source_end
 
 
 def run_attestation(
@@ -307,7 +326,8 @@ def run_attestation(
         l7._write_json_atomic(active_capsule, capsule)
         try:
             if not l7._quiescence_ok(before):
-                raise RuntimeError(
+                _require_unchanged_source(source_start)
+                raise l7.EvidenceRejected(
                     f"run {run_index} not started: host was not quiescent: {before}"
                 )
 
@@ -336,11 +356,7 @@ def run_attestation(
             after = asdict(l7.perf_calibration.measure_quiescence())
             capsule.update(
                 {
-                    "status": (
-                        "completed"
-                        if measured.returncode == 0 and not measured.timed_out
-                        else "failed"
-                    ),
+                    "status": ("completed" if measured.evidence_eligible else "failed"),
                     "completed_at_utc": l7._utc_now(),
                     "returncode": measured.returncode,
                     "timed_out": measured.timed_out,
@@ -365,7 +381,7 @@ def run_attestation(
         archived_capsule.parent.mkdir(parents=True, exist_ok=True)
         active_capsule.replace(archived_capsule)
 
-        if measured.returncode != 0 or measured.timed_out:
+        if not measured.evidence_eligible:
             sys.stderr.write(measured.stdout)
             sys.stderr.write(measured.stderr)
             raise RuntimeError(
@@ -393,17 +409,22 @@ def run_attestation(
                 f"run {run_index} Job peak commit {measured.peak_job_commit_bytes} exceeds "
                 f"{MAX_PEAK_JOB_COMMIT_BYTES}"
             )
-        if not l7._quiescence_ok(before) or not l7._quiescence_ok(after):
-            raise RuntimeError(f"run {run_index} was not quiescent")
         payload = _parse_payload(measured.stdout)
-        _validate_payload(
-            payload,
-            source=source_start,
-            build=build,
-            rustc=rustc,
-            run_nonce=run_nonce,
-            execution_control=execution_control,
-        )
+        try:
+            _validate_payload(
+                payload,
+                source=source_start,
+                build=build,
+                rustc=rustc,
+                run_nonce=run_nonce,
+                execution_control=execution_control,
+            )
+        except l7.EvidenceRejected:
+            _require_unchanged_source(source_start)
+            raise
+        if not l7._quiescence_ok(before) or not l7._quiescence_ok(after):
+            _require_unchanged_source(source_start)
+            raise l7.EvidenceRejected(f"run {run_index} was not quiescent")
         process_runs.append(
             {
                 "run": run_index,
@@ -419,9 +440,7 @@ def run_attestation(
         )
         attestations.append(payload)
 
-    source_end = l7._source_snapshot()
-    if source_end != source_start:
-        raise RuntimeError("repository source changed during container attestation")
+    source_end = _require_unchanged_source(source_start)
     fingerprint = l7.perf_calibration.host_fingerprint()
     fingerprint_data = asdict(fingerprint)
     fingerprint_data["key"] = fingerprint.key()
@@ -432,7 +451,7 @@ def run_attestation(
             f"{case_name}/cross_process/ns_per_op/robust_cv",
         )
         if robust_cv > MAX_TIMING_ROBUST_CV:
-            raise RuntimeError(
+            raise l7.EvidenceRejected(
                 f"{case_name}: cross-process timing robust CV {robust_cv:.4f} exceeds "
                 f"{MAX_TIMING_ROBUST_CV:.4f}"
             )
@@ -441,7 +460,7 @@ def run_attestation(
         rss_summary["robust_cv"], "process/peak_rss_bytes/robust_cv"
     )
     if rss_robust_cv > MAX_PROCESS_MEMORY_ROBUST_CV:
-        raise RuntimeError(
+        raise l7.EvidenceRejected(
             f"process peak RSS robust CV {rss_robust_cv:.4f} exceeds "
             f"{MAX_PROCESS_MEMORY_ROBUST_CV:.4f}"
         )
@@ -457,7 +476,7 @@ def run_attestation(
             "process/peak_job_commit_bytes/robust_cv",
         )
         if job_commit_robust_cv > MAX_PROCESS_MEMORY_ROBUST_CV:
-            raise RuntimeError(
+            raise l7.EvidenceRejected(
                 f"Job peak commit robust CV {job_commit_robust_cv:.4f} exceeds "
                 f"{MAX_PROCESS_MEMORY_ROBUST_CV:.4f}"
             )

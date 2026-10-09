@@ -2734,13 +2734,12 @@ def test_supervisor_build_environment_uses_admitted_windows_store_temp(
     }
 
 
-@pytest.fixture(scope="module")
-def guarded_execution_authorities(
-    tmp_path_factory: pytest.TempPathFactory,
+def _capture_guarded_execution_authorities(
+    python: Path,
+    source_root: Path,
 ) -> GuardedExecutionAuthorities:
     """Capture immutable process authorities once for non-capture integration tests."""
-    source_root = tmp_path_factory.mktemp("guarded-execution-source")
-    command = [sys.executable, "-c", "pass"]
+    command = [str(python), "-c", "pass"]
     envelope = command_admission.envelope_for_command(command)
     # A Python-only locator does not invoke the supervisor. Reuse the production
     # selection contract so the cached capture cannot invent launcher authority.
@@ -2751,7 +2750,7 @@ def guarded_execution_authorities(
             command,
             cwd=state.ROOT,
             env=os.environ,
-            supervisor_binary=Path(sys.executable),
+            supervisor_binary=python,
         )
     )
     identity = command_identity._python_identity(
@@ -2770,6 +2769,27 @@ def guarded_execution_authorities(
         envelope=envelope,
         selection=selections["python"],
         capture=command_identity._python_identity,
+    )
+
+
+@pytest.fixture(scope="module")
+def guarded_execution_authorities(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> GuardedExecutionAuthorities:
+    return _capture_guarded_execution_authorities(
+        Path(sys.executable), tmp_path_factory.mktemp("guarded-execution-source")
+    )
+
+
+@pytest.fixture(scope="module")
+def python_location_authorities(
+    tmp_path_factory: pytest.TempPathFactory,
+    custody_python: Path,
+) -> GuardedExecutionAuthorities:
+    # Location/image joins need a real interpreter, but no installed project or
+    # third-party packages. Keep the full environment in queue execution tests.
+    return _capture_guarded_execution_authorities(
+        custody_python, tmp_path_factory.mktemp("python-location-source")
     )
 
 
@@ -2793,10 +2813,10 @@ def guarded_execution_authorities(
 def test_python_selection_location_join_preserves_coordinate_and_content(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    guarded_execution_authorities: GuardedExecutionAuthorities,
+    python_location_authorities: GuardedExecutionAuthorities,
     mutation: str,
 ) -> None:
-    authorities = guarded_execution_authorities
+    authorities = python_location_authorities
     captured = authorities.current()
     selection = copy.deepcopy(dict(authorities.selection))
     location = selection["location"]

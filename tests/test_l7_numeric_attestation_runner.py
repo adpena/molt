@@ -889,3 +889,451 @@ def test_candidate_list_exit_status_is_retained(tmp_path, monkeypatch, exit_code
     assert result["status"] == ("failed" if exit_code else "evidence_only")
     assert result["performance_claim"] is False
     assert result["release_acceptance"] is False
+
+
+@pytest.mark.parametrize("rejected", [(), ("l7",), ("list",), ("l7", "list")])
+def test_candidate_completed_rejections_run_independent_operations(
+    tmp_path, monkeypatch, rejected
+):
+    from tools import run_candidate_runtime_costs as candidate
+
+    monkeypatch.setattr(candidate, "OUTPUT", tmp_path)
+    calls = []
+
+    def numeric(argv, *, raise_measurement_rejection):
+        assert raise_measurement_rejection is True
+        calls.append("l7")
+        invalid = "l7" in rejected
+        candidate.l7._write_json_atomic(
+            Path(argv[argv.index("--output") + 1]),
+            {
+                "comparison": {
+                    "status": "invalid" if invalid else "evidence_only",
+                    "performance_claim": False,
+                }
+            },
+        )
+        if invalid:
+            raise candidate.l7.EvidenceRejected("fixture measurement rejection")
+        return 0
+
+    def sequence(argv):
+        calls.append("list")
+        if "list" in rejected:
+            raise candidate.l7.EvidenceRejected("fixture nonquiescent list admission")
+        return 0
+
+    def storage(_directory, _timeout):
+        calls.append("storage")
+
+    monkeypatch.setattr(candidate.l7, "main", numeric)
+    monkeypatch.setattr(candidate.lists, "main", sequence)
+    monkeypatch.setattr(candidate, "run_storage", storage)
+    assert candidate.main([]) == (1 if rejected else 0)
+    assert calls == ["l7", "list", "storage"]
+    for operation in calls:
+        result = json.loads(
+            (tmp_path / operation / "result.json").read_text(encoding="utf-8")
+        )
+        assert result["status"] == (
+            "failed" if operation in rejected else "evidence_only"
+        )
+        assert result["performance_claim"] is False
+        assert result["release_acceptance"] is False
+
+
+@pytest.mark.parametrize(
+    "error", [RuntimeError("custody unresolved"), KeyboardInterrupt(), SystemExit(130)]
+)
+def test_candidate_does_not_continue_unknown_failure_or_interruption(
+    tmp_path, monkeypatch, error
+):
+    from tools import run_candidate_runtime_costs as candidate
+
+    monkeypatch.setattr(candidate, "OUTPUT", tmp_path)
+    calls = []
+
+    def numeric(_argv, *, raise_measurement_rejection):
+        assert raise_measurement_rejection is True
+        calls.append("l7")
+        raise error
+
+    monkeypatch.setattr(candidate.l7, "main", numeric)
+    monkeypatch.setattr(candidate.lists, "main", lambda _argv: calls.append("list"))
+    monkeypatch.setattr(candidate, "run_storage", lambda *args: calls.append("storage"))
+    with pytest.raises(type(error)) as caught:
+        candidate.main([])
+    assert caught.value is error
+    assert calls == ["l7"]
+    assert (
+        json.loads((tmp_path / "l7/result.json").read_text(encoding="utf-8"))["status"]
+        == "failed"
+    )
+    assert not (tmp_path / "list").exists()
+    assert not (tmp_path / "storage").exists()
+
+
+def _list_closed_child_payload():
+    # Literal workload/zero-gate denominator, independent of the runner's roster.
+    names = (
+        ("list.delta.append_pop", True),
+        ("list.delta.indexed_replace", True),
+        ("list.delta.reverse", True),
+        ("list.construction.pylist_new_presized", False),
+        ("tuple.steady.empty_singleton", True),
+        ("tuple.steady.checked_raw_fast_items", True),
+        ("tuple.steady.full_slice_repeat_one_identity", True),
+        ("tuple.construction.pytuple_new_fill", False),
+        ("list.removal.tail_128", False),
+        ("list.removal.tail_1048576", False),
+        ("list.removal.dense_8192", False),
+        ("list.removal.projected_tail_65536", False),
+        ("list.removal.projected_dense_8192", False),
+    )
+    cases = []
+    for name, zero in names:
+        sample = {
+            "ns_per_op": 10.0,
+            "allocations_per_op": 0.0 if zero else 1.0,
+            "allocated_bytes_per_op": 0.0 if zero else 8.0,
+            "peak_live_bytes": 0 if zero else 8,
+        }
+        cases.append(
+            {
+                "name": name,
+                "family": "fixture",
+                "input": {},
+                "samples": [dict(sample) for _ in range(9)],
+                "summary": {
+                    metric: {"median": value, "cv": 0.0, "robust_cv": 0.0}
+                    for metric, value in sample.items()
+                },
+                "gates": {
+                    "semantic_witness": "pass",
+                    "steady_state_zero_allocations": {"required": zero, "passed": True},
+                    "allocator_probe_positive_control": {
+                        "required": not zero,
+                        "passed": True,
+                    },
+                },
+            }
+        )
+    return {
+        "schema_version": 2,
+        "kind": "sequence_container_performance_attestation",
+        "profile": "release",
+        "source": {
+            "git_commit": SHA,
+            "git_dirty": False,
+            "rustc": "rustc-fixture",
+            "build_fingerprint": SHA,
+            "run_nonce": NONCE,
+        },
+        "execution_control": {
+            "affinity_mask": "0x4",
+            "scope": "current_benchmark_thread",
+        },
+        "execution_mode": {
+            "deterministic_default": True,
+            "runtime_gil": "enabled",
+            "free_threaded": False,
+            "benchmark_threads": 1,
+        },
+        "sample_count": 9,
+        "cases": cases,
+    }
+
+
+def test_list_owner_still_refuses_allocation_corruption_before_timing_classification():
+    from tools import run_candidate_runtime_costs as candidate
+
+    payload = _list_closed_child_payload()
+    payload["cases"][0]["samples"][0]["allocations_per_op"] = 1.0
+    with pytest.raises(RuntimeError, match="violated exact zero gate"):
+        candidate.lists._validate_payload(
+            payload,
+            source={"git_commit": SHA, "git_dirty": False},
+            build={"artifact_fingerprint": SHA},
+            rustc="rustc-fixture",
+            run_nonce=NONCE,
+            execution_control={
+                "affinity_mask": "0x4",
+                "scope": "current_benchmark_thread",
+            },
+        )
+
+
+@pytest.mark.parametrize("rejection", ["timing", "allocation"])
+def test_list_rejection_type_separates_stability_from_invalid_counts(rejection):
+    from tools import run_candidate_runtime_costs as candidate
+
+    payload = _list_closed_child_payload()
+    if rejection == "timing":
+        values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
+        for sample, value in zip(payload["cases"][0]["samples"], values, strict=True):
+            sample["ns_per_op"] = value
+        payload["cases"][0]["summary"]["ns_per_op"] = candidate.l7._summary(values)
+    else:
+        payload["cases"][0]["samples"][0]["allocations_per_op"] = 1.0
+    with pytest.raises(RuntimeError) as caught:
+        candidate.lists._validate_payload(
+            payload,
+            source={"git_commit": SHA, "git_dirty": False},
+            build={"artifact_fingerprint": SHA},
+            rustc="rustc-fixture",
+            run_nonce=NONCE,
+            execution_control={
+                "affinity_mask": "0x4",
+                "scope": "current_benchmark_thread",
+            },
+        )
+    assert isinstance(caught.value, candidate.l7.EvidenceRejected) is (
+        rejection == "timing"
+    )
+
+
+@pytest.mark.parametrize("component", ["numeric", "list"])
+def test_cost_owner_does_not_turn_lost_custody_into_continuable_evidence(
+    tmp_path, monkeypatch, component
+):
+    from tools import run_candidate_runtime_costs as candidate
+
+    l7 = candidate.l7
+    owner = l7 if component == "numeric" else candidate.lists
+    source = {"git_commit": SHA, "git_dirty": False}
+    monkeypatch.setattr(owner, "CAPSULE_ACTIVE_DIR", tmp_path / "active")
+    monkeypatch.setattr(owner, "CAPSULE_ARCHIVE_DIR", tmp_path / "custody")
+    monkeypatch.setattr(
+        owner, "secrets", SimpleNamespace(token_hex=lambda _count: NONCE)
+    )
+    monkeypatch.setattr(l7, "_source_snapshot", lambda: source)
+    monkeypatch.setattr(l7, "_parent_command", lambda _argv: b"rustc-fixture")
+    monkeypatch.setattr(l7, "_sha256_file", lambda _path: SHA)
+    monkeypatch.setattr(
+        l7, "_resolve_execution_control", lambda _mask: {"affinity_mask": "0x4"}
+    )
+    monkeypatch.setattr(
+        l7,
+        "_build_test_executable",
+        lambda *args, **kwargs: (
+            tmp_path / "native-image",
+            {"artifact_fingerprint": SHA},
+        ),
+    )
+    monkeypatch.setattr(
+        l7.perf_calibration,
+        "measure_quiescence",
+        lambda: l7.perf_calibration.Quiescence(True, 0.1, 0.025, 0, "literal quiet"),
+    )
+    calls = []
+
+    def measure(argv, **kwargs):
+        calls.append(argv)
+        # A successful child code cannot erase unresolved descendant custody.
+        return l7.perf_calibration.RunMeasurement(
+            returncode=0,
+            child_returncode=0,
+            elapsed_s=0.01,
+            peak_rss_bytes=1024,
+            peak_job_commit_bytes=2048,
+            stdout="",
+            stderr="",
+            orphaned_process_groups=(123,),
+        )
+
+    monkeypatch.setattr(l7.perf_calibration, "run_and_measure", measure)
+    with pytest.raises(RuntimeError, match="rc=0 timeout=False") as caught:
+        if component == "numeric":
+            l7._run_component(
+                "runtime_bigint",
+                l7.COMPONENTS["runtime_bigint"],
+                runs=7,
+                timeout=300.0,
+                schema={},
+                source=source,
+                rustc="rustc-fixture",
+                cargo_lock_sha256=SHA,
+                run_nonce=NONCE,
+                max_measured_rss_bytes=None,
+                affinity_mask="0x4",
+            )
+        else:
+            owner.run_attestation(
+                runs=7,
+                timeout=300.0,
+                output=tmp_path / "attestation.json",
+                affinity_request="auto",
+            )
+    assert not isinstance(caught.value, l7.EvidenceRejected)
+    assert len(calls) == 1
+
+    capsules = list((tmp_path / "custody").glob("*.json"))
+    assert len(capsules) == 1
+    assert json.loads(capsules[0].read_text(encoding="utf-8"))["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "defect", [None, "source", "missing-component", "digest", "summary", "raw-error"]
+)
+def test_candidate_l7_policy_rejection_does_not_mask_integrity_failure(
+    tmp_path, monkeypatch, defect
+):
+    from tools import run_candidate_runtime_costs as candidate
+
+    l7 = candidate.l7
+    bundle = _bundle()
+    component = "abi_boundary"
+    bundle["process"][component]["runs"][0]["quiescence_before"]["certified"] = False
+    if defect == "source":
+        bundle["source"]["end"]["git_commit"] = "different-source"
+    elif defect == "missing-component":
+        del bundle["attestations"]["runtime_bigint"]
+    elif defect == "digest":
+        bundle["process"][component]["runs"][0]["attestation_sha256"] = "0" * 64
+    elif defect == "summary":
+        bundle["attestations"][component][0]["cases"][0]["summary"]["ns_per_op"][
+            "median"
+        ] = 999.0
+    aggregate, errors = l7._aggregate_bundle(bundle, 0.1, 0.25)
+    assert errors
+    if defect == "raw-error":
+        # Serialized strings cannot confer the in-memory owner's classification.
+        errors = [str(error) for error in errors]
+    bundle["aggregated_cases"] = aggregate
+    bundle["validation"]["errors"] = errors
+    bundle["validation"]["valid"] = False
+    bundle["comparison"] = {"status": "invalid", "performance_claim": False}
+    monkeypatch.setattr(l7, "run_attestation", lambda *args, **kwargs: bundle)
+    monkeypatch.setattr(
+        l7,
+        "_resolve_execution_control",
+        lambda _mask: bundle["runner"]["execution_control"],
+    )
+    monkeypatch.setattr(candidate, "OUTPUT", tmp_path)
+    later = []
+    monkeypatch.setattr(
+        candidate.lists, "main", lambda _args: later.append("list") or 0
+    )
+    monkeypatch.setattr(
+        candidate, "run_storage", lambda *_args: later.append("storage")
+    )
+    if defect is None:
+        assert candidate.main([]) == 1
+        assert later == ["list", "storage"]
+        for operation in later:
+            assert (
+                json.loads(
+                    (tmp_path / operation / "result.json").read_text(encoding="utf-8")
+                )["status"]
+                == "evidence_only"
+            )
+    else:
+        with pytest.raises(RuntimeError, match="must be valid evidence_only"):
+            candidate.main([])
+        assert later == []
+        assert not (tmp_path / "list").exists()
+        assert not (tmp_path / "storage").exists()
+    assert (
+        json.loads((tmp_path / "l7/result.json").read_text(encoding="utf-8"))["status"]
+        == "failed"
+    )
+    assert (
+        json.loads((tmp_path / "l7/attestation.json").read_text(encoding="utf-8"))[
+            "comparison"
+        ]["status"]
+        == "invalid"
+    )
+
+
+@pytest.mark.parametrize("source_changed", [False, True])
+def test_candidate_list_pre_refusal_revalidates_source_before_continuation(
+    tmp_path, monkeypatch, source_changed
+):
+    from tools import run_candidate_runtime_costs as candidate
+
+    l7 = candidate.l7
+    lists = candidate.lists
+    source = {"git_commit": SHA, "git_dirty": False}
+    snapshots = iter(
+        [source, {**source, "git_commit": "changed"} if source_changed else source]
+    )
+    monkeypatch.setattr(l7, "_source_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(l7, "_parent_command", lambda _argv: b"rustc-fixture")
+    monkeypatch.setattr(l7, "_sha256_file", lambda _path: SHA)
+    monkeypatch.setattr(
+        l7, "_resolve_execution_control", lambda _mask: {"affinity_mask": "0x4"}
+    )
+    monkeypatch.setattr(
+        l7,
+        "_build_test_executable",
+        lambda *args, **kwargs: (tmp_path / "image", {"artifact_fingerprint": SHA}),
+    )
+    monkeypatch.setattr(lists, "CAPSULE_ACTIVE_DIR", tmp_path / "active")
+    monkeypatch.setattr(lists, "CAPSULE_ARCHIVE_DIR", tmp_path / "custody")
+    monkeypatch.setattr(
+        l7.perf_calibration,
+        "measure_quiescence",
+        lambda: l7.perf_calibration.Quiescence(False, 4.0, 1.0, 0, "literal busy"),
+    )
+    monkeypatch.setattr(candidate, "OUTPUT", tmp_path / "operations")
+
+    def numeric(argv, **_kwargs):
+        l7._write_json_atomic(
+            Path(argv[argv.index("--output") + 1]),
+            {"comparison": {"status": "evidence_only", "performance_claim": False}},
+        )
+        return 0
+
+    monkeypatch.setattr(l7, "main", numeric)
+    children = []
+    monkeypatch.setattr(
+        l7.perf_calibration,
+        "run_and_measure",
+        lambda *args, **kwargs: children.append(args),
+    )
+    later = []
+    monkeypatch.setattr(
+        candidate, "run_storage", lambda *_args: later.append("storage")
+    )
+    if source_changed:
+        with pytest.raises(RuntimeError, match="repository source changed"):
+            candidate.main([])
+        assert later == []
+    else:
+        assert candidate.main([]) == 1
+        assert later == ["storage"]
+    assert children == []
+    assert (
+        json.loads((candidate.OUTPUT / "list/result.json").read_text(encoding="utf-8"))[
+            "status"
+        ]
+        == "failed"
+    )
+
+
+@pytest.mark.parametrize("defect", ["late-allocation", "forged-summary"])
+def test_list_timing_rejection_cannot_mask_payload_corruption(defect):
+    from tools import run_candidate_runtime_costs as candidate
+
+    payload = _list_closed_child_payload()
+    values = [float(value) for value in range(1, 10)]
+    for sample, value in zip(payload["cases"][0]["samples"], values, strict=True):
+        sample["ns_per_op"] = value
+    payload["cases"][0]["summary"]["ns_per_op"] = candidate.l7._summary(values)
+    if defect == "late-allocation":
+        payload["cases"][1]["samples"][0]["allocations_per_op"] = 1.0
+    else:
+        payload["cases"][-1]["summary"]["ns_per_op"]["median"] = 999.0
+    with pytest.raises(RuntimeError) as caught:
+        candidate.lists._validate_payload(
+            payload,
+            source={"git_commit": SHA, "git_dirty": False},
+            build={"artifact_fingerprint": SHA},
+            rustc="rustc-fixture",
+            run_nonce=NONCE,
+            execution_control={
+                "affinity_mask": "0x4",
+                "scope": "current_benchmark_thread",
+            },
+        )
+    assert not isinstance(caught.value, candidate.l7.EvidenceRejected)
