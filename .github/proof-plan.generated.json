@@ -338,7 +338,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "1c55f97a3e9950b5546d393adcf7a50c2a426ee9ffa5aa06a0d2d07731e04da6",
+  "authority_sha256": "0377a8fe8cae587259788859932f1e8b0d662fbd8d2d9bf7ea5e661b0668b3b7",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -722,6 +722,8 @@
       "description": "Hosted Linux, macOS, and Windows queue, process, path, and source-build custody proof, plus Rust workspace lint/compile and runtime test truth on macOS.",
       "executor": "github-matrix",
       "inputs": [
+        "include/molt/**",
+        "tests/cli/test_c_api_headers.py",
         ".github/actions/setup-project/**",
         "tools/check_rust_toolchain.py",
         "tests/tools/test_setup_project_inputs.py",
@@ -4734,6 +4736,40 @@
       "argv": [
         "uv",
         "run",
+        "--active",
+        "--project",
+        ".",
+        "--no-sync",
+        "python",
+        "-u",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/cli/test_c_api_headers.py::test_optimize_flag_headers_share_data_across_translation_units"
+      ],
+      "cache_domain": "pytest",
+      "cell": "windows-x86_64-py312-queue-portability",
+      "dependencies": [],
+      "family": "platform_portability",
+      "id": "portability.headers.windows",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "hosted-clang-cl"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
         "--frozen",
         "python",
         "tools/run_candidate_runtime_costs.py"
@@ -4885,10 +4921,10 @@
         "windows-x86_64-py312-queue-portability": {
           "budget_seconds": 10800,
           "critical_path_seconds": 1800,
-          "headroom_seconds": 8760,
-          "projected_makespan_seconds": 2040,
+          "headroom_seconds": 8700,
+          "projected_makespan_seconds": 2100,
           "resource_capacity_floor_seconds": {
-            "python-tests": 1920
+            "python-tests": 2070
           }
         }
       },
@@ -6679,6 +6715,18 @@
         "--version"
       ],
       "version_pattern": "clang version 22\\.1\\.8\\b"
+    },
+    {
+      "executable": "clang-cl",
+      "name": "hosted-clang-cl",
+      "setup_evidence": [
+        ".github/workflows/ci.yml::The Windows image supplies clang-cl for the C ABI header probes."
+      ],
+      "setup_value": "windows-2022 image C11 compiler",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^clang version [0-9]+\\.[0-9]+\\.[0-9]+\\b"
     },
     {
       "executable": "ninja",

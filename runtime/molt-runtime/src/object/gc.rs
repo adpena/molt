@@ -1538,6 +1538,7 @@ fn promote_marked_candidates(
 /// # Safety
 /// `ptr` must be a live object of a `may_form_cycle` type. The GIL is held (the
 /// `TYPE_ID_OBJECT` arm reads class metadata through the shared inline-field walker).
+#[cfg(test)]
 pub(crate) unsafe fn molt_traverse(py: &PyToken<'_>, ptr: *mut u8, visit: &mut dyn FnMut(*mut u8)) {
     unsafe { super::heap_lifecycle::visit_owned_edges(py, ptr, visit) }
 }

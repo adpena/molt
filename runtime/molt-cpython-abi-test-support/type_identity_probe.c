@@ -260,3 +260,7 @@ PyObject *MOLT_GC_PROBE(_sequence_iterator_first)(PyObject *value) {
     Py_DECREF(iter);
     return item;
 }
+
+/* These functions are compiled into separate translation units for both
+ * distributed headers. The Rust consumer supplies the actual exported owner. */
+int *MOLT_GC_PROBE(_optimize_address)(void) { return &Py_OptimizeFlag; }

@@ -4,6 +4,22 @@ use super::*;
 use molt_cpython_abi::abi_types;
 use std::os::raw::c_int;
 
+#[test]
+fn optimize_flag_c_consumers_share_the_runtime_owner() {
+    molt_cpython_abi_test_support::link();
+    unsafe extern "C" {
+        fn molt_public_type_identity_probe_optimize_address() -> *mut c_int;
+        fn molt_linked_type_identity_probe_optimize_address() -> *mut c_int;
+    }
+    // Address identity does not read or mutate the process-global flag. The
+    // separately executed C fixture owns its own data and proves write visibility.
+    let owner = std::ptr::addr_of_mut!(abi_types::Py_OptimizeFlag);
+    unsafe {
+        assert_eq!(molt_public_type_identity_probe_optimize_address(), owner);
+        assert_eq!(molt_linked_type_identity_probe_optimize_address(), owner);
+    }
+}
+
 type Probe = unsafe extern "C" fn(*mut PyObject, *mut PyTypeObject, c_int, c_int) -> c_int;
 unsafe extern "C" {
     fn molt_public_type_identity_probe(

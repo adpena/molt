@@ -3112,12 +3112,9 @@ pub(crate) unsafe fn builtin_slot_owner(
     let name_len = name.len();
     let name = name.as_ptr();
     unsafe {
-        let Some(function) = crate::obj_from_bits(descriptor)
+        let function = crate::obj_from_bits(descriptor)
             .as_ptr()
-            .filter(|p| object_type_id(*p) == crate::TYPE_ID_FUNCTION)
-        else {
-            return None;
-        };
+            .filter(|p| object_type_id(*p) == crate::TYPE_ID_FUNCTION)?;
         let expected = if constructor {
             NativeCallableKind::Function
         } else {
@@ -3127,15 +3124,10 @@ pub(crate) unsafe fn builtin_slot_owner(
         {
             return None;
         }
-        let Some(name_bits) = FunctionMetadataField::Name.load(function) else {
-            return None;
-        };
-        let Some(declared_name) = crate::obj_from_bits(name_bits)
+        let name_bits = FunctionMetadataField::Name.load(function)?;
+        let declared_name = crate::obj_from_bits(name_bits)
             .as_ptr()
-            .filter(|p| object_type_id(*p) == crate::TYPE_ID_STRING)
-        else {
-            return None;
-        };
+            .filter(|p| object_type_id(*p) == crate::TYPE_ID_STRING)?;
         if name.is_null()
             || crate::string_len(declared_name) != name_len
             || std::slice::from_raw_parts(crate::string_bytes(declared_name), name_len)
@@ -3148,9 +3140,7 @@ pub(crate) unsafe fn builtin_slot_owner(
         } else {
             FunctionMetadataField::Owner
         };
-        let Some(owner) = owner_field.load(function) else {
-            return None;
-        };
+        let owner = owner_field.load(function)?;
         // object construction also shares the existing executable identity
         // boundary used by the runtime constructor argument policy.
         if constructor

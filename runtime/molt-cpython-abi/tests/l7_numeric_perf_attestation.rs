@@ -883,32 +883,6 @@ fn enforce_allocation_free_cases(cases: &[CaseResult]) {
     }
 }
 
-fn enforce_legacy_raw_lane_absent() {
-    let bridge = concat!(
-        include_str!("../src/bridge.rs"),
-        include_str!("../src/bridge/identity.rs"),
-        include_str!("../src/bridge/identity/ffi_exports.rs"),
-        include_str!("../src/bridge/identity/layouts.rs"),
-        include_str!("../src/bridge/identity/lifecycle.rs"),
-        include_str!("../src/bridge/identity/managed_objects.rs"),
-        include_str!("../src/bridge/identity/numeric_projection.rs"),
-        include_str!("../src/bridge/identity/registry.rs"),
-        include_str!("../src/bridge/identity/retired_guards.rs"),
-        include_str!("../src/bridge/identity/tag_table.rs"),
-    );
-    let probe = include_str!("../../molt-cpython-abi-test-support/l7_overlay_probe.c");
-    let raw_variant = ["Raw", "Molt"].concat();
-    let raw_probe_prefix = ["molt_l7_overlay_", "raw_"].concat();
-    assert!(
-        !bridge.contains(&raw_variant),
-        "legacy raw-handle PyObject variant remains in bridge authority"
-    );
-    assert!(
-        !probe.contains(&raw_probe_prefix),
-        "legacy raw-pointer overlay probe symbol remains"
-    );
-}
-
 #[test]
 fn compiled_prebuilt_direct_refcount_retains_identity_until_zero() {
     initialize_hooks();
@@ -926,7 +900,6 @@ fn l7_numeric_performance_attestation() {
         "L7 numeric attestation is release-only"
     );
     let affinity_mask = enforce_current_thread_affinity(&required_env("MOLT_L7_AFFINITY_MASK"));
-    enforce_legacy_raw_lane_absent();
     initialize_hooks();
 
     let mut cases = Vec::new();

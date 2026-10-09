@@ -822,14 +822,12 @@ pub extern "C" fn molt_types_mappingproxy_get(
         }
         if let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
             unsafe {
-                if object_type_id(kwargs_ptr) == TYPE_ID_DICT {
-                    if crate::dict_len(kwargs_ptr) != 0 {
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "mappingproxy.get() takes no keyword arguments",
-                        );
-                    }
+                if object_type_id(kwargs_ptr) == TYPE_ID_DICT && crate::dict_len(kwargs_ptr) != 0 {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "mappingproxy.get() takes no keyword arguments",
+                    );
                 }
             }
         }

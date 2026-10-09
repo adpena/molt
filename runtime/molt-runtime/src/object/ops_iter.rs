@@ -2367,8 +2367,6 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         } else {
                             (len, crate::object::seq_access::item(target_ptr, idx), false)
                         }
-                    } else if target_type == TYPE_ID_RANGE {
-                        (0, None, false)
                     } else {
                         (0, None, false)
                     }

@@ -44,7 +44,7 @@ pub(crate) unsafe fn dict_snapshot<'a, 'py>(
                 return None;
             };
             let mut values = super::backing::tracked_vec_box_from_raw(storage);
-            for pair in entries.chunks_exact(2) {
+            for pair in entries.as_chunks::<2>().0 {
                 let tuple = alloc_tuple(py, pair);
                 if tuple.is_null() {
                     let _partial =

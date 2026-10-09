@@ -160,8 +160,7 @@ pub(in crate::object) unsafe fn call_numeric_dunder(
             op_name_bits,
             rop_name_bits,
             modulus,
-            true,
-            true,
+            [true, true],
         )
     }
 }
@@ -173,8 +172,7 @@ pub(in crate::object) unsafe fn call_numeric_dunder_sides(
     op_name_bits: u64,
     rop_name_bits: u64,
     modulus: Option<u64>,
-    left_dispatches: bool,
-    right_dispatches: bool,
+    [left_dispatches, right_dispatches]: [bool; 2],
 ) -> Option<u64> {
     unsafe {
         // Snapshot identities only to choose CPython's reflected-subclass

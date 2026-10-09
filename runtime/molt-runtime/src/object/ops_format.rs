@@ -1565,7 +1565,7 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
                         FormatBuffer::from("dict_items([")
                     };
                     let mut first = true;
-                    for pair in pairs.chunks_exact(2) {
+                    for pair in pairs.as_chunks::<2>().0 {
                         if !first {
                             out.push_str(", ");
                         }

@@ -53,7 +53,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 180 min | 10800 s per cell | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 113 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 180 min | 10800 s per cell | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 115 |
 
 ## Scheduled families
 
@@ -115,6 +115,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `git` | `executable` | — | `^git version 2\.` | `.` | `2.x` | 1 |
 | `rustfmt` | `executable` | — | `^rustfmt 1\.10\.0-stable\b` | `.` | `1.10.0` | 3 |
 | `clang` | `executable` | — | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `hosted-clang-cl` | `executable` | — | `^clang version [0-9]+\.[0-9]+\.[0-9]+\b` | `.` | `windows-2022 image C11 compiler` | 1 |
 | `ninja` | `executable` | — | `^1\.13\.0(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$` | `.` | `1.13.0` | 2 |
 | `wasi-clang` | `executable` | — | `clang version 23\.1\.0\b` | `.` | `23.1.0` | 1 |
 | `llvm-config` | `executable` | — | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
@@ -259,6 +260,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `portability.cargo-custody.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
 | `portability.cargo-custody.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
 | `portability.cargo-custody.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
+| `portability.headers.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 300 s | `python-tests` | 0 |
 | `runtime.cost.candidate` | `runtime_candidate_costs` | `linux-x86_64-rust-native-release` | `shipping` | 9000 s | `compiler-build-resource` | 0 |
 
 ## Local integration families

@@ -40,7 +40,7 @@ impl CallKeywords<'_, '_> {
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&String, &u64)> {
         self.names
             .iter()
-            .zip(self.entries.chunks_exact(2).map(|row| &row[1]))
+            .zip(self.entries.as_chunks::<2>().0.iter().map(|row| &row[1]))
     }
 }
 

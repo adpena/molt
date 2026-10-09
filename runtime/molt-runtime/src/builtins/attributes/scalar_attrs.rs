@@ -30,7 +30,8 @@ pub(crate) fn numeric_publish_members(py: &PyToken<'_>) -> bool {
         };
         let _getter = PtrDropGuard::new(getter_ptr);
         let builtins = builtin_classes(py);
-        let definitions: [(u64, NativeDescriptorFlavor, &[(&str, NumericMember, &str)]); 3] = [
+        type MemberDefinition = (&'static str, NumericMember, &'static str);
+        let definitions: [(u64, NativeDescriptorFlavor, &[MemberDefinition]); 3] = [
             (
                 builtins.int,
                 NativeDescriptorFlavor::GetSet,

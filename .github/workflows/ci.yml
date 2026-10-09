@@ -133,6 +133,8 @@ jobs:
           "MOLT_PROOF_TEST_METADATA_ROOT=$metadataRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup portability toolchains
+        # The Windows image supplies clang-cl for the C ABI header probes.
+        # Their proof command captures its exact identity before execution.
         uses: ./.github/actions/setup-project
         with:
           rust-toolchain: pinned
