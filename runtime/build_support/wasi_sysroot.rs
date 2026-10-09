@@ -4,6 +4,7 @@
 //! the bounded transport, target/variant, paths and extents. SHA256 fields are
 //! content declarations checked by Python command custody, not authenticated
 //! evidence merely because they arrived in an environment variable.
+#[cfg(not(test))]
 use std::env;
 use std::path::{Component, Path, PathBuf};
 
@@ -163,9 +164,10 @@ fn rust_argument_value<'a>(
 
 impl WasiCAbiPlan {
     pub fn decode(value: &str) -> Result<Self, String> {
+        let (pairs, remainder) = value.as_bytes().as_chunks::<2>();
         if value.is_empty()
             || value.len() > bound("max_chars")
-            || value.len() % 2 != 0
+            || !remainder.is_empty()
             || !value
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -173,9 +175,8 @@ impl WasiCAbiPlan {
             return Err("invalid bounded WASI C-runtime projection encoding".into());
         }
         let nibble = |b: u8| if b <= b'9' { b - b'0' } else { b - b'a' + 10 };
-        let bytes: Vec<u8> = value
-            .as_bytes()
-            .chunks_exact(2)
+        let bytes: Vec<u8> = pairs
+            .iter()
             .map(|pair| (nibble(pair[0]) << 4) | nibble(pair[1]))
             .collect();
         let text =
@@ -266,24 +267,6 @@ impl WasiCAbiPlan {
             linker,
             members,
         })
-    }
-
-    pub fn member(&self, role: &str) -> &Path {
-        &self
-            .members
-            .iter()
-            .find(|(name, _)| name == role)
-            .expect("canonical WASI member role")
-            .1
-    }
-    pub fn libc(&self) -> &Path {
-        self.member("libc")
-    }
-    pub fn long_double(&self) -> &Path {
-        self.member("long_double")
-    }
-    pub fn compiler_rt(&self) -> &Path {
-        self.member("compiler_rt")
     }
 
     pub fn native_search_directories(&self) -> Vec<&Path> {
@@ -379,6 +362,8 @@ impl WasiCAbiPlan {
         Ok(())
     }
 
+    // Build scripts admit the Cargo environment; wire tests admit explicit values.
+    #[cfg(not(test))]
     pub fn from_environment() -> Self {
         println!("cargo:rerun-if-env-changed={PLAN_ENV}");
         let raw = env::var(PLAN_ENV).unwrap_or_else(|_| panic!(

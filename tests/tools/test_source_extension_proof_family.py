@@ -299,9 +299,10 @@ def test_named_native_intent_reaches_host_compiler_selection(
     cxx = tmp_path / ("cxx-clang-cl.exe" if msvc else "host-cxx")
     compiler.write_bytes(b"fixture; never executed")
     cxx.write_bytes(b"fixture; never executed")
+    cxx_mode = "--driver-mode=cl" if msvc else "--driver-mode=g++"
     selected = {
         "CC": str(compiler),
-        "CXX": str(cxx) + (" --driver-mode=cl" if msvc else ""),
+        "CXX": f"{cxx} {cxx_mode}",
         "MOLT_CROSS_CC": str(tmp_path / "must-not-select-cross-cc"),
         "MOLT_CROSS_CXX": str(tmp_path / "must-not-select-cross-cxx"),
         "PATH": "",
@@ -336,7 +337,7 @@ def test_named_native_intent_reaches_host_compiler_selection(
     )
     assert resolved.compiler_kind == ("host-clang-cl" if msvc else "host")
     assert resolved.commands["c"] == (str(compiler),)
-    expected_cxx = (str(cxx), "--driver-mode=cl") if msvc else (str(cxx),)
+    expected_cxx = (str(cxx), cxx_mode)
     assert resolved.commands["cpp"] == expected_cxx
     assert seen == [{"cc": (str(compiler),), "cxx": expected_cxx}]
 
