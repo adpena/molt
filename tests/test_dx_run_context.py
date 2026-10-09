@@ -28,7 +28,7 @@ from tools import hosted_ci_env, run_context_env
 
 # Unit cases create independent synthetic project roots. The process-wide
 # hosted checkout contract belongs to GITHUB_WORKSPACE, not those fixtures.
-pytestmark = pytest.mark.usefixtures("no_hosted_checkout_custody")
+pytestmark = pytest.mark.usefixtures("developer_host_context")
 
 
 def _clear_run_context_env(monkeypatch: pytest.MonkeyPatch) -> None:

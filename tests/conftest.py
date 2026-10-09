@@ -91,18 +91,38 @@ def no_ambient_guard_caps(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-@pytest.fixture
-def no_hosted_checkout_custody(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Resolve paths as a developer host does, not as a hosted CI job.
+# What a hosted job adds to a developer host: the custody contract, and the
+# Molt roots and session that the guarded executor derives from it. Tool caches
+# (UV_*, TMPDIR, PYTHONPYCACHEPREFIX) stay, so child `uv run` calls keep their
+# environment and write nothing into the checkout.
+DEVELOPER_HOST_CLEARED_KEYS = (
+    "MOLT_CI_EPHEMERAL_CUSTODY_ROOT",
+    "MOLT_EXT_ROOT",
+    "MOLT_TARGET_ROOT",
+    "MOLT_CACHE",
+    "MOLT_DIFF_ROOT",
+    "MOLT_DIFF_TMPDIR",
+    "MOLT_DIFF_CARGO_TARGET_DIR",
+    "CARGO_TARGET_DIR",
+    "MOLT_SESSION_ID",
+    "MOLT_SESSION_ID_GENERATED",
+)
 
-    The setup-project action exports the hosted custody root for the whole
-    job. With it set, ``molt.dx`` derives roots from GITHUB_WORKSPACE and
-    asks git for the checked-out commit, so a test that builds a synthetic
-    project or patches ``subprocess`` would test the CI custody instead.
+
+@pytest.fixture
+def developer_host_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve paths as a developer host with no ambient run context does.
+
+    A hosted job exports the custody root for the whole job, and the proof
+    plan's guarded executor exports the roots and session it derives from it.
+    A test that builds a synthetic project, patches ``subprocess`` or asserts
+    default roots would test that CI context instead.
     """
     from molt.dx import GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV
 
-    monkeypatch.delenv(GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV, raising=False)
+    assert GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV in DEVELOPER_HOST_CLEARED_KEYS
+    for key in DEVELOPER_HOST_CLEARED_KEYS:
+        monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture

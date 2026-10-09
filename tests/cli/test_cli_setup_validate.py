@@ -22,9 +22,7 @@ from tests.cli.process_guard import run_cli_test_process
 # These cases build synthetic projects and assert developer-host roots and
 # guard limits; hosted custody has its own cases in
 # tests/test_dx_run_context.py, and each limit case sets the caps it tests.
-pytestmark = pytest.mark.usefixtures(
-    "no_hosted_checkout_custody", "no_ambient_guard_caps"
-)
+pytestmark = pytest.mark.usefixtures("developer_host_context", "no_ambient_guard_caps")
 
 
 ROOT = Path(__file__).resolve().parents[2]

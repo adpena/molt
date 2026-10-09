@@ -22,7 +22,7 @@ from tests.cli.test_installed_runtime import bundle as bundle
 
 # These cases build synthetic projects and assert developer-host roots;
 # hosted custody has its own cases in tests/test_dx_run_context.py.
-pytestmark = pytest.mark.usefixtures("no_hosted_checkout_custody")
+pytestmark = pytest.mark.usefixtures("developer_host_context")
 
 _RUST_COMMANDS = {"cargo", "rustc", "rustup", "cargo-upgrade", "sccache"}
 _RUST_CHECKS = {

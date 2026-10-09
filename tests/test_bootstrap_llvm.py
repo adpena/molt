@@ -127,7 +127,7 @@ def test_explicit_targets_parse_before_unknown_host_default(
     )
 
 
-@pytest.mark.usefixtures("no_hosted_checkout_custody")
+@pytest.mark.usefixtures("developer_host_context")
 def test_managed_paths_share_checkout_family_custody() -> None:
     pin = bootstrap_llvm.required_llvm_backend_pin(ROOT)
     assert pin is not None

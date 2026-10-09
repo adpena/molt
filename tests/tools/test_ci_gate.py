@@ -14,9 +14,7 @@ from tests.process_guard_common import run_guarded_test_process
 
 # The gate tests patch subprocess and resolve default guard limits, so they
 # run outside hosted custody (which asks git for the checkout) and CI caps.
-pytestmark = pytest.mark.usefixtures(
-    "no_hosted_checkout_custody", "no_ambient_guard_caps"
-)
+pytestmark = pytest.mark.usefixtures("developer_host_context", "no_ambient_guard_caps")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_GATE = REPO_ROOT / "tools" / "ci_gate.py"
