@@ -1659,6 +1659,30 @@ def _render_observation_kind_predicates(data: dict) -> str:
     )
     lines.append(_render_matches_arm(data.get("exception_check_kinds", [])))
     lines.append("    )\n}\n\n")
+    for table, function, doc in (
+        (
+            "simpleir_pending_exception_raise_kinds",
+            "simpleir_kind_raises_pending_exception",
+            "always leaves an exception pending",
+        ),
+        (
+            "simpleir_pending_exception_clear_kinds",
+            "simpleir_kind_clears_pending_exception",
+            "always drops the pending exception",
+        ),
+    ):
+        lines.extend(
+            [
+                f"/// Whether this SimpleIR spelling {doc}.\n",
+                f"/// Generated from `{table}`.\n",
+                "#[inline]\n",
+                f"pub fn {function}(kind: &str) -> bool {{\n",
+                "    matches!(\n",
+                "        kind,\n",
+            ]
+        )
+        lines.append(_render_matches_arm(data.get(table, [])))
+        lines.append("    )\n}\n\n")
     lines.extend(
         [
             "/// Whether this SimpleIR spelling is the generated async-work poll.\n",

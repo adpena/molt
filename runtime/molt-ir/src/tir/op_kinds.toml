@@ -1104,6 +1104,13 @@ async_work_poll_after_opcodes = [
     "CallBuiltin",
 ]
 exception_check_kinds = ["check_exception", "async_work_poll"]
+# Pending-exception effects for the SimpleIR verifier's dataflow. `raise`
+# always leaves an exception pending, and execution continues to the next
+# exception check. Only these kinds drop a pending exception (the runtime's
+# molt_exception_clear and molt_exception_enter_handler); every other kind may
+# raise but leaves a pending exception in place.
+simpleir_pending_exception_raise_kinds = ["raise"]
+simpleir_pending_exception_clear_kinds = ["exception_clear", "exception_enter_handler"]
 async_work_poll_kinds = ["async_work_poll"]
 async_work_poll_marker_kinds = [
     "exception_finally_pending_observer",
