@@ -198,17 +198,40 @@ def runtime_fixture_root(tmp_path: Path) -> RuntimeFixtureRoot:
     return RuntimeFixtureRoot(tmp_path)
 
 
-def _remove_molt_stdlib_top_level_root() -> None:
-    """Keep host pytest imports on CPython's stdlib.
+def _remove_molt_stdlib_top_level_root() -> bool:
+    """Keep host pytest imports on CPython's stdlib; True if a root was found.
 
     Surface tests may load Molt stdlib files directly, but `src/molt/stdlib`
-    must not remain as a top-level import root during collection. If it does,
-    host imports such as `ctypes`, `fractions`, `statistics`, and `tarfile`
-    resolve to Molt intrinsic-gated wrappers and fail before the runtime exists.
+    must never be a top-level import root of the host process. If it is,
+    host imports such as `asyncio`, `concurrent`, `ctypes` and `tarfile`
+    resolve to Molt intrinsic-gated wrappers and fail with "runtime inactive"
+    in every later test on the worker, and in every child it spawns.
     """
 
+    found = MOLT_STDLIB_ROOT in sys.path
     while MOLT_STDLIB_ROOT in sys.path:
         sys.path.remove(MOLT_STDLIB_ROOT)
+    return found
+
+
+_MOLT_STDLIB_ROOT_LEAK = (
+    "{owner} left {root} on sys.path; Molt's stdlib then shadows CPython's "
+    "for the rest of the process. Load Molt stdlib files by path "
+    "(tests/stdlib_intrinsic_registry.py, tests/helpers/tinygrad_stdlib_loader.py) "
+    "or in a child interpreter."
+)
+
+
+@pytest.fixture(autouse=True)
+def _reject_molt_stdlib_import_root(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Fail the test that puts Molt's stdlib on the host import path."""
+    yield
+    if _remove_molt_stdlib_top_level_root():
+        pytest.fail(
+            _MOLT_STDLIB_ROOT_LEAK.format(
+                owner=request.node.nodeid, root=MOLT_STDLIB_ROOT
+            )
+        )
 
 
 def _ensure_src_on_path() -> None:
@@ -308,8 +331,16 @@ def pytest_sessionfinish(session, exitstatus) -> None:  # type: ignore[no-untype
         sentinel.__exit__(None, None, None)
 
 
-def pytest_collect_file() -> None:
-    _remove_molt_stdlib_top_level_root()
+@pytest.hookimpl(wrapper=True)
+def pytest_make_collect_report(collector):  # type: ignore[no-untyped-def]
+    """Fail the collection of a module that puts Molt's stdlib on sys.path."""
+    report = yield
+    if isinstance(collector, pytest.Module) and _remove_molt_stdlib_top_level_root():
+        report.outcome = "failed"
+        report.longrepr = _MOLT_STDLIB_ROOT_LEAK.format(
+            owner=collector.nodeid, root=MOLT_STDLIB_ROOT
+        )
+    return report
 
 
 @pytest.fixture
