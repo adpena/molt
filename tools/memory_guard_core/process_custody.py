@@ -80,7 +80,8 @@ class GuardSamplingTelemetry:
     max_process_rows: int = 0
     observer_wall_time_s: float = 0.0
     observer_cpu_time_s: float = 0.0
-    observer_cpu_duty_cycle: float = 0.0
+    # None when either time is not positive: the share is unmeasurable.
+    observer_cpu_duty_cycle: float | None = None
 
     @property
     def enforcement_complete(self) -> bool:
