@@ -178,7 +178,6 @@
   "tests/tools/test_artifact_cleanup.py",
   "tests/tools/test_benchmark_cext_trampoline.py",
   "tests/tools/test_cargo_test_binary_discovery.py",
-  "tests/tools/test_check_ir_structure.py",
   "tests/tools/test_cold_start_decompose.py",
   "tests/tools/test_dx_build_timer.py",
   "tests/tools/test_frontend_hot_pass_profile.py",
