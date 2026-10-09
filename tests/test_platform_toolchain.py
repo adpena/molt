@@ -12,6 +12,7 @@ import pytest
 
 from molt import platform_toolchain as platform_tools
 from tests.process_guard_common import install_module_view
+import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -61,8 +62,12 @@ def test_msvc_activation_owns_installation_and_search_roots_without_atl(
         "resolve_executable",
         lambda *_args, **_kwargs: tmp_path / "cmd.exe",
     )
-    monkeypatch.setattr(
-        platform_tools.shutil, "which", lambda name, **_kwargs: "cl.exe"
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        platform_tools,
+        which=lambda name, **_kwargs: "cl.exe",
     )
 
     def query(argv, env, **kwargs):
@@ -103,8 +108,12 @@ def test_msvc_activation_preserves_batch_path_with_spaces(tmp_path, monkeypatch)
     monkeypatch.setattr(
         platform_tools, "visual_studio_installation", lambda *_: install
     )
-    monkeypatch.setattr(
-        platform_tools.shutil, "which", lambda *_args, **_kwargs: "cl.exe"
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        platform_tools,
+        which=lambda *_args, **_kwargs: "cl.exe",
     )
     env = platform_tools.activate_msvc_environment(
         os.environ, repo_root=ROOT, machine="AMD64"

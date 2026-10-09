@@ -74,12 +74,8 @@ def _load_stdlib_module(name: str, relpath: str) -> types.ModuleType:
 
 
 @pytest.fixture()
-def mp_core(monkeypatch: pytest.MonkeyPatch):
+def mp_core():
     _install_intrinsics_stub()
-    # os.name must read as posix for the interesting branch (the Windows branch
-    # already only advertised spawn); force posix so the test proves fork was
-    # dropped even on the non-Windows path.
-    monkeypatch.setattr("os.name", "posix", raising=False)
     mod = _load_stdlib_module("molt_test__mp_core", "multiprocessing/_core.py")
     yield mod
     sys.modules.pop("molt_test__mp_core", None)

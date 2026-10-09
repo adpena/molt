@@ -9,6 +9,8 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+import shutil
+from tests.process_guard_common import install_module_view
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = REPO_ROOT / "tools" / "check_luau_static.py"
@@ -68,7 +70,7 @@ def test_require_analyzer_fails_when_missing(tmp_path: Path, monkeypatch) -> Non
     source = tmp_path / "sample.py"
     source.write_text("print('ok')\n", encoding="utf-8")
 
-    monkeypatch.setattr(mod.shutil, "which", lambda name: None)
+    install_module_view(monkeypatch, "shutil", shutil, mod, which=lambda name: None)
 
     rc = mod.main([str(source), "--require-analyzer"])
     assert rc == 2
@@ -85,7 +87,9 @@ def test_batch_runs_and_writes_json_report(tmp_path: Path, monkeypatch) -> None:
 
     json_out = tmp_path / "report.json"
 
-    monkeypatch.setattr(mod.shutil, "which", lambda name: "/usr/bin/luau-analyze")
+    install_module_view(
+        monkeypatch, "shutil", shutil, mod, which=lambda name: "/usr/bin/luau-analyze"
+    )
 
     def _fake_run(cmd, **kwargs):
         if len(cmd) >= 3 and cmd[1] == "-m" and cmd[2] == "molt.cli":
@@ -138,7 +142,7 @@ def test_missing_analyzer_is_nonfatal_without_requirement(
     source.write_text("print('ok')\n", encoding="utf-8")
     json_out = tmp_path / "single-report.json"
 
-    monkeypatch.setattr(mod.shutil, "which", lambda name: None)
+    install_module_view(monkeypatch, "shutil", shutil, mod, which=lambda name: None)
 
     def _fake_run(cmd, **kwargs):
         if len(cmd) >= 3 and cmd[1] == "-m" and cmd[2] == "molt.cli":

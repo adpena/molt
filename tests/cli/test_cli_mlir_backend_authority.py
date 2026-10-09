@@ -6,6 +6,8 @@ from pathlib import Path
 
 import molt.cli as cli
 from molt.cli import mlir_backend
+import shutil
+from tests.process_guard_common import install_module_view
 
 _MLIR_BACKEND_NAMES = (
     "_ensure_mlir_backend_binary",
@@ -70,10 +72,12 @@ def test_ensure_mlir_backend_builds_once_with_canonical_environment(
     backend = manifest.parent / "target" / "release" / _backend_name()
     captured: dict[str, object] = {}
 
-    monkeypatch.setattr(
-        mlir_backend.shutil,
-        "which",
-        lambda name: "C:/bin/cargo.exe" if name == "cargo" else None,
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        mlir_backend,
+        which=lambda name: "C:/bin/cargo.exe" if name == "cargo" else None,
     )
     monkeypatch.setattr(
         mlir_backend,

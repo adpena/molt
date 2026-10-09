@@ -16,6 +16,8 @@ from molt.target_python import (
 )
 from tests import test_finally_pending_observer_parity as parity
 from tools.compat.comparison import Outputs
+import shutil
+from tests.process_guard_common import install_module_view
 
 
 def _version(short: str) -> TargetPythonVersion:
@@ -227,8 +229,12 @@ def test_cpython_builder_projects_existing_extension_manifest(
     monkeypatch.setattr(builder, "Extension", extension)
     monkeypatch.setattr(builder, "Distribution", distribution)
     monkeypatch.setattr(builder, "build_ext", Build)
-    monkeypatch.setattr(
-        builder.shutil, "copyfile", lambda src, dst: copied.append((src, dst))
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        builder,
+        copyfile=lambda src, dst: copied.append((src, dst)),
     )
     builder.build(parity.FIXTURE, tmp_path)
     assert commands == ["finalized", "run"]

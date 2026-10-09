@@ -23,6 +23,7 @@ import platform
 
 import pytest
 from tests.process_guard_common import install_module_view
+import shutil
 
 _RUNNER = Path(__file__).resolve().parents[2] / "tools" / "witness_iter.py"
 
@@ -186,7 +187,9 @@ def test_wsl_boundary_keeps_dynamic_values_out_of_shell_program(monkeypatch):
     calls: list[tuple[list[str], dict[str, object]]] = []
     marker = "; touch /tmp/not-executed"
     install_module_view(monkeypatch, "platform", platform, WI, system=lambda: "Windows")
-    monkeypatch.setattr(WI.shutil, "which", lambda _name: "wsl.exe")
+    install_module_view(
+        monkeypatch, "shutil", shutil, WI, which=lambda _name: "wsl.exe"
+    )
     monkeypatch.delenv("MOLT_WITNESS_WSL_REPO", raising=False)
 
     def fake_run(command: list[str], **kwargs: object):
