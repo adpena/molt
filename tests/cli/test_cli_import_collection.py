@@ -135,13 +135,13 @@ from tests.runtime_build_identity_helper import (
     mock_wasm_optimizer_cache_fact,
     mock_wasm_optimizer_publications,
 )
-from tests.subprocess_view import patch_module_subprocess
 from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbol as _wasm_exporting_i64_unary_symbol,
 )
 from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbols as _wasm_exporting_i64_unary_symbols,
 )
+from tests.process_guard_common import install_module_view
 
 cli_deps = importlib.import_module("molt.cli.deps")
 cli_frontend_worker = importlib.import_module("molt.cli.frontend_worker")
@@ -20503,8 +20503,12 @@ def test_start_backend_daemon_leaves_warming_process_running(
     monkeypatch.setattr(
         BACKEND_EXECUTION, "_backend_daemon_wait_until_ready", fake_wait_until_ready
     )
-    patch_module_subprocess(
-        monkeypatch, BACKEND_EXECUTION, Popen=lambda *args, **kwargs: _FakePopen()
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        BACKEND_EXECUTION,
+        Popen=lambda *args, **kwargs: _FakePopen(),
     )
     monkeypatch.setattr(
         BACKEND_EXECUTION,
@@ -20621,8 +20625,12 @@ def test_start_backend_daemon_trusts_verified_busy_socket_with_live_pid(
     monkeypatch.setattr(
         BACKEND_EXECUTION, "_backend_daemon_wait_until_ready", fake_wait_until_ready
     )
-    patch_module_subprocess(
-        monkeypatch, BACKEND_EXECUTION, Popen=lambda *args, **kwargs: _FakePopen()
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        BACKEND_EXECUTION,
+        Popen=lambda *args, **kwargs: _FakePopen(),
     )
     monkeypatch.setattr(
         BACKEND_EXECUTION,
@@ -20713,7 +20721,9 @@ def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
     monkeypatch.setattr(
         BACKEND_EXECUTION, "_backend_daemon_wait_until_ready", fake_wait_until_ready
     )
-    patch_module_subprocess(monkeypatch, BACKEND_EXECUTION, Popen=fake_popen)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, BACKEND_EXECUTION, Popen=fake_popen
+    )
 
     with tempfile.TemporaryDirectory(
         prefix="moltbd-test-", dir=tempfile.gettempdir()
@@ -20825,8 +20835,12 @@ def test_start_backend_daemon_refuses_to_kill_unverified_stale_identity(
         "_backend_daemon_process_command",
         lambda pid: f"{backend_bin} --daemon --socket {socket_path}",
     )
-    patch_module_subprocess(
-        monkeypatch, BACKEND_EXECUTION, Popen=lambda *args, **kwargs: _FakePopen()
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        BACKEND_EXECUTION,
+        Popen=lambda *args, **kwargs: _FakePopen(),
     )
 
     assert (
@@ -24777,7 +24791,9 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
         cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint
     )
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fake_run_cargo)
-    patch_module_subprocess(monkeypatch, BACKEND_EXECUTION, run=fake_run)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, BACKEND_EXECUTION, run=fake_run
+    )
     monkeypatch.setattr(
         cli_backend_binary,
         "_run_subprocess_captured_to_tempfiles",
@@ -24926,7 +24942,9 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
         cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint
     )
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fake_run_cargo)
-    patch_module_subprocess(monkeypatch, BACKEND_EXECUTION, run=fake_run)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, BACKEND_EXECUTION, run=fake_run
+    )
     monkeypatch.setattr(
         cli_backend_binary,
         "_run_subprocess_captured_to_tempfiles",
@@ -28442,7 +28460,9 @@ def test_start_backend_daemon_rejects_overlong_unix_socket_paths(
         popen_called = True
         raise AssertionError("daemon should not spawn for an overlong unix socket path")
 
-    patch_module_subprocess(monkeypatch, BACKEND_EXECUTION, Popen=fake_popen)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, BACKEND_EXECUTION, Popen=fake_popen
+    )
 
     ok = cli._start_backend_daemon(
         backend_bin,

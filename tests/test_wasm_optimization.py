@@ -34,7 +34,7 @@ from molt.wasm_optimizer_identity import (
     wasm_optimizer_pipeline_authority_sha256,
 )
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
-from tests.subprocess_view import patch_module_subprocess
+from tests.process_guard_common import install_module_view
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -457,8 +457,10 @@ class TestWasmOptReduction:
         executable = tmp_path / "wasm-opt"
         executable.write_bytes(b"binaryen-test-build")
         monkeypatch.setattr(mod, "find_wasm_opt", lambda: str(executable))
-        patch_module_subprocess(
+        install_module_view(
             monkeypatch,
+            "subprocess",
+            subprocess,
             binaryen_identity,
             run=lambda cmd, **_kwargs: subprocess.CompletedProcess(
                 cmd, returncode, stdout, stderr

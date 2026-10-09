@@ -27,8 +27,8 @@ from tools import (
 from tools.proof_queue_pkg import command_admission, supervisor_custody
 from tools.proof_queue_pkg import custody as proof_queue_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
-from tests.process_guard_common import run_guarded_test_process
-from tests.subprocess_view import patch_module_subprocess
+from tests.process_guard_common import install_module_view, run_guarded_test_process
+import subprocess
 
 
 PLAN = proof_plan.ProofPlan.load()
@@ -1367,7 +1367,7 @@ def test_toolchain_fingerprint_selects_sdk_only_for_declared_wasm_role(
         banner = f"LLVM version {version}" if name == "llvm-nm" else f"LLD {version}"
         return proof_plan.subprocess.CompletedProcess(command, 0, banner, "")
 
-    patch_module_subprocess(monkeypatch, proof_plan, run=run)
+    install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=run)
     actual = proof_plan._version_fingerprint(policy)
     assert actual is not None
     assert actual["path"] == str(selected)
@@ -1421,7 +1421,7 @@ def test_toolchain_content_and_version_probes_share_declared_cwd(monkeypatch) ->
         return proof_plan.subprocess.CompletedProcess(argv, 0, output)
 
     monkeypatch.setattr(proof_plan.shutil, "which", lambda _requested: sys.executable)
-    patch_module_subprocess(monkeypatch, proof_plan, run=fake_run)
+    install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=fake_run)
 
     fingerprint = proof_plan._version_fingerprint(policy)
     expected_cwd = (proof_plan.ROOT / "formal/lean").resolve()
@@ -1462,7 +1462,7 @@ def test_toolchain_content_probe_ignores_provisioner_stderr(
         return proof_plan.subprocess.CompletedProcess(argv, 0, "probe 1.0\n", "")
 
     monkeypatch.setattr(proof_plan.shutil, "which", lambda _requested: sys.executable)
-    patch_module_subprocess(monkeypatch, proof_plan, run=fake_run)
+    install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=fake_run)
 
     fingerprint = proof_plan._version_fingerprint(policy)
     assert fingerprint is not None

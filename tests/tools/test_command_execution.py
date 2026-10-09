@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools import command_execution
-from tests.subprocess_view import patch_module_subprocess
+from tests.process_guard_common import install_module_view
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -137,7 +137,9 @@ def test_owned_cargo_process_normalizes_wrapper_incremental_conflict(
             captured["command"] = command
             captured["kwargs"] = kwargs
 
-    patch_module_subprocess(monkeypatch, command_execution, Popen=FakePopen)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, command_execution, Popen=FakePopen
+    )
     executor = command_execution.CommandExecutor.for_file(__file__)
 
     executor.start_owned(
