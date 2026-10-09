@@ -389,8 +389,8 @@ def _reachable_blocks(successors: dict[int, list[int]]) -> set[int]:
 
 def _compute_immediate_dominators(
     *,
-    successors: dict[int, list[int]],
-    predecessors: dict[int, list[int]],
+    successors: Mapping[int, Sequence[int]],
+    predecessors: Mapping[int, Sequence[int]],
 ) -> dict[int, int]:
     """Immediate dominators of the blocks reachable from the entry block 0.
 
