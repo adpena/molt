@@ -56,9 +56,10 @@ def _load_nemotron_modal_module(monkeypatch: pytest.MonkeyPatch):
     fake_modal = SimpleNamespace(
         App=_FakeModalApp,
         Image=_FakeModalImage,
+        concurrent=_identity_decorator,
         enter=_identity_decorator,
+        fastapi_endpoint=_identity_decorator,
         method=_identity_decorator,
-        web_endpoint=_identity_decorator,
     )
     monkeypatch.setitem(sys.modules, "modal", fake_modal)
     module_name = "test_loaded_nemotron_ocr"
