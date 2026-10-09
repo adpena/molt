@@ -5,6 +5,9 @@ from functools import partial
 
 import pytest
 
+from molt.compiler_analysis.python_binding_flow import analyze_python_bindings
+from molt.compiler_analysis.python_source_keys import python_ast_digest
+from molt.compiler_analysis.python_value_identity import UNBOUND_IDENTITY
 from molt.frontend import SimpleTIRGenerator
 from molt.frontend._types import MoltOp, MoltValue
 
@@ -97,3 +100,118 @@ def test_new_handler_inside_suppression_still_observes_fallible_store():
         "CHECK_EXCEPTION",
     ]
     assert gen.current_ops[-1].args == [200]
+
+
+# A frame-home store can raise, and a failed store keeps the earlier binding.
+# Each source below resumes after such a store: a suppressing __exit__ (the
+# `with` target binds first in its protected region) or a handler (the store is
+# the try body's only fallible step). CPython's rule for an unbound local then
+# applies: the later read raises UnboundLocalError instead of reading garbage.
+_RECOVERED_STORE_SOURCES = {
+    "with_target": (
+        "def probe(manager):\n"
+        "    with manager as bound:\n"
+        "        pass\n"
+        "    return bound\n"
+    ),
+    "with_target_in_loop": (
+        "def probe(managers):\n"
+        "    for manager in managers:\n"
+        "        with manager as bound:\n"
+        "            pass\n"
+        "        print(bound)\n"
+    ),
+    "inner_with_target": (
+        "def probe(outer, inner):\n"
+        "    with outer, inner as bound:\n"
+        "        pass\n"
+        "    return bound\n"
+    ),
+    "try_body_local_copy": (
+        "def probe(other):\n"
+        "    try:\n"
+        "        bound = other\n"
+        "    except MemoryError:\n"
+        "        pass\n"
+        "    return bound\n"
+    ),
+}
+
+_UNBOUND_BOUND_MESSAGE = (
+    "cannot access local variable 'bound' where it is not associated with a value"
+)
+
+
+def _bound_read_facts(source: str):
+    tree = ast.parse(source)
+    index = analyze_python_bindings(tree, source_digest=python_ast_digest(tree))
+    reads = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+        and node.id == "bound"
+        and isinstance(node.ctx, ast.Load)
+    ]
+    assert reads
+    return [index.expression_fact(node) for node in reads]
+
+
+def _probe_ops(source: str, target: tuple[int, int]) -> list[MoltOp]:
+    gen = SimpleTIRGenerator(module_name="home_edges", target_python=target)
+    gen.visit(ast.parse(source))
+    return gen.funcs_map["home_edges__probe"]["ops"]
+
+
+@pytest.mark.parametrize(
+    "source", _RECOVERED_STORE_SOURCES.values(), ids=_RECOVERED_STORE_SOURCES.keys()
+)
+def test_read_after_a_recovered_store_may_see_the_name_unbound(source):
+    for fact in _bound_read_facts(source):
+        assert fact is not None and fact.name_lookup == "lexical"
+        assert fact.identities & UNBOUND_IDENTITY
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize(
+    "source", _RECOVERED_STORE_SOURCES.values(), ids=_RECOVERED_STORE_SOURCES.keys()
+)
+def test_read_after_a_recovered_store_checks_the_home(source, target):
+    ops = _probe_ops(source, target)
+    assert any(
+        op.kind == "CONST_STR" and op.args == [_UNBOUND_BOUND_MESSAGE] for op in ops
+    )
+    assert not any(
+        op.kind == "LOAD_VAR" and (op.metadata or {}).get("var") == "bound"
+        for op in ops
+    ), "an SSA read would use a definition the failed store skipped"
+
+
+def test_failed_with_target_store_keeps_an_earlier_binding():
+    source = (
+        "def probe(manager):\n"
+        "    bound = None\n"
+        "    with manager as bound:\n"
+        "        pass\n"
+        "    return bound\n"
+    )
+    (fact,) = _bound_read_facts(source)
+    assert fact is not None and not fact.identities & UNBOUND_IDENTITY
+    ops = _probe_ops(source, (3, 12))
+    assert not any(
+        op.kind == "CONST_STR" and op.args == [_UNBOUND_BOUND_MESSAGE] for op in ops
+    )
+
+
+def test_failed_store_raises_from_the_state_before_it():
+    # Boxing fails before the home publishes the new binding, so the handler
+    # sees only the state before the store: `bound` is definitely unbound.
+    source = (
+        "def probe(other):\n"
+        "    try:\n"
+        "        bound = 1\n"
+        "    except MemoryError:\n"
+        "        return bound\n"
+        "    return other\n"
+    )
+    (fact,) = _bound_read_facts(source)
+    assert fact is not None and fact.identities == UNBOUND_IDENTITY
