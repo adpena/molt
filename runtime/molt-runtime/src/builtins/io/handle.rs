@@ -252,34 +252,6 @@ pub(crate) unsafe fn file_handle_exit(_py: &PyToken<'_>, ptr: *mut u8, _exc_bits
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn close_payload(_py: &PyToken<'_>, payload_bits: u64) {
-    let payload = obj_from_bits(payload_bits);
-    let Some(ptr) = payload.as_ptr() else {
-        return raise_exception::<()>(_py, "AttributeError", "object has no attribute 'close'");
-    };
-    unsafe {
-        if object_type_id(ptr) == TYPE_ID_FILE_HANDLE {
-            let _ = molt_file_close(payload_bits);
-            return;
-        }
-    }
-    let Some(close_name_bits) = attr_name_bits_from_bytes(_py, b"close") else {
-        return;
-    };
-    let missing = missing_bits(_py);
-    let close_bits = molt_getattr_builtin(payload_bits, close_name_bits, missing);
-    dec_ref_bits(_py, close_name_bits);
-    if exception_pending(_py) {
-        return;
-    }
-    let out = unsafe { call_callable0(_py, close_bits) };
-    dec_ref_bits(_py, close_bits);
-    if !obj_from_bits(out).is_none() {
-        dec_ref_bits(_py, out);
-    }
-}
-
 pub(crate) fn file_handle_detached_message(handle: &MoltFileHandle) -> &'static str {
     if handle.text {
         "underlying buffer has been detached"
