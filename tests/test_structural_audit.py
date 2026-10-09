@@ -2681,3 +2681,63 @@ def test_audit_concurrent_run_scopes_do_not_leak_or_resurrect(tmp_path, monkeypa
     assert [f.location for f in results["b"]] == ["src/b.py:1"]
     (right / "src/b.py").write_text("# finished\n", encoding="utf-8")
     assert [f.location for f in SA.probe_debt_markers(right)] == ["src/a.py:1"]
+
+
+def _process_wide_patch_count(tmp_path: Path, body: str) -> int:
+    tests = tmp_path / "tests"
+    tests.mkdir(parents=True, exist_ok=True)
+    (tests / "test_fixture.py").write_text(body, encoding="utf-8")
+    return sum(int(f.metric) for f in SA.probe_process_wide_test_patches(tmp_path))
+
+
+def test_process_wide_patch_probe_counts_rebinding_a_shared_module(tmp_path: Path):
+    body = (
+        "import subprocess\n"
+        "def test_a(monkeypatch):\n"
+        "    monkeypatch.setattr(mod.os, 'getpid', lambda: 1)\n"
+        "    monkeypatch.setattr(\n"
+        "        mod.subprocess,\n"
+        "        'run',\n"
+        "        fake,\n"
+        "    )\n"
+        "    monkeypatch.setattr(subprocess, 'Popen', fake)\n"
+        "    monkeypatch.setattr('pkg.mod.time.monotonic', fake)\n"
+    )
+    assert _process_wide_patch_count(tmp_path, body) == 4
+
+
+def test_process_wide_patch_probe_accepts_patches_of_an_installed_view(
+    tmp_path: Path,
+):
+    body = (
+        "def test_a(monkeypatch):\n"
+        "    install_module_view(monkeypatch, 'os', os, mod, getpid=fake)\n"
+        "    monkeypatch.setattr(mod.os, 'kill', fake)\n"
+        "    install_module_os_view(monkeypatch, other, name='nt')\n"
+        "    monkeypatch.setattr(other.os, 'getpid', fake)\n"
+    )
+    assert _process_wide_patch_count(tmp_path, body) == 0
+
+
+def test_process_wide_patch_probe_does_not_extend_a_view_to_other_modules(
+    tmp_path: Path,
+):
+    body = (
+        "def test_a(monkeypatch):\n"
+        "    install_module_view(monkeypatch, 'os', os, mod, getpid=fake)\n"
+        "    monkeypatch.setattr(helper.os, 'getpid', fake)\n"
+        "def test_b(monkeypatch):\n"
+        "    monkeypatch.setattr(mod.os, 'kill', fake)\n"
+    )
+    assert _process_wide_patch_count(tmp_path, body) == 2
+
+
+def test_process_wide_patch_probe_ignores_process_wide_by_nature(tmp_path: Path):
+    body = (
+        "def test_a(monkeypatch):\n"
+        "    monkeypatch.setattr(mod.sys, 'argv', ['molt'])\n"
+        "    monkeypatch.setattr(sys, 'path', [])\n"
+        "    monkeypatch.setattr(mod.os, 'environ', {})\n"
+        "    monkeypatch.setattr(mod, 'helper', fake)\n"
+    )
+    assert _process_wide_patch_count(tmp_path, body) == 0
