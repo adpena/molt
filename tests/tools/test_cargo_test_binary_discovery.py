@@ -74,6 +74,7 @@ def test_libtest_accounting_retains_early_failure_outside_display_tail(tmp_path)
     assert not runner._test_execution_succeeded(execution)
 
 
+@pytest.mark.usefixtures("admitted_build_capacity")  # the Cargo process is a fake
 def test_cargo_artifact_inventory_retains_early_artifact_outside_tail(
     monkeypatch, tmp_path
 ):
