@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+from molt.backend_environment import CodegenSelection
 import molt.cli as cli
 from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import script_commands as cli_commands
@@ -28,6 +29,7 @@ def test_prepare_build_config_uses_dev_runtime_profile_for_dev_builds(
         pgo_profile=None,
         runtime_feedback=None,
         capabilities=None,
+        codegen=CodegenSelection(),
     )
 
     assert error is None
@@ -47,6 +49,7 @@ def test_prepare_build_config_uses_release_runtime_profile_for_release_builds(
         pgo_profile=None,
         runtime_feedback=None,
         capabilities=None,
+        codegen=CodegenSelection(),
     )
 
     assert error is None

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.backend_environment import CodegenSelection
 from molt._wasm_abi_generated import (
     WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLES,
@@ -172,6 +173,7 @@ def _compile(
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
         backend_bin=backend,
+        codegen=CodegenSelection(),
     )
 
 

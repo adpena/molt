@@ -21,10 +21,7 @@ from molt.cli import module_graph_discovery as _graph_discovery
 from molt.cli import module_import_scanner as _module_import_scanner
 from molt.cli import module_resolution as _module_resolution
 from molt.cli import module_source as _module_source
-from molt.cli.config_resolution import (
-    DEFAULT_STDLIB_PROFILE,
-    MOLT_STDLIB_PROFILE_ENV,
-)
+from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli import module_stdlib_policy as _module_stdlib_policy
 from molt.cli.models import (
     ModuleExecutionKind,
@@ -1899,6 +1896,7 @@ def _augment_module_graph_for_entry_and_runtime(
     import_admission_policy: _ImportAdmissionPolicy | None = None,
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
+    stdlib_profile: str = DEFAULT_STDLIB_PROFILE,
 ) -> tuple[_ModuleGraphAugmentation, _CliFailure | None]:
     roots = list(roots)
     module_roots = list(module_roots)
@@ -1906,7 +1904,7 @@ def _augment_module_graph_for_entry_and_runtime(
     explicit_imports = set(entry_imports)
     stub_parents = STUB_PARENT_MODULES - entry_imports
     core_module_names = _module_stdlib_policy._core_stdlib_module_names_for_profile(
-        os.environ.get(MOLT_STDLIB_PROFILE_ENV, DEFAULT_STDLIB_PROFILE)
+        stdlib_profile
     )
     core_paths = [
         path
@@ -2012,7 +2010,9 @@ def _prepare_entry_module_graph(
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     capability_config_digest: str = "",
     image_scope: _BinaryImageScope | None = None,
+    stdlib_profile: str = DEFAULT_STDLIB_PROFILE,
 ) -> tuple[_PreparedEntryModuleGraph | None, _CliFailure | None]:
+    """``stdlib_profile`` is the build's resolved intent (resolve_stdlib_profile)."""
     stdlib_allowlist = _module_stdlib_policy._stdlib_allowlist()
     roots = module_roots + [stdlib_root]
     module_resolution_cache = _module_resolution._ModuleResolutionCache()
@@ -2151,7 +2151,9 @@ def _prepare_entry_module_graph(
             "package_parent_closure",
         )
     core_before = set(module_graph)
-    _module_stdlib_policy._ensure_core_stdlib_modules(module_graph, stdlib_root)
+    _module_stdlib_policy._ensure_core_stdlib_modules(
+        module_graph, stdlib_root, stdlib_profile
+    )
     _graph_discovery._record_new_module_reasons(
         module_graph,
         core_before,
@@ -2196,6 +2198,7 @@ def _prepare_entry_module_graph(
         import_admission_policy=import_admission_policy,
         target_python=target_python,
         capability_config_digest=capability_config_digest,
+        stdlib_profile=stdlib_profile,
     )
     if augmentation_error is not None:
         return None, augmentation_error

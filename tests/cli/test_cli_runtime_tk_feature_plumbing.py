@@ -6,6 +6,7 @@ from tests.compiler_identity_helper import (
     write_compiler_lock,
 )
 
+from molt.backend_environment import CodegenSelection
 from molt.cli.native_link_manifest import read_native_link_flags
 
 from tests.cli.native_link_test_support import native_codegen_binding
@@ -755,6 +756,7 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
         target_python="py312",
         stdlib_profile="full",
         resolved_modules={"molt_msgpack"},
+        codegen=CodegenSelection(),
     )
 
     assert err is None
@@ -849,6 +851,7 @@ def test_prepare_backend_setup_records_backend_stage_timings(
         stdlib_profile="full",
         resolved_modules={"molt_msgpack"},
         stage_timings_ms=stage_timings_ms,
+        codegen=CodegenSelection(),
     )
 
     assert err is None
@@ -964,6 +967,7 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
         stdlib_profile="full",
         native_artifact_plan=native_plan,
         resolved_modules={"nativepkg"},
+        codegen=CodegenSelection(),
     )
 
     assert err is None

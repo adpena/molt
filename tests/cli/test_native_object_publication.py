@@ -6,6 +6,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
+from molt.backend_environment import CodegenSelection
 from molt import file_publication
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import (
@@ -332,6 +333,7 @@ def test_native_object_publication_is_one_admitted_transaction(
         capabilities_source=None,
         target_python=TargetPythonVersion(3, 12, 0),
         target_sys_platform=None,
+        codegen=CodegenSelection(),
     )
     bundle = NS(
         prepared_frontend_run_ticket=NS(

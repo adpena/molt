@@ -389,7 +389,7 @@ retained — additive, never changes a normal build or any speedup number.
 - `MOLT_SESSION_ID=perfscore` isolates the build cache (the constitution's
   concurrent-dev contract): the DX authority places its `CARGO_TARGET_DIR` at
   `<artifact root>/target/sessions/perfscore`, outside the checkout.
-- The LLVM lane forces `MOLT_BACKEND=llvm` and resolves the required
+- The LLVM lane builds with `--backend llvm` and resolves the required
   `LLVM_SYS_<ver>_PREFIX` from the same `molt.llvm_toolchain` authority used by
   CI and setup diagnostics. For the current `llvm22-1` inkwell pin, that is
   `LLVM_SYS_221_PREFIX` and the Homebrew fallback is `/opt/homebrew/opt/llvm@22`.
@@ -990,7 +990,7 @@ never scored.
 ## What was measured vs deferred (no silent truncation)
 
 **Measured (baseline run):**
-- Backends: **native** (Cranelift) and **llvm** (inkwell, `MOLT_BACKEND=llvm`) —
+- Backends: **native** (Cranelift) and **llvm** (inkwell, `--backend llvm`) —
   both lanes fully swept (56 cells each, 112 total).
 - Profile: **release-fast** (the daily-contract profile; CLI `--build-profile
   release` → cargo `release-fast` for the backend).

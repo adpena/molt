@@ -95,7 +95,7 @@ def _dispatch_entrypoint_command(
         )
 
     if args.command == "internal-backend-build":
-        target, backend_error = _select_codegen_backend(
+        target, codegen_backend, backend_error = _select_codegen_backend(
             _configured_build_target(args.target, build_cfg), args.backend
         )
         if backend_error is not None:
@@ -106,6 +106,7 @@ def _dispatch_entrypoint_command(
         return _backend_build._prebuild_backend_binary(
             project_root=config_root,
             target=target,
+            codegen_backend=codegen_backend,
             json_output=args.json,
             cargo_timeout=args.cargo_timeout,
             verbose=args.verbose,
@@ -325,11 +326,9 @@ def _dispatch_entrypoint_command(
             )
         )
         # `stdlib_profile` is resolved through the ONE config authority
-        # (`config_resolution.resolve_stdlib_profile`). The module-graph closure
-        # reads `MOLT_STDLIB_PROFILE` directly (`_ensure_core_stdlib_modules`),
-        # while the runtime-staticlib selector consumes this resolved value;
-        # routing both through one resolver + one default (and re-exporting the
-        # result to the env inside `build()`) is what makes a closure/staticlib
+        # (`config_resolution.resolve_stdlib_profile`). `build()` passes this
+        # one value to the module-graph closure (`_ensure_core_stdlib_modules`)
+        # and to the runtime-staticlib selector, which makes a closure/staticlib
         # desync (env-only `full` vs a `micro` staticlib -> link failure on
         # undefined `molt_pbkdf2_hmac`/`molt_scrypt`) unexpressible.
         stdlib_profile, _stdlib_profile_source = resolve_stdlib_profile(
@@ -353,7 +352,9 @@ def _dispatch_entrypoint_command(
                 if isinstance(default_wasm_profile, str):
                     wasm_profile = default_wasm_profile
 
-        target, backend_error = _select_codegen_backend(target, backend_choice)
+        target, codegen_backend, backend_error = _select_codegen_backend(
+            target, backend_choice
+        )
         if backend_error is not None:
             return _fail(backend_error, args.json, command="build")
 
@@ -407,6 +408,7 @@ def _dispatch_entrypoint_command(
             build_config=build_cfg,
             bolt=bolt_requested,
             bolt_training_cmd=getattr(args, "bolt_training_cmd", None),
+            codegen_backend=codegen_backend,
         )
         return build_rc
     if args.command == "factgraph":

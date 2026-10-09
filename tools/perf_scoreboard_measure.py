@@ -39,9 +39,10 @@ from perf_scoreboard_model import (  # noqa: E402
 def _perfscore_build_env(spec: BackendSpec, profile: str) -> dict[str, str]:
     """Build the conformance/build env for a backend lane.
 
-    Sets the constitution's session isolation + the LLVM_SYS prefix + the
-    MOLT_BACKEND selector. bench._canonical_bench_env folds in the molt
-    conformance env (PYTHONPATH, codec, conformance dirs).
+    Sets the constitution's session isolation and the LLVM_SYS prefix.
+    bench._canonical_bench_env folds in the molt conformance env (PYTHONPATH,
+    codec, conformance dirs). The codegen backend is a build flag
+    (``BackendSpec.build_args``), never an environment variable.
     """
     from perf_scoreboard_build_profiles import profile_selection
 
@@ -57,10 +58,6 @@ def _perfscore_build_env(spec: BackendSpec, profile: str) -> dict[str, str]:
     # The canonical bench env derives this session's target dir under the
     # custody-selected artifact root; an ambient one would share build state.
     base.pop("CARGO_TARGET_DIR", None)
-    if spec.molt_backend is not None:
-        base["MOLT_BACKEND"] = spec.molt_backend
-    else:
-        base.pop("MOLT_BACKEND", None)
     if spec.backend == "llvm":
         prefix = _llvm_sys_prefix()
         prefix_env_var = _llvm_sys_prefix_env_var()
@@ -117,6 +114,7 @@ def measure_cell(
     extra_args = [
         "--python-version",
         target_python_version,
+        *spec.build_args(),
         *bench_suites.molt_args_for_benchmark(script_path),
     ]
     build_flag = PROFILE_BUILD_FLAG[profile]

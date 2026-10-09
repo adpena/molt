@@ -138,7 +138,8 @@ from molt.capability_policy import (
     materialize_capability_input,
     parse_capability_input,
 )
-from molt._host_capabilities_generated import MAXIMUM_BUILTIN_CAPABILITY_TIER
+from molt.backend_environment import CodegenSelection
+from molt.backend_executable_names import CodegenBackend, DEFAULT_CODEGEN_BACKEND
 from molt.cli.default_paths import (
     _default_home_str,
     _default_molt_bin,
@@ -188,7 +189,6 @@ from molt.cli.env_paths import (
     _resolve_env_path_cached,
     _vendor_roots,
 )
-from molt.cli.env_overrides import temporary_env_overrides as _temporary_env_overrides
 from molt.file_hashing import _sha256_file
 from molt.cli.external_native import (
     _EXTERNAL_PACKAGE_NATIVE_ARTIFACT_EXCLUDED_DIRS,
@@ -465,7 +465,6 @@ from molt.cli._lazy_facade import (
     __getattr__,
     _build_inputs,
     _build_pipeline,
-    _scoped_environ_updates,
 )
 
 
@@ -520,6 +519,7 @@ def build(
     bolt: bool = False,
     bolt_training_cmd: str | None = None,
     fact_graph_request: _factgraph.FactGraphRequest | None = None,
+    codegen_backend: CodegenBackend = DEFAULT_CODEGEN_BACKEND,
 ) -> int:
     if isinstance(profile, bool):
         profile = "release"
@@ -547,9 +547,9 @@ def build(
     # dispatcher already resolves it before calling `build()`, but direct
     # library callers may pass `None`; resolving here (honoring the flag value,
     # `MOLT_STDLIB_PROFILE`, the `[tool.molt.build]` config, and the single
-    # default) guarantees a concrete value that is both passed to the runtime
-    # build and re-exported to the env below, so the module-graph closure reader
-    # and the staticlib selector can never disagree.
+    # default) guarantees one concrete value that is passed both to module-graph
+    # construction and to the runtime build, so the closure reader and the
+    # staticlib selector can never disagree.
     stdlib_profile, _ = resolve_stdlib_profile(
         flag=stdlib_profile,
         build_cfg=(
@@ -558,38 +558,22 @@ def build(
             else None
         ),
     )
-    env_updates: dict[str, str] = {}
-    if trusted:
-        env_updates["MOLT_CAPABILITY_TIER"] = MAXIMUM_BUILTIN_CAPABILITY_TIER
-    # --audit-log: propagate audit config via environment variables for the
-    # build pipeline only. Several lower layers intentionally read os.environ as
-    # the canonical build signal, so keep that custody but restore the caller's
-    # process environment when the build returns.
-    if audit_log is not None:
-        env_updates.update(_build_inputs._parse_audit_log_flag(audit_log))
-    # --io-mode: propagate IO mode via environment variable.
-    if io_mode is not None:
-        env_updates.update(_build_inputs._parse_io_mode_flag(io_mode))
-    # --type-gate: propagate type gate to the backend.
-    env_updates.update(_build_inputs._parse_type_gate_flag(type_gate))
-    # --portable: force baseline ISA for cross-machine reproducible codegen.
-    if portable:
-        env_updates["MOLT_PORTABLE"] = "1"
-    # --split-runtime: signal to the non-native build result handler.
-    if split_runtime:
-        env_updates["MOLT_SPLIT_RUNTIME"] = "1"
-    # --wasm-profile: pass the effective profile to the backend explicitly so
-    # CLI, config, deploy defaults, and direct library calls share one
-    # import-planning authority without widening ordinary wasm builds to the
-    # full manifest surface.
-    if target in {"wasm", "wasm-freestanding"} and wasm_profile:
-        env_updates["MOLT_WASM_PROFILE"] = wasm_profile
-    # --stdlib-profile: propagate the resolved profile to module-graph
-    # construction so the closure reader (`_ensure_core_stdlib_modules`) and the
-    # runtime-staticlib selector are derived from the same value. `stdlib_profile`
-    # is always concrete here (resolved above), so this export is unconditional.
-    env_updates["MOLT_STDLIB_PROFILE"] = stdlib_profile
-    with _scoped_environ_updates(env_updates), _source_tree_fingerprint_transaction():
+    # Every value this call resolves travels as a parameter. The backend
+    # process receives its share in its own environment mapping
+    # (CodegenSelection.environment); build() never writes os.environ, so an
+    # in-process caller (library use, the batch build server, a test) cannot
+    # leak one build's choices into later work.
+    codegen = CodegenSelection(
+        backend=codegen_backend,
+        portable=portable,
+        wasm_profile=(
+            wasm_profile
+            if target in {"wasm", "wasm-freestanding"} and wasm_profile
+            else None
+        ),
+        type_gate=type_gate,
+    )
+    with _source_tree_fingerprint_transaction():
         if file_path and module:
             return _fail(
                 "Use a file path or --module, not both.", json_output, command="build"
@@ -619,6 +603,7 @@ def build(
                 lib_paths=lib_paths or [],
                 python_version=python_version,
                 build_config=build_config,
+                codegen=codegen,
             )
         )
         if prepared_build_inputs_error is not None:
@@ -654,6 +639,7 @@ def build(
                 emit_ir=emit_ir,
                 type_facts_path=type_facts_path,
                 tree_shake=tree_shake,
+                stdlib_profile=stdlib_profile,
             )
         )
         if prepared_frontend_pipeline_error is not None:

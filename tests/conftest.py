@@ -21,11 +21,11 @@ _PYTEST_SENTINEL_ATTR = "_molt_repo_process_sentinel"
 def _restore_process_environment() -> Iterator[None]:
     """Every test ends with the process environment it started with.
 
-    Product code exports some selections into ``os.environ`` for the child
-    processes it launches (for example ``MOLT_BACKEND``); a test that calls it
-    in process would otherwise leak them into every later test on the same
-    worker. Session-scoped fixtures run before this one, so their settings
-    persist as intended.
+    Product code passes its selections to child processes in their own
+    environment mappings and never writes ``os.environ`` (HF-60), but a test
+    may still set variables directly; this keeps them from leaking into every
+    later test on the same worker. Session-scoped fixtures run before this
+    one, so their settings persist as intended.
     """
     snapshot = dict(os.environ)
     yield

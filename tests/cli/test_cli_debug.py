@@ -433,9 +433,16 @@ def test_debug_trace_records_enabled_families_and_restores_env(
     seen_env = {}
 
     def fake_capture_json_cli_result(*args, **kwargs):
-        seen_env["callargs"] = os.environ.get("MOLT_TRACE_CALLARGS")
-        seen_env["call_bind_ic"] = os.environ.get("MOLT_TRACE_CALL_BIND_IC")
-        seen_env["function_bind_meta"] = os.environ.get("MOLT_TRACE_FUNCTION_BIND_META")
+        overrides = kwargs["environment_overrides"]
+        seen_env["callargs"] = overrides.get("MOLT_TRACE_CALLARGS")
+        seen_env["call_bind_ic"] = overrides.get("MOLT_TRACE_CALL_BIND_IC")
+        seen_env["function_bind_meta"] = overrides.get("MOLT_TRACE_FUNCTION_BIND_META")
+        # The trace selection reaches the run as its own mapping: the process
+        # environment keeps the caller's values during the run as well.
+        seen_env["ambient_callargs"] = os.environ.get("MOLT_TRACE_CALLARGS")
+        seen_env["ambient_function_bind_meta"] = os.environ.get(
+            "MOLT_TRACE_FUNCTION_BIND_META"
+        )
         return 0, {
             "command": "run",
             "status": "ok",
@@ -490,6 +497,8 @@ def test_debug_trace_records_enabled_families_and_restores_env(
         "callargs": "1",
         "call_bind_ic": "1",
         "function_bind_meta": "0",
+        "ambient_callargs": None,
+        "ambient_function_bind_meta": "1",
     }
     assert os.environ.get("MOLT_TRACE_CALLARGS") is None
     assert os.environ.get("MOLT_TRACE_CALL_BIND_IC") is None
@@ -507,7 +516,7 @@ def test_debug_trace_can_enable_success_path_assertion(
     seen_env = {}
 
     def fake_capture_json_cli_result(*args, **kwargs):
-        seen_env["assert_no_pending"] = os.environ.get(
+        seen_env["assert_no_pending"] = kwargs["environment_overrides"].get(
             "MOLT_ASSERT_NO_PENDING_ON_SUCCESS"
         )
         return 0, {
@@ -563,8 +572,12 @@ def test_debug_trace_can_enable_backend_timing_family(
     seen_env = {}
 
     def fake_capture_json_cli_result(*args, **kwargs):
-        seen_env["backend_timing"] = os.environ.get("MOLT_BACKEND_TIMING")
-        seen_env["callargs"] = os.environ.get("MOLT_TRACE_CALLARGS")
+        seen_env["backend_timing"] = kwargs["environment_overrides"].get(
+            "MOLT_BACKEND_TIMING"
+        )
+        seen_env["callargs"] = kwargs["environment_overrides"].get(
+            "MOLT_TRACE_CALLARGS"
+        )
         return 0, {
             "command": "run",
             "status": "ok",
@@ -622,8 +635,12 @@ def test_debug_trace_can_enable_compile_func_family(
     seen_env = {}
 
     def fake_capture_json_cli_result(*args, **kwargs):
-        seen_env["compile_func"] = os.environ.get("MOLT_TRACE_COMPILE_FUNC")
-        seen_env["backend_timing"] = os.environ.get("MOLT_BACKEND_TIMING")
+        seen_env["compile_func"] = kwargs["environment_overrides"].get(
+            "MOLT_TRACE_COMPILE_FUNC"
+        )
+        seen_env["backend_timing"] = kwargs["environment_overrides"].get(
+            "MOLT_BACKEND_TIMING"
+        )
         return 0, {
             "command": "run",
             "status": "ok",

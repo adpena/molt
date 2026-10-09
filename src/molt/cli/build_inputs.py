@@ -11,6 +11,7 @@ import tracemalloc
 from typing import Any, cast
 
 from molt.source_root import compiler_source_root
+from molt.backend_environment import CodegenSelection
 from molt.capability_manifest import (
     VALID_AUDIT_SINKS as _VALID_AUDIT_SINKS,
     AuditConfig,
@@ -464,6 +465,7 @@ def _prepare_build_config(
     io_mode: str | None = None,
     python_version: str | None = None,
     build_config: Mapping[str, Any] | None = None,
+    codegen: CodegenSelection,
 ) -> tuple[_PreparedBuildConfig | None, _CliFailure | None]:
     try:
         target_python = _resolve_target_python_version(
@@ -620,7 +622,14 @@ def _prepare_build_config(
             )
             resolved_runtime_policy = envelope.resolve(combined_policy, tier=tier)
         else:
-            resolved_runtime_policy = resolve_runtime_policy_from_env(os.environ)
+            # Without a policy file the flags select the policy through its
+            # environment form: the caller's environment with these flags
+            # applied, as one explicit mapping. os.environ is never written.
+            resolved_runtime_policy = resolve_runtime_policy_from_env(
+                _runtime_policy_flag_environment(
+                    os.environ, trusted=trusted, audit_log=audit_log, io_mode=io_mode
+                )
+            )
     except Exception as exc:
         return None, _fail(
             f"Invalid capability policy: {exc}", json_output, command="build"
@@ -645,6 +654,7 @@ def _prepare_build_config(
         capabilities_source=capabilities_source,
         target_python=target_python,
         target_sys_platform=_target_sys_platform(target),
+        codegen=codegen,
     ), None
 
 
@@ -820,6 +830,7 @@ def _prepare_build_inputs(
     lib_paths: list[str] | None = None,
     python_version: str | None = None,
     build_config: Mapping[str, Any] | None = None,
+    codegen: CodegenSelection,
 ) -> tuple[
     tuple[
         _PreparedBuildPreamble,
@@ -869,6 +880,7 @@ def _prepare_build_inputs(
         io_mode=io_mode,
         python_version=python_version,
         build_config=build_config,
+        codegen=codegen,
     )
     if prepared_build_config_error is not None:
         return None, prepared_build_config_error
@@ -1179,10 +1191,28 @@ def _parse_io_mode_flag(value: str) -> dict[str, str]:
 
 
 def _parse_type_gate_flag(enabled: bool) -> dict[str, str]:
-    """Propagate --type-gate to the backend via environment variable."""
+    """Project --type-gate into a child process environment."""
     if enabled:
         return {"MOLT_TYPE_GATE": "1"}
     return {}
+
+
+def _runtime_policy_flag_environment(
+    base: Mapping[str, str],
+    *,
+    trusted: bool,
+    audit_log: str | None,
+    io_mode: str | None,
+) -> dict[str, str]:
+    """Return ``base`` with --trusted, --audit-log and --io-mode applied."""
+    env = dict(base)
+    if trusted:
+        env["MOLT_CAPABILITY_TIER"] = MAXIMUM_BUILTIN_CAPABILITY_TIER
+    if audit_log is not None:
+        env.update(_parse_audit_log_flag(audit_log))
+    if io_mode is not None:
+        env.update(_parse_io_mode_flag(io_mode))
+    return env
 
 
 def _target_sys_platform(target: Target) -> str | None:

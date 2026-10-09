@@ -624,19 +624,19 @@ def _handle_debug_trace(
         "1" if getattr(args, "assert_no_pending_on_success", False) else "0"
     )
     cli_module = _cli_module()
-    with cli_module._temporary_env_overrides(trace_env):
-        inner_rc, inner_payload = cli_module._capture_json_cli_result(
-            _script_commands.run_script,
-            str(source_path),
-            None,
-            [],
-            verbose=False,
-            timing=True,
-            trusted=False,
-            capabilities=None,
-            build_args=build_args,
-            build_profile=cast(BuildProfile | None, profile),
-        )
+    inner_rc, inner_payload = cli_module._capture_json_cli_result(
+        _script_commands.run_script,
+        str(source_path),
+        None,
+        [],
+        verbose=False,
+        timing=True,
+        trusted=False,
+        capabilities=None,
+        build_args=build_args,
+        build_profile=cast(BuildProfile | None, profile),
+        environment_overrides=trace_env,
+    )
     if inner_payload is None:
         payload = normalize_debug_payload(
             subcommand=subcommand,

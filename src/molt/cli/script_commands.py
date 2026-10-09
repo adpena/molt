@@ -10,6 +10,7 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, cast
 from molt.source_root import compiler_source_root
 from molt.cli import build_inputs as _build_inputs
@@ -627,7 +628,13 @@ def run_script(
     audit_log: str | None = None,
     io_mode: str | None = None,
     type_gate: bool = False,
+    environment_overrides: Mapping[str, str] | None = None,
 ) -> int:
+    """Build and run a native program.
+
+    ``environment_overrides`` reaches the build and the program through their
+    own environment mappings; the caller's process environment is not written.
+    """
     if file_path and module:
         return _fail(
             "Use a file path or --module, not both.", json_output, command="run"
@@ -648,6 +655,8 @@ def run_script(
         Path(file_path).resolve() if file_path else None,
         molt_root=molt_root,
     )
+    if environment_overrides:
+        env.update(environment_overrides)
     if file_path:
         env.update(_build_inputs._collect_env_overrides(file_path))
     resolved_build_entry, resolved_build_entry_error = (

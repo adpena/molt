@@ -286,6 +286,13 @@ _REGISTRY_JSON = r"""{
       "retired": "2026-10-06"
     },
     {
+      "name": "MOLT_SPLIT_RUNTIME",
+      "note": "use `molt build --split-runtime`",
+      "rejected_by": [],
+      "replacement": "",
+      "retired": "2026-10-09"
+    },
+    {
       "name": "MOLT_SUBPROCESS_KEEPALIVE_SECS",
       "note": "",
       "rejected_by": [],
@@ -848,7 +855,7 @@ _REGISTRY_JSON = r"""{
       "kind": "enum",
       "name": "MOLT_BACKEND",
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/compile_driver.rs",
-      "summary": "Selects the native code generator in molt-backend: llvm routes through the LLVM backend and panics when the binary was built without the llvm feature, any other value or unset uses Cranelift; molt sets it from --backend (auto becomes cranelift) and appends the llvm feature to the backend executable name.",
+      "summary": "Selects the native code generator in molt-backend: llvm routes through the LLVM backend and panics when the binary was built without the llvm feature, any other value or unset uses Cranelift; molt build sets it from --backend (auto becomes cranelift) in the backend process environment and its daemon requests, never in its own environment, and appends the llvm feature to the backend executable name; the value in molt's own environment selects nothing.",
       "values": [
         "cranelift",
         "llvm"
@@ -4521,7 +4528,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_MODULE_CHUNK_OPS",
       "owner": "src/molt/cli/frontend_pipeline.py",
-      "summary": "Maximum ops per chunk when the frontend splits native module-init functions into eagerly called chunks; 0 disables chunking, negative values clamp to 0, a non-integer value keeps 1400 with a warning, and Luau transpile builds set 1500 when it is unset.",
+      "summary": "Maximum ops per chunk when the frontend splits native module-init functions into eagerly called chunks; 0 disables chunking, negative values clamp to 0, a non-integer value keeps the default with a warning; the default is 1400, and 1500 for Luau transpile builds.",
       "values": []
     },
     {
@@ -5532,15 +5539,6 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "0",
       "kind": "bool",
-      "name": "MOLT_SPLIT_RUNTIME",
-      "owner": "src/molt/cli/non_native_output.py",
-      "summary": "Requests the sealed split app/runtime wasm bundle from the non-native output handler when set to exactly 1; molt build --split-runtime sets it in its scoped environment; default off.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
       "name": "MOLT_SROA_REPORT",
       "owner": "runtime/molt-passes/src/tir/passes/sroa/engine.rs",
       "summary": "Collects per-root diagnostics (rejected, blocked and not-removable allocation roots) in the TIR scalar-replacement pass when set to exactly 1; default off.",
@@ -5606,7 +5604,7 @@ _REGISTRY_JSON = r"""{
       "kind": "enum",
       "name": "MOLT_STDLIB_PROFILE",
       "owner": "src/molt/cli/config_resolution.py",
-      "summary": "Stdlib profile ceiling for a build; the --stdlib-profile flag outranks it, it outranks toml config and deploy defaults, and the CLI re-exports the resolved value before module-graph construction so the closure reader and the runtime staticlib selector agree; invalid values are ignored and unset means auto.",
+      "summary": "Stdlib profile ceiling for a build; the --stdlib-profile flag outranks it, it outranks toml config and deploy defaults, and the CLI passes the one resolved value to module-graph construction and to the runtime staticlib selector so they agree; invalid values are ignored and unset means auto.",
       "values": [
         "auto",
         "micro",
@@ -7575,12 +7573,12 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "user",
+      "audience": "internal",
       "default": "auto",
       "kind": "enum",
       "name": "MOLT_WASM_PROFILE",
-      "owner": "src/molt/cli/frontend_pipeline.py",
-      "summary": "Wasm import-planning profile that molt build --wasm-profile exports to the frontend and the wasm backend: auto, full, or pure (the backend treats any other spelling as auto), where pure also enables pure-wasm dead-module elimination when tree shaking is on; default auto.",
+      "owner": "runtime/molt-backend-wasm/src/wasm_options.rs",
+      "summary": "Wasm import-planning profile for the wasm backend: auto, full, or pure (the backend treats any other spelling as auto); molt build sets it from --wasm-profile in the backend process environment, and the frontend takes the same value as a parameter (pure also enables pure-wasm dead-module elimination when tree shaking is on); default auto.",
       "values": [
         "auto",
         "full",
