@@ -39,6 +39,7 @@ MANIFEST_NAME = "release-compiler-source.json"
 MANIFEST_SCHEMA = "molt.release-compiler-source.v5"
 PRODUCTION_COMPILER_PROFILE = "release"
 PRODUCTION_COMPILER_FEATURES = (
+    "llvm",
     "luau-backend",
     "native-backend",
     "rust-backend",

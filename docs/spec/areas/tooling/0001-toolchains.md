@@ -583,8 +583,14 @@ ABI controls; source mtimes are not a separate freshness authority.
 
 Root profiles are the only profile authority: compiler `release` retains unwind
 support; shipping native runtimes use `release-output`/`release-size`, and WASM
-uses `wasm-release`. Select profiles explicitly rather than changing policy by
-launching Cargo from a different directory.
+uses `wasm-release`. Public guest `release` requests native `release-output`
+and WASM `wasm-release`; `dev` requests `dev-fast` for both. A selected
+`MOLT_RELEASE_CARGO_PROFILE=release-output` remains a physical WASM profile
+choice as well as a native one. `MOLT_WASM_CARGO_PROFILE` takes precedence over
+`MOLT_RUNTIME_BUILD_PROFILE`, which takes precedence over the requested WASM
+profile. Prebuilds, installed-cell selection and proof receipts use the same
+request/resolution authorities. Select profiles explicitly rather than changing
+policy by launching Cargo from a different directory.
 
 Host and guest profiles are independent. The CLI defaults to the production
 `release` compiler for both guest `dev` and guest `release`; guest runtime Cargo
@@ -835,3 +841,45 @@ experiment control where CPython permits it. The former Molt seed override and
 restart sentinel are retired with explicit environment migration diagnostics.
 Wrapper build reuse still includes `PYTHONHASHSEED` in its broader environment
 identity; cross-seed wrapper reuse is not implied by backend payload determinism.
+
+
+### Required release lanes and installed products
+
+`config/release_acceptance_matrix.toml` is the single declaration of executable
+release lanes. The shipped `molt.release_lanes` reader validates it against the
+Cargo and verified-subset authorities. Each logical lane carries backend, target,
+guest profile, runtime Cargo profile and compiler Cargo profile. LLVM has native
+target semantics; it is not a third runtime target. Declaration is not compiler
+capability or execution evidence. Installed readiness requires both the delivered
+compiler features/profile and matching runtime cells.
+
+Release runtime production projects those lanes through the installed cell keys,
+deduplicating shared native/LLVM runtime products while preserving stdlib tiers,
+source-extension features and hosted/freestanding WASM variants. Each physical
+request supplies its actual Cargo profile. The producer clears ambient profile
+selectors inside its existing isolated build scope; unsupported feature or source
+location overrides remain errors. User compilation retains explicit installed
+cell selection and never compiles a replacement runtime.
+
+The installed consumer proof carries the complete logical lane record for every
+Python coordinate. Platform-wheel verification uses the same product producer and
+receiver for the first declared reference Python, rather than a separate native
+smoke artifact. Sealed post-uninstall replay retains backend/profile-distinct
+product IDs. Missing lanes, wrong profiles, compiler substitution and duplicate
+products are refused. Consumer proof v8, replay v2 and performance shard v2 replace
+their older internal shapes together; selected profile observations alone still
+do not establish authenticated compiler/cache origin or used-byte performance
+evidence. Those stronger release requirements remain separately enforced.
+
+The compiler production feature tuple includes `llvm` and retains the base
+`llvm22-1` pin alongside `inkwell/llvm22-1-force-static`. Source and release builds
+share one selected-SDK admission: `llvm-config`, selected headers and the complete
+`--libnames --link-static` archive closure remain under resource custody through
+publication. `--libdir` and `--includedir` must refer to the selected SDK. Native
+build v3 records this location-neutral input identity and source policy; candidate
+admission and the signed SBOM consume that record. Static LLVM linkage does not
+claim static system C/C++ linkage; the existing target compatibility audits own
+that boundary. Installed readiness checks delivered compiler/runtime capability
+and does not require source-development SDK tools. Full SDK provisioning uses the
+existing Linux package and non-Linux source-build owners. None of these source
+contracts constitutes actual six-host execution or release acceptance.

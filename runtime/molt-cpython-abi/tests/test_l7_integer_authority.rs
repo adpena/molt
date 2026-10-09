@@ -12,7 +12,7 @@ use molt_cpython_abi::hooks::{
     INT_BYTES_OVERFLOW, NumberBinaryOp, NumberUnaryOp, OwnedHandleResult, STUB_HOOKS,
 };
 use molt_lang_obj_model::MoltObject;
-use std::ffi::{c_char, c_void};
+use std::ffi::c_char;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

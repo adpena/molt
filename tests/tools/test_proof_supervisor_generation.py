@@ -299,6 +299,7 @@ def test_provision_scope_reuses_one_observer_and_keeps_each_child_guard(
             peak_total=None,
             stdout="ok\n",
             stderr="",
+            child_stderr="",
         )
 
     monkeypatch.setattr(

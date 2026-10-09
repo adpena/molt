@@ -3,7 +3,7 @@ description: Install and verify Molt's manifest-owned LLVM profile and host wasi
 
 inputs:
   profile:
-    description: Full Linux LLVM/MLIR SDK, or the wasi-sdk-only WebAssembly profile
+    description: Full LLVM/MLIR SDK on the selected host, or the wasi-sdk-only profile
     required: false
     default: full
   wasi:
@@ -57,7 +57,7 @@ runs:
           --github-output "$GITHUB_OUTPUT"
 
     - name: Provision full LLVM SDK packages
-      if: inputs.profile == 'full'
+      if: inputs.profile == 'full' && runner.os == 'Linux'
       shell: bash
       env:
         LLVM_MAJOR: ${{ steps.contract.outputs.major }}
@@ -66,10 +66,6 @@ runs:
         LLVM_APT_INSTALLER_SHA256: ${{ steps.contract.outputs.apt_installer_sha256 }}
       run: |
         set -euo pipefail
-        if [ "$RUNNER_OS" != "Linux" ]; then
-          printf 'the full LLVM SDK package profile is Linux-only: %s\n' "$RUNNER_OS" >&2
-          exit 2
-        fi
         installer="$RUNNER_TEMP/molt-llvm-apt.sh"
         curl --fail --location --proto '=https' --tlsv1.2 \
           --output "$installer" "$LLVM_APT_INSTALLER_URL"
@@ -79,6 +75,16 @@ runs:
         sudo "$installer" "$LLVM_MAJOR"
         read -r -a packages <<< "$LLVM_APT_PACKAGES"
         sudo apt-get install -y "${packages[@]}"
+
+    # Darwin and MSVC use the existing checksummed source provisioner. It owns
+    # host architecture, build tools, SDK activation, resource admission and
+    # transactional installation; verification below also admits warm reuse.
+    - name: Provision full LLVM SDK from pinned source
+      if: inputs.profile == 'full' && runner.os != 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        PYTHONPATH=src python -m tools.bootstrap_llvm
 
     # The archive cache is keyed by the host asset's manifest digest; the
     # provisioner still re-verifies size and SHA-256 before any reuse.

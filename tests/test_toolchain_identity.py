@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.process_guard_common import run_isolated_python_probe
+
 from molt import toolchain_identity as identity
 from tests.operation_probe import same_thread_probe
 
@@ -1210,25 +1212,38 @@ def test_stable_chunk_iteration_preserves_exact_bytes_and_empty_files(tmp_path, 
 
 
 def test_hashing_does_not_keep_previous_read_buffer_live(tmp_path):
-    import gc
-    import tracemalloc
-
     path = tmp_path / "hash-input"
     data = b"finite file bytes\n" * (256 * 1024)
     path.write_bytes(data)
     expected = hashlib.sha256(data).hexdigest()
     del data
-    # Warm platform metadata/resource initialization before measuring the read.
-    assert identity.stable_regular_file_identity(path, label="warm").sha256 == expected
-    gc.collect()
-    tracemalloc.start()
-    try:
-        observed = identity.stable_regular_file_identity(path, label="measured")
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-    assert observed.sha256 == expected
+    observed = run_isolated_python_probe(
+        """
+        import gc
+        import json
+        from pathlib import Path
+        import sys
+        import tracemalloc
+        from molt import toolchain_identity as identity
+
+        path = Path(sys.argv[1])
+        warm = identity.stable_regular_file_identity(path, label="warm")
+        if tracemalloc.is_tracing():
+            raise RuntimeError("probe requires exclusive allocation tracing")
+        gc.collect()
+        tracemalloc.start()
+        try:
+            measured = identity.stable_regular_file_identity(path, label="measured")
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        print(json.dumps({"warm": warm.sha256, "sha256": measured.sha256, "peak": peak}))
+        """,
+        args=[path],
+    )
+    assert observed["warm"] == expected
+    assert observed["sha256"] == expected
     # One 256-KiB content buffer plus generous metadata/interpreter headroom.
     # A suspended producer or consuming loop must not retain its prior block
     # while the next block is allocated. This measures live Python allocation.
-    assert peak < 384 * 1024
+    assert observed["peak"] < 384 * 1024

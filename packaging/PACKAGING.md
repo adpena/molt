@@ -68,11 +68,22 @@ permission to omit cells or raise every timeout without diagnosis.
    profile. Each output publishes its three binaries and `native-build.json`
    atomically; an existing output cannot be reused or replaced. Candidate
    admission requires different output roots, equal location-neutral receipts
-   (source inventory, epoch, target, profiles, features and native tool bytes),
+   (source inventory, epoch, target, profiles, features, native tool bytes and
+   the admitted LLVM SDK input identity),
    matching binary architectures, and byte identity for all three binaries.
    Build Python uses the existing runtime identity admission and is checked
    again before publication. The installed consumer binds its worker bytes and
-   shipped source inventory back to the admitted native receipt.
+   shipped source inventory back to the admitted native receipt. Native-build
+   receipt v3 adds the pinned LLVM release, policy-source digest, exact static
+   archive closure, configuration executable and captured SDK resource identity.
+   Source and release compiler builds share the same SDK admission owner. The
+   production feature tuple includes `llvm` with `llvm22-1-force-static`; keeping
+   the base `llvm22-1` feature preserves the existing pin parser. This statically
+   links LLVM, while system C/C++ dependencies remain subject to platform binary
+   compatibility admission. Installed consumers do not need an LLVM SDK.
+   Full-SDK setup uses the existing package provisioner on Linux and the pinned
+   source bootstrap on macOS and Windows, including their existing resource and
+   tool prerequisites. Provisioning does not waive final release evidence.
    Darwin builds pin `DEVELOPER_DIR`, use actual xcrun-selected tools, retain
    `SDKROOT`, and record SDK metadata, version and deployment target. Windows
    builds retain the activated Visual Studio installation and SDK environment;
@@ -85,7 +96,10 @@ permission to omit cells or raise every timeout without diagnosis.
    dependencies fail before building and must be provisioned explicitly.
    `tools/release/runtime_cells.py` twice materializes the tagged commit with the
    canonical Git snapshot and produces every runtime cell the guest surface can
-   select (profile x stdlib tier x source-extension loader; WASM hosted SIMD or
+   select from the eleven logical lanes in `config/release_acceptance_matrix.toml`.
+   The shipped reader owns validation and projects four native runtime profiles
+   (shared by native and LLVM) and three WASM profiles through existing cell keys
+   (profile x stdlib tier x source-extension loader; WASM hosted SIMD or
    freestanding, with the full CPython C-API export surface). Both inventories
    must match byte for byte and carry the snapshot's Git identity. Each complete
    inventory and its cells are validated in a private sibling directory, then
@@ -117,11 +131,13 @@ permission to omit cells or raise every timeout without diagnosis.
    in the candidate source's verified-subset policy. Each coordinate selects its
    exact reference interpreter and explicit guest Python semantics, with Cargo,
    rustc and rustup unavailable. It verifies the shipped runtime cells equal the
-   candidate and the derived policy, installs the platform wheel with pip into a
-   separate environment for one native release build, then runs one
-   version-gated guest for every shipped target with both `dev` and `release`
-   program profiles: `molt build --target native` followed by direct execution
-   of the requested executable, and one public `molt run --target wasm` that
+   candidate and the derived policy, then executes all eleven logical lanes for
+   each declared reference Python. The platform wheel is installed into a separate
+   environment and uses that same eleven-lane producer and receiver for the first
+   reference Python. Each lane binds backend, target, guest profile, runtime Cargo
+   profile and compiler Cargo profile. Native and LLVM use explicit
+   `molt build --target native --backend cranelift|llvm`, followed by direct execution
+   of the requested executable. Each WASM lane uses public `molt run --target wasm`, which
    performs its own linked build and runs it on the Node host. The guest
    receives a flag-shaped argument and an argument containing a space, and its
    stdout must equal a fixed literal that CPython reproduces. Every cell writes
@@ -133,8 +149,9 @@ permission to omit cells or raise every timeout without diagnosis.
    The separate worker archive is extracted and executed as its sole command
    owner; the compiler bundle does not contain another copy. Installation is
    private to the consumer; uninstall checks prove no ambient Molt import or
-   console script remains. All native and WASM products, including the pip-built
-   native product, are then replayed from one sealed Linux root after removing
+   console script remains. All 44 logical products (eleven per declared Python
+   and eleven from pip), including distinct native and LLVM products, are then
+   replayed from one sealed Linux root after removing
    the installed owners. The root contains only those bound products, the
    source-bound Node runner closure, the canonical native supervisor, and loader,
    library and Node bytes extracted from exact pinned archives. Reference/build
@@ -274,3 +291,17 @@ uv run --python 3.12 python -m tools.release.update_manifests release_manifest.j
 
 External package repositories consume the already-published manifest and never
 recalculate artifact digests.
+
+### LLVM attribution and qualification
+
+`vendor/llvm/LICENSE.TXT` retains the exact notice from the source-pinned LLVM
+release. Bundle production copies it to `share/molt/LLVM-LICENSE.TXT`, and the
+platform wheel projects the same tree. The SBOM projects one SDK package per
+release host from the admitted native-build v3 input record, including upstream
+source digest, static link closure and location-neutral SDK byte identity.
+This uses the existing candidate admission and signing path; a feature list or
+self-reported summary cannot replace native-build and installed-consumer receipts.
+Consumer proof v8 and sealed replay v2 carry complete logical lane records.
+The six-host native/LLVM/WASM execution and performance matrix must still be
+qualified on the exact final candidate; the implemented delivery path does not
+establish those results or resolve the separate release-evidence production cycle.

@@ -101,6 +101,7 @@ def test_run_cmd_uses_harness_memory_guard(
             "ok\n",
             "",
             elapsed_s=0.01,
+            child_stderr="",
         )
 
     monkeypatch.setattr(

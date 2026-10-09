@@ -338,7 +338,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "1f515fed56e42a9f5c49e8d41eec72762b8c7fb8274059b8dc5ea614388130bb",
+  "authority_sha256": "2431c5ace54cc408b94325ccaeb70f94886f4bece35b7494353ada995ac37995",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -380,6 +380,7 @@
         "**"
       ],
       "job": "docs-gates",
+      "job_reserve_seconds": 120,
       "name": "repository_policy",
       "required": true,
       "resource_class": "repository-policy",
@@ -420,9 +421,14 @@
         "tests/wasm_harness.py",
         "tests/wasm_linked_runner.py",
         "wasm/**",
-        "examples/*.py"
+        "examples/*.py",
+        "tests/differential/basic/from_import_missing_name.py",
+        "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py",
+        "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py",
+        "tools/compat/**"
       ],
       "job": "wasm-build",
+      "job_reserve_seconds": 180,
       "name": "wasm",
       "required": true,
       "resource_class": "compiler-build-resource",
@@ -430,7 +436,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 240,
+      "timeout_minutes": 263,
       "workflow": ".github/workflows/molt-wasm-ci.yml"
     },
     {
@@ -453,6 +459,7 @@
         "tools/**"
       ],
       "job": "python-static",
+      "job_reserve_seconds": 60,
       "name": "python_static",
       "required": true,
       "resource_class": "python-static",
@@ -487,6 +494,7 @@
         "tools/**"
       ],
       "job": "python-unit",
+      "job_reserve_seconds": 60,
       "name": "python_unit",
       "required": true,
       "resource_class": "python-tests",
@@ -495,7 +503,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 20,
+      "timeout_minutes": 21,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -529,6 +537,7 @@
         "tests/proof_queue_owned_roots.py"
       ],
       "job": "native-integration",
+      "job_reserve_seconds": 180,
       "name": "native_integration",
       "required": true,
       "resource_class": "compiler-build-resource",
@@ -536,7 +545,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 40,
+      "timeout_minutes": 43,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -568,6 +577,7 @@
         "tests/runtime_descendant_test_support.py"
       ],
       "job": "rust-build-unit-smoke",
+      "job_reserve_seconds": 240,
       "name": "rust",
       "required": true,
       "resource_class": "compiler-build-resource",
@@ -576,7 +586,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 250,
+      "timeout_minutes": 254,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -613,9 +623,23 @@
         "runtime/molt-backend-native/**",
         "runtime/molt-ir/**",
         "runtime/molt-passes/**",
-        "runtime/molt-tir/**"
+        "runtime/molt-tir/**",
+        "config/release_acceptance_matrix.toml",
+        "src/molt/release_lanes.py",
+        "src/molt/compiler_distribution.py",
+        "src/molt/cli/compiler_identity.py",
+        "src/molt/cli/installed_runtime.py",
+        "tools/release/native_build.py",
+        "tools/release/runtime_cells.py",
+        "tools/release/verify_consumer.py",
+        "vendor/llvm/**",
+        "tests/cli/test_compiler_identity.py",
+        "tests/cli/test_installed_runtime.py",
+        "tests/tools/test_release_native_build.py",
+        "tests/test_release_lanes.py"
       ],
       "job": "llvm-backend",
+      "job_reserve_seconds": 120,
       "name": "llvm",
       "required": true,
       "resource_class": "compiler-build-resource",
@@ -644,6 +668,7 @@
         "uv.lock"
       ],
       "job": "python-security",
+      "job_reserve_seconds": 60,
       "name": "python_security",
       "required": true,
       "resource_class": "network-audit",
@@ -672,6 +697,7 @@
         "rust-toolchain.toml"
       ],
       "job": "rust-security",
+      "job_reserve_seconds": 360,
       "name": "rust_security",
       "required": true,
       "resource_class": "network-audit",
@@ -680,7 +706,7 @@
         "main",
         "scheduled"
       ],
-      "timeout_minutes": 20,
+      "timeout_minutes": 21,
       "workflow": ".github/workflows/security_hardening.yml"
     },
     {
@@ -845,6 +871,7 @@
         "tests/tools/test_proof_queue_output_layout.py"
       ],
       "job": "platform-portability",
+      "job_reserve_seconds": 120,
       "name": "platform_portability",
       "required": true,
       "resource_class": "python-tests",
@@ -852,7 +879,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 180,
+      "timeout_minutes": 182,
       "workflow": ".github/workflows/ci.yml"
     }
   ],
@@ -2341,7 +2368,11 @@
         "tests/tools/test_release_matrix_consumer.py",
         "tests/tools/test_release_archive.py",
         "tests/tools/test_release_remote.py",
-        "tests/tools/test_provision_wasi_sdk.py"
+        "tests/tools/test_provision_wasi_sdk.py",
+        "tests/test_release_lanes.py",
+        "tests/tools/test_release_native_build.py",
+        "tests/tools/test_release_installed_distribution.py",
+        "tests/tools/test_release_exit_gate.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -2411,7 +2442,8 @@
         "tests/tools/test_check_environment_registry.py",
         "tests/tools/test_setup_project_inputs.py",
         "tests/tools/test_rust_toolchain_contract.py",
-        "tests/test_gen_cpython_abi_layout.py"
+        "tests/test_gen_cpython_abi_layout.py",
+        "tests/tools/test_perf_release_integrity.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -2933,7 +2965,8 @@
         "tests/test_wasm_startup_failures.py",
         "tests/test_generate_worker.py",
         "tests/test_browser_asset_closure.py",
-        "tests/test_wasm_reserved_callable_arity.py"
+        "tests/test_wasm_reserved_callable_arity.py",
+        "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-wasm-dev",
@@ -3053,6 +3086,9 @@
       "dependencies": [
         "wasm.build.backend",
         "wasm.build.split-runtime-release"
+      ],
+      "evidence_outputs": [
+        "proof-receipts/evidence/split-runtime"
       ],
       "family": "wasm",
       "id": "wasm.integration.split-runtime",
@@ -3360,6 +3396,74 @@
         "lld-link",
         "wasm-ld",
         "wasm-tools"
+      ]
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "tests/molt_diff.py",
+        "--python-version",
+        "3.12",
+        "--molt-target-python",
+        "3.12",
+        "--build-profile",
+        "dev",
+        "--stdlib-profile",
+        "full",
+        "--target",
+        "native,wasm",
+        "--jobs",
+        "1",
+        "--no-retry-oom",
+        "--json-output",
+        "proof-receipts/evidence/import-from-codec/summary.json",
+        "--log-aggregate",
+        "proof-receipts/evidence/import-from-codec/output.log",
+        "tests/differential/basic/from_import_missing_name.py",
+        "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py",
+        "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
+        "wasm.build.backend",
+        "wasm.build.shared-runtime"
+      ],
+      "env": {
+        "MOLT_BACKEND_DAEMON": "0",
+        "MOLT_COMPAT_WASM_RUN_TIMEOUT_SEC": "60",
+        "MOLT_DIFF_RESULTS_JSONL": "proof-receipts/evidence/import-from-codec/results.jsonl",
+        "MOLT_DIFF_TIMEOUT": "60"
+      },
+      "evidence_outputs": [
+        "proof-receipts/evidence/import-from-codec"
+      ],
+      "family": "wasm",
+      "id": "wasm.test.import-from-codec-parity",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cold",
+      "timeout_env": [
+        "MOLT_CARGO_TIMEOUT",
+        "MOLT_DIFF_BUILD_TIMEOUT",
+        "MOLT_COMPAT_WASM_BUILD_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
+        "uv",
+        "node",
+        "rustc",
+        "cargo",
+        "ld.lld",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang"
       ]
     },
     {
@@ -3724,7 +3828,20 @@
         "tests/test_wasm_bundle.py",
         "tests/cli/test_link_member_selection.py",
         "tests/cli/test_link_selection_admission.py",
-        "tests/test_artifact_release_sibling.py"
+        "tests/test_artifact_release_sibling.py",
+        "tests/test_llvm_toolchain.py",
+        "tests/test_bootstrap_llvm.py",
+        "tests/cli/test_compiler_identity.py",
+        "tests/cli/test_installed_compiler.py",
+        "tests/cli/test_installed_runtime.py",
+        "tests/cli/test_installed_toolchain_rules.py",
+        "tests/cli/test_cli_backend_output_pipeline_authority.py",
+        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair",
+        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest",
+        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_digest",
+        "tests/cli/test_cli_import_collection.py::test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen",
+        "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift",
+        "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -3800,7 +3917,20 @@
         "tests/test_wasm_bundle.py",
         "tests/cli/test_link_member_selection.py",
         "tests/cli/test_link_selection_admission.py",
-        "tests/test_artifact_release_sibling.py"
+        "tests/test_artifact_release_sibling.py",
+        "tests/test_llvm_toolchain.py",
+        "tests/test_bootstrap_llvm.py",
+        "tests/cli/test_compiler_identity.py",
+        "tests/cli/test_installed_compiler.py",
+        "tests/cli/test_installed_runtime.py",
+        "tests/cli/test_installed_toolchain_rules.py",
+        "tests/cli/test_cli_backend_output_pipeline_authority.py",
+        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair",
+        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest",
+        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_digest",
+        "tests/cli/test_cli_import_collection.py::test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen",
+        "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift",
+        "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
@@ -3845,7 +3975,8 @@
         "tests/cli/test_cli_intrinsic_enforcement.py",
         "tests/test_weakrefset_private_module_surface.py",
         "tests/test_weakref_native_authority.py",
-        "tests/test_unittest_mock_protocol.py"
+        "tests/test_unittest_mock_protocol.py",
+        "tests/test_public_intrinsic_surface_batch_d.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -3888,7 +4019,8 @@
         "tests/cli/test_cli_intrinsic_enforcement.py",
         "tests/test_weakrefset_private_module_surface.py",
         "tests/test_weakref_native_authority.py",
-        "tests/test_unittest_mock_protocol.py"
+        "tests/test_unittest_mock_protocol.py",
+        "tests/test_public_intrinsic_surface_batch_d.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
@@ -5097,18 +5229,22 @@
       "llvm": {
         "budget_seconds": 4500,
         "critical_path_seconds": 3300,
-        "headroom_seconds": 300,
+        "headroom_seconds": 180,
+        "job_reserve_seconds": 120,
         "projected_makespan_seconds": 4200,
+        "required_job_seconds": 4320,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 4200,
           "python-tests": 60
         }
       },
       "native_integration": {
-        "budget_seconds": 2400,
+        "budget_seconds": 2580,
         "critical_path_seconds": 1200,
         "headroom_seconds": 0,
+        "job_reserve_seconds": 180,
         "projected_makespan_seconds": 2400,
+        "required_job_seconds": 2580,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 2400,
           "python-tests": 150
@@ -5117,8 +5253,10 @@
       "python_security": {
         "budget_seconds": 1200,
         "critical_path_seconds": 900,
-        "headroom_seconds": 300,
+        "headroom_seconds": 240,
+        "job_reserve_seconds": 60,
         "projected_makespan_seconds": 900,
+        "required_job_seconds": 960,
         "resource_capacity_floor_seconds": {
           "network-audit": 600
         }
@@ -5126,8 +5264,10 @@
       "python_static": {
         "budget_seconds": 900,
         "critical_path_seconds": 300,
-        "headroom_seconds": 600,
+        "headroom_seconds": 540,
+        "job_reserve_seconds": 60,
         "projected_makespan_seconds": 300,
+        "required_job_seconds": 360,
         "resource_capacity_floor_seconds": {
           "python-static": 300
         }
@@ -5135,37 +5275,45 @@
       "repository_policy": {
         "budget_seconds": 3600,
         "critical_path_seconds": 1500,
-        "headroom_seconds": 1500,
+        "headroom_seconds": 1380,
+        "job_reserve_seconds": 120,
         "projected_makespan_seconds": 2100,
+        "required_job_seconds": 2220,
         "resource_capacity_floor_seconds": {
           "repository-policy": 1560
         }
       },
       "rust": {
-        "budget_seconds": 15000,
+        "budget_seconds": 15240,
         "critical_path_seconds": 9000,
         "headroom_seconds": 0,
+        "job_reserve_seconds": 240,
         "projected_makespan_seconds": 15000,
+        "required_job_seconds": 15240,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 15000
         }
       },
       "rust_security": {
-        "budget_seconds": 1200,
+        "budget_seconds": 1260,
         "critical_path_seconds": 900,
-        "headroom_seconds": 300,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 360,
         "projected_makespan_seconds": 900,
+        "required_job_seconds": 1260,
         "resource_capacity_floor_seconds": {
           "network-audit": 450
         }
       },
       "wasm": {
-        "budget_seconds": 14400,
+        "budget_seconds": 15780,
         "critical_path_seconds": 2400,
         "headroom_seconds": 0,
-        "projected_makespan_seconds": 14400,
+        "job_reserve_seconds": 180,
+        "projected_makespan_seconds": 15600,
+        "required_job_seconds": 15780,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 14400,
+          "compiler-build-resource": 15600,
           "python-tests": 120,
           "wasm-runtime": 450
         }
@@ -5174,46 +5322,56 @@
     "github_matrix_timeout_envelopes": {
       "platform_portability": {
         "linux-aarch64-py312-rust-native-dev": {
-          "budget_seconds": 10800,
+          "budget_seconds": 10920,
           "critical_path_seconds": 1800,
           "headroom_seconds": 9000,
+          "job_reserve_seconds": 120,
           "projected_makespan_seconds": 1800,
+          "required_job_seconds": 1920,
           "resource_capacity_floor_seconds": {
             "compiler-build-resource": 1800
           }
         },
         "linux-x86_64-py312-queue-portability": {
-          "budget_seconds": 10800,
+          "budget_seconds": 10920,
           "critical_path_seconds": 1800,
           "headroom_seconds": 8760,
+          "job_reserve_seconds": 120,
           "projected_makespan_seconds": 2040,
+          "required_job_seconds": 2160,
           "resource_capacity_floor_seconds": {
             "python-tests": 1920
           }
         },
         "macos-arm64-py312-queue-portability": {
-          "budget_seconds": 10800,
+          "budget_seconds": 10920,
           "critical_path_seconds": 1800,
           "headroom_seconds": 8760,
+          "job_reserve_seconds": 120,
           "projected_makespan_seconds": 2040,
+          "required_job_seconds": 2160,
           "resource_capacity_floor_seconds": {
             "python-tests": 1920
           }
         },
         "macos-arm64-py312-rust-native-dev": {
-          "budget_seconds": 10800,
+          "budget_seconds": 10920,
           "critical_path_seconds": 9000,
           "headroom_seconds": 0,
+          "job_reserve_seconds": 120,
           "projected_makespan_seconds": 10800,
+          "required_job_seconds": 10920,
           "resource_capacity_floor_seconds": {
             "compiler-build-resource": 10800
           }
         },
         "windows-x86_64-py312-queue-portability": {
-          "budget_seconds": 10800,
+          "budget_seconds": 10920,
           "critical_path_seconds": 1800,
           "headroom_seconds": 8700,
+          "job_reserve_seconds": 120,
           "projected_makespan_seconds": 2100,
+          "required_job_seconds": 2220,
           "resource_capacity_floor_seconds": {
             "python-tests": 2100
           }
@@ -5221,19 +5379,23 @@
       },
       "python_unit": {
         "linux-x86_64-py312-unit": {
-          "budget_seconds": 1200,
+          "budget_seconds": 1260,
           "critical_path_seconds": 900,
           "headroom_seconds": 0,
+          "job_reserve_seconds": 60,
           "projected_makespan_seconds": 1200,
+          "required_job_seconds": 1260,
           "resource_capacity_floor_seconds": {
             "python-tests": 1110
           }
         },
         "macos-arm64-py312-unit": {
-          "budget_seconds": 1200,
+          "budget_seconds": 1260,
           "critical_path_seconds": 900,
           "headroom_seconds": 0,
+          "job_reserve_seconds": 60,
           "projected_makespan_seconds": 1200,
+          "required_job_seconds": 1260,
           "resource_capacity_floor_seconds": {
             "python-tests": 1110
           }
@@ -5280,8 +5442,10 @@
       "nightly_conformance": {
         "budget_seconds": 900,
         "critical_path_seconds": 600,
-        "headroom_seconds": 300,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 300,
         "projected_makespan_seconds": 600,
+        "required_job_seconds": 900,
         "resource_capacity_floor_seconds": {
           "scheduled-suite": 150
         }
@@ -5289,8 +5453,10 @@
       "nightly_determinism": {
         "budget_seconds": 3600,
         "critical_path_seconds": 3300,
-        "headroom_seconds": 300,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 300,
         "projected_makespan_seconds": 3300,
+        "required_job_seconds": 3600,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 1200,
           "scheduled-suite": 525
@@ -5299,8 +5465,10 @@
       "nightly_differential": {
         "budget_seconds": 900,
         "critical_path_seconds": 600,
-        "headroom_seconds": 300,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 300,
         "projected_makespan_seconds": 600,
+        "required_job_seconds": 900,
         "resource_capacity_floor_seconds": {
           "scheduled-suite": 150
         }
@@ -5308,8 +5476,10 @@
       "nightly_regrtest": {
         "budget_seconds": 900,
         "critical_path_seconds": 600,
-        "headroom_seconds": 300,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 300,
         "projected_makespan_seconds": 600,
+        "required_job_seconds": 900,
         "resource_capacity_floor_seconds": {
           "scheduled-suite": 150
         }
@@ -5317,8 +5487,10 @@
       "nightly_shard_prepare": {
         "budget_seconds": 3600,
         "critical_path_seconds": 3300,
-        "headroom_seconds": 300,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 300,
         "projected_makespan_seconds": 3300,
+        "required_job_seconds": 3600,
         "resource_capacity_floor_seconds": {
           "scheduled-suite": 825
         }
@@ -5326,8 +5498,10 @@
       "nightly_shard_profile_feedback": {
         "budget_seconds": 600,
         "critical_path_seconds": 300,
-        "headroom_seconds": 300,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 300,
         "projected_makespan_seconds": 300,
+        "required_job_seconds": 600,
         "resource_capacity_floor_seconds": {
           "scheduled-suite": 75
         }
@@ -5335,8 +5509,10 @@
       "nightly_verification_t3": {
         "budget_seconds": 5400,
         "critical_path_seconds": 4800,
-        "headroom_seconds": 600,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 600,
         "projected_makespan_seconds": 4800,
+        "required_job_seconds": 5400,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 1200,
           "scheduled-suite": 1800
@@ -5345,8 +5521,10 @@
       "runtime_candidate_costs": {
         "budget_seconds": 10800,
         "critical_path_seconds": 9000,
-        "headroom_seconds": 1800,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 1800,
         "projected_makespan_seconds": 9000,
+        "required_job_seconds": 10800,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 9000
         }
@@ -6736,6 +6914,7 @@
     {
       "description": "One immutable native runtime, pinned CPython source, and digest-bound Nightly shard plan.",
       "job": "nightly-prepare",
+      "job_reserve_seconds": 300,
       "name": "nightly_shard_prepare",
       "resource_class": "scheduled-suite",
       "tiers": [
@@ -6747,6 +6926,7 @@
     {
       "description": "Full Molt conformance corpus aggregated from eight exact digest-bound shards.",
       "job": "conformance-aggregate",
+      "job_reserve_seconds": 300,
       "name": "nightly_conformance",
       "resource_class": "scheduled-suite",
       "shard_count": 8,
@@ -6760,6 +6940,7 @@
     {
       "description": "Full basic and stdlib differential corpus aggregated from sixteen exact digest-bound shards.",
       "job": "differential-aggregate",
+      "job_reserve_seconds": 300,
       "name": "nightly_differential",
       "resource_class": "scheduled-suite",
       "shard_count": 16,
@@ -6773,6 +6954,7 @@
     {
       "description": "Pinned CPython regrtest closure aggregated from four exact digest-bound shards.",
       "job": "regrtest-aggregate",
+      "job_reserve_seconds": 300,
       "name": "nightly_regrtest",
       "resource_class": "scheduled-suite",
       "shard_count": 4,
@@ -6786,6 +6968,7 @@
     {
       "description": "Fit one compact digest-bound cost model from complete measured Nightly item telemetry.",
       "job": "shard-profile-feedback",
+      "job_reserve_seconds": 300,
       "name": "nightly_shard_profile_feedback",
       "needs": [
         "nightly-prepare",
@@ -6803,6 +6986,7 @@
     {
       "description": "Runtime determinism and typed IR verification after one runtime build.",
       "job": "determinism-sweep",
+      "job_reserve_seconds": 300,
       "name": "nightly_determinism",
       "resource_class": "scheduled-suite",
       "tiers": [
@@ -6814,6 +6998,7 @@
     {
       "description": "Heavy Tier 3 reproducibility, fuzzing, mutation, translation, and model proof.",
       "job": "verification-gate-t3",
+      "job_reserve_seconds": 600,
       "name": "nightly_verification_t3",
       "resource_class": "scheduled-suite",
       "tiers": [
@@ -6825,6 +7010,7 @@
     {
       "description": "Controlled candidate-only numeric/list/shared-storage measurements; no comparative or release PASS.",
       "job": "candidate-runtime-costs",
+      "job_reserve_seconds": 1800,
       "name": "runtime_candidate_costs",
       "resource_class": "compiler-build-resource",
       "tiers": [
@@ -6834,7 +7020,7 @@
       "workflow": ".github/workflows/perf-gate.yml"
     }
   ],
-  "schema": "molt.proof-plan-projection.v6",
+  "schema": "molt.proof-plan-projection.v7",
   "toolchain_policies": [
     {
       "executable": "{python}",

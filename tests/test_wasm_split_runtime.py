@@ -562,20 +562,80 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _retain_split_failure(
+    reason: str, builds: dict[str, Path], *, evidence_root: Path | None = None
+) -> dict[str, object]:
+    """Retain failed products before pytest retires their scratch directories."""
+    from molt.artifact_publication import publication_receipt_path
+    from tools.proof_queue_pkg import custody_cas
+
+    root = evidence_root or ROOT / "proof-receipts/evidence/split-runtime"
+    retained = {}
+    for label, output in builds.items():
+        paths = [
+            output / "app.wasm",
+            output / "molt_runtime.wasm",
+            output / "manifest.json",
+            output / "target_feature_manifest.json",
+            publication_receipt_path(output / "manifest.json"),
+        ]
+        retained[label] = {
+            path.name: custody_cas.put_file(root, path).as_dict() for path in paths
+        }
+    return custody_cas.put_json(
+        root,
+        {
+            "schema": custody_cas.ARTIFACT_SCHEMA,
+            "kind": "split-runtime-failure",
+            "reason": reason,
+            "builds": retained,
+        },
+    ).as_dict()
+
+
+def test_split_failure_retains_distinct_bytes_and_publication(tmp_path):
+    from molt.artifact_publication import publication_receipt_path
+    from tools.proof_queue_pkg import custody_cas
+
+    builds = {label: tmp_path / label for label in ("A", "B")}
+    expected = {}
+    for label, output in builds.items():
+        output.mkdir()
+        paths = [
+            output / "app.wasm",
+            output / "molt_runtime.wasm",
+            output / "manifest.json",
+            output / "target_feature_manifest.json",
+            publication_receipt_path(output / "manifest.json"),
+        ]
+        expected[label] = {}
+        for path in paths:
+            data = label.encode() + b"\0\xff\r\n" + path.name.encode()
+            path.write_bytes(data)
+            expected[label][path.name] = data
+    root = tmp_path / "evidence"
+    reference = _retain_split_failure("runtime_hash", builds, evidence_root=root)
+    assert (
+        _retain_split_failure("runtime_hash", builds, evidence_root=root) == reference
+    )
+    for output in builds.values():
+        shutil.rmtree(output)
+    report = custody_cas.read_ref(reference, expected_root=root)
+    assert report["kind"] == "split-runtime-failure"
+    assert report["reason"] == "runtime_hash"
+    for label, files in report["builds"].items():
+        assert set(files) == set(expected[label])
+        for name, retained in files.items():
+            custody_cas.verify_file_ref(retained, expected_root=root)
+            assert Path(retained["path"]).read_bytes() == expected[label][name]
+
+
 def _collect_module_imports(path: Path, module_name: str) -> list[str]:
     return sorted(wasm_artifact._collect_wasm_module_import_names(path, module_name))
 
 
 def _collect_export_names(path: Path) -> list[str]:
     return sorted(wasm_artifact._collect_wasm_export_names(path))
-
-
-def _minimum_wasm_table_ref_index(path: Path) -> int | None:
-    export_names = _collect_export_names(path)
-    ref_indices = wasm_artifact.wasm_table_ref_indices_from_names(export_names)
-    if not ref_indices:
-        return None
-    return min(ref_indices)
 
 
 def _require_split_artifact(out_dir: Path, name: str) -> Path:
@@ -719,7 +779,10 @@ class TestSplitRuntimeArtifacts:
         out_dir, _ = split_build_a
         app_wasm = _require_split_artifact(out_dir, "app.wasm")
         size_mb = app_wasm.stat().st_size / (1024 * 1024)
-        assert size_mb < 1, f"app.wasm is {size_mb:.2f} MB, expected < 1 MB"
+        assert size_mb < 1, (
+            f"app.wasm is {size_mb:.2f} MB, expected < 1 MB; retained: "
+            f"{_retain_split_failure('app_size', {'A': out_dir})}"
+        )
 
     def test_app_wasm_smaller_than_raw_output_module(self, split_build_a):
         out_dir, _ = split_build_a
@@ -734,7 +797,10 @@ class TestSplitRuntimeArtifacts:
         out_dir, _ = split_build_a
         rt_wasm = _require_split_artifact(out_dir, "molt_runtime.wasm")
         size_mb = rt_wasm.stat().st_size / (1024 * 1024)
-        assert size_mb < 5, f"molt_runtime.wasm is {size_mb:.2f} MB, expected < 5 MB"
+        assert size_mb < 5, (
+            f"molt_runtime.wasm is {size_mb:.2f} MB, expected < 5 MB; retained: "
+            f"{_retain_split_failure('runtime_size', {'A': out_dir})}"
+        )
 
     def test_app_wasm_retains_runtime_abi_imports(self, split_build_a):
         out_dir, _ = split_build_a
@@ -744,7 +810,10 @@ class TestSplitRuntimeArtifacts:
             "app.wasm must retain molt_runtime imports in split mode"
         )
         assert "molt_string_from_bytes" in runtime_imports
-        assert "molt_module_import" in runtime_imports
+        # PROGRAM_A has no Python import operation. The shared runtime still
+        # publishes import support for other applications using the same image.
+        runtime = _require_split_artifact(out_dir, "molt_runtime.wasm")
+        assert "molt_module_import" in _collect_export_names(runtime)
 
     def test_worker_uses_backend_wasm_table_base(self, split_build_a):
         out_dir, _ = split_build_a
@@ -760,9 +829,8 @@ class TestSplitRuntimeArtifacts:
             "fallback authority"
         )
 
-        first_exported_ref = _minimum_wasm_table_ref_index(app_wasm)
-        if first_exported_ref is not None:
-            assert first_exported_ref >= wasm_table_base
+        entries = wasm_artifact.read_wasm_callable_table_attestation(app_wasm)
+        assert all(entry.slot >= wasm_table_base for entry in entries)
 
         worker_content = worker_js.read_text(encoding="utf-8")
         assert (
@@ -2017,7 +2085,8 @@ class TestRuntimeCacheability:
             f"  Program A runtime hash: {hash_a}\n"
             f"  Program B runtime hash: {hash_b}\n"
             f"  Program A runtime size: {rt_a.stat().st_size}\n"
-            f"  Program B runtime size: {rt_b.stat().st_size}"
+            f"  Program B runtime size: {rt_b.stat().st_size}\n"
+            f"  Retained: {_retain_split_failure('runtime_hash', {'A': out_a, 'B': out_b})}"
         )
 
     def test_app_wasm_differs(self, split_build_a, split_build_b):

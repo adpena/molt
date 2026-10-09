@@ -2084,6 +2084,8 @@ def run_guarded(
             )
         else:
             child_elapsed_s = None
+        # Preserve captured guest bytes before adding any guard diagnostics.
+        child_stderr = stderr if capture_output else None
         returncode = proc.returncode
         if violation is not None:
             returncode = GUARD_RETURN_CODE
@@ -2332,6 +2334,7 @@ def run_guarded(
             peak_total=peak_total,
             stdout=stdout,
             stderr=stderr,
+            child_stderr=child_stderr,
             timed_out=timed_out,
             cancelled=cancelled,
             descendants_closed=descendants_closed,

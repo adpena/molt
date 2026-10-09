@@ -124,7 +124,9 @@ def _execution(coordinate: authority.VerifiedSubsetCoordinate) -> dict[str, obje
     ]
     return {
         "backend": backend,
-        "profiles": verified_subset.execution_profiles(coordinate.build_profile),
+        "profiles": verified_subset.execution_profiles(
+            coordinate.build_profile, backend=coordinate.backend
+        ),
         "ci": {
             "job": "coordinate",
             "provider": "github-actions",
@@ -851,8 +853,9 @@ def test_verify_receipts_rejects_failed_coordinate(
 
 
 @pytest.mark.parametrize("profile", ["dev", "release"])
+@pytest.mark.parametrize("backend", ["native", "llvm", "wasm"])
 def test_profiles_are_explicit_and_ambient_overrides_do_not_change_selection(
-    monkeypatch, profile
+    monkeypatch, profile, backend
 ):
     for name in (
         "MOLT_RUNTIME_BUILD_PROFILE",
@@ -862,18 +865,31 @@ def test_profiles_are_explicit_and_ambient_overrides_do_not_change_selection(
     ):
         monkeypatch.setenv(name, "invalid")
     monkeypatch.setenv("CARGO_PROFILE_RELEASE_OUTPUT_DEBUG_ASSERTIONS", "false")
-    env = verified_subset._profile_environment(profile)
+    env = verified_subset._profile_environment(profile, backend=backend)
     assert "CARGO_PROFILE_RELEASE_OUTPUT_DEBUG_ASSERTIONS" not in env
     assert "MOLT_RUNTIME_BUILD_PROFILE" not in env
     assert "MOLT_DIFF_STDLIB_PROFILE" not in env
-    assert verified_subset.execution_profiles(profile)["runtime"] == (
-        "dev-fast" if profile == "dev" else "release-output"
+    expected = (
+        "dev-fast"
+        if profile == "dev"
+        else "wasm-release"
+        if backend == "wasm"
+        else "release-output"
+    )
+    assert (
+        verified_subset.execution_profiles(profile, backend=backend)["runtime"]
+        == expected
     )
 
 
 def test_invalid_build_profile_fails_closed():
     with pytest.raises(ValueError, match="build profile"):
-        verified_subset.execution_profiles("relase")
+        verified_subset.execution_profiles("relase", backend="wasm")
+
+
+def test_invalid_profile_backend_fails_closed():
+    with pytest.raises(ValueError, match="backend"):
+        verified_subset.execution_profiles("release", backend="unknown")
 
 
 def test_receipt_closure_rejects_a_different_requested_build_profile(

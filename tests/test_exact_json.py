@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.process_guard_common import run_isolated_python_probe
+
 from molt import exact_json, file_deletion, file_publication
 
 
@@ -53,23 +55,38 @@ def test_exact_file_read_admits_byte_limit_and_rejects_before_decode(
 
 @pytest.mark.parametrize("reader", [exact_json.read_exact, exact_json.capture_exact])
 def test_small_json_allocation_is_independent_of_admitted_budget(tmp_path, reader):
-    import gc
-    import tracemalloc
-
     path = tmp_path / "small.json"
     path.write_bytes(b'{"value":1}')
-    peaks = []
-    for budget in (1024 * 1024, 8 * 1024 * 1024):
-        gc.collect()
-        tracemalloc.start()
-        try:
-            result = reader(path, max_bytes=budget, label="small receipt")
-            _, peak = tracemalloc.get_traced_memory()
-        finally:
-            tracemalloc.stop()
-        decoded = result[1] if reader is exact_json.capture_exact else result
-        assert decoded == {"value": 1}
-        peaks.append(peak)
+    measurements = run_isolated_python_probe(
+        """
+        import gc
+        import json
+        from pathlib import Path
+        import sys
+        import tracemalloc
+        from molt import exact_json
+
+        path = Path(sys.argv[1])
+        reader = getattr(exact_json, sys.argv[2])
+        measurements = []
+        if tracemalloc.is_tracing():
+            raise RuntimeError("probe requires exclusive allocation tracing")
+        for budget in (1024 * 1024, 8 * 1024 * 1024):
+            gc.collect()
+            tracemalloc.start()
+            try:
+                result = reader(path, max_bytes=budget, label="small receipt")
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            decoded = result[1] if reader is exact_json.capture_exact else result
+            measurements.append({"decoded": decoded, "peak": peak})
+        print(json.dumps(measurements))
+        """,
+        args=[path, reader.__name__],
+    )
+    assert [row["decoded"] for row in measurements] == [{"value": 1}] * 2
+    peaks = [row["peak"] for row in measurements]
     # Policy headroom is not requested storage. This tolerates interpreter and
     # filesystem bookkeeping while detecting allocation proportional to 7 MiB
     # of unused admission allowance.

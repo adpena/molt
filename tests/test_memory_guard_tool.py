@@ -750,6 +750,7 @@ def test_temporary_artifact_posix_closure_reconciles_only_terminal_liveness(
         stderr="",
         orphaned_process_groups=(101,),
         termination_reports=reports,
+        child_stderr="",
     )
     incident = memory_guard._incident_payload(result)
     assert incident is not None
@@ -4393,6 +4394,7 @@ def test_escalation_reconciles_only_proven_terminal_exit(
             stderr="",
             orphaned_process_groups=cleanup.process_groups,
             termination_reports=cleanup.termination_reports,
+            child_stderr="",
         )
         incident = memory_guard._incident_payload(result)
         assert incident is not None
@@ -5755,7 +5757,15 @@ def test_guard_report_context_rejects_missing_or_unknown_fields_before_write(
         else:
             memory_guard._write_summary_json(
                 str(path),
-                result=memory_guard.GuardResult(0, None, None, None, "", ""),
+                result=memory_guard.GuardResult(
+                    0,
+                    None,
+                    None,
+                    None,
+                    "",
+                    "",
+                    child_stderr="",
+                ),
                 **context,
             )
     assert not path.exists()
@@ -5792,6 +5802,7 @@ def test_summary_json_keeps_rss_incident_primary_when_guard_signal_is_secondary(
             stderr="",
             elapsed_s=0.1,
             guard_signal=signal.SIGTERM,
+            child_stderr="",
         ),
     )
 
@@ -5839,6 +5850,7 @@ def test_summary_json_reports_incomplete_sampling_without_fabricating_incident(
             stderr="",
             elapsed_s=1.0,
             sampling_telemetry=telemetry,
+            child_stderr="",
         ),
     )
 
@@ -5891,6 +5903,7 @@ def test_summary_json_keeps_timeout_primary_when_guard_signal_is_secondary(
             timed_out=True,
             elapsed_s=5.0,
             guard_signal=signal.SIGTERM,
+            child_stderr="",
         ),
     )
 
@@ -5921,6 +5934,7 @@ def test_main_writes_running_summary_before_launch_result(
             stdout="",
             stderr="",
             elapsed_s=0.1,
+            child_stderr="",
         )
 
     monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
@@ -5994,6 +6008,7 @@ def test_main_reports_signal_status_without_guard_violation(
             stdout="",
             stderr="",
             elapsed_s=0.3,
+            child_stderr="",
         )
 
     monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
@@ -6052,6 +6067,7 @@ def test_main_reports_guard_signal_name_from_guard_signal_not_returncode(
             stderr="",
             elapsed_s=0.3,
             guard_signal=signal.SIGTERM,
+            child_stderr="",
         )
 
     monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
@@ -6117,6 +6133,7 @@ def test_main_reports_cargo_incremental_quarantine_summary(
             stderr="",
             elapsed_s=0.3,
             cargo_incremental_quarantine=receipt,
+            child_stderr="",
         )
 
     monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
@@ -6199,6 +6216,7 @@ def test_main_reports_incident_repro_context(
                 max_process_rss_kb=2 * 1024 * 1024,
                 max_total_rss_kb=3 * 1024 * 1024,
             ),
+            child_stderr="",
         )
 
     monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
@@ -7010,6 +7028,7 @@ def test_internal_worker_loads_command_and_strips_internal_env(monkeypatch) -> N
             peak_total=None,
             stdout="",
             stderr="",
+            child_stderr="",
         )
 
     monkeypatch.setenv(memory_guard.INTERNAL_WORKER_ENV, "1")
@@ -7275,6 +7294,7 @@ def test_main_reports_orphan_cleanup_with_operator_signal(
             elapsed_s=0.4,
             orphaned_process_groups=(44,),
             termination_reports=(report,),
+            child_stderr="",
         )
 
     monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
@@ -7345,6 +7365,7 @@ def test_incident_reports_incomplete_orphan_cleanup_without_false_success() -> N
         # dominate the incident classification and quarantine authority.
         orphaned_process_groups=(777,),
         termination_reports=(report,),
+        child_stderr="",
     )
 
     incident = memory_guard._incident_payload(result)
@@ -7441,7 +7462,10 @@ def test_primary_incidents_preserve_incomplete_cleanup_truth(
         "termination_reports": (report,),
     }
     kwargs.update(result_overrides)
-    result = memory_guard.GuardResult(**kwargs)  # type: ignore[arg-type]
+    result = memory_guard.GuardResult(
+        **kwargs,
+        child_stderr=kwargs["stderr"],
+    )  # type: ignore[arg-type]
 
     incident = memory_guard._incident_payload(result)
 
@@ -7503,6 +7527,7 @@ def test_owned_child_handle_success_reconciles_only_direct_child_liveness(
         stderr="",
         timed_out=True,
         termination_reports=(primary, handle),
+        child_stderr="",
     )
 
     incident = memory_guard._incident_payload(result)
@@ -7581,6 +7606,7 @@ def test_completed_group_outcome_preserves_protected_root_group_skip() -> None:
         stderr="",
         orphaned_process_groups=(100,),
         termination_reports=(report,),
+        child_stderr="",
     )
 
     incident = memory_guard._incident_payload(result)
@@ -7620,6 +7646,7 @@ def test_incident_cleanup_preserves_exact_windows_job_authority(
         windows_job_cleanup=_windows_job_cleanup(
             active_processes=0 if job_completed else 1
         ),
+        child_stderr="",
     )
     incident = memory_guard._incident_payload(result)
     assert incident is not None

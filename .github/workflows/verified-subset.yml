@@ -80,6 +80,12 @@ jobs:
           TARGET_PYTHON: ${{ matrix.reference_python }}
         run: uv sync --frozen --python "$TARGET_PYTHON"
 
+      - name: Setup canonical LLVM backend SDK
+        if: matrix.backend == 'llvm'
+        uses: ./.github/actions/setup-llvm
+        with:
+          profile: full
+
       - name: Setup canonical WebAssembly linker and WASI sysroot
         if: matrix.backend == 'wasm'
         uses: ./.github/actions/setup-llvm

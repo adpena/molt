@@ -33,6 +33,8 @@ def _resolve_backend_profile() -> tuple[BuildProfile, str | None]:
 def _resolve_cargo_profile_name_cached(
     build_profile: BuildProfile,
     raw: str,
+    *,
+    wasm: bool = False,
 ) -> tuple[str, str | None]:
     env_var = (
         "MOLT_DEV_CARGO_PROFILE"
@@ -43,10 +45,17 @@ def _resolve_cargo_profile_name_cached(
     # dev-fast is the correct default for development: it has debug info plus
     # incremental compilation. The plain "dev" profile is unoptimized and
     # produces a much larger binary.
-    # release-output is the release default for the runtime staticlib: it uses
-    # panic=abort and opt-level "z" for minimal binary size. The backend daemon
-    # has its own independent profile authority below.
-    default_profile = "dev-fast" if build_profile == "dev" else "release-output"
+    # Native release defaults to release-output. WASM retains the generic
+    # release request until its target-specific resolver selects wasm-release.
+    # An explicit physical profile, including release-output, stays explicit.
+    # The backend daemon has its own independent profile authority below.
+    default_profile = (
+        "dev-fast"
+        if build_profile == "dev"
+        else "release"
+        if wasm
+        else "release-output"
+    )
     profile_name = normalized_raw or default_profile
     if not _CARGO_PROFILE_NAME_RE.match(profile_name):
         return default_profile, f"Invalid {env_var} value: {raw}"
@@ -55,6 +64,8 @@ def _resolve_cargo_profile_name_cached(
 
 def _resolve_cargo_profile_name(
     build_profile: BuildProfile,
+    *,
+    wasm: bool = False,
 ) -> tuple[str, str | None]:
     env_var = (
         "MOLT_DEV_CARGO_PROFILE"
@@ -64,6 +75,7 @@ def _resolve_cargo_profile_name(
     return _resolve_cargo_profile_name_cached(
         build_profile,
         os.environ.get(env_var, ""),
+        wasm=wasm,
     )
 
 

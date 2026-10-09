@@ -240,13 +240,13 @@ def test_native_measurement_passes_oracle_minor_to_build(monkeypatch, tmp_path):
         return None
 
     monkeypatch.setattr(measure, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(measure, "_perfscore_build_env", lambda spec: {})
+    monkeypatch.setattr(measure, "_perfscore_build_env", lambda spec, profile: {})
     monkeypatch.setattr(measure.bench, "prepare_molt_binary", build)
     script = tmp_path / "bench_probe.py"
     script.write_text("print(1)", encoding="utf-8")
     measure.measure_cell(
         script_path=script,
-        spec=measure.BackendSpec("native", "native", None, "native"),
+        spec=measure.BackendSpec("native", "native", "native"),
         profile="release-fast",
         samples=5,
         warmup=2,

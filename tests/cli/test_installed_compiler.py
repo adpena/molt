@@ -202,7 +202,7 @@ def test_guest_project_discovery_starts_at_entry_without_launcher_override(
 
 
 @pytest.mark.parametrize(
-    "profile,features", [("dev-fast", ("native-backend",)), ("release", ("llvm",))]
+    "profile,features", [("dev-fast", ("native-backend",)), ("release", ("polly",))]
 )
 def test_installed_compiler_never_silently_rebuilds_an_unshipped_variant(
     installation, profile, features

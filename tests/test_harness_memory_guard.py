@@ -47,6 +47,7 @@ def test_guarded_completed_process_defaults_temporary_artifacts_to_none() -> Non
         "",
         "",
         elapsed_s=0.1,
+        child_stderr="",
     )
 
     assert result.temporary_artifacts is None
@@ -71,7 +72,7 @@ def test_guarded_result_transports_child_and_infrastructure_outcomes(
         else child_returncode or guard.INFRASTRUCTURE_RETURN_CODE
     )
     child_output = b"retained output\n" if tempfiles else "retained output\n"
-    child_error = b"custody incomplete\n" if tempfiles else "custody incomplete\n"
+    child_error = b"guest diagnostic\n" if tempfiles else "guest diagnostic\n"
     guarded = guard.GuardResult(
         returncode=final_returncode,
         child_returncode=child_returncode,
@@ -82,8 +83,12 @@ def test_guarded_result_transports_child_and_infrastructure_outcomes(
         peak=None,
         peak_total=None,
         stdout=child_output,
-        stderr=child_error,
+        stderr=child_error
+        + (
+            b"guard custody incomplete\n" if tempfiles else "guard custody incomplete\n"
+        ),
         owned_process_identities=((321, guard.ProcessIdentity(123456)),),
+        child_stderr=child_error,
     )
     monkeypatch.setattr(guard, "run_guarded", lambda *_args, **_kwargs: guarded)
     monkeypatch.setattr(
@@ -222,6 +227,7 @@ def test_guarded_command_incident_writes_outside_armed_source(
             stdout="",
             stderr="fixture failure",
             elapsed_s=0.1,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -805,6 +811,7 @@ def test_guarded_completed_process_uses_process_tree_guard(monkeypatch) -> None:
             peak_total=None,
             stdout="ok\n",
             stderr="",
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -852,6 +859,7 @@ def test_guarded_completed_process_preallocates_pytest_current_test_env(
             peak_total=None,
             stdout="ok\n",
             stderr="",
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -911,6 +919,7 @@ def test_guarded_completed_process_writes_command_profile(
             stderr="",
             elapsed_s=0.25,
             temporary_artifacts=temporary_artifacts,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -970,6 +979,7 @@ def test_guarded_completed_process_skips_success_profile_by_default(
             stdout="ok\n",
             stderr="",
             elapsed_s=0.1,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -1019,6 +1029,7 @@ def test_guarded_completed_process_profiles_incident_by_default(
             stdout="",
             stderr="",
             elapsed_s=0.25,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -1093,6 +1104,7 @@ def test_guarded_completed_process_profiles_cargo_incremental_quarantine(
             stderr="memory_guard: quarantined Cargo incremental state\n",
             elapsed_s=0.25,
             cargo_incremental_quarantine=receipt,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -1118,6 +1130,7 @@ def test_guarded_completed_process_profiles_cargo_incremental_quarantine(
     )
 
     assert result.returncode == 143
+    assert result.child_stderr in ("", b"")
     assert result.cargo_incremental_quarantine is receipt
     assert "quarantined Cargo incremental state" in result.stderr
     event = json.loads(profile_log.read_text(encoding="utf-8"))
@@ -1144,6 +1157,7 @@ def test_guarded_completed_process_rotates_command_profile(
             stdout="ok\n",
             stderr="",
             elapsed_s=0.1,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -1187,6 +1201,7 @@ def test_guarded_completed_process_streamed_commands_emit_keepalive(
             peak_total=None,
             stdout="",
             stderr="",
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -1229,6 +1244,7 @@ def test_guarded_completed_process_capture_commands_use_explicit_keepalive(
             peak_total=None,
             stdout="",
             stderr="",
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -1281,6 +1297,7 @@ def test_guarded_completed_process_starts_default_repo_sentinel(monkeypatch) -> 
             peak_total=None,
             stdout="ok\n",
             stderr="",
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -1332,6 +1349,7 @@ def test_guarded_completed_process_reuses_active_repo_sentinel(monkeypatch) -> N
             peak_total=None,
             stdout="ok\n",
             stderr="",
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -1377,6 +1395,7 @@ def test_guarded_completed_process_honors_external_repo_sentinel_env(
             peak_total=None,
             stdout="ok\n",
             stderr="",
+            child_stderr="",
         )
 
     def fail_sentinel(**kwargs):  # type: ignore[no-untyped-def]
@@ -1483,6 +1502,7 @@ def test_guarded_completed_process_refreshes_dynamic_child_rlimit(monkeypatch) -
             peak_total=None,
             stdout="ok\n",
             stderr="",
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -1526,6 +1546,7 @@ def test_guarded_completed_process_preserves_signal_diagnostic(monkeypatch) -> N
             stdout="",
             stderr="",
             elapsed_s=0.25,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -1585,6 +1606,7 @@ def test_guarded_completed_process_reports_guard_parent_signal(
             stderr="",
             elapsed_s=0.25,
             guard_signal=signal.SIGTERM,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -1623,6 +1645,7 @@ def test_guarded_completed_process_reports_guard_parent_signal(
     )
 
     assert result.returncode == 143
+    assert result.child_stderr in ("", b"")
     assert result.guard_signal == signal.SIGTERM
     assert "memory_guard: guard parent received SIGTERM" in result.stderr
     assert "command exited with SIGTERM status" not in result.stderr
@@ -1655,6 +1678,7 @@ def test_guarded_completed_process_profiles_secondary_guard_signal(
             stderr="",
             elapsed_s=0.25,
             guard_signal=signal.SIGTERM,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -1710,6 +1734,7 @@ def test_guarded_completed_process_reports_actionable_violation(
                 max_process_rss_kb=2 * 1024 * 1024,
                 max_total_rss_kb=3 * 1024 * 1024,
             ),
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -1765,6 +1790,7 @@ def test_guarded_completed_process_reports_actionable_timeout(
             stderr="memory_guard: timeout after 7.00s\n",
             timed_out=True,
             elapsed_s=7.01,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -1789,6 +1815,7 @@ def test_guarded_completed_process_reports_actionable_timeout(
     )
 
     assert result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+    assert result.child_stderr == ""
     assert "timeout; terminated the tracked process tree" in result.stderr
     assert "killed_at=2026-05-21T12:00:00Z" in result.stderr
     assert "elapsed=7.01s" in result.stderr
@@ -1809,6 +1836,7 @@ def test_repro_snapshot_failure_cannot_replace_primary_guard_outcome(
             stderr="",
             timed_out=True,
             elapsed_s=7.0,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -1966,6 +1994,7 @@ def test_guarded_completed_process_reports_orphan_cleanup(
             stderr="",
             elapsed_s=1.25,
             orphaned_process_groups=(101, 202),
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -2023,6 +2052,7 @@ def test_guarded_completed_process_closes_owned_tree_under_active_sentinel(
             stdout="",
             stderr="",
             elapsed_s=0.1,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -2087,6 +2117,7 @@ def test_guarded_completed_process_to_tempfiles_uses_canonical_guard(
             elapsed_s=0.2,
             cargo_incremental_quarantine=receipt,
             temporary_artifacts=temporary_artifacts,
+            child_stderr=b"",
         )
 
     monkeypatch.setattr(
@@ -2122,6 +2153,7 @@ def test_guarded_completed_process_to_tempfiles_uses_canonical_guard(
     )
 
     assert result.returncode == 143
+    assert result.child_stderr in ("", b"")
     assert result.stdout == b"binary-out\n"
     assert result.cargo_incremental_quarantine is receipt
     assert result.temporary_artifacts == temporary_artifacts
@@ -3599,6 +3631,7 @@ def test_harness_forwards_cancellation_and_projects_closure(tmp_path, monkeypatc
         peak_total=None,
         stdout="",
         stderr="",
+        child_stderr="",
     )
 
     def run(_command, **kwargs):
@@ -3631,3 +3664,116 @@ def test_harness_forwards_cancellation_and_projects_closure(tmp_path, monkeypatc
     assert payload["cancelled"] is True
     assert payload["descendants_closed"] is True
     assert payload["exit_signal"] is None
+
+
+@pytest.mark.parametrize("tempfiles", [False, True])
+@pytest.mark.parametrize("termination", ["normal", "child_124", "timeout"])
+def test_actual_guard_paths_keep_raw_child_streams_separate(
+    tmp_path: Path,
+    tempfiles: bool,
+    termination: str,
+) -> None:
+    stdout = b"out\xff\r\nno-final-newline"
+    child_stderr = b'err\xfe\r\nSAFE_RUN {"status":"ok","elapsed_s":0}no-final-newline'
+    code = (
+        "import os,time; "
+        f"os.write(1, {stdout!r}); os.write(2, {child_stderr!r}); "
+        + (
+            "time.sleep(60)"
+            if termination == "timeout"
+            else "raise SystemExit(124)"
+            if termination == "child_124"
+            else "pass"
+        )
+    )
+    command = [sys.executable, "-c", code]
+    env = os.environ.copy()
+    env["MOLT_EXT_ROOT"] = str(tmp_path)
+    run = (
+        harness_memory_guard.guarded_completed_process_to_tempfiles
+        if tempfiles
+        else harness_memory_guard.guarded_completed_process
+    )
+    options = {} if tempfiles else {"text": False}
+    result = run(
+        command,
+        prefix="MOLT_TEST_RAW_CAPTURE",
+        env=env,
+        timeout=2.0 if termination == "timeout" else 10.0,
+        **options,
+    )
+
+    assert result.stdout == stdout
+    assert result.child_stderr == child_stderr
+    assert result.descendants_closed is True
+    assert result.sampling_telemetry is not None
+    assert result.sampling_interval_s > 0
+    assert result.timed_out is (termination == "timeout")
+    if termination == "timeout":
+        assert (
+            result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
+        )
+        assert result.stderr != child_stderr
+        assert b"memory_guard:" in result.stderr
+    else:
+        assert result.returncode == (124 if termination == "child_124" else 0)
+        assert result.child_returncode == result.returncode
+        assert result.stderr == child_stderr
+
+
+def test_raw_child_stderr_has_no_decorated_result_default() -> None:
+    with pytest.raises(TypeError, match="child_stderr"):
+        harness_memory_guard.GuardedCompletedProcess(
+            ["child"],
+            0,
+            b"",
+            b"decorated",
+            elapsed_s=0.1,
+        )
+
+
+@pytest.mark.parametrize("text", [False, True])
+def test_actual_uncaptured_child_stderr_is_absent(tmp_path: Path, text: bool) -> None:
+    env = os.environ.copy()
+    env["MOLT_EXT_ROOT"] = str(tmp_path)
+    result = harness_memory_guard.guarded_completed_process(
+        [sys.executable, "-c", "pass"],
+        prefix="MOLT_TEST_RAW_CAPTURE",
+        env=env,
+        timeout=10.0,
+        capture_output=False,
+        text=text,
+    )
+    assert result.returncode == 0
+    assert result.descendants_closed is True
+    assert result.child_stderr is None
+
+
+@pytest.mark.parametrize("tempfiles", [False, True])
+def test_absent_raw_capture_is_not_reconstructed_from_diagnostics(
+    monkeypatch, tempfiles
+):
+    guard = harness_memory_guard.memory_guard
+    result = guard.GuardResult(
+        returncode=125,
+        violation=None,
+        peak=None,
+        peak_total=None,
+        stdout=b"" if tempfiles else "",
+        stderr=b"guard-only" if tempfiles else "guard-only",
+        child_stderr=None,
+    )
+    monkeypatch.setattr(guard, "run_guarded", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "_auto_repo_sentinel",
+        lambda **_: contextlib.nullcontext(),
+    )
+    run = (
+        harness_memory_guard.guarded_completed_process_to_tempfiles
+        if tempfiles
+        else harness_memory_guard.guarded_completed_process
+    )
+    observed = run([sys.executable, "-c", "pass"], prefix="MOLT_TEST")
+    assert observed.child_stderr is None
+    assert "guard-only" in (observed.stderr.decode() if tempfiles else observed.stderr)

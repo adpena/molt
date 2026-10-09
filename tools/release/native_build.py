@@ -5,7 +5,8 @@ from __future__ import annotations
 from molt.temporary_artifacts import OwnedTemporaryDirectory
 
 import argparse
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict
 import os
 from pathlib import Path
 import re
@@ -16,6 +17,13 @@ from typing import Any
 
 from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
 from molt.cli.native_binary import validate_native_binary_architecture
+from molt.cli.compiler_identity import LlvmCompilerInputs, admit_llvm_compiler_inputs
+from molt.llvm_toolchain import (
+    llvm_release,
+    required_llvm_backend_pin,
+    required_llvm_targets_for_host,
+)
+from molt.portable_paths import portable_relative_path
 from molt.cli.runtime_build_python import build_python_scope
 from molt.cli.runtime_identity_schema import _validated_build_python_identity
 from molt.compiler_distribution import (
@@ -58,7 +66,7 @@ from .git_source_snapshot import (
 )
 from .release_model import ROOT, target_by_id
 
-SCHEMA = "molt.release-native-build.v2"
+SCHEMA = "molt.release-native-build.v3"
 RECEIPT_NAME = "native-build.json"
 _COMMANDS = CommandExecutor.for_file(__file__)
 _COMPONENTS = {
@@ -120,6 +128,163 @@ def source_record(snapshot: GitSourceSnapshot) -> dict[str, Any]:
             [entry.as_record() for entry in snapshot.files]
         ),
     }
+
+
+LLVM_POLICY_PATHS = (
+    "config/llvm_toolchain_arches.toml",
+    "config/llvm_toolchain_releases.toml",
+    "runtime/molt-backend-native/Cargo.toml",
+    "runtime/molt-backend/Cargo.toml",
+)
+
+
+def llvm_policy_sha256(files: Iterable[Mapping[str, Any]]) -> str:
+    selected = {
+        item["path"]: item for item in files if item["path"] in LLVM_POLICY_PATHS
+    }
+    if any(path not in selected for path in LLVM_POLICY_PATHS):
+        raise ValueError("native build source omits LLVM policy authorities")
+    return canonical_json_sha256(
+        [
+            {
+                "path": path,
+                "size": selected[path]["size"],
+                "sha256": selected[path]["sha256"],
+            }
+            for path in LLVM_POLICY_PATHS
+        ]
+    )
+
+
+def llvm_input_record(
+    inputs: LlvmCompilerInputs, snapshot: GitSourceSnapshot
+) -> dict[str, Any]:
+    verification = inputs.verification
+    if verification.release is None:
+        raise ValueError("release compiler requires a manifest-pinned LLVM release")
+    config = inputs.resources.file_identity(verification.llvm_config)
+    closure = [
+        f"system:${{compiler/llvm-system/{index}}}"
+        if token.startswith("system:") and Path(token[7:]).is_absolute()
+        else token
+        for index, token in enumerate(verification.link_closure)
+    ]
+    return validate_llvm_inputs(
+        {
+            "linkage": "force-static",
+            "version": verification.version,
+            "upstream_release": asdict(verification.release),
+            "policy_sha256": llvm_policy_sha256(
+                item.as_record() for item in snapshot.files
+            ),
+            "targets": list(verification.targets),
+            "link_closure": closure,
+            "llvm_config": {"sha256": config.sha256, "size": config.size},
+            "resources": inputs.resources.content_identity(),
+        }
+    )
+
+
+def validate_llvm_inputs(value: object) -> dict[str, Any]:
+    record = _object(
+        value,
+        {
+            "linkage",
+            "version",
+            "upstream_release",
+            "policy_sha256",
+            "targets",
+            "link_closure",
+            "llvm_config",
+            "resources",
+        },
+        "LLVM compiler inputs",
+    )
+    pin = required_llvm_backend_pin(ROOT)
+    release = None if pin is None else llvm_release(pin.default_release, ROOT)
+    if (
+        release is None
+        or record["linkage"] != "force-static"
+        or record["version"] != release.version
+        or record["upstream_release"] != asdict(release)
+        or not _digest(record["policy_sha256"])
+    ):
+        raise ValueError("native LLVM input policy differs from pinned static release")
+    targets = record["targets"]
+    if (
+        not isinstance(targets, list)
+        or not targets
+        or not all(
+            isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9]+", item)
+            for item in targets
+        )
+        or targets != sorted(set(targets))
+    ):
+        raise ValueError("invalid native LLVM target inventory")
+    config = _object(record["llvm_config"], {"sha256", "size"}, "llvm-config identity")
+    if (
+        not _digest(config["sha256"])
+        or type(config["size"]) is not int
+        or config["size"] <= 0
+    ):
+        raise ValueError("invalid native llvm-config identity")
+    resources = _object(
+        record["resources"],
+        {"digest", "file_count", "total_size", "roots", "missing"},
+        "LLVM resources",
+    )
+    roots = resources["roots"]
+    if (
+        not _digest(resources["digest"])
+        or type(resources["file_count"]) is not int
+        or resources["file_count"] <= 1
+        or type(resources["total_size"]) is not int
+        or resources["total_size"] < config["size"]
+        or resources["missing"] != []
+        or not isinstance(roots, list)
+        or not all(
+            isinstance(item, str)
+            and re.fullmatch(r"compiler/llvm-(?:config|sdk/[^\\:]+|system/\d+)", item)
+            for item in roots
+        )
+        or roots != sorted(set(roots))
+        or resources["file_count"] != len(roots)
+        or "compiler/llvm-config" not in roots
+    ):
+        raise ValueError("invalid native LLVM resource custody")
+    for root in roots:
+        portable_relative_path(root)
+    closure = record["link_closure"]
+    if (
+        not isinstance(closure, list)
+        or not closure
+        or not all(isinstance(item, str) for item in closure)
+    ):
+        raise ValueError("invalid native LLVM static link closure")
+    archives = []
+    for index, token in enumerate(closure):
+        if token.startswith("system:"):
+            operand = token[7:]
+            if operand == f"${{compiler/llvm-system/{index}}}":
+                if f"compiler/llvm-system/{index}" not in roots:
+                    raise ValueError("LLVM external system input lacks byte custody")
+            elif (
+                re.fullmatch(r"(?:-l[A-Za-z0-9_.+-]+|[A-Za-z0-9_.+-]+\.lib)", operand)
+                is None
+            ):
+                raise ValueError("LLVM system selector is not location-neutral")
+        else:
+            if (
+                not token.startswith("lib/")
+                or ".." in Path(token).parts
+                or Path(token).suffix.lower() not in {".a", ".lib"}
+                or "compiler/llvm-sdk/" + token not in roots
+            ):
+                raise ValueError("LLVM archive lacks admitted static SDK bytes")
+            archives.append(token)
+    if not archives or len(archives) != len(set(archives)):
+        raise ValueError("LLVM static archive inventory must be nonempty and unique")
+    return record
 
 
 def snapshot_rust_channel(repo_root: Path, snapshot: GitSourceSnapshot) -> str:
@@ -212,6 +377,7 @@ def validate_receipt(payload: object) -> dict[str, Any]:
             "policy",
             "tools",
             "build_python",
+            "llvm",
             "artifacts",
         },
         "receipt fields",
@@ -246,7 +412,7 @@ def validate_receipt(payload: object) -> dict[str, Any]:
         "policy",
     )
     if (
-        policy["revision"] != 1
+        policy["revision"] != 2
         or type(policy["revision"]) is not int
         or not isinstance(policy["rust_channel"], str)
         or not re.fullmatch(r"\d+\.\d+\.\d+", policy["rust_channel"])
@@ -320,6 +486,11 @@ def validate_receipt(payload: object) -> dict[str, Any]:
         key: value for key, value in tools["python"].items() if key != "version"
     }:
         raise ValueError("native build Python closure differs from selected executable")
+    llvm = validate_llvm_inputs(receipt["llvm"])
+    if not set(required_llvm_targets_for_host(ROOT, target["arch"])).issubset(
+        llvm["targets"]
+    ):
+        raise ValueError("native LLVM SDK omits a required host code generator")
     artifacts = _object(receipt["artifacts"], set(_COMPONENTS), "artifacts")
     for role, artifact in artifacts.items():
         _object(artifact, {"path", "sha256", "size"}, f"{role} artifact")
@@ -362,6 +533,10 @@ def read_native_build(
         )
     if receipt["policy"]["rust_channel"] != expected_rust_channel:
         raise ValueError("native build Rust channel differs from source snapshot")
+    if receipt["llvm"]["policy_sha256"] != llvm_policy_sha256(
+        item.as_record() for item in snapshot.files
+    ):
+        raise ValueError("native LLVM policy differs from source snapshot")
     for role, record in receipt["artifacts"].items():
         binary = root / record["path"]
         validate_native_binary_architecture(binary, receipt["target"]["rust_target"])
@@ -621,11 +796,12 @@ def produce_native_build(
         darwin = None
         versions = {}
         if platform == "windows":
-            inherited = activate_msvc_environment(inherited, repo_root=repo_root)
+            inherited = activate_msvc_environment(inherited, repo_root=source)
         elif platform == "macos":
             darwin = select_darwin_toolchain(inherited)
             inherited.update(darwin.environment())
             versions = darwin.versions()
+        llvm_inputs = admit_llvm_compiler_inputs(source, inherited)
         env = build_environment(source, work, inherited, epoch=source_date_epoch)
         if platform == "windows":
             versions = {
@@ -639,6 +815,7 @@ def produce_native_build(
         paths = _tool_paths(source, env, platform=platform, arch=arch, darwin=darwin)
         triple = RUST_TARGET_BY_COORDINATE[(platform, arch)]
         _select_build_tools(env, paths, work=work, triple=triple, platform=platform)
+        compiler_env = llvm_inputs.environment(env)
         with build_python_scope(None) as build_python:
             identities = _tool_identities(paths, env)
             _validate_rust_tools(identities, env["RUSTUP_TOOLCHAIN"], triple)
@@ -649,20 +826,23 @@ def produce_native_build(
                 "source_date_epoch": source_date_epoch,
                 "target": {"platform": platform, "arch": arch, "rust_target": triple},
                 "policy": {
-                    "revision": 1,
+                    "revision": 2,
                     "rust_channel": env["RUSTUP_TOOLCHAIN"],
                     "platform_versions": versions,
                     "components": plans,
                 },
                 "tools": identities,
-                "build_python": build_python.capture(env),
+                "build_python": build_python.capture(compiler_env),
+                "llvm": llvm_input_record(llvm_inputs, snapshot),
                 "artifacts": {},
             }
             for role, plan in plans.items():
+                if role == "compiler":
+                    llvm_inputs.verify()
                 _COMMANDS.run(
                     cargo_command(plan, source=source, work=work, cargo=paths["cargo"]),
                     cwd=work,
-                    env=env,
+                    env=compiler_env if role == "compiler" else env,
                     check=True,
                 )
                 binary = (
@@ -679,6 +859,7 @@ def produce_native_build(
                     "size": captured.snapshot.size,
                 }
                 destination.chmod(0o755)
+            llvm_inputs.verify()
             snapshot.verify(source)
             if darwin is not None and darwin != select_darwin_toolchain(
                 env, developer_dir=darwin.developer_dir
@@ -689,7 +870,7 @@ def produce_native_build(
             require_config_free_build_root(work, env)
             if identities != _tool_identities(paths, env):
                 raise ValueError("native build tool identity changed during build")
-            if receipt["build_python"] != build_python.capture(env):
+            if receipt["build_python"] != build_python.capture(compiler_env):
                 raise ValueError("native build Python runtime changed during build")
             write_exact(stage / RECEIPT_NAME, validate_receipt(receipt))
             read_native_build(

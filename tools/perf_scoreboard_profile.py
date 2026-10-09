@@ -14,7 +14,6 @@ import bench_suites
 import perf_inner_repeat
 from perf_schema import SCHEMA_VERSION
 from perf_scoreboard_model import (
-    PROFILE_BUILD_FLAG,
     REPO_ROOT,
     SAFE_RUN,
     SCOREBOARD_DIR,
@@ -295,7 +294,9 @@ def build_profiling_binary(
         target_python_version,
         *bench_suites.molt_args_for_benchmark(script_path),
     ]
-    build_flag = PROFILE_BUILD_FLAG[profile]
+    from perf_scoreboard_build_profiles import profile_selection
+
+    build_flag = profile_selection(spec, profile).guest_profile
     try:
         binary = bench.prepare_molt_binary(
             str(looped_path),

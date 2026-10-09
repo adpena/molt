@@ -79,7 +79,7 @@ def main(api: Mapping[str, Any], argv: list[str]) -> int:
         "--profile",
         action="append",
         default=None,
-        choices=list(api["PROFILE_BUILD_FLAG"]),
+        choices=list(api["profile_build_flags"]()),
         help="profile(s) to measure (default: release-fast)",
     )
     parser.add_argument(

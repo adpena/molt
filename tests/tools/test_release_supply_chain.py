@@ -16,7 +16,7 @@ import zipfile
 
 import pytest
 
-from molt.exact_json import canonical_json_sha256
+from molt.exact_json import ExactJsonError, canonical_json_sha256
 from molt.verified_subset import current_host_coordinate, host_coordinate
 
 from tools.release import build_bundle
@@ -33,6 +33,12 @@ from tools.release import compiler_payload
 from tools.release import git_source_snapshot
 from tests.tools.test_release_native_build import native_build_fixture
 
+
+from tests.release_lane_fixtures import (
+    EXPECTED_LANES,
+    LANE_FIELDS,
+    stage_release_lane_authorities,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 _COMMANDS = CommandExecutor.for_file(__file__)
@@ -390,6 +396,7 @@ def _prepare_release_source(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# fixture\n", encoding="utf-8")
     (root / "rust-toolchain.toml").write_bytes(b'[toolchain]\nchannel="1.96.1"\n')
+    stage_release_lane_authorities(root)
     for name, data in (extra_files or {}).items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -946,7 +953,7 @@ def release_inputs(
 
 
 def _consumer_transport_receipt(candidate):
-    """Simulated transport transcript; never evidence of compiler execution."""
+    """Independent literal command oracle; never compiler execution evidence."""
     windows = candidate["target"]["platform"] == "windows"
     root = "C:/consumer" if windows else "/consumer"
     bin_dir = f"{root}/bundle/molt-{candidate['version']}/bin"
@@ -956,6 +963,17 @@ def _consumer_transport_receipt(candidate):
     suffix = ".exe" if windows else ""
     policy_bytes = (ROOT / "config/verified_subset.toml").read_bytes()
     references = tomllib.loads(policy_bytes.decode("utf-8"))["reference_cpython"]
+
+    def command(role, argv, stdout=""):
+        return {
+            "role": role,
+            "argv": argv,
+            "returncode": 0,
+            "duration_seconds": 0.125,
+            "stdout_sha256": hashlib.sha256(stdout.encode()).hexdigest(),
+            "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+        }
+
     python_proofs = []
     for reference in references:
         minor = ".".join(reference.split(".")[:2])
@@ -971,107 +989,97 @@ def _consumer_transport_receipt(candidate):
         python = f"{coordinate_root}/venv/" + (
             "Scripts/python.exe" if windows else "bin/python"
         )
-        commands = []
-
-        def command(role, argv, stdout=""):
-            commands.append(
-                {
-                    "role": role,
-                    "argv": argv,
-                    "returncode": 0,
-                    "duration_seconds": 0.125,
-                    "stdout_sha256": hashlib.sha256(stdout.encode()).hexdigest(),
-                    "stderr_sha256": hashlib.sha256(b"").hexdigest(),
-                }
-            )
-
-        command(
-            "environment",
-            [
-                "uv",
-                "venv",
-                "--no-config",
-                "--python",
-                reference,
-                f"{coordinate_root}/venv",
-            ],
-        )
-        command("cli_setup", [*launcher, "setup", "--install-cli-dependencies"])
-        command("cli_help", [*launcher, "--help"])
         worker = "molt-worker.exe" if windows else "molt-worker"
         worker_bin = f"{root}/worker/molt-worker-{candidate['version']}/bin"
-        command("worker_help", [f"{worker_bin}/{worker}", "--help"])
+        commands = [
+            command(
+                "environment",
+                [
+                    "uv",
+                    "venv",
+                    "--no-config",
+                    "--python",
+                    reference,
+                    f"{coordinate_root}/venv",
+                ],
+            ),
+            command("cli_setup", [*launcher, "setup", "--install-cli-dependencies"]),
+            command("cli_help", [*launcher, "--help"]),
+            command("worker_help", [f"{worker_bin}/{worker}", "--help"]),
+        ]
         cells = []
-        for target, profile in (
-            ("native", "dev"),
-            ("native", "release"),
-            ("wasm", "dev"),
-            ("wasm", "release"),
-        ):
-            cell = f"{project}/{target}-{profile}"
+        for values in EXPECTED_LANES:
+            backend, target, profile, _runtime, _compiler = values
+            lane_id = "-".join(values)
+            cell = f"{project}/{lane_id}"
             diagnostics = f"{cell}/diagnostics.json"
             if target == "native":
                 output = artifact = f"{cell}/release_consumer{suffix}"
-                command(
-                    f"build_native_{profile}",
-                    [
-                        *launcher,
-                        "build",
-                        "--target",
-                        "native",
-                        "--profile",
-                        profile,
-                        "--python-version",
-                        minor,
-                        "--diagnostics-file",
-                        diagnostics,
-                        "--output",
-                        output,
-                        source,
-                    ],
+                commands.append(
+                    command(
+                        f"build_{lane_id}",
+                        [
+                            *launcher,
+                            "build",
+                            "--target",
+                            "native",
+                            "--backend",
+                            "llvm" if backend == "llvm" else "cranelift",
+                            "--profile",
+                            profile,
+                            "--python-version",
+                            minor,
+                            "--diagnostics-file",
+                            diagnostics,
+                            "--output",
+                            output,
+                            source,
+                        ],
+                    )
                 )
-                command(f"run_native_{profile}", [output, *guest_argv], guest_stdout)
+                commands.append(
+                    command(f"run_{lane_id}", [output, *guest_argv], guest_stdout)
+                )
             else:
                 output = f"{cell}/release_consumer.wasm"
                 artifact = f"{cell}/release_consumer_linked.wasm"
-                command(
-                    f"run_wasm_{profile}",
-                    [
-                        *launcher,
-                        "run",
-                        "--target",
-                        "wasm",
-                        "--profile",
-                        profile,
-                        "--python-version",
-                        minor,
-                        f"--build-arg=--diagnostics-file={diagnostics}",
-                        f"--build-arg=--output={output}",
-                        source,
-                        "--",
-                        *guest_argv,
-                    ],
-                    guest_stdout,
+                commands.append(
+                    command(
+                        f"run_{lane_id}",
+                        [
+                            *launcher,
+                            "run",
+                            "--target",
+                            "wasm",
+                            "--profile",
+                            profile,
+                            "--python-version",
+                            minor,
+                            f"--build-arg=--diagnostics-file={diagnostics}",
+                            f"--build-arg=--output={output}",
+                            source,
+                            "--",
+                            *guest_argv,
+                        ],
+                        guest_stdout,
+                    )
                 )
             cells.append(
                 {
-                    "target": target,
-                    "profile": profile,
+                    "lane": dict(zip(LANE_FIELDS, values, strict=True)),
                     "diagnostics": diagnostics,
                     "output": output,
                     "compiler_sha256": candidate["compiler"]["sha256"],
                     "compiler_fingerprint": "b" * 64,
                     "artifact": {"path": artifact, "sha256": "e" * 64, "size": 8192},
-                    "manifest": (
-                        {
-                            "path": f"{cell}/manifest.json",
-                            "filename": "manifest.json",
-                            "sha256": "f" * 64,
-                            "size": 512,
-                        }
-                        if target == "wasm"
-                        else None
-                    ),
+                    "manifest": {
+                        "path": f"{cell}/manifest.json",
+                        "filename": "manifest.json",
+                        "sha256": "f" * 64,
+                        "size": 512,
+                    }
+                    if target == "wasm"
+                    else None,
                 }
             )
         python_proofs.append(
@@ -1099,25 +1107,36 @@ def _consumer_transport_receipt(candidate):
                 "cells": cells,
             }
         )
-    count = len(references) * 4
     wheel_record = next(
         record for record in candidate["artifacts"] if record["name"] == "molt-wheel"
     )
-    first_reference = references[0]
-    first_minor = ".".join(first_reference.split(".")[:2])
+    first = python_proofs[0]
+    first_reference, first_minor = first["reference_python"], first["python"]
     pip_venv = f"{root}/pip/venv"
     pip_python = f"{pip_venv}/" + ("Scripts/python.exe" if windows else "bin/python")
     pip_molt = f"{pip_venv}/" + ("Scripts/molt.exe" if windows else "bin/molt")
     pip_project = f"{root}/pip/project"
-    pip_output = f"{pip_project}/release_consumer{suffix}"
-    pip_commands = []
-    for role, argv, stdout in (
-        (
+    # Transport both projections of the same independent command fixture; no
+    # production command/schema helper synthesizes the admission oracle.
+    pip_products = json.loads(
+        json.dumps(
+            {
+                "source": first["source"],
+                "cells": first["cells"],
+                "commands": first["commands"][4:],
+            }
+        )
+        .replace(f"{root}/python-{first_minor}/project", pip_project)
+        .replace(launcher[0], pip_molt)
+    )
+    for row in pip_products["commands"]:
+        row["role"] = "pip_" + row["role"]
+    pip_commands = [
+        command(
             "pip_environment",
             ["uv", "venv", "--no-config", "--python", first_reference, pip_venv],
-            "",
         ),
-        (
+        command(
             "pip_install",
             [
                 "uv",
@@ -1128,44 +1147,13 @@ def _consumer_transport_receipt(candidate):
                 pip_python,
                 f"{root}/candidate/{wheel_record['filename']}",
             ],
-            "",
         ),
-        (
-            "pip_build_native_release",
-            [
-                pip_molt,
-                "build",
-                "--target",
-                "native",
-                "--profile",
-                "release",
-                "--python-version",
-                first_minor,
-                "--diagnostics-file",
-                f"{pip_project}/diagnostics.json",
-                "--output",
-                pip_output,
-                f"{pip_project}/release_consumer.py",
-            ],
-            "",
+        *pip_products["commands"],
+        command(
+            "pip_uninstall", ["uv", "pip", "uninstall", "--python", pip_python, "molt"]
         ),
-        ("pip_run_native_release", [pip_output, *guest_argv], guest_stdout),
-        (
-            "pip_uninstall",
-            ["uv", "pip", "uninstall", "--python", pip_python, "molt"],
-            "",
-        ),
-    ):
-        pip_commands.append(
-            {
-                "role": role,
-                "argv": argv,
-                "returncode": 0,
-                "duration_seconds": 0.125,
-                "stdout_sha256": hashlib.sha256(stdout.encode()).hexdigest(),
-                "stderr_sha256": hashlib.sha256(b"").hexdigest(),
-            }
-        )
+    ]
+    count = (len(references) + 1) * 11
     return {
         "schema": release_authority.CONSUMER_SCHEMA,
         "candidate": "candidate.json",
@@ -1186,14 +1174,13 @@ def _consumer_transport_receipt(candidate):
             "python": first_minor,
             "reference_python": first_reference,
             "commands": pip_commands,
-            "artifact": {"path": pip_output, "sha256": "e" * 64, "size": 8192},
+            "source": pip_products["source"],
+            "source_sha256": first["source_sha256"],
+            "cells": pip_products["cells"],
             "compiler_sha256": candidate["compiler"]["sha256"],
         },
         "guest_cells": [
-            ["native", "dev"],
-            ["native", "release"],
-            ["wasm", "dev"],
-            ["wasm", "release"],
+            dict(zip(LANE_FIELDS, values, strict=True)) for values in EXPECTED_LANES
         ],
         "expected_stdout": guest_stdout,
         "python_policy_sha256": hashlib.sha256(policy_bytes).hexdigest(),
@@ -1217,6 +1204,101 @@ def test_candidate_matrix_builds_one_collision_free_signed_index(
     sbom = json.loads((publish / "release.spdx.json").read_text(encoding="utf-8"))
     assert sbom["spdxVersion"] == "SPDX-2.3"
     assert len(sbom["files"]) == 26
+    expected_targets = {
+        "linux-x86-64": "linux-x86_64",
+        "linux-aarch64": "linux-aarch64",
+        "macos-x86-64": "macos-x86_64",
+        "macos-arm64": "macos-arm64",
+        "windows-x86-64": "windows-x86_64",
+        "windows-arm64": "windows-arm64",
+    }
+    llvm_packages = {
+        item["SPDXID"].removeprefix("SPDXRef-LLVM-SDK-"): item
+        for item in sbom["packages"]
+        if item["SPDXID"].startswith("SPDXRef-LLVM-SDK-")
+    }
+    assert set(llvm_packages) == set(expected_targets)
+    for identity, package in llvm_packages.items():
+        candidate = json.loads(
+            (
+                release_inputs["candidate_root"]
+                / expected_targets[identity]
+                / "candidate.json"
+            ).read_text("utf-8")
+        )
+        inputs = candidate["native_build"]["llvm"]
+        assert json.loads(package["sourceInfo"]) == inputs
+        assert package["versionInfo"] == "22.1.8"
+        assert package["checksums"] == [
+            {
+                "algorithm": "SHA256",
+                "checksumValue": inputs["upstream_release"]["source_sha256"],
+            }
+        ]
+        assert package["downloadLocation"] == inputs["upstream_release"]["url"]
+        assert package["licenseDeclared"] == "Apache-2.0 WITH LLVM-exception"
+    release_model.validate_spdx_llvm_inputs(sbom)
+    # Exercise the real receiver on independently forged JSON spellings.
+    # The last-member-wins case reconstructs the original semantic record;
+    # it must still fail at the shared exact decoder, before projection.
+    original = llvm_packages["linux-x86-64"]["sourceInfo"]
+    assert original.count('"upstream_release":{') == 1
+    duplicate_records = (
+        '{"linkage":"shared",' + original[1:],
+        original[:-1] + ',"linkage":"shared"}',
+        original.replace(
+            '"upstream_release":{',
+            '"upstream_release":{"source_sha256":"' + "f" * 64 + '",',
+            1,
+        ),
+    )
+    for forged_source in duplicate_records:
+        invalid_sbom = copy.deepcopy(sbom)
+        entry = next(
+            item
+            for item in invalid_sbom["packages"]
+            if item["SPDXID"] == "SPDXRef-LLVM-SDK-linux-x86-64"
+        )
+        entry["sourceInfo"] = forged_source
+        with pytest.raises(ValueError, match="LLVM input record is invalid") as error:
+            release_model.validate_spdx_llvm_inputs(invalid_sbom)
+        assert isinstance(error.value.__cause__, ExactJsonError)
+        assert "duplicate JSON key" in str(error.value.__cause__)
+    for corruption in (
+        "omitted",
+        "duplicate",
+        "shared",
+        "version",
+        "checksum",
+        "substituted-archive",
+        "malformed",
+    ):
+        invalid_sbom = copy.deepcopy(sbom)
+        packages = invalid_sbom["packages"]
+        entry = next(
+            item
+            for item in packages
+            if item["SPDXID"] == "SPDXRef-LLVM-SDK-linux-x86-64"
+        )
+        if corruption == "omitted":
+            packages.remove(entry)
+        elif corruption == "duplicate":
+            packages.append(copy.deepcopy(entry))
+        elif corruption == "version":
+            entry["versionInfo"] = "23.1.0"
+        elif corruption == "checksum":
+            entry["checksums"][0]["checksumValue"] = "e" * 64
+        elif corruption == "malformed":
+            entry["sourceInfo"] = "[]"
+        else:
+            inputs = json.loads(entry["sourceInfo"])
+            if corruption == "shared":
+                inputs["linkage"] = "prefer-static"
+            else:
+                inputs["link_closure"] = ["lib/libLLVM.so"]
+            entry["sourceInfo"] = json.dumps(inputs)
+        with pytest.raises(ValueError):
+            release_model.validate_spdx_llvm_inputs(invalid_sbom)
     assert (
         manifest["evidence_archive"]["sha256"] == release_inputs["release_exit_sha256"]
     )
@@ -1421,6 +1503,15 @@ def test_homebrew_projection_preserves_admissible_bundle_layout(tmp_path, monkey
     extracted = tmp_path / "extracted"
     verify_consumer._extract(archive, extracted)
     bundle = extracted / "molt-0.0.001"
+    assert (bundle / "share/molt/LLVM-LICENSE.TXT").read_bytes() == (
+        ROOT / "vendor/llvm/LICENSE.TXT"
+    ).read_bytes()
+    assert (
+        hashlib.sha256(
+            (bundle / "share/molt/LLVM-LICENSE.TXT").read_bytes()
+        ).hexdigest()
+        == "8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee"
+    )
     artifacts = [
         {
             "name": kind,
@@ -1881,11 +1972,16 @@ def test_consumer_admission_rejects_nontext_manifest_path(release_inputs, invali
     receipt_path = candidate_dir / "consumer-verification.json"
     payload = json.loads(receipt_path.read_text(encoding="utf-8"))
     cell = next(
-        row for row in payload["python_proofs"][0]["cells"] if row["target"] == "wasm"
+        row
+        for row in payload["python_proofs"][0]["cells"]
+        if row["lane"]["target"] == "wasm"
     )
     cell["manifest"]["path"] = invalid_path
     release_model.write_json(receipt_path, payload)
-    with pytest.raises(ValueError, match="release consumer wasm/dev manifest identity"):
+    with pytest.raises(
+        ValueError,
+        match="release consumer wasm-wasm-dev-dev-fast-release manifest identity",
+    ):
         release_authority._admit_candidate(
             candidate,
             candidate_dir,
@@ -1929,9 +2025,11 @@ def test_consumer_admission_requires_bound_target_profile_python_closure(
 
     def collide_wasm_outputs(p):
         # Internally consistent argv; only the per-cell directory invariant breaks.
-        dev, release = p["cells"][2:]
+        dev, release = p["cells"][8:10]
         release.update(output=dev["output"], artifact=copy.deepcopy(dev["artifact"]))
-        role(p, "run_wasm_release")["argv"][9] = f"--build-arg=--output={dev['output']}"
+        role(p, "run_wasm-wasm-release-release-output-release")["argv"][9] = (
+            f"--build-arg=--output={dev['output']}"
+        )
 
     variants = []
     for field in (
@@ -1946,7 +2044,7 @@ def test_consumer_admission_requires_bound_target_profile_python_closure(
         del payload["python_proofs"][0][field]
         variants.append(payload)
     for key, value in (
-        ("role", "run_native_release"),
+        ("role", "run_native-native-release-release-output-release"),
         ("returncode", False),
         ("returncode", 1),
         ("duration_seconds", True),
@@ -1960,24 +2058,46 @@ def test_consumer_admission_requires_bound_target_profile_python_closure(
         # Missing installed commands and unbound native/WASM inputs.
         lambda p: p["commands"].pop(),
         lambda p: p["commands"].__delitem__(slice(-2, None)),
-        lambda p: role(p, "run_native_dev").update(
+        lambda p: role(p, "run_native-native-dev-dev-fast-release").update(
             argv=["/another/executable", "--guest-flag", "two words"]
         ),
-        lambda p: p["cells"][2]["manifest"].update(path="/another/manifest.json"),
+        lambda p: p["cells"][8]["manifest"].update(path="/another/manifest.json"),
         lambda p: p["cells"][0].update(manifest={}),
-        lambda p: role(p, "run_native_dev").update(stdout_sha256=fabricated),
-        lambda p: role(p, "run_native_release")["argv"].pop(),
+        lambda p: role(p, "run_native-native-dev-dev-fast-release").update(
+            stdout_sha256=fabricated
+        ),
+        lambda p: role(p, "run_native-native-release-release-output-release")[
+            "argv"
+        ].pop(),
         # Wrong launcher, target, profile, Python, source and guest argv.
-        lambda p: role(p, "build_native_release")["argv"].__setitem__(5, "dev"),
-        lambda p: role(p, "build_native_dev")["argv"].__setitem__(7, "3.11"),
-        lambda p: role(p, "build_native_dev")["argv"].__delitem__(slice(6, 8)),
-        lambda p: role(p, "run_wasm_dev")["argv"].__setitem__(0, "/consumer/molt"),
-        lambda p: role(p, "run_wasm_release")["argv"].__setitem__(3, "native"),
-        lambda p: role(p, "run_wasm_release")["argv"].__setitem__(5, "dev"),
-        lambda p: role(p, "run_wasm_dev")["argv"].__setitem__(7, "3.11"),
-        lambda p: role(p, "run_wasm_dev")["argv"].__setitem__(10, elsewhere),
-        lambda p: role(p, "run_wasm_dev")["argv"].pop(),
-        lambda p: role(p, "run_wasm_release").update(stdout_sha256=fabricated),
+        lambda p: role(p, "build_native-native-release-release-output-release")[
+            "argv"
+        ].__setitem__(7, "dev"),
+        lambda p: role(p, "build_native-native-dev-dev-fast-release")[
+            "argv"
+        ].__setitem__(9, "3.11"),
+        lambda p: role(p, "build_native-native-dev-dev-fast-release")[
+            "argv"
+        ].__delitem__(slice(8, 10)),
+        lambda p: role(p, "run_wasm-wasm-dev-dev-fast-release")["argv"].__setitem__(
+            0, "/consumer/molt"
+        ),
+        lambda p: role(p, "run_wasm-wasm-release-release-output-release")[
+            "argv"
+        ].__setitem__(3, "native"),
+        lambda p: role(p, "run_wasm-wasm-release-release-output-release")[
+            "argv"
+        ].__setitem__(5, "dev"),
+        lambda p: role(p, "run_wasm-wasm-dev-dev-fast-release")["argv"].__setitem__(
+            7, "3.11"
+        ),
+        lambda p: role(p, "run_wasm-wasm-dev-dev-fast-release")["argv"].__setitem__(
+            10, elsewhere
+        ),
+        lambda p: role(p, "run_wasm-wasm-dev-dev-fast-release")["argv"].pop(),
+        lambda p: role(p, "run_wasm-wasm-release-release-output-release").update(
+            stdout_sha256=fabricated
+        ),
         lambda p: p.update(source=elsewhere),
         lambda p: p.update(source="relative/release_consumer.py"),
         lambda p: p.update(source_sha256="f" * 64),
@@ -1989,8 +2109,8 @@ def test_consumer_admission_requires_bound_target_profile_python_closure(
         lambda p: p["cells"].pop(),
         lambda p: p["cells"].__setitem__(3, copy.deepcopy(p["cells"][2])),
         lambda p: p["cells"].reverse(),
-        lambda p: p["cells"][2].update(target="native"),
-        lambda p: p["cells"][1].update(profile="dev"),
+        lambda p: p["cells"][8]["lane"].update(target="native"),
+        lambda p: p["cells"][1]["lane"].update(guest_profile="dev"),
         lambda p: p["cells"][0].update(unexpected=True),
         # Wrong production compiler and output binding.
         lambda p: p["cells"][2].update(compiler_sha256="f" * 64),

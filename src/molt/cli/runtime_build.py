@@ -151,7 +151,7 @@ def _prebuild_runtime_wasm(
             "internal-runtime-wasm-build builds runtime artifacts from a Molt "
             "source checkout; installed Molt uses its shipped runtime cells."
         )
-    cargo_profile, profile_error = _resolve_cargo_profile_name(build_profile)
+    cargo_profile, profile_error = _resolve_cargo_profile_name(build_profile, wasm=True)
     if profile_error is not None:
         return fail(profile_error)
     concrete_stdlib_profile = runtime_stdlib_profile_for_required_features(

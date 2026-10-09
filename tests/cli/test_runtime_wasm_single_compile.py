@@ -212,6 +212,51 @@ def _specs(root: Path):
     return _bind_specs(shared, reloc, root=root)
 
 
+@pytest.mark.parametrize("reloc", [False, True])
+@pytest.mark.parametrize("freestanding", [False, True])
+@pytest.mark.parametrize(
+    ("build_profile", "explicit", "requested", "resolved"),
+    [
+        ("dev", None, "dev-fast", "dev-fast"),
+        ("release", None, "release", "wasm-release"),
+        ("release", "release-output", "release-output", "release-output"),
+    ],
+)
+def test_public_profile_request_reaches_shared_and_reloc_build_specs(
+    tmp_path,
+    monkeypatch,
+    reloc,
+    freestanding,
+    build_profile,
+    explicit,
+    requested,
+    resolved,
+):
+    from molt.cli.cargo_profiles import _resolve_cargo_profile_name
+
+    for name in (
+        "MOLT_DEV_CARGO_PROFILE",
+        "MOLT_RELEASE_CARGO_PROFILE",
+        "MOLT_WASM_CARGO_PROFILE",
+        "MOLT_RUNTIME_BUILD_PROFILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    if explicit is not None:
+        monkeypatch.setenv("MOLT_RELEASE_CARGO_PROFILE", explicit)
+    profile_request, error = _resolve_cargo_profile_name(build_profile, wasm=True)
+    assert error is None
+    assert profile_request == requested
+    spec = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
+        tmp_path,
+        tmp_path / "runtime.wasm",
+        reloc=reloc,
+        **{**_COMMON, "cargo_profile": profile_request, "freestanding": freestanding},
+    )
+    assert spec.requested_cargo_profile == requested
+    assert spec.cargo_profile == resolved
+    assert spec.profile_dir == resolved
+
+
 def test_wasm_cache_variant_binds_runtime_member_identity() -> None:
     common = dict(
         profile="dev",

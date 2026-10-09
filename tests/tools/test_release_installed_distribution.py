@@ -346,7 +346,7 @@ def _set(path, value):
             "/consumer/candidate/molt-0.0.1-py3-none-any.whl",
         ),
         lambda proof: proof["commands"].pop(),
-        _set(("artifact", "path"), "/elsewhere/release_consumer"),
+        _set(("cells", 0, "artifact", "path"), "/elsewhere/release_consumer"),
     ],
 )
 def test_pip_consumer_admission_binds_one_plain_pip_install(release_inputs, mutate):

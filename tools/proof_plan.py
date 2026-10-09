@@ -300,9 +300,10 @@ class ProofPlan:
     def timeout_envelope(
         self, family_name: str, *, matrix_cell: str | None = None
     ) -> TimeoutEnvelope:
-        """Project the bounded DAG schedule when every partition hits its timeout.
+        """Project command deadlines, excluding setup and finalization work.
 
         A `github-matrix` job runs one cell, so its envelope is per cell.
+        Each job separately reserves its declared operational allowance.
         """
         commands = tuple(
             command
@@ -422,8 +423,8 @@ class ProofPlan:
     @classmethod
     def load(cls, path: Path = DEFAULT_MANIFEST) -> "ProofPlan":
         data = tomllib.loads(path.read_text(encoding="utf-8"))
-        if data.get("schema") != "molt.proof-plan.v4":
-            raise ValueError(f"{path}: expected schema molt.proof-plan.v4")
+        if data.get("schema") != "molt.proof-plan.v5":
+            raise ValueError(f"{path}: expected schema molt.proof-plan.v5")
         families = tuple(
             ProofFamily(str(entry.get("name", "")), dict(entry))
             for entry in data.get("ci_family", [])
@@ -887,6 +888,19 @@ class ProofPlan:
         if len(names) != len(set(names)):
             errors.append("ci_family names must be unique")
         for family in (*self.families, *self.scheduled_families):
+            models_job = isinstance(family, ScheduledFamily) or family.data.get(
+                "executor"
+            ) in {"github-job", "github-matrix"}
+            reserve = family.data.get("job_reserve_seconds")
+            if models_job:
+                if type(reserve) is not int or reserve <= 0:
+                    errors.append(
+                        f"{family.name}: job_reserve_seconds must be a positive integer"
+                    )
+            elif "job_reserve_seconds" in family.data:
+                errors.append(
+                    f"{family.name}: job_reserve_seconds requires a modeled job"
+                )
             tiers = family.data.get("tiers")
             if not isinstance(tiers, list) or not set(tiers) <= set(PROOF_TIERS):
                 errors.append(
@@ -1522,12 +1536,16 @@ class ProofPlan:
                         errors.append(str(exc))
                         continue
                     job_budget = int(family.data["timeout_minutes"]) * 60
-                    if envelope.projected_makespan_seconds > job_budget:
+                    reserve = family.data.get("job_reserve_seconds")
+                    if type(reserve) is not int or reserve <= 0:
+                        continue  # The owning field validation reports this error.
+                    if envelope.projected_makespan_seconds + reserve > job_budget:
                         scope = "" if cell is None else f" in matrix cell {cell}"
                         errors.append(
                             f"{family.name}: projected resource-aware timeout "
                             f"envelope {envelope.projected_makespan_seconds}s"
-                            f"{scope} exceeds GitHub job budget {job_budget}s"
+                            f"{scope} plus job reserve {reserve}s exceeds "
+                            f"GitHub job budget {job_budget}s"
                         )
             for family in self.scheduled_families:
                 try:
@@ -1536,11 +1554,14 @@ class ProofPlan:
                     errors.append(str(exc))
                     continue
                 job_budget = int(family.data["timeout_minutes"]) * 60
-                if envelope.projected_makespan_seconds > job_budget:
+                reserve = family.data.get("job_reserve_seconds")
+                if type(reserve) is not int or reserve <= 0:
+                    continue  # The owning field validation reports this error.
+                if envelope.projected_makespan_seconds + reserve > job_budget:
                     errors.append(
                         f"{family.name}: projected resource-aware timeout envelope "
-                        f"{envelope.projected_makespan_seconds}s exceeds scheduled "
-                        f"job budget {job_budget}s"
+                        f"{envelope.projected_makespan_seconds}s plus job reserve "
+                        f"{reserve}s exceeds scheduled job budget {job_budget}s"
                     )
         for family in self.families:
             if family.data.get("executor") != "github-workflow":
@@ -1986,6 +2007,11 @@ def family_outputs(
                     "resource_class",
                 )
             },
+            **(
+                {"job_reserve_seconds": family.data["job_reserve_seconds"]}
+                if family.data["executor"] in {"github-job", "github-matrix"}
+                else {}
+            ),
             "command_ids": [
                 command.id for command in tiered if command.family == family.name
             ],

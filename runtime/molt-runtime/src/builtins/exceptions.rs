@@ -376,6 +376,41 @@ pub(crate) fn raise_exception_bytes<T: ExceptionSentinel>(
     T::exception_sentinel()
 }
 
+/// Construct an IMPORT_FROM failure with one typed-field publication. The
+/// message and metadata are independent: Python observes the actual module
+/// name/origin objects even when their diagnostic spelling is customized.
+pub(crate) fn raise_import_error(
+    py: &PyToken<'_>,
+    message: &[u8],
+    name: u64,
+    path: u64,
+    name_from: u64,
+) -> u64 {
+    let ptr = alloc_exception_bytes(py, "ImportError", message);
+    if ptr.is_null() {
+        record_emergency_memory_error(py);
+        return MoltObject::none().bits();
+    }
+    let exception = ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits());
+    if let Err(message) = exception_typed_fields_replace_internal(
+        py,
+        exception.bits(),
+        &[
+            (ExceptionTypedField::ImportName, name),
+            (ExceptionTypedField::ImportPath, path),
+            (ExceptionTypedField::ImportNameFrom, name_from),
+        ],
+    ) {
+        if !exception_pending(py) {
+            return raise_exception(py, "SystemError", message);
+        }
+        return MoltObject::none().bits();
+    }
+    let owned = exception.into_bits();
+    record_exception_owned(py, crate::ptr_from_bits(owned));
+    MoltObject::none().bits()
+}
+
 #[inline]
 fn emergency_memory_error_pending_for_current() -> bool {
     THREAD_LAST_EXCEPTION.with(|state| state.emergency_memory_error_is_pending(current_task_ptr()))

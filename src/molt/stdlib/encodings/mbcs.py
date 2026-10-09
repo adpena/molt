@@ -8,20 +8,9 @@ which was written by Marc-Andre Lemburg (mal@lemburg.com).
 
 """
 
+# CPython delegates missing Windows codec exports to the ordinary import owner.
+from codecs import mbcs_encode, mbcs_decode
 import codecs
-
-# Keep CPython import-error semantics on non-Windows platforms.
-if not hasattr(codecs, "mbcs_encode"):
-    raise ImportError(
-        f"cannot import name 'mbcs_encode' from 'codecs' ({getattr(codecs, '__file__', None)})"
-    )
-if not hasattr(codecs, "mbcs_decode"):
-    raise ImportError(
-        f"cannot import name 'mbcs_decode' from 'codecs' ({getattr(codecs, '__file__', None)})"
-    )
-
-mbcs_encode = codecs.mbcs_encode
-mbcs_decode = codecs.mbcs_decode
 
 ### Codec APIs
 

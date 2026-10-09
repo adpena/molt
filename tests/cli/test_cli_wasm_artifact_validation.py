@@ -73,12 +73,19 @@ def _isolated_runtime_wasm_cache(
 @pytest.mark.parametrize(
     "required_features", [frozenset(), frozenset({"molt_gpu_primitives"})]
 )
+@pytest.mark.parametrize(
+    ("build_profile", "requested"), [("dev", "dev-fast"), ("release", "release")]
+)
 def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     required_features: frozenset[str],
+    build_profile: str,
+    requested: str,
 ) -> None:
+    monkeypatch.delenv("MOLT_DEV_CARGO_PROFILE", raising=False)
+    monkeypatch.delenv("MOLT_RELEASE_CARGO_PROFILE", raising=False)
     runtime_root = tmp_path / "wasm-root"
     monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(runtime_root))
     calls: list[tuple[str, float | None, str | None, Path]] = []
@@ -126,7 +133,7 @@ def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
             project_root=tmp_path,
             kind="shared",
             json_output=True,
-            build_profile="dev",
+            build_profile=build_profile,
             cargo_timeout=1200.0,
             simd_enabled=True,
             freestanding=False,
@@ -136,7 +143,7 @@ def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
         == 0
     )
 
-    assert calls == [("dev-fast", 1200.0, "micro", tmp_path)]
+    assert calls == [(requested, 1200.0, "micro", tmp_path)]
     payload = json.loads(capsys.readouterr().out)
     assert payload["artifacts"]["shared"] == str(selected_shared)
     assert payload["artifacts"]["generation"] == str(generation)

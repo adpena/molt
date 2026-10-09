@@ -47,6 +47,7 @@ from tests.cli.native_link_test_support import (
     write_test_static_archive,
 )
 from tests.runtime_build_identity_helper import runtime_build_identity
+from tests.release_lane_fixtures import stage_release_lane_authorities
 
 _SOURCE_FILES = (
     "Cargo.lock",
@@ -164,20 +165,25 @@ def _installed_bundle(
     monkeypatch.delenv("MOLT_BUNDLE_ROOT", raising=False)
     root = tmp_path / "bundle"
     source = root / "source"
-    records = []
     for name in _SOURCE_FILES:
         path = source / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"source")
-        records.append(
-            {
-                "path": name,
-                "mode": 0o100644,
-                "blob_oid": "c" * 40,
-                "size": 6,
-                "sha256": _digest(b"source"),
-            }
+    stage_release_lane_authorities(source)
+    # Rebuild the signed source list from actual fixture bytes after adding policy.
+    records = [
+        {
+            "path": path.relative_to(source).as_posix(),
+            "mode": 0o100644,
+            "blob_oid": "c" * 40,
+            "size": len(path.read_bytes()),
+            "sha256": _digest(path.read_bytes()),
+        }
+        for path in sorted(
+            source.rglob("*"), key=lambda path: path.relative_to(source).as_posix()
         )
+        if path.is_file()
+    ]
     system, arch = current_host_coordinate()
     windows = system == "windows"
     binaries = {}
@@ -577,12 +583,18 @@ def test_release_policy_is_derived_from_existing_authorities(monkeypatch):
     assert kinds == {distribution.NATIVE_RUNTIME_CELL, distribution.WASM_RUNTIME_CELL}
     for kind in kinds:
         subset = [request for request in requests if request.kind == kind]
-        assert {request.guest_profile for request in subset} == {"dev", "release"}
+        assert {request.runtime_profile for request in subset} == (
+            {"dev-fast", "release-output", "release-size", "release-fast"}
+            if kind == distribution.NATIVE_RUNTIME_CELL
+            else {"dev-fast", "release-output", "wasm-release"}
+        )
         assert {request.stdlib_profile for request in subset} == set(
             RUNTIME_STDLIB_PROFILE_TIERS
         )
     assert (
-        len(set(requests)) == len(requests) == 4 * 2 * len(RUNTIME_STDLIB_PROFILE_TIERS)
+        len(set(requests))
+        == len(requests)
+        == (4 * 2 + 3 * 2) * len(RUNTIME_STDLIB_PROFILE_TIERS)
     )
     monkeypatch.setenv("MOLT_RUNTIME_GPU_CUDA", "1")
     with pytest.raises(ValueError, match="MOLT_RUNTIME_GPU_CUDA"):
@@ -705,7 +717,12 @@ def test_manifest_requires_the_native_callable_projection(bundle):
         distribution.installed_compiler(bundle / "source")
 
 
-def test_release_native_cell_stages_the_canonical_projection(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "runtime_profile", ["dev-fast", "release-output", "release-size", "release-fast"]
+)
+def test_release_native_cell_stages_the_canonical_projection(
+    tmp_path, monkeypatch, runtime_profile
+):
     from tools.release import runtime_cells
 
     for name in runtime_cells.POLICY_OVERRIDE_ENV:
@@ -752,7 +769,7 @@ def test_release_native_cell_stages_the_canonical_projection(tmp_path, monkeypat
     output.mkdir()
     record = runtime_cells._produce_native(
         runtime_cells.RuntimeCellRequest(
-            distribution.NATIVE_RUNTIME_CELL, "dev", "micro"
+            distribution.NATIVE_RUNTIME_CELL, runtime_profile, "micro"
         ),
         tmp_path / "source",
         output,
@@ -795,10 +812,13 @@ def test_runtime_cell_output_is_bound_before_the_private_cwd(tmp_path, monkeypat
     monkeypatch.setattr(
         toolchain_identity, "resolve_executable", lambda *_a, **_k: Path("git")
     )
+
+    def materialize_source(_snapshot, root, **_kwargs):
+        stage_release_lane_authorities(root)
+        return root
+
     monkeypatch.setattr(
-        git_source_snapshot,
-        "materialize_git_source_snapshot",
-        lambda _snapshot, root, **_kwargs: root,
+        git_source_snapshot, "materialize_git_source_snapshot", materialize_source
     )
     monkeypatch.setattr(
         verified_subset, "current_host_coordinate", lambda: ("linux", "x86_64")
@@ -1380,7 +1400,12 @@ def test_runtime_policy_receipts_match_installed_simd_key(bundle, simd):
     installed = distribution.installed_compiler(bundle / "source")
     assert installed is not None
     key = installed_runtime.wasm_runtime_cell_key(
-        **{**_INSTALLED_WASM_REQUEST, "simd_enabled": simd}
+        runtime_profile="wasm-release",
+        **{
+            key: value
+            for key, value in {**_INSTALLED_WASM_REQUEST, "simd_enabled": simd}.items()
+            if key != "cargo_profile"
+        },
     )
     flags = _wasm_runtime_codegen_flags(
         ("-C", "target-feature=-reference-types"),
@@ -1415,7 +1440,14 @@ def _ship_installed_wasm_cell(bundle: Path, tmp_path: Path, **facts) -> dict:
     """
     from molt.wasm_artifact import inspect_wasm_binary
 
-    key = installed_runtime.wasm_runtime_cell_key(**_INSTALLED_WASM_REQUEST)
+    key = installed_runtime.wasm_runtime_cell_key(
+        runtime_profile="wasm-release",
+        **{
+            key: value
+            for key, value in _INSTALLED_WASM_REQUEST.items()
+            if key != "cargo_profile"
+        },
+    )
     shared_identity, reloc_identity = _distribution_wasm_identities(key, **facts)
     producer = tmp_path / "wasm-producer"
     producer.mkdir()
@@ -2002,3 +2034,106 @@ def test_runtime_feature_reader_uses_cluster_and_key_semantics(flags, expected):
         assert _wasm_runtime_codegen_flags(
             (*resolved, "-gCopt_level=2"), simd_enabled=simd, freestanding=False
         ) == (*resolved, "-gCopt_level=2")
+
+
+def test_physical_release_keys_ignore_ambient_profile_aliases(monkeypatch):
+    from tools.release import runtime_cells
+
+    before = runtime_cells.declared_cell_keys()
+    for name in (
+        "MOLT_DEV_CARGO_PROFILE",
+        "MOLT_RELEASE_CARGO_PROFILE",
+        "MOLT_WASM_CARGO_PROFILE",
+        "MOLT_RUNTIME_BUILD_PROFILE",
+    ):
+        monkeypatch.setenv(name, "unrelated-profile")
+    assert runtime_cells.declared_cell_keys() == before
+    # Key projection consumes a resolved physical profile; source selection is
+    # the caller's responsibility, not an ambient side effect of identity.
+    key = installed_runtime.wasm_runtime_cell_key(
+        runtime_profile="release-output",
+        stdlib_profile="micro",
+        simd_enabled=True,
+        freestanding=False,
+    )
+    assert key["cargo_profile"] == "release-output"
+
+
+def test_installed_readiness_joins_features_to_the_exact_runtime_profile(
+    bundle, monkeypatch
+):
+    installed = distribution.installed_compiler(bundle / "source")
+    assert installed is not None
+    monkeypatch.setenv("MOLT_RELEASE_CARGO_PROFILE", "dev-fast")
+    monkeypatch.setenv("MOLT_DEV_CARGO_PROFILE", "release-size")
+    states = installed_runtime.installed_runtime_profile_readiness(installed)
+    assert len(states) == 11
+    assert {
+        (lane.backend, lane.runtime_profile) for lane, ready in states.items() if ready
+    } == {("native", "dev-fast"), ("llvm", "dev-fast")}
+    # The production feature tuple is indivisible. A missing LLVM feature is
+    # damaged installation metadata, never a hypothetical successful product.
+    manifest = bundle / "source" / distribution.MANIFEST_NAME
+    payload = json.loads(manifest.read_text("utf-8"))
+    payload["compiler"]["features"].remove("llvm")
+    manifest.write_text(json.dumps(payload), "utf-8")
+    with pytest.raises(ValueError, match="invalid production compiler identity"):
+        distribution.installed_compiler(bundle / "source")
+
+
+@pytest.mark.parametrize("profile", ["dev-fast", "release-output", "wasm-release"])
+def test_wasm_release_producer_uses_declared_physical_profile(
+    tmp_path, monkeypatch, profile
+):
+    from types import SimpleNamespace
+    from tools.release import runtime_cells
+    from molt.cli import runtime_wasm_build_policy
+
+    for name in runtime_cells.POLICY_OVERRIDE_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MOLT_WASM_CARGO_PROFILE", "ambient-wrong")
+    source = tmp_path / "source"
+    source.mkdir()
+    work = tmp_path / "work"
+    work.mkdir()
+    output = tmp_path / "output"
+    output.mkdir()
+    members = {}
+    for role, name in (
+        ("manifest", "molt_runtime.generation.json"),
+        ("shared", "shared.wasm"),
+        ("reloc", "reloc.wasm"),
+    ):
+        path = tmp_path / name
+        path.write_bytes(b"{}" if role == "manifest" else b"\0asm\x01\0\0\0")
+        members[role] = path
+    observed = []
+
+    def build(state, **arguments):
+        observed.append(arguments["cargo_profile"])
+        assert (
+            runtime_wasm_build_policy._resolve_wasm_cargo_profile(
+                arguments["cargo_profile"]
+            )
+            == profile
+        )
+        state.runtime_wasm_codegen_binding = SimpleNamespace(
+            generation=SimpleNamespace(**members)
+        )
+        return True
+
+    # Only the external compilation boundary is fake. Request/profile selection,
+    # artifact state setup, file staging and content-addressed key are real.
+    monkeypatch.setattr(runtime_wasm_pair_build, "_ensure_runtime_wasm_both", build)
+    with runtime_cells._isolated_build_environment(work):
+        record = runtime_cells._produce_wasm(
+            runtime_cells.RuntimeCellRequest(
+                distribution.WASM_RUNTIME_CELL, profile, "micro"
+            ),
+            source,
+            output,
+            None,
+        )
+    assert observed == [profile]
+    assert record["key"]["cargo_profile"] == profile
+    assert os.environ["MOLT_WASM_CARGO_PROFILE"] == "ambient-wrong"

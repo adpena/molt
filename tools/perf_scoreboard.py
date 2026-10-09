@@ -76,7 +76,7 @@ from perf_scoreboard_model import (
     NATIVE_LLVM as NATIVE_LLVM,
     NON_AUTHORITATIVE_NOTE as NON_AUTHORITATIVE_NOTE,
     PERFSCORE_SESSION_ID as PERFSCORE_SESSION_ID,
-    PROFILE_BUILD_FLAG as PROFILE_BUILD_FLAG,
+    profile_build_flags as profile_build_flags,
     REPO_ROOT as REPO_ROOT,
     RUN_BLOCKED_BACKENDS as RUN_BLOCKED_BACKENDS,
     SAFE_RUN as SAFE_RUN,
@@ -1309,7 +1309,7 @@ def _resolve_backend_binary_path(spec: "BackendSpec", profile: str) -> Path | No
     env = _perfscore_build_env(spec, profile)
     root = Path(env["CARGO_TARGET_DIR"])
     name = "molt-backend.exe" if os.name == "nt" else "molt-backend"
-    candidate = root / selection.host_cargo_profile / name
+    candidate = root / selection.compiler_profile / name
     return candidate if candidate.is_file() else None
 
 

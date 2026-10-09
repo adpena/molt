@@ -160,9 +160,19 @@ molt build examples/hello.py --output hello_molt
 ## Verification checklist
 
 `molt build app.py --profile dev` and `--profile release` use the same production
-compiler. `--diagnostics` distinguishes its profile and content identity from
-the program/runtime profiles. Native/WASM feature availability remains governed
-by the release's verified support matrix, not by the presence of a binary.
+compiler. `--diagnostics` reports the selected backend, target, guest profile,
+runtime Cargo profile and compiler Cargo profile. The required combinations come
+from [`release_acceptance_matrix.toml`](../config/release_acceptance_matrix.toml).
+Installed selection requires the exact shipped runtime cell and compiler
+capabilities; declaring a required lane does not make an unavailable backend
+ready. Native and LLVM use the same native runtime bytes for an identical
+runtime profile, while their compiled programs remain distinct products.
+The production compiler includes LLVM through the source-pinned static SDK build
+path. Installed builds select those admitted compiler bytes and do not discover,
+provision or execute `llvm-config`; the ordinary native C/link tool requirements
+still apply. The LLVM notice is retained under `share/molt/LLVM-LICENSE.TXT` and
+in the platform wheel. Actual platform/backend qualification remains governed
+by the release's verified support matrix.
 
 The bundle owns `source/`; do not edit it or place build outputs there.
 Project discovery starts from the entry file; set `MOLT_PROJECT_ROOT` only to

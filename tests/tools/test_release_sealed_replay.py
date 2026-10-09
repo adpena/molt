@@ -923,3 +923,62 @@ def test_retained_snapshot_must_match_pin_before_any_payload_derivation(
             generation={},
             argv=(),
         )
+
+
+def test_replay_keeps_all_logical_lane_products_distinct():
+    from tests.release_lane_fixtures import EXPECTED_LANES, LANE_FIELDS
+
+    cells = [
+        {
+            "lane": dict(zip(LANE_FIELDS, values, strict=True)),
+            "artifact": {"sha256": "a" * 64},
+            "manifest": None,
+        }
+        for values in EXPECTED_LANES
+    ]
+    bundle = [
+        {"python": minor, "cells": copy.deepcopy(cells)}
+        for minor in ("3.12", "3.13", "3.14")
+    ]
+    pip = {"python": "3.12", "cells": copy.deepcopy(cells)}
+    rows = consumer_replay.expected_runs(bundle, pip)
+    assert len(rows) == len({row["id"] for row in rows}) == 44
+    names = {row["id"] for row in rows}
+    assert "bundle-3.12-native-native-release-release-size-release" in names
+    assert "bundle-3.12-llvm-native-release-release-size-release" in names
+    assert "pip-3.12-wasm-wasm-release-wasm-release-release" in names
+    native = next(row for row in rows if row["lane"]["backend"] == "llvm")
+    assert consumer_replay.guest_command(native, ("argument",)) == [
+        f"/app/{native['id']}/program",
+        "argument",
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutation", ["duplicate", "llvm-target", "unsupported-profile", "extra-field"]
+)
+def test_replay_refuses_aliases_or_relabelled_logical_products(mutation):
+    from tests.release_lane_fixtures import EXPECTED_LANES, LANE_FIELDS
+
+    cells = [
+        {
+            "lane": dict(zip(LANE_FIELDS, values, strict=True)),
+            "artifact": {},
+            "manifest": None,
+        }
+        for values in EXPECTED_LANES
+    ]
+    pip_cells = copy.deepcopy(cells)
+    cell = cells[4]
+    if mutation == "duplicate":
+        cells.append(copy.deepcopy(cell))
+    elif mutation == "llvm-target":
+        cell["lane"]["target"] = "llvm"
+    elif mutation == "unsupported-profile":
+        cell["lane"]["runtime_profile"] = "wasm-release"
+    else:
+        cell["lane"]["unexpected"] = "claim"
+    with pytest.raises(ValueError, match="consumer replay"):
+        consumer_replay.expected_runs(
+            [{"python": "3.12", "cells": cells}], {"python": "3.12", "cells": pip_cells}
+        )

@@ -6,7 +6,7 @@
 # Workflows retain only executor mechanics.  Do not add path classifiers to
 # workflow YAML or another tool.
 
-schema = "molt.proof-plan.v4"
+schema = "molt.proof-plan.v5"
 
 authority_inputs = [
   "tools/compatibility_error_protocol.py",
@@ -363,6 +363,13 @@ always = [
 
 receipt_schema = "molt.proof-receipt.v4"
 
+# Each modeled CI or scheduled job declares a positive job_reserve_seconds.
+# It covers setup, identity capture, guard finalization and artifact transport
+# outside command deadlines. CI allowances use observed run 37935929479 setup
+# and post-proof elapsed time, rounded upward to whole minutes; scheduled
+# allowances preserve existing declared slack. These are minimum allowances,
+# not hard bounds on network provisioning or OS process cleanup. Headroom is
+# calculated after the reserve. Child deadlines remain independently owned.
 # One deterministic DAG executor owns command admission. The global ceiling
 # bounds process fanout; each resource policy additionally serializes or limits
 # commands that share mutable toolchain/build state.
@@ -926,13 +933,15 @@ admission_needs = []
 tiers = ["pre-push", "pr", "main"]
 required = true
 timeout_minutes = 60
+# Observed setup/post-proof total 64s, rounded up to whole minutes.
+job_reserve_seconds = 120
 resource_class = "repository-policy"
 dependencies = []
 
 [[ci_family]]
 name = "wasm"
 description = "WASM backend, shared runtime, linked artifact, Luau sibling, and control-flow proof."
-inputs = [".github/workflows/molt-wasm-ci.yml", ".python-version", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "runtime/**", "src/**", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/venv_exec.py", "tools/wasm_*.py", "tests/test_wasm_*.py", "tests/test_generate_worker.py", "tests/test_browser_asset_closure.py", "tests/cli/test_native_symbol_authority.py", "tests/wasm_harness.py", "tests/wasm_linked_runner.py", "wasm/**", "examples/*.py"]
+inputs = [".github/workflows/molt-wasm-ci.yml", ".python-version", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "runtime/**", "src/**", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/venv_exec.py", "tools/wasm_*.py", "tests/test_wasm_*.py", "tests/test_generate_worker.py", "tests/test_browser_asset_closure.py", "tests/cli/test_native_symbol_authority.py", "tests/wasm_harness.py", "tests/wasm_linked_runner.py", "wasm/**", "examples/*.py", "tests/differential/basic/from_import_missing_name.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py", "tools/compat/**"]
 executor = "github-job"
 workflow = ".github/workflows/molt-wasm-ci.yml"
 job = "wasm-build"
@@ -941,7 +950,9 @@ admission_job = "wasm-validation"
 admission_needs = ["classify-changes"]
 tiers = ["pr", "main"]
 required = true
-timeout_minutes = 240
+timeout_minutes = 263
+# Observed setup/post-proof total 124s, rounded up to whole minutes.
+job_reserve_seconds = 180
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -958,6 +969,8 @@ admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main"]
 required = true
 timeout_minutes = 15
+# Observed setup/post-proof total 27s, rounded up to whole minutes.
+job_reserve_seconds = 60
 resource_class = "python-static"
 dependencies = []
 
@@ -973,7 +986,9 @@ admission_job = "python-unit"
 admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main"]
 required = true
-timeout_minutes = 20
+timeout_minutes = 21
+# Observed setup/post-proof total 38s, rounded up to whole minutes.
+job_reserve_seconds = 60
 resource_class = "python-tests"
 dependencies = []
 
@@ -991,7 +1006,9 @@ admission_needs = ["classify-changes"]
 tiers = ["pr", "main"]
 required = true
 # The two cold compiler rows serialize on main; the Python row runs beside them.
-timeout_minutes = 40
+timeout_minutes = 43
+# Observed setup/post-proof total 126s, rounded up to whole minutes.
+job_reserve_seconds = 180
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -1009,15 +1026,17 @@ tiers = ["pre-push", "pr", "main"]
 required = true
 # Full parallel runtime plus seven fresh-process shipping witnesses are mandatory.
 # The full resource-serialized DAG, including the focused extension witness,
-# is bounded by this complete job envelope.
-timeout_minutes = 250
+# has a separate operational allowance inside the job backstop.
+timeout_minutes = 254
+# Observed setup/post-proof total 218s, rounded up to whole minutes.
+job_reserve_seconds = 240
 resource_class = "compiler-build-resource"
 dependencies = []
 
 [[ci_family]]
 name = "llvm"
 description = "LLVM, MLIR, and linker executable build/lowering/link/differential proof."
-inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/llvm_toolchain_arches.toml", "config/llvm_toolchain_releases.toml", ".github/actions/setup-llvm/**", ".github/workflows/perf-gate.yml", "src/molt/cli/setup_readiness.py", "src/molt/llvm_toolchain.py", "src/molt/wasi_sdk_identity.py", "tools/provision_wasi_sdk.py", "tests/tools/test_provision_wasi_sdk.py", "src/molt/cli/native_link*.py", "tests/test_bootstrap_llvm.py", "tests/test_llvm_toolchain.py", "tests/cli/test_native_link*.py", "tools/bootstrap_llvm.py", "runtime/molt-backend/**", "runtime/molt-artifact-publish/**", "runtime/molt-backend-mlir/**", "runtime/molt-backend-native/**", "runtime/molt-ir/**", "runtime/molt-passes/**", "runtime/molt-tir/**"]
+inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/llvm_toolchain_arches.toml", "config/llvm_toolchain_releases.toml", ".github/actions/setup-llvm/**", ".github/workflows/perf-gate.yml", "src/molt/cli/setup_readiness.py", "src/molt/llvm_toolchain.py", "src/molt/wasi_sdk_identity.py", "tools/provision_wasi_sdk.py", "tests/tools/test_provision_wasi_sdk.py", "src/molt/cli/native_link*.py", "tests/test_bootstrap_llvm.py", "tests/test_llvm_toolchain.py", "tests/cli/test_native_link*.py", "tools/bootstrap_llvm.py", "runtime/molt-backend/**", "runtime/molt-artifact-publish/**", "runtime/molt-backend-mlir/**", "runtime/molt-backend-native/**", "runtime/molt-ir/**", "runtime/molt-passes/**", "runtime/molt-tir/**", "config/release_acceptance_matrix.toml", "src/molt/release_lanes.py", "src/molt/compiler_distribution.py", "src/molt/cli/compiler_identity.py", "src/molt/cli/installed_runtime.py", "tools/release/native_build.py", "tools/release/runtime_cells.py", "tools/release/verify_consumer.py", "vendor/llvm/**", "tests/cli/test_compiler_identity.py", "tests/cli/test_installed_runtime.py", "tests/tools/test_release_native_build.py", "tests/test_release_lanes.py"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "llvm-backend"
@@ -1027,6 +1046,8 @@ admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main", "scheduled"]
 required = true
 timeout_minutes = 75
+# Observed setup/post-proof total 116s, rounded up to whole minutes.
+job_reserve_seconds = 120
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -1043,6 +1064,8 @@ admission_needs = ["classify-changes"]
 tiers = ["pr", "main", "scheduled"]
 required = true
 timeout_minutes = 20
+# Observed setup/post-proof total 22s, rounded up to whole minutes.
+job_reserve_seconds = 60
 resource_class = "network-audit"
 dependencies = []
 
@@ -1058,7 +1081,9 @@ admission_job = "security-hardening"
 admission_needs = ["classify-changes"]
 tiers = ["pr", "main", "scheduled"]
 required = true
-timeout_minutes = 20
+timeout_minutes = 21
+# Observed setup/post-proof total 321s, rounded up to whole minutes.
+job_reserve_seconds = 360
 resource_class = "network-audit"
 dependencies = []
 
@@ -1208,7 +1233,9 @@ required = true
 # The macOS Rust cell serializes its workspace lint (suite budget) and runtime
 # gate (shipping budget) on one compiler-build resource; the Python cells keep
 # their declared per-command envelopes inside this backstop.
-timeout_minutes = 180
+timeout_minutes = 182
+# Observed setup/post-proof total 72s, rounded up to whole minutes.
+job_reserve_seconds = 120
 resource_class = "python-tests"
 dependencies = []
 
@@ -1222,6 +1249,8 @@ workflow = ".github/workflows/nightly.yml"
 job = "nightly-prepare"
 tiers = ["scheduled"]
 timeout_minutes = 60
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 300
 resource_class = "scheduled-suite"
 
 [[scheduled_family]]
@@ -1231,6 +1260,8 @@ workflow = ".github/workflows/nightly.yml"
 job = "conformance-aggregate"
 tiers = ["scheduled"]
 timeout_minutes = 15
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 300
 resource_class = "scheduled-suite"
 sharded_program = "conformance"
 shard_count = 8
@@ -1242,6 +1273,8 @@ workflow = ".github/workflows/nightly.yml"
 job = "differential-aggregate"
 tiers = ["scheduled"]
 timeout_minutes = 15
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 300
 resource_class = "scheduled-suite"
 sharded_program = "differential"
 shard_count = 16
@@ -1253,6 +1286,8 @@ workflow = ".github/workflows/nightly.yml"
 job = "regrtest-aggregate"
 tiers = ["scheduled"]
 timeout_minutes = 15
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 300
 resource_class = "scheduled-suite"
 sharded_program = "regrtest"
 shard_count = 4
@@ -1264,6 +1299,8 @@ workflow = ".github/workflows/nightly.yml"
 job = "shard-profile-feedback"
 tiers = ["scheduled"]
 timeout_minutes = 10
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 300
 resource_class = "scheduled-suite"
 needs = ["nightly-prepare", "conformance-aggregate", "differential-aggregate", "regrtest-aggregate"]
 
@@ -1274,6 +1311,8 @@ workflow = ".github/workflows/nightly.yml"
 job = "determinism-sweep"
 tiers = ["scheduled"]
 timeout_minutes = 60
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 300
 resource_class = "scheduled-suite"
 
 [[scheduled_family]]
@@ -1283,6 +1322,8 @@ workflow = ".github/workflows/nightly.yml"
 job = "verification-gate-t3"
 tiers = ["scheduled"]
 timeout_minutes = 90
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 600
 resource_class = "scheduled-suite"
 
 # Every executable partition has a stable command identity, exact matrix cell,
@@ -1901,7 +1942,7 @@ resource_class = "repository-policy"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/tools/test_release_supply_chain.py", "tests/tools/test_release_sealed_replay.py", "tests/tools/test_release_matrix_acceptance.py", "tests/tools/test_release_matrix_consumer.py", "tests/tools/test_release_archive.py", "tests/tools/test_release_remote.py", "tests/tools/test_provision_wasi_sdk.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/tools/test_release_supply_chain.py", "tests/tools/test_release_sealed_replay.py", "tests/tools/test_release_matrix_acceptance.py", "tests/tools/test_release_matrix_consumer.py", "tests/tools/test_release_archive.py", "tests/tools/test_release_remote.py", "tests/tools/test_provision_wasi_sdk.py", "tests/test_release_lanes.py", "tests/tools/test_release_native_build.py", "tests/tools/test_release_installed_distribution.py", "tests/tools/test_release_exit_gate.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -1913,7 +1954,7 @@ resource_class = "repository-policy"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = ["repository.generator-manifest", "repository.generators", "repository.structural-debt", "repository.canonicalization", "repository.call-fact-coverage"]
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_dependabot_config.py", "tests/tools/test_check_test_ownership.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/tools/test_gen_python_numeric_errors.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_scoreboard.py", "tests/tools/test_perf_schema.py", "tests/tools/test_check_perf_gate_wiring.py",  "tests/tools/test_analysis_capsule.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py", "tests/tools/test_gen_luau_support_matrix.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/tools/test_runtime_test_gate.py", "tests/test_environment_registry.py", "tests/tools/test_check_environment_registry.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/test_gen_cpython_abi_layout.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_dependabot_config.py", "tests/tools/test_check_test_ownership.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/tools/test_gen_python_numeric_errors.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_scoreboard.py", "tests/tools/test_perf_schema.py", "tests/tools/test_check_perf_gate_wiring.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py", "tests/tools/test_gen_luau_support_matrix.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/tools/test_runtime_test_gate.py", "tests/test_environment_registry.py", "tests/tools/test_check_environment_registry.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/test_gen_cpython_abi_layout.py", "tests/tools/test_perf_release_integrity.py"]
 toolchains = ["python", "uv", "rustfmt"]
 
 [[command]]
@@ -2092,7 +2133,7 @@ timeout_seconds = 120
 timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
 dependencies = []
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_startup_failures.py", "tests/test_generate_worker.py", "tests/test_browser_asset_closure.py", "tests/test_wasm_reserved_callable_arity.py"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_startup_failures.py", "tests/test_generate_worker.py", "tests/test_browser_asset_closure.py", "tests/test_wasm_reserved_callable_arity.py", "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication"]
 toolchains = ["python", "uv", "node"]
 
 [[command]]
@@ -2125,6 +2166,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-ar", "llvm-nm", "
 
 [[command]]
 id = "wasm.integration.split-runtime"
+evidence_outputs = ["proof-receipts/evidence/split-runtime"]
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
@@ -2232,6 +2274,24 @@ dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runt
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_finally_pending_observer_parity.py::test_finally_pending_observer_native_wasm_parity"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-config", "ld.lld", "lld-link", "wasm-ld", "wasm-tools"]
 
+# Real IMPORT_FROM and codec receivers share the existing differential adapters.
+# Full import closures may select a runtime generation distinct from prewarm;
+# admit that once through the CLI, without a second build-only pass.
+[[command]]
+id = "wasm.test.import-from-codec-parity"
+evidence_outputs = ["proof-receipts/evidence/import-from-codec"]
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_DIFF_BUILD_TIMEOUT", "MOLT_COMPAT_WASM_BUILD_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
+env = { MOLT_BACKEND_DAEMON = "0", MOLT_DIFF_TIMEOUT = "60", MOLT_COMPAT_WASM_RUN_TIMEOUT_SEC = "60", MOLT_DIFF_RESULTS_JSONL = "proof-receipts/evidence/import-from-codec/results.jsonl" }
+argv = ["python3", "tools/venv_exec.py", "python3", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "dev", "--stdlib-profile", "full", "--target", "native,wasm", "--jobs", "1", "--no-retry-oom", "--json-output", "proof-receipts/evidence/import-from-codec/summary.json", "--log-aggregate", "proof-receipts/evidence/import-from-codec/output.log", "tests/differential/basic/from_import_missing_name.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"]
+
 [[command]]
 id = "python.static.ty"
 family = "python_static"
@@ -2325,7 +2385,7 @@ resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv","run","--python","3.12","python","-m","pytest","-q","-n","2","-m","not slow","tests/cli/test_backend_manifest_contract.py","tests/test_cargo_workspace.py","tests/test_cli_build_profile_policy.py","tests/cli/test_runtime_build_identity.py","tests/cli/test_runtime_family_authority.py","tests/cli/test_runtime_artifact_selection.py","tests/cli/test_cli_backend_binary_materialization.py","tests/cli/test_cli_artifact_format_validation.py","tests/cli/test_cli_shared_stdlib_cache.py","tests/test_ustar.py","tests/test_native_artifact_header.py","tests/cli/test_cli_native_binary_authority.py","tests/cli/test_native_artifact_contract.py","tests/cli/test_native_symbol_authority.py","tests/cli/test_native_symbol_build_errors.py","tests/cli/test_backend_artifact_contract.py","tests/cli/test_artifact_sync.py","tests/cli/test_native_link_custody.py","tests/cli/test_native_link_manifest.py","tests/cli/test_cargo_execution_failure_authority.py","tests/cli/test_runtime_wasm_generation.py","tests/cli/test_runtime_wasm_single_compile.py","tests/cli/test_cli_runtime_wasm_shared_cache.py","tests/cli/test_cli_wasm_artifact_validation.py","tests/cli/test_cli_toolchain_artifact_hydration.py","tests/test_wasm_link_runtime_generation.py","tests/test_wasm_longdouble_durable_provisioning.py","tests/tools/test_nightly_runtime_bundle.py","tests/tools/test_nightly_prepare.py","tests/tools/test_native_link_benchmark.py","tests/cli/test_runtime_c_resource_custody.py","tests/cli/test_runtime_native_failure_custody.py","tests/cli/test_static_archive_identity.py","tests/cli/test_link_fingerprints.py","tests/cli/test_runtime_wasm_build_timings.py","tests/test_wasm_link_validation.py","tests/test_wasm_section_spans.py", "tests/tools/test_artifact_publish.py", "tests/test_wasm_bundle.py", "tests/cli/test_link_member_selection.py", "tests/cli/test_link_selection_admission.py", "tests/test_artifact_release_sibling.py"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/cli/test_backend_manifest_contract.py", "tests/test_cargo_workspace.py", "tests/test_cli_build_profile_policy.py", "tests/cli/test_runtime_build_identity.py", "tests/cli/test_runtime_family_authority.py", "tests/cli/test_runtime_artifact_selection.py", "tests/cli/test_cli_backend_binary_materialization.py", "tests/cli/test_cli_artifact_format_validation.py", "tests/cli/test_cli_shared_stdlib_cache.py", "tests/test_ustar.py", "tests/test_native_artifact_header.py", "tests/cli/test_cli_native_binary_authority.py", "tests/cli/test_native_artifact_contract.py", "tests/cli/test_native_symbol_authority.py", "tests/cli/test_native_symbol_build_errors.py", "tests/cli/test_backend_artifact_contract.py", "tests/cli/test_artifact_sync.py", "tests/cli/test_native_link_custody.py", "tests/cli/test_native_link_manifest.py", "tests/cli/test_cargo_execution_failure_authority.py", "tests/cli/test_runtime_wasm_generation.py", "tests/cli/test_runtime_wasm_single_compile.py", "tests/cli/test_cli_runtime_wasm_shared_cache.py", "tests/cli/test_cli_wasm_artifact_validation.py", "tests/cli/test_cli_toolchain_artifact_hydration.py", "tests/test_wasm_link_runtime_generation.py", "tests/test_wasm_longdouble_durable_provisioning.py", "tests/tools/test_nightly_runtime_bundle.py", "tests/tools/test_nightly_prepare.py", "tests/tools/test_native_link_benchmark.py", "tests/cli/test_runtime_c_resource_custody.py", "tests/cli/test_runtime_native_failure_custody.py", "tests/cli/test_static_archive_identity.py", "tests/cli/test_link_fingerprints.py", "tests/cli/test_runtime_wasm_build_timings.py", "tests/test_wasm_link_validation.py", "tests/test_wasm_section_spans.py", "tests/tools/test_artifact_publish.py", "tests/test_wasm_bundle.py", "tests/cli/test_link_member_selection.py", "tests/cli/test_link_selection_admission.py", "tests/test_artifact_release_sibling.py", "tests/test_llvm_toolchain.py", "tests/test_bootstrap_llvm.py", "tests/cli/test_compiler_identity.py", "tests/cli/test_installed_compiler.py", "tests/cli/test_installed_runtime.py", "tests/cli/test_installed_toolchain_rules.py", "tests/cli/test_cli_backend_output_pipeline_authority.py", "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair", "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest", "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_digest", "tests/cli/test_cli_import_collection.py::test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen", "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift", "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -2337,7 +2397,7 @@ resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv","run","--python","3.12","python","-m","pytest","-q","-n","2","-m","not slow","tests/cli/test_backend_manifest_contract.py","tests/test_cargo_workspace.py","tests/test_cli_build_profile_policy.py","tests/cli/test_runtime_build_identity.py","tests/cli/test_runtime_family_authority.py","tests/cli/test_runtime_artifact_selection.py","tests/cli/test_cli_backend_binary_materialization.py","tests/cli/test_cli_artifact_format_validation.py","tests/cli/test_cli_shared_stdlib_cache.py","tests/test_ustar.py","tests/test_native_artifact_header.py","tests/cli/test_cli_native_binary_authority.py","tests/cli/test_native_artifact_contract.py","tests/cli/test_native_symbol_authority.py","tests/cli/test_native_symbol_build_errors.py","tests/cli/test_backend_artifact_contract.py","tests/cli/test_artifact_sync.py","tests/cli/test_native_link_custody.py","tests/cli/test_native_link_manifest.py","tests/cli/test_cargo_execution_failure_authority.py","tests/cli/test_runtime_wasm_generation.py","tests/cli/test_runtime_wasm_single_compile.py","tests/cli/test_cli_runtime_wasm_shared_cache.py","tests/cli/test_cli_wasm_artifact_validation.py","tests/cli/test_cli_toolchain_artifact_hydration.py","tests/test_wasm_link_runtime_generation.py","tests/test_wasm_longdouble_durable_provisioning.py","tests/tools/test_nightly_runtime_bundle.py","tests/tools/test_nightly_prepare.py","tests/tools/test_native_link_benchmark.py","tests/cli/test_runtime_c_resource_custody.py","tests/cli/test_runtime_native_failure_custody.py","tests/cli/test_static_archive_identity.py","tests/cli/test_link_fingerprints.py","tests/cli/test_runtime_wasm_build_timings.py","tests/test_wasm_link_validation.py","tests/test_wasm_section_spans.py", "tests/tools/test_artifact_publish.py", "tests/test_wasm_bundle.py", "tests/cli/test_link_member_selection.py", "tests/cli/test_link_selection_admission.py", "tests/test_artifact_release_sibling.py"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/cli/test_backend_manifest_contract.py", "tests/test_cargo_workspace.py", "tests/test_cli_build_profile_policy.py", "tests/cli/test_runtime_build_identity.py", "tests/cli/test_runtime_family_authority.py", "tests/cli/test_runtime_artifact_selection.py", "tests/cli/test_cli_backend_binary_materialization.py", "tests/cli/test_cli_artifact_format_validation.py", "tests/cli/test_cli_shared_stdlib_cache.py", "tests/test_ustar.py", "tests/test_native_artifact_header.py", "tests/cli/test_cli_native_binary_authority.py", "tests/cli/test_native_artifact_contract.py", "tests/cli/test_native_symbol_authority.py", "tests/cli/test_native_symbol_build_errors.py", "tests/cli/test_backend_artifact_contract.py", "tests/cli/test_artifact_sync.py", "tests/cli/test_native_link_custody.py", "tests/cli/test_native_link_manifest.py", "tests/cli/test_cargo_execution_failure_authority.py", "tests/cli/test_runtime_wasm_generation.py", "tests/cli/test_runtime_wasm_single_compile.py", "tests/cli/test_cli_runtime_wasm_shared_cache.py", "tests/cli/test_cli_wasm_artifact_validation.py", "tests/cli/test_cli_toolchain_artifact_hydration.py", "tests/test_wasm_link_runtime_generation.py", "tests/test_wasm_longdouble_durable_provisioning.py", "tests/tools/test_nightly_runtime_bundle.py", "tests/tools/test_nightly_prepare.py", "tests/tools/test_native_link_benchmark.py", "tests/cli/test_runtime_c_resource_custody.py", "tests/cli/test_runtime_native_failure_custody.py", "tests/cli/test_static_archive_identity.py", "tests/cli/test_link_fingerprints.py", "tests/cli/test_runtime_wasm_build_timings.py", "tests/test_wasm_link_validation.py", "tests/test_wasm_section_spans.py", "tests/tools/test_artifact_publish.py", "tests/test_wasm_bundle.py", "tests/cli/test_link_member_selection.py", "tests/cli/test_link_selection_admission.py", "tests/test_artifact_release_sibling.py", "tests/test_llvm_toolchain.py", "tests/test_bootstrap_llvm.py", "tests/cli/test_compiler_identity.py", "tests/cli/test_installed_compiler.py", "tests/cli/test_installed_runtime.py", "tests/cli/test_installed_toolchain_rules.py", "tests/cli/test_cli_backend_output_pipeline_authority.py", "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair", "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest", "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_digest", "tests/cli/test_cli_import_collection.py::test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen", "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift", "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -2349,7 +2409,7 @@ resource_class = "python-tests"
 timeout_seconds = 120
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/test_moltlib_io.py", "tests/test_moltlib_io_runtime.py", "tests/test_moltlib_runtime_exports.py", "tests/test_io_private_module_surface.py", "tests/test_check_stdlib_intrinsics.py", "tests/test_stdlib_inspect_coroutine_marking.py", "tests/cli/test_cli_core_io_closure.py", "tests/cli/test_required_features_reachability.py", "tests/test_stdlib_intrinsic_import_evidence.py", "tests/cli/test_cli_intrinsic_enforcement.py", "tests/test_weakrefset_private_module_surface.py", "tests/test_weakref_native_authority.py", "tests/test_unittest_mock_protocol.py"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/test_moltlib_io.py", "tests/test_moltlib_io_runtime.py", "tests/test_moltlib_runtime_exports.py", "tests/test_io_private_module_surface.py", "tests/test_check_stdlib_intrinsics.py", "tests/test_stdlib_inspect_coroutine_marking.py", "tests/cli/test_cli_core_io_closure.py", "tests/cli/test_required_features_reachability.py", "tests/test_stdlib_intrinsic_import_evidence.py", "tests/cli/test_cli_intrinsic_enforcement.py", "tests/test_weakrefset_private_module_surface.py", "tests/test_weakref_native_authority.py", "tests/test_unittest_mock_protocol.py", "tests/test_public_intrinsic_surface_batch_d.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -2361,7 +2421,7 @@ resource_class = "python-tests"
 timeout_seconds = 120
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/test_moltlib_io.py", "tests/test_moltlib_io_runtime.py", "tests/test_moltlib_runtime_exports.py", "tests/test_io_private_module_surface.py", "tests/test_check_stdlib_intrinsics.py", "tests/test_stdlib_inspect_coroutine_marking.py", "tests/cli/test_cli_core_io_closure.py", "tests/cli/test_required_features_reachability.py", "tests/test_stdlib_intrinsic_import_evidence.py", "tests/cli/test_cli_intrinsic_enforcement.py", "tests/test_weakrefset_private_module_surface.py", "tests/test_weakref_native_authority.py", "tests/test_unittest_mock_protocol.py"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/test_moltlib_io.py", "tests/test_moltlib_io_runtime.py", "tests/test_moltlib_runtime_exports.py", "tests/test_io_private_module_surface.py", "tests/test_check_stdlib_intrinsics.py", "tests/test_stdlib_inspect_coroutine_marking.py", "tests/cli/test_cli_core_io_closure.py", "tests/cli/test_required_features_reachability.py", "tests/test_stdlib_intrinsic_import_evidence.py", "tests/cli/test_cli_intrinsic_enforcement.py", "tests/test_weakrefset_private_module_surface.py", "tests/test_weakref_native_authority.py", "tests/test_unittest_mock_protocol.py", "tests/test_public_intrinsic_surface_batch_d.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -3951,6 +4011,8 @@ workflow = ".github/workflows/perf-gate.yml"
 job = "candidate-runtime-costs"
 tiers = ["scheduled"]
 timeout_minutes = 180
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 1800
 resource_class = "compiler-build-resource"
 
 [[command]]

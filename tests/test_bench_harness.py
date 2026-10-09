@@ -30,6 +30,7 @@ def test_bench_harness_run_cmd_uses_memory_guard(
             "ok\n",
             "",
             elapsed_s=0.02,
+            child_stderr="",
         )
 
     monkeypatch.setattr(

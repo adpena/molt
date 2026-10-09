@@ -18,7 +18,7 @@ env:
 jobs:
   wasm-build:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 263
     env:
       PYTHONPATH: ${{ github.workspace }}/src
       MOLT_EXT_ROOT: /tmp/molt-ext
@@ -53,6 +53,7 @@ jobs:
         uses: ./.github/actions/setup-project
         with:
           node-version: pinned
+          node-cache-dependency-path: tools/browser_asset_graph/package-lock.json
           rust-toolchain: pinned
           rust-targets: wasm32-wasip1
           cache-cargo: "true"
@@ -60,6 +61,9 @@ jobs:
           sync: "true"
           sync-frozen: "true"
           sync-groups: source-build-numpy
+
+      - name: Provision browser asset parser
+        run: uv run --no-sync python3 tools/bootstrap_browser_asset_graph.py
 
       # setup-project placed CARGO_TARGET_DIR under RUNNER_TEMP, outside the
       # checkout; the WASM parity tests build into the same cached target.
@@ -100,6 +104,8 @@ jobs:
           name: proof-receipt-wasm
           path: |
             proof-receipts/wasm.json
+            proof-receipts/evidence/import-from-codec/
+            proof-receipts/evidence/split-runtime/
             ${{ steps.build-control.outputs.root }}/build_failures/*.json
             ${{ steps.build-control.outputs.root }}/runtime_wasm_generations/*.json
             /tmp/molt-ext/wasm/*.json
@@ -113,6 +119,8 @@ jobs:
           name: proof-diagnostics-wasm
           path: |
             proof-receipts/wasm.json
+            proof-receipts/evidence/import-from-codec/
+            proof-receipts/evidence/split-runtime/
             ${{ steps.build-control.outputs.profile_log }}
             ${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}
             ${{ steps.build-control.outputs.guard_state_root != '' && format('{0}/commands/**/*.json', steps.build-control.outputs.guard_state_root) || '' }}

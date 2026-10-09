@@ -103,6 +103,7 @@ def test_wasm_test_process_preserves_timeout_semantics(
             stderr="memory_guard: timeout after 2.00s\n",
             elapsed_s=2.0,
             timed_out=True,
+            child_stderr="",
         )
 
     monkeypatch.setattr(

@@ -171,6 +171,7 @@ def _bundle_molt(
         source / "packaging" / "INSTALL.md", root / "share" / "molt" / "INSTALL.md"
     )
     _copy_file(source / "LICENSE", root / "share" / "molt" / "LICENSE")
+    _copy_file(source / "vendor/llvm/LICENSE.TXT", root / "share/molt/LLVM-LICENSE.TXT")
     if {entry.name for entry in root.iterdir()} != set(
         COMPILER_BUNDLE_DIRECTORIES
     ) or not all((root / name).is_dir() for name in COMPILER_BUNDLE_DIRECTORIES):

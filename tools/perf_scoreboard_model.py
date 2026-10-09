@@ -137,22 +137,21 @@ RUN_BLOCKED_BACKENDS = {"wasm"}
 class BackendSpec:
     """A (target, backend) build lane.
 
-    ``molt_backend`` is the value forced into ``MOLT_BACKEND`` so the daemon
+    The release lane owns the selected ``MOLT_BACKEND`` environment so the daemon
     selects the right codegen (native Cranelift vs the inkwell/LLVM feature).
     ``build_target`` is the CLI ``--target`` (native vs wasm).
     """
 
     target: str  # logical target name in the scoreboard ("native", "wasm")
     backend: str  # codegen backend ("native", "llvm", "wasm")
-    molt_backend: str | None  # MOLT_BACKEND env value, or None to leave unset
     build_target: str  # molt CLI --target
 
 
-NATIVE_CRANELIFT = BackendSpec("native", "native", None, "native")
+NATIVE_CRANELIFT = BackendSpec("native", "native", "native")
 
-NATIVE_LLVM = BackendSpec("native", "llvm", "llvm", "native")
+NATIVE_LLVM = BackendSpec("native", "llvm", "native")
 
-WASM = BackendSpec("wasm", "wasm", None, "wasm")
+WASM = BackendSpec("wasm", "wasm", "wasm")
 
 BACKENDS_BY_NAME = {
     "native": NATIVE_CRANELIFT,
@@ -160,7 +159,7 @@ BACKENDS_BY_NAME = {
     "wasm": WASM,
 }
 
-from perf_scoreboard_build_profiles import PROFILE_BUILD_FLAG as PROFILE_BUILD_FLAG  # noqa: E402
+from perf_scoreboard_build_profiles import profile_build_flags as profile_build_flags  # noqa: E402
 
 
 def _llvm_backend_pin():

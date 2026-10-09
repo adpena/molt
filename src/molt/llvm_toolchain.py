@@ -52,6 +52,8 @@ from molt.toolchain_identity import (
     find_executable,
     expand_user_path,
     stable_executable_probe,
+    stable_regular_file_identity,
+    verify_stable_regular_file_identity,
 )
 
 
@@ -255,7 +257,7 @@ class LlvmContentFact:
     sha256: str
 
 
-LLVM_ATTESTATION_SCHEMA = "molt.llvm-toolchain.v6"
+LLVM_ATTESTATION_SCHEMA = "molt.llvm-toolchain.v7"
 LLVM_ATTESTATION_FILENAME = ".molt-llvm-toolchain.json"
 
 
@@ -1460,37 +1462,41 @@ def _llvm_link_closure(
     prefix: Path,
     llvm_config: Path,
 ) -> tuple[tuple[str, ...], tuple[Path, ...]]:
-    local_output = _run_llvm_config(
-        llvm_config, "--link-static", "--libs", "core", "support"
-    )
-    system_output = _run_llvm_config(llvm_config, "--system-libs")
+    local_output = _run_llvm_config(llvm_config, "--libnames", "--link-static")
+    system_output = _run_llvm_config(llvm_config, "--system-libs", "--link-static")
     lib_dir = prefix / "lib"
+    # llvm-sys consumes these exact roots. A coincidental same-name archive or
+    # header in prefix/lib or prefix/include is not proof of that selection.
+    for option, expected in (
+        ("--libdir", lib_dir),
+        ("--includedir", prefix / "include"),
+    ):
+        selected = _run_llvm_config(llvm_config, option)
+        if (
+            not selected
+            or "\n" in selected
+            or "\r" in selected
+            or not Path(selected).is_absolute()
+            or Path(selected).resolve() != expected.resolve()
+        ):
+            raise LlvmToolchainConfigError(
+                f"llvm-config {option} escapes the admitted SDK layout: {selected!r}"
+            )
     resolved_local: list[Path] = []
     rendered: list[str] = []
     for token in _llvm_config_tokens(local_output):
-        if token.startswith("-l"):
-            stem = token[2:]
-            candidates = (
-                lib_dir / f"{stem}.lib",
-                lib_dir / f"lib{stem}.lib",
-                lib_dir / f"lib{stem}.a",
-                lib_dir / f"lib{stem}.so",
-                lib_dir / f"lib{stem}.dylib",
+        # Match llvm-sys's --libnames contract. Never fall back to a shared
+        # library when the force-static compiler feature requires an archive.
+        candidate = Path(token)
+        if token.startswith("-") or candidate.suffix.lower() not in {".a", ".lib"}:
+            raise LlvmToolchainConfigError(
+                f"llvm-config static closure names a non-archive input: {token}"
             )
-            path = next(
-                (candidate for candidate in candidates if candidate.is_file()), None
+        path = candidate if candidate.is_absolute() else lib_dir / candidate
+        if not path.is_file():
+            raise LlvmToolchainConfigError(
+                f"llvm-config link closure names missing library: {path}"
             )
-            if path is None:
-                raise LlvmToolchainConfigError(
-                    f"llvm-config link closure names missing library {token} in {lib_dir}"
-                )
-        else:
-            candidate = Path(token)
-            path = candidate if candidate.is_absolute() else lib_dir / candidate
-            if not path.is_file():
-                raise LlvmToolchainConfigError(
-                    f"llvm-config link closure names missing library: {path}"
-                )
         resolved = path.resolve()
         try:
             relative = resolved.relative_to(prefix)
@@ -1858,6 +1864,9 @@ def verify_llvm_toolchain_prefix(
         raise LlvmToolchainConfigError(
             f"LLVM/MLIR prefix does not contain llvm-config: {llvm_config}"
         )
+    config_identity = stable_regular_file_identity(
+        llvm_config, label="LLVM configuration authority"
+    )
     actual_version = _run_llvm_config(llvm_config, "--version")
     expected_version = version or pin.default_release
     release = llvm_release(expected_version, root)
@@ -1940,7 +1949,9 @@ def verify_llvm_toolchain_prefix(
         library_family(name) for name in ("llvm", "mlir", "polly", "lld")
     )
     required_libraries = tuple(
-        sorted({path for family in library_families for path in family})
+        sorted(
+            {*link_libraries, *(path for family in library_families for path in family)}
+        )
     )
     library_facts = tuple(
         LlvmLibraryFact(
@@ -2081,6 +2092,15 @@ def verify_llvm_toolchain_prefix(
                 "managed LLVM/MLIR attestation omits projects "
                 f"{sorted(required_projects - attested_projects)}"
             )
+    verify_stable_regular_file_identity(
+        config_identity, label="LLVM configuration authority"
+    )
+    config_fact = next(fact for fact in tool_versions if fact.role == "llvm-config")
+    if (config_fact.sha256, config_fact.size) != (
+        config_identity.sha256,
+        config_identity.size,
+    ):
+        raise LlvmToolchainConfigError("llvm-config changed during SDK verification")
     return LlvmPrefixVerification(
         prefix=resolved,
         llvm_config=llvm_config,

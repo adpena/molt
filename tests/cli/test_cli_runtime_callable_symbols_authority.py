@@ -788,6 +788,7 @@ def test_native_object_output_rejects_runtime_generation_drift(
         cache_hit_tier=None,
     )
     backend_setup = _PreparedBackendSetup(
+        backend="native",
         runtime_state=state,
         backend_bin=tmp_path / "backend.exe",
         cache_setup=cache_setup,

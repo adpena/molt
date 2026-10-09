@@ -1003,11 +1003,12 @@ class _FixtureWasmFactsProvider:
         artifact.write_bytes(published)
         facts = _rust_facts_fixture(published)
         if layout is not None:
-            app_entry_count = (
-                len(facts["callable_table_entries"])
-                if role == "app"
-                else layout.app_entry_count
-            )
+            if role == "runtime":
+                app_entry_count = 0
+            elif role == "app":
+                app_entry_count = len(facts["callable_table_entries"])
+            else:
+                app_entry_count = layout.app_entry_count
             facts["callable_table_layout"] = {
                 "fixed_prefix_base": layout.fixed_prefix_base,
                 "fixed_prefix_len": layout.fixed_prefix_len,

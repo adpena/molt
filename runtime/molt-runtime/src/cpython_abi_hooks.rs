@@ -10463,9 +10463,15 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         assert!(register_cpython_hooks());
         unsafe {
-            use molt_cpython_abi::api::{errors, modules, object, refcount, strings};
-            let module = modules::PyModule_New(c"pkg.method_owner".as_ptr());
-            let module_name = strings::PyUnicode_FromString(c"pkg.method_owner".as_ptr());
+            use molt_cpython_abi::api::refcount::OwnedPyObject;
+            use molt_cpython_abi::api::{errors, modules, object, strings};
+            let module_owner =
+                OwnedPyObject::from_owned(modules::PyModule_New(c"pkg.method_owner".as_ptr()));
+            let module = module_owner.as_ptr();
+            let module_name_owner = OwnedPyObject::from_owned(strings::PyUnicode_FromString(
+                c"pkg.method_owner".as_ptr(),
+            ));
+            let module_name = module_name_owner.as_ptr();
             assert!(!module.is_null() && !module_name.is_null());
             let mut method = PyMethodDef {
                 ml_name: c"method".as_ptr(),
@@ -10473,12 +10479,21 @@ mod tests {
                 ml_flags: METH_NOARGS,
                 ml_doc: std::ptr::null(),
             };
-            let function = object::PyCFunction_NewEx(&raw mut method, module, module_name);
+            let function_owner = OwnedPyObject::from_owned(object::PyCFunction_NewEx(
+                &raw mut method,
+                module,
+                module_name,
+            ));
+            let function = function_owner.as_ptr();
             assert!(!function.is_null());
             let physical = function.cast::<molt_cpython_abi::abi_types::PyCFunctionObject>();
             assert_eq!((*physical).m_module, module_name);
 
-            let initial = object::PyObject_GetAttrString(function, c"__module__".as_ptr());
+            let initial_owner = OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                function,
+                c"__module__".as_ptr(),
+            ));
+            let initial = initial_owner.as_ptr();
             assert!(!initial.is_null());
             let initial_name = strings::PyUnicode_AsUTF8(initial);
             assert!(!initial_name.is_null());
@@ -10486,15 +10501,21 @@ mod tests {
                 std::ffi::CStr::from_ptr(initial_name).to_bytes(),
                 b"pkg.method_owner"
             );
-            refcount::Py_DECREF(initial);
+            drop(initial_owner);
 
-            let replacement = strings::PyUnicode_FromString(c"pkg.rebound".as_ptr());
+            let replacement_owner =
+                OwnedPyObject::from_owned(strings::PyUnicode_FromString(c"pkg.rebound".as_ptr()));
+            let replacement = replacement_owner.as_ptr();
             assert!(!replacement.is_null());
             assert_eq!(
                 object::PyObject_SetAttrString(function, c"__module__".as_ptr(), replacement),
                 0,
             );
-            let rebound = object::PyObject_GetAttrString(function, c"__module__".as_ptr());
+            let rebound_owner = OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                function,
+                c"__module__".as_ptr(),
+            ));
+            let rebound = rebound_owner.as_ptr();
             assert!(!rebound.is_null());
             let rebound_name = strings::PyUnicode_AsUTF8(rebound);
             assert!(!rebound_name.is_null());
@@ -10503,24 +10524,44 @@ mod tests {
                 b"pkg.rebound"
             );
             assert_eq!((*physical).m_module, replacement);
-            refcount::Py_DECREF(rebound);
+            drop(rebound_owner);
+
+            // Assignment of Python None owns a non-null Py_None. Deletion
+            // owns no C pointer, even though both public reads return None.
+            let none = (&raw mut molt_cpython_abi::abi_types::Py_None).cast();
+            assert_eq!(
+                object::PyObject_SetAttrString(function, c"__module__".as_ptr(), none),
+                0,
+            );
+            assert_eq!((*physical).m_module, none);
+            let assigned_none = OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                function,
+                c"__module__".as_ptr(),
+            ));
+            assert_eq!(assigned_none.as_ptr(), none);
+            assert!(errors::PyErr_Occurred().is_null());
+            drop(assigned_none);
 
             assert_eq!(
                 object::PyObject_SetAttrString(function, c"__module__".as_ptr(), ptr::null_mut()),
                 0,
             );
-            let deleted = object::PyObject_GetAttrString(function, c"__module__".as_ptr());
+            let deleted_owner = OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                function,
+                c"__module__".as_ptr(),
+            ));
+            let deleted = deleted_owner.as_ptr();
             assert_eq!(
                 deleted,
                 (&raw mut molt_cpython_abi::abi_types::Py_None).cast()
             );
             assert!((*physical).m_module.is_null());
             assert!(errors::PyErr_Occurred().is_null());
-            refcount::Py_DECREF(deleted);
-            refcount::Py_DECREF(replacement);
-            refcount::Py_DECREF(function);
-            refcount::Py_DECREF(module_name);
-            refcount::Py_DECREF(module);
+            drop(deleted_owner);
+            drop(replacement_owner);
+            drop(function_owner);
+            drop(module_name_owner);
+            drop(module_owner);
         }
     }
 

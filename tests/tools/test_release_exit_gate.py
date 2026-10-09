@@ -232,7 +232,7 @@ def _scoreboard_cell(
         "profile": gate.pa.CANONICAL_PERF_PROFILE,
         "build_observation": write_synthetic_build_observation(
             observation_root / backend / f"{Path(benchmark).stem}.fixture",
-            target="native",
+            backend=backend,
             profile=gate.pa.CANONICAL_PERF_PROFILE,
         ),
         "build_ok": True,
@@ -382,7 +382,9 @@ def _verified_execution(coordinate, source_sha: str) -> dict[str, object]:
     ]
     return {
         "backend": backend,
-        "profiles": verified_subset.execution_profiles(coordinate.build_profile),
+        "profiles": verified_subset.execution_profiles(
+            coordinate.build_profile, backend=coordinate.backend
+        ),
         "ci": {
             "job": "coordinate",
             "provider": "github-actions",

@@ -25,6 +25,7 @@ from molt.file_publication import durable_publish_directory_exclusive
 from molt.python_identity_common import _valid_sha256
 from molt.toolchain_identity import snapshot_stable_regular_file
 from molt.verified_subset import capture_verified_subset_policy
+from molt.release_lanes import ReleaseLane, capture_release_lanes
 from tools.command_execution import CommandExecutor
 from tools.git_identity import clean_checkout_status_arguments, require_git_object_id
 
@@ -65,6 +66,7 @@ from .release_model import (
     release_subjects,
     sha256_file,
     spdx_document,
+    validate_spdx_llvm_inputs,
     target_by_id,
     write_json,
     validate_artifact_record,
@@ -77,15 +79,14 @@ _COMMANDS = CommandExecutor.for_file(__file__)
 
 CANDIDATE_SCHEMA = "molt.release-candidate.v5"
 CONSUMER_EXPECTED_OUTPUT = "MOLT_RELEASE_CONSUMER_OK"
-CONSUMER_SCHEMA = "molt.release-consumer-proof.v7"
-# The installed guest matrix for every declared Python coordinate, in receipt
-# order: each shipped target with each program profile.
-CONSUMER_GUEST_CELLS = (
-    ("native", "dev"),
-    ("native", "release"),
-    ("wasm", "dev"),
-    ("wasm", "release"),
-)
+CONSUMER_SCHEMA = "molt.release-consumer-proof.v8"
+
+
+def consumer_lanes() -> tuple[ReleaseLane, ...]:
+    """Required logical products, not a claim of shipped compiler capability."""
+    return capture_release_lanes(ROOT).lanes
+
+
 # A flag-shaped argument and an embedded space prove verbatim argv forwarding.
 CONSUMER_GUEST_ARGV = ("--guest-flag", "two words")
 CONSUMER_EXPECTED_STDOUT = (
@@ -93,8 +94,7 @@ CONSUMER_EXPECTED_STDOUT = (
 )
 _CONSUMER_CELL_FIELDS = frozenset(
     {
-        "target",
-        "profile",
+        "lane",
         "diagnostics",
         "output",
         "compiler_sha256",
@@ -118,22 +118,23 @@ def consumer_guest_source(python_minor: str) -> str:
 def consumer_guest_command(
     launcher: list[str],
     *,
-    target: str,
-    profile: str,
+    lane: ReleaseLane,
     python_minor: str,
     diagnostics: str,
     output: str,
     source: str,
 ) -> list[str]:
     """Installed native build, or the one public WASM build-and-run command."""
-    if target == "native":
+    if lane.target == "native":
         return [
             *launcher,
             "build",
             "--target",
             "native",
+            "--backend",
+            "llvm" if lane.backend == "llvm" else "cranelift",
             "--profile",
-            profile,
+            lane.guest_profile,
             "--python-version",
             python_minor,
             "--diagnostics-file",
@@ -142,8 +143,8 @@ def consumer_guest_command(
             output,
             source,
         ]
-    if target != "wasm":
-        raise ValueError(f"release consumer has no guest command for {target}")
+    if lane.target != "wasm" or lane.backend != "wasm":
+        raise ValueError(f"release consumer has no guest command for {lane.id}")
     # `molt run` forwards build args verbatim to its single linked build.
     return [
         *launcher,
@@ -151,7 +152,7 @@ def consumer_guest_command(
         "--target",
         "wasm",
         "--profile",
-        profile,
+        lane.guest_profile,
         "--python-version",
         python_minor,
         f"--build-arg=--diagnostics-file={diagnostics}",
@@ -162,13 +163,20 @@ def consumer_guest_command(
     ]
 
 
-def consumer_command_roles() -> tuple[str, ...]:
-    """Installed setup and cells; sealed post-uninstall replay has its own evidence."""
-    roles = ["environment", "cli_setup", "cli_help", "worker_help"]
-    for target, profile in CONSUMER_GUEST_CELLS:
-        if target == "native":
-            roles.append(f"build_native_{profile}")
-        roles.append(f"run_{target}_{profile}")
+def consumer_command_roles(*, pip: bool = False) -> tuple[str, ...]:
+    """One role projection for bundle and platform-wheel logical products."""
+    prefix = "pip_" if pip else ""
+    roles = (
+        ["pip_environment", "pip_install"]
+        if pip
+        else ["environment", "cli_setup", "cli_help", "worker_help"]
+    )
+    for lane in consumer_lanes():
+        if lane.target == "native":
+            roles.append(f"{prefix}build_{lane.id}")
+        roles.append(f"{prefix}run_{lane.id}")
+    if pip:
+        roles.append("pip_uninstall")
     return tuple(roles)
 
 
@@ -729,12 +737,14 @@ def _validate_consumer_guest_cells(
     python_minor: str,
     source: str,
     compiler_sha256: str,
+    role_prefix: str,
 ) -> tuple[str, set[PurePosixPath | PureWindowsPath]]:
     """Bind each installed target/profile cell to its command, compiler and bytes.
 
     Returns the one compiler fingerprint and every cell output directory.
     """
-    if not isinstance(cells, list) or len(cells) != len(CONSUMER_GUEST_CELLS):
+    lanes = consumer_lanes()
+    if not isinstance(cells, list) or len(cells) != len(lanes):
         raise ValueError("release consumer guest cells are incomplete")
     path_type = PureWindowsPath if windows else PurePosixPath
     expected_stdout = hashlib.sha256(
@@ -744,14 +754,14 @@ def _validate_consumer_guest_cells(
     fingerprints: set[str] = set()
     diagnostics: set[str] = set()
     directories: set[PurePosixPath | PureWindowsPath] = set()
-    for (target, profile), cell in zip(CONSUMER_GUEST_CELLS, cells, strict=True):
-        name = f"{target}/{profile}"
+    for lane, cell in zip(lanes, cells, strict=True):
+        name = lane.id
+        target = lane.target
         artifact = cell.get("artifact") if isinstance(cell, dict) else None
         if (
             not isinstance(cell, dict)
             or set(cell) != _CONSUMER_CELL_FIELDS
-            or cell["target"] != target
-            or cell["profile"] != profile
+            or cell["lane"] != lane.as_record()
             or not all(
                 isinstance(cell[key], str) and path_type(cell[key]).is_absolute()
                 for key in ("diagnostics", "output")
@@ -787,20 +797,19 @@ def _validate_consumer_guest_cells(
             raise ValueError(f"release consumer {name} manifest identity is invalid")
         command = consumer_guest_command(
             launcher,
-            target=target,
-            profile=profile,
+            lane=lane,
             python_minor=python_minor,
             diagnostics=cell["diagnostics"],
             output=cell["output"],
             source=source,
         )
         output = path_type(cell["output"])
-        run = by_role[f"run_{target}_{profile}"]
+        run = by_role[f"{role_prefix}run_{lane.id}"]
         if target == "native":
             # The installed executable binds to the later sealed replay by bytes.
             guest = [cell["output"], *guest_argv]
             bound = (
-                by_role[f"build_native_{profile}"]["argv"] == command
+                by_role[f"{role_prefix}build_{lane.id}"]["argv"] == command
                 and run["argv"] == guest
                 and path_type(artifact["path"]) == output
             )
@@ -880,7 +889,16 @@ def validate_consumer_proof(
 ) -> None:
     """Admit the exact installed Python x target x profile execution closure."""
     coordinates, policy_sha256 = consumer_python_policy()
-    count = len(coordinates) * len(CONSUMER_GUEST_CELLS)
+    lanes = consumer_lanes()
+    for lane in lanes:
+        if lane.compiler_profile != candidate["compiler"]["profile"] or not set(
+            lane.compiler_features
+        ).issubset(candidate["compiler"]["features"]):
+            raise ValueError(
+                "release consumer lane requires an undelivered compiler capability"
+            )
+    bundle_count = len(coordinates) * len(lanes)
+    count = bundle_count + len(lanes)
     if (
         not isinstance(consumer, dict)
         or set(consumer)
@@ -926,7 +944,7 @@ def validate_consumer_proof(
         or consumer.get("compiler") != candidate["compiler"]
         or consumer.get("launcher") != candidate["launcher"]
         or consumer.get("runtime") != candidate["runtime"]
-        or consumer.get("guest_cells") != [list(cell) for cell in CONSUMER_GUEST_CELLS]
+        or consumer.get("guest_cells") != [lane.as_record() for lane in lanes]
         or consumer.get("expected_stdout") != CONSUMER_EXPECTED_STDOUT
     ):
         raise ValueError("release consumer proof header is invalid")
@@ -983,6 +1001,7 @@ def validate_consumer_proof(
             python_minor=minor,
             source=proof["source"],
             compiler_sha256=candidate["compiler"]["sha256"],
+            role_prefix="",
         )
         fingerprints.add(fingerprint)
         directories.update(cell_directories)
@@ -994,7 +1013,7 @@ def validate_consumer_proof(
         raise ValueError(
             "release consumer Python coordinates must use separate environments"
         )
-    if len(launchers) != 1 or len(directories) != count:
+    if len(launchers) != 1 or len(directories) != bundle_count:
         raise ValueError(
             "release consumer coordinates must share one installed launcher "
             "and build into separate output directories"
@@ -1014,17 +1033,8 @@ def validate_consumer_proof(
     )
 
 
-_CONSUMER_PIP_ROLES = (
-    "pip_environment",
-    "pip_install",
-    "pip_build_native_release",
-    "pip_run_native_release",
-    "pip_uninstall",
-)
-
-
 def _validate_consumer_pip_proof(proof: object, candidate: dict[str, Any]) -> None:
-    """Bind one ordinary pip install of the target's platform wheel to its build."""
+    """The same logical products through one ordinary platform-wheel install."""
     windows = candidate["target"]["platform"] == "windows"
     path_type = PureWindowsPath if windows else PurePosixPath
     wheels = [
@@ -1039,7 +1049,9 @@ def _validate_consumer_pip_proof(proof: object, candidate: dict[str, Any]) -> No
             "python",
             "reference_python",
             "commands",
-            "artifact",
+            "cells",
+            "source",
+            "source_sha256",
             "compiler_sha256",
         }
     ):
@@ -1050,52 +1062,53 @@ def _validate_consumer_pip_proof(proof: object, candidate: dict[str, Any]) -> No
         (proof["python"], proof["reference_python"]) != coordinates[0]
         or proof["wheel"] != {key: wheel[key] for key in ("filename", "sha256", "size")}
         or proof["compiler_sha256"] != candidate["compiler"]["sha256"]
+        or not isinstance(proof["source"], str)
+        or not path_type(proof["source"]).is_absolute()
+        or proof["source_sha256"]
+        != hashlib.sha256(
+            consumer_guest_source(proof["python"]).encode("utf-8")
+        ).hexdigest()
     ):
         raise ValueError(
             "release consumer pip proof is not bound to the candidate wheel"
         )
     by_role = _validate_consumer_command_records(
-        proof["commands"], roles=_CONSUMER_PIP_ROLES
+        proof["commands"], roles=consumer_command_roles(pip=True)
     )
     environment = by_role["pip_environment"]["argv"]
     install = by_role["pip_install"]["argv"]
-    build = by_role["pip_build_native_release"]["argv"]
-    run = by_role["pip_run_native_release"]
+    # Validate lengths before indexing untrusted receipt argv.
+    if len(environment) != 6 or len(install) != 7:
+        raise ValueError("release consumer pip commands are not one pip installation")
     venv = path_type(environment[-1])
-    output = build[build.index("--output") + 1] if "--output" in build[:-1] else None
+    first_build = by_role[f"pip_build_{consumer_lanes()[0].id}"]["argv"]
+    launcher = first_build[:1]
     if (
-        len(environment) != 6
-        or path_type(environment[0]).name.lower() not in {"uv", "uv.exe"}
+        path_type(environment[0]).name.lower() not in {"uv", "uv.exe"}
         or environment[1:5]
         != ["venv", "--no-config", "--python", proof["reference_python"]]
         or not venv.is_absolute()
-        or len(install) != 7
         or install[:1] != environment[:1]
+        or path_type(launcher[0])
+        != venv.joinpath("Scripts/molt.exe" if windows else "bin/molt")
         or install[1:5] != ["pip", "install", "--no-config", "--python"]
         or path_type(install[5])
         != venv.joinpath("Scripts/python.exe" if windows else "bin/python")
         or path_type(install[6]).name != wheel["filename"]
-        or path_type(build[0])
-        != venv.joinpath("Scripts/molt.exe" if windows else "bin/molt")
-        or build[1:6] != ["build", "--target", "native", "--profile", "release"]
-        or output is None
-        or run["argv"] != [output, *CONSUMER_GUEST_ARGV]
-        or run["stdout_sha256"]
-        != hashlib.sha256(CONSUMER_EXPECTED_STDOUT.encode("utf-8")).hexdigest()
         or by_role["pip_uninstall"]["argv"]
         != [install[0], "pip", "uninstall", "--python", install[5], "molt"]
     ):
         raise ValueError("release consumer pip commands are not one pip installation")
-    artifact = proof["artifact"]
-    if (
-        not isinstance(artifact, dict)
-        or set(artifact) != {"path", "sha256", "size"}
-        or artifact["path"] != output
-        or not _valid_sha256(artifact["sha256"])
-        or type(artifact["size"]) is not int
-        or artifact["size"] <= 0
-    ):
-        raise ValueError("release consumer pip artifact is invalid")
+    _validate_consumer_guest_cells(
+        proof["cells"],
+        by_role,
+        windows=windows,
+        launcher=launcher,
+        python_minor=proof["python"],
+        source=proof["source"],
+        compiler_sha256=candidate["compiler"]["sha256"],
+        role_prefix="pip_",
+    )
 
 
 def _admit_candidate(
@@ -1229,7 +1242,7 @@ def _assemble_index_stage(
         release_exit_sha256=release_exit_sha256,
         phase_exit_manifest=phase_exit_manifest,
     )
-    published = _stage_candidate_assets(
+    published, llvm_inputs = _stage_candidate_assets(
         candidate_root=candidate_root,
         wheel=wheel,
         version=version,
@@ -1244,6 +1257,7 @@ def _assemble_index_stage(
         output=output,
         wheel=output / wheel.name,
         published=published,
+        llvm_inputs=llvm_inputs,
         evidence_record=evidence_record,
         phase_record=phase_record,
     )
@@ -1313,7 +1327,7 @@ def _stage_candidate_assets(
     source_sha: str,
     source_date_epoch: int,
     output: Path,
-) -> list[dict[str, object]]:
+) -> tuple[list[dict[str, object]], dict[str, dict[str, Any]]]:
     """Require the exact admitted target matrix and stage only verified bytes."""
     candidate_paths = sorted(candidate_root.rglob("candidate.json"))
     candidates_by_id: dict[str, tuple[Path, dict[str, Any]]] = {}
@@ -1347,6 +1361,7 @@ def _stage_candidate_assets(
     from . import consumer_replay
 
     supervisor, _generation = consumer_replay.provision_verifier()
+    llvm_inputs = {}
     for candidate_dir, candidate in candidates_by_id.values():
         artifacts = _admit_candidate(
             candidate,
@@ -1357,6 +1372,7 @@ def _stage_candidate_assets(
             wheel_record=wheel_record,
             supervisor=supervisor,
         )
+        llvm_inputs[candidate["target"]["id"]] = candidate["native_build"]["llvm"]
         for record in artifacts:
             filename = record["filename"]
             if filename in seen_names:
@@ -1367,7 +1383,7 @@ def _stage_candidate_assets(
             published.append(record)
 
     published.sort(key=lambda item: str(item["filename"]))
-    return published
+    return published, llvm_inputs
 
 
 def _compose_index_metadata(
@@ -1378,6 +1394,7 @@ def _compose_index_metadata(
     output: Path,
     wheel: Path,
     published: list[dict[str, object]],
+    llvm_inputs: dict[str, dict[str, Any]],
     evidence_record: dict[str, object],
     phase_record: dict[str, dict[str, object]] | None,
 ) -> dict[str, object]:
@@ -1412,6 +1429,7 @@ def _compose_index_metadata(
             source_date_epoch=source_date_epoch,
             subjects=subjects,
             wheel=wheel,
+            llvm_inputs=llvm_inputs,
         ),
     )
     checksum_lines = [
@@ -1474,6 +1492,7 @@ def _release_directory_files(
     )
     if not isinstance(sbom, dict):
         raise ValueError("release SBOM must be an object")
+    validate_spdx_llvm_inputs(sbom)
     expected_sbom_files = {
         f"./{record['filename']}": record["sha256"] for record in subjects
     }
