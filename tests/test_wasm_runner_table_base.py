@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -144,6 +146,33 @@ def _split_manifest(app_path: Path, runtime_path: Path) -> Path:
     )
 
 
+@functools.cache
+def _wasm_backend() -> Path:
+    """The backend `molt build --target wasm` selects; CI builds it first.
+
+    Every fixture publishes its link facts with that one binary. A `cargo run`
+    per fixture built a second, dev-profile backend, and parallel workers
+    queued behind its cold build until they timed out.
+    """
+    result = _run_wasm_test_process(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "internal-backend-build",
+            "--target",
+            "wasm",
+            "--json",
+        ],
+        cwd=ROOT,
+        env=os.environ,
+        timeout=1800,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok", payload["errors"]
+    return Path(payload["data"]["path"])
+
+
 def _wasm_from_wat(
     tmp_path: Path,
     name: str,
@@ -164,22 +193,9 @@ def _wasm_from_wat(
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
-    cargo = shutil.which("cargo")
-    if cargo is None:
-        pytest.skip("cargo is required for Rust-owned callable-table publication")
     published = wasm_path.with_suffix(".published.wasm")
     publish_command = [
-        cargo,
-        "run",
-        "--quiet",
-        "--locked",
-        "-p",
-        "molt-backend",
-        "--features",
-        "wasm-backend",
-        "--bin",
-        "molt-backend",
-        "--",
+        str(_wasm_backend()),
         "--publish-wasm-link-facts",
         str(wasm_path),
         "--output",
