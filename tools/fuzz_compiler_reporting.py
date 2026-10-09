@@ -40,26 +40,36 @@ def _save_failure(result: FuzzResult, output_dir: Path) -> Path:
     return source_file
 
 
-def _print_diff_snippet(result: FuzzResult, max_lines: int = 15) -> None:
+def _log_failure_detail(result: FuzzResult) -> None:
+    """Print a failure's evidence when it happens.
+
+    A campaign can be stopped before it writes its receipt, so each failure
+    leaves its own diagnosis in the log.
+    """
+    detail = " ".join(result.error_detail.split())[:300]
+    if detail:
+        _log(f"         {detail}")
+    for line in result.molt_stderr.strip().splitlines()[-3:]:
+        _log(f"         molt stderr: {line[:200]}")
+    if result.status in {"mismatch", "molt_run_error"}:
+        _print_diff_snippet(result)
+
+
+def _print_diff_snippet(result: FuzzResult, max_diffs: int = 5) -> None:
     cp_lines = result.cpython_stdout.splitlines()
     molt_lines = result.molt_stdout.splitlines()
-    printed = 0
-    max_len = max(len(cp_lines), len(molt_lines))
-    for i in range(min(max_len, max_lines)):
-        cp_line = cp_lines[i] if i < len(cp_lines) else "<missing>"
-        molt_line = molt_lines[i] if i < len(molt_lines) else "<missing>"
-        if cp_line != molt_line:
-            _log(f"    line {i + 1}:")
-            _log(f"      CPython: {cp_line!r}")
-            _log(f"      Molt:    {molt_line!r}")
-            printed += 1
-            if printed >= 5:
-                remaining = sum(
-                    1
-                    for j in range(i + 1, max_len)
-                    if (cp_lines[j] if j < len(cp_lines) else "")
-                    != (molt_lines[j] if j < len(molt_lines) else "")
-                )
-                if remaining > 0:
-                    _log(f"    ... and {remaining} more differing lines")
-                break
+
+    def line(lines: list[str], index: int) -> str:
+        return lines[index] if index < len(lines) else "<missing>"
+
+    differing = [
+        i
+        for i in range(max(len(cp_lines), len(molt_lines)))
+        if line(cp_lines, i) != line(molt_lines, i)
+    ]
+    for i in differing[:max_diffs]:
+        _log(f"    line {i + 1}:")
+        _log(f"      CPython: {line(cp_lines, i)[:200]!r}")
+        _log(f"      Molt:    {line(molt_lines, i)[:200]!r}")
+    if len(differing) > max_diffs:
+        _log(f"    ... and {len(differing) - max_diffs} more differing lines")
