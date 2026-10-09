@@ -47,7 +47,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `wasm` | pr, main | yes | `github-job` | 160 min | 9600 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 18 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 30 min | 1800 s per cell | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
-| `native_integration` | pr, main | yes | `github-job` | 25 min | 1500 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 19 |
+| `native_integration` | pr, main | yes | `github-job` | 40 min | 2400 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 19 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 240 min | 14400 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
 | `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 25 |
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
@@ -233,7 +233,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `python.unit.runtime-library-boundary.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 120 s | `python-tests` | 0 |
 | `native.integration.python-custody` | `native_integration` | `linux-x86_64-py312-native-dev` | `explicit` | 300 s | `python-tests` | 0 |
 | `native.integration.bench-cli` | `native_integration` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
-| `native.integration.capability-manifest` | `native_integration` | `linux-x86_64-py312-native-dev` | `warm` | 300 s | `compiler-build-resource` | 0 |
+| `native.integration.capability-manifest` | `native_integration` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `rust.clippy.wasi32` | `rust` | `linux-x86_64-rust-wasi-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `rust.cargo-locks` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
 | `rust.clippy.browser-simd` | `rust` | `linux-x86_64-rust-wasi-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |

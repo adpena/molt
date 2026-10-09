@@ -26,13 +26,9 @@ from molt.path_custody import (
 from tools import run_context_env
 
 
-@pytest.fixture(autouse=True)
-def _isolate_unit_paths_from_hosted_checkout_contract(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Unit cases create independent synthetic project roots.  The process-wide
-    # hosted checkout contract belongs to GITHUB_WORKSPACE, not those fixtures.
-    monkeypatch.delenv(dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV, raising=False)
+# Unit cases create independent synthetic project roots. The process-wide
+# hosted checkout contract belongs to GITHUB_WORKSPACE, not those fixtures.
+pytestmark = pytest.mark.usefixtures("no_hosted_checkout_custody")
 
 
 def _clear_run_context_env(monkeypatch: pytest.MonkeyPatch) -> None:

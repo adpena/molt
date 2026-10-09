@@ -54,6 +54,20 @@ def no_ambient_guard_caps(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def no_hosted_checkout_custody(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve paths as a developer host does, not as a hosted CI job.
+
+    The setup-project action exports the hosted custody root for the whole
+    job. With it set, ``molt.dx`` derives roots from GITHUB_WORKSPACE and
+    asks git for the checked-out commit, so a test that builds a synthetic
+    project or patches ``subprocess`` would test the CI custody instead.
+    """
+    from molt.dx import GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV
+
+    monkeypatch.delenv(GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV, raising=False)
+
+
+@pytest.fixture
 def session_sentinel_paused(request: pytest.FixtureRequest) -> Iterator[None]:
     """Pause the serial session's repo sentinel while a test fakes process data.
 
