@@ -1070,6 +1070,17 @@ are historical; broader family acceptance remains subject to the open owners abo
 
 Everything removed while consolidating onto `main` is recoverable from bundles on the Windows host only: `C:\Molt\drift-bundles\handoff-20261005-final.bundle` (all 88 refs before branch deletion) and `handoff-20261005-final-worktrees.bundle` (final snapshots of every removed worktree), plus `stash@{0}` in `C:\Molt\molt-src` (the shared checkout's Sep 30 - Oct 1 working state, superseded by `main`).
 
+Codex's committed work landed through the takeover of `codex/queued-cargo-selection` (PR 119). Its uncommitted work stays in place as donor material, idle since 2026-10-06 to 2026-10-08 and partly superseded by that branch. Reconcile a worktree's files when the owning row's work starts; never apply one wholesale. Triage against the takeover tip on 2026-10-09 counted, per worktree under `~/.codex/worktrees/<name>/molt-src`, the changed files whose patch is already contained, applies cleanly, or conflicts:
+
+| Worktree | Area | Contained | Applies cleanly | Conflicts |
+| --- | --- | --- | --- | --- |
+| `shared-hash-storage` | runtime dict/set storage (V1-27) | 122 | 13 | 51 |
+| `ci-source-audit` | runtime and C-ABI fixtures | 22 | 14 | 19 |
+| `v1-ffi-retirement` | proof supervisor, queue and guard tooling | 6 | 99 | 53 |
+| `v1-resource-contract` | resource contract, CLI and CI wiring | 15 | 48 | 71 |
+| `v1-main-landing` | guard and queue tooling, Windows process API | 19 | 41 | 17 |
+| `hf03-upstream-reconciliation` | WASI SDK and CLI consumers (17 commits on `codex/v1-coherent-wasi-sdk` beyond the takeover, plus WIP) | 0 | 18 | 9 |
+
 ## Release dependency and landing order
 
 Land complete changed authorities as soon as their actual consumers pass. Keep
