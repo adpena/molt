@@ -1099,7 +1099,11 @@ def _python_comment_segments(text: str) -> list[tuple[int, str]]:
 
 def _debt_marker_hits(path: Path, text: str) -> list[DebtMarkerHit]:
     if path.suffix == ".py":
-        comment_segments = _python_comment_segments(text)
+        # A comment is a substring of the text, so a file whose text has no
+        # marker has no commented one either and is not tokenized.
+        comment_segments = (
+            _python_comment_segments(text) if _COMMENT_DEBT_RE.search(text) else []
+        )
         code_text = ""
     elif path.suffix == ".rs":
         projection = project_rust_source(text)
@@ -1209,7 +1213,20 @@ def _python_string_constants(node: ast.AST | None) -> list[ast.Constant]:
     ]
 
 
-def _python_intrinsic_stub_surface_hit(tree: ast.Module) -> ImplementationGapHit | None:
+def _python_raise_nodes(tree: ast.Module, text: str) -> list[ast.Raise]:
+    """Every ``raise`` statement, from one walk shared by the stub probes.
+
+    A ``Raise`` node needs the literal ``raise`` keyword in the source, so a
+    file without it has none and its tree is not walked.
+    """
+    if "raise" not in text:
+        return []
+    return [node for node in ast.walk(tree) if isinstance(node, ast.Raise)]
+
+
+def _python_intrinsic_stub_surface_hit(
+    tree: ast.Module, raises: list[ast.Raise]
+) -> ImplementationGapHit | None:
     hits: list[ImplementationGapHit] = []
     if tree.body:
         first = tree.body[0]
@@ -1225,9 +1242,7 @@ def _python_intrinsic_stub_surface_hit(tree: ast.Module) -> ImplementationGapHit
                     marker="intrinsic-first stub",
                 )
             )
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Raise):
-            continue
+    for node in raises:
         for string_node in _python_string_constants(node.exc):
             if _INTRINSIC_FIRST_STUB_RE.search(str(string_node.value)):
                 hits.append(
@@ -1256,11 +1271,12 @@ def _python_stub_surface_hits(path: Path, text: str) -> list[ImplementationGapHi
                 )
             )
         return hits
-    intrinsic_stub_hit = _python_intrinsic_stub_surface_hit(tree)
+    raises = _python_raise_nodes(tree, text)
+    intrinsic_stub_hit = _python_intrinsic_stub_surface_hit(tree, raises)
     if intrinsic_stub_hit is not None:
         hits.append(intrinsic_stub_hit)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Raise) and _python_raise_is_notimplemented(node):
+    for node in raises:
+        if _python_raise_is_notimplemented(node):
             hits.append(
                 ImplementationGapHit(
                     line=getattr(node, "lineno", 1),
