@@ -1826,6 +1826,7 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
             "portability.cargo-link.windows",
             "portability.ir.windows",
             "portability.cargo-custody.windows",
+            "portability.headers.windows",
         ],
     }
     for entry in matrix:
@@ -1836,6 +1837,31 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
         )
         assert [command.id for command in commands] == entry["command_ids"]
         assert all(command.data["cell"] == entry["cell"] for command in commands)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "include/molt/Python.h",
+        "include/molt/shared/_data_api.h",
+        "runtime/molt-cpython-abi/include/Python.h",
+        "tests/cli/test_c_api_headers.py",
+    ],
+)
+def test_header_changes_execute_real_windows_data_imports(path: str) -> None:
+    assert _classes(path)["platform_portability"]
+    command = next(
+        command
+        for command in PLAN.commands
+        if command.id == "portability.headers.windows"
+    )
+    assert command.data["cell"] == "windows-x86_64-py312-queue-portability"
+    assert set(command.data["tiers"]) == {"pr", "main"}
+    assert (
+        "tests/cli/test_c_api_headers.py::test_optimize_flag_headers_share_data_across_translation_units"
+        in command.data["argv"]
+    )
+    assert "hosted-clang-cl" in PLAN.required_toolchains(command)
 
 
 @pytest.mark.parametrize(

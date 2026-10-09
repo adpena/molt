@@ -63,10 +63,7 @@ fn dataclasses_collect_fields_by_tag<'a, 'py>(
             crate::object::ops_dict::DictSnapshotKind::Entries,
         )
     }?;
-    for (index, pair) in order.chunks_exact(2).enumerate() {
-        if pair.len() != 2 {
-            continue;
-        }
+    for (index, pair) in order.as_chunks::<2>().0.iter().enumerate() {
         let field_obj_bits = pair[1];
         let tag_bits = dc_getattr_default_bits(_py, field_obj_bits, b"_field_type", missing)?;
         if exception_pending(_py) {

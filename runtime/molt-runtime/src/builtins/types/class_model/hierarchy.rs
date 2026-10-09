@@ -530,7 +530,9 @@ unsafe fn merge_class_layout_metadata(
                         crate::object::ops_dict::DictSnapshotKind::Entries,
                     )
                     .ok_or_else(|| MoltObject::none().bits())?
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .any(|row| {
                         crate::builtins::attr::class_field_offset(py, class, row[0])
                             != obj_from_bits(row[1])

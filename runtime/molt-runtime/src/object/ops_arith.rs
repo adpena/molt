@@ -1931,8 +1931,7 @@ pub(crate) fn number_power(a: u64, b: u64, modulus: u64, inplace: bool) -> u64 {
                             forward,
                             reflected,
                             (!obj_from_bits(modulus).is_none()).then_some(modulus),
-                            left_dispatches,
-                            right_dispatches,
+                            [left_dispatches, right_dispatches],
                         )
                     }
                 },

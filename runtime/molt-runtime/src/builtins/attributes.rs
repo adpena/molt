@@ -855,16 +855,15 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
         }
         if type_id == TYPE_ID_COMPLEX
             && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
+            && let Some(func_bits) = complex_method_bits(_py, name.as_str())
         {
-            if let Some(func_bits) = complex_method_bits(_py, name.as_str()) {
-                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return descriptor_bind(
-                    _py,
-                    func_bits,
-                    Some(type_of_bits(_py, self_bits)),
-                    Some(self_bits),
-                );
-            }
+            let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+            return descriptor_bind(
+                _py,
+                func_bits,
+                Some(type_of_bits(_py, self_bits)),
+                Some(self_bits),
+            );
         }
         if type_id == TYPE_ID_TYPE {
             return type_attr_lookup_ptr_default(_py, obj_ptr, attr_bits);

@@ -923,3 +923,132 @@ int main(void) {
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("transport", ["source-linked", "source-host", "abi-linked"])
+@pytest.mark.parametrize("shared_owner", [False, True], ids=["static", "windows-dll"])
+@pytest.mark.parametrize(
+    "private_copy", [False, True], ids=["exported", "private-mutant"]
+)
+def test_optimize_flag_headers_share_data_across_translation_units(
+    tmp_path: Path, transport: str, shared_owner: bool, private_copy: bool
+) -> None:
+    """Each facade must read/write one external owner, including DLL imports.
+
+    The negative replaces only the data declaration with the historical private
+    binding. It must compile and fail the independent address oracle, not merely
+    fail compilation or observe the same initial zero in every translation unit.
+    """
+    if shared_owner and sys.platform != "win32":
+        pytest.skip("actual Windows DLL data import requires Windows")
+    windows = sys.platform == "win32"
+    driver_name = "clang-cl" if windows else "clang"
+    compiler = shutil.which(driver_name)
+    if compiler is None:
+        pytest.skip(f"{driver_name} is required for C-API transport execution")
+    root = Path(__file__).resolve().parents[2]
+    tier = "cpython-abi" if transport == "abi-linked" else "source-compat"
+    includes = _source_extension_include_dirs_for_abi_tier(
+        molt_root=root, abi_tier=tier
+    )
+    header = _source_extension_python_header_for_abi_tier(molt_root=root, abi_tier=tier)
+    if private_copy:
+        # Preserve the real distributed header/include family; mutate only the
+        # data binding under test in a private top-level header.
+        source = header.read_text(encoding="utf-8")
+        declaration = "PyAPI_DATA(int) Py_OptimizeFlag;"
+        assert source.count(declaration) == 1
+        mutant = tmp_path / "private_python.h"
+        mutant.write_text(
+            source.replace(declaration, "static int Py_OptimizeFlag = 0;"),
+            encoding="utf-8",
+        )
+        # Quoted includes still resolve from the actual header's directory.
+        includes = (header.parent, *includes)
+        header = mutant
+    consumers = []
+    for name in ("left", "right"):
+        consumer = tmp_path / f"{name}.c"
+        consumer.write_text(
+            f'#include "{header.as_posix()}"\n'
+            f"int *{name}_address(void) {{ return &Py_OptimizeFlag; }}\n"
+            f"int {name}_read(void) {{ return Py_OptimizeFlag; }}\n"
+            f"void {name}_write(int value) {{ Py_OptimizeFlag = value; }}\n",
+            encoding="utf-8",
+        )
+        consumers.append(consumer)
+    owner = tmp_path / "owner.c"
+    owner.write_text(
+        "#ifdef _WIN32\n__declspec(dllexport)\n#endif\nint Py_OptimizeFlag = 17;\n",
+        encoding="utf-8",
+    )
+    driver = tmp_path / "driver.c"
+    driver.write_text(
+        """#if defined(_WIN32) && defined(MOLT_CPYTHON_ABI_SHARED)
+__declspec(dllimport)
+#endif
+extern int Py_OptimizeFlag;
+extern int *left_address(void), *right_address(void);
+extern int left_read(void), right_read(void);
+extern void left_write(int), right_write(int);
+int main(void) {
+    if (left_address() != &Py_OptimizeFlag || right_address() != &Py_OptimizeFlag) return 41;
+    if (left_read() != 17 || right_read() != 17) return 42;
+    left_write(23);
+    if (Py_OptimizeFlag != 23 || right_read() != 23) return 43;
+    right_write(31);
+    if (Py_OptimizeFlag != 31 || left_read() != 31) return 44;
+    Py_OptimizeFlag = 47;
+    if (left_read() != 47 || right_read() != 47) return 45;
+    return 0;
+}
+""",
+        encoding="utf-8",
+    )
+    command = [compiler, *(("/std:c11", "/O2") if windows else ("-std=c11", "-O2"))]
+    for include in includes:
+        command.extend(["/I" if windows else "-I", str(include)])
+    if transport == "source-host":
+        command.append(f"{'/D' if windows else '-D'}MOLT_EXTENSION_HOST_ABI=1")
+    if shared_owner:
+        # Exercise the native Windows MSVC driver and linker;
+        # consume its real import library, not a preprocessor-only DLL mock.
+        library = tmp_path / "owner.lib"
+        build = run_cli_test_process(
+            [
+                compiler,
+                "/LD",
+                str(owner),
+                f"/Fe{tmp_path / 'owner.dll'}",
+                "/link",
+                f"/IMPLIB:{library}",
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert build.returncode == 0, build.stderr
+        command.append("/DMOLT_CPYTHON_ABI_SHARED=1")
+        owner_input = library
+    else:
+        owner_input = owner
+    output = tmp_path / ("probe.exe" if sys.platform == "win32" else "probe")
+    build = run_cli_test_process(
+        [
+            *command,
+            *(str(path) for path in consumers),
+            str(driver),
+            str(owner_input),
+            *([f"/Fe{output}"] if windows else ["-o", str(output)]),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert build.returncode == 0, build.stderr
+    result = run_cli_test_process(
+        [str(output)], cwd=tmp_path, capture_output=True, text=True, check=False
+    )
+    assert result.returncode == (41 if private_copy else 0), result.stderr

@@ -357,7 +357,9 @@ pub extern "C" fn molt_type_new(
         let (kw_names, kw_values): (Vec<_>, Vec<_>) = keyword_snapshot
             .as_deref()
             .unwrap_or(&[])
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| (pair[0], pair[1]))
             .unzip();
 

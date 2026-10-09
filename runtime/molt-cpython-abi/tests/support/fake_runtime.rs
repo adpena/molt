@@ -243,8 +243,8 @@ pub unsafe extern "C" fn int_from_bytes(
         return 0;
     }
     let mut bytes = [0u8; 16];
-    for index in 0..length {
-        bytes[index] = unsafe {
+    for (index, byte) in bytes.iter_mut().take(length).enumerate() {
+        *byte = unsafe {
             data.add(if little != 0 {
                 index
             } else {

@@ -549,7 +549,7 @@ pub extern "C" fn molt_enum_member(cls_bits: u64, value_bits: u64) -> u64 {
                 dec_ref_bits(_py, members_bits);
                 return MoltObject::none().bits();
             };
-            for row in entries.chunks_exact(2) {
+            for row in entries.as_chunks::<2>().0 {
                 let pair = (row[0], row[1]);
                 inc_ref_bits(_py, pair.0);
                 inc_ref_bits(_py, pair.1);

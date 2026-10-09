@@ -472,7 +472,8 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 
 #define Py_CLEANUP_SUPPORTED 0x20000
 
-static int Py_OptimizeFlag = 0;
+/* Both header transports observe the runtime-owned process flag. */
+PyAPI_DATA(int) Py_OptimizeFlag;
 
 #ifndef Py_LIMITED_API
 #define Py_LIMITED_API 0x030C0000

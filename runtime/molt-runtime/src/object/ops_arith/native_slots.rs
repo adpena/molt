@@ -383,10 +383,7 @@ fn items_view_xor(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
         };
         let right_ptr = obj_from_bits(right_dict.bits()).as_ptr().unwrap();
         let mut index = 0;
-        loop {
-            let Some(row) = dict_next_entry(right_ptr, &mut index) else {
-                break;
-            };
+        while let Some(row) = dict_next_entry(right_ptr, &mut index) {
             let (key, value, hash) = (
                 row.key,
                 row.value,
