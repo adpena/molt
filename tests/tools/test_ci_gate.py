@@ -11,6 +11,7 @@ from molt import custody_layout
 import pytest
 
 from tests.process_guard_common import run_guarded_test_process
+from tests.subprocess_view import patch_module_subprocess
 
 # The gate tests patch subprocess and resolve default guard limits, so they
 # run outside hosted custody (which asks git for the checkout) and CI caps.
@@ -231,10 +232,10 @@ def test_run_check_cannot_opt_out_of_memory_guard(monkeypatch) -> None:
         "guarded_completed_process",
         fake_guarded_completed_process,
     )
-    monkeypatch.setattr(
-        module.subprocess,
-        "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+    patch_module_subprocess(
+        monkeypatch,
+        module,
+        run=lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("ci gate used raw subprocess.run")
         ),
     )
@@ -534,7 +535,7 @@ def test_launch_background_gate_strips_recursive_background_flag(
     monkeypatch.setattr(
         module.memory_guard, "adaptive_memory_budget", fake_adaptive_memory_budget
     )
-    monkeypatch.setattr(module.subprocess, "Popen", FakePopen)
+    patch_module_subprocess(monkeypatch, module, Popen=FakePopen)
 
     metadata = module.launch_background_gate(
         ["--tier", "2", "--background", "--parallel"]

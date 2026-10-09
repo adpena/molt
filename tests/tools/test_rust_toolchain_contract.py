@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.subprocess_view import patch_module_subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECK_RUST_TOOLCHAIN = ROOT / "tools" / "check_rust_toolchain.py"
@@ -64,7 +65,7 @@ def test_cargo_version_probe_normalizes_config_wrapper(monkeypatch) -> None:
 
     monkeypatch.setenv("CARGO_BUILD_RUSTC_WRAPPER", "sccache")
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
-    monkeypatch.setattr(tool.subprocess, "run", fake_run)
+    patch_module_subprocess(monkeypatch, tool, run=fake_run)
 
     tool._run(["cargo", "--version"])
 

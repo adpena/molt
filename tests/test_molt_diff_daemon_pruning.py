@@ -9,6 +9,7 @@ import sys
 
 from molt import backend_daemon_custody as custody
 from molt.dx import session_artifact_component
+from tests.subprocess_view import patch_module_subprocess
 
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
@@ -69,7 +70,7 @@ def test_molt_diff_backend_daemon_scan_failure_fails_closed(monkeypatch) -> None
     def raise_timeout(*args, **kwargs):
         raise module.subprocess.TimeoutExpired(cmd=["ps"], timeout=2.0)
 
-    monkeypatch.setattr(module.subprocess, "run", raise_timeout)
+    patch_module_subprocess(monkeypatch, module, run=raise_timeout)
 
     assert module._list_backend_daemon_processes() == []
 

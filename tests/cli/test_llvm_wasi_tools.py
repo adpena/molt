@@ -2,23 +2,26 @@ from __future__ import annotations
 
 import hashlib
 import os
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
-from molt.cli import native_symbol_inspection
-from molt.cli import llvm_wasi_tools
-from molt.cli import source_extension_target
-from molt.cli import source_extension_toolchain
+import pytest
+
 from molt import llvm_toolchain
-from tests.operation_probe import same_thread_probe
-from molt.toolchain_identity import resolve_explicit_tool_command
+from molt.cli import (
+    llvm_wasi_tools,
+    native_symbol_inspection,
+    source_extension_target,
+    source_extension_toolchain,
+)
 from molt.llvm_linker_roles import LlvmLinkerRole, executable_selects_linker_role
+from molt.toolchain_identity import resolve_explicit_tool_command
 from tests.cli.native_link_test_support import (
     single_member_archive_symbol_facts,
     static_archive_bytes,
 )
-import pytest
-
+from tests.operation_probe import same_thread_probe
+from tests.subprocess_view import patch_module_subprocess
 
 _TOOL_FILE_NAMES = {
     "cc": "clang",
@@ -531,7 +534,7 @@ def test_sdk_source_compilers_disable_hidden_config_before_probe_and_materializa
         probes.append(tuple(command))
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(source_extension_toolchain.subprocess, "run", run)
+    patch_module_subprocess(monkeypatch, source_extension_toolchain, run=run)
     plan = source_extension_target.resolve_source_extension_target_plan(
         requested, host_platform="linux", host_arch="x86_64"
     )

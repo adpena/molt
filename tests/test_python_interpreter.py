@@ -8,6 +8,7 @@ import pytest
 
 from molt import python_interpreter
 from tests import molt_diff
+from tests.subprocess_view import patch_module_subprocess
 
 
 @pytest.mark.parametrize(
@@ -33,7 +34,7 @@ def test_timeout_payloads_are_normalized_at_interpreter_boundary(
             stderr=stderr,
         )
 
-    monkeypatch.setattr(python_interpreter.subprocess, "run", time_out)
+    patch_module_subprocess(monkeypatch, python_interpreter, run=time_out)
 
     assert (
         python_interpreter._run_command(

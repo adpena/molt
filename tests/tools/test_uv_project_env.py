@@ -5,6 +5,7 @@ from tests.process_guard_common import install_module_os_view
 
 from molt import dx
 from tools import uv_project_env
+from tests.subprocess_view import patch_module_subprocess
 
 
 def test_project_environment_path_uses_dx_root_and_versioned_session(
@@ -100,7 +101,7 @@ def test_run_command_waits_for_child_on_windows(monkeypatch) -> None:
         return 7
 
     install_module_os_view(monkeypatch, uv_project_env, name="nt")
-    monkeypatch.setattr(uv_project_env.subprocess, "call", fake_call)
+    patch_module_subprocess(monkeypatch, uv_project_env, call=fake_call)
 
     assert uv_project_env.run_command(["uv", "--version"], env={"X": "1"}) == 7
     assert calls == [(["uv", "--version"], {"X": "1"})]

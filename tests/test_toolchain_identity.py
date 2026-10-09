@@ -14,6 +14,7 @@ import pytest
 
 from molt import toolchain_identity as identity
 from tests.operation_probe import same_thread_probe
+from tests.subprocess_view import patch_module_subprocess
 
 
 def test_capture_bytes_and_identity_share_one_stable_read(tmp_path, monkeypatch):
@@ -566,8 +567,8 @@ def test_version_probe_hashes_once_and_closes_generation_fence(
         "stable_regular_file_handle_identity",
         same_thread_probe(identity.stable_regular_file_handle_identity, counted),
     )
-    monkeypatch.setattr(
-        identity.subprocess, "run", same_thread_probe(identity.subprocess.run, run)
+    patch_module_subprocess(
+        monkeypatch, identity, run=same_thread_probe(identity.subprocess.run, run)
     )
     if mutate:
         with pytest.raises(ValueError, match="changed"):
@@ -630,10 +631,10 @@ def test_native_consumers_reject_scripts_before_execution(
     def unexpected_execution(*args, **kwargs):
         pytest.fail("script was executed before native admission")
 
-    monkeypatch.setattr(
-        identity.subprocess,
-        "run",
-        same_thread_probe(identity.subprocess.run, unexpected_execution),
+    patch_module_subprocess(
+        monkeypatch,
+        identity,
+        run=same_thread_probe(identity.subprocess.run, unexpected_execution),
     )
     with pytest.raises(ValueError, match="native executable, not a script"):
         if consumer == "content":

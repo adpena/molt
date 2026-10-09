@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from tests.cli import process_guard
+from tests.subprocess_view import patch_module_subprocess
 
 
 def test_run_cli_test_process_uses_shared_memory_guard(
@@ -85,7 +86,7 @@ def test_guarded_cli_test_popen_enters_memory_guard_wrapper(
             captured["args"] = list(args)
             captured["kwargs"] = kwargs
 
-    monkeypatch.setattr(process_guard.subprocess, "Popen", FakePopen)
+    patch_module_subprocess(monkeypatch, process_guard, Popen=FakePopen)
     monkeypatch.setattr(
         process_guard.harness_memory_guard,
         "batch_process_group_kwargs",
