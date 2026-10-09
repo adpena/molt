@@ -844,9 +844,6 @@ static int *tracking(void *object) {
     ++invalid;
     return &invalid;
 }
-EXPORT Py_ssize_t PyObject_LengthHint(PyObject *obj, Py_ssize_t defaultvalue) {
-    ++calls[18]; bad |= obj != &storage || defaultvalue != 31; return 37;
-}
 EXPORT int32_t molt_c_heap_contains(uintptr_t object) {
     return object == (uintptr_t)private_header;
 }

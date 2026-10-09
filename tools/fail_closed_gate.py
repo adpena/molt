@@ -794,6 +794,13 @@ _ABI_ALLOWLIST_SYMBOLS = frozenset(
         # implementation, not a placeholder success (teeth:
         # tests/test_list_setitem.rs::setitem_places_items_at_index_out_of_order).
         "PyList_New",
+        # PyList_SetItem(list, i, NULL) is legal CPython and clears the slot;
+        # Molt lists have no NULL slots, so the cleared slot holds None, the
+        # same representation PyList_New uses for its unfilled slots.
+        "PyList_SetItem",
+        # A module created without m_doc has __doc__ None in CPython; a NULL
+        # doc string reaches that same state here.
+        "PyModule_SetDocString",
     }
 )
 # Files whose wrapping_* is mask/refcount arithmetic, not int-semantics poison.

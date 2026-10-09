@@ -35,6 +35,9 @@ def _frontend_ir_and_contract(
         entry_module="probe",
         known_modules={"probe", "helpers"},
         known_func_kinds=known_kinds,
+        # ``helpers`` is compiled into the same build, so its declared
+        # functions have linkable code symbols.
+        direct_call_modules={"helpers"},
     )
     generator.visit(tree)
     ir = generator.to_json()
@@ -48,13 +51,18 @@ def _frontend_ir_and_contract(
 def test_app_export_contract_owns_binding_families_and_last_definition() -> None:
     ir, contract = _frontend_ir_and_contract(
         """
-from helpers import imported
-
 def _identity(fn):
     return fn
 
 def alpha(value):
     return value
+
+# Stated before any other code runs: an import or a call such as the
+# decorator below may rebind any global, so a later alias has no provable
+# callable identity.
+alias = alpha
+
+from helpers import imported
 
 def beta(left, right):
     return left
@@ -77,8 +85,6 @@ def _private(value):
 def decorated(value):
     return value
 
-alias = alpha
-
 def gone(value):
     return value
 
@@ -93,12 +99,14 @@ del gone
     )
     assert carrier == contract["bindings"]
     bindings = {binding["name"]: binding for binding in contract["bindings"]}
+    # A redefined name exports its final definition and records the one it
+    # replaced, so the earlier symbol can never be dispatched by name.
     assert exported_app_symbols(contract) == (
         "probe__alpha",
         "probe__beta",
-        "probe__same",
+        "probe__same_1",
     )
-    assert bindings["same"]["superseded_symbols"] == []
+    assert bindings["same"]["superseded_symbols"] == ["probe__same"]
     assert bindings["_private"]["reason"] == "private-name"
     assert bindings["decorated"]["reason"] == (
         "decorated-binding-requires-module-dispatch"
