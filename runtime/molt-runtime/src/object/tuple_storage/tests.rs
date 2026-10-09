@@ -1,6 +1,8 @@
 use super::*;
+use crate::builtins::exceptions::ExceptionValue;
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::api::{errors, numbers, typeobj};
+use std::cell::Cell;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -61,9 +63,8 @@ fn assert_values(py: &PyToken<'_>, bits: u64, expected: &[i64]) {
     let tuple = TupleStorage::from_bits(py, bits).expect("physical tuple result");
     assert_eq!(tuple.len(), Some(expected.len()));
     for (index, expected) in expected.iter().enumerate() {
-        let value = tuple.item(index).unwrap();
-        assert_eq!(obj_from_bits(value).as_int(), Some(*expected));
-        dec_ref_bits(py, value);
+        let value = ExceptionValue::adopt(py, tuple.item(index).unwrap());
+        assert_eq!(crate::to_i64(obj_from_bits(value.bits())), Some(*expected));
     }
 }
 
@@ -100,6 +101,7 @@ fn exercise_descriptors(py: &PyToken<'_>, bits: u64) {
     );
 
     let iterator = descriptor(py, "__iter__", &[bits]);
+    let iterator_owner = ExceptionValue::adopt(py, iterator);
     for expected in [1, 2, 1] {
         let mut value = MoltObject::none().bits();
         let done = unsafe {
@@ -108,9 +110,9 @@ fn exercise_descriptors(py: &PyToken<'_>, bits: u64) {
                 (&raw mut value) as usize as u64,
             )
         };
+        let value = ExceptionValue::adopt(py, value);
         assert_eq!(obj_from_bits(done).as_bool(), Some(false));
-        assert_eq!(obj_from_bits(value).as_int(), Some(expected));
-        dec_ref_bits(py, value);
+        assert_eq!(crate::to_i64(obj_from_bits(value.bits())), Some(expected));
     }
     let mut value = MoltObject::none().bits();
     assert_eq!(
@@ -123,10 +125,11 @@ fn exercise_descriptors(py: &PyToken<'_>, bits: u64) {
         .as_bool(),
         Some(true)
     );
-    dec_ref_bits(py, iterator);
+    drop(iterator_owner);
 
     let managed =
         MoltObject::from_ptr(alloc_tuple(py, &[one, MoltObject::from_int(2).bits(), one])).bits();
+    let managed_owner = ExceptionValue::adopt(py, managed);
     for (name, expected) in [
         ("__eq__", true),
         ("__ne__", false),
@@ -147,9 +150,8 @@ fn exercise_descriptors(py: &PyToken<'_>, bits: u64) {
         );
     }
     for args in [[bits, managed], [managed, bits]] {
-        let result = descriptor(py, "__add__", &args);
-        assert_values(py, result, &[1, 2, 1, 1, 2, 1]);
-        dec_ref_bits(py, result);
+        let result = ExceptionValue::adopt(py, descriptor(py, "__add__", &args));
+        assert_values(py, result.bits(), &[1, 2, 1, 1, 2, 1]);
     }
     // The public C sequence APIs must share the same root tuple operations as
     // explicit runtime descriptors, including mixed physical representations.
@@ -221,20 +223,23 @@ fn exercise_descriptors(py: &PyToken<'_>, bits: u64) {
         }
     }
     for name in ["__mul__", "__rmul__"] {
-        let result = descriptor(py, name, &[bits, MoltObject::from_int(2).bits()]);
-        assert_values(py, result, &[1, 2, 1, 1, 2, 1]);
-        dec_ref_bits(py, result);
+        let result = ExceptionValue::adopt(
+            py,
+            descriptor(py, name, &[bits, MoltObject::from_int(2).bits()]),
+        );
+        assert_values(py, result.bits(), &[1, 2, 1, 1, 2, 1]);
     }
     let slice_bits = crate::object::ops_slice::molt_slice_new(
         one,
         MoltObject::none().bits(),
         MoltObject::none().bits(),
     );
-    let result = descriptor(py, "__getitem__", &[bits, slice_bits]);
-    assert_values(py, result, &[2, 1]);
-    dec_ref_bits(py, result);
-    dec_ref_bits(py, slice_bits);
-    dec_ref_bits(py, managed);
+    let slice_owner = ExceptionValue::adopt(py, slice_bits);
+    let result = ExceptionValue::adopt(py, descriptor(py, "__getitem__", &[bits, slice_bits]));
+    assert_values(py, result.bits(), &[2, 1]);
+    drop(result);
+    drop(slice_owner);
+    drop(managed_owner);
     assert!(!exception_pending(py));
     assert!(unsafe { errors::PyErr_Occurred() }.is_null());
 }
@@ -246,6 +251,7 @@ fn native_tuple_descriptor_family_reads_real_storage_and_owned_results() {
     crate::with_gil(|py| unsafe {
         let native = native_tuple_of(&raw mut PyTuple_Type, &[1, 2, 1]);
         let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
+        let _bits_owner = ExceptionValue::adopt(&py, bits);
         assert_eq!(
             object_type_id(obj_from_bits(bits).as_ptr().unwrap()),
             TYPE_ID_FOREIGN
@@ -263,13 +269,10 @@ fn native_tuple_descriptor_family_reads_real_storage_and_owned_results() {
         let iterator = crate::molt_iter(bits);
         assert!(!exception_pending(&py));
         dec_ref_bits(&py, iterator);
-        dec_ref_bits(&py, bits);
     });
 }
 
-#[test]
-fn native_tuple_base_descriptors_bypass_subclass_overrides() {
-    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+fn exercise_native_tuple_overrides(unwind_after_item: bool, retired: &Cell<[usize; 2]>) {
     assert!(crate::cpython_abi_hooks::register_cpython_hooks());
     crate::with_gil(|py| unsafe {
         OVERRIDES.store(0, Ordering::SeqCst);
@@ -307,29 +310,85 @@ fn native_tuple_base_descriptors_bypass_subclass_overrides() {
             (&raw mut PyTuple_Type).cast(),
         ));
         assert!(!class.as_ptr().is_null());
-        let native = native_tuple_of(class.as_ptr().cast(), &[1, 2, 1]);
-        let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
-        exercise_descriptors(&py, bits);
-        assert_eq!(OVERRIDES.load(Ordering::SeqCst), 0);
-        assert_eq!(obj_from_bits(crate::molt_len(bits)).as_int(), Some(99));
-        assert_eq!(
-            obj_from_bits(crate::molt_index(bits, MoltObject::from_int(1).bits())).as_int(),
-            Some(999)
-        );
-        assert_eq!(
-            obj_from_bits(crate::molt_contains(bits, MoltObject::from_int(1).bits())).as_bool(),
-            Some(false)
-        );
-        let result = crate::molt_iter(bits);
-        assert!(exception_pending(&py));
-        crate::clear_exception(&py);
-        errors::PyErr_Clear();
-        dec_ref_bits(&py, result);
-        assert_eq!(OVERRIDES.load(Ordering::SeqCst), 4);
-        dec_ref_bits(&py, bits);
-        drop(native);
-        assert_eq!(typeobj::molt_type_clear(class.as_ptr()), 0);
+        let class_address = class.as_ptr().addr();
+        assert!(crate::object::gc::native_gc_is_enrolled(class_address));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let native = native_tuple_of(class.as_ptr().cast(), &[1, 2, 1]);
+            retired.set([class_address, native.as_ptr().addr()]);
+            assert!(crate::object::gc::native_gc_is_enrolled(
+                native.as_ptr().addr()
+            ));
+            let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
+            let _bits_owner = ExceptionValue::adopt(&py, bits);
+            exercise_descriptors(&py, bits);
+            assert_eq!(OVERRIDES.load(Ordering::SeqCst), 0);
+            assert_eq!(obj_from_bits(crate::molt_len(bits)).as_int(), Some(99));
+            let item =
+                ExceptionValue::adopt(&py, crate::molt_index(bits, MoltObject::from_int(1).bits()));
+            assert!(!exception_pending(&py));
+            assert_eq!(
+                crate::type_of_bits(&py, item.bits()),
+                crate::builtin_classes(&py).int
+            );
+            assert_eq!(crate::to_i64(obj_from_bits(item.bits())), Some(999));
+            if unwind_after_item {
+                crate::test_support::with_expected_panic(|| {
+                    std::panic::panic_any("native tuple fixture unwind");
+                });
+            }
+            drop(item);
+            assert_eq!(
+                obj_from_bits(crate::molt_contains(bits, MoltObject::from_int(1).bits())).as_bool(),
+                Some(false)
+            );
+            let result = ExceptionValue::adopt(&py, crate::molt_iter(bits));
+            assert!(exception_pending(&py));
+            crate::clear_exception(&py);
+            errors::PyErr_Clear();
+            drop(result);
+            assert_eq!(OVERRIDES.load(Ordering::SeqCst), 4);
+        }));
+        // The heap type's MRO is an owned self-cycle. Retire it after every
+        // instance/wrapper guard, even when the body asserted or returned early.
+        let clear = errors::with_preserved_error(|| typeobj::molt_type_clear(class.as_ptr()));
+        drop(class);
+        if let Err(primary) = outcome {
+            if clear != 0 {
+                eprintln!("native tuple fixture cleanup also failed: type clear returned {clear}");
+            }
+            std::panic::resume_unwind(primary);
+        }
+        assert_eq!(clear, 0);
     });
+}
+
+#[test]
+fn native_tuple_base_descriptors_bypass_subclass_overrides() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    let retired = Cell::new([0; 2]);
+    exercise_native_tuple_overrides(false, &retired);
+    for address in retired.get() {
+        assert_ne!(address, 0);
+        assert!(!crate::object::gc::native_gc_is_enrolled(address));
+    }
+}
+
+#[test]
+fn native_tuple_override_unwind_retires_instance_and_type() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    let retired = Cell::new([0; 2]);
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        exercise_native_tuple_overrides(true, &retired);
+    }))
+    .expect_err("the fixture must reach its intentional unwind");
+    assert_eq!(
+        failure.downcast_ref::<&str>(),
+        Some(&"native tuple fixture unwind")
+    );
+    for address in retired.get() {
+        assert_ne!(address, 0);
+        assert!(!crate::object::gc::native_gc_is_enrolled(address));
+    }
 }
 
 #[test]

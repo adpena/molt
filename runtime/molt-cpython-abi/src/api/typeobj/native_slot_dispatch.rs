@@ -790,12 +790,15 @@ unsafe fn declaring_numeric_call<const SLOT: c_int>(
     }
 }
 
-fn numeric_tag<const TAG: u8>() -> MoltTypeTag {
+// These slots invoke the namespace of their declaring builtin, not the
+// physical carrier fallback selected by bridge::tag_to_type. In particular,
+// int's slot still declares int when its receiver is a bool.
+fn numeric_declaring_type<const TAG: u8>() -> *mut PyTypeObject {
     match TAG {
-        value if value == MoltTypeTag::Int as u8 => MoltTypeTag::Int,
-        value if value == MoltTypeTag::Bool as u8 => MoltTypeTag::Bool,
-        value if value == MoltTypeTag::Float as u8 => MoltTypeTag::Float,
-        value if value == MoltTypeTag::Complex as u8 => MoltTypeTag::Complex,
+        value if value == MoltTypeTag::Int as u8 => &raw mut PyLong_Type,
+        value if value == MoltTypeTag::Bool as u8 => &raw mut PyBool_Type,
+        value if value == MoltTypeTag::Float as u8 => &raw mut PyFloat_Type,
+        value if value == MoltTypeTag::Complex as u8 => &raw mut PyComplex_Type,
         _ => unreachable!("builtin numeric table tag"),
     }
 }
@@ -894,7 +897,7 @@ unsafe extern "C" fn native_number_binary<const TAG: u8, const SLOT: c_int>(
             return ptr::null_mut();
         }
         declaring_numeric_call::<SLOT>(
-            crate::bridge::tag_to_type(numeric_tag::<TAG>()),
+            numeric_declaring_type::<TAG>(),
             &[left.as_ptr(), right.as_ptr()],
         )
     }
@@ -944,7 +947,7 @@ unsafe extern "C" fn native_number_power<const TAG: u8>(
             return ptr::null_mut();
         }
         declaring_numeric_call::<{ ts::Py_nb_power }>(
-            crate::bridge::tag_to_type(numeric_tag::<TAG>()),
+            numeric_declaring_type::<TAG>(),
             &[left.as_ptr(), right.as_ptr(), modulus.as_ptr()],
         )
     }
@@ -959,10 +962,7 @@ unsafe extern "C" fn native_number_unary<const TAG: u8, const SLOT: c_int>(
         if argument.as_ptr().is_null() {
             return ptr::null_mut();
         }
-        declaring_numeric_call::<SLOT>(
-            crate::bridge::tag_to_type(numeric_tag::<TAG>()),
-            &[argument.as_ptr()],
-        )
+        declaring_numeric_call::<SLOT>(numeric_declaring_type::<TAG>(), &[argument.as_ptr()])
     }
 }
 unsafe extern "C" fn native_number_bool<const TAG: u8>(a: *mut PyObject) -> c_int {

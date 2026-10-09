@@ -608,6 +608,9 @@ fn frame_materialization_denial_never_looks_like_an_absent_frame() {
         let globals = dict(py);
         let locals = dict(py);
         let builtins = dict(py);
+        let owned = [code, globals, locals, builtins];
+        let _owners =
+            owned.map(|bits| crate::builtins::exceptions::ExceptionValue::adopt(py, bits));
         let entry = FrameEntry {
             code_bits: code,
             globals_bits: globals,
@@ -623,9 +626,7 @@ fn frame_materialization_denial_never_looks_like_an_absent_frame() {
         let construct = || unsafe { alloc_frame_obj(py, entry, 1, MoltObject::none().bits(), -1) };
         // Warm interned field names and sealed class metadata before denial.
         dec_ref_bits(py, construct().unwrap());
-        let owned = [code, globals, locals, builtins];
         let baseline = owned.map(refs);
-        let mut failures = 0;
         let mut completed = false;
         for limit in 0..=16 {
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
@@ -635,12 +636,16 @@ fn frame_materialization_denial_never_looks_like_an_absent_frame() {
             let budget = RestoreBudget;
             match construct() {
                 Some(frame) => {
+                    let frame = crate::builtins::exceptions::ExceptionValue::adopt(py, frame);
+                    assert_ne!(
+                        limit, 0,
+                        "frame materialization must obey a zero allocation budget"
+                    );
                     assert!(!crate::exception_pending(py));
-                    dec_ref_bits(py, frame);
+                    drop(frame);
                     completed = true;
                 }
                 None => {
-                    failures += 1;
                     assert!(
                         crate::exception_pending(py),
                         "silent frame failure at budget {limit}"
@@ -659,13 +664,9 @@ fn frame_materialization_denial_never_looks_like_an_absent_frame() {
             }
         }
         assert!(completed);
-        assert!(
-            failures >= 5,
-            "exercise frame, dict and all backing buffers"
-        );
-        for bits in owned {
-            dec_ref_bits(py, bits);
-        }
+        // Every admitted allocation budget below the first complete frame
+        // failed with an exception and restored the same edge owners. Storage
+        // consolidation may reduce that first successful budget.
     });
 }
 

@@ -1,5 +1,6 @@
 //! Name objects remain the same operands across normal and raw mutation.
 use super::*;
+use crate::builtins::exceptions::ExceptionValue;
 use molt_cpython_abi::abi_types::{Py_TPFLAGS_READY, PyBaseObject_Type, PyType_Type, PyTypeObject};
 
 thread_local! {
@@ -49,12 +50,11 @@ extern "C" fn name_equal(left: u64, right: u64) -> u64 {
 }
 
 fn new_class(py: &crate::PyToken<'_>, name: &[u8], base: u64) -> u64 {
-    let name = crate::attr_name_bits_from_bytes(py, name).unwrap();
-    let class = crate::molt_class_new(name);
-    crate::molt_class_set_base(class, base);
-    dec_ref_bits(py, name);
+    let name = ExceptionValue::adopt(py, crate::attr_name_bits_from_bytes(py, name).unwrap());
+    let class = ExceptionValue::adopt(py, crate::molt_class_new(name.bits()));
+    crate::molt_class_set_base(class.bits(), base);
     assert!(!crate::exception_pending(py));
-    class
+    class.into_bits()
 }
 
 fn finish_class(py: &crate::PyToken<'_>, class: u64) {
@@ -65,6 +65,7 @@ fn finish_class(py: &crate::PyToken<'_>, class: u64) {
 fn subclass_name(py: &crate::PyToken<'_>) -> (u64, u64, u64) {
     HASH_FAIL.with(|slot| slot.set(false));
     let spelling = crate::attr_name_bits_from_bytes(py, b"mutation_name_identity").unwrap();
+    let spelling_owner = ExceptionValue::adopt(py, spelling);
     let ordinary_hash = crate::molt_hash_builtin(spelling);
     let alternate = MoltObject::from_int(if ordinary_hash == MoltObject::from_int(137).bits() {
         138
@@ -75,11 +76,13 @@ fn subclass_name(py: &crate::PyToken<'_>) -> (u64, u64, u64) {
     dec_ref_bits(py, ordinary_hash);
     NAME_HASH.with(|slot| slot.set(alternate));
     let class = new_class(py, b"MutationName", crate::builtin_classes(py).str);
+    let class_owner = ExceptionValue::adopt(py, class);
     method(py, class, b"__eq__", name_equal as *const (), 2);
     method(py, class, b"__hash__", name_hash as *const (), 1);
     finish_class(py, class);
     let name =
         unsafe { crate::call::bind::call_bind_borrowed(py, class, None, &[spelling], &[], &[]) };
+    let name_owner = ExceptionValue::adopt(py, name);
     assert!(!crate::exception_pending(py));
     assert_ne!(name, spelling);
     assert_eq!(crate::type_of_bits(py, name), class);
@@ -87,7 +90,11 @@ fn subclass_name(py: &crate::PyToken<'_>) -> (u64, u64, u64) {
         unsafe { crate::object_type_id(obj_from_bits(name).as_ptr().unwrap()) },
         crate::TYPE_ID_STRING
     );
-    (name, spelling, class)
+    (
+        name_owner.into_bits(),
+        spelling_owner.into_bits(),
+        class_owner.into_bits(),
+    )
 }
 
 #[test]
@@ -326,11 +333,21 @@ fn managed_type_defaults_canonicalize_names_without_projection() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let (name, spelling, name_class) = subclass_name(py);
+            let _names = [name, spelling, name_class].map(|bits| ExceptionValue::adopt(py, bits));
+            let assert_name_unprojected = |phase| {
+                assert!(
+                    !(*crate::header_from_obj_ptr(obj_from_bits(name).as_ptr().unwrap()))
+                        .has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW),
+                    "original subclass name projected during {phase}"
+                );
+            };
+            assert_name_unprojected("subclass construction");
             let class = new_class(
                 py,
                 b"UnprojectedMutableType",
                 crate::builtin_classes(py).object,
             );
+            let _class_owner = ExceptionValue::adopt(py, class);
             finish_class(py, class);
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             let dictionary = obj_from_bits(crate::class_dict_bits(class_ptr))
@@ -340,6 +357,13 @@ fn managed_type_defaults_canonicalize_names_without_projection() {
             // A subclass hash would choose another dictionary bucket and fail
             // these exact-string reads. Default mutation must never invoke it.
             HASH_CALLS.with(|calls| calls.set(0));
+            struct ResetHash;
+            impl Drop for ResetHash {
+                fn drop(&mut self) {
+                    HASH_FAIL.with(|fail| fail.set(false));
+                }
+            }
+            let _reset_hash = ResetHash;
             HASH_FAIL.with(|fail| fail.set(true));
             for explicit in [false, true] {
                 if explicit {
@@ -352,6 +376,11 @@ fn managed_type_defaults_canonicalize_names_without_projection() {
                     crate::molt_set_attr_name(class, name, MoltObject::from_int(31).bits());
                 }
                 assert!(!crate::exception_pending(py));
+                assert_name_unprojected(if explicit {
+                    "explicit type assignment"
+                } else {
+                    "normal assignment"
+                });
                 assert_eq!(
                     crate::dict_get_in_place(py, dictionary, spelling),
                     Some(MoltObject::from_int(31).bits())
@@ -372,6 +401,11 @@ fn managed_type_defaults_canonicalize_names_without_projection() {
                     crate::molt_del_attr_name(class, name);
                 }
                 assert!(!crate::exception_pending(py));
+                assert_name_unprojected(if explicit {
+                    "explicit type deletion"
+                } else {
+                    "normal deletion"
+                });
                 assert_eq!(crate::dict_get_in_place(py, dictionary, spelling), None);
                 assert!(!GLOBAL_BRIDGE.type_has_projection(class));
             }
@@ -381,9 +415,6 @@ fn managed_type_defaults_canonicalize_names_without_projection() {
                     .has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW)
             );
             HASH_FAIL.with(|fail| fail.set(false));
-            for bits in [class, name, spelling, name_class] {
-                dec_ref_bits(py, bits);
-            }
         }
     });
 }

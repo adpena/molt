@@ -968,8 +968,9 @@ fn builtin_numeric_c_tables_keep_declaring_owner_and_complete_slot_domains() {
             ));
             assert_ne!(int_fn as usize, bool_fn as usize);
             let raw_int = OwnedPyObject::from_owned(int_fn(truth, truth));
+            assert!(!raw_int.as_ptr().is_null(), "int {name:?} slot");
             let raw_bool = OwnedPyObject::from_owned(bool_fn(truth, truth));
-            assert!(!raw_int.as_ptr().is_null() && !raw_bool.as_ptr().is_null());
+            assert!(!raw_bool.as_ptr().is_null(), "bool {name:?} slot");
             assert_eq!((*raw_int.as_ptr()).ob_type, &raw mut abi_types::PyLong_Type);
             assert_eq!(
                 (*raw_bool.as_ptr()).ob_type,
@@ -1030,6 +1031,168 @@ fn builtin_numeric_c_tables_keep_declaring_owner_and_complete_slot_domains() {
         assert_eq!(numbers::PyFloat_AsDouble(result.as_ptr()), 4.0);
         let normal = OwnedPyObject::from_owned(abstract_number::PyNumber_And(truth, truth));
         assert_eq!(normal.as_ptr(), truth);
+        assert!(errors::PyErr_Occurred().is_null());
+        assert!(!crate::exception_pending(&py));
+    });
+}
+
+#[test]
+fn builtin_numeric_declaring_slots_cover_unary_binary_power_and_truth() {
+    use molt_cpython_abi::api::refcount::OwnedPyObject;
+    use molt_cpython_abi::api::{abstract_number, numbers, typeobj};
+    use molt_cpython_abi::type_slots as slots;
+    type Unary = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
+    type Binary = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
+    type Power = unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
+    type Truth = unsafe extern "C" fn(*mut PyObject) -> c_int;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil(|py| unsafe {
+        // Literal CPython arithmetic and exact result classes, independently of
+        // the slot table's declaring-owner selection. Keep every input alive.
+        let two = OwnedPyObject::from_owned(numbers::PyLong_FromLong(2));
+        let zero = OwnedPyObject::from_owned(numbers::PyLong_FromLong(0));
+        let three = OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(3.0));
+        let float_zero = OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(0.0));
+        let four = OwnedPyObject::from_owned(numbers::PyComplex_FromDoubles(4.0, 0.0));
+        let complex_zero = OwnedPyObject::from_owned(numbers::PyComplex_FromDoubles(0.0, 0.0));
+        for value in [&two, &zero, &three, &float_zero, &four, &complex_zero] {
+            assert!(!value.as_ptr().is_null());
+        }
+        let slot = |class, id| {
+            let pointer = typeobj::PyType_GetSlot(class, id);
+            assert!(!pointer.is_null(), "required numeric slot {id}");
+            pointer
+        };
+        let check = |result, class, real, imag, operation| {
+            let result = OwnedPyObject::from_owned(result);
+            assert!(!result.as_ptr().is_null(), "{operation}");
+            assert_eq!((*result.as_ptr()).ob_type, class, "{operation}");
+            let value = numbers::PyComplex_AsCComplex(result.as_ptr());
+            assert_eq!((value.real, value.imag), (real, imag), "{operation}");
+            assert!(errors::PyErr_Occurred().is_null(), "{operation}");
+        };
+        for (class, value, zero, result_class, negative, difference, square) in [
+            (
+                &raw mut abi_types::PyLong_Type,
+                two.as_ptr(),
+                zero.as_ptr(),
+                &raw mut abi_types::PyLong_Type,
+                -2.0,
+                0.0,
+                4.0,
+            ),
+            (
+                &raw mut abi_types::PyBool_Type,
+                (&raw mut abi_types::Py_True).cast(),
+                (&raw mut abi_types::Py_False).cast(),
+                &raw mut abi_types::PyLong_Type,
+                -1.0,
+                -1.0,
+                1.0,
+            ),
+            (
+                &raw mut abi_types::PyFloat_Type,
+                three.as_ptr(),
+                float_zero.as_ptr(),
+                &raw mut abi_types::PyFloat_Type,
+                -3.0,
+                1.0,
+                9.0,
+            ),
+            (
+                &raw mut abi_types::PyComplex_Type,
+                four.as_ptr(),
+                complex_zero.as_ptr(),
+                &raw mut abi_types::PyComplex_Type,
+                -4.0,
+                2.0,
+                16.0,
+            ),
+        ] {
+            let negative_slot: Unary = std::mem::transmute(slot(class, slots::Py_nb_negative));
+            let subtract_slot: Binary = std::mem::transmute(slot(class, slots::Py_nb_subtract));
+            let power_slot: Power = std::mem::transmute(slot(class, slots::Py_nb_power));
+            let truth_slot: Truth = std::mem::transmute(slot(class, slots::Py_nb_bool));
+            check(
+                negative_slot(value),
+                result_class,
+                negative,
+                0.0,
+                "raw negative",
+            );
+            check(
+                subtract_slot(value, two.as_ptr()),
+                result_class,
+                difference,
+                0.0,
+                "raw subtract",
+            );
+            check(
+                power_slot(value, two.as_ptr(), &raw mut abi_types::Py_None),
+                result_class,
+                square,
+                0.0,
+                "raw power",
+            );
+            assert_eq!(truth_slot(value), 1);
+            assert_eq!(truth_slot(zero), 0);
+            check(
+                abstract_number::PyNumber_Negative(value),
+                result_class,
+                negative,
+                0.0,
+                "public negative",
+            );
+            check(
+                abstract_number::PyNumber_Subtract(value, two.as_ptr()),
+                result_class,
+                difference,
+                0.0,
+                "public subtract",
+            );
+            check(
+                abstract_number::PyNumber_Power(value, two.as_ptr(), &raw mut abi_types::Py_None),
+                result_class,
+                square,
+                0.0,
+                "public power",
+            );
+        }
+        // Right-hand selection must keep operand order and use the selected
+        // numeric class, rather than the left operand's class or a carrier tag.
+        let complex = OwnedPyObject::from_owned(numbers::PyComplex_FromDoubles(3.0, 1.0));
+        for (class, right, real, imag) in [
+            (&raw mut abi_types::PyFloat_Type, three.as_ptr(), -1.0, 0.0),
+            (
+                &raw mut abi_types::PyComplex_Type,
+                complex.as_ptr(),
+                -1.0,
+                -1.0,
+            ),
+        ] {
+            let subtract: Binary = std::mem::transmute(slot(class, slots::Py_nb_subtract));
+            check(
+                subtract(two.as_ptr(), right),
+                class,
+                real,
+                imag,
+                "raw right-selected subtract",
+            );
+            check(
+                abstract_number::PyNumber_Subtract(two.as_ptr(), right),
+                class,
+                real,
+                imag,
+                "public right-selected subtract",
+            );
+            check(
+                abstract_number::PyNumber_Subtract(right, two.as_ptr()),
+                class,
+                -real,
+                -imag,
+                "public left-selected subtract",
+            );
+        }
         assert!(errors::PyErr_Occurred().is_null());
         assert!(!crate::exception_pending(&py));
     });
