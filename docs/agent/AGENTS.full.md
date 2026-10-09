@@ -1184,11 +1184,10 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - Every compatibility claim must include explicit dimensions where relevant: `py312`/`py313`/`py314`, `native`, `wasm_wasi`, `wasm_browser`, and platform notes (`linux`/`macos`/`windows`).
 - Required refresh workflow when compatibility surfaces move:
   1. `python3 tools/gen_stdlib_module_union.py --write`
-  2. `python3 tools/sync_stdlib_top_level_stubs.py --write`
-  3. `python3 tools/sync_stdlib_submodule_stubs.py --write`
-  4. `python3 tools/check_stdlib_intrinsics.py --update-doc`
-  5. `python3 tools/gen_compat_platform_availability.py --write`
-  6. `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`
+  2. `python3 tools/gen_stdlib_stubs.py --write`
+  3. `python3 tools/check_stdlib_intrinsics.py --update-doc`
+  4. `python3 tools/gen_compat_platform_availability.py --write`
+  5. `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
   7. `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
   8. Sync docs in the same change: `docs/spec/STATUS.md`, `ROADMAP.md`, `docs/spec/README.md`, and `docs/INDEX.md`.
 - If documentation claims conflict across compat files, resolve them in the same
@@ -1473,7 +1472,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 - `uv run pre-commit install` and `uv run pre-commit run -a`: enable repo hooks. Hooks are read-only by default; run explicit format/fix commands before staging when a check fails.
 - `python3 tools/check_stdlib_intrinsics.py`: validate stdlib/intrinsic coverage (use `--fallback-intrinsic-backed-only` for strict checks, `--critical-allowlist` for gating, and `--update-doc` to refresh docs).
 - `python3 tools/check_dynamic_policy.py`: enforce dynamic-execution policy guardrails (no accidental policy drift for `eval`/`exec`, monkeypatching, or unrestricted reflection lanes).
-- `python3 tools/sync_stdlib_top_level_stubs.py --write` and `python3 tools/sync_stdlib_submodule_stubs.py --write`: sync stdlib stub inventories from the manifest.
+- `python3 tools/gen_stdlib_stubs.py --write`: write a stub for each stdlib union module Molt lacks and hold every stub to the one template (`--check` names drift).
 - `python3 tools/gen_stdlib_module_union.py --write`: regenerate the stdlib module union list used by stub syncing and checks.
 - `python3 tools/gen_compat_platform_availability.py --write`: regenerate CPython 3.12/3.13/3.14 stdlib Availability matrix at `docs/spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md`.
 - `python3 tools/diff_coverage.py`: generate [tests/differential/COVERAGE_REPORT.md](tests/differential/COVERAGE_REPORT.md).

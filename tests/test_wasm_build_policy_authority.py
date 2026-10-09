@@ -257,8 +257,19 @@ def test_pytest_session_scope_marks_only_generated_session_ids(
     assert os.environ["MOLT_SESSION_ID_GENERATED"] == "1"
 
 
-def test_wasm_build_env_replaces_generated_pytest_session_with_stable_lane() -> None:
-    env = wasm_test_build_env(ROOT, create_dirs=False)
+def test_wasm_build_env_replaces_generated_pytest_session_with_stable_lane(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("MOLT_WASM_TEST_LANE", raising=False)
+    monkeypatch.setenv("MOLT_SESSION_ID", "pytest-123")
+    monkeypatch.setenv("MOLT_SESSION_ID_GENERATED", "1")
+    for worker, lane in ((None, "local"), ("gw0", "worker_gw0")):
+        if worker is None:
+            monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+        else:
+            monkeypatch.setenv("PYTEST_XDIST_WORKER", worker)
 
-    assert env["MOLT_SESSION_ID"] == "test-wasm-local"
-    assert env.get("MOLT_SESSION_ID_GENERATED") is None
+        env = wasm_test_build_env(ROOT, create_dirs=False)
+
+        assert env["MOLT_SESSION_ID"] == f"test-wasm-{lane}"
+        assert env.get("MOLT_SESSION_ID_GENERATED") is None

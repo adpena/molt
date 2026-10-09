@@ -86,7 +86,7 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
   results appear dead.
 - **Object/layout**: `Alloc`, `LoadAttr`, `StoreAttr`, `GetAttrGenericPtr`, `SetAttrGenericPtr`, `GetAttrGenericObj`, `SetAttrGenericObj`, `LoadIndex`, `StoreIndex`, `Index`, `Iter`, `Enumerate`, `IterNext`, `ListNew`, `DictNew`, `Len`, `Slice`, `SliceNew`, `BytearrayFromObj`, `RangeNew`, `Buffer2DNew`, `Buffer2DGet`, `Buffer2DSet`, `Buffer2DMatmul`, `ClosureLoad`, `ClosureStore`.
 - **Bytes/Bytearray/String**: `BytesFind`, `BytesSplit`, `BytesReplace`, `BytearrayFind`, `BytearraySplit`, `BytearrayReplace`, `StringFind`, `StringFormat`, `StringSplit`, `StringCapitalize`, `StringStrip`, `StringReplace`, `StringStartswith`, `StringEndswith`, `StringCount`, `StringJoin`.
-- **Exceptions**: `ExceptionNew`, `ExceptionLast`, `ExceptionClear`, `ExceptionKind`, `ExceptionMessage`, `ExceptionSetCause`, `ExceptionContextSet`, `Raise` (raise sets implicit `__context__`; `ExceptionSetCause` sets explicit `__cause__` and suppresses context).
+- **Exceptions**: `ExceptionNew`, `ExceptionLast`, `ExceptionClear`, `ExceptionKind`, `ExceptionMessage`, `ExceptionContextSet`, `Raise`. Raise sets the implicit `__context__`. For `raise X from Y` the frontend evaluates both operands and passes them to the runtime call `molt_exception_prepare_raise`, which turns each class into an instance and sets the explicit `__cause__` and so suppresses the context. No IR op carries the cause.
 - **Generators/async**: `AllocGenerator`, `GenSend`, `GenThrow`, `GenClose`, `IsGenerator`, `AIter`, `ANext`, `CallAsync`, `StateSwitch`, `StateTransition`, `StateYield`, `StateSet`, `IsPending`, `TaskWait`.
   - Source `StateTransition`/`StateYield` become explicit activation exits before
     terminal ownership: state writes, a canonical poll call, exact pending test,
@@ -240,8 +240,10 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
 - Implemented in this repo today:
   - `SimpleTIRGenerator` in `src/molt/frontend/__init__.py` emits a broad TIR
     op surface used by `molt build`/`molt run`.
-- Detailed instruction-by-instruction audit:
-  - `docs/spec/areas/compiler/0100_MOLT_IR_IMPLEMENTATION_COVERAGE_2026-02-11.md`.
+- Instruction inventory:
+  - `molt debug verify` checks every op the instruction categories list
+    against the frontend op-kind registry generated from
+    `runtime/molt-ir/src/tir/op_kinds.toml`.
 - Partial / pending:
   - Dedicated HIR and LIR modules are not yet split into standalone compiler
     crates/modules in this tree.
@@ -296,12 +298,11 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
     `IncRef`/`DecRef`/`Borrow`/`Release` plus conversion families
     (`Box`/`Unbox`/`Cast`/`Widen`); deterministic semantic-depth hardening and
     broader differential evidence are still in progress.
-  - The shared verifier core, exposed publicly via `molt debug verify`, now
-    enforces inventory coverage, dedicated-lane presence, and behavior-level
-    semantic assertions for these lanes across
-    frontend/native/wasm (including dedicated native+wasm call-site labels for
-    `invoke_ffi_bridge`/`invoke_ffi_deopt` vs `call_func` and `call_indirect`
-    vs `call_bind`).
+  - `molt debug verify` serializes each dedicated frontend lane through the
+    real serializer and checks the lane it emits. It also checks that the
+    native and WASM backends keep each lane, including the distinct call-site
+    labels for `invoke_ffi_bridge`/`invoke_ffi_deopt` vs `call_func` and
+    `call_indirect` vs `call_bind`.
   - LIR-level explicit RC ops (`IncRef`/`DecRef`/`Borrow`/`Release`) are
     specified here but not fully materialized as a separate lowering stage in
     the frontend emitter.

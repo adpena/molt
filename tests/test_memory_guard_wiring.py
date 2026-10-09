@@ -15,7 +15,11 @@ from molt import pytest_memory_guard_bootstrap
 from molt import pytest_memory_guard_config_plugin
 from molt import memory_guard_paths
 from molt import temporary_artifacts
-from tests.process_guard_common import install_module_os_view
+from tests.process_guard_common import install_module_os_view, install_module_view
+import subprocess
+
+# These tests fake process data the session sentinel also reads.
+pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -274,13 +278,21 @@ def test_pytest_startup_reexecs_direct_pytest_under_memory_guard(monkeypatch) ->
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: False
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "execvpe", fake_execvpe)
+    install_module_view(
+        monkeypatch, "os", os, pytest_memory_guard_bootstrap, execvpe=fake_execvpe
+    )
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap,
         "outer_memory_guard_active",
         lambda _environ=None: False,
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.sys, "executable", sys.executable)
+    install_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        pytest_memory_guard_bootstrap,
+        executable=sys.executable,
+    )
     monkeypatch.delenv("MOLT_MEMORY_GUARD_ACTIVE", raising=False)
     monkeypatch.delenv("MOLT_PYTEST_OUTER_GUARD_REEXEC", raising=False)
 
@@ -334,21 +346,30 @@ def test_pytest_startup_windows_handoff_waits_for_guard_child(monkeypatch) -> No
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
     # Complete the Windows simulation on every host: the flag is 0 off Windows.
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap.subprocess,
-        "CREATE_NEW_PROCESS_GROUP",
-        0x00000200,
-        raising=False,
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        pytest_memory_guard_bootstrap,
+        CREATE_NEW_PROCESS_GROUP=0x00000200,
+        run=fake_run,
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.subprocess, "run", fake_run)
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "execvpe", fake_execvpe)
+    install_module_view(
+        monkeypatch, "os", os, pytest_memory_guard_bootstrap, execvpe=fake_execvpe
+    )
     monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "_exit", fake_exit)
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap,
         "outer_memory_guard_active",
         lambda _environ=None: False,
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.sys, "executable", sys.executable)
+    install_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        pytest_memory_guard_bootstrap,
+        executable=sys.executable,
+    )
     monkeypatch.delenv("MOLT_MEMORY_GUARD_ACTIVE", raising=False)
     monkeypatch.delenv("MOLT_PYTEST_OUTER_GUARD_REEXEC", raising=False)
 
@@ -388,8 +409,16 @@ def test_pytest_startup_windows_handoff_interrupt_exits_cleanly(monkeypatch) -> 
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.subprocess, "run", fake_run)
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "_exit", fake_exit)
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        pytest_memory_guard_bootstrap,
+        run=fake_run,
+    )
+    install_module_view(
+        monkeypatch, "os", os, pytest_memory_guard_bootstrap, _exit=fake_exit
+    )
 
     try:
         pytest_memory_guard_bootstrap.handoff_to_outer_guard(
@@ -415,13 +444,21 @@ def test_repo_test_script_startup_reexecs_under_memory_guard(monkeypatch) -> Non
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: False
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "execvpe", fake_execvpe)
+    install_module_view(
+        monkeypatch, "os", os, pytest_memory_guard_bootstrap, execvpe=fake_execvpe
+    )
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap,
         "outer_memory_guard_active",
         lambda _environ=None: False,
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.sys, "executable", sys.executable)
+    install_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        pytest_memory_guard_bootstrap,
+        executable=sys.executable,
+    )
     monkeypatch.delenv("MOLT_MEMORY_GUARD_ACTIVE", raising=False)
 
     try:
@@ -455,13 +492,21 @@ def test_repo_test_module_startup_reexecs_under_memory_guard(monkeypatch) -> Non
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: False
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "execvpe", fake_execvpe)
+    install_module_view(
+        monkeypatch, "os", os, pytest_memory_guard_bootstrap, execvpe=fake_execvpe
+    )
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap,
         "outer_memory_guard_active",
         lambda _environ=None: False,
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.sys, "executable", sys.executable)
+    install_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        pytest_memory_guard_bootstrap,
+        executable=sys.executable,
+    )
     monkeypatch.delenv("MOLT_MEMORY_GUARD_ACTIVE", raising=False)
 
     try:
@@ -507,13 +552,21 @@ def test_current_file_test_script_startup_uses_resolved_file(monkeypatch) -> Non
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: False
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "execvpe", fake_execvpe)
+    install_module_view(
+        monkeypatch, "os", os, pytest_memory_guard_bootstrap, execvpe=fake_execvpe
+    )
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap,
         "outer_memory_guard_active",
         lambda _environ=None: False,
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.sys, "executable", sys.executable)
+    install_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        pytest_memory_guard_bootstrap,
+        executable=sys.executable,
+    )
     monkeypatch.delenv("MOLT_MEMORY_GUARD_ACTIVE", raising=False)
 
     try:
@@ -845,13 +898,21 @@ def test_pytest_initial_conftest_hook_reexecs_from_pytest_args(monkeypatch) -> N
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: False
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "execvpe", fake_execvpe)
+    install_module_view(
+        monkeypatch, "os", os, pytest_memory_guard_bootstrap, execvpe=fake_execvpe
+    )
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap,
         "outer_memory_guard_active",
         lambda _environ=None: False,
     )
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.sys, "executable", sys.executable)
+    install_module_view(
+        monkeypatch,
+        "sys",
+        sys,
+        pytest_memory_guard_bootstrap,
+        executable=sys.executable,
+    )
     monkeypatch.delenv("MOLT_MEMORY_GUARD_ACTIVE", raising=False)
     monkeypatch.delenv("MOLT_PYTEST_OUTER_GUARD_REEXEC", raising=False)
 
@@ -1257,7 +1318,9 @@ def test_outer_memory_guard_requires_live_repo_memory_guard_ancestor(
     }
 
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "getpid", lambda: 300)
+    install_module_view(
+        monkeypatch, "os", os, pytest_memory_guard_bootstrap, getpid=lambda: 300
+    )
 
     assert (
         pytest_memory_guard_bootstrap.outer_memory_guard_active(
@@ -1308,7 +1371,9 @@ def test_outer_memory_guard_accepts_live_marker_when_parent_chain_breaks(
     }
 
     monkeypatch.setattr(memory_guard, "sample_processes", lambda: samples)
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "getpid", lambda: current_pid)
+    install_module_view(
+        monkeypatch, "os", os, pytest_memory_guard_bootstrap, getpid=lambda: current_pid
+    )
 
     assert (
         pytest_memory_guard_bootstrap.outer_memory_guard_active(
@@ -1579,7 +1644,9 @@ def test_pytest_current_test_writer_ignores_test_monkeypatched_os_replace(
     def forbidden_replace(_src: object, _dst: object) -> None:
         raise AssertionError("guard custody must not use monkeypatched os.replace")
 
-    monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "replace", forbidden_replace)
+    install_module_view(
+        monkeypatch, "os", os, pytest_memory_guard_bootstrap, replace=forbidden_replace
+    )
 
     class Item:
         nodeid = "tests/test_memory_guard_wiring.py::test_unit"

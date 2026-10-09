@@ -10,10 +10,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
+import difflib as _host_difflib
 import importlib.util
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 def _load_module(name, path_text):
@@ -41,7 +41,7 @@ def _atexit_run():
         func(*args, **kwargs)
 
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_atexit_register": _atexit_register,
     "molt_atexit_unregister": _atexit_unregister,
     "molt_atexit_clear": lambda: _callbacks.clear(),
@@ -62,23 +62,7 @@ builtins._molt_intrinsics = {{
     "molt_html_entities_codepoint2name": lambda: {{34: "quot"}},
     "molt_html_entities_name2codepoint": lambda: {{"quot": 34}},
     "molt_html_entities_html5": lambda: {{"quot;": '"'}},
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 atexit_mod = _load_module("molt_test_atexit", {str(STDLIB_ROOT / "atexit.py")!r})
@@ -102,7 +86,12 @@ atexit_mod.unregister(_record)
 atexit_mod.register(_record, "gamma")
 atexit_mod._run_exitfuncs()
 
-matcher = difflib_mod.SequenceMatcher(None, "a", "b")
+# difflib's matcher is pure Python; CPython's difflib is its oracle.
+_pairs = [("a", "b"), ("abcd", "bcde"), ("private", "privately"), ("", "x")]
+_matchers = [
+    (difflib_mod.SequenceMatcher(None, a, b), _host_difflib.SequenceMatcher(None, a, b))
+    for a, b in _pairs
+]
 trace_runner = trace_mod.Trace(count=False, trace=False)
 
 checks = {{
@@ -112,9 +101,13 @@ checks = {{
         and "molt_atexit_register" not in atexit_mod.__dict__
     ),
     "difflib": (
-        matcher.ratio() == 0.5
-        and matcher.get_matching_blocks() == [(0, 0, 1), (1, 1, 0)]
-        and difflib_mod.get_close_matches("alp", ["alpha"]) == ["alpha"]
+        all(
+            ours.ratio() == theirs.ratio()
+            and [tuple(m) for m in ours.get_matching_blocks()]
+            == [tuple(m) for m in theirs.get_matching_blocks()]
+            and ours.get_opcodes() == theirs.get_opcodes()
+            for ours, theirs in _matchers
+        )
         and "molt_difflib_ratio" not in difflib_mod.__dict__
     ),
     "pkgutil": (

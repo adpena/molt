@@ -1,10 +1,15 @@
 """Static analysis tests for nondeterminism sources in the Molt compiler.
 
-Scans compiler source code for patterns that could introduce nondeterminism:
+Scans the packages that produce IR for patterns that could make it
+nondeterministic:
 - Entropy sources: random.*, os.urandom, uuid.*
 - Timestamp leakage: time.time(), datetime.now()
 - Unsafe iteration: bare dict/set iteration used for output ordering
-- id()-based ordering decisions
+- id()-based ordering decisions (anywhere in src/molt)
+
+Custody code outside these packages may use entropy for staging names and
+upload IDs; those never reach compiler output, which
+``tests/determinism/test_ir_determinism.py`` checks by compiling twice.
 """
 
 from __future__ import annotations
@@ -12,22 +17,62 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-FRONTEND_INIT = ROOT / "src" / "molt" / "frontend" / "__init__.py"
 SRC_DIR = ROOT / "src" / "molt"
+# The packages whose code produces IR.
+CODEGEN_PACKAGES = (SRC_DIR / "frontend", SRC_DIR / "compiler_analysis")
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _compiler_source_files() -> list[Path]:
-    """Return all Python source files under src/molt/ that are part of the compiler."""
-    if not SRC_DIR.is_dir():
-        return []
-    return sorted(SRC_DIR.rglob("*.py"))
+def _codegen_source_files() -> list[Path]:
+    """Every Python source file in the packages that produce IR."""
+    missing = [package for package in CODEGEN_PACKAGES if not package.is_dir()]
+    assert not missing, f"codegen packages moved: {missing}"
+    return sorted(
+        path for package in CODEGEN_PACKAGES for path in package.rglob("*.py")
+    )
+
+
+def _findings(
+    files: list[Path],
+    pattern: re.Pattern[str],
+    *,
+    exclude_patterns: list[re.Pattern[str]] | None = None,
+) -> list[str]:
+    return [
+        f"  {path.relative_to(ROOT).as_posix()}:{lineno}: {text}"
+        for path in files
+        for lineno, text in _find_pattern_in_file(
+            path, pattern, exclude_patterns=exclude_patterns
+        )
+    ]
+
+
+def _output_method_lines(
+    path: Path, pattern: re.Pattern[str], *, lookback: int
+) -> list[str]:
+    """Lines matching ``pattern`` without sorted() inside an output method."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    sorted_wrapper = re.compile(r"\bsorted\(")
+    unsafe: list[str] = []
+    for i, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if pattern.search(stripped) and not sorted_wrapper.search(stripped):
+            for j in range(i - 1, max(0, i - lookback), -1):
+                prev = lines[j - 1].strip()
+                if prev.startswith("def "):
+                    if any(kw in prev for kw in _OUTPUT_METHOD_KEYWORDS):
+                        unsafe.append(
+                            f"  {path.relative_to(ROOT).as_posix()}:{i}: {stripped}"
+                        )
+                    break
+    return unsafe
 
 
 def _read_lines(path: Path) -> list[tuple[int, str]]:
@@ -95,6 +140,10 @@ _TIMESTAMP_EXCLUDES = [
     re.compile(r"\bmonotonic\b"),  # monotonic is fine, used for elapsed time
 ]
 
+# Only methods that build the final output structure; Python 3.7+ dicts keep
+# insertion order, so general emit helpers are deterministic.
+_OUTPUT_METHOD_KEYWORDS = ("to_json", "serialize", "dump")
+
 # id() used in ordering (e.g., sorted(things, key=id) or comparisons)
 _ID_ORDERING_PATTERN = re.compile(
     r"""
@@ -113,196 +162,66 @@ _ID_ORDERING_PATTERN = re.compile(
 
 
 class TestEntropySourceAudit:
-    """Verify no entropy sources exist in compiler code paths."""
+    """Verify no entropy sources exist where IR is produced."""
 
-    def test_no_entropy_in_frontend(self) -> None:
-        """Frontend compiler must not use random/uuid/urandom."""
-        if not FRONTEND_INIT.exists():
-            pytest.skip("Frontend __init__.py not found")
-
-        findings = _find_pattern_in_file(FRONTEND_INIT, _ENTROPY_PATTERN)
-        assert not findings, (
-            f"Entropy sources found in {FRONTEND_INIT.name}:\n"
-            + "\n".join(f"  line {n}: {t}" for n, t in findings)
-        )
-
-    def test_no_entropy_in_compiler_sources(self) -> None:
-        """No compiler source file should use entropy sources in codegen paths.
-
-        We exclude the CLI package and other non-codegen modules where
-        uuid/random usage is legitimate (e.g., temp file naming, upload IDs).
-        """
-        # Files where entropy usage is acceptable (not in codegen paths)
-        _ENTROPY_ALLOWLIST = {
-            "src/molt/cli/__init__.py",  # temp files, upload IDs
-            "src/molt/cli/arg_helpers.py",  # PYTHONHASHSEED=random opt-out parsing
-            "src/molt/cli/deps.py",  # temporary vendor worktrees
-            "src/molt/cli/wasm.py",  # generated WASI random_get host shim text
-            "src/molt/dx.py",  # write-probe temp names
-            "src/molt/net.py",  # network request IDs
-            "src/molt/asgi.py",  # request handling
-            "src/molt/gpu/generate.py",  # sampling for text generation
-            "demos/tinygrad/nl_template_filler.py",  # invoice ID generation
-            "demos/tinygrad/speculative.py",  # sampling in speculative decoding
-            "demos/tinygrad/template_extractor.py",  # unique template IDs
-        }
-
-        all_findings: list[tuple[str, int, str]] = []
-        for src in _compiler_source_files():
-            rel = src.relative_to(ROOT)
-            rel_str = rel.as_posix()
-            if "test" in rel_str.lower():
-                continue
-            if rel_str in _ENTROPY_ALLOWLIST:
-                continue
-            findings = _find_pattern_in_file(src, _ENTROPY_PATTERN)
-            for lineno, text in findings:
-                all_findings.append((rel_str, lineno, text))
-
-        assert not all_findings, (
-            "Entropy sources found in compiler code:\n"
-            + "\n".join(f"  {f}:{n}: {t}" for f, n, t in all_findings)
+    def test_no_entropy_in_codegen_sources(self) -> None:
+        findings = _findings(_codegen_source_files(), _ENTROPY_PATTERN)
+        assert not findings, "Entropy sources found in codegen code:\n" + "\n".join(
+            findings
         )
 
 
 class TestTimestampLeakage:
     """Verify no timestamps leak into compiler output."""
 
-    def test_no_output_timestamps_in_frontend(self) -> None:
-        """Frontend must not embed timestamps into IR output.
-
-        We allow time.monotonic() for performance measurement since it doesn't
-        leak into output.
-        """
-        if not FRONTEND_INIT.exists():
-            pytest.skip("Frontend __init__.py not found")
-
-        findings = _find_pattern_in_file(
-            FRONTEND_INIT,
+    def test_no_output_timestamps_in_codegen_sources(self) -> None:
+        """time.monotonic() and timing-context lines stay allowed."""
+        findings = _findings(
+            _codegen_source_files(),
             _TIMESTAMP_PATTERN,
             exclude_patterns=_TIMESTAMP_EXCLUDES,
         )
         assert not findings, (
-            f"Timestamp usage found in {FRONTEND_INIT.name} "
-            f"(may leak into output):\n"
-            + "\n".join(f"  line {n}: {t}" for n, t in findings)
+            "Timestamp usage found in codegen code (may leak into output):\n"
+            + "\n".join(findings)
         )
 
 
 class TestDictSetIterationSafety:
-    """Verify that dict/set iteration in the frontend doesn't leak ordering."""
+    """Verify that dict/set iteration doesn't leak ordering into output."""
 
     def test_no_unsafe_dict_iteration_for_output(self) -> None:
-        """Check that dict iteration in to_json/serialize/dump methods uses sorted().
-
-        We look for patterns like `for k in self.<dict_attr>` in the frontend
-        that are NOT wrapped in sorted(). Only flags methods that directly
-        produce the final output structure (to_json, serialize, dump), not
-        general emit helpers where dict insertion order is deterministic in
-        Python 3.7+.
-        """
-        if not FRONTEND_INIT.exists():
-            pytest.skip("Frontend __init__.py not found")
-
-        content = FRONTEND_INIT.read_text(encoding="utf-8")
-        lines = content.splitlines()
-
-        # Pattern: for <var> in self.<something>.items() or self.<something>
-        # without sorted() wrapping
+        """Dict iteration in to_json/serialize/dump methods uses sorted()."""
         dict_iter_pattern = re.compile(
             r"for\s+\w+(?:\s*,\s*\w+)?\s+in\s+self\.\w+(?:\.items\(\)|\.keys\(\)|\.values\(\)|\b)"
         )
-        sorted_wrapper = re.compile(r"\bsorted\(")
-
-        # Only flag truly output-producing methods (not general emit helpers,
-        # since Python 3.7+ dicts maintain insertion order deterministically).
-        _OUTPUT_METHOD_KEYWORDS = ("to_json", "serialize", "dump")
-
-        unsafe_lines: list[tuple[int, str]] = []
-        for i, line in enumerate(lines, 1):
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                continue
-            if dict_iter_pattern.search(stripped):
-                if not sorted_wrapper.search(stripped):
-                    for j in range(i - 1, max(0, i - 50), -1):
-                        prev = lines[j - 1].strip()
-                        if prev.startswith("def "):
-                            if any(kw in prev for kw in _OUTPUT_METHOD_KEYWORDS):
-                                unsafe_lines.append((i, stripped))
-                            break
-
-        assert not unsafe_lines, (
-            "Unsorted dict iteration in output-producing methods:\n"
-            + "\n".join(f"  line {n}: {t}" for n, t in unsafe_lines)
+        unsafe = [
+            line
+            for path in _codegen_source_files()
+            for line in _output_method_lines(path, dict_iter_pattern, lookback=50)
+        ]
+        assert not unsafe, (
+            "Unsorted dict iteration in output-producing methods:\n" + "\n".join(unsafe)
         )
 
     def test_no_set_iteration_for_output(self) -> None:
-        """Verify that set iteration isn't used for output ordering in frontend.
-
-        We only flag set iteration that directly feeds into output-producing
-        methods (to_json, serialize, dump). Set iteration used internally for
-        building analysis dicts (where iteration order doesn't affect values,
-        e.g., max/min aggregation) is safe.
-        """
-        if not FRONTEND_INIT.exists():
-            pytest.skip("Frontend __init__.py not found")
-
-        content = FRONTEND_INIT.read_text(encoding="utf-8")
-        lines = content.splitlines()
-
+        """Set iteration in to_json/serialize/dump methods uses sorted()."""
         set_iter_pattern = re.compile(r"for\s+\w+\s+in\s+(?:self\.\w+_set|set\()")
-        sorted_wrapper = re.compile(r"\bsorted\(")
-        _OUTPUT_METHOD_KEYWORDS = ("to_json", "serialize", "dump")
-
-        unsafe_lines: list[tuple[int, str]] = []
-        for i, line in enumerate(lines, 1):
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                continue
-            if set_iter_pattern.search(stripped) and not sorted_wrapper.search(
-                stripped
-            ):
-                # Only flag if inside an output-producing method
-                for j in range(i - 1, max(0, i - 80), -1):
-                    prev = lines[j - 1].strip()
-                    if prev.startswith("def "):
-                        if any(kw in prev for kw in _OUTPUT_METHOD_KEYWORDS):
-                            unsafe_lines.append((i, stripped))
-                        break
-
-        assert not unsafe_lines, (
-            "Unsorted set iteration in output-producing methods:\n"
-            + "\n".join(f"  line {n}: {t}" for n, t in unsafe_lines)
+        unsafe = [
+            line
+            for path in _codegen_source_files()
+            for line in _output_method_lines(path, set_iter_pattern, lookback=80)
+        ]
+        assert not unsafe, (
+            "Unsorted set iteration in output-producing methods:\n" + "\n".join(unsafe)
         )
 
 
 class TestIdOrdering:
     """Verify that id() is not used for ordering decisions."""
 
-    def test_no_id_ordering_in_frontend(self) -> None:
-        """id() must not be used as a sort key or comparison for ordering."""
-        if not FRONTEND_INIT.exists():
-            pytest.skip("Frontend __init__.py not found")
-
-        findings = _find_pattern_in_file(FRONTEND_INIT, _ID_ORDERING_PATTERN)
-        assert not findings, (
-            f"id()-based ordering found in {FRONTEND_INIT.name}:\n"
-            + "\n".join(f"  line {n}: {t}" for n, t in findings)
-        )
-
     def test_no_id_ordering_in_compiler_sources(self) -> None:
-        """No compiler source should use id() for ordering."""
-        all_findings: list[tuple[str, int, str]] = []
-        for src in _compiler_source_files():
-            rel = src.relative_to(ROOT)
-            if "test" in str(rel).lower():
-                continue
-            findings = _find_pattern_in_file(src, _ID_ORDERING_PATTERN)
-            for lineno, text in findings:
-                all_findings.append((str(rel), lineno, text))
-
-        assert not all_findings, (
-            "id()-based ordering found in compiler code:\n"
-            + "\n".join(f"  {f}:{n}: {t}" for f, n, t in all_findings)
+        findings = _findings(sorted(SRC_DIR.rglob("*.py")), _ID_ORDERING_PATTERN)
+        assert not findings, "id()-based ordering found in compiler code:\n" + (
+            "\n".join(findings)
         )

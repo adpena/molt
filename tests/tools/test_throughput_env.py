@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
+from molt.dx import GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV
 from tests.native_process_guard import run_native_test_process
 
 
@@ -58,6 +59,8 @@ def test_run_context_env_prefers_external_artifact_root() -> None:
         "MOLT_DIFF_TMPDIR",
         "UV_CACHE_DIR",
         "TMPDIR",
+        # Hosted CI custody owns every root; this case is the developer host.
+        GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
     ):
         env.pop(key, None)
     env.update(

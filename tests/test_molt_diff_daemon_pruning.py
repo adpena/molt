@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import pytest
+
 import importlib.util
 from pathlib import Path
-from tests.process_guard_common import install_module_os_view
+from tests.process_guard_common import install_module_os_view, install_module_view
 import sys
 
 from molt import backend_daemon_custody as custody
 from molt.dx import session_artifact_component
+import subprocess
+import os
+
+# These tests fake process data the session sentinel also reads.
+pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -64,7 +71,9 @@ def test_molt_diff_backend_daemon_scan_failure_fails_closed(monkeypatch) -> None
     def raise_timeout(*args, **kwargs):
         raise module.subprocess.TimeoutExpired(cmd=["ps"], timeout=2.0)
 
-    monkeypatch.setattr(module.subprocess, "run", raise_timeout)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, module, run=raise_timeout
+    )
 
     assert module._list_backend_daemon_processes() == []
 
@@ -228,13 +237,11 @@ def test_molt_diff_build_helper_pruning_preserves_codex_protected_group(
         reason="stale_diff_build_helper",
     )
 
-    monkeypatch.setattr(module.memory_guard.os, "getpid", lambda: 999)
+    install_module_view(monkeypatch, "os", os, module.memory_guard, getpid=lambda: 999)
     monkeypatch.setattr(module.memory_guard, "_safe_getpgrp", lambda: None)
     monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
     monkeypatch.setattr(
-        module.memory_guard.os,
-        "kill",
-        lambda pid, sig: sent.append((pid, sig)),
+        module.memory_guard.os, "kill", lambda pid, sig: sent.append((pid, sig))
     )
 
     def capture_event(process, actions):

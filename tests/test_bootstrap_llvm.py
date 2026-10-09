@@ -1,5 +1,5 @@
 from __future__ import annotations
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import install_module_view, run_guarded_test_process
 
 import hashlib
 import io
@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -15,6 +16,7 @@ import time
 from types import SimpleNamespace
 import tomllib
 import uuid
+import platform
 
 import pytest
 from tests.process_guard_common import start_owned_test_process
@@ -97,7 +99,9 @@ def test_default_llvm_targets_fail_closed_for_unknown_architecture() -> None:
 def test_explicit_targets_parse_before_unknown_host_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(bootstrap_llvm.platform, "machine", lambda: "mystery-cpu")
+    install_module_view(
+        monkeypatch, "platform", platform, bootstrap_llvm, machine=lambda: "mystery-cpu"
+    )
     monkeypatch.setattr(
         bootstrap_llvm,
         "verify_llvm_toolchain_prefix",
@@ -127,24 +131,27 @@ def test_explicit_targets_parse_before_unknown_host_default(
     )
 
 
+@pytest.mark.usefixtures("developer_host_context")
 def test_managed_paths_share_checkout_family_custody(tmp_path: Path) -> None:
+    # A checkout family: the main checkout and a worktree beside it. Where CI
+    # checks this repository out is not such a family.
+    family = tmp_path / "Molt"
+    main_checkout = family / "molt-src"
+    worktree = family / "worktrees" / "feature"
+    main_checkout.mkdir(parents=True)
+    worktree.mkdir(parents=True)
     pin = bootstrap_llvm.required_llvm_backend_pin(ROOT)
     assert pin is not None
-    family = tmp_path / "Molt"
-    checkout = family / "molt-src"
-    worktree = family / "worktrees" / "lane"
-    checkout.mkdir(parents=True)
-    worktree.mkdir(parents=True)
-    paths = managed_llvm_paths(checkout, pin)
+
+    paths = managed_llvm_paths(main_checkout, pin)
     worktree_paths = managed_llvm_paths(worktree, pin)
+
     independent = tmp_path / "independent-checkout"
     independent.mkdir()
     assert managed_llvm_paths(independent, pin) != paths
-
     assert paths == worktree_paths
-    assert paths.root.name == "toolchains"
-    assert paths.root.parent.name == "target-root"
-    assert checkout not in paths.prefix.parents
+    assert paths.root == family.resolve() / "target-root" / "toolchains"
+    assert main_checkout.resolve() not in paths.prefix.parents
 
 
 def test_native_backend_inkwell_mapping_matches_arch_contract_exactly() -> None:
@@ -1113,10 +1120,12 @@ def test_llvm_alone_requires_atl_after_shared_msvc_activation(tmp_path):
 def test_resource_preflight_rejects_insufficient_disk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        bootstrap_llvm.shutil,
-        "disk_usage",
-        lambda _path: SimpleNamespace(free=10 * 1024**3),
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        bootstrap_llvm,
+        disk_usage=lambda _path: SimpleNamespace(free=10 * 1024**3),
     )
 
     with pytest.raises(SystemExit, match="only 10.0 GiB is available"):
@@ -1130,10 +1139,12 @@ def test_resource_preflight_rejects_insufficient_disk(
 def test_resource_preflight_rejects_insufficient_memory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        bootstrap_llvm.shutil,
-        "disk_usage",
-        lambda _path: SimpleNamespace(free=100 * 1024**3),
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        bootstrap_llvm,
+        disk_usage=lambda _path: SimpleNamespace(free=100 * 1024**3),
     )
     monkeypatch.setattr(
         bootstrap_llvm,

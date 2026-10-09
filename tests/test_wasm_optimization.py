@@ -19,7 +19,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
+
+from molt.toolchain_identity import stable_regular_file_identity
 from molt.wasm_artifact import WASM_SECTION_NAMES
 from molt.wasm_optimization import WASM_OPT_LEVELS, wasm_opt_pipeline
 from molt.wasm_optimizer_identity import (
@@ -32,15 +33,16 @@ from molt.wasm_optimizer_identity import (
     validate_wasm_optimizer_attestation,
     wasm_optimizer_pipeline_authority_sha256,
 )
-from molt.toolchain_identity import stable_regular_file_identity
+from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
+from tests.process_guard_common import install_module_view
 
 ROOT = Path(__file__).resolve().parents[1]
 
 # Import project tools (added to path so they are importable)
 sys.path.insert(0, str(ROOT / "tools"))
-from wasm_optimize import _export_names, find_wasm_opt, optimize  # noqa: E402
 from wasm_link_edit import _standard_section_order_error  # noqa: E402
 from wasm_metrics import wasm_metrics  # noqa: E402
+from wasm_optimize import _export_names, find_wasm_opt, optimize  # noqa: E402
 from wasm_size_audit import parse_sections  # noqa: E402
 
 
@@ -263,7 +265,9 @@ class TestWasmOptReduction:
         expected.write_bytes(b"manifest-owned-binaryen")
         monkeypatch.delenv("MOLT_WASM_OPT", raising=False)
         monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path))
-        monkeypatch.setattr(identity.shutil, "which", lambda _name: None)
+        install_module_view(
+            monkeypatch, "shutil", shutil, identity, which=lambda _name: None
+        )
         asset = SimpleNamespace(
             archive_root="binaryen-version_130",
             executable=f"bin/{executable_name}",
@@ -297,7 +301,9 @@ class TestWasmOptReduction:
         )
         monkeypatch.delenv("MOLT_WASM_OPT", raising=False)
         monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path))
-        monkeypatch.setattr(identity.shutil, "which", lambda _name: None)
+        install_module_view(
+            monkeypatch, "shutil", shutil, identity, which=lambda _name: None
+        )
         monkeypatch.setattr(identity, "binaryen_host_asset", lambda _root: asset)
 
         assert identity.find_wasm_opt() is None
@@ -447,18 +453,20 @@ class TestWasmOptReduction:
         stdout: str,
         stderr: str,
     ) -> None:
-        import tools.wasm_optimize as mod
         import molt.binaryen_identity as binaryen_identity
+        import tools.wasm_optimize as mod
 
         source = tmp_path / "input.wasm"
         source.write_bytes(_exported_func_module("kept"))
         executable = tmp_path / "wasm-opt"
         executable.write_bytes(b"binaryen-test-build")
         monkeypatch.setattr(mod, "find_wasm_opt", lambda: str(executable))
-        monkeypatch.setattr(
-            binaryen_identity.subprocess,
-            "run",
-            lambda cmd, **_kwargs: subprocess.CompletedProcess(
+        install_module_view(
+            monkeypatch,
+            "subprocess",
+            subprocess,
+            binaryen_identity,
+            run=lambda cmd, **_kwargs: subprocess.CompletedProcess(
                 cmd, returncode, stdout, stderr
             ),
         )

@@ -13,6 +13,7 @@ import pytest
 
 from molt import python_native_locations as locations
 from molt.python_identity_common import PythonEnvironmentIdentityError
+from tests.process_guard_common import install_module_view
 
 
 def _mock_dyld(monkeypatch: pytest.MonkeyPatch, images: tuple[Path, ...]) -> None:
@@ -126,7 +127,7 @@ def _mock_linux(
     monkeypatch.setattr(Path, "open", open_path)
     monkeypatch.setattr(Path, "resolve", resolve_path)
     # Windows runs these same synthetic tests without a native os.makedev.
-    monkeypatch.setattr(os, "makedev", make_device, raising=False)
+    install_module_view(monkeypatch, "os", os, locations, makedev=make_device)
 
 
 @pytest.mark.parametrize("named_main", [False, True])

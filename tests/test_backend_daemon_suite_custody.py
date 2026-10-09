@@ -14,7 +14,14 @@ from molt.exact_json import write_exact
 from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 from tools import memory_guard
 
-from tests.process_guard_common import run_custody_subject_process
+from tests.process_guard_common import (
+    install_module_os_view,
+    install_module_view,
+    run_custody_subject_process,
+)
+
+# These tests fake process data the session sentinel also reads.
+pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
 
 
 def sample(pid, parent, group, born, command="owned worker"):
@@ -328,7 +335,7 @@ def test_fork_descriptor_cleanup_closes_both_pipe_ends_without_unlock(monkeypatc
     closed = []
     monkeypatch.setattr(suite, "_LEASE_PIPE_FDS", {17, 19})
     monkeypatch.setattr(suite, "_LEASE_DESCRIPTOR_MUTEX", threading.Lock())
-    monkeypatch.setattr(suite.os, "close", closed.append)
+    install_module_view(monkeypatch, "os", os, suite, close=closed.append)
     monkeypatch.setattr(
         suite, "_release_file_lock", lambda _lock: pytest.fail("parent lease unlocked")
     )
@@ -348,8 +355,12 @@ def test_inherited_python_lease_cannot_teardown_parent(tmp_path, monkeypatch):
         17,
         cast(subprocess.Popen, object()),
     )
-    monkeypatch.setattr(
-        suite.os, "close", lambda _fd: pytest.fail("parent pipe closed")
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        suite,
+        close=lambda _fd: pytest.fail("parent pipe closed"),
     )
     active.close()
     assert active.write_fd == 17
@@ -530,6 +541,9 @@ def test_dead_leader_never_claims_unobserved_worker_custody(
 
 
 def test_birth_probe_snapshot_error_is_unavailable(monkeypatch):
+    # POSIX reads the native birth time; the process snapshot serves the other
+    # hosts, so select that path here on every host.
+    install_module_os_view(monkeypatch, daemon, name="nt")
     monkeypatch.setattr(daemon, "_load_memory_guard_module", lambda: memory_guard)
 
     def fail():
@@ -839,7 +853,7 @@ def test_child_pipe_cleanup_marks_protocol_and_restores(monkeypatch):
             sys.audit("os.fork")
         closed.append(fd)
 
-    monkeypatch.setattr(suite.os, "close", close)
+    install_module_view(monkeypatch, "os", os, suite, close=close)
     suite._close_inherited_lease_descriptors()
     assert sorted(closed) == [17, 19]
     assert suite._LEASE_PIPE_FDS == set()
@@ -865,7 +879,7 @@ def test_child_pipe_exception_attempts_all_copies_and_fails_custody_closed(
         if fd == 17:
             raise error_type("injected inherited pipe close failure")
 
-    monkeypatch.setattr(suite.os, "close", close)
+    install_module_view(monkeypatch, "os", os, suite, close=close)
     suite._close_inherited_lease_descriptors()
     assert sorted(attempts) == [17, 19]
     assert suite._LEASE_PIPE_FDS == set()
@@ -932,7 +946,7 @@ def test_dead_leader_uses_real_individual_birth_gate_never_group_signal(
         signals.append((pid, sig))
         samples.pop(pid)
 
-    monkeypatch.setattr(process_custody.os, "kill", kill)
+    install_module_view(monkeypatch, "os", os, process_custody, kill=kill)
     monkeypatch.setattr(
         process_custody.os,
         "killpg",

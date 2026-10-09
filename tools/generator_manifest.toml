@@ -39,6 +39,14 @@
 # The meta-gate enforces 2/3/4/5; rustc + the closed-domain auditor enforce 6.
 #
 # Field contract (per [[generator]] row):
+#   outputs         list  — the files the generator writes. The audit treats
+#                           each as generated and skips it.
+#   output_family   str   — instead of outputs, for a generator whose files are
+#                           not fixed and sit among hand-written sources;
+#                           generated_outputs() enumerates them at run time.
+#                           The audit does not treat them as generated, so the
+#                           debt they record stays counted. A row declares
+#                           exactly one of a non-empty outputs or output_family.
 #   check_mode      bool  — the generator supports `--check`. MUST be true for a
 #                           non-discovery authority (the meta-gate fails otherwise).
 #   ci_checkable    bool  — default true. false ⇒ the source is not reproducible
@@ -472,6 +480,21 @@ ci_checkable = false
 ci_skip_reason = "needs live CPython 3.12/3.13/3.14 interpreters absent from the docs-gates CI job; baseline is an upstream snapshot, not in-repo source"
 idempotent = true
 sync_test_reason = "interpreter-gated upstream snapshot; --check runs only where all three CPython interpreters are present"
+closed_domains = []
+discovery_only = false
+
+[[generator]]
+tool = "tools/gen_stdlib_stubs.py"
+outputs = []
+# A stub is an admitted parity gap: the structural audit counts it, and
+# lowering the module replaces the file, so the set changes with every lowering.
+output_family = "src/molt/stdlib stub files (every file carrying gen_stdlib_stubs.STUB_MARKER, plus a stub for each union module Molt lacks)"
+source = "tools/stdlib_module_union.py + tools/generator_io.py"
+upstream_generators = ["tools/gen_stdlib_module_union.py"]
+check_mode = true
+check_command = "tools/gen_stdlib_stubs.py --check"
+idempotent = true
+sync_test = "tests/test_stdlib_stubs.py"
 closed_domains = []
 discovery_only = false
 

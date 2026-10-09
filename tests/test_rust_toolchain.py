@@ -2,6 +2,7 @@ import os
 
 import pytest
 from pathlib import Path
+import sys
 
 from molt import rust_toolchain
 
@@ -13,6 +14,7 @@ from molt.rust_toolchain import (
     rustc_host,
     rustc_printed_sysroot,
 )
+from tests.process_guard_common import install_module_view
 
 
 @pytest.mark.parametrize("cargo_home", [None, "", "relative-cargo", "~/literal-cargo"])
@@ -252,7 +254,7 @@ def test_direct_toolchain_runs_get_rustups_library_path_on_macos(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rustc, library = _toolchain(tmp_path)
-    monkeypatch.setattr(rust_toolchain.sys, "platform", "darwin")
+    install_module_view(monkeypatch, "sys", sys, rust_toolchain, platform="darwin")
     env = rust_toolchain.rust_toolchain_library_environment(rustc, {})
     entries = env["DYLD_FALLBACK_LIBRARY_PATH"].split(os.pathsep)
     # The toolchain lib comes first, then dyld's own defaults stay searchable.
@@ -270,7 +272,7 @@ def test_direct_toolchain_library_path_is_macos_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rustc, _library = _toolchain(tmp_path)
-    monkeypatch.setattr(rust_toolchain.sys, "platform", "linux")
+    install_module_view(monkeypatch, "sys", sys, rust_toolchain, platform="linux")
     assert rust_toolchain.rust_toolchain_library_environment(rustc, {}) == {}
 
 

@@ -80,7 +80,7 @@ def test_dead_code_insertion_equivalence(program: str):
     result = runner.compare(program, transformed)
 
     if result.error:
-        pytest.skip(f"Build/run error: {result.error}")
+        pytest.fail(f"Build/run error: {result.error}")
 
     assert result.equivalent, (
         f"Output differs after dead code insertion!\n"

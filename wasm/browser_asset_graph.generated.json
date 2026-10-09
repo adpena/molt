@@ -56,7 +56,7 @@
         "runtime_lifecycle.js"
       ],
       "role": "browser",
-      "sha256": "10369c9216bfc1d819e46905f0341250067d3d46c5b498c4d4cad24ea126316a",
+      "sha256": "bd8ecb652c74f2e52a8c91c0b6e4d516b59f013ac5a608d06c6ee0a85cdfe74d",
       "source_type": "module"
     },
     "browser_gpu_dispatch.js": {
@@ -151,7 +151,7 @@
         "runtime_lifecycle.js"
       ],
       "role": "browser",
-      "sha256": "234d2375be5441bbeb9cf679fd29fad38fc3f522350b3387aee600ccb8404206",
+      "sha256": "72e3492894c33d7b30142e4caf07cfcc4ecd4199f24c0e2a714d20eed858e00a",
       "source_type": "module"
     },
     "browser_target_features.js": {
@@ -207,7 +207,7 @@
         "callable_table_abi_generated.js"
       ],
       "role": "shared",
-      "sha256": "b3f5c5d147079fac92692ec243423aaeeef15a610e437f8c89dcb61745547b82",
+      "sha256": "4034f78c090a70f174019038434f353a3149a347b50180655ef1652e3d16c04c",
       "source_type": "script"
     },
     "molt_vfs_browser.js": {
@@ -248,7 +248,7 @@
         {
           "column": 5,
           "kind": "require",
-          "line": 36,
+          "line": 37,
           "request": "./loader_bridge.js",
           "target": "loader_bridge.js"
         },
@@ -318,7 +318,7 @@
         {
           "column": 15,
           "kind": "require",
-          "line": 51,
+          "line": 52,
           "request": "node:wasi",
           "target": "node:wasi"
         },
@@ -339,21 +339,21 @@
         {
           "column": 37,
           "kind": "require",
-          "line": 45,
+          "line": 46,
           "request": "undici",
           "target": "undici"
         },
         {
           "column": 17,
           "kind": "require",
-          "line": 54,
+          "line": 55,
           "request": "wasi",
           "target": "wasi"
         },
         {
           "column": 5,
           "kind": "require",
-          "line": 71,
+          "line": 72,
           "request": "worker_threads",
           "target": "worker_threads"
         }
@@ -365,7 +365,7 @@
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "2122af25b55afcd5908426763f49ec41cf7339ca2eccfe50a63c66872ee73e43",
+      "sha256": "3dc87826572a9b8ab5ba25d2b054d738de35b986fbebe0d571e201f614e50167",
       "source_type": "script"
     },
     "runtime_lifecycle.js": {
@@ -427,7 +427,7 @@
     }
   },
   "scanner": {
-    "package_lock_sha256": "48aa8d11316e983cc93be2cfe319503092bed17b4d311290bd8c60a6a70051bc",
+    "package_lock_sha256": "7d8e66491c259a119ce86ff6d67bf5ac74050b2b91526c3cd78ffc9d1d7d207b",
     "path": "tools/browser_asset_graph/scan.mjs",
     "sha256": "346a692737424515c8e1350590c028aefba400cfa626512c8f58778211199c05"
   },

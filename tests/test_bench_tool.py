@@ -6,11 +6,13 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+import platform
 
 import molt.dx as molt_dx
 import pytest
 
 from tests.native_process_guard import run_native_test_process
+from tests.process_guard_common import install_module_view
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -813,7 +815,9 @@ def test_bench_cli_passes_molt_profile(monkeypatch, tmp_path: Path) -> None:
     def fail_platform_platform() -> str:
         raise AssertionError("platform.platform() shells out on Windows")
 
-    monkeypatch.setattr(bench_tool.platform, "platform", fail_platform_platform)
+    install_module_view(
+        monkeypatch, "platform", platform, bench_tool, platform=fail_platform_platform
+    )
     monkeypatch.setattr(
         bench_tool,
         "write_json",

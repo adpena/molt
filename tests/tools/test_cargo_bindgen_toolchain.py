@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
+import sys
 
 import pytest
 
@@ -17,6 +18,7 @@ from tools.proof_queue_pkg import (
     supervisor_custody,
     toolchain_capture,
 )
+from tests.process_guard_common import install_module_view
 
 
 def _tool(root: Path, name: str) -> Path:
@@ -217,7 +219,7 @@ def test_failed_implicit_selector_is_retained_without_requiring_unused_capabilit
 def test_usable_driver_does_not_probe_unused_macos_selector(tmp_path, monkeypatch):
     driver = _tool(tmp_path, "clang")
     _tool(tmp_path, "xcrun")
-    monkeypatch.setattr(toolchain_capture.sys, "platform", "darwin")
+    install_module_view(monkeypatch, "sys", sys, toolchain_capture, platform="darwin")
     _no_processes(monkeypatch)
     updates, _ = toolchain_capture.select_cargo_build_tool_environment(
         cwd=tmp_path, env={"PATH": str(tmp_path)}

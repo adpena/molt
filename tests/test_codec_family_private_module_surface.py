@@ -14,30 +14,11 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 def _probe_source(module_name: str, module_path: Path) -> str:
     return f"""
-import builtins
 import importlib.util
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
-builtins._molt_intrinsics = {{
-    "molt_capabilities_has": lambda _name=None: True,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+install_registry()
 
 spec = importlib.util.spec_from_file_location({module_name!r}, {str(module_path)!r})
 assert spec is not None and spec.loader is not None

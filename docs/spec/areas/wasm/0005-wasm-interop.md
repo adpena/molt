@@ -26,8 +26,8 @@ world json-service {
 }
 ```
 
-### 2.2 Runtime intrinsics WIT
-Core runtime imports are defined in `wit/molt-runtime.wit` and consumed by the WASM backend. This is the stable contract for NaN-boxed values, async/task hooks, and scalar parsing.
+### 2.2 Runtime imports
+`runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` declares every core runtime import: its name, its WebAssembly type and its runtime export. `tools/gen_wasm_abi.py` generates the backend tables and the host metadata from it. A host converts each import's arguments and result by the type of the runtime export it calls. A Component Model world for these imports will be generated from the same manifest; no hand-written WIT file defines them.
 
 ## 3. Calling Convention (Molt-to-WASM)
 1.  **Serialization**: Molt serializes Python objects to a linear memory buffer (for complex types) or passes primitives directly.

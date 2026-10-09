@@ -12,23 +12,10 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 _PROBE = f"""
 import importlib.util
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    if name != "molt_capabilities_has":
-        raise RuntimeError(f"intrinsic unavailable: {{name}}")
-    value = lambda _name=None: True
-    if namespace is not None:
-        namespace[name] = value
-    return value
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+install_registry()
 
 
 def _load_module(name, path_text):

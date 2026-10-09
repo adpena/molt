@@ -10,10 +10,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 def _load_module(name, path_text):
@@ -25,7 +24,7 @@ def _load_module(name, path_text):
     return module
 
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_colorsys_rgb_to_hls": lambda r, g, b: (0.1, 0.2, 0.3),
     "molt_colorsys_hls_to_rgb": lambda h, l, s: (0.4, 0.5, 0.6),
     "molt_colorsys_rgb_to_hsv": lambda r, g, b: (0.7, 0.8, 0.9),
@@ -49,23 +48,7 @@ builtins._molt_intrinsics = {{
     "molt_fnmatch_translate": lambda pat: f"re:{{pat}}",
     "molt_gettext_gettext": lambda message: f"T:{{message}}",
     "molt_gettext_ngettext": lambda singular, plural, n: singular if int(n) == 1 else plural,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 colorsys_mod = _load_module("molt_test_colorsys", {str(STDLIB_ROOT / "colorsys.py")!r})

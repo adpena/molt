@@ -12,6 +12,7 @@ import pytest
 
 from molt import backend_daemon_custody as daemon
 from tools.memory_guard_core import process_model as model
+from tests.process_guard_common import install_module_view
 
 
 @pytest.mark.parametrize(
@@ -54,7 +55,7 @@ def test_linux_unknown_or_malformed_argv_is_unavailable(tmp_path, raw):
 
 
 def test_authoritative_argv_probe_rejects_changed_birth(monkeypatch):
-    monkeypatch.setattr(model.sys, "platform", "linux")
+    install_module_view(monkeypatch, "sys", sys, model, platform="linux")
     births = iter([(1, 12, 100, "molt-backend"), (1, 12, 101, "molt-backend")])
     monkeypatch.setattr(model, "_linux_proc_stat_identity", lambda *_: next(births))
     monkeypatch.setattr(

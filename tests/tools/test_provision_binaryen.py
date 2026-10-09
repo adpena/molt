@@ -20,6 +20,7 @@ from molt.binaryen_identity import (
 )
 from molt.binaryen_toolchain import BinaryenHostAsset
 from tools import provision_binaryen as provisioner
+from tests.process_guard_common import install_module_view
 
 
 _ARCHIVE_ROOT = "binaryen-version_130"
@@ -630,7 +631,9 @@ def test_version_probe_rejects_executable_replacement(
 
     # Both source versions are safe to discriminate offline: the preserved
     # donor's raw call and the reconciled shared boundary are mocked here.
-    monkeypatch.setattr(binaryen_identity.subprocess, "run", completed)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, binaryen_identity, run=completed
+    )
     monkeypatch.setattr(
         binaryen_identity, "run_completed_command", completed, raising=False
     )

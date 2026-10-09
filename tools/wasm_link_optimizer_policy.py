@@ -21,6 +21,7 @@ from molt.cli.wasm_link_cache import (
     _wasm_link_cache_entry,
 )
 from molt.cli.python_source_closure import local_python_import_closure
+from molt.exact_json import canonical_json_sha256
 from molt.wasm_optimization import wasm_link_policy
 from molt.wasm_optimizer_identity import (
     WasmOptimizerExecutableIdentity,
@@ -43,8 +44,8 @@ from wasm_optimize import optimize as optimize_wasm
 
 TOOLS_ROOT = Path(__file__).resolve().parent
 
-_TREE_SHAKE_RUNTIME_CACHE_SCHEMA = "runtime-tree-shake-v7"
-_SPLIT_APP_OPTIMIZE_CACHE_SCHEMA = "split-app-optimize-v6"
+_TREE_SHAKE_RUNTIME_CACHE_SCHEMA = "runtime-tree-shake-v8"
+_SPLIT_APP_OPTIMIZE_CACHE_SCHEMA = "split-app-optimize-v7"
 _WASM_LINK_CACHE_METRIC_SUFFIXES = (
     "requests",
     "hits",
@@ -171,6 +172,59 @@ def _wasm_facts_cache_authority_digest(
     return provider_identity
 
 
+def _wasm_link_cache_key(schema: str, components: Mapping[str, object]) -> str:
+    """Hash named key components as canonical JSON, the final-link encoding.
+
+    JSON keeps every component's boundary, so no two component sets share a
+    key; bytes enter as their SHA-256.
+    """
+    return canonical_json_sha256({"schema": schema, "components": dict(components)})
+
+
+def _report_wasm_link_cache_miss(
+    label: str, status: str, key: str, components: Mapping[str, object]
+) -> None:
+    """Name each key component's digest, so two misses show what differs."""
+    detail = ", ".join(
+        f"{name} {canonical_json_sha256(value)[:12]}"
+        for name, value in sorted(components.items())
+    )
+    print(f"{label} cache {status}: key {key[:16]} ({detail})", file=sys.stderr)
+
+
+def _split_app_optimize_cache_components(
+    *,
+    app_data: bytes,
+    reference_data: bytes | None,
+    optimize: bool,
+    optimize_level: str,
+    contract_keep_set: set[str],
+    facts_authority_digest: str,
+    optimizer_identity: WasmOptimizerExecutableIdentity | None = None,
+    preserve_debug: bool = False,
+) -> dict[str, object] | None:
+    if optimize and optimizer_identity is None:
+        return None
+    return {
+        "app_sha256": hashlib.sha256(app_data).hexdigest(),
+        "reference_sha256": None
+        if reference_data is None
+        else hashlib.sha256(reference_data).hexdigest(),
+        "optimize": optimize,
+        "optimize_level": optimize_level,
+        "preserve_debug": preserve_debug,
+        "exports": sorted(contract_keep_set),
+        "optimizer": {
+            "sha256": optimizer_identity.sha256,
+            "binaryen_version": optimizer_identity.binaryen_version,
+        }
+        if optimize and optimizer_identity is not None
+        else None,
+        "tool": _wasm_link_cache_authority_digest(),
+        "facts_authority": facts_authority_digest,
+    }
+
+
 def _split_app_optimize_cache_key(
     *,
     app_data: bytes,
@@ -182,34 +236,35 @@ def _split_app_optimize_cache_key(
     optimizer_identity: WasmOptimizerExecutableIdentity | None = None,
     preserve_debug: bool = False,
 ) -> str | None:
-    hasher = hashlib.sha256()
-    hasher.update(_SPLIT_APP_OPTIMIZE_CACHE_SCHEMA.encode("ascii"))
-    hasher.update(b"\0app\0")
-    hasher.update(app_data)
-    hasher.update(b"\0reference\0")
-    if reference_data is not None:
-        hasher.update(reference_data)
-    hasher.update(b"\0optimize\0")
-    hasher.update(str(int(optimize)).encode("ascii"))
-    hasher.update(b"\0level\0")
-    hasher.update(optimize_level.encode("utf-8"))
-    hasher.update(b"\0preserve-debug\0")
-    hasher.update(str(int(preserve_debug)).encode("ascii"))
-    hasher.update(b"\0exports\0")
-    for name in sorted(contract_keep_set):
-        hasher.update(name.encode("utf-8") + b"\0")
-    if optimize:
-        if optimizer_identity is None:
-            return None
-        hasher.update(b"\0wasm-opt-sha256\0")
-        hasher.update(optimizer_identity.sha256.encode("ascii"))
-        hasher.update(b"\0wasm-opt-version\0")
-        hasher.update(optimizer_identity.binaryen_version.encode("utf-8"))
-    hasher.update(b"\0tool\0")
-    hasher.update(_wasm_link_cache_authority_digest().encode("ascii"))
-    hasher.update(b"\0facts-authority\0")
-    hasher.update(facts_authority_digest.encode("ascii"))
-    return hasher.hexdigest()
+    components = _split_app_optimize_cache_components(
+        app_data=app_data,
+        reference_data=reference_data,
+        optimize=optimize,
+        optimize_level=optimize_level,
+        contract_keep_set=contract_keep_set,
+        facts_authority_digest=facts_authority_digest,
+        optimizer_identity=optimizer_identity,
+        preserve_debug=preserve_debug,
+    )
+    if components is None:
+        return None
+    return _wasm_link_cache_key(_SPLIT_APP_OPTIMIZE_CACHE_SCHEMA, components)
+
+
+def _tree_shake_runtime_cache_components(
+    *,
+    runtime_data: bytes,
+    normalized_required_exports: set[str],
+    facts_authority_digest: str,
+    preserve_debug: bool = False,
+) -> dict[str, object]:
+    return {
+        "runtime_sha256": hashlib.sha256(runtime_data).hexdigest(),
+        "exports": sorted(normalized_required_exports),
+        "preserve_debug": preserve_debug,
+        "tool": _wasm_link_cache_authority_digest(),
+        "facts_authority": facts_authority_digest,
+    }
 
 
 def _tree_shake_runtime_cache_key(
@@ -219,21 +274,15 @@ def _tree_shake_runtime_cache_key(
     facts_authority_digest: str,
     preserve_debug: bool = False,
 ) -> str:
-    hasher = hashlib.sha256()
-    hasher.update(_TREE_SHAKE_RUNTIME_CACHE_SCHEMA.encode("ascii"))
-    hasher.update(b"\0")
-    hasher.update(runtime_data)
-    hasher.update(b"\0exports\0")
-    for name in sorted(normalized_required_exports):
-        hasher.update(name.encode("utf-8"))
-        hasher.update(b"\0")
-    hasher.update(b"preserve-debug\0")
-    hasher.update(str(int(preserve_debug)).encode("ascii"))
-    hasher.update(b"\0tool\0")
-    hasher.update(_wasm_link_cache_authority_digest().encode("ascii"))
-    hasher.update(b"\0facts-authority\0")
-    hasher.update(facts_authority_digest.encode("ascii"))
-    return hasher.hexdigest()
+    return _wasm_link_cache_key(
+        _TREE_SHAKE_RUNTIME_CACHE_SCHEMA,
+        _tree_shake_runtime_cache_components(
+            runtime_data=runtime_data,
+            normalized_required_exports=normalized_required_exports,
+            facts_authority_digest=facts_authority_digest,
+            preserve_debug=preserve_debug,
+        ),
+    )
 
 
 def _transform_tree_shake_runtime(
@@ -331,12 +380,13 @@ def _tree_shake_runtime(
     facts_authority_digest = _wasm_facts_cache_authority_digest(
         facts_provider,
     )
-    cache_key = _tree_shake_runtime_cache_key(
+    cache_components = _tree_shake_runtime_cache_components(
         runtime_data=runtime_data,
         normalized_required_exports=normalized_required_exports,
         facts_authority_digest=facts_authority_digest,
         preserve_debug=preserve_debug,
     )
+    cache_key = _wasm_link_cache_key(_TREE_SHAKE_RUNTIME_CACHE_SCHEMA, cache_components)
     cache_entry = _wasm_link_cache_entry(
         "runtime_tree_shake",
         _TREE_SHAKE_RUNTIME_CACHE_SCHEMA,
@@ -368,6 +418,9 @@ def _tree_shake_runtime(
             return cached.data
 
         _cache_metric_add(operation_counts, f"{metric_prefix}_misses", 1)
+        _report_wasm_link_cache_miss(
+            "Runtime tree-shake", cached.status, cache_key, cache_components
+        )
         if cached.status == "corrupt":
             _cache_metric_add(operation_counts, f"{metric_prefix}_corruptions", 1)
             _invalidate_wasm_link_cache_entry(cache_entry)
@@ -439,7 +492,7 @@ def _optimize_split_app_module(
     facts_authority_digest = _wasm_facts_cache_authority_digest(
         facts_provider,
     )
-    cache_key = _split_app_optimize_cache_key(
+    cache_components = _split_app_optimize_cache_components(
         app_data=app_data,
         reference_data=reference_data,
         optimize=optimize,
@@ -449,7 +502,8 @@ def _optimize_split_app_module(
         optimizer_identity=optimizer_identity,
         preserve_debug=preserve_debug,
     )
-    assert cache_key is not None
+    assert cache_components is not None
+    cache_key = _wasm_link_cache_key(_SPLIT_APP_OPTIMIZE_CACHE_SCHEMA, cache_components)
     cache_entry = _wasm_link_cache_entry(
         "split_app_optimize",
         _SPLIT_APP_OPTIMIZE_CACHE_SCHEMA,
@@ -509,6 +563,12 @@ def _optimize_split_app_module(
             )
             return cached.data
         _cache_metric_add(operation_counts, f"{metric_prefix}_misses", 1)
+        _report_wasm_link_cache_miss(
+            "Split app optimize",
+            "stale-optimizer" if cached.data is not None else cached.status,
+            cache_key,
+            cache_components,
+        )
         if cached.status == "corrupt" or cached.data is not None:
             _cache_metric_add(operation_counts, f"{metric_prefix}_corruptions", 1)
             _invalidate_wasm_link_cache_entry(cache_entry)

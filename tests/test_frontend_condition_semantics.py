@@ -20,6 +20,7 @@ from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
 def _execute_expression_ops(ops: list[MoltOp], inputs: dict[str, Any]) -> Any:
     values = dict(inputs)
     variables: dict[str, Any] = {}
+    homes: dict[int, Any] = {}
     frames: list[tuple[bool, bool]] = []
     active = True
     completed_branch = False
@@ -49,15 +50,28 @@ def _execute_expression_ops(ops: list[MoltOp], inputs: dict[str, Any]) -> Any:
             active, completed_branch = frames.pop()
         elif not active:
             continue
-        elif op.kind in {"LINE", "CHECK_EXCEPTION", "TRACE_EXIT"}:
+        elif op.kind in {
+            "LINE",
+            "CHECK_EXCEPTION",
+            "TRACE_ENTER_SLOT",
+            "TRACE_EXIT",
+            "FRAME_CONTEXT_SET",
+        }:
             continue
+        elif op.kind == "FRAME_HOME_STORE":
+            # A frame home holds a local's binding; the result is the value.
+            assert op.metadata is not None
+            homes[op.metadata["slot"]] = values[op.result.name] = read(op.args[0])
+        elif op.kind == "FRAME_HOME_LOAD":
+            assert op.metadata is not None
+            values[op.result.name] = homes[op.metadata["slot"]]
         elif op.kind == "STORE_VAR":
             assert op.metadata is not None
             variables[op.metadata["var"]] = read(op.args[0])
         elif op.kind == "LOAD_VAR":
             assert op.metadata is not None
             values[op.result.name] = variables[op.metadata["var"]]
-        elif op.kind in {"COPY", "IDENTITY_ALIAS"}:
+        elif op.kind in {"COPY", "IDENTITY_ALIAS", "BINDING_ALIAS"}:
             values[op.result.name] = read(op.args[0])
         elif op.kind == "PHI":
             values[op.result.name] = read(op.args[0 if completed_branch else 1])

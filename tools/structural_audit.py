@@ -64,6 +64,7 @@ from molt.rust_source_scan import (  # noqa: E402
     mask_rust_test_items,
     rust_test_only_source_files,
     project_rust_source,
+    prewarm_rust_item_projections,
     scan_memo,
 )
 from tools import release_criterion_receipt as release_receipt  # noqa: E402
@@ -1098,7 +1099,11 @@ def _python_comment_segments(text: str) -> list[tuple[int, str]]:
 
 def _debt_marker_hits(path: Path, text: str) -> list[DebtMarkerHit]:
     if path.suffix == ".py":
-        comment_segments = _python_comment_segments(text)
+        # A comment is a substring of the text, so a file whose text has no
+        # marker has no commented one either and is not tokenized.
+        comment_segments = (
+            _python_comment_segments(text) if _COMMENT_DEBT_RE.search(text) else []
+        )
         code_text = ""
     elif path.suffix == ".rs":
         projection = project_rust_source(text)
@@ -1208,7 +1213,20 @@ def _python_string_constants(node: ast.AST | None) -> list[ast.Constant]:
     ]
 
 
-def _python_intrinsic_stub_surface_hit(tree: ast.Module) -> ImplementationGapHit | None:
+def _python_raise_nodes(tree: ast.Module, text: str) -> list[ast.Raise]:
+    """Every ``raise`` statement, from one walk shared by the stub probes.
+
+    A ``Raise`` node needs the literal ``raise`` keyword in the source, so a
+    file without it has none and its tree is not walked.
+    """
+    if "raise" not in text:
+        return []
+    return [node for node in ast.walk(tree) if isinstance(node, ast.Raise)]
+
+
+def _python_intrinsic_stub_surface_hit(
+    tree: ast.Module, raises: list[ast.Raise]
+) -> ImplementationGapHit | None:
     hits: list[ImplementationGapHit] = []
     if tree.body:
         first = tree.body[0]
@@ -1224,9 +1242,7 @@ def _python_intrinsic_stub_surface_hit(tree: ast.Module) -> ImplementationGapHit
                     marker="intrinsic-first stub",
                 )
             )
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Raise):
-            continue
+    for node in raises:
         for string_node in _python_string_constants(node.exc):
             if _INTRINSIC_FIRST_STUB_RE.search(str(string_node.value)):
                 hits.append(
@@ -1255,11 +1271,12 @@ def _python_stub_surface_hits(path: Path, text: str) -> list[ImplementationGapHi
                 )
             )
         return hits
-    intrinsic_stub_hit = _python_intrinsic_stub_surface_hit(tree)
+    raises = _python_raise_nodes(tree, text)
+    intrinsic_stub_hit = _python_intrinsic_stub_surface_hit(tree, raises)
     if intrinsic_stub_hit is not None:
         hits.append(intrinsic_stub_hit)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Raise) and _python_raise_is_notimplemented(node):
+    for node in raises:
+        if _python_raise_is_notimplemented(node):
             hits.append(
                 ImplementationGapHit(
                     line=getattr(node, "lineno", 1),
@@ -2588,6 +2605,348 @@ def probe_registry_reconciliation(root: Path) -> list[Finding]:
     return findings
 
 
+# --- process-wide stdlib patches in tests (HF-43) -------------------------
+
+# Shared stdlib modules whose attributes every caller in a pytest process reads,
+# the suite-lease and sentinel threads among them.
+_SHARED_STDLIB_MODULES = frozenset(
+    {"os", "sys", "platform", "subprocess", "hashlib", "shutil", "threading", "time"}
+)
+# Process-wide by nature: the interpreter itself reads these, so a test that
+# changes them means to change them for the process.
+_PROCESS_WIDE_ATTRIBUTES = frozenset(
+    {
+        ("sys", "argv"),
+        ("sys", "path"),
+        ("sys", "stdin"),
+        ("sys", "stdout"),
+        ("sys", "stderr"),
+        ("sys", "modules"),
+        ("os", "environ"),
+    }
+)
+_PROCESS_WIDE_PATCH_PREFILTER = re.compile(
+    r"setattr\(\s*(?:\"[\w.]*\b(?:"
+    + "|".join(sorted(_SHARED_STDLIB_MODULES))
+    + r")\.|[\w.]*\b(?:"
+    + "|".join(sorted(_SHARED_STDLIB_MODULES))
+    + r")\s*,)"
+)
+
+
+def _process_wide_patch_lines(tree: ast.AST) -> list[int]:
+    """Lines of ``monkeypatch.setattr`` calls that rebind a shared stdlib module.
+
+    A patch of ``module.os`` after the same function installed a module view
+    for ``module`` and ``os`` rebinds that view, not the process-wide module.
+    """
+    lines: list[int] = []
+    for function in ast.walk(tree):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        views: set[tuple[str, str]] = set()
+        calls = sorted(
+            (node for node in ast.walk(function) if isinstance(node, ast.Call)),
+            key=lambda node: (node.lineno, node.col_offset),
+        )
+        for call in calls:
+            func = call.func
+            name = func.id if isinstance(func, ast.Name) else None
+            if name == "install_module_view" and len(call.args) >= 4:
+                stdlib = call.args[1]
+                if isinstance(stdlib, ast.Constant) and isinstance(stdlib.value, str):
+                    views.update(
+                        (ast.unparse(module), stdlib.value) for module in call.args[3:]
+                    )
+                continue
+            if name == "install_module_os_view":
+                views.update((ast.unparse(module), "os") for module in call.args[1:])
+                continue
+            if not (
+                isinstance(func, ast.Attribute)
+                and func.attr == "setattr"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "monkeypatch"
+                and call.args
+            ):
+                continue
+            target = call.args[0]
+            if isinstance(target, ast.Constant) and isinstance(target.value, str):
+                parts = target.value.split(".")
+                if len(parts) >= 2 and parts[-2] in _SHARED_STDLIB_MODULES:
+                    if (parts[-2], parts[-1]) not in _PROCESS_WIDE_ATTRIBUTES:
+                        lines.append(call.lineno)
+                continue
+            if len(call.args) < 2 or not (
+                isinstance(call.args[1], ast.Constant)
+                and isinstance(call.args[1].value, str)
+            ):
+                continue
+            attribute = call.args[1].value
+            if isinstance(target, ast.Name) and target.id in _SHARED_STDLIB_MODULES:
+                stdlib_name = target.id
+                owner = None
+            elif (
+                isinstance(target, ast.Attribute)
+                and target.attr in _SHARED_STDLIB_MODULES
+            ):
+                stdlib_name = target.attr
+                owner = ast.unparse(target.value)
+            else:
+                continue
+            if (stdlib_name, attribute) in _PROCESS_WIDE_ATTRIBUTES:
+                continue
+            if owner is not None and (owner, stdlib_name) in views:
+                continue
+            lines.append(call.lineno)
+    return sorted(set(lines))
+
+
+def _iter_test_files(root: Path) -> list[Path]:
+    base = root / "tests"
+    scope = _source_scope(root)
+    if scope is not None:
+        return [
+            root / rel
+            for rel in sorted(scope)
+            if rel.startswith("tests/")
+            and rel.endswith(".py")
+            and (root / rel).is_file()
+            and not _is_excluded(root / rel, root)
+        ]
+    if not base.is_dir():
+        return []
+    return sorted(
+        _iter_pruned_files(base, root, (".py",)),
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
+
+
+@_audit_probe
+def probe_process_wide_test_patches(root: Path) -> list[Finding]:
+    """Tests that fake a shared stdlib attribute for the whole process.
+
+    ``monkeypatch.setattr(module.os, "getpid", fake)`` changes ``os.getpid``
+    for every thread of the pytest process while the test runs. A module view
+    (``tests/process_guard_common.install_module_view``) confines the fake to
+    the modules under test. Reported per file, ratcheted in aggregate.
+    """
+    findings: list[Finding] = []
+    for path in _iter_test_files(root):
+        try:
+            text = _source_text(path)
+        except OSError:
+            continue
+        if not _PROCESS_WIDE_PATCH_PREFILTER.search(text):
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        lines = _process_wide_patch_lines(tree)
+        if not lines:
+            continue
+        rel = path.relative_to(root).as_posix()
+        findings.append(
+            Finding(
+                probe="process_wide_test_patch",
+                severity="medium" if len(lines) >= 10 else "low",
+                title=f"{len(lines)} process-wide stdlib patches",
+                location=f"{rel}:{lines[0]}",
+                detail=", ".join(f"L{line}" for line in lines[:8]),
+                suggested_action="install a module view over every module that "
+                "reads the attribute (tests/process_guard_common.install_module_view)",
+                class_retired="process-wide-test-fake",
+                metric=len(lines),
+            )
+        )
+    return findings
+
+
+_BUILD_SKIP_PREFILTER = re.compile(r"\.skip\(")
+# A skip message that reports a failed build, as opposed to a missing tool
+# ("cargo is required for backend compilation").
+_BUILD_FAILURE_SKIP_MESSAGE = re.compile(
+    r"\b(?:builds?|compil\w*)\b.*\b(?:fail\w*|error)\b|killed during compilation",
+    re.IGNORECASE,
+)
+
+
+def _skip_message_text(node: ast.expr) -> str | None:
+    """The literal text of a skip message, with f-string fields dropped."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(
+            part.value
+            for part in node.values
+            if isinstance(part, ast.Constant) and isinstance(part.value, str)
+        )
+    return None
+
+
+def _build_failure_skip_lines(tree: ast.AST) -> list[int]:
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "skip"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "pytest"
+            and node.args
+        ):
+            continue
+        text = _skip_message_text(node.args[0])
+        if text is not None and _BUILD_FAILURE_SKIP_MESSAGE.search(text):
+            lines.append(node.lineno)
+    return sorted(lines)
+
+
+@_audit_probe
+def probe_build_failure_test_skips(root: Path) -> list[Finding]:
+    """Tests that turn a failed build into a skip.
+
+    ``pytest.skip(f"Compilation failed: ...")`` makes a compiler regression
+    read as green. A missing tool is a capability skip and does not count.
+    Reported per file, ratcheted in aggregate.
+    """
+    findings: list[Finding] = []
+    for path in _iter_test_files(root):
+        try:
+            text = _source_text(path)
+        except OSError:
+            continue
+        if not _BUILD_SKIP_PREFILTER.search(text):
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        lines = _build_failure_skip_lines(tree)
+        if not lines:
+            continue
+        rel = path.relative_to(root).as_posix()
+        findings.append(
+            Finding(
+                probe="build_failure_test_skip",
+                severity="medium",
+                title=f"{len(lines)} skips on a failed build",
+                location=f"{rel}:{lines[0]}",
+                detail=", ".join(f"L{line}" for line in lines[:8]),
+                suggested_action="fail on a build error; name a program that is "
+                "unsupported on purpose in an expected-failure list",
+                class_retired="fail-open-build-skip",
+                metric=len(lines),
+            )
+        )
+    return findings
+
+
+def _is_type_checking_guard(test: ast.expr) -> bool:
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+    )
+
+
+def _module_scope_statements(body: list[ast.stmt]) -> Iterator[ast.stmt]:
+    """Statements that run at module scope, through guards but not into defs."""
+
+    for node in body:
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(node, ast.If) and _is_type_checking_guard(node.test):
+            # Type-checking declarations never run.
+            yield from _module_scope_statements(node.orelse)
+            continue
+        for field in ("body", "orelse", "finalbody"):
+            nested = getattr(node, field, None)
+            if isinstance(nested, list):
+                yield from _module_scope_statements(nested)
+        for handler in getattr(node, "handlers", ()):
+            yield from _module_scope_statements(handler.body)
+        for case in getattr(node, "cases", ()):
+            yield from _module_scope_statements(case.body)
+
+
+def _binds_raw_intrinsic_name(node: ast.stmt) -> bool:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return node.name.startswith("molt_")
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return any(
+            (alias.asname or alias.name.split(".")[0]).startswith("molt_")
+            for alias in node.names
+        )
+    if isinstance(node, ast.Assign):
+        targets: list[ast.expr] = list(node.targets)
+    elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+        targets = [node.target]
+    elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+        # ``require_intrinsic("molt_x", globals())`` binds the raw name.
+        call = node.value
+        return (
+            len(call.args) >= 2
+            and isinstance(call.args[0], ast.Constant)
+            and str(call.args[0].value).startswith("molt_")
+            and isinstance(call.args[1], ast.Call)
+            and getattr(call.args[1].func, "id", None) == "globals"
+        )
+    else:
+        return False
+    return any(
+        isinstance(name, ast.Name) and name.id.startswith("molt_")
+        for target in targets
+        for name in ast.walk(target)
+    )
+
+
+def probe_stdlib_raw_intrinsic_names(root: Path) -> list[Finding]:
+    """Stdlib modules that leave a raw ``molt_*`` intrinsic name bound.
+
+    A name bound at module scope is a public attribute of the module, which
+    CPython's module does not have. Bind intrinsics to private ``_MOLT_*``
+    names and release the resolver helper. Reported per file, ratcheted in
+    aggregate.
+    """
+    findings: list[Finding] = []
+    stdlib = root / "src" / "molt" / "stdlib"
+    for path in _iter_source_files(root, (".py",)):
+        if not path.is_relative_to(stdlib):
+            continue
+        try:
+            text = _source_text(path)
+        except OSError:
+            continue
+        if "molt_" not in text:
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        lines = [
+            node.lineno
+            for node in _module_scope_statements(tree.body)
+            if _binds_raw_intrinsic_name(node)
+        ]
+        if not lines:
+            continue
+        rel = path.relative_to(root).as_posix()
+        findings.append(
+            Finding(
+                probe="stdlib_raw_intrinsic_name",
+                severity="medium" if len(lines) >= 10 else "low",
+                title=f"{len(lines)} raw intrinsic names bound at module scope",
+                location=f"{rel}:{lines[0]}",
+                detail=", ".join(f"L{line}" for line in lines[:8]),
+                suggested_action="bind each intrinsic to a private _MOLT_* name",
+                class_retired="stdlib-namespace-leak",
+                metric=len(lines),
+            )
+        )
+    return findings
+
+
 PROBES = (
     probe_semantic_fallthroughs,
     probe_large_source_files,
@@ -2601,12 +2960,51 @@ PROBES = (
     probe_repr_name_scalar_authority,
     probe_duplicate_authorities,
     probe_registry_reconciliation,
+    probe_process_wide_test_patches,
+    probe_build_failure_test_skips,
+    probe_stdlib_raw_intrinsic_names,
 )
+
+
+# A worker costs about 0.2 s to start; a file costs a few ms to project. At 128
+# files a worker, start-up stays under a third of its work.
+_PROJECTION_FILES_PER_WORKER = 128
+# One worker holds a slice of the Rust sources and their projections.
+_PROJECTION_BYTES_PER_WORKER = 256 * 1024 * 1024
+_PROJECTION_MEMORY_HEADROOM_BYTES = 1024 * 1024 * 1024
+
+
+def _prewarm_rust_projections(root: Path) -> None:
+    """Project every Rust source in parallel before the probes read them.
+
+    The probes project every Rust file under the source roots (test ownership
+    ignores a --path selection), so the whole set is warmed once.
+    """
+    from molt.dx import _memory_bounded_worker_count
+
+    paths = [
+        path
+        for sub in _SOURCE_ROOTS
+        if (root / sub).is_dir()
+        for path in _iter_pruned_files(root / sub, root, (".rs",))
+    ]
+    workers = min(
+        len(paths) // _PROJECTION_FILES_PER_WORKER,
+        _memory_bounded_worker_count(
+            bytes_per_worker=_PROJECTION_BYTES_PER_WORKER,
+            headroom_bytes=_PROJECTION_MEMORY_HEADROOM_BYTES,
+        ),
+    )
+    if workers > 1:
+        prewarm_rust_item_projections(
+            (_source_text(path) for path in paths), workers=workers
+        )
 
 
 def run_all(root: Path, path_scope: frozenset[str] | None = None) -> list[Finding]:
     findings: list[Finding] = []
     with audit_operation(root, path_scope):
+        _prewarm_rust_projections(root)
         for probe in PROBES:
             if path_scope is not None and probe is probe_registry_reconciliation:
                 continue
@@ -2645,6 +3043,11 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     ]
     repr_name_scalar = [f for f in findings if f.probe == "repr_name_scalar_authority"]
     dup = [f for f in findings if f.probe == "duplicate_authority"]
+    process_wide_patches = [f for f in findings if f.probe == "process_wide_test_patch"]
+    build_failure_skips = [f for f in findings if f.probe == "build_failure_test_skip"]
+    raw_intrinsic_names = [
+        f for f in findings if f.probe == "stdlib_raw_intrinsic_name"
+    ]
     kitchen_sink_files = float(len(kitchen_sink))
     max_kitchen_sink_structural_score = float(
         max((f.metric for f in kitchen_sink), default=0)
@@ -2688,6 +3091,15 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
             sum(int(f.metric) for f in repr_name_scalar)
         ),
         "duplicate_authorities": float(len(dup)),
+        "process_wide_test_patches": float(
+            sum(int(f.metric) for f in process_wide_patches)
+        ),
+        "build_failure_test_skips": float(
+            sum(int(f.metric) for f in build_failure_skips)
+        ),
+        "stdlib_raw_intrinsic_bindings": float(
+            sum(int(f.metric) for f in raw_intrinsic_names)
+        ),
     }
 
     if set(metrics) != release_receipt.STRUCTURAL_AUDIT_METRICS:

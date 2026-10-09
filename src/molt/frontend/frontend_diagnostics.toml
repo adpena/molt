@@ -12,13 +12,6 @@ tier = "bridge"
 impact = "high"
 
 [[diagnostic]]
-name = "call_signature"
-code = "MOLT-FE002"
-title = "call signature is outside the lowered contract"
-tier = "bridge"
-impact = "high"
-
-[[diagnostic]]
 name = "operand_value"
 code = "MOLT-FE003"
 title = "operand or value cannot be lowered"
@@ -66,3 +59,11 @@ code = "MOLT-FE009"
 title = "frontend capability is not implemented"
 tier = "bridge"
 impact = "high"
+
+# A retired code stays reserved; no later diagnostic may reuse it.
+[[retired]]
+name = "call_signature"
+code = "MOLT-FE002"
+reason = """A call's argument count or keywords are checked when it runs, as in \
+CPython: the frontend lowers every call shape and the runtime binder raises \
+the TypeError."""

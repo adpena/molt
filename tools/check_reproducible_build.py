@@ -40,6 +40,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from molt.cargo_execution_policy import default_nested_process_timeout_seconds  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
 
@@ -155,8 +156,14 @@ def _build_once(
     cache_dir: str,
     profile: str,
     prefer_object: bool,
+    build_timeout: float | None = None,
 ) -> tuple[str | None, str]:
-    """Build a source file once, returning (artifact_path, error_msg)."""
+    """Build a source file once, returning (artifact_path, error_msg).
+
+    ``build_timeout`` defaults to the proof plan's nested build budget.
+    """
+    if build_timeout is None:
+        build_timeout = default_nested_process_timeout_seconds("build")
     env = os.environ.copy()
     env.setdefault("PYTHONPATH", "src")
     env["PYTHONHASHSEED"] = "0"
@@ -184,11 +191,11 @@ def _build_once(
             capture_output=True,
             text=True,
             env=env,
-            timeout=120,
+            timeout=build_timeout,
             limits=limits,
         )
     except subprocess.TimeoutExpired:
-        return None, "build timed out"
+        return None, f"build timed out after {build_timeout:g} s"
 
     if result.returncode != 0:
         return None, f"build failed (exit {result.returncode}): {result.stderr[:500]}"
@@ -261,6 +268,7 @@ def _build_repeated_and_compare(
     prefer_object: bool,
     verbose: bool,
     runs: int,
+    build_timeout: float | None = None,
 ) -> tuple[bool, dict]:
     """Build a source repeatedly in isolated caches and compare all outputs."""
     if runs < 2:
@@ -270,7 +278,9 @@ def _build_repeated_and_compare(
     artifacts: list[str] = []
     for run in range(runs):
         with tempfile.TemporaryDirectory(prefix=f"repro_{run}_") as cache:
-            artifact, error = _build_once(source, cache, profile, prefer_object)
+            artifact, error = _build_once(
+                source, cache, profile, prefer_object, build_timeout
+            )
             if artifact is None:
                 return False, {
                     "source": source,
@@ -426,6 +436,13 @@ def main() -> int:
         help="Independent observations per source (minimum and default: 2)",
     )
     parser.add_argument(
+        "--build-timeout",
+        type=float,
+        default=None,
+        help="Timeout in seconds per build (default: the proof plan's nested "
+        "build budget)",
+    )
+    parser.add_argument(
         "--audit-ir",
         action="store_true",
         help="Also compare canonical frontend IR across fresh processes",
@@ -468,6 +485,7 @@ def main() -> int:
                 args.object,
                 args.verbose,
                 args.runs,
+                args.build_timeout,
             )
             results.append(details)
 
@@ -546,6 +564,7 @@ def main() -> int:
             args.object,
             verbose=True,
             runs=args.runs,
+            build_timeout=args.build_timeout,
         )
 
         if "error" in details:

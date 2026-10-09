@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import functools
 import io
 import json
 import re
@@ -19,6 +20,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from molt.compiler_analysis.python_imports import UnresolvedStaticImportError  # noqa: E402
+from molt.cli import module_graph_cache  # noqa: E402
+from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction  # noqa: E402
 from molt.stdlib_intrinsic_policy import (  # noqa: E402
     INTRINSIC_CALL_NAMES,
     LAZY_INTRINSIC_CALL_NAMES,
@@ -33,9 +36,12 @@ from molt.stdlib_intrinsic_policy import (  # noqa: E402
     intrinsic_names_from_source,
     is_fail_closed_import_policy_gate,
 )
+from molt.stdlib_intrinsic_policy import StdlibIntrinsicClassification  # noqa: E402
+from molt.stdlib_intrinsic_policy import StdlibModuleIntrinsicFacts  # noqa: E402
 from molt.target_python import (  # noqa: E402
     SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
     _DEFAULT_TARGET_PYTHON_VERSION,
+    TargetPythonVersion,
     _parse_target_python_version,
 )
 
@@ -1129,6 +1135,31 @@ def main() -> int:
         )
 
 
+def _intrinsic_source_facts(
+    module_name: str, path: Path, *, target_python: TargetPythonVersion
+) -> StdlibModuleIntrinsicFacts:
+    """The compiler's content-keyed facts cache: builds and this gate share it."""
+    return module_graph_cache._stdlib_intrinsic_source_facts(
+        ROOT, module_name, path, target_python=target_python
+    )
+
+
+def _classify_stdlib_modules(
+    module_paths: dict[str, Path], target_python: TargetPythonVersion
+) -> StdlibIntrinsicClassification:
+    module_graph_cache.warm_stdlib_intrinsic_source_facts(
+        ROOT, module_paths, target_python=target_python
+    )
+    with _source_tree_fingerprint_transaction():
+        return classify_stdlib_module_statuses(
+            module_paths,
+            target_python=target_python,
+            facts_provider=functools.partial(
+                _intrinsic_source_facts, target_python=target_python
+            ),
+        )
+
+
 def _run_audit(args: argparse.Namespace) -> int:
     if not STDLIB_ROOT.is_dir():
         raise RuntimeError(f"stdlib root missing: {STDLIB_ROOT}")
@@ -1207,8 +1238,8 @@ def _run_audit(args: argparse.Namespace) -> int:
             failures.append((path, errors))
 
     module_paths = {audit.module: audit.path for audit in audits}
-    intrinsic_classification = classify_stdlib_module_statuses(
-        module_paths, target_python=_parse_target_python_version(args.target_python)
+    intrinsic_classification = _classify_stdlib_modules(
+        module_paths, _parse_target_python_version(args.target_python)
     )
     closed_statuses = intrinsic_classification.statuses
     unresolved_intrinsic_imports = intrinsic_classification.unresolved_imports_payload()

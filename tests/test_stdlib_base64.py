@@ -6,67 +6,71 @@ import codecs
 
 import pytest
 
-registry = getattr(builtins, "_molt_intrinsics", None)
-if not isinstance(registry, dict):
-    registry = {}
-    setattr(builtins, "_molt_intrinsics", registry)
-registry.setdefault("molt_stdlib_probe", lambda: True)
-registry.setdefault("molt_capabilities_has", lambda _name=None: True)
-registry.setdefault(
+# The stub binds every intrinsic when it is imported, so the fakes live in
+# the process registry only for that import. A registry left installed
+# would answer molt_capabilities_has for every later test on the worker.
+_FAKE_INTRINSICS: dict[str, object] = {}
+_FAKE_INTRINSICS.setdefault("molt_stdlib_probe", lambda: True)
+_FAKE_INTRINSICS.setdefault("molt_capabilities_has", lambda _name=None: True)
+_FAKE_INTRINSICS.setdefault(
     "molt_codecs_encode",
     lambda data, encoding, errors="strict": codecs.encode(data, encoding, errors),
 )
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
     "molt_codecs_decode",
     lambda data, encoding, errors="strict": codecs.decode(data, encoding, errors),
 )
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
     "molt_base64_b64encode",
     lambda data, altchars=None: py_base64.b64encode(data, altchars=altchars),
 )
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
     "molt_base64_b64decode",
     lambda data, altchars=None, validate=False: py_base64.b64decode(
         data, altchars=altchars, validate=validate
     ),
 )
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
     "molt_base64_standard_b64encode",
     lambda data: py_base64.standard_b64encode(data),
 )
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
     "molt_base64_standard_b64decode",
     lambda data: py_base64.standard_b64decode(data),
 )
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
     "molt_base64_urlsafe_b64encode",
     lambda data: py_base64.urlsafe_b64encode(data),
 )
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
     "molt_base64_urlsafe_b64decode",
     lambda data: py_base64.urlsafe_b64decode(data),
 )
-registry.setdefault("molt_base64_b32encode", lambda data: py_base64.b32encode(data))
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
+    "molt_base64_b32encode", lambda data: py_base64.b32encode(data)
+)
+_FAKE_INTRINSICS.setdefault(
     "molt_base64_b32decode",
     lambda data, casefold=False, map01=None: py_base64.b32decode(
         data, casefold=casefold, map01=map01
     ),
 )
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
     "molt_base64_b32hexencode",
     lambda data: py_base64.b32hexencode(data),
 )
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
     "molt_base64_b32hexdecode",
     lambda data, casefold=False: py_base64.b32hexdecode(data, casefold=casefold),
 )
-registry.setdefault("molt_base64_b16encode", lambda data: py_base64.b16encode(data))
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
+    "molt_base64_b16encode", lambda data: py_base64.b16encode(data)
+)
+_FAKE_INTRINSICS.setdefault(
     "molt_base64_b16decode",
     lambda data, casefold=False: py_base64.b16decode(data, casefold=casefold),
 )
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
     "molt_base64_a85encode",
     lambda data, foldspaces=False, wrapcol=0, pad=False, adobe=False: (
         py_base64.a85encode(
@@ -74,27 +78,47 @@ registry.setdefault(
         )
     ),
 )
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
     "molt_base64_a85decode",
     lambda data, foldspaces=False, adobe=False: py_base64.a85decode(
         data, foldspaces=foldspaces, adobe=adobe
     ),
 )
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
     "molt_base64_b85encode",
     lambda data, pad=False: py_base64.b85encode(data, pad=pad),
 )
-registry.setdefault("molt_base64_b85decode", lambda data: py_base64.b85decode(data))
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
+    "molt_base64_b85decode", lambda data: py_base64.b85decode(data)
+)
+_FAKE_INTRINSICS.setdefault(
     "molt_base64_encodebytes",
     lambda data: py_base64.encodebytes(data),
 )
-registry.setdefault(
+_FAKE_INTRINSICS.setdefault(
     "molt_base64_decodebytes",
     lambda data: py_base64.decodebytes(data),
 )
 
-from molt.stdlib import base64 as molt_base64  # noqa: E402
+
+def _import_molt_base64():
+    missing = object()
+    previous = getattr(builtins, "_molt_intrinsics", missing)
+    registry = dict(previous) if isinstance(previous, dict) else {}
+    for name, fake in _FAKE_INTRINSICS.items():
+        registry.setdefault(name, fake)
+    builtins._molt_intrinsics = registry
+    try:
+        from molt.stdlib import base64 as module
+    finally:
+        if previous is missing:
+            del builtins._molt_intrinsics
+        else:
+            builtins._molt_intrinsics = previous
+    return module
+
+
+molt_base64 = _import_molt_base64()
 
 
 @pytest.mark.parametrize(

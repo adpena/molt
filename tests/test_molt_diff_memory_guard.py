@@ -7,6 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.process_guard_common import install_module_view
+
+# These tests fake process data the session sentinel also reads, and resolve
+# guard limits the CI plan's exported caps would otherwise decide.
+pytestmark = pytest.mark.usefixtures("session_sentinel_paused", "no_ambient_guard_caps")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -374,7 +379,7 @@ def test_diff_scheduler_uses_memory_scaled_job_budget(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
     monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "96")
     monkeypatch.delenv("MOLT_DIFF_MEM_PER_JOB_GB", raising=False)
-    monkeypatch.setattr(module.os, "cpu_count", lambda: 12)
+    install_module_view(monkeypatch, "os", os, module, cpu_count=lambda: 12)
 
     config = module._diff_memory_guard_config()
 
@@ -393,7 +398,7 @@ def test_diff_default_jobs_use_guard_budget_under_memory_pressure(
     monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
     monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "32")
     monkeypatch.delenv("MOLT_DIFF_MEM_PER_JOB_GB", raising=False)
-    monkeypatch.setattr(module.os, "cpu_count", lambda: 64)
+    install_module_view(monkeypatch, "os", os, module, cpu_count=lambda: 64)
 
     config = module._diff_memory_guard_config()
 
@@ -405,6 +410,10 @@ def test_diff_default_jobs_use_guard_budget_under_memory_pressure(
 
 def test_diff_memory_guard_inherits_shared_parent_overrides(monkeypatch) -> None:
     module = _load_diff_module()
+    # The guard lowers every limit to the host's available memory; a large
+    # host keeps these overrides from meeting that floor on a small runner.
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "96")
     monkeypatch.delenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", raising=False)
@@ -424,6 +433,10 @@ def test_diff_memory_guard_inherits_shared_parent_overrides(monkeypatch) -> None
 
 def test_diff_memory_guard_family_overrides_parent_controls(monkeypatch) -> None:
     module = _load_diff_module()
+    # The guard lowers every limit to the host's available memory; a large
+    # host keeps these overrides from meeting that floor on a small runner.
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "96")
     monkeypatch.setenv("MOLT_MAX_PROCESS_RSS_GB", "7")
     monkeypatch.setenv("MOLT_MAX_TOTAL_RSS_GB", "8")
     monkeypatch.setenv("MOLT_MAX_GLOBAL_RSS_GB", "9")

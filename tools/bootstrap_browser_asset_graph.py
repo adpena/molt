@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -27,7 +28,12 @@ def main() -> int:
     )
     if result.returncode != 0:
         raise SystemExit(result.returncode)
-    print("browser-asset-parser: ready (Acorn 8.15.0, lockfile exact)")
+    installed = json.loads(
+        (TOOL_ROOT / "node_modules" / "acorn" / "package.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    print(f"browser-asset-parser: ready (Acorn {installed['version']}, lockfile exact)")
     return 0
 
 

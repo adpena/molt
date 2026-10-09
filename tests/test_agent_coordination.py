@@ -8,6 +8,8 @@ import sys
 import pytest
 
 from tools import agent_coordination
+import time
+from tests.process_guard_common import install_module_view
 
 
 def _identity_fixture_git(repo: Path, *arguments: str) -> str:
@@ -1003,10 +1005,12 @@ def test_codex_stall_telemetry_records_first_output_and_idle_spans(
     monkeypatch,
 ) -> None:
     monotonic_values = iter([1.25, 1.60])
-    monkeypatch.setattr(
-        agent_coordination.time,
-        "monotonic",
-        lambda: next(monotonic_values),
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        agent_coordination,
+        monotonic=lambda: next(monotonic_values),
     )
     telemetry = agent_coordination.CodexStallTelemetry(
         idle_threshold_sec=0.1,
@@ -1277,3 +1281,23 @@ def test_codex_crash_classifies_unsupported_exec_interrupt(
     assert any(
         "proof_queue prune-stale" in action for action in payload["next_actions"]
     )
+
+
+def test_agent_context_reports_a_claims_row_outside_the_vocabulary(
+    tmp_path: Path,
+) -> None:
+    claims = tmp_path / "docs" / "agent" / "CLAIMS.md"
+    claims.parent.mkdir(parents=True)
+    claims.write_text(
+        "## Log\n| L | a | 2026-10-01T00:00:00Z | BLOCKED | stopped |\n",
+        encoding="utf-8",
+    )
+    errors: list[dict[str, object]] = []
+
+    context = agent_coordination._claims_context(tmp_path, errors)
+
+    assert context["counts"] is None
+    assert [(error["source"], error["kind"]) for error in errors] == [
+        ("claims.records", "invalid_status")
+    ]
+    assert "'BLOCKED'" in str(errors[0]["message"])

@@ -16,16 +16,23 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from molt.exact_json import ExactJsonError, loads_exact, write_exact
-from molt.file_publication import durable_publish_directory_exclusive
-from molt.toolchain_identity import stable_file_sha256
-from molt.verified_subset import VerifiedSubsetCoordinate
-from tools import pact_witness_receipt as pwr
-from tools import perf_authority as pa
-from tools import release_criterion_receipt as rcr
-from tools import verified_subset
-from tools.git_identity import is_git_object_id
-from tools.command_execution import CommandExecutor
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
+
+bind_repository_imports(__file__)
+
+from molt.exact_json import ExactJsonError, loads_exact, write_exact  # noqa: E402
+from molt.file_publication import durable_publish_directory_exclusive  # noqa: E402
+from molt.toolchain_identity import stable_file_sha256  # noqa: E402
+from molt.verified_subset import VerifiedSubsetCoordinate  # noqa: E402
+from tools import pact_witness_receipt as pwr  # noqa: E402
+from tools import perf_authority as pa  # noqa: E402
+from tools import release_criterion_receipt as rcr  # noqa: E402
+from tools import verified_subset  # noqa: E402
+from tools.git_identity import is_git_object_id  # noqa: E402
+from tools.command_execution import CommandExecutor  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]

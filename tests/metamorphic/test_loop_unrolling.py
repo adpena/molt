@@ -91,7 +91,7 @@ def test_loop_unrolling_equivalence(pair: tuple[str, str]):
     result = runner.compare(original, unrolled)
 
     if result.error:
-        pytest.skip(f"Build/run error: {result.error}")
+        pytest.fail(f"Build/run error: {result.error}")
 
     assert result.equivalent, (
         f"Output differs after loop unrolling!\n"

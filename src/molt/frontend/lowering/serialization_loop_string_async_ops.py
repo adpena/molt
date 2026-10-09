@@ -585,8 +585,6 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "CALL_DUMMY":
-            ctx.json_ops.append({"kind": "const", "value": 0, "out": op.result.name})
         elif op.kind == "BRIDGE_UNAVAILABLE":
             ctx.json_ops.append(
                 {

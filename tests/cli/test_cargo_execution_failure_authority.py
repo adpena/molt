@@ -396,7 +396,7 @@ def test_canonical_cargo_environment_uses_normal_policy_without_sccache(
 ) -> None:
     for name in CARGO_WRAPPER_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(CARGO, "_pinned_sccache", lambda _env: None)
+    monkeypatch.setattr(CARGO, "pinned_sccache", lambda _env: None)
     if explicit is None:
         monkeypatch.delenv("CARGO_INCREMENTAL", raising=False)
     else:

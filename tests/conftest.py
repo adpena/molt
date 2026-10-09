@@ -34,6 +34,44 @@ def _restore_process_environment() -> Iterator[None]:
         os.environ.update(snapshot)
 
 
+# Process-global names the intrinsic loader (src/_intrinsics.py) reads.
+_INTRINSIC_BUILTINS = (
+    "_molt_intrinsics",
+    "_molt_intrinsic_lookup",
+    "_molt_intrinsics_strict",
+    "_molt_runtime",
+)
+
+
+@pytest.fixture(autouse=True)
+def _restore_intrinsic_registry() -> Iterator[None]:
+    """Every test ends with the intrinsic registry it started with.
+
+    Stub-surface tests install fake intrinsic tables on ``builtins`` to run a
+    stdlib module on the host interpreter, and some add entries in place. A
+    leaked table answers ``molt_capabilities_has`` and friends for every later
+    test on the same worker, so the restore covers both the binding and the
+    dictionary contents.
+    """
+    import builtins
+
+    missing = object()
+    saved = {name: getattr(builtins, name, missing) for name in _INTRINSIC_BUILTINS}
+    contents = {
+        name: dict(value) for name, value in saved.items() if isinstance(value, dict)
+    }
+    yield
+    for name, value in saved.items():
+        if value is missing:
+            if hasattr(builtins, name):
+                delattr(builtins, name)
+            continue
+        setattr(builtins, name, value)
+        if name in contents and value != contents[name]:
+            value.clear()
+            value.update(contents[name])
+
+
 # Guard caps a CI job plan or an outer guard exports to its children.
 AMBIENT_GUARD_CAP_KEYS = (
     "MOLT_MAX_PROCESS_RSS_GB",
@@ -51,6 +89,55 @@ def no_ambient_guard_caps(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     for key in AMBIENT_GUARD_CAP_KEYS:
         monkeypatch.delenv(key, raising=False)
+
+
+# What a hosted job adds to a developer host: the custody contract, and the
+# Molt roots and session that the guarded executor derives from it. Tool caches
+# (UV_*, TMPDIR, PYTHONPYCACHEPREFIX) stay, so child `uv run` calls keep their
+# environment and write nothing into the checkout.
+DEVELOPER_HOST_CLEARED_KEYS = (
+    "MOLT_CI_EPHEMERAL_CUSTODY_ROOT",
+    "MOLT_EXT_ROOT",
+    "MOLT_TARGET_ROOT",
+    "MOLT_CACHE",
+    "MOLT_DIFF_ROOT",
+    "MOLT_DIFF_TMPDIR",
+    "MOLT_DIFF_CARGO_TARGET_DIR",
+    "CARGO_TARGET_DIR",
+    "MOLT_SESSION_ID",
+    "MOLT_SESSION_ID_GENERATED",
+)
+
+
+@pytest.fixture
+def developer_host_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve paths as a developer host with no ambient run context does.
+
+    A hosted job exports the custody root for the whole job, and the proof
+    plan's guarded executor exports the roots and session it derives from it.
+    A test that builds a synthetic project, patches ``subprocess`` or asserts
+    default roots would test that CI context instead.
+    """
+    from molt.dx import GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV
+
+    assert GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV in DEVELOPER_HOST_CLEARED_KEYS
+    for key in DEVELOPER_HOST_CLEARED_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture
+def session_sentinel_paused(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Pause the serial session's repo sentinel while a test fakes process data.
+
+    The sentinel's thread reads the same module functions these tests patch, so
+    it could see one test's fake groups and act on them during the next test.
+    """
+    sentinel = getattr(request.config, _PYTEST_SENTINEL_ATTR, None)
+    if sentinel is None:
+        yield
+        return
+    with sentinel.paused():
+        yield
 
 
 @pytest.fixture
@@ -160,17 +247,40 @@ def readonly_file_source(
         source.chmod(0o600)
 
 
-def _remove_molt_stdlib_top_level_root() -> None:
-    """Keep host pytest imports on CPython's stdlib.
+def _remove_molt_stdlib_top_level_root() -> bool:
+    """Keep host pytest imports on CPython's stdlib; True if a root was found.
 
     Surface tests may load Molt stdlib files directly, but `src/molt/stdlib`
-    must not remain as a top-level import root during collection. If it does,
-    host imports such as `ctypes`, `fractions`, `statistics`, and `tarfile`
-    resolve to Molt intrinsic-gated wrappers and fail before the runtime exists.
+    must never be a top-level import root of the host process. If it is,
+    host imports such as `asyncio`, `concurrent`, `ctypes` and `tarfile`
+    resolve to Molt intrinsic-gated wrappers and fail with "runtime inactive"
+    in every later test on the worker, and in every child it spawns.
     """
 
+    found = MOLT_STDLIB_ROOT in sys.path
     while MOLT_STDLIB_ROOT in sys.path:
         sys.path.remove(MOLT_STDLIB_ROOT)
+    return found
+
+
+_MOLT_STDLIB_ROOT_LEAK = (
+    "{owner} left {root} on sys.path; Molt's stdlib then shadows CPython's "
+    "for the rest of the process. Load Molt stdlib files by path "
+    "(tests/stdlib_intrinsic_registry.py, tests/helpers/tinygrad_stdlib_loader.py) "
+    "or in a child interpreter."
+)
+
+
+@pytest.fixture(autouse=True)
+def _reject_molt_stdlib_import_root(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Fail the test that puts Molt's stdlib on the host import path."""
+    yield
+    if _remove_molt_stdlib_top_level_root():
+        pytest.fail(
+            _MOLT_STDLIB_ROOT_LEAK.format(
+                owner=request.node.nodeid, root=MOLT_STDLIB_ROOT
+            )
+        )
 
 
 def _ensure_src_on_path() -> None:
@@ -270,8 +380,16 @@ def pytest_sessionfinish(session, exitstatus) -> None:  # type: ignore[no-untype
         sentinel.__exit__(None, None, None)
 
 
-def pytest_collect_file() -> None:
-    _remove_molt_stdlib_top_level_root()
+@pytest.hookimpl(wrapper=True)
+def pytest_make_collect_report(collector):  # type: ignore[no-untyped-def]
+    """Fail the collection of a module that puts Molt's stdlib on sys.path."""
+    report = yield
+    if isinstance(collector, pytest.Module) and _remove_molt_stdlib_top_level_root():
+        report.outcome = "failed"
+        report.longrepr = _MOLT_STDLIB_ROOT_LEAK.format(
+            owner=collector.nodeid, root=MOLT_STDLIB_ROOT
+        )
+    return report
 
 
 @pytest.fixture

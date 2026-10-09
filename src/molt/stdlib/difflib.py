@@ -848,3 +848,5 @@ td.diff_header {text-align:right}
             # '? ' lines (intraline hint markers) are skipped in the HTML view
         rows.append("</tbody></table>")
         return "\n".join(rows)
+
+globals().pop("_require_intrinsic", None)

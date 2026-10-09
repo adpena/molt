@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+import os
 
 import pytest
 
@@ -10,6 +11,7 @@ from molt import dx
 from molt.cli import build_diagnostics
 from molt.cli import frontend_execution
 from molt.cli import frontend_parallel
+from tests.process_guard_common import install_module_view
 
 _FRONTEND_PARALLEL_NAMES = (
     "_append_frontend_parallel_layer_detail",
@@ -93,7 +95,7 @@ def test_frontend_parallel_defaults_to_memory_bounded_auto(monkeypatch) -> None:
     monkeypatch.setattr(
         frontend_parallel, "_system_memory_bytes", lambda: (64 * gib, 7 * gib)
     )
-    monkeypatch.setattr(frontend_parallel.os, "cpu_count", lambda: 16)
+    install_module_view(monkeypatch, "os", os, frontend_parallel, cpu_count=lambda: 16)
 
     assert frontend_parallel._resolve_frontend_parallel_module_workers() == 6
 
@@ -230,7 +232,7 @@ def test_frontend_worker_policy_payload_exposes_resource_authority(monkeypatch) 
     monkeypatch.setattr(
         frontend_parallel, "_system_memory_bytes", lambda: (64 * gib, 5 * gib)
     )
-    monkeypatch.setattr(frontend_parallel.os, "cpu_count", lambda: 16)
+    install_module_view(monkeypatch, "os", os, frontend_parallel, cpu_count=lambda: 16)
     config = frontend_parallel._resolve_frontend_parallel_config(module_count=8)
 
     payload = frontend_parallel._frontend_parallel_policy_payload(config)
@@ -251,7 +253,7 @@ def test_frontend_pool_never_spawns_more_processes_than_modules(monkeypatch) -> 
     monkeypatch.setattr(
         frontend_parallel, "_system_memory_bytes", lambda: (128 * gib, 64 * gib)
     )
-    monkeypatch.setattr(frontend_parallel.os, "cpu_count", lambda: 32)
+    install_module_view(monkeypatch, "os", os, frontend_parallel, cpu_count=lambda: 32)
 
     config = frontend_parallel._resolve_frontend_parallel_config(module_count=2)
 

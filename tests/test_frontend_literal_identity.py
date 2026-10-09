@@ -11,13 +11,7 @@ from molt.compiler_analysis.literal_identity import (
 from molt.compiler_analysis.static_truth import _same_scalar_value
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
 from molt.frontend._types import _SCCP_OVERDEFINED, _SCCP_UNKNOWN
-from molt.frontend.cfg_analysis import (
-    BasicBlock,
-    CFGEdgeKind,
-    CFGGraph,
-    DominatorTree,
-    build_cfg,
-)
+from molt.frontend.cfg_analysis import BasicBlock, CFGEdgeKind, CFGGraph, build_cfg
 from molt.frontend.lowering.midend_dataflow import _same_sccp_state
 from molt.frontend.lowering.serialization_context import SerializationContext
 
@@ -165,7 +159,6 @@ def _phi_result(left: object, right: object) -> dict[str, object]:
         },
         predecessors={0: [], 1: [0], 2: [0], 3: [1, 2]},
         reachable={0, 1, 2, 3},
-        dominance=DominatorTree.compute([[1, 2], [3], [3], []]),
     )
     gen = SimpleTIRGenerator()
     result = gen._compute_sccp(ops, cfg)

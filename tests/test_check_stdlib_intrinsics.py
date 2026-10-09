@@ -11,6 +11,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "tools" / "check_stdlib_intrinsics.py"
 
 
+@pytest.fixture(autouse=True)
+def _private_build_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The gate caches per-module facts under the build state; keep each test's
+    # cache in its own directory instead of the checkout's target tree.
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "build-state"))
+
+
 def _load_gate_module():
     spec = importlib.util.spec_from_file_location(
         "check_stdlib_intrinsics_gate", SCRIPT_PATH
@@ -768,9 +775,9 @@ def test_same_package_intrinsic_wrapper_is_not_python_only_in_audit(
     classify = module.classify_stdlib_module_statuses
     target_versions: list[str] = []
 
-    def classify_for_target(paths, *, target_python):
+    def classify_for_target(paths, *, target_python, **options):
         target_versions.append(target_python.short)
-        return classify(paths, target_python=target_python)
+        return classify(paths, target_python=target_python, **options)
 
     monkeypatch.setattr(module, "classify_stdlib_module_statuses", classify_for_target)
     selected_target = f"3.{min(sys.version_info.minor, 14)}"

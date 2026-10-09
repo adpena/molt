@@ -15,34 +15,27 @@ import pytest
 
 from tests.native_process_guard import run_native_test_process
 from molt.wasm_artifact import wasm_runtime_manifest_path
-from tests.helpers.falcon_ocr_paths import (
-    FALCON_OCR_TOKENIZER_PATH,
-    falcon_ocr_weights_available,
-)
+from tests.helpers.falcon_ocr_paths import require_falcon_ocr_weight
 
 
-WASM_OPT_PATH = Path(
-    os.environ.get("MOLT_FALCON_OCR_WASM_OPT", "/tmp/falcon_latest_opt.wasm")
-)
-WASM_LINKED_PATH = Path(
-    os.environ.get("MOLT_FALCON_OCR_WASM_LINKED", "/tmp/falcon_latest_linked.wasm")
-)
+def _wasm_artifact(variable: str) -> Path:
+    """A built Falcon-OCR module; external artifacts have no default path."""
+    raw = os.environ.get(variable, "").strip()
+    if not raw or not Path(raw).expanduser().exists():
+        pytest.skip(f"{variable} does not name a built Falcon-OCR module")
+    return Path(raw).expanduser()
 
 
 def test_wasm_compiles():
     """WASM binary exists and is valid."""
-    if not WASM_OPT_PATH.exists():
-        pytest.skip(f"Falcon-OCR optimized WASM not found at {WASM_OPT_PATH}")
-    with WASM_OPT_PATH.open("rb") as f:
+    with _wasm_artifact("MOLT_FALCON_OCR_WASM_OPT").open("rb") as f:
         magic = f.read(4)
         assert magic == b"\x00asm"
 
 
 def test_wasm_runs_cleanly():
     """WASM runs without traps."""
-    if not WASM_LINKED_PATH.exists():
-        pytest.skip(f"Falcon-OCR linked WASM not found at {WASM_LINKED_PATH}")
-    manifest = wasm_runtime_manifest_path(WASM_LINKED_PATH)
+    manifest = wasm_runtime_manifest_path(_wasm_artifact("MOLT_FALCON_OCR_WASM_LINKED"))
     result = run_native_test_process(
         ["node", "wasm/run_wasm.js", str(manifest)],
         capture_output=True,
@@ -54,12 +47,7 @@ def test_wasm_runs_cleanly():
 
 def test_tokenizer_decodes_ocr_tokens():
     """OCR special tokens decode correctly."""
-    if not falcon_ocr_weights_available():
-        pytest.skip(
-            "Falcon-OCR weights/config/tokenizer artifacts are not available "
-            f"under {FALCON_OCR_TOKENIZER_PATH.parent}"
-        )
-    with FALCON_OCR_TOKENIZER_PATH.open() as f:
+    with require_falcon_ocr_weight("tokenizer.json").open() as f:
         data = json.load(f)
     vocab = {}
     for piece, tid in data.get("model", {}).get("vocab", {}).items():

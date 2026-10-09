@@ -7,10 +7,9 @@ from pathlib import Path
 import pytest
 
 from tests.process_guard_common import run_guarded_test_process
-from tests.helpers.falcon_ocr_paths import FALCON_OCR_TOKENIZER_PATH
+from tests.helpers.falcon_ocr_paths import require_falcon_ocr_weight
 
 ROOT = Path(__file__).resolve().parents[1]
-TOKENIZER_PATH = FALCON_OCR_TOKENIZER_PATH
 
 OFFICIAL_INSTRUCTIONS = {
     "plain": "Extract the text content from this image.",
@@ -29,11 +28,10 @@ OFFICIAL_INSTRUCTIONS = {
 
 def _official_prompt_ids() -> dict[str, list[int]]:
     pytest.importorskip("tokenizers")
-    if not TOKENIZER_PATH.exists():
-        pytest.skip(f"Falcon-OCR tokenizer not found at {TOKENIZER_PATH}")
+    tokenizer_path = require_falcon_ocr_weight("tokenizer.json")
     from tokenizers import Tokenizer
 
-    tokenizer = Tokenizer.from_file(str(TOKENIZER_PATH))
+    tokenizer = Tokenizer.from_file(str(tokenizer_path))
     return {
         category: tokenizer.encode(f"<|image|>{instruction}\n<|OCR_PLAIN|>").ids
         for category, instruction in OFFICIAL_INSTRUCTIONS.items()

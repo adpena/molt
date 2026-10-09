@@ -10,22 +10,16 @@ TRANCHE_FILES = [
     "src/molt/stdlib/_bisect.py",
     "src/molt/stdlib/_collections_abc.py",
     "src/molt/stdlib/_ctypes.py",
-    "src/molt/stdlib/_curses.py",
-    "src/molt/stdlib/_curses_panel.py",
     "src/molt/stdlib/_datetime.py",
-    "src/molt/stdlib/_dbm.py",
     "src/molt/stdlib/_decimal.py",
     "src/molt/stdlib/_elementtree.py",
     "src/molt/stdlib/_frozen_importlib.py",
     "src/molt/stdlib/_frozen_importlib_external.py",
     "src/molt/stdlib/_functools.py",
-    "src/molt/stdlib/_gdbm.py",
     "src/molt/stdlib/_hashlib.py",
     "src/molt/stdlib/_heapq.py",
     "src/molt/stdlib/_hmac.py",
     "src/molt/stdlib/_imp.py",
-    "src/molt/stdlib/_interpchannels.py",
-    "src/molt/stdlib/_interpqueues.py",
 ]
 
 

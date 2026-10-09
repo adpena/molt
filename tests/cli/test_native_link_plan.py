@@ -8,6 +8,7 @@ from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 import subprocess
 import sys
+import platform
 
 import pytest
 from tools.command_execution import CommandExecutor
@@ -26,6 +27,7 @@ from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkLoadingPolicy,
     source_extension_link_file,
 )
+from tests.process_guard_common import install_module_view
 
 
 _COMMANDS = CommandExecutor.for_file(__file__)
@@ -782,8 +784,10 @@ def test_planned_release_strip_failure_is_loud(
 ) -> None:
     binary = tmp_path / "app"
     binary.write_bytes(b"ELF")
-    monkeypatch.setattr(build_results.sys, "platform", "linux")
-    monkeypatch.setattr(build_results.platform, "machine", lambda: "x86_64")
+    install_module_view(monkeypatch, "sys", sys, build_results, platform="linux")
+    install_module_view(
+        monkeypatch, "platform", platform, build_results, machine=lambda: "x86_64"
+    )
     monkeypatch.setattr(
         build_results,
         "llvm_tool_candidates",
@@ -807,8 +811,10 @@ def test_cross_target_strip_requires_target_capable_llvm_strip(
 ) -> None:
     binary = tmp_path / "app"
     binary.write_bytes(b"ELF")
-    monkeypatch.setattr(build_results.sys, "platform", "win32")
-    monkeypatch.setattr(build_results.platform, "machine", lambda: "AMD64")
+    install_module_view(monkeypatch, "sys", sys, build_results, platform="win32")
+    install_module_view(
+        monkeypatch, "platform", platform, build_results, machine=lambda: "AMD64"
+    )
     monkeypatch.setattr(
         build_results,
         "llvm_tool_candidates",
@@ -828,8 +834,10 @@ def test_cross_target_strip_uses_llvm_strip_and_target_format_flags(
     llvm_strip = tmp_path / "llvm-strip.exe"
     llvm_strip.write_bytes(b"tool")
     received: list[list[str]] = []
-    monkeypatch.setattr(build_results.sys, "platform", "win32")
-    monkeypatch.setattr(build_results.platform, "machine", lambda: "AMD64")
+    install_module_view(monkeypatch, "sys", sys, build_results, platform="win32")
+    install_module_view(
+        monkeypatch, "platform", platform, build_results, machine=lambda: "AMD64"
+    )
     monkeypatch.setattr(
         build_results,
         "llvm_tool_candidates",

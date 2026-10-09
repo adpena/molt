@@ -10,11 +10,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import functools as _host_functools
 import importlib.util
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 class _Closing:
@@ -201,7 +200,7 @@ _KW_MARK = object()
 _ASYNC_SLEEPS = []
 _TIME_SLEEPS = []
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_time_monotonic": lambda: 1.25,
     "molt_time_monotonic_ns": lambda: 125,
     "molt_time_perf_counter": lambda: 2.5,
@@ -224,8 +223,6 @@ builtins._molt_intrinsics = {{
     "molt_time_sleep": lambda delay: _TIME_SLEEPS.append(float(delay)),
     "molt_async_sleep": lambda delay, result=None: ("sleep", float(delay), result),
     "molt_block_on": lambda fut: _ASYNC_SLEEPS.append(fut),
-    "molt_capabilities_trusted": lambda: True,
-    "molt_capabilities_has": lambda name: True,
     "molt_context_null": lambda value=None: value,
     "molt_contextlib_closing": lambda thing: _Closing(thing),
     "molt_contextlib_aclosing_enter": lambda thing: thing,
@@ -311,23 +308,7 @@ builtins._molt_intrinsics = {{
     "molt_functools_singledispatch_drop": _sd_drop,
     "molt_functools_cmp_to_key": _host_functools.cmp_to_key,
     "molt_functools_total_ordering": _host_functools.total_ordering,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 def _load_module(name, path_text):

@@ -53,33 +53,40 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from molt.exact_json import (
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
+
+bind_repository_imports(__file__)
+
+from molt.exact_json import (  # noqa: E402
     ExactJsonError,
     canonical_json_bytes,
     canonical_json_sha256,
     loads_exact,
     write_exact,
 )
-from molt.file_publication import (
+from molt.file_publication import (  # noqa: E402
     atomic_write_bytes,
     durable_publish_exclusive,
     resolve_owned_path,
     staged_file_path,
 )
-from molt.portable_paths import portable_path_component, portable_relative_path
-from molt.toolchain_identity import (
+from molt.portable_paths import portable_path_component, portable_relative_path  # noqa: E402
+from molt.toolchain_identity import (  # noqa: E402
     StableRegularFileChangedError,
     open_stable_regular_file,
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
-from tools import legacy_inventory
-from tools import pact_witness_receipt as pwr
-from tools import perf_authority as pa
-from tools import release_criterion_receipt as rcr
-from tools import release_exit_gate as reg
-from tools import verified_subset as vs
-from tools.git_identity import is_git_object_id
+from tools import legacy_inventory  # noqa: E402
+from tools import pact_witness_receipt as pwr  # noqa: E402
+from tools import perf_authority as pa  # noqa: E402
+from tools import release_criterion_receipt as rcr  # noqa: E402
+from tools import release_exit_gate as reg  # noqa: E402
+from tools import verified_subset as vs  # noqa: E402
+from tools.git_identity import is_git_object_id  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIREMENTS_PATH = ROOT / "config" / "phase_exit_requirements.toml"

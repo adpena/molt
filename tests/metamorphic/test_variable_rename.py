@@ -118,7 +118,7 @@ def test_variable_rename_equivalence(program: str):
     result = runner.compare(program, renamed)
 
     if result.error:
-        pytest.skip(f"Build/run error: {result.error}")
+        pytest.fail(f"Build/run error: {result.error}")
 
     assert result.equivalent, (
         f"Output differs after variable renaming!\n"

@@ -148,7 +148,6 @@ const {
   callWithWasmSignature,
   extractWasmTableBase,
   installWasmTagImports,
-  normalizeImportResult,
   normalizeValueForKind,
   parseWasmImports,
   planReservedRuntimeDispatch,
@@ -1393,7 +1392,7 @@ const buildRuntimeImports = (outputImports, runtimeInstance, options = {}) => {
           freeRuntimeTempBytes,
           writeU64ToMemory,
         });
-        return normalizeImportResult(bridgedResult, resultKind);
+        return normalizeValueForKind(bridgedResult, resultKind);
       }
       if (runtimeImportObjectArrayArgNames.has(entry.name) && appMemory) {
         const bridgedResult = callRuntimeObjectArrayArgImport({
@@ -1407,9 +1406,9 @@ const buildRuntimeImports = (outputImports, runtimeInstance, options = {}) => {
           allocRuntimeTempBytes,
           freeRuntimeTempBytes,
         });
-        return normalizeImportResult(bridgedResult, resultKind);
+        return normalizeValueForKind(bridgedResult, resultKind);
       }
-      return normalizeImportResult(fn(...callArgs), resultKind);
+      return normalizeValueForKind(fn(...callArgs), resultKind);
     };
   }
   return imports;

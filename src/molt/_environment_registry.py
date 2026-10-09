@@ -3731,11 +3731,11 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "developer",
-      "default": "/Users/adpena/Projects/enjoice/experiments/tinygrad-molt/falcon-ocr",
+      "default": "",
       "kind": "path",
       "name": "MOLT_FALCON_OCR_ARTIFACT_ROOT",
       "owner": "tests/helpers/falcon_ocr_paths.py",
-      "summary": "Directory that holds the Falcon OCR weights the e2e OCR tests load from weights/model.safetensors, weights/config.json and weights/tokenizer.json; falcon_ocr_weights_available() reports whether all three files exist, and the default is the fixed path /Users/adpena/Projects/enjoice/experiments/tinygrad-molt/falcon-ocr.",
+      "summary": "Falcon OCR experiment checkout that holds the weights (weights/model.safetensors, weights/config.json, weights/tokenizer.json) and the helper modules the OCR tests load; these are external artifacts with no default location, so a test that needs one skips while this is unset.",
       "values": []
     },
     {
@@ -3925,8 +3925,8 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "string",
       "name": "MOLT_HASH_SEED",
-      "owner": "src/molt/cli/__init__.py",
-      "summary": "PYTHONHASHSEED value the molt CLI re-executes itself with for deterministic builds; off, disable, or random skip the re-exec, empty means 0, and the value also keys the molt-run wrapper build cache.",
+      "owner": "src/molt/cli_entry.py",
+      "summary": "PYTHONHASHSEED value the molt launcher restarts itself with, before the CLI loads, for deterministic builds; off, disable, or random skip the re-exec, empty means 0, and the value also keys the molt-run wrapper build cache.",
       "values": []
     },
     {
@@ -3934,7 +3934,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "bool",
       "name": "MOLT_HASH_SEED_APPLIED",
-      "owner": "src/molt/cli/__init__.py",
+      "owner": "src/molt/cli_entry.py",
       "summary": "The molt CLI sets it to 1 in the environment of its own PYTHONHASHSEED re-exec; the child reads it and exits 127 when the seed still does not match instead of re-executing again.",
       "values": []
     },

@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+import platform
 
 import pytest
 
@@ -18,6 +19,12 @@ from molt.cli import process_execution, quality_commands, script_commands
 from molt.node_runtime import NodeRuntime
 from molt.llvm_toolchain import LlvmBackendPin
 from tests.cli.process_guard import run_cli_test_process
+from tests.process_guard_common import install_module_view
+
+# These cases build synthetic projects and assert developer-host roots and
+# guard limits; hosted custody has its own cases in
+# tests/test_dx_run_context.py, and each limit case sets the caps it tests.
+pytestmark = pytest.mark.usefixtures("developer_host_context", "no_ambient_guard_caps")
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -379,7 +386,7 @@ def test_cli_run_command_uses_memory_guard_prefix(
         cli,
         lambda cwd: _fake_cli_harness(calls),
     )
-    monkeypatch.setattr(cli.subprocess, "run", fail_raw_run, raising=True)
+    install_module_view(monkeypatch, "subprocess", subprocess, cli, run=fail_raw_run)
 
     rc = process_execution._run_command(
         ["python3", "-c", "print('ok')"],
@@ -421,7 +428,7 @@ def test_cli_timed_command_uses_memory_guard_elapsed(
         cli,
         lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
     )
-    monkeypatch.setattr(cli.subprocess, "run", fail_raw_run, raising=True)
+    install_module_view(monkeypatch, "subprocess", subprocess, cli, run=fail_raw_run)
 
     result = process_execution._run_command_timed(
         ["python3", "-c", "print('ok')"],
@@ -495,7 +502,13 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
         raise AssertionError("cargo helper used raw subprocess.run")
 
     monkeypatch.setenv("MOLT_BUILD_MAX_PROCESS_RSS_GB", "0.25")
-    monkeypatch.setattr(COMMAND_RUNTIME.subprocess, "run", fail_raw_subprocess_run)
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        COMMAND_RUNTIME,
+        run=fail_raw_subprocess_run,
+    )
     _patch_memory_guard_loader(
         monkeypatch,
         cli,
@@ -543,7 +556,7 @@ def test_maybe_enable_sccache_installs_shared_dx_cache_defaults(
         "MOLT_USE_SCCACHE": "1",
     }
     monkeypatch.setattr(
-        CARGO_EXECUTION, "_pinned_sccache", lambda _env: "/usr/bin/sccache"
+        CARGO_EXECUTION, "pinned_sccache", lambda _env: "/usr/bin/sccache"
     )
     monkeypatch.setattr(
         CARGO_EXECUTION, "_sccache_server_responsive", lambda _sccache: True
@@ -588,7 +601,7 @@ def test_cli_wrapper_build_uses_default_memory_guard(
         cli,
         lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
     )
-    monkeypatch.setattr(cli.subprocess, "run", fail_raw_run, raising=True)
+    install_module_view(monkeypatch, "subprocess", subprocess, cli, run=fail_raw_run)
 
     contract, duration, error = cli._run_wrapper_build(
         file_path=str(entry),
@@ -1284,7 +1297,9 @@ def test_update_plan_bootstraps_missing_cargo_tool_helpers(
 def test_llvm_backend_advice_names_exact_prefix_and_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Windows")
+    install_module_view(
+        monkeypatch, "platform", platform, SETUP_READINESS, system=lambda: "Windows"
+    )
 
     advice = SETUP_READINESS._llvm_backend_advice(22)
 
@@ -1297,7 +1312,9 @@ def test_llvm_backend_advice_names_exact_prefix_and_config(
 def test_llvm_report_distinguishes_windows_clang_without_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Windows")
+    install_module_view(
+        monkeypatch, "platform", platform, SETUP_READINESS, system=lambda: "Windows"
+    )
     monkeypatch.setattr(
         SETUP_READINESS,
         "_required_llvm_backend_pin",
@@ -1378,7 +1395,9 @@ def test_llvm_report_distinguishes_windows_clang_without_config(
 def test_windows_msvc_env_reports_inactive_dev_shell(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Windows")
+    install_module_view(
+        monkeypatch, "platform", platform, SETUP_READINESS, system=lambda: "Windows"
+    )
     monkeypatch.setattr(
         SETUP_READINESS,
         "_windows_vsdevcmd_path",
@@ -1445,7 +1464,9 @@ def test_windows_vsdevcmd_advice_uses_shared_installation_selection(
         selected.append(component)
         return installation
 
-    monkeypatch.setattr(SETUP_READINESS.platform, "system", lambda: "Windows")
+    install_module_view(
+        monkeypatch, "platform", platform, SETUP_READINESS, system=lambda: "Windows"
+    )
     monkeypatch.setattr(platform_toolchain, "visual_studio_installation", discover)
     assert SETUP_READINESS._windows_vsdevcmd_path() == script
     assert selected == ["Microsoft.VisualStudio.Component.VC.Tools.x86.x64"]

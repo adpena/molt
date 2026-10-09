@@ -31,7 +31,7 @@ def execute_commands(
     commands: Iterable[ProofCommand],
     receipt_path: Path,
     *,
-    _source_tree_state: Callable[[], str],
+    _source_tree_changes: Callable[[], tuple[str, ...]],
     toolchain_fingerprints: Callable[
         [ProofPlan, tuple[str, ...]], dict[str, dict[str, Any]]
     ],
@@ -49,11 +49,12 @@ def execute_commands(
     command_list = tuple(commands)
     if not command_list:
         raise ValueError("receipt execution requires at least one command")
-    source_tree_state = _source_tree_state()
-    if source_tree_state != "clean":
+    initial_changes = _source_tree_changes()
+    if initial_changes:
         raise ValueError(
             "executable proof receipts require a clean source tree; commit or "
-            "remove every staged, unstaged, and untracked input first"
+            "remove every staged, unstaged, and untracked input first: "
+            + _describe_source_changes(initial_changes)
         )
     source_identity = _source_identity()
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,7 +107,7 @@ def execute_commands(
         "authority_sha256": _authority_sha256(plan),
         "source_commit": source_identity["commit"],
         "source_tree": source_identity["tree"],
-        "source_tree_state": source_tree_state,
+        "source_tree_state": "clean",
         "family": command_list[0].family,
         "environment": {
             "os": _normalized_os(),
@@ -174,8 +175,11 @@ def execute_commands(
 
     def source_change() -> str | None:
         try:
-            if _source_tree_state() != "clean":
-                return "source tree changed or is dirty"
+            changes = _source_tree_changes()
+            if changes:
+                return "source tree changed or is dirty: " + _describe_source_changes(
+                    changes
+                )
             if _source_identity() != source_identity:
                 return "candidate HEAD or tree identity changed"
         except Exception as exc:
@@ -426,9 +430,33 @@ def execute_commands(
         record["status"] == "skipped" for record in records_by_id.values()
     )
     refresh_receipt()
+    if receipt["status"] == "failure":
+        # The receipt holds the evidence; the log must still say what failed
+        # and why, or every failure costs an artifact download.
+        for record in failures:
+            reason = record.get("failure_reason") or (
+                f"exit {record.get('returncode')}"
+            )
+            print(f"proof-plan: failed {record['id']}: {reason}", file=sys.stderr)
+        if not failures:
+            for reason in execution["global_stop_reasons"]:
+                print(f"proof-plan: stopped: {reason}", file=sys.stderr)
+        print(
+            f"proof-plan: family={receipt['family']} status=failure "
+            f"failed={len(failures)}; receipt={receipt_path}",
+            file=sys.stderr,
+        )
     if custody_errors:
         raise ExceptionGroup(
             f"proof executor retained unresolved guard custody; inspect {receipt_path}",
             custody_errors,
         )
     return returncode
+
+
+def _describe_source_changes(changes: tuple[str, ...], limit: int = 8) -> str:
+    """Name the Git status entries behind a dirty-tree verdict, bounded."""
+
+    shown = ", ".join(changes[:limit])
+    hidden = len(changes) - limit
+    return shown + (f", and {hidden} more" if hidden > 0 else "")

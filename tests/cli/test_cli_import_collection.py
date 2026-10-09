@@ -1,32 +1,8 @@
 from __future__ import annotations
 
-from molt.cli.native_link_plan import resolve_native_target_spec
-
-from tests.operation_probe import same_thread_probe
-from tests.compiler_identity_helper import (
-    stub_compiler_admission,
-    write_compiler_source,
-)
-
-from types import SimpleNamespace
-
-from molt.cli.extension_manifest import _default_molt_c_api_version
-from molt.source_root import compiler_source_root
-
-from tests.cli.native_link_test_support import transport_codegen_binding
-
-from tests.cli.native_link_test_support import native_codegen_binding
-
-from molt.cli import wasm_link_inputs
-from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
-from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
-from molt.cli.python_source_closure import LocalPythonSourceClosure
-from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
-
 import ast
 import builtins as py_builtins
 import contextlib
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib
 import importlib.util
@@ -41,24 +17,18 @@ import tarfile
 import threading
 import time
 import types
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
-from molt.cli.models import (
-    _CompleteImportScan,
-    _ImportScanRequests,
-    _StaticSourceExecutionRequest,
-)
-from molt.target_python import TargetPythonVersion, _DEFAULT_TARGET_PYTHON_VERSION
+from types import SimpleNamespace
 from typing import Any, Collection, Mapping, Sequence, cast
 
-from molt.cli import native_symbol_inspection
 import pytest
 
 import molt.cli as cli
-from molt.cli import maintenance as cli_maintenance
 import molt.wasm_artifact as wasm_artifact
-from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt import c_api_symbols as cli_c_api_symbols
+from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
@@ -69,16 +39,14 @@ from molt.cli import build_diagnostics as cli_build_diagnostics
 from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import build_output_layout as cli_build_output_layout
 from molt.cli import build_results as cli_build_results
-from molt.cli import wrapper_build as cli_wrapper_build
-from molt.cli import script_commands as cli_commands
-from molt.node_runtime import NodeRuntime, NodeRuntimeError
 from molt.cli import config_resolution as cli_config_resolution
 from molt.cli import external_native as cli_external_native
 from molt.cli import frontend_execution as cli_frontend_execution
 from molt.cli import frontend_parallel as cli_frontend_parallel
 from molt.cli import frontend_pipeline as cli_frontend_pipeline
-from molt.cli import link_pipeline as cli_link_pipeline
 from molt.cli import link_fingerprints as cli_link_fingerprints
+from molt.cli import link_pipeline as cli_link_pipeline
+from molt.cli import maintenance as cli_maintenance
 from molt.cli import module_cache as cli_module_cache
 from molt.cli import module_dependencies as cli_module_dependencies
 from molt.cli import module_graph_cache as cli_module_graph_cache
@@ -87,13 +55,20 @@ from molt.cli import module_import_scanner as cli_module_import_scanner
 from molt.cli import module_resolution as cli_module_resolution
 from molt.cli import module_source as cli_module_source
 from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
+from molt.cli import native_symbol_inspection, wasm_link_inputs
 from molt.cli import non_native_output as cli_non_native_output
 from molt.cli import runtime_features as cli_runtime_features
-from molt.cli import source_extensions as cli_source_extensions
+from molt.cli import script_commands as cli_commands
 from molt.cli import source_extension_runtime_imports as cli_runtime_imports
+from molt.cli import source_extensions as cli_source_extensions
+from molt.cli import wrapper_build as cli_wrapper_build
 from molt.cli.app_export_contract import build_app_export_contract
+from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
+from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.models import (
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
+    _CompleteImportScan,
     _ExternalNativeAbiSymbol,
     _ExternalNativeCallableExport,
     _ExternalNativeCapiSymbol,
@@ -102,16 +77,21 @@ from molt.cli.models import (
     _ExternalPackageNativeArtifact,
     _ExternalPackageNativeArtifactPlan,
     _FrontendWorkerResourceDecision,
+    _ImportScanRequests,
     _StagedExternalPackageNativeArtifact,
+    _StaticSourceExecutionRequest,
 )
+from molt.cli.native_link_plan import resolve_native_target_spec
+from molt.cli.python_source_closure import LocalPythonSourceClosure
+from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkInput,
+    SourceExtensionLinkLoadingPolicy,
     SourceExtensionLinkProvider,
     SourceExtensionLinkProviderKind,
     SourceExtensionLinkRequirements,
-    SourceExtensionLinkLoadingPolicy,
-    source_extension_link_file,
     read_source_extension_link_plan,
+    source_extension_link_file,
 )
 from molt.cli.source_extension_object_closure import (
     finalize_source_extension_object_closure,
@@ -122,33 +102,46 @@ from molt.cli.source_extension_object_closure_schema import (
     SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
     SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
 )
-from molt.wasm_linking_symbols import parse_wasm_linking_symbols
 from molt.frontend import MoltValue, SimpleTIRGenerator
+from molt.node_runtime import NodeRuntime, NodeRuntimeError
+from molt.source_root import compiler_source_root
+from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION, TargetPythonVersion
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
+from molt.wasm_linking_symbols import parse_wasm_linking_symbols
 from tests.cli.native_link_test_support import (
-    NativeArchiveFixtureCatalog,
-    static_archive_bytes,
     RUNTIME_BUILD_IDENTITY,
+    NativeArchiveFixtureCatalog,
+    native_codegen_binding,
+    static_archive_bytes,
+    transport_codegen_binding,
     write_test_native_link_manifest,
-)
-from tests.native_artifact_fixtures import (
-    NativeSymbolFixture,
-    native_relocatable_object,
-)
-from tests.runtime_build_identity_helper import (
-    RuntimeFixtureRoot,
-    mock_wasm_optimizer_cache_fact,
-    mock_wasm_optimizer_publications,
 )
 from tests.cli.process_guard import (
     cli_test_popen_kwargs,
     close_cli_test_process_group,
     run_cli_test_process,
 )
+from tests.compiler_identity_helper import (
+    stub_compiler_admission,
+    write_compiler_source,
+)
+from tests.native_artifact_fixtures import (
+    NativeSymbolFixture,
+    native_relocatable_object,
+)
+from tests.operation_probe import same_thread_probe
+from tests.runtime_build_identity_helper import (
+    RuntimeFixtureRoot,
+    mock_wasm_optimizer_cache_fact,
+    mock_wasm_optimizer_publications,
+)
 from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbol as _wasm_exporting_i64_unary_symbol,
+)
+from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbols as _wasm_exporting_i64_unary_symbols,
 )
+from tests.process_guard_common import install_module_view
 
 cli_deps = importlib.import_module("molt.cli.deps")
 cli_frontend_worker = importlib.import_module("molt.cli.frontend_worker")
@@ -441,6 +434,7 @@ def _install_fake_backend_compile(
 
 def _native_dispatch_binding_fixture(root: Path):
     from tempfile import mkdtemp
+
     from tests.cli.native_link_test_support import native_codegen_binding
 
     root.mkdir(parents=True, exist_ok=True)
@@ -8301,7 +8295,7 @@ def test_case_exact_file_refreshes_stale_directory_cache(
         return original_stat(path, *args, **kwargs)
 
     cli_module_resolution._case_exact_dir_entries_cached.cache_clear()
-    monkeypatch.setattr(cli_module_resolution.os, "stat", fake_stat)
+    install_module_view(monkeypatch, "os", os, cli_module_resolution, stat=fake_stat)
 
     assert not cli_module_resolution._case_exact_file(staged)
     staged.write_bytes(b"wasm artifact")
@@ -20635,8 +20629,12 @@ def test_start_backend_daemon_leaves_warming_process_running(
     monkeypatch.setattr(
         BACKEND_EXECUTION, "_backend_daemon_wait_until_ready", fake_wait_until_ready
     )
-    monkeypatch.setattr(
-        BACKEND_EXECUTION.subprocess, "Popen", lambda *args, **kwargs: _FakePopen()
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        BACKEND_EXECUTION,
+        Popen=lambda *args, **kwargs: _FakePopen(),
     )
     monkeypatch.setattr(
         BACKEND_EXECUTION,
@@ -20753,8 +20751,12 @@ def test_start_backend_daemon_trusts_verified_busy_socket_with_live_pid(
     monkeypatch.setattr(
         BACKEND_EXECUTION, "_backend_daemon_wait_until_ready", fake_wait_until_ready
     )
-    monkeypatch.setattr(
-        BACKEND_EXECUTION.subprocess, "Popen", lambda *args, **kwargs: _FakePopen()
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        BACKEND_EXECUTION,
+        Popen=lambda *args, **kwargs: _FakePopen(),
     )
     monkeypatch.setattr(
         BACKEND_EXECUTION,
@@ -20845,7 +20847,9 @@ def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
     monkeypatch.setattr(
         BACKEND_EXECUTION, "_backend_daemon_wait_until_ready", fake_wait_until_ready
     )
-    monkeypatch.setattr(BACKEND_EXECUTION.subprocess, "Popen", fake_popen)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, BACKEND_EXECUTION, Popen=fake_popen
+    )
 
     with tempfile.TemporaryDirectory(
         prefix="moltbd-test-", dir=tempfile.gettempdir()
@@ -20957,8 +20961,12 @@ def test_start_backend_daemon_refuses_to_kill_unverified_stale_identity(
         "_backend_daemon_process_command",
         lambda pid: f"{backend_bin} --daemon --socket {socket_path}",
     )
-    monkeypatch.setattr(
-        BACKEND_EXECUTION.subprocess, "Popen", lambda *args, **kwargs: _FakePopen()
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        BACKEND_EXECUTION,
+        Popen=lambda *args, **kwargs: _FakePopen(),
     )
 
     assert (
@@ -24617,10 +24625,12 @@ def test_ensure_backend_binary_rebuild_does_not_signal_verified_daemons(
         cli_backend_binary, "_backend_fingerprint", lambda *args, **kwargs: fingerprint
     )
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fake_run_cargo)
-    monkeypatch.setattr(
-        cli.os,
-        "kill",
-        lambda pid, sig: (_ for _ in ()).throw(
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        cli,
+        kill=lambda pid, sig: (_ for _ in ()).throw(
             AssertionError("backend rebuild must not signal live daemons")
         ),
     )
@@ -24938,7 +24948,9 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
         cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint
     )
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fake_run_cargo)
-    monkeypatch.setattr(BACKEND_EXECUTION.subprocess, "run", fake_run)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, BACKEND_EXECUTION, run=fake_run
+    )
     monkeypatch.setattr(
         cli_backend_binary,
         "_run_subprocess_captured_to_tempfiles",
@@ -25087,7 +25099,9 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
         cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint
     )
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fake_run_cargo)
-    monkeypatch.setattr(BACKEND_EXECUTION.subprocess, "run", fake_run)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, BACKEND_EXECUTION, run=fake_run
+    )
     monkeypatch.setattr(
         cli_backend_binary,
         "_run_subprocess_captured_to_tempfiles",
@@ -28603,7 +28617,9 @@ def test_start_backend_daemon_rejects_overlong_unix_socket_paths(
         popen_called = True
         raise AssertionError("daemon should not spawn for an overlong unix socket path")
 
-    monkeypatch.setattr(BACKEND_EXECUTION.subprocess, "Popen", fake_popen)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, BACKEND_EXECUTION, Popen=fake_popen
+    )
 
     ok = cli._start_backend_daemon(
         backend_bin,

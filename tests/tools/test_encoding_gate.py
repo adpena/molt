@@ -7,9 +7,11 @@ is proven to catch both a brand-new file::rule AND an extra occurrence inside a
 file that already trips a rule (the hole a fingerprint set would miss).
 
 The headline falsification ("real gate, not theater", M05): the integration test
-drops a throwaway `open("x")` file into the scanned tree and asserts the real
-`encoding_gate.py --check` CLI FAILS (exit 2) on it and PASSES (exit 0) on the
-clean tree. A gate that only ever passes clean is not proven to have teeth.
+drops a throwaway `open("x")` file into a fixture checkout and asserts the real
+`encoding_gate.py --check --root` CLI FAILS (exit 2) on it and PASSES (exit 0)
+once it is gone. A gate that only ever passes clean is not proven to have teeth.
+The plant never enters this repository: a file there would dirty the checkout
+that every parallel proof command attests.
 """
 
 from __future__ import annotations
@@ -17,7 +19,6 @@ from tests.process_guard_common import run_guarded_test_process
 
 import subprocess
 import sys
-import uuid
 from pathlib import Path
 
 import pytest
@@ -145,9 +146,15 @@ def test_regressions_allows_burn_down() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _run_check() -> subprocess.CompletedProcess[str]:
+def _run_check(root: Path = REPO_ROOT) -> subprocess.CompletedProcess[str]:
     return run_guarded_test_process(
-        [sys.executable, str(TOOLS_ROOT / "encoding_gate.py"), "--check"],
+        [
+            sys.executable,
+            str(TOOLS_ROOT / "encoding_gate.py"),
+            "--check",
+            "--root",
+            str(root),
+        ],
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
@@ -163,23 +170,28 @@ def test_clean_tree_passes() -> None:
     assert "PASS" in result.stdout
 
 
-def test_planted_violation_fails() -> None:
-    """Drop a throwaway `open("x")` into the scanned tree; --check MUST fail on it."""
-    planted = TOOLS_ROOT / f"_encoding_gate_teeth_{uuid.uuid4().hex}.py"
+def test_planted_violation_fails(tmp_path: Path) -> None:
+    """Plant a throwaway `open("x")` in a scanned checkout; --check MUST fail on it."""
+    root = tmp_path / "checkout"
+    (root / "tools").mkdir(parents=True)
+    (root / "tools" / "encoding_gate_baseline.json").write_bytes(
+        (TOOLS_ROOT / "encoding_gate_baseline.json").read_bytes()
+    )
+    assert _run_check(root).returncode == 0
+
+    planted = root / "tools" / "planted.py"
     planted.write_text('open("x")\n', encoding="utf-8")
-    try:
-        result = _run_check()
-    finally:
-        planted.unlink(missing_ok=True)
+    result = _run_check(root)
     assert result.returncode == 2, (
         f"planted violation did not trip the gate (rc={result.returncode}); "
         f"the gate lacks teeth.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
-    assert planted.name in result.stderr
+    assert "tools/planted.py" in result.stderr
     assert "open-no-encoding" in result.stderr
 
-    # And, crucially, removing the plant returns the tree to green.
-    assert _run_check().returncode == 0
+    # And, crucially, removing the plant returns the checkout to green.
+    planted.unlink()
+    assert _run_check(root).returncode == 0
 
 
 def test_fix_pins_utf8_on_every_flagged_call_and_stays_valid() -> None:

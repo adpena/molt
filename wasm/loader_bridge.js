@@ -22,7 +22,6 @@
   const CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE = callableTableAbi.active_element_role;
   const CALLABLE_TABLE_VALUE_TYPE_FORMAT = callableTableAbi.value_type_format;
   const UTF8_DECODER = new TextDecoder('utf-8');
-  const BIGINT_SIGNATURE_KINDS = new Set(['i64', 'u64', 's64', 'molt-object']);
 
   // Canonical runtime ABI: molt_exception_pending is () -> u64 raw 0/1.
   // A missing/wrong-shaped export is never evidence of successful execution.
@@ -846,25 +845,18 @@
     return BigInt.asUintN(64, BigInt(value));
   };
 
+  // Kinds are WebAssembly value types: an i64 crosses as a BigInt and an i32
+  // as a Number.
   const normalizeValueForKind = (value, kind) => {
-    if (BIGINT_SIGNATURE_KINDS.has(kind)) {
+    if (kind === 'i64') {
       return normalizeI64BridgeValue(value, kind);
     }
-    if (kind === 'i32' || kind === 'u32' || kind === 's32') {
-      return typeof value === 'bigint' ? Number(value) : Number(value);
+    if (kind === 'i32') {
+      return Number(value);
     }
     return value;
   };
 
-  const normalizeImportResult = (value, resultKind) => {
-    if (BIGINT_SIGNATURE_KINDS.has(resultKind)) {
-      return normalizeI64BridgeValue(value, resultKind);
-    }
-    if (resultKind === 'i32' || resultKind === 'u32' || resultKind === 's32') {
-      return typeof value === 'bigint' ? Number(value) : Number(value);
-    }
-    return value;
-  };
 
   const callIsolateImportExport = (fn, args) => {
     if (args.length !== 1) {
@@ -878,14 +870,14 @@
     if (!signature) {
       return fn(...args);
     }
-    const params = signature.params || signature.argTypes || null;
+    const { params } = signature;
     if (!Array.isArray(params)) {
       return fn(...args);
     }
     const callArgs = args.map((value, index) =>
       normalizeValueForKind(value, params[index] || null));
     const out = fn(...callArgs);
-    return normalizeImportResult(out, signature.result || signature.retType || null);
+    return normalizeValueForKind(out, signature.result || null);
   };
 
   const callIndirectObjectSignature = (name, { includeIndex = false } = {}) => {
@@ -1315,7 +1307,6 @@
     installManifestLinkImportTraps,
     installWasmTagImports,
     normalizeI64BridgeValue,
-    normalizeImportResult,
     normalizeValueForKind,
     parseWasmMetadata,
     parseWasmExportFunctionSignatures,

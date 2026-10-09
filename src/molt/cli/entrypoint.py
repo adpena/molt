@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Callable
 
 from molt.cli import build_inputs as _build_inputs
-from molt.cli.arg_helpers import _ensure_cli_hash_seed
 from molt.cli.config_resolution import (
     _resolve_build_config,
     _resolve_capabilities_config,
@@ -14,6 +13,7 @@ from molt.cli.config_resolution import (
 from molt.cli.entrypoint_dispatch import _dispatch_entrypoint_command
 from molt.cli.entrypoint_parser import _build_entrypoint_parser
 from molt.cli.project_roots import _find_project_root
+from molt.cli_entry import ensure_hash_seed
 from molt.environment_registry import (
     EnvironmentRegistryError,
     check_process_environment,
@@ -21,7 +21,7 @@ from molt.environment_registry import (
 
 
 def main(build_fn: Callable[..., int] | None = None) -> int:
-    _ensure_cli_hash_seed()
+    ensure_hash_seed()
     try:
         check_process_environment()
     except EnvironmentRegistryError as exc:

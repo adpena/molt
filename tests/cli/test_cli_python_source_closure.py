@@ -11,6 +11,7 @@ import pytest
 from molt.cli.python_source_closure import local_python_import_closure
 from molt.cli import python_source_closure as graph
 from molt.cli.python_import_resolution import PythonImportPolicy
+from tests.process_guard_common import install_module_view
 
 
 pytestmark = pytest.mark.usefixtures("isolated_molt_cache")
@@ -1614,6 +1615,25 @@ def test_relative_inventory_uses_resolver_shadows_namespaces_and_new_topology(
     assert added in newest.paths and newest.content_digest != after.content_digest
 
 
+def test_relative_inventory_ignores_the_bytecode_cache_directory(tmp_path):
+    root = tmp_path / "root"
+    (root / "pkg").mkdir(parents=True)
+    seed = root / "entry.py"
+    seed.write_text(
+        "__package__ = unknown\nfrom .missing import value\n", encoding="utf-8"
+    )
+    (root / "pkg/mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    before = local_python_import_closure(tmp_path, (seed,), search_roots=(root,))
+    assert before.topology_digest
+    # Python writes these on first import, so a fresh checkout gains them while
+    # it runs; as namespace members they changed every tooling identity.
+    (root / "__pycache__").mkdir()
+    (root / "pkg/__pycache__").mkdir()
+    (root / "pkg/__pycache__/mod.cpython-312.pyc").write_bytes(b"\0")
+    after = local_python_import_closure(tmp_path, (seed,), search_roots=(root,))
+    assert after.content_digest == before.content_digest
+
+
 def test_relative_inventory_keeps_manifest_and_invalid_operand_errors(tmp_path):
     seed = tmp_path / "entry.py"
     manifest = tmp_path / graph._DYNAMIC_IMPORT_MANIFEST
@@ -1717,7 +1737,7 @@ def test_declared_source_domain_bounds_inventory_and_qualified_tool_aliases(
         assert not Path(path).is_relative_to(tmp_path / "tmp")
         return real_scandir(path)
 
-    monkeypatch.setattr(resolution.os, "scandir", admitted_scandir)
+    install_module_view(monkeypatch, "os", os, resolution, scandir=admitted_scandir)
     before = local_python_import_closure(tmp_path, (seed,))
     assert set(before.paths) == {seed, helper, initializer, leaf, manifest}
     assert before.topology_digest

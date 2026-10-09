@@ -371,7 +371,7 @@ jobs:
   determinism-sweep:
     name: Determinism Full Sweep
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 95
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -385,6 +385,10 @@ jobs:
           cache-cargo: "true"
           sync: "true"
           sync-frozen: "true"
+          sync-groups: dev
+
+      - name: Setup canonical native linker SDK
+        uses: ./.github/actions/setup-llvm
 
       - name: Run deterministic runtime and IR sweep
         run: |

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 from pathlib import Path
 
@@ -20,6 +21,12 @@ def _load_bench_generator():
 
 
 def test_generator_benchmark_uses_shared_memory_guard(monkeypatch) -> None:
+    # A proof-plan command exports its own budget, which nested defaults take as
+    # a floor, and CI may export per-prefix overrides; this test checks the
+    # benchmark's default, so it runs as on a developer host.
+    for name in list(os.environ):
+        if name.startswith("MOLT_") and name.endswith("_TIMEOUT_SEC"):
+            monkeypatch.delenv(name)
     module = _load_bench_generator()
     captured: dict[str, object] = {}
 

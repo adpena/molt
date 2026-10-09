@@ -9,7 +9,6 @@ from typing import Final, Literal, NamedTuple
 
 class FrontendDiagnostic(str, Enum):
     CALL_TARGET = "MOLT-FE001"
-    CALL_SIGNATURE = "MOLT-FE002"
     OPERAND_VALUE = "MOLT-FE003"
     TYPE_FORM = "MOLT-FE004"
     SYNTAX_FORM = "MOLT-FE005"
@@ -30,12 +29,6 @@ FRONTEND_DIAGNOSTIC_METADATA: Final = {
     FrontendDiagnostic.CALL_TARGET: FrontendDiagnosticMetadata(
         title="call target cannot be lowered",
         detail="MOLT-FE001: call target cannot be lowered",
-        tier="bridge",
-        impact="high",
-    ),
-    FrontendDiagnostic.CALL_SIGNATURE: FrontendDiagnosticMetadata(
-        title="call signature is outside the lowered contract",
-        detail="MOLT-FE002: call signature is outside the lowered contract",
         tier="bridge",
         impact="high",
     ),
@@ -82,3 +75,10 @@ FRONTEND_DIAGNOSTIC_METADATA: Final = {
         impact="high",
     ),
 }
+
+# Reserved codes: never reuse one for a new meaning.
+RETIRED_FRONTEND_DIAGNOSTIC_CODES: Final = frozenset(
+    {
+        "MOLT-FE002",  # call_signature
+    }
+)

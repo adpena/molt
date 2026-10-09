@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import sys
 
 import pytest
 
 from tools import benchmark_cext_trampoline as bench
+from tests.process_guard_common import install_module_view
 
 
 def _sample(baseline: float, admitted: float) -> dict[str, object]:
@@ -120,7 +122,7 @@ def test_sample_process_contract_requires_guarded_exact_child(monkeypatch) -> No
         "child_affinity_mask": 128,
         "child_priority_class": 0x8000,
     }
-    monkeypatch.setattr(bench.sys, "platform", "win32")
+    install_module_view(monkeypatch, "sys", sys, bench, platform="win32")
     bench.validate_sample_process_contract(sample, isolation, {"pid": 123})
     sample["process_execution_contract"]["pid"] = 456
     with pytest.raises(RuntimeError, match="guard custody"):
@@ -130,7 +132,7 @@ def test_sample_process_contract_requires_guarded_exact_child(monkeypatch) -> No
 def test_unsupported_platform_writes_explicit_non_admission(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(bench.sys, "platform", "darwin")
+    install_module_view(monkeypatch, "sys", sys, bench, platform="darwin")
     monkeypatch.delattr(bench.os, "sched_getaffinity", raising=False)
     monkeypatch.delattr(bench.os, "sched_setaffinity", raising=False)
     monkeypatch.setattr(

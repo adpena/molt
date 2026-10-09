@@ -53,21 +53,20 @@ Failure of any invariant is a hard CI failure.
   - `tools/stdlib_module_union.py`
 - Baseline generator:
   - `tools/gen_stdlib_module_union.py`
-- Stub synchronizer:
-  - `tools/sync_stdlib_top_level_stubs.py`
-  - `tools/sync_stdlib_submodule_stubs.py`
-- Enforcer:
+- Stub generator (one template for every stub; `tests/test_stdlib_stubs.py`
+  pins it):
+  - `tools/gen_stdlib_stubs.py`
+- Enforcer (CI command `python.static.stdlib-intrinsics`):
   - `tools/check_stdlib_intrinsics.py`
 - Generated status artifact:
   - `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`
 
 ## 5. Standard Operator Workflows
 ### 5.1 Daily/Feature Work (No Version Change)
-1. Verify no missing names:
-   - `python3 tools/sync_stdlib_top_level_stubs.py`
-   - `python3 tools/sync_stdlib_submodule_stubs.py`
-2. Verify intrinsic gates:
-   - `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`
+1. Verify that no union name is missing and no stub has drifted:
+   - `python3 tools/gen_stdlib_stubs.py --check`
+2. Verify intrinsic gates (the CI command):
+   - `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
 3. Verify intrinsic-partial ratchet posture:
    - `cat tools/stdlib_intrinsics_ratchet.json`
 4. Refresh audit after meaningful lowering change:
@@ -78,9 +77,8 @@ Failure of any invariant is a hard CI failure.
 2. Add the version to the target-Python authority (`src/molt/target_python.py`;
    `tools/check_table_drift.py` requires the baseline versions to equal it), then regenerate:
    - `python3 tools/gen_stdlib_module_union.py --write`
-3. Materialize missing top-level entries:
-   - `python3 tools/sync_stdlib_top_level_stubs.py --write`
-   - `python3 tools/sync_stdlib_submodule_stubs.py --write`
+3. Materialize stubs for the new union entries:
+   - `python3 tools/gen_stdlib_stubs.py --write`
 4. Run gates:
    - `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`
    - `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
@@ -96,17 +94,34 @@ Failure of any invariant is a hard CI failure.
 - `python3 tools/gen_stdlib_module_union.py --check` names every stale output.
 
 ## 6. Stub Policy (Non-Negotiable)
-When `sync_stdlib_top_level_stubs.py --write` or
-`sync_stdlib_submodule_stubs.py --write` creates missing entries:
+`tools/gen_stdlib_stubs.py` owns every stub. It writes one for each union
+module Molt lacks and holds every existing stub to one template, so a hand
+edit fails `--check`. The template fixes this contract:
 
-1. Stubs must remain intrinsic-first:
-   - load required intrinsic, no host-stdlib import fallback.
-2. Stubs must fail fast on unsupported behavior:
-   - raise deterministic runtime errors, never silent fallback.
-3. Stubs are temporary:
-   - each file must carry grepable `TODO(...)` marker with milestone/owner.
-4. Promotion path:
-   - replace stub behavior with real Rust-intrinsic-backed implementation.
+1. Stubs are intrinsic-first:
+   - importing a stub requires the `molt_capabilities_has` intrinsic; there is
+     no host-stdlib import fallback.
+2. Stubs bind nothing:
+   - a stub has no public name and leaves no import helper in its namespace.
+3. Stubs fail fast:
+   - any attribute access raises the deterministic gap error
+     `stdlib {module|package} "<name>" is not fully lowered yet; only an
+     intrinsic-first stub is available.`, never a silent fallback.
+   - a package stub raises `AttributeError` for its union submodules instead,
+     because the import system asks for a submodule before it loads it
+     (`from pkg import sub`), and only that error lets it go on.
+4. Platform-only modules keep CPython's import outcome:
+   - a module CPython ships on one platform raises `ModuleNotFoundError` on
+     every other platform (`PLATFORM_ONLY` in the generator).
+5. Stubs are counted debt:
+   - each stub carries a grepable `TODO(stdlib-parity, ...)` marker, and the
+     structural audit counts every stub.
+6. The union decides kind:
+   - the generator refuses a stub for a name outside the union or of the wrong
+     kind (module versus package) and names the fix.
+7. Promotion path:
+   - lowering a module replaces its stub file with the real
+     Rust-intrinsic-backed implementation; the generator then stops owning it.
 
 ## 7. Gate Failure Triage
 ### 7.1 Missing Top-Level Coverage
@@ -114,7 +129,7 @@ Message:
 - `stdlib top-level coverage gate violated`
 
 Action:
-1. Run `python3 tools/sync_stdlib_top_level_stubs.py --write`.
+1. Run `python3 tools/gen_stdlib_stubs.py --write`.
 2. Re-run checker.
 3. If still missing, inspect baseline file for recent version additions.
 
@@ -133,6 +148,7 @@ Message:
 
 Action:
 1. Convert `src/molt/stdlib/name.py` to `src/molt/stdlib/name/__init__.py`.
+   For a stub, `python3 tools/gen_stdlib_stubs.py --check` names the `git mv`.
 2. Update any path references in docs/tests as needed.
 
 ### 7.4 Missing Submodule Coverage
@@ -140,7 +156,7 @@ Message:
 - `stdlib submodule coverage gate violated`
 
 Action:
-1. Run `python3 tools/sync_stdlib_submodule_stubs.py --write`.
+1. Run `python3 tools/gen_stdlib_stubs.py --write`.
 2. Re-run checker.
 
 ### 7.5 Subpackage-Kind Mismatch
@@ -155,15 +171,15 @@ Action:
 ## 8. Release Checklist
 Before release or large lowering tranche merge:
 
-1. `python3 tools/sync_stdlib_top_level_stubs.py`
-2. `python3 tools/sync_stdlib_submodule_stubs.py`
-3. `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`
-4. `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
-5. `python3 tools/check_stdlib_intrinsics.py --update-doc`
-6. Confirm `docs/spec/STATUS.md` and `ROADMAP.md` reflect current counts and
+1. `python3 tools/gen_stdlib_stubs.py --check`
+2. `python3 tools/check_stdlib_intrinsics.py --critical-allowlist` (the CI
+   command: every gate plus the strict closure of the critical roots)
+3. `python3 tools/check_stdlib_intrinsics.py --update-doc`
+4. Confirm `docs/spec/STATUS.md` and `ROADMAP.md` reflect current counts and
    gate posture.
-7. Confirm `tools/stdlib_intrinsics_ratchet.json` is tightened only when real
-   lowering progress landed in the same change.
+5. Confirm `tools/stdlib_intrinsics_ratchet.json` is tightened when real
+   lowering progress lands. It rises only when union modules that Molt lacked
+   become counted stubs, and the change must say so.
 
 ## 9. Design Notes
 - The baseline uses the union across supported CPython versions to avoid

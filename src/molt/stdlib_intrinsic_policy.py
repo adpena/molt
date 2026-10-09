@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 from molt.python_private_names import python_source_field
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -385,10 +386,21 @@ def stdlib_module_intrinsic_facts(
             f"Python {target_python.short}) cannot parse source: {exc.msg}"
         ) from exc
 
+    # The parsed bytes and the target Python determine the AST, so their digest
+    # is the analysis identity; walking the tree to hash it costs ~7 ms a module.
+    source_digest = hashlib.sha256(
+        source
+        if isinstance(source, bytes)
+        else source.encode("utf-8", errors="surrogatepass")
+    ).hexdigest()
     return StdlibModuleIntrinsicFacts(
         _stdlib_module_intrinsic_status_from_tree(tree, path.name),
         _stdlib_module_import_evidence_from_tree(
-            module_name, path, tree, target_python=target_python
+            module_name,
+            path,
+            tree,
+            source_digest=source_digest,
+            target_python=target_python,
         ),
     )
 
@@ -398,6 +410,7 @@ def _stdlib_module_import_evidence_from_tree(
     path: Path,
     tree: ast.Module,
     *,
+    source_digest: str,
     target_python: TargetPythonVersion,
 ) -> StdlibModuleImportEvidence:
     imports: set[str] = set()
@@ -411,11 +424,10 @@ def _stdlib_module_import_evidence_from_tree(
         PythonBindingPolicy,
         analyze_python_bindings,
     )
-    from molt.compiler_analysis.python_source_keys import python_ast_digest
 
     bindings = analyze_python_bindings(
         tree,
-        source_digest=python_ast_digest(tree),
+        source_digest=source_digest,
         policy=PythonBindingPolicy(
             target_python=target_python.feature_version,
             module_name=module_name,

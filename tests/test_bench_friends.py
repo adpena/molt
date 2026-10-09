@@ -15,6 +15,7 @@ from molt.scientific_stack_versions import resolve_scientific_stack
 import pytest
 
 from tests.native_process_guard import run_native_test_process
+from tests.process_guard_common import install_module_view
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -184,7 +185,7 @@ def test_project_python_prefers_active_virtualenv(monkeypatch, tmp_path: Path) -
     python_path.parent.mkdir(parents=True)
     python_path.write_text("", encoding="utf-8")
     monkeypatch.setenv("VIRTUAL_ENV", str(venv))
-    monkeypatch.setattr(module.sys, "prefix", str(venv))
+    install_module_view(monkeypatch, "sys", sys, module, prefix=str(venv))
     monkeypatch.setattr(module.sys, "base_prefix", str(tmp_path / "base"))
 
     assert module._project_python() == str(python_path)

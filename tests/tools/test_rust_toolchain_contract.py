@@ -5,8 +5,10 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+import platform
 
 import pytest
+from tests.process_guard_common import install_module_view
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECK_RUST_TOOLCHAIN = ROOT / "tools" / "check_rust_toolchain.py"
@@ -64,7 +66,7 @@ def test_cargo_version_probe_normalizes_config_wrapper(monkeypatch) -> None:
 
     monkeypatch.setenv("CARGO_BUILD_RUSTC_WRAPPER", "sccache")
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
-    monkeypatch.setattr(tool.subprocess, "run", fake_run)
+    install_module_view(monkeypatch, "subprocess", subprocess, tool, run=fake_run)
 
     tool._run(["cargo", "--version"])
 
@@ -491,10 +493,14 @@ def test_rust_setup_rejects_unadmitted_python_before_repository_import(
     (tmp_path / ".python-version").write_text(
         "3.12\n" if failure == "pin" else "3.12.15\n", encoding="utf-8"
     )
-    monkeypatch.setattr(
-        provisioner.platform,
-        "python_implementation",
-        lambda: "PyPy" if failure == "implementation" else "CPython",
+    install_module_view(
+        monkeypatch,
+        "platform",
+        platform,
+        provisioner,
+        python_implementation=lambda: (
+            "PyPy" if failure == "implementation" else "CPython"
+        ),
     )
     monkeypatch.setattr(
         provisioner.platform,

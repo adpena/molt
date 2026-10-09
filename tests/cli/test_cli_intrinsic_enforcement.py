@@ -10,6 +10,7 @@ import pytest
 from molt import stdlib_intrinsic_policy
 from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
 from molt.cli import module_graph_cache
+from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
 from molt.target_python import (
     SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
@@ -636,3 +637,54 @@ def test_real_tk_widgets_require_their_semantic_callable_provider(tmp_path, prov
         if provider == "real"
         else stdlib_intrinsic_policy.STATUS_PYTHON_ONLY
     )
+
+
+def test_warm_intrinsic_source_facts_runs_workers_only_for_a_large_set(
+    tmp_path, monkeypatch
+):
+    import molt.dx
+
+    # Spawned workers inherit the environment, not this process's patches.
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(molt.dx, "_memory_bounded_worker_count", lambda **_: 2)
+    real_pool = module_graph_cache.ProcessPoolExecutor
+
+    def modules(prefix: str, count: int) -> dict[str, Path]:
+        return {
+            f"{prefix}{index}": _write_module(
+                tmp_path, f"{prefix}{index}.py", f"VALUE = {index}\n"
+            )
+            for index in range(count)
+        }
+
+    per_worker = module_graph_cache._INTRINSIC_FACTS_MODULES_PER_WORKER
+    monkeypatch.setattr(
+        module_graph_cache,
+        "ProcessPoolExecutor",
+        lambda **_: pytest.fail("a set one worker covers must stay serial"),
+    )
+    module_graph_cache.warm_stdlib_intrinsic_source_facts(
+        tmp_path,
+        modules("small", 2 * per_worker - 1),
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+
+    monkeypatch.setattr(module_graph_cache, "ProcessPoolExecutor", real_pool)
+    large = modules("large", 2 * per_worker)
+    module_graph_cache.warm_stdlib_intrinsic_source_facts(
+        tmp_path, large, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    )
+    counts: dict[str, int] = {}
+    with _source_tree_fingerprint_transaction():
+        for name, path in large.items():
+            module_graph_cache._stdlib_intrinsic_source_facts(
+                tmp_path,
+                name,
+                path,
+                target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+                operation_counts=counts,
+            )
+    assert counts == {
+        "intrinsic_source_requests": 2 * per_worker,
+        "intrinsic_source_hits": 2 * per_worker,
+    }

@@ -10,10 +10,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 def _load_module(name, path_text):
@@ -25,29 +24,12 @@ def _load_module(name, path_text):
     return module
 
 
-builtins._molt_intrinsics = {{
-    "molt_capabilities_has": lambda name: True,
+install_registry({{
     "molt_email_headerregistry_value": lambda name, value: f"hdr:{{name}}={{value}}",
     "molt_email_address_addr_spec": lambda display_name, username, domain: f"{{username}}@{{domain}}",
     "molt_email_address_format": lambda display_name, username, domain: f"{{display_name}} <{{username}}@{{domain}}>",
     "molt_email_message_from_bytes": lambda payload: {{"decoded": bytes(payload).decode("utf-8", "replace")}},
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 headerregistry_mod = _load_module("molt_test_email_headerregistry", {str(STDLIB_ROOT / "email" / "headerregistry.py")!r})

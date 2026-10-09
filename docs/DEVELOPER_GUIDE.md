@@ -226,7 +226,7 @@ The current Cloudflare package authorities are
 lockfiles committed with the manifest change.
 
 ## Differential Suite Controls
-- **Memory profiling**: set `MOLT_DIFF_MEASURE_RSS=1` to collect per-test RSS metrics.
+- **Memory profiling**: per-test RSS metrics are collected by default; set `MOLT_DIFF_MEASURE_RSS=0` only for a deliberately lighter local investigation.
 - **Summary sidecar**: `MOLT_DIFF_ROOT/summary.json` (or `MOLT_DIFF_SUMMARY=<path>`) records jobs, limits, and RSS aggregates.
 - **Failure queue**: failed tests are written to `MOLT_DIFF_ROOT/failures.txt` (override with `MOLT_DIFF_FAILURES` or `--failures-output`).
 - **OOM retry**: OOM failures retry once with `--jobs 1` by default (`MOLT_DIFF_RETRY_OOM=0` disables).
@@ -710,9 +710,11 @@ cargo nextest run -p molt-runtime --all-targets
 ```
 
 ### Build caching (Rust)
+Molt never downloads a tool on its own. Provision the pinned `sccache` once;
+Molt then sets `RUSTC_WRAPPER` for its Cargo builds, and warns with this command
+while the release is missing. Set `MOLT_USE_SCCACHE=0` to build without it.
 ```bash
-export RUSTC_WRAPPER=sccache
-sccache -s
+python -m molt.tool_releases provision sccache
 ```
 
 ### Binary size + WASM size analysis

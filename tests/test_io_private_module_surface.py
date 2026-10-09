@@ -11,11 +11,11 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
 import abc
-import builtins
 import importlib.util
 import _io as _host_native_io
 import sys
 import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 _published_open = _host_native_io.open
 _intrinsic_requests = []
@@ -39,27 +39,19 @@ def _builtin_class_lookup(name):
     return getattr(_host_native_io, name)
 
 
-builtins._molt_intrinsics = {{
+_resolver = install_registry({{
     "molt_io_class": _io_class,
     "molt_builtin_class_lookup": _builtin_class_lookup,
-}}
+}})
+_resolve = _resolver.require_intrinsic
 
-_intrinsics_mod = types.ModuleType("_intrinsics")
 
-
-def _require_intrinsic(name, namespace=None):
+def _recording_require_intrinsic(name, namespace=None):
     _intrinsic_requests.append(name)
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
+    return _resolve(name, namespace)
 
 
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+_resolver.require_intrinsic = _recording_require_intrinsic
 
 
 def _load_module(name, path_text, *, published_open=None):

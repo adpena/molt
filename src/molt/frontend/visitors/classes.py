@@ -873,10 +873,9 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
         class_attrs: dict[str, ast.expr] = {}
         class_attr_values: dict[str, MoltValue] = {}
         pending_methods = {item.name for item in method_nodes}
-        if len(base_names) != len(set(base_names)):
-            dup = next(name for name in base_names if base_names.count(name) > 1)
-            raise FrontendRejection(Diagnostic.TYPE_FORM, f"Duplicate base class {dup}")
-
+        # Repeated bases build dynamically like any multi-base class, and
+        # molt_class_set_base raises CPython's TypeError when the statement
+        # runs; base names cannot decide identity at compile time.
         dynamic = dynamic_build or len(base_names) > 1
         if any(
             name not in self.classes

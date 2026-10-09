@@ -4,14 +4,15 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-REGISTRY = Path(__file__).resolve().parent / "dead_code_allow_baseline.json"
+# The waiver registry, relative to the scanned checkout.
+REGISTRY_RELPATH = Path("tools") / "dead_code_allow_baseline.json"
 SCAN_ROOTS = ("runtime", "src")
 ALLOW_RE = re.compile(r"#!?\[\s*allow\s*\(([^)]*)\)\s*\]")
 CFG_CORPSE_RE = re.compile(
@@ -33,18 +34,194 @@ def _valid_text(value: object) -> bool:
     return len(text) >= 4 and text.lower() not in PLACEHOLDER
 
 
+class UnnamedSiteError(ValueError):
+    """A mask sits before an item shape the scanner cannot name."""
+
+
+_ITEM_RE = re.compile(
+    r"""
+    (?:pub(?:\s*\([^)]*\))?\s+)?
+    (?:(?:default|unsafe|safe|async|extern(?:\s+"[^"]*")?
+        |const(?=\s+(?:unsafe|async|extern|fn)\b))\s+)*
+    (?P<kind>(?:fn|struct|enum|union|trait|type|mod|static|const|impl|use|let)\b
+        |macro_rules!)
+    """,
+    re.VERBOSE,
+)
+_NAME_RE = re.compile(r"\s*(?:mut\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
+_MEMBER_RE = re.compile(
+    r"(?:pub(?:\s*\([^)]*\))?\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<sep>::|[:({,=])"
+)
+
+
+def _skip_string(text: str, pos: int) -> int:
+    """Return the offset after the string literal that starts at ``pos``."""
+    pos += 1
+    while pos < len(text):
+        if text[pos] == "\\":
+            pos += 2
+        elif text[pos] == '"':
+            return pos + 1
+        else:
+            pos += 1
+    return pos
+
+
+def _skip_attribute(text: str, pos: int) -> int:
+    """Return the offset after the ``#[...]`` or ``#![...]`` at ``pos``."""
+    pos = text.index("[", pos)
+    depth = 0
+    while pos < len(text):
+        char = text[pos]
+        if char == '"':
+            pos = _skip_string(text, pos)
+            continue
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                return pos + 1
+        pos += 1
+    return pos
+
+
+def _skip_trivia(text: str, pos: int) -> int:
+    """Skip whitespace, comments and further attributes before an item."""
+    while pos < len(text):
+        if text[pos].isspace():
+            pos += 1
+        elif text.startswith("//", pos):
+            newline = text.find("\n", pos)
+            pos = len(text) if newline < 0 else newline + 1
+        elif text.startswith("/*", pos):
+            depth, pos = 1, pos + 2
+            while pos < len(text) and depth:
+                if text.startswith("/*", pos):
+                    depth, pos = depth + 1, pos + 2
+                elif text.startswith("*/", pos):
+                    depth, pos = depth - 1, pos + 2
+                else:
+                    pos += 1
+        elif text.startswith("#[", pos) or text.startswith("#![", pos):
+            pos = _skip_attribute(text, pos)
+        else:
+            return pos
+    return pos
+
+
+_RAW_STRING_RE = re.compile(r'b?r(#*)"')
+_FN_RE = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _literal_spans(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Return the comment spans and the string-literal spans of Rust source."""
+    comments: list[tuple[int, int]] = []
+    strings: list[tuple[int, int]] = []
+    pos = 0
+    while pos < len(text):
+        char = text[pos]
+        if text.startswith("//", pos):
+            newline = text.find("\n", pos)
+            end = len(text) if newline < 0 else newline
+            comments.append((pos, end))
+            pos = end
+        elif text.startswith("/*", pos):
+            start, depth, pos = pos, 1, pos + 2
+            while pos < len(text) and depth:
+                if text.startswith("/*", pos):
+                    depth, pos = depth + 1, pos + 2
+                elif text.startswith("*/", pos):
+                    depth, pos = depth - 1, pos + 2
+                else:
+                    pos += 1
+            comments.append((start, pos))
+        elif (raw := _RAW_STRING_RE.match(text, pos)) is not None and (
+            pos == 0 or not (text[pos - 1].isalnum() or text[pos - 1] == "_")
+        ):
+            closing = '"' + raw.group(1)
+            end = text.find(closing, raw.end())
+            end = len(text) if end < 0 else end + len(closing)
+            strings.append((pos, end))
+            pos = end
+        elif char == '"':
+            end = _skip_string(text, pos)
+            strings.append((pos, end))
+            pos = end
+        elif char == "'":
+            # A char literal closes within a few characters; a lifetime does not.
+            if text.startswith("\\", pos + 1):
+                close = text.find("'", pos + 2)
+                pos = close + 1 if close >= 0 else pos + 1
+            elif pos + 2 < len(text) and text[pos + 2] == "'":
+                pos += 3
+            else:
+                pos += 1
+        else:
+            pos += 1
+    return comments, strings
+
+
+def _within(spans: list[tuple[int, int]], offset: int) -> bool:
+    return any(start <= offset < end for start, end in spans)
+
+
+def _enclosing_fn(text: str, offset: int, strings: list[tuple[int, int]]) -> str:
+    names = [
+        match.group(1)
+        for match in _FN_RE.finditer(text, 0, offset)
+        if not _within(strings, match.start())
+    ]
+    if not names:
+        line = text.count("\n", 0, offset) + 1
+        raise UnnamedSiteError(f"line {line}: emitted mask outside any fn")
+    return names[-1]
+
+
+def _masked_item(text: str, attribute_start: int) -> str:
+    """Name the item an attribute masks, for a site ID that survives edits.
+
+    An inner attribute masks its enclosing scope. Otherwise the item is the
+    next declaration after any comments and attributes: ``fn:name``,
+    ``impl:<header>``, ``field:name`` and so on.
+    """
+    if text.startswith("#!", attribute_start):
+        return "inner"
+    pos = _skip_trivia(text, _skip_attribute(text, attribute_start))
+    item = _ITEM_RE.match(text, pos)
+    if item is not None:
+        kind = item.group("kind").rstrip("!")
+        rest = item.end()
+        if kind == "impl":
+            header = re.split(r"\{|\bwhere\b", text[rest : rest + 400], maxsplit=1)[0]
+            return "impl:" + " ".join(header.split())
+        if kind == "use":
+            path = text[rest : text.find(";", rest)]
+            return "use:" + "".join(path.split())
+        name = _NAME_RE.match(text, rest)
+        if name is not None:
+            return f"{kind}:{name.group('name')}"
+    member = _MEMBER_RE.match(text, pos)
+    if member is not None and member.group("sep") != "::":
+        kind = "field" if member.group("sep") == ":" else "variant"
+        return f"{kind}:{member.group('name')}"
+    line = text.count("\n", 0, attribute_start) + 1
+    snippet = text[pos : pos + 60].split("\n", 1)[0]
+    raise UnnamedSiteError(f"line {line}: cannot name the masked item at {snippet!r}")
+
+
 def scan(root: Path = ROOT) -> list[Site]:
     sites: list[Site] = []
-    ordinals: dict[tuple[str, str], int] = {}
     for root_name in SCAN_ROOTS:
         source_root = root / root_name
         if not source_root.is_dir():
             continue
         for source in sorted(source_root.rglob("*.rs")):
-            if "target" in source.parts or ".git" in source.parts:
+            rel = source.relative_to(root).as_posix()
+            if {"target", ".git"} & set(Path(rel).parts):
                 continue
             text = source.read_text(encoding="utf-8", errors="replace")
-            rel = source.relative_to(root).as_posix()
+            comments, strings = _literal_spans(text)
             matches: list[tuple[int, str]] = []
             for match in ALLOW_RE.finditer(text):
                 lints = {lint.strip() for lint in match.group(1).split(",")}
@@ -53,13 +230,26 @@ def scan(root: Path = ROOT) -> list[Site]:
             matches.extend(
                 (match.start(), "cfg_corpse") for match in CFG_CORPSE_RE.finditer(text)
             )
+            occurrences: dict[str, int] = {}
             for offset, kind in sorted(matches):
-                key = (rel, kind)
-                ordinal = ordinals.get(key, 0) + 1
-                ordinals[key] = ordinal
+                if _within(comments, offset):
+                    continue
+                try:
+                    # A generator's string literal emits the mask into generated
+                    # code; the generating function names that site.
+                    item = (
+                        f"emitted-by:{_enclosing_fn(text, offset, strings)}"
+                        if _within(strings, offset)
+                        else _masked_item(text, offset)
+                    )
+                except UnnamedSiteError as exc:
+                    raise UnnamedSiteError(f"{rel}: {exc}") from None
+                base = f"{rel}::{kind}::{item}"
+                occurrence = occurrences.get(base, 0) + 1
+                occurrences[base] = occurrence
                 sites.append(
                     Site(
-                        id=f"{rel}::{kind}::{ordinal}",
+                        id=base if occurrence == 1 else f"{base}#{occurrence}",
                         path=rel,
                         line=text.count("\n", 0, offset) + 1,
                         kind=kind,
@@ -68,8 +258,8 @@ def scan(root: Path = ROOT) -> list[Site]:
     return sites
 
 
-def _load_registry(path: Path = REGISTRY) -> dict[str, object]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+def _load_registry(root: Path) -> dict[str, object]:
+    data = json.loads((root / REGISTRY_RELPATH).read_text(encoding="utf-8"))
     if not isinstance(data.get("entries"), list):
         raise ValueError("registry must contain an entries list")
     return data
@@ -109,16 +299,42 @@ def regressions(sites: list[Site], registry: dict[str, object]) -> list[str]:
     return failures
 
 
-def _write_registry(sites: list[Site], owner: str, path: Path = REGISTRY) -> None:
-    entries = [
-        {
-            **asdict(site),
-            "owner": owner,
-            "waiver": "legacy dead-code mask; owner must wire or delete",
-        }
-        for site in sites
-    ]
-    path.write_bytes(
+def updated_entries(
+    sites: list[Site],
+    registry: dict[str, object] | None,
+    *,
+    owner: str | None,
+    waiver: str | None,
+) -> list[dict[str, str]]:
+    """Keep each live site's waiver, drop stale ones, and waive new sites.
+
+    A new site takes the given owner and waiver, which must both be real; no
+    default waiver exists, so a new mask is a reviewed registry change.
+    """
+    registered = {
+        entry["id"]: entry
+        for entry in (registry or {}).get("entries", [])
+        if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+    }
+    entries: list[dict[str, str]] = []
+    for site in sites:
+        prior = registered.get(site.id)
+        if prior is not None:
+            entries.append(
+                {"id": site.id, "owner": prior["owner"], "waiver": prior["waiver"]}
+            )
+        elif _valid_text(owner) and _valid_text(waiver):
+            assert owner is not None and waiver is not None
+            entries.append({"id": site.id, "owner": owner, "waiver": waiver})
+        else:
+            raise ValueError(
+                f"new site {site.id} needs --owner and --waiver naming why it stays"
+            )
+    return entries
+
+
+def _write_registry(entries: list[dict[str, str]], root: Path) -> None:
+    (root / REGISTRY_RELPATH).write_bytes(
         (
             json.dumps({"baseline_total": len(entries), "entries": entries}, indent=2)
             + "\n"
@@ -128,25 +344,47 @@ def _write_registry(sites: list[Site], owner: str, path: Path = REGISTRY) -> Non
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--update", action="store_true")
-    parser.add_argument("--owner", default="compiler-runtime maintainers")
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="rewrite the registry: keep live waivers, drop stale entries and "
+        "waive new sites with --owner and --waiver",
+    )
+    parser.add_argument("--owner", help="owner of the new sites --update waives")
+    parser.add_argument("--waiver", help="why the new sites --update waives stay")
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=ROOT,
+        help="checkout to scan; its tools/dead_code_allow_baseline.json is the "
+        "registry (default: this repository)",
+    )
     args = parser.parse_args(argv)
-    sites = scan()
-    if args.update:
-        if not _valid_text(args.owner):
-            print(
-                "dead_code_allow_ratchet: --owner must name a real owner",
-                file=sys.stderr,
-            )
-            return 3
-        _write_registry(sites, args.owner)
-        print(f"dead_code_allow_ratchet: registry updated to {len(sites)} sites")
-        return 0
+    root = args.root.resolve()
     try:
-        registry = _load_registry()
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        print(f"dead_code_allow_ratchet: invalid registry: {exc}", file=sys.stderr)
+        sites = scan(root)
+    except UnnamedSiteError as exc:
+        print(f"dead_code_allow_ratchet: {exc}", file=sys.stderr)
         return 3
+    try:
+        registry = _load_registry(root)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        if not args.update:
+            print(f"dead_code_allow_ratchet: invalid registry: {exc}", file=sys.stderr)
+            return 3
+        registry = None
+    if args.update:
+        try:
+            entries = updated_entries(
+                sites, registry, owner=args.owner, waiver=args.waiver
+            )
+        except ValueError as exc:
+            print(f"dead_code_allow_ratchet: {exc}", file=sys.stderr)
+            return 3
+        _write_registry(entries, root)
+        print(f"dead_code_allow_ratchet: registry updated to {len(entries)} sites")
+        return 0
+    assert registry is not None
     failures = regressions(sites, registry)
     if failures:
         print("dead_code_allow_ratchet: FAIL", file=sys.stderr)

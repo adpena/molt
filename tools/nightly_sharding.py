@@ -27,15 +27,22 @@ from dataclasses import dataclass
 from typing import Any
 import zipfile
 
-from molt.artifact_publication import (
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
+
+bind_repository_imports(__file__)
+
+from molt.artifact_publication import (  # noqa: E402
     atomic_write_json,
     publish_validated_outputs,
     staged_output_path,
 )
-from tools.command_execution import CommandExecutor
-from tools import nightly_shard_profile
-from tools.compat import test_policy
-from molt.verified_subset import load_verified_subset_policy
+from tools.command_execution import CommandExecutor  # noqa: E402
+from tools import nightly_shard_profile  # noqa: E402
+from tools.compat import test_policy  # noqa: E402
+from molt.verified_subset import load_verified_subset_policy  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]

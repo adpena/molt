@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from molt.cargo_execution_policy import default_nested_process_timeout_seconds  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools.check_reproducible_build import resolve_corpus  # noqa: E402
 from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
@@ -65,11 +66,19 @@ def build_program(
     cache_dir: str | None = None,
     cwd: str | Path | None = None,
     hash_seed: int = 0,
+    build_timeout: float | None = None,
 ) -> tuple[str | None, str, dict[str, object] | None]:
     """Build a Molt program. Returns (binary_path, error_msg).
 
-    Returns (None, error) on failure instead of sys.exit().
+    Every observation shares the compiler build (the Cargo target and
+    toolchain roots in the environment). It gets its own working directory,
+    program cache and output path, and no backend daemon, so no compile state
+    passes between observations. ``build_timeout`` defaults to the plan's
+    nested build budget. Returns (None, error) on failure instead of
+    sys.exit().
     """
+    if build_timeout is None:
+        build_timeout = default_nested_process_timeout_seconds("build")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")
     env["PYTHONHASHSEED"] = str(hash_seed)
@@ -79,13 +88,10 @@ def build_program(
         env.pop("MOLT_DETERMINISTIC", None)
     if cache_dir is not None:
         env["MOLT_CACHE"] = cache_dir
-    if cwd is not None:
-        root = Path(cwd)
-        env["MOLT_EXT_ROOT"] = str(root / "artifacts")
-        env["MOLT_TARGET_ROOT"] = str(root / "target-root")
-        env["CARGO_TARGET_DIR"] = str(root / "cargo-target")
-        env["MOLT_BACKEND_DAEMON"] = "0"
-        env["MOLT_BACKEND_DAEMON_SOCKET_DIR"] = str(root / "daemon-sockets")
+    env["MOLT_BACKEND_DAEMON"] = "0"
+    output_args = (
+        ["--output", str(Path(cwd) / Path(source).stem)] if cwd is not None else []
+    )
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
 
     cmd = [
@@ -97,6 +103,7 @@ def build_program(
         profile,
         "--json",
         *(["--deterministic"] if deterministic else []),
+        *output_args,
         source,
     ]
     try:
@@ -107,11 +114,11 @@ def build_program(
             text=True,
             env=env,
             cwd=cwd,
-            timeout=120,
+            timeout=build_timeout,
             limits=limits,
         )
     except subprocess.TimeoutExpired:
-        return None, "build timed out", None
+        return None, f"build timed out after {build_timeout:g} s", None
 
     if result.returncode != 0:
         return (
@@ -196,6 +203,7 @@ def check_determinism(
     timeout: int = 60,
     verbose: bool = False,
     deterministic_mode: bool = True,
+    build_timeout: float | None = None,
 ) -> dict:
     """Check determinism for a single source file. Returns result dict."""
     result = {
@@ -244,6 +252,7 @@ def check_determinism(
                 cache_dir=str(cache),
                 cwd=run_root,
                 hash_seed=0,
+                build_timeout=build_timeout,
             )
             if binary is None:
                 result["status"] = "build_error"
@@ -281,8 +290,9 @@ def check_determinism(
                         "PYTHONHASHSEED": "0",
                         "MOLT_DETERMINISTIC": "1" if deterministic_mode else None,
                         "isolated_cache": True,
-                        "isolated_artifact_root": True,
-                        "isolated_target_root": True,
+                        "isolated_cwd": True,
+                        "isolated_output": True,
+                        "shared_compiler_build": True,
                         "backend_daemon": "disabled",
                     },
                     "build_receipt": build_receipt,
@@ -389,6 +399,13 @@ def main() -> int:
         help="Timeout in seconds per run (default: 60)",
     )
     parser.add_argument(
+        "--build-timeout",
+        type=float,
+        default=None,
+        help="Timeout in seconds per program build (default: the proof plan's "
+        "nested build budget)",
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -427,6 +444,7 @@ def main() -> int:
             args.timeout,
             args.verbose,
             deterministic_mode,
+            args.build_timeout,
         )
 
     with ThreadPoolExecutor(max_workers=min(2, len(tasks))) as executor:

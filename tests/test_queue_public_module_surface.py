@@ -10,10 +10,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
 import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 class _State:
@@ -40,7 +40,7 @@ def _get(handle, _block, _timeout, sentinel):
     return queue.pop(0)
 
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_queue_new": _new_queue,
     "molt_queue_lifo_new": _new_queue,
     "molt_queue_priority_new": _new_queue,
@@ -53,23 +53,7 @@ builtins._molt_intrinsics = {{
     "molt_queue_join": lambda _handle: None,
     "molt_queue_drop": lambda handle: _State.queues.pop(handle, None),
     "molt_module_cache_set": lambda _name, _module: None,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 _queue_mod = types.ModuleType("_queue")
 

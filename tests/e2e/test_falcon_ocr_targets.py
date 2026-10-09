@@ -48,10 +48,7 @@ from tests.e2e.falcon_ocr_stub_weights import (
 
 def _molt_runtime_available() -> bool:
     try:
-        stdlib_path = os.path.join(_project_root, "src", "molt", "stdlib")
         src_path = os.path.join(_project_root, "src")
-        if stdlib_path not in sys.path:
-            sys.path.insert(0, stdlib_path)
         if src_path not in sys.path:
             sys.path.insert(0, src_path)
         from molt.gpu import Buffer  # noqa: F401
@@ -133,10 +130,7 @@ class TestCPUTarget:
 
     @pytest.fixture(autouse=True)
     def _setup(self):
-        stdlib_path = os.path.join(_project_root, "src", "molt", "stdlib")
         src_path = os.path.join(_project_root, "src")
-        if stdlib_path not in sys.path:
-            sys.path.insert(0, stdlib_path)
         if src_path not in sys.path:
             sys.path.insert(0, src_path)
 
@@ -193,10 +187,7 @@ class TestMetalTarget:
 
     @pytest.fixture(autouse=True)
     def _setup(self):
-        stdlib_path = os.path.join(_project_root, "src", "molt", "stdlib")
         src_path = os.path.join(_project_root, "src")
-        if stdlib_path not in sys.path:
-            sys.path.insert(0, stdlib_path)
         if src_path not in sys.path:
             sys.path.insert(0, src_path)
 
@@ -538,10 +529,7 @@ class TestCrossTargetParity:
 
     @pytest.fixture(autouse=True)
     def _setup(self):
-        stdlib_path = os.path.join(_project_root, "src", "molt", "stdlib")
         src_path = os.path.join(_project_root, "src")
-        if stdlib_path not in sys.path:
-            sys.path.insert(0, stdlib_path)
         if src_path not in sys.path:
             sys.path.insert(0, src_path)
 

@@ -2,14 +2,9 @@ from __future__ import annotations
 
 import argparse
 import importlib
-import os
-import shutil
-import subprocess
-import sys
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
-from molt._host_exit import process_returncode_for_direct_os_exit
 from molt.cli.build_output_layout import _BUILD_PROFILE_CHOICES
 from molt.cli.completion import _completion_script
 
@@ -32,14 +27,6 @@ def _emit_json(*args: Any, **kwargs: Any) -> Any:
 
 def _build_profile_choices() -> tuple[str, ...]:
     return _BUILD_PROFILE_CHOICES
-
-
-def _hash_seed_override_env() -> str:
-    return _cli_module()._HASH_SEED_OVERRIDE_ENV
-
-
-def _hash_seed_sentinel_env() -> str:
-    return _cli_module()._HASH_SEED_SENTINEL_ENV
 
 
 def completion(
@@ -144,83 +131,6 @@ def _build_args_has_profile_flag(args: list[str]) -> bool:
                 return True
             continue
     return False
-
-
-def _is_windows_process_model() -> bool:
-    return os.name == "nt"
-
-
-def _flush_standard_streams() -> None:
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.flush()
-        except (OSError, ValueError):
-            pass
-
-
-def _process_exit_code(returncode: int | None) -> int:
-    return process_returncode_for_direct_os_exit(
-        returncode,
-        windows=_cli_module()._is_windows_process_model(),
-    )
-
-
-def _cli_hash_seed_reexec_argv() -> list[str] | None:
-    orig_argv = list(getattr(sys, "orig_argv", ()) or ())
-    if len(orig_argv) >= 2 and orig_argv[1] not in {"-c", "-"}:
-        return [sys.executable, *orig_argv[1:]]
-    if not sys.argv or sys.argv[0] in {"", "-c", "-"}:
-        return None
-    argv0 = sys.argv[0]
-    has_sep = os.sep in argv0 or (os.altsep is not None and os.altsep in argv0)
-    if has_sep or Path(argv0).exists() or shutil.which(argv0):
-        return [sys.executable, *sys.argv]
-    return None
-
-
-def _reexec_cli_with_hash_seed(env: Mapping[str, str]) -> None:
-    cli_module = _cli_module()
-    argv = cli_module._cli_hash_seed_reexec_argv()
-    if argv is None:
-        return
-    if cli_module._is_windows_process_model():
-        try:
-            completed = subprocess.run(argv, env=dict(env), check=False)
-        except OSError as exc:
-            print(
-                f"molt: failed to restart with PYTHONHASHSEED: {exc}", file=sys.stderr
-            )
-            _flush_standard_streams()
-            raise SystemExit(127) from exc
-        # A normal interpreter exit, never os._exit: the launcher's atexit
-        # handlers (the proof-queue child custody hook's terminal handshake
-        # among them) must run, or every guarded molt invocation ends with an
-        # incomplete child-custody receipt.
-        _flush_standard_streams()
-        raise SystemExit(_process_exit_code(completed.returncode))
-    os.execvpe(argv[0], argv, env)
-
-
-def _ensure_cli_hash_seed() -> None:
-    desired = os.environ.get(_hash_seed_override_env(), "0").strip()
-    if not desired:
-        desired = "0"
-    if desired.lower() in {"off", "disable", "random"}:
-        return
-    if os.environ.get("PYTHONHASHSEED") == desired:
-        return
-    if os.environ.get(_hash_seed_sentinel_env()) == "1":
-        print(
-            "molt: deterministic PYTHONHASHSEED restart did not apply "
-            f"(expected {desired!r}, got {os.environ.get('PYTHONHASHSEED')!r}).",
-            file=sys.stderr,
-        )
-        _flush_standard_streams()
-        raise SystemExit(127)
-    env = os.environ.copy()
-    env["PYTHONHASHSEED"] = desired
-    env[_hash_seed_sentinel_env()] = "1"
-    _cli_module()._reexec_cli_with_hash_seed(env)
 
 
 _BUILD_ESSENTIAL_FLAGS = frozenset(

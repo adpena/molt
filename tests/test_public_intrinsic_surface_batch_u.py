@@ -10,13 +10,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
 import tempfile
-import types
 import zipfile
 from pathlib import Path
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 def _load_module(name, path_text):
@@ -28,7 +27,7 @@ def _load_module(name, path_text):
     return module
 
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_http_client_execute": lambda *args, **kwargs: None,
     "molt_http_status_reason": lambda code: "OK" if code == 200 else "",
     "molt_http_cookies_parse": lambda raw: [("session", "abc")],
@@ -39,25 +38,7 @@ builtins._molt_intrinsics = {{
     "molt_shlex_quote": lambda s: "'" + s + "'",
     "molt_shlex_split_ex": lambda source, whitespace, posix, comments, whitespace_split, commenters, punctuation_chars: source.split(),
     "molt_shlex_join": lambda parts: " ".join(parts),
-    "molt_zipapp_runtime_ready": lambda: True,
-    "molt_capabilities_has": lambda name: True,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 http_mod = _load_module("molt_test_http", {str(STDLIB_ROOT / "http" / "__init__.py")!r})
 cookies_mod = _load_module("molt_test_http_cookies", {str(STDLIB_ROOT / "http" / "cookies.py")!r})

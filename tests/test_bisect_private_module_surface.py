@@ -10,35 +10,29 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
+import inspect
 import bisect as _host_bisect
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
-builtins._molt_intrinsics = {{
-    "molt_bisect_left": _host_bisect.bisect_left,
-    "molt_bisect_right": _host_bisect.bisect_right,
-    "molt_bisect_insort_left": _host_bisect.insort_left,
-    "molt_bisect_insort_right": _host_bisect.insort_right,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+# The intrinsics take all five arguments positionally; CPython's bisect is the
+# reference implementation of that ABI.
+install_registry({{
+    "molt_bisect_left": lambda a, x, lo, hi, key: _host_bisect.bisect_left(
+        a, x, lo, hi, key=key
+    ),
+    "molt_bisect_right": lambda a, x, lo, hi, key: _host_bisect.bisect_right(
+        a, x, lo, hi, key=key
+    ),
+    "molt_bisect_insort_left": lambda a, x, lo, hi, key: _host_bisect.insort_left(
+        a, x, lo, hi, key=key
+    ),
+    "molt_bisect_insort_right": lambda a, x, lo, hi, key: _host_bisect.insort_right(
+        a, x, lo, hi, key=key
+    ),
+}})
 
 
 def _load_module(name, path_text):
@@ -52,23 +46,39 @@ def _load_module(name, path_text):
 
 _private = _load_module("_bisect", {str(STDLIB_ROOT / "_bisect.py")!r})
 
-rows = [
-    (name, type(getattr(_private, name)).__name__, bool(callable(getattr(_private, name))))
-    for name in sorted(dir(_private))
-    if not name.startswith("_")
-]
-for name, type_name, is_callable in rows:
-    print(f"ROW|{{name}}|{{type_name}}|{{is_callable}}")
+for name in sorted(n for n in dir(_private) if not n.startswith("_")):
+    print(
+        f"ROW|{{name}}|{{inspect.signature(getattr(_private, name))}}"
+        f"|{{inspect.signature(getattr(_host_bisect, name))}}"
+    )
 
-data = [1, 3, 5]
-left = _private.bisect_left(data, 3)
-right = _private.bisect_right(data, 3)
-_private.insort_left(data, 4)
-checks = {{
-    "behavior": left == 1 and right == 2 and data == [1, 3, 4, 5],
-}}
-for key in sorted(checks):
-    print(f"CHECK|{{key}}|{{checks[key]}}")
+cases = [
+    ([1, 3, 5], 3, {{}}),
+    ([1, 3, 3, 3, 5], 3, {{"lo": 2}}),
+    ([1, 3, 3, 3, 5], 3, {{"lo": 1, "hi": 3}}),
+    ([5, 3, 1], 3, {{"key": lambda v: -v}}),
+    ([(1, "a"), (3, "b")], 2, {{"key": lambda item: item[0]}}),
+]
+same = True
+for data, x, kwargs in cases:
+    for name in ("bisect_left", "bisect_right"):
+        same &= getattr(_private, name)(data, x, **kwargs) == getattr(
+            _host_bisect, name
+        )(data, x, **kwargs)
+    probe_x = (x, "z") if isinstance(data[0], tuple) else x
+    for name in ("insort_left", "insort_right"):
+        ours, theirs = list(data), list(data)
+        getattr(_private, name)(ours, probe_x, **kwargs)
+        getattr(_host_bisect, name)(theirs, probe_x, **kwargs)
+        same &= ours == theirs
+try:
+    _private.bisect_left([1], 1, 0, 1, None)
+except TypeError:
+    keyword_only = True
+else:
+    keyword_only = False
+print(f"CHECK|matches_cpython|{{same}}")
+print(f"CHECK|key_is_keyword_only|{{keyword_only}}")
 """
 
 
@@ -91,12 +101,14 @@ def _run_probe() -> tuple[list[tuple[str, str, str]], dict[str, str]]:
     return rows, checks
 
 
-def test__bisect_public_surface_matches_expected_shape() -> None:
+def test__bisect_public_surface_matches_cpython() -> None:
     rows, checks = _run_probe()
-    assert rows == [
-        ("bisect_left", "builtin_function_or_method", "True"),
-        ("bisect_right", "builtin_function_or_method", "True"),
-        ("insort_left", "builtin_function_or_method", "True"),
-        ("insort_right", "builtin_function_or_method", "True"),
+    # Same public names and the same signatures as CPython's _bisect.
+    assert [name for name, _, _ in rows] == [
+        "bisect_left",
+        "bisect_right",
+        "insort_left",
+        "insort_right",
     ]
-    assert checks == {"behavior": "True"}
+    assert all(ours == theirs for _, ours, theirs in rows), rows
+    assert checks == {"key_is_keyword_only": "True", "matches_cpython": "True"}

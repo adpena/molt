@@ -65,8 +65,12 @@ def _molt_cli_available() -> bool:
         return False
 
 
-def _build_wasm(src_path: Path, out_dir: Path) -> Path | None:
-    """Build a Python file to WASM, returning the .wasm path or None."""
+def _build_wasm(src_path: Path, out_dir: Path) -> Path:
+    """Build a Python file to WASM and return the .wasm path.
+
+    A failed build fails the test: skipping it would let a compiler regression
+    read as green (HF-94).
+    """
     env = wasm_test_build_env(ROOT)
     try:
         result = _run_wasm_test_process(
@@ -86,13 +90,18 @@ def _build_wasm(src_path: Path, out_dir: Path) -> Path | None:
             timeout=_SUBPROCESS_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
-        return None
+        pytest.fail(
+            f"WASM build of {src_path.name} timed out after {_SUBPROCESS_TIMEOUT} s"
+        )
     if result.returncode != 0:
-        return None
+        pytest.fail(
+            f"WASM build of {src_path.name} failed (exit {result.returncode}):\n"
+            f"{(result.stderr or '')[-2000:]}"
+        )
     # Look for .wasm output.
     for wasm_file in out_dir.rglob("*.wasm"):
         return wasm_file
-    return None
+    pytest.fail(f"WASM build of {src_path.name} produced no .wasm in {out_dir}")
 
 
 _F64_CONST_RE = re.compile(r"\(f64\.const\s+([^)\\s]+)")
@@ -230,8 +239,6 @@ class TestWasmBinaryDeterminism:
             out_dir = tmp_path / f"build_{i}"
             out_dir.mkdir()
             wasm_path = _build_wasm(src_file, out_dir)
-            if wasm_path is None:
-                pytest.skip(f"WASM build failed for '{name}'")
             data = wasm_path.read_bytes()
             hashes.append(hashlib.sha256(data).hexdigest())
 
@@ -266,8 +273,6 @@ class TestWasmModuleStructure:
             out_dir = tmp_path / f"sec_{i}"
             out_dir.mkdir()
             wasm_path = _build_wasm(src_file, out_dir)
-            if wasm_path is None:
-                pytest.skip(f"WASM build failed for '{name}'")
             data = wasm_path.read_bytes()
             sections = parse_wasm_section_spans(data)
             section_orders.append([s.id for s in sections])
@@ -290,8 +295,6 @@ class TestWasmModuleStructure:
         out_dir = tmp_path / "asc"
         out_dir.mkdir()
         wasm_path = _build_wasm(src_file, out_dir)
-        if wasm_path is None:
-            pytest.skip(f"WASM build failed for '{name}'")
 
         data = wasm_path.read_bytes()
         sections = parse_wasm_section_spans(data)
@@ -336,8 +339,6 @@ class TestWasmNaNCanonicalization:
         out_dir = tmp_path / "nan_out"
         out_dir.mkdir()
         wasm_path = _build_wasm(src, out_dir)
-        if wasm_path is None:
-            pytest.skip("WASM build failed")
 
         nan_constants = _extract_f64_constants(wasm_path)
 

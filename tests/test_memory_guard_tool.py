@@ -38,6 +38,9 @@ from molt.memory_guard_paths import (
     pytest_guard_summary_dir,
 )
 
+# These tests fake process data the session sentinel also reads.
+pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
+
 
 @pytest.mark.parametrize("phase", ["temporary_artifact_custody", "rss_trip_evidence"])
 def test_infrastructure_failure_has_one_exact_wire_authority(

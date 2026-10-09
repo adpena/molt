@@ -18,6 +18,7 @@ import pytest
 
 from molt import environment_registry as R
 from molt.dx import DxConfigError, RunContext
+from tests.process_guard_common import install_module_os_view
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "tools") not in sys.path:
@@ -168,7 +169,7 @@ def test_retired_family_suffix_is_an_error_for_a_stem() -> None:
 def test_lower_case_spelling_is_reported_on_case_sensitive_platforms(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(R.os, "name", "posix")
+    install_module_os_view(monkeypatch, R, name="posix")
     errors, warnings = R.inspect_environment({"molt_home": "/x"})
     assert errors == []
     assert len(warnings) == 1
@@ -177,7 +178,7 @@ def test_lower_case_spelling_is_reported_on_case_sensitive_platforms(
 
 
 def test_windows_matches_names_case_insensitively(monkeypatch) -> None:
-    monkeypatch.setattr(R.os, "name", "nt")
+    install_module_os_view(monkeypatch, R, name="nt")
     assert R.inspect_environment({"molt_home": "/x"}) == ([], [])
     row = _retired_fixed_name()
     errors, _warnings = R.inspect_environment({row.name.lower(): "1"})

@@ -698,7 +698,7 @@ def _path_is_within(path: Path, parent: Path) -> bool:
     return host_path_is_within(path, parent)
 
 
-def _git_checkout_head(repo_root: Path) -> str | None:
+def git_checkout_head(repo_root: Path) -> str | None:
     try:
         proc = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -797,7 +797,7 @@ def _github_actions_checkout_custody(
     github_sha = env.get("GITHUB_SHA", "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", github_sha):
         raise DxConfigError("GitHub Actions custody requires a full GITHUB_SHA")
-    checkout_head = _git_checkout_head(source_root)
+    checkout_head = git_checkout_head(source_root)
     if verify_checkout_files and checkout_head != github_sha:
         raise DxConfigError(
             f"GitHub Actions checkout HEAD mismatch: expected {github_sha}, got {checkout_head}"
@@ -1123,50 +1123,31 @@ def backend_daemon_socket_dir(repo_root: Path, env: Mapping[str, str]) -> Path:
     return (_backend_daemon_socket_root(env) / f"molt-backend-{root_hash}").resolve()
 
 
-# The sccache release is pinned in config/tool_releases.toml (R73.3). A missing
-# compilation-cache binary is a missing PRIMITIVE that gets COMPLETED here from
-# that digest-bound authority, never a silent fallback to cold builds.
+# The sccache release is pinned in config/tool_releases.toml. Molt never
+# downloads a tool on its own: the pinned release is used only after
+# `python -m molt.tool_releases provision sccache` installed it.
 _sccache_degrade_warned = False
-# Provisioning is attempted at most ONCE per process: a failed network download
-# must never re-run on every _install_dx_defaults call (that would hang every
-# build's env setup by the download timeout on an offline host).
-_sccache_download_failed = False
-_sccache_provision_error = ""
 
 
-def _provision_sccache(toolchain_root: Path | None) -> str | None:
-    """Provision the pinned sccache release under the custody toolchain root.
-
-    Idempotent and memoized: one failed attempt per process (offline host,
-    digest mismatch, no toolchain root) is recorded once and never re-run on
-    every env setup. Returns the attested executable path, or ``None`` with
-    the reason kept for the loud degradation message.
-    """
-    global _sccache_download_failed, _sccache_provision_error
-    if _sccache_download_failed:
+def pinned_sccache(env: Mapping[str, str]) -> str | None:
+    """The pinned sccache already provisioned under ``MOLT_TARGET_ROOT``."""
+    raw_target_root = env.get("MOLT_TARGET_ROOT", "").strip()
+    if not raw_target_root:
         return None
     from molt import tool_releases
 
-    try:
-        if toolchain_root is None:
-            raise tool_releases.ToolReleaseError(
-                "no toolchain root is known for this environment (MOLT_TARGET_ROOT)"
-            )
-        release = tool_releases.tool_release("sccache")
-        discovery = tool_releases.provision_tool(release, toolchain_root)
-    except (tool_releases.ToolReleaseError, OSError) as exc:
-        _sccache_download_failed = True
-        _sccache_provision_error = f"{type(exc).__name__}: {exc}"
-        return None
-    return str(discovery.executable)
+    discovery = tool_releases.discover_tool(
+        tool_releases.tool_release("sccache"), Path(raw_target_root).expanduser()
+    )
+    return None if discovery is None else str(discovery.executable)
 
 
 def _ensure_sccache_wrapper(env: dict[str, str]) -> None:
     """Wire ``RUSTC_WRAPPER=sccache`` for content-addressed, cross-worktree-shared
-    rustc caching across EVERY DX/proof build path. Provisions sccache when absent;
-    if it genuinely cannot be made available, DEGRADE LOUDLY (cold builds saturate
-    memory under parallel lanes) instead of the historical silent skip. Single
-    authority — respects an explicit pre-set RUSTC_WRAPPER (e.g. benchmarks)."""
+    rustc caching across EVERY DX/proof build path. When the pinned release is
+    not provisioned, DEGRADE LOUDLY (cold builds saturate memory under parallel
+    lanes) and name the command that provisions it; never download it here.
+    Respects an explicit pre-set RUSTC_WRAPPER (e.g. benchmarks)."""
     global _sccache_degrade_warned
     if env.get("RUSTC_WRAPPER"):
         return
@@ -1187,21 +1168,17 @@ def _ensure_sccache_wrapper(env: dict[str, str]) -> None:
                 flush=True,
             )
         return
-    raw_target_root = env.get("MOLT_TARGET_ROOT", "").strip()
-    sccache = _provision_sccache(
-        Path(raw_target_root).expanduser() if raw_target_root else None
-    )
+    sccache = pinned_sccache(env)
     if sccache is None:
         if not _sccache_degrade_warned:
             _sccache_degrade_warned = True
             print(
-                "molt: WARNING sccache unavailable and could not be provisioned "
-                f"({_sccache_provision_error or 'unknown reason'}) — Rust "
-                "compilation cache is OFF; builds will be COLD and memory-heavy "
-                "(every worktree recompiles the full crate graph, which saturates "
-                "memory under parallel lanes). Provision the pinned release with "
-                "`python -m molt.tool_releases provision sccache` or set "
-                "MOLT_USE_SCCACHE=0 to silence.",
+                "molt: WARNING the pinned sccache is not provisioned under "
+                "MOLT_TARGET_ROOT, so the Rust compilation cache is OFF; builds "
+                "will be COLD and memory-heavy (every worktree recompiles the full "
+                "crate graph, which saturates memory under parallel lanes). "
+                "Provision it with `python -m molt.tool_releases provision sccache` "
+                "or set MOLT_USE_SCCACHE=0 to silence.",
                 file=sys.stderr,
                 flush=True,
             )

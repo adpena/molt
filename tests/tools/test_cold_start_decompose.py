@@ -4,6 +4,9 @@ import importlib.util
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+import shutil
+import tempfile
+from tests.process_guard_common import install_module_view
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -79,8 +82,10 @@ def test_build_noop_c_uses_shared_guard(monkeypatch, tmp_path: Path) -> None:
         path.mkdir()
         return str(path)
 
-    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/cc")
-    monkeypatch.setattr(module.tempfile, "mkdtemp", fake_mkdtemp)
+    install_module_view(
+        monkeypatch, "shutil", shutil, module, which=lambda name: "/usr/bin/cc"
+    )
+    install_module_view(monkeypatch, "tempfile", tempfile, module, mkdtemp=fake_mkdtemp)
     monkeypatch.setattr(
         module.harness_memory_guard,
         "guarded_completed_process",

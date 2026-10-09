@@ -742,7 +742,7 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
     # result semantics execute in test_wasm_reserved_callable_arity.py.
     assert "return callReservedRuntimeCallable({" in run_wasm
     assert "entry: reservedRuntimeCallable," in run_wasm
-    assert "fn = runtimeFallbackFunction(runtimeInst.exports, entry.name);" in run_wasm
+    assert ": runtimeFallbackFunction(runtimeInst.exports, entry.name);" in run_wasm
     assert "entry.name.startsWith('molt_')" not in run_wasm
     assert "`molt_${entry.name}`" not in run_wasm
     assert "`molt_${name}`" not in run_wasm
@@ -837,7 +837,6 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
 
     root = Path(__file__).resolve().parents[1]
     browser_host = (root / "wasm/browser_host.js").read_text(encoding="utf-8")
-    assert "normalizeImportResult," in browser_host
     assert "normalizeValueForKind," in browser_host
     assert (
         "const loadRuntimeManifest = async (options, moduleUrl = import.meta.url) => {"
@@ -899,7 +898,7 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
         "normalizeValueForKind(value, callSignature.params[index] || null)"
         in browser_host
     )
-    assert "return normalizeImportResult(fn(...callArgs), resultKind);" in browser_host
+    assert "return normalizeValueForKind(fn(...callArgs), resultKind);" in browser_host
     assert "runtimeImportAbi," in browser_host
     assert "runtimeImportFallbacks," in browser_host
     assert "entry.name === 'fast_list_append'" not in browser_host

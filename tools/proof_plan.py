@@ -1823,13 +1823,14 @@ def _source_identity() -> dict[str, str]:
     return {"commit": commit, "tree": tree}
 
 
-def _source_tree_state() -> str:
-    """Return whether executable proof inputs are exactly commit-backed.
+def _source_tree_changes() -> tuple[str, ...]:
+    """Return the Git status entries that keep proof inputs from being commit-backed.
 
     A commit SHA alone does not attest staged, unstaged, or untracked source.
-    Receipts therefore fail closed unless Git reports an entirely clean tree at
-    the instant execution begins. Keep the probe byte-oriented so unusual path
-    encodings cannot weaken the cleanliness decision.
+    Receipts therefore fail closed unless Git reports an entirely clean tree
+    when execution begins and after every command. The probe splits Git's raw
+    NUL-separated output, so unusual path encodings cannot hide an entry; the
+    decoded entries only name the change in diagnostics.
     """
     try:
         status = subprocess.check_output(
@@ -1841,7 +1842,11 @@ def _source_tree_state() -> str:
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ValueError(f"cannot observe proof checkout cleanliness: {exc}") from exc
-    return "clean" if not status else "dirty"
+    return tuple(
+        entry.decode("utf-8", "backslashreplace")
+        for entry in status.split(b"\0")
+        if entry
+    )
 
 
 def _diff_paths(base: str, head: str, *, three_dot: bool = False) -> list[str]:
@@ -2936,7 +2941,7 @@ def execute_commands(
         plan,
         commands,
         receipt_path,
-        _source_tree_state=_source_tree_state,
+        _source_tree_changes=_source_tree_changes,
         toolchain_fingerprints=toolchain_fingerprints,
         _authority_sha256=_authority_sha256,
         _source_identity=_source_identity,

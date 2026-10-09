@@ -24,7 +24,7 @@ def _repo_root() -> Path:
     return REPO_ROOT
 
 
-def _build_env() -> dict[str, str]:
+def fuzz_build_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("PYTHONPATH", "src")
     env["PYTHONHASHSEED"] = "0"

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import IntFlag
+from functools import cached_property, lru_cache
+from types import MappingProxyType
 from typing import Any, Protocol, Sequence
 
 from molt.frontend.lowering.try_regions import try_region_id
@@ -21,12 +24,12 @@ class BasicBlock:
 
 @dataclass(frozen=True)
 class ControlMaps:
-    if_to_else: dict[int, int]
-    if_to_end: dict[int, int]
-    else_to_end: dict[int, int]
-    loop_start_to_end: dict[int, int]
-    loop_end_to_start: dict[int, int]
-    loop_owner: dict[int, int]
+    if_to_else: Mapping[int, int]
+    if_to_end: Mapping[int, int]
+    else_to_end: Mapping[int, int]
+    loop_start_to_end: Mapping[int, int]
+    loop_end_to_start: Mapping[int, int]
+    loop_owner: Mapping[int, int]
 
 
 class CFGEdgeKind(IntFlag):
@@ -35,6 +38,14 @@ class CFGEdgeKind(IntFlag):
     NORMAL = 1
     EXCEPTION = 2
     RESUME = 4
+
+
+# Successor construction ORs plain bits per edge and converts each edge once:
+# IntFlag arithmetic goes through the enum machinery on every operation.
+_NORMAL_EDGE = int(CFGEdgeKind.NORMAL)
+_EXCEPTION_EDGE = int(CFGEdgeKind.EXCEPTION)
+_RESUME_EDGE = int(CFGEdgeKind.RESUME)
+_EDGE_KIND_BY_BITS = tuple(CFGEdgeKind(bits) for bits in range(1 << len(CFGEdgeKind)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,19 +162,29 @@ class DominatorTree:
 
 @dataclass(frozen=True)
 class CFGGraph:
-    blocks: list[BasicBlock]
-    index_to_block: dict[int, int]
-    label_to_block: dict[str, int]
-    block_entry_label: dict[int, str]
+    """Control flow of one op list. Immutable: ``build_cfg`` gives every op list
+    with the same control projection the same graph."""
+
+    blocks: Sequence[BasicBlock]
+    index_to_block: Mapping[int, int]
+    label_to_block: Mapping[str, int]
+    block_entry_label: Mapping[int, str]
     control: ControlMaps
-    successors: dict[int, list[int]]
-    edge_kinds: dict[tuple[int, int], CFGEdgeKind]
-    predecessors: dict[int, list[int]]
-    reachable: set[int]
-    dominance: DominatorTree
+    successors: Mapping[int, Sequence[int]]
+    edge_kinds: Mapping[tuple[int, int], CFGEdgeKind]
+    predecessors: Mapping[int, Sequence[int]]
+    reachable: frozenset[int] | set[int]
+
+    # Dominance is derived on first use: most graphs a pass round builds are
+    # never asked a dominance query. Shared CFGs retain one immutable tree.
+    @cached_property
+    def dominance(self) -> DominatorTree:
+        return DominatorTree.compute(
+            tuple(self.successors[index] for index in range(len(self.successors)))
+        )
 
 
-def _collect_control_maps(ops: Sequence[OpLike]) -> ControlMaps:
+def _collect_control_maps(kinds: Sequence[str]) -> ControlMaps:
     if_stack: list[int] = []
     if_to_else: dict[int, int] = {}
     if_to_end: dict[int, int] = {}
@@ -174,44 +195,44 @@ def _collect_control_maps(ops: Sequence[OpLike]) -> ControlMaps:
     loop_end_to_start: dict[int, int] = {}
     loop_owner: dict[int, int] = {}
 
-    for idx, op in enumerate(ops):
+    for idx, kind in enumerate(kinds):
         if loop_stack:
             loop_owner[idx] = loop_stack[-1]
-        if op.kind == "IF":
+        if kind == "IF":
             if_stack.append(idx)
-        elif op.kind == "ELSE":
+        elif kind == "ELSE":
             if if_stack:
                 if_to_else[if_stack[-1]] = idx
-        elif op.kind == "END_IF":
+        elif kind == "END_IF":
             if if_stack:
                 if_idx = if_stack.pop()
                 if_to_end[if_idx] = idx
                 else_idx = if_to_else.get(if_idx)
                 if else_idx is not None:
                     else_to_end[else_idx] = idx
-        elif op.kind == "LOOP_START":
+        elif kind == "LOOP_START":
             loop_stack.append(idx)
             loop_owner[idx] = idx
-        elif op.kind == "LOOP_END":
+        elif kind == "LOOP_END":
             if loop_stack:
                 start_idx = loop_stack.pop()
                 loop_start_to_end[start_idx] = idx
                 loop_end_to_start[idx] = start_idx
 
     return ControlMaps(
-        if_to_else=if_to_else,
-        if_to_end=if_to_end,
-        else_to_end=else_to_end,
-        loop_start_to_end=loop_start_to_end,
-        loop_end_to_start=loop_end_to_start,
-        loop_owner=loop_owner,
+        if_to_else=MappingProxyType(if_to_else),
+        if_to_end=MappingProxyType(if_to_end),
+        else_to_end=MappingProxyType(else_to_end),
+        loop_start_to_end=MappingProxyType(loop_start_to_end),
+        loop_end_to_start=MappingProxyType(loop_end_to_start),
+        loop_owner=MappingProxyType(loop_owner),
     )
 
 
 def _build_basic_blocks(
-    ops: Sequence[OpLike], control: ControlMaps
+    kinds: Sequence[str], operands: Mapping[int, str | None]
 ) -> tuple[list[BasicBlock], dict[int, int], dict[str, int], dict[int, str]]:
-    if not ops:
+    if not kinds:
         return [], {}, {}, {}
 
     leader_kinds = {
@@ -243,17 +264,19 @@ def _build_basic_blocks(
     split_after_kinds = leader_kinds
 
     leaders: set[int] = {0}
-    for idx, op in enumerate(ops):
-        if op.kind in leader_kinds:
+    for idx, kind in enumerate(kinds):
+        if kind in leader_kinds:
             leaders.add(idx)
-        if op.kind in split_after_kinds and idx + 1 < len(ops):
+        if kind in split_after_kinds and idx + 1 < len(kinds):
             leaders.add(idx + 1)
 
     leader_list = sorted(leaders)
     blocks: list[BasicBlock] = []
     for block_idx, start in enumerate(leader_list):
         end = (
-            leader_list[block_idx + 1] if block_idx + 1 < len(leader_list) else len(ops)
+            leader_list[block_idx + 1]
+            if block_idx + 1 < len(leader_list)
+            else len(kinds)
         )
         blocks.append(BasicBlock(id=block_idx, start=start, end=end))
 
@@ -265,27 +288,28 @@ def _build_basic_blocks(
     label_to_block: dict[str, int] = {}
     block_entry_label: dict[int, str] = {}
     for block in blocks:
-        op = ops[block.start]
-        if op.kind in {"LABEL", "STATE_LABEL"} and op.args:
-            label = str(op.args[0])
-            label_to_block[label] = block.id
-            block_entry_label[block.id] = label
+        if kinds[block.start] in _LABEL_KINDS:
+            label = operands[block.start]
+            if label is not None:
+                label_to_block[label] = block.id
+                block_entry_label[block.id] = label
 
     return blocks, index_to_block, label_to_block, block_entry_label
 
 
 def _compute_successors(
     *,
-    ops: Sequence[OpLike],
+    kinds: Sequence[str],
+    operands: Mapping[int, str | None],
     blocks: list[BasicBlock],
     index_to_block: dict[int, int],
     label_to_block: dict[str, int],
     control: ControlMaps,
 ) -> tuple[dict[int, list[int]], dict[tuple[int, int], CFGEdgeKind]]:
     successors: dict[int, list[int]] = {block.id: [] for block in blocks}
-    edge_kinds: dict[tuple[int, int], CFGEdgeKind] = {}
+    edge_bits: dict[tuple[int, int], int] = {}
     if not blocks:
-        return successors, edge_kinds
+        return successors, {}
 
     # Collect resume-target blocks: blocks immediately following a STATE_YIELD.
     # These are only reachable via STATE_SWITCH dispatch, not via normal
@@ -293,22 +317,16 @@ def _compute_successors(
     state_yield_resume_blocks: list[int] = []
     for block in blocks:
         for idx in range(block.start, block.end):
-            op = ops[idx]
-            if op.kind == "STATE_YIELD" and idx + 1 < len(ops):
+            if kinds[idx] == "STATE_YIELD" and idx + 1 < len(kinds):
                 resume_block = index_to_block.get(idx + 1)
                 if resume_block is not None:
                     state_yield_resume_blocks.append(resume_block)
     # Also collect STATE_LABEL blocks as resume targets (for async state machines).
     for block in blocks:
-        op = ops[block.start]
-        if op.kind == "STATE_LABEL":
+        if kinds[block.start] == "STATE_LABEL":
             state_yield_resume_blocks.append(block.id)
 
-    def add_succ(
-        block_id: int,
-        succ: int | None,
-        kind: CFGEdgeKind = CFGEdgeKind.NORMAL,
-    ) -> None:
+    def add_succ(block_id: int, succ: int | None, kind: int = _NORMAL_EDGE) -> None:
         if succ is None:
             return
         if succ < 0 or succ >= len(blocks):
@@ -316,7 +334,7 @@ def _compute_successors(
         if succ not in successors[block_id]:
             successors[block_id].append(succ)
         edge = (block_id, succ)
-        edge_kinds[edge] = edge_kinds.get(edge, CFGEdgeKind(0)) | kind
+        edge_bits[edge] = edge_bits.get(edge, 0) | kind
 
     def block_for_index(idx: int | None) -> int | None:
         if idx is None:
@@ -328,14 +346,13 @@ def _compute_successors(
         if block.start >= block.end:
             continue
         op_idx = block.end - 1
-        op = ops[op_idx]
+        kind = kinds[op_idx]
         next_block = block_id + 1 if block_id + 1 < len(blocks) else None
 
-        if op.kind == "JUMP":
-            target = str(op.args[0]) if op.args else ""
-            add_succ(block_id, label_to_block.get(target))
+        if kind == "JUMP":
+            add_succ(block_id, label_to_block.get(operands[op_idx]))
             continue
-        if op.kind == "IF":
+        if kind == "IF":
             add_succ(block_id, next_block)
             false_idx = control.if_to_else.get(op_idx)
             if false_idx is not None:
@@ -350,7 +367,7 @@ def _compute_successors(
                 false_idx = control.if_to_end.get(op_idx)
                 add_succ(block_id, block_for_index(false_idx))
             continue
-        if op.kind == "ELSE":
+        if kind == "ELSE":
             end_if_idx = control.else_to_end.get(op_idx)
             # Target the END_IF block itself (not end_if_idx + 1) — END_IF
             # is a block leader so it starts its own block which falls through
@@ -361,7 +378,7 @@ def _compute_successors(
             # incorrectly eliminate ops inside else branches.
             add_succ(block_id, block_for_index(end_if_idx))
             continue
-        if op.kind == "LOOP_BREAK":
+        if kind == "LOOP_BREAK":
             owner = control.loop_owner.get(op_idx)
             end_idx = (
                 control.loop_start_to_end.get(owner) if owner is not None else None
@@ -369,7 +386,7 @@ def _compute_successors(
             exit_idx = None if end_idx is None else end_idx + 1
             add_succ(block_id, block_for_index(exit_idx))
             continue
-        if op.kind in {
+        if kind in {
             "LOOP_BREAK_IF_TRUE",
             "LOOP_BREAK_IF_FALSE",
             "LOOP_BREAK_IF_EXCEPTION",
@@ -382,31 +399,28 @@ def _compute_successors(
             exit_idx = None if end_idx is None else end_idx + 1
             add_succ(block_id, block_for_index(exit_idx))
             continue
-        if op.kind == "LOOP_CONTINUE":
+        if kind == "LOOP_CONTINUE":
             owner = control.loop_owner.get(op_idx)
             add_succ(block_id, block_for_index(owner))
             continue
-        if op.kind == "LOOP_END":
+        if kind == "LOOP_END":
             add_succ(block_id, next_block)
             add_succ(block_id, block_for_index(control.loop_end_to_start.get(op_idx)))
             continue
-        if op.kind == "TRY_START":
+        if kind == "TRY_START":
             add_succ(block_id, next_block)
             # Region markers describe path-local custody, not textual brackets.
             # Keep handler reachability conservative until shared TIR exception
             # analysis can prove the actual exceptional edges.
-            handler = try_region_id(op)
-            handler_label = str(handler) if handler is not None else ""
-            add_succ(block_id, label_to_block.get(handler_label), CFGEdgeKind.EXCEPTION)
+            add_succ(block_id, label_to_block.get(operands[op_idx]), _EXCEPTION_EDGE)
             continue
-        if op.kind == "CHECK_EXCEPTION":
+        if kind == "CHECK_EXCEPTION":
             add_succ(block_id, next_block)
-            target = str(op.args[0]) if op.args else ""
-            add_succ(block_id, label_to_block.get(target), CFGEdgeKind.EXCEPTION)
+            add_succ(block_id, label_to_block.get(operands[op_idx]), _EXCEPTION_EDGE)
             continue
-        if op.kind in {"ret", "ret_void"}:
+        if kind in {"ret", "ret_void"}:
             continue
-        if op.kind in {"RAISE", "RAISE_CAUSE", "RERAISE"}:
+        if kind in {"RAISE", "RAISE_CAUSE", "RERAISE"}:
             # molt's exception model lowers `raise` to "set the pending
             # exception flag and CONTINUE" (the native/WASM/LLVM `raise` op calls
             # `molt_raise` and falls through — it does NOT branch). The frontend
@@ -421,23 +435,25 @@ def _compute_successors(
             # the real lowering and keeps the explicit routing live.
             add_succ(block_id, next_block)
             continue
-        if op.kind == "STATE_YIELD":
+        if kind == "STATE_YIELD":
             # STATE_YIELD suspends the generator (returns to caller).
             # The block after it is only reachable via STATE_SWITCH on
             # the next call to next()/send()/throw(), NOT via fall-through.
-            # Treat it like a RETURN (no successors).
+            # Treat it like a return (no successors).
             continue
-        if op.kind == "STATE_SWITCH":
+        if kind == "STATE_SWITCH":
             # STATE_SWITCH dispatches to any resume block in the function:
             # blocks after STATE_YIELD ops and STATE_LABEL blocks.
-            add_succ(block_id, next_block, CFGEdgeKind.RESUME)
+            add_succ(block_id, next_block, _RESUME_EDGE)
             for resume_block in state_yield_resume_blocks:
-                add_succ(block_id, resume_block, CFGEdgeKind.RESUME)
+                add_succ(block_id, resume_block, _RESUME_EDGE)
             continue
 
         add_succ(block_id, next_block)
 
-    return successors, edge_kinds
+    return successors, {
+        edge: _EDGE_KIND_BY_BITS[bits] for edge, bits in edge_bits.items()
+    }
 
 
 def _compute_predecessors(successors: dict[int, list[int]]) -> dict[int, list[int]]:
@@ -451,30 +467,91 @@ def _compute_predecessors(successors: dict[int, list[int]]) -> dict[int, list[in
     return predecessors
 
 
+def _reachable_blocks(successors: dict[int, list[int]]) -> set[int]:
+    if not successors:
+        return set()
+    seen: set[int] = set()
+    stack = [0]
+    while stack:
+        block_id = stack.pop()
+        if block_id in seen:
+            continue
+        seen.add(block_id)
+        for succ in successors.get(block_id, []):
+            if succ not in seen:
+                stack.append(succ)
+    return seen
+
+
+# The CFG reads every op's kind and the first operand of these kinds only. The
+# projection carries exactly that, so it is both the builder's sole input and
+# the key under which equal op lists share one graph.
+_LABEL_KINDS = frozenset({"LABEL", "STATE_LABEL"})
+_OPERAND_KINDS = _LABEL_KINDS | {"JUMP", "CHECK_EXCEPTION", "TRY_START"}
+
+_ControlProjection = tuple[tuple[str, ...], tuple[tuple[int, str | None], ...]]
+
+
+def _control_operand(op: OpLike) -> str | None:
+    """The label an operand-reading op contributes, spelled as the CFG uses it."""
+    if op.kind in _LABEL_KINDS:
+        # An operand-less label names no block.
+        return str(op.args[0]) if op.args else None
+    if op.kind == "TRY_START":
+        handler = try_region_id(op)
+        return str(handler) if handler is not None else ""
+    return str(op.args[0]) if op.args else ""
+
+
+def _control_projection(ops: Sequence[OpLike]) -> _ControlProjection:
+    kinds = tuple([op.kind for op in ops])
+    operands = tuple(
+        (index, _control_operand(op))
+        for index, op in enumerate(ops)
+        if op.kind in _OPERAND_KINDS
+    )
+    return kinds, operands
+
+
 def build_cfg(ops: Sequence[OpLike]) -> CFGGraph:
-    control = _collect_control_maps(ops)
+    """The CFG of ``ops``.
+
+    Midend pass rounds rebuild the CFG of an op list most of whose rounds
+    change no control flow, so graphs are shared by control projection.
+    """
+    return _cfg_for_projection(_control_projection(ops))
+
+
+@lru_cache(maxsize=128)
+def _cfg_for_projection(projection: _ControlProjection) -> CFGGraph:
+    kinds, operand_items = projection
+    operands = dict(operand_items)
+    control = _collect_control_maps(kinds)
     blocks, index_to_block, label_to_block, block_entry_label = _build_basic_blocks(
-        ops, control
+        kinds, operands
     )
     successors, edge_kinds = _compute_successors(
-        ops=ops,
+        kinds=kinds,
+        operands=operands,
         blocks=blocks,
         index_to_block=index_to_block,
         label_to_block=label_to_block,
         control=control,
     )
     predecessors = _compute_predecessors(successors)
-    dominance = DominatorTree.compute([successors[block.id] for block in blocks])
-    reachable = {block.id for block in blocks if dominance.is_reachable(block.id)}
+    reachable = _reachable_blocks(successors)
     return CFGGraph(
-        blocks=blocks,
-        index_to_block=index_to_block,
-        label_to_block=label_to_block,
-        block_entry_label=block_entry_label,
+        blocks=tuple(blocks),
+        index_to_block=MappingProxyType(index_to_block),
+        label_to_block=MappingProxyType(label_to_block),
+        block_entry_label=MappingProxyType(block_entry_label),
         control=control,
-        successors=successors,
-        edge_kinds=edge_kinds,
-        predecessors=predecessors,
-        reachable=reachable,
-        dominance=dominance,
+        successors=MappingProxyType(
+            {block: tuple(targets) for block, targets in successors.items()}
+        ),
+        edge_kinds=MappingProxyType(edge_kinds),
+        predecessors=MappingProxyType(
+            {block: tuple(sources) for block, sources in predecessors.items()}
+        ),
+        reachable=frozenset(reachable),
     )

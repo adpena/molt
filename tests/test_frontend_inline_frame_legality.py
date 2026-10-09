@@ -71,8 +71,7 @@ class InlineHarness(CallMethodDispatchMixin, ClassMethodCompilationMixin):
     def _class_attr_is_data_descriptor(self, name: str, field: str) -> bool:
         return False
 
-    def _emit_guarded_setattr(self, receiver, name, value, owner, **kwargs) -> None:
-        assert kwargs == {"assume_exact": True}
+    def _emit_guarded_setattr(self, receiver, name, value, owner) -> None:
         self.events.append(f"store:{name}")
 
 

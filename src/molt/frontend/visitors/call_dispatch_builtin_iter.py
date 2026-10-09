@@ -26,17 +26,11 @@ class CallNamedBuiltinIterDispatchMixin(GeneratorMixinBase):
     ) -> Any:
         if func_id == "enumerate":
             if len(node.args) > 2:
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE,
-                    "enumerate expects 1 or 2 arguments",
-                )
+                return CALL_NOT_HANDLED
             if node.keywords:
                 for keyword in node.keywords:
                     if keyword.arg != "start":
-                        raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
-                            f"enumerate got unexpected keyword {keyword.arg}",
-                        )
+                        return CALL_NOT_HANDLED
             iterable = self.visit(node.args[0]) if node.args else None
             if iterable is None:
                 raise FrontendRejection(
@@ -72,9 +66,7 @@ class CallNamedBuiltinIterDispatchMixin(GeneratorMixinBase):
             return res
         if func_id == "slice":
             if len(node.args) not in (1, 2, 3):
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE, "slice expects 1-3 arguments"
-                )
+                return CALL_NOT_HANDLED
             if len(node.args) == 1:
                 start = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=start))
@@ -95,9 +87,7 @@ class CallNamedBuiltinIterDispatchMixin(GeneratorMixinBase):
             return res
         if func_id == "aiter":
             if len(node.args) != 1:
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE, "aiter expects 1 argument"
-                )
+                return CALL_NOT_HANDLED
             iterable = self.visit(node.args[0])
             if iterable is None:
                 raise FrontendRejection(
@@ -106,10 +96,7 @@ class CallNamedBuiltinIterDispatchMixin(GeneratorMixinBase):
             return self._emit_aiter(iterable)
         if func_id == "anext":
             if node.keywords or len(node.args) not in (1, 2):
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE,
-                    "anext expects 1 or 2 positional arguments",
-                )
+                return CALL_NOT_HANDLED
             iter_obj = self.visit(node.args[0])
             if iter_obj is None:
                 raise FrontendRejection(
@@ -195,7 +182,7 @@ class CallNamedBuiltinIterDispatchMixin(GeneratorMixinBase):
                     arg_val = self.visit(expr)
                     if arg_val is None:
                         raise FrontendRejection(
-                            Diagnostic.CALL_SIGNATURE,
+                            Diagnostic.OPERAND_VALUE,
                             f"Unsupported {func_id} positional argument",
                         )
                     arg_vals.append(arg_val)

@@ -29,7 +29,7 @@ from tools import (
 from tools.proof_queue_pkg import command_admission, supervisor_custody
 from tools.proof_queue_pkg import custody as proof_queue_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import install_module_view, run_guarded_test_process
 
 
 @pytest.fixture(autouse=True)
@@ -665,6 +665,7 @@ def test_native_receipt_contract_selects_existing_integration_batch(path: str) -
     command = owners[0]
     assert command.family == "native_integration"
     assert command.data["resource_class"] == "compiler-build-resource"
+    # It is the first compiler build on the PR tier, where bench-cli does not run.
     assert command.data["timeout_budget"] == "cold"
 
 
@@ -912,18 +913,21 @@ def test_matrix_job_must_consume_its_own_family_matrix(tmp_path) -> None:
 
 def test_matrix_family_budget_binds_each_cell() -> None:
     commands = tuple(
-        replace(command, data={**command.data, "timeout_seconds": 1100})
+        replace(command, data={**command.data, "timeout_seconds": 2401})
         if command.id == "python.unit.harness.macos"
         else command
         for command in PLAN.commands
     )
     errors = replace(PLAN, commands=commands).validate()
-    # The 1100 s harness followed by the 120 s library row gives 1220 s.
-    # Commands alone fit 1260 s; the 60 s reserve makes only macOS over budget.
+    # Commands take the first free slot in declaration order. Harness (2401 s)
+    # holds slot 1; custody (300), binding (300), frontend (600), CLI (900)
+    # and surface contracts (600) fill slot 2 until 2700 s; runtime-artifacts
+    # (600) takes slot 1 at 2401 s and ends at 3001 s; the 120 s boundary
+    # partition takes slot 2 at 2700 s. The makespan is 3001 s. The Linux job
+    # is unchanged, so only the macOS cell exceeds its 41-minute budget.
     assert [error for error in errors if "timeout envelope" in error] == [
-        "python_unit: projected resource-aware timeout envelope 1220s in matrix "
-        "cell macos-arm64-py312-unit plus job reserve 60s exceeds "
-        "GitHub job budget 1260s"
+        "python_unit: projected resource-aware timeout envelope 3001s in matrix "
+        "cell macos-arm64-py312-unit plus job reserve 60s exceeds GitHub job budget 2460s"
     ]
 
 
@@ -980,9 +984,9 @@ def test_job_reserve_is_not_a_workflow_wide_budget() -> None:
     [
         (
             "python.static.ty",
-            840,
-            "python_static: projected resource-aware timeout envelope 841s "
-            "plus job reserve 60s exceeds GitHub job budget 900s",
+            300,
+            "python_static: projected resource-aware timeout envelope 901s "
+            "plus job reserve 60s exceeds GitHub job budget 960s",
         ),
         (
             "nightly.shards.profile-feedback",
@@ -1006,8 +1010,8 @@ def test_command_schedule_cannot_consume_the_job_reserve(
             ),
         )
 
-    # A single command plus reserve exactly fills the real workflow cap.
-    # One more second still fits the job on its own, but consumes reserved time.
+    # The selected command, existing sibling work and reserve fill the workflow cap.
+    # One more second of command work consumes the reserved time.
     assert at_deadline(deadline).validate() == []
     assert at_deadline(deadline + 1).validate() == [expected_error]
 
@@ -1142,10 +1146,10 @@ def test_cargo_toolchain_declares_complete_process_dependency_closure() -> None:
     cargo_command = next(
         command for command in PLAN.commands if command.argv[:2] == ("cargo", "build")
     )
-    assert PLAN.required_toolchains(cargo_command) == (
-        *cargo_command.toolchains,
-        "git",
-    )
+    required = PLAN.required_toolchains(cargo_command)
+    assert set(required) == {*cargo_command.toolchains, "git"}
+    assert len(required) == len(set(required))
+    assert required.index("git") > required.index("cargo")
     rustc = next(policy for policy in PLAN.toolchain_policies if policy.name == "rustc")
     assert rustc.data["linker_build_tools"] == {
         "link.exe": {
@@ -1220,6 +1224,7 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
 ) -> None:
     rows = {row.id: row for row in PLAN.commands if row.family == "wasm"}
     expected_pytest_rows = {
+        "wasm.host.runner-fixtures",
         "wasm.test.startup-lifecycle",
         "wasm.test.linker-admission",
         "wasm.test.control-flow",
@@ -1347,6 +1352,14 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
     assert {"pr", "main"} <= set(startup.data["tiers"])
     assert "node" in PLAN.required_toolchains(startup)
     assert not startup.dependencies
+    runner = rows["wasm.host.runner-fixtures"]
+    assert runner.dependencies == ("wasm.build.backend",)
+    assert {arg for arg in runner.argv if arg.startswith("tests/")} == {
+        "tests/test_wasm_runner_table_base.py"
+    }
+    assert not set(startup.argv[6:]) & {
+        arg for arg in runner.argv if arg.startswith("tests/")
+    }
     for path in startup.argv[6:]:
         assert "wasm" in {
             family.name for family in PLAN.select([path.split("::", 1)[0]]).selected
@@ -1713,6 +1726,7 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
         "nightly_verification_t3",
         "platform_portability",
         "python_unit",
+        "repository_policy",
         "rust",
         "rust_security",
         "runtime_candidate_costs",
@@ -1892,7 +1906,7 @@ def test_toolchain_fingerprint_selects_sdk_only_for_declared_wasm_role(
         banner = f"LLVM version {version}" if name == "llvm-nm" else f"LLD {version}"
         return proof_plan.subprocess.CompletedProcess(command, 0, banner, "")
 
-    monkeypatch.setattr(proof_plan.subprocess, "run", run)
+    install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=run)
     actual = proof_plan._version_fingerprint(policy)
     assert actual is not None
     assert actual["path"] == str(selected)
@@ -1946,7 +1960,7 @@ def test_toolchain_content_and_version_probes_share_declared_cwd(monkeypatch) ->
         return proof_plan.subprocess.CompletedProcess(argv, 0, output)
 
     monkeypatch.setattr(proof_plan.shutil, "which", lambda _requested: sys.executable)
-    monkeypatch.setattr(proof_plan.subprocess, "run", fake_run)
+    install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=fake_run)
 
     fingerprint = proof_plan._version_fingerprint(policy)
     expected_cwd = (proof_plan.ROOT / "formal/lean").resolve()
@@ -1987,7 +2001,7 @@ def test_toolchain_content_probe_ignores_provisioner_stderr(
         return proof_plan.subprocess.CompletedProcess(argv, 0, "probe 1.0\n", "")
 
     monkeypatch.setattr(proof_plan.shutil, "which", lambda _requested: sys.executable)
-    monkeypatch.setattr(proof_plan.subprocess, "run", fake_run)
+    install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=fake_run)
 
     fingerprint = proof_plan._version_fingerprint(policy)
     assert fingerprint is not None
@@ -2333,7 +2347,7 @@ def _receipt_for(
         "cargo": "cargo {}",
         "lune": "lune {}",
         "clang": "clang version {}",
-        "ld.lld": "LLD {}",
+        "ld.lld": "LLD {} (compatible with GNU linkers)",
         "llvm-config": "{}",
         "mlir-opt": "LLVM version {}",
         "lean": "Lean (version {})",
@@ -2436,7 +2450,14 @@ def _receipt_for(
 
 def test_receipt_verdict_fails_selected_but_unexecuted_cells(tmp_path: Path) -> None:
     errors = proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
-    assert errors == ["python.static.ty: required executable receipt is missing"]
+    selected = [
+        command.id for command in PLAN.commands if command.family == "python_static"
+    ]
+    assert len(selected) > 1
+    assert errors == [
+        f"{command_id}: required executable receipt is missing"
+        for command_id in selected
+    ]
 
 
 def test_cache_disposition_never_infers_restore_hit_from_directory_existence(
@@ -2704,7 +2725,7 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
 
 
 def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     cell = proof_plan.MatrixCell(
         "local-executor-cell",
         {
@@ -2765,7 +2786,7 @@ def test_provisioned_lean_fingerprint_admits_formal_build_receipt(
     command = next(
         command for command in PLAN.commands if command.id == "formal.lean.build"
     )
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     observed_toolchains: list[tuple[str, ...]] = []
 
     def fake_fingerprints(
@@ -2907,7 +2928,7 @@ def test_executor_hashes_declared_evidence_and_rejects_zero_work(
         },
     )
     plan = _synthetic_executor_plan((producer,), limits={"resource-a": 1})
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -2954,7 +2975,7 @@ def test_executor_schedules_dependencies_and_resources_with_deterministic_receip
         _synthetic_executor_command("synthetic.after-a", dependencies=["synthetic.a"]),
     )
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -3025,7 +3046,7 @@ def test_executor_partition_failure_preserves_independent_work_and_blocks_depend
         ),
     )
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -3131,7 +3152,7 @@ def test_actual_rust_roots_continue_after_failure_without_overlapping_capacity(
     # Source/toolchain admission is supplied by this unit fixture; execution and
     # failure classification still use the real executor, guard and children.
     plan = replace(PLAN, commands=commands)
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -3170,7 +3191,7 @@ def test_executor_does_not_convert_control_plane_interrupts_into_records(
 ) -> None:
     command = _synthetic_executor_command("synthetic.interrupt")
     plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -3235,7 +3256,7 @@ def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
     live = replace(live, data={**live.data, "argv": [sys.executable, "-c", live_code]})
     commands = (fail, live)
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -3280,19 +3301,44 @@ def test_executor_process_custody_is_classified_by_subprocess_guard() -> None:
 def test_executor_refuses_uncommitted_source_attestation(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "dirty")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ("?? stray.py",))
     command = next(
         command for command in PLAN.commands if command.id == "python.static.ty"
     )
-    with pytest.raises(ValueError, match="clean source tree"):
+    with pytest.raises(ValueError, match=r"clean source tree.*: \?\? stray\.py"):
         proof_plan.execute_commands(PLAN, (command,), tmp_path / "receipt.json")
     assert not (tmp_path / "receipt.json").exists()
+
+
+def test_source_tree_changes_names_every_dirty_entry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def git(*args: str) -> None:
+        run_guarded_test_process(
+            ["git", "-C", str(tmp_path), *args], check=True, capture_output=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "proof@example.invalid")
+    git("config", "user.name", "Proof")
+    (tmp_path / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    git("add", "tracked.py")
+    git("commit", "-q", "-m", "seed")
+    monkeypatch.setattr(proof_plan, "ROOT", tmp_path)
+    assert proof_plan._source_tree_changes() == ()
+
+    (tmp_path / "tracked.py").write_text("x = 2\n", encoding="utf-8")
+    (tmp_path / "new file é.py").write_text("", encoding="utf-8")
+    assert sorted(proof_plan._source_tree_changes()) == [
+        " M tracked.py",
+        "?? new file é.py",
+    ]
 
 
 def test_executor_preflight_error_is_visible_and_receipted(
     tmp_path, monkeypatch, capsys
 ):
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
 
     def reject_toolchain(_plan, _names):
         raise ValueError("toolchain contract violation: node version mismatch")
@@ -3313,10 +3359,10 @@ def test_executor_preflight_error_is_visible_and_receipted(
 
 
 def test_executor_rejects_source_mutation_during_partition(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    states = iter(("clean", "clean", "dirty"))
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: next(states))
+    states = iter(((), (), ("?? tools/stray.py", " M README.md")))
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: next(states))
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -3339,7 +3385,13 @@ def test_executor_rejects_source_mutation_during_partition(
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["status"] == "failure"
     assert receipt["commands"][0]["source_tree_state_after"] == "changed"
+    reason = "source tree changed or is dirty: ?? tools/stray.py,  M README.md"
+    assert receipt["commands"][0]["failure_reason"] == reason
     assert receipt["executed_partitions"] == []
+    # The log names the failing command and the paths without the receipt.
+    message = capsys.readouterr().err
+    assert f"proof-plan: failed python.static.ty: {reason}" in message
+    assert f"status=failure failed=1; receipt={receipt_path}" in message
 
 
 def test_heavy_queue_projects_the_same_receipt_schema(
@@ -3760,7 +3812,7 @@ def test_executor_stops_on_candidate_change_even_when_checkout_is_clean(
 ) -> None:
     original = {"commit": "a" * 40, "tree": "b" * 40}
     current = dict(original)
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(proof_plan, "_source_identity", lambda: dict(current))
     monkeypatch.setattr(
         proof_plan,
@@ -3799,7 +3851,7 @@ def test_executor_control_plane_interrupt_cancels_siblings_before_join(
         _synthetic_executor_command("live", resource_class="resource-b"),
     )
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -4102,7 +4154,7 @@ def test_python_rust_consumers_admit_tools_before_any_partition(
         assert {"python", "uv", "rustc", "cargo"} <= set(names)
         raise ValueError("independent fixture: partial Rust installation")
 
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan, "toolchain_fingerprints", reject_incomplete_installation
     )
@@ -4263,7 +4315,7 @@ def test_executor_retains_owner_in_failure_receipt_and_library_exception(
 
     command = _synthetic_executor_command("synthetic.unresolved")
     plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -4392,7 +4444,7 @@ def test_cli_process_exit_preserves_autonomous_guard_and_eventual_closure(tmp_pa
         f"commands=tuple(p.ProofCommand(identity,data) for identity,data in {[(c.id, c.data) for c in commands]!r})\n"
         "plan=replace(base,commands=commands,executor_max_workers=2,resource_policies=(p.ResourcePolicy('resource-a',1),p.ResourcePolicy('resource-b',1)))\n"
         "p.ProofPlan.load=lambda _:plan\np._topological_commands=lambda *a,**k:commands\n"
-        "p._source_tree_state=lambda:'clean'\np.toolchain_fingerprints=lambda *a:{}\n"
+        "p._source_tree_changes=lambda:()\np.toolchain_fingerprints=lambda *a:{}\n"
         "p._source_identity=lambda:{'commit':'a'*40,'tree':'b'*40}\n"
         "start=CommandExecutor.start_owned\n"
         "def held_start(self,args,**kwargs):\n"
@@ -4624,6 +4676,11 @@ def test_ninja_identity_binds_locked_release_and_observed_distribution_banner(
 
 def test_receipt_verdict_binds_sdk_closure_without_changing_native_hashes(tmp_path):
     command = next(item for item in PLAN.commands if item.id == "python.static.ty")
+    for sibling in PLAN.commands:
+        if sibling.family == command.family and sibling.id != command.id:
+            (tmp_path / f"{sibling.id}.json").write_text(
+                json.dumps(_receipt_for(sibling, tmp_path)), encoding="utf-8"
+            )
     receipt = _receipt_for(command, tmp_path)
     policy = next(item for item in PLAN.toolchain_policies if item.name == "wasi-clang")
     sdk = {
@@ -4689,6 +4746,11 @@ def test_selected_sdk_fingerprint_roundtrips_through_actual_receipt_receiver(
     command = next(item for item in PLAN.commands if item.id == "python.static.ty")
     receipt_root = tmp_path / "receipts"
     receipt_root.mkdir()
+    for sibling in PLAN.commands:
+        if sibling.family == command.family and sibling.id != command.id:
+            (receipt_root / f"{sibling.id}.json").write_text(
+                json.dumps(_receipt_for(sibling, receipt_root)), encoding="utf-8"
+            )
     receipt = _receipt_for(command, receipt_root)
     receipt["toolchains"]["wasi-clang"] = sdk
     path = receipt_root / "sdk.json"

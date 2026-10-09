@@ -46,8 +46,7 @@ Top-level + submodule name coverage is enforced against the CPython
 3.12/3.13/3.14 union baseline:
 - baseline: `tools/stdlib_module_union.py`
 - generator: `tools/gen_stdlib_module_union.py`
-- stub sync: `tools/sync_stdlib_top_level_stubs.py`
-- submodule stub sync: `tools/sync_stdlib_submodule_stubs.py`
+- stub generator: `tools/gen_stdlib_stubs.py`
 - workflow doc: `docs/spec/areas/compat/surfaces/stdlib/stdlib_union_baseline.md`
 
 ## Daily Commands

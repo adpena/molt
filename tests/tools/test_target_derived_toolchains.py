@@ -34,6 +34,7 @@ from molt.source_extension_link_inputs import SourceExtensionLinkInputs
 from tools import proof_plan
 from tools.proof_queue_pkg import process_image_capture, toolchain_capture
 from tools.proof_queue_pkg import target_derived_toolchains as provider
+from tests.process_guard_common import install_module_view
 
 
 def _policy(**updates):
@@ -474,10 +475,8 @@ def test_validation_never_rediscovers_native_target_or_probes(tmp_path, monkeypa
 
     monkeypatch.setattr(provider, "resolve_source_extension_target_plan", forbidden)
     monkeypatch.setattr(provider, "_resolve_source_extension_toolchain", forbidden)
-    monkeypatch.setattr(
-        source_extension_toolchain.subprocess,
-        "run",
-        same_thread_probe(source_extension_toolchain.subprocess.run, forbidden),
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, source_extension_toolchain, run=forbidden
     )
     provider.validate_identity(_policy(), identity)
 
@@ -795,10 +794,8 @@ def test_compiler_probe_subprocess_receives_exact_environment(tmp_path, monkeypa
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(
-        source_extension_toolchain.subprocess,
-        "run",
-        same_thread_probe(source_extension_toolchain.subprocess.run, run),
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, source_extension_toolchain, run=run
     )
     assert (
         source_extension_toolchain._probe_wasm_source_extension_compiler(
