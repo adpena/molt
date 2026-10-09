@@ -92,8 +92,11 @@ def test_run_with_log_uses_memory_guard_and_canonical_env(
         fake_guarded_completed_process,
     )
     log_path = tmp_path / "runtime.log"
+    # An artifact root outside the source tree: where a checkout is its own
+    # root (a hosted runner's checkout), scratch moves out of the tree instead.
     env = {
         "PATH": "/usr/bin",
+        "MOLT_EXT_ROOT": str(tmp_path / "Molt"),
         "MOLT_SESSION_ID": "runtime-safety-test",
         "RUSTFLAGS": "-Z sanitizer=address",
     }
