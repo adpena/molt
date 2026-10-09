@@ -78,7 +78,9 @@ def _install_guard(monkeypatch: pytest.MonkeyPatch, result_for: Any) -> list[lis
             return result_for(list(command))
 
     fake = SimpleNamespace(HarnessExecutionContext=Context)
-    monkeypatch.setattr(command_runtime, "_load_cli_harness_memory_guard", lambda _cwd: fake)
+    monkeypatch.setattr(
+        command_runtime, "_load_cli_harness_memory_guard", lambda _cwd: fake
+    )
     return calls
 
 
@@ -166,13 +168,13 @@ def test_completed_command_never_returns_a_guard_failure(
     assert isinstance(raised.value, subprocess.SubprocessError)
 
 
-def _install_tempfile_guard(
-    monkeypatch: pytest.MonkeyPatch, result: Any
-) -> None:
+def _install_tempfile_guard(monkeypatch: pytest.MonkeyPatch, result: Any) -> None:
     fake = SimpleNamespace(
         guarded_completed_process_to_tempfiles=lambda command, **_kwargs: result
     )
-    monkeypatch.setattr(command_runtime, "_load_cli_harness_memory_guard", lambda _cwd: fake)
+    monkeypatch.setattr(
+        command_runtime, "_load_cli_harness_memory_guard", lambda _cwd: fake
+    )
 
 
 def test_tempfile_runner_raises_a_guard_timeout_instead_of_returning_124(
@@ -181,7 +183,9 @@ def test_tempfile_runner_raises_a_guard_timeout_instead_of_returning_124(
     command = ["molt-backend", "--ir-file", "ir.json"]
     _install_tempfile_guard(
         monkeypatch,
-        _guard_result(command, child_returncode=-9, timed_out=True, stdout=b"", stderr=b""),
+        _guard_result(
+            command, child_returncode=-9, timed_out=True, stdout=b"", stderr=b""
+        ),
     )
 
     with pytest.raises(subprocess.TimeoutExpired) as raised:
@@ -213,7 +217,8 @@ def test_tempfile_runner_returns_a_child_exit_of_124_as_its_result(
 ) -> None:
     command = ["molt-backend"]
     _install_tempfile_guard(
-        monkeypatch, _guard_result(command, child_returncode=124, stdout=b"", stderr=b"")
+        monkeypatch,
+        _guard_result(command, child_returncode=124, stdout=b"", stderr=b""),
     )
 
     result = command_runtime._run_subprocess_captured_to_tempfiles(command, timeout=5.0)
@@ -230,7 +235,9 @@ def test_entrypoint_reports_a_guard_failure_with_the_guard_exit_code(
 ) -> None:
     error = GuardInfrastructureError(
         ["uv", "lock", "--check"],
-        _guard_result(["uv", "lock", "--check"], child_returncode=0, infrastructure=True),
+        _guard_result(
+            ["uv", "lock", "--check"], child_returncode=0, infrastructure=True
+        ),
     )
 
     def dispatch(*_args: Any, **_kwargs: Any) -> int:
