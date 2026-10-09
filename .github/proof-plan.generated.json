@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "cff677bf6bf5ee7a3a7eae8f66f8e7062f3ce5877a8115aa85e95464038dcf69",
+  "authority_sha256": "6cd79746ef88c98e57bf55a3bce5f14a55ab66dc37d0adcdbd2dfa0a0f0573cc",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2462,7 +2462,8 @@
         "tests/test_perf_regression.py",
         "tests/test_profile_tool.py",
         "tests/test_regrtest_adapter.py",
-        "tests/test_version_compat.py"
+        "tests/test_version_compat.py",
+        "tests/tools/test_hosted_ci_env.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",

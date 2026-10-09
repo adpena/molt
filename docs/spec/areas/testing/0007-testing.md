@@ -233,6 +233,22 @@ To test Tier 1:
 - **Differential**: run `uv run --python 3.12 python tests/molt_diff.py <case.py>` for curated parity cases (expand over time).
 - **Benchmarks**: `tools/bench.py` for local validation; add CI regression gates as they stabilize.
 
+Hosted jobs export process-wide state that local runs lack: the hosted checkout
+custody contract (`MOLT_CI_EPHEMERAL_CUSTODY_ROOT` and the GitHub provenance
+fields `molt.dx` verifies) and the resource plan from `tools/ci_resource_env.py`
+(RSS caps, Cargo jobs, xdist workers). To reproduce a failure that appears only
+in CI, load the same state for the local checkout and rerun the test:
+
+```bash
+eval "$(python3 tools/hosted_ci_env.py --runner-temp /tmp/molt-runner)"
+```
+
+A unit test that builds a synthetic project or asserts developer-host roots or
+guard limits must not inherit that state: it uses the shared
+`no_hosted_checkout_custody` and `no_ambient_guard_caps` fixtures from
+`tests/conftest.py`. Hosted custody itself has its own cases in
+`tests/test_dx_run_context.py`.
+
 ### Execution acceptance and deadline controls
 
 An execution with incomplete process custody or guard infrastructure failure

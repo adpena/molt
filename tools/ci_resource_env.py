@@ -182,7 +182,7 @@ def _guard_caps(
     return process_cap, total_cap
 
 
-def _github_env_lines(plan: CiResourcePlan) -> list[str]:
+def github_env_lines(plan: CiResourcePlan) -> list[str]:
     plan_json = json.dumps(
         plan.resource_plan.to_json_dict(),
         sort_keys=True,
@@ -204,7 +204,7 @@ def _github_env_lines(plan: CiResourcePlan) -> list[str]:
 
 def write_github_env(path: Path, plan: CiResourcePlan) -> None:
     with path.open("a", encoding="utf-8") as handle:
-        for line in _github_env_lines(plan):
+        for line in github_env_lines(plan):
             handle.write(f"{line}\n")
 
 
