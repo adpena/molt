@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.process_guard_common import run_guarded_test_process
 from tools import gen_stdlib_module_union as gen
 
 FIXTURE_HEADER = (
@@ -429,13 +430,8 @@ def _fixture_remote(root: Path) -> tuple[Path, str, str]:
     }
 
     def git(*args: str) -> str:
-        return subprocess.run(
-            ["git", "-C", str(root), *args],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=env,
-        ).stdout.strip()
+        command = ["git", "-C", str(root), *args]
+        return run_guarded_test_process(command, env=env, check=True).stdout.strip()
 
     files = {
         "Python/stdlib_module_names.h": "\n".join(FIXTURE_HEADER) + "\n",
@@ -450,7 +446,7 @@ def _fixture_remote(root: Path) -> tuple[Path, str, str]:
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
-    subprocess.run(["git", "init", "--quiet", str(root)], check=True, env=env)
+    git("init", "--quiet")
     git("config", "uploadpack.allowFilter", "true")
     git("config", "uploadpack.allowAnySHA1InWant", "true")
     git("add", "--all")
