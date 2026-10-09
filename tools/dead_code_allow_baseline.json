@@ -1,5 +1,5 @@
 {
-  "baseline_total": 141,
+  "baseline_total": 132,
   "entries": [
     {
       "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::inner",
@@ -42,57 +42,12 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/container_runtime_selector.rs::allow_dead_code::struct:WasmContainerRuntimeSelectorSpec",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/container_runtime_selector.rs::allow_dead_code::const:WASM_CONTAINER_RUNTIME_SELECTORS",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/method_ic_selector.rs::allow_dead_code::struct:WasmMethodIcSelectorSpec",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/method_ic_selector.rs::allow_dead_code::const:WASM_METHOD_IC_SELECTORS",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
       "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/numeric_runtime_selector.rs::allow_dead_code::struct:WasmNumericRuntimeSelectorSpec",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
       "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/numeric_runtime_selector.rs::allow_dead_code::const:WASM_NUMERIC_RUNTIME_SELECTORS",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/runtime_surface.rs::allow_dead_code::const:RUNTIME_HOST_EXPORTS",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/runtime_surface.rs::allow_dead_code::struct:RuntimeHostExportSignature",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/runtime_surface.rs::allow_dead_code::const:RUNTIME_HOST_EXPORT_SIGNATURES",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/runtime_surface.rs::allow_dead_code::struct:RuntimeImportFallbackSpec",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/runtime_surface.rs::allow_dead_code::const:RUNTIME_IMPORT_FALLBACK_EXPORTS",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },

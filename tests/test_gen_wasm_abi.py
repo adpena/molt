@@ -1280,7 +1280,8 @@ def test_wasm_abi_manifest_owns_runtime_export_policy() -> None:
     }
     assert "runtime_export_name" in rendered_rs
     assert "RUNTIME_HOST_EXPORTS" in rendered_rs
-    assert "RUNTIME_HOST_EXPORT_SIGNATURES" in rendered_rs
+    # The Python projection carries the table; Rust selects through a match.
+    assert "RUNTIME_HOST_EXPORT_SIGNATURES" not in rendered_rs
     assert ".find(|export| *export == name)" in rendered_rs
     assert 'Self::Alloc => "molt_alloc"' in rendered_rs
     assert 'Self::RuntimeInit => "molt_runtime_init"' in rendered_rs
@@ -2318,7 +2319,8 @@ def test_wasm_abi_manifest_owns_container_runtime_selector() -> None:
     rendered_selector_rs = rendered_rs_modules["container_runtime_selector.rs"]
     rendered_mod_rs = rendered_rs_modules["mod.rs"]
     rendered_py = gen.render_py(data)
-    assert "WASM_CONTAINER_RUNTIME_SELECTORS" in rendered_selector_rs
+    # The Python projection carries the table; Rust selects through a match.
+    assert "WASM_CONTAINER_RUNTIME_SELECTORS" not in rendered_selector_rs
     assert "WasmContainerRuntimeFact::FlatListInt" in rendered_selector_rs
     assert "import: WasmRuntimeImport::ListIntGetitem" in rendered_selector_rs
     assert "LirRuntimeCall::ListIntGetitem" in rendered_selector_rs
@@ -2380,7 +2382,8 @@ def test_wasm_abi_manifest_owns_method_ic_selector() -> None:
     rendered_selector_rs = rendered_rs_modules["method_ic_selector.rs"]
     rendered_mod_rs = rendered_rs_modules["mod.rs"]
     rendered_py = gen.render_py(data)
-    assert "WASM_METHOD_IC_SELECTORS" in rendered_selector_rs
+    # The Python projection carries the table; Rust selects through a match.
+    assert "WASM_METHOD_IC_SELECTORS" not in rendered_selector_rs
     assert "WASM_METHOD_IC_MAX_EXTRA_ARGS: usize = 4" in rendered_selector_rs
     assert "WasmMethodIcFamily::Method" in rendered_selector_rs
     assert "WasmMethodIcFamily::SuperMethod" in rendered_selector_rs
