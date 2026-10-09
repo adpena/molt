@@ -407,6 +407,65 @@ def test_source_runner_real_frontend_to_strict_verifier(tmp_path) -> None:
     assert ir == before
 
 
+def test_suite_streams_each_case_with_its_cost_before_the_summary(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sources = []
+    for name in ("first", "second"):
+        source = tmp_path / f"{name}.py"
+        source.write_text(f"def {name}():\n    return 1\n", encoding="utf-8")
+        sources.append(source)
+
+    def stub_verifier(tir, *, request_id, timeout_seconds):
+        return check_ir_structure.VerificationResult(
+            verifier_pid=7,
+            verifier_lifetime_peak_rss_bytes=(request_id + 1) * 2**30,
+        )
+
+    monkeypatch.setattr(check_ir_structure, "verify_tir", stub_verifier)
+    streamed: list[dict[str, object]] = []
+    results, _telemetry = verify_ir_suite._run_worker_pool_owned(
+        sources,
+        worker_count=1,
+        per_case_timeout=120.0,
+        max_cases_per_worker=8,
+        fail_fast=False,
+        resource_policy={},
+        on_result=streamed.append,
+    )
+
+    assert [result["source"] for result in streamed] == [str(s) for s in sources]
+    assert streamed == results
+    assert [result["status"] for result in streamed] == ["pass", "pass"]
+    assert [result["verifier_lifetime_peak_rss_bytes"] for result in streamed] == [
+        2**30,
+        2 * 2**30,
+    ]
+
+
+def test_case_line_names_time_and_verifier_peak(capsys) -> None:
+    verify_ir_suite._print_case_result(
+        {
+            "source": "big.py",
+            "status": "fail",
+            "duration_seconds": 12.345,
+            "verifier_lifetime_peak_rss_bytes": 3 * 2**30,
+            "detail": "ERRORS (1):\nbad op",
+        },
+        quiet=True,
+    )
+    verify_ir_suite._print_case_result(
+        {"source": "small.py", "status": "pass", "duration_seconds": 0.5},
+        quiet=True,
+    )
+
+    assert capsys.readouterr().out == (
+        "  FAIL big.py (12.35 s, verifier peak 3072 MiB)\n"
+        "       ERRORS (1):\n"
+        "       bad op\n"
+    )
+
+
 def test_branch_local_definition_does_not_dominate_join_use() -> None:
     diagnostics = _definition_diagnostics(
         "branch",
