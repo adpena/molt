@@ -22,6 +22,7 @@ def _export_value(stdout: str, key: str) -> str:
 
 
 @pytest.mark.parametrize("pinned", [False, True], ids=["init-named", "pinned"])
+@pytest.mark.usefixtures("developer_host_context")
 def test_new_agent_task_scaffolds_canonical_agent_env(pinned: bool) -> None:
     task = f"unit-agent-{uuid4().hex}"
     pinned_session = f"lane-{uuid4().hex}"
