@@ -2178,13 +2178,15 @@ toolchains = ["python", "uv", "rustc", "cargo"]
 
 # Frontend lowering: AST to structured IR, diagnostics and the semantic
 # oracles that run each lowering against CPython, on both unit cells.
+# The suite takes about 50 s on an M-series Mac but about 350 s on a hosted
+# Linux runner, where it shares four vCPUs with the CLI partition.
 [[command]]
 id = "python.unit.frontend-lowering"
 family = "python_unit"
 cell = "linux-x86_64-py312-unit"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "python-tests"
-timeout_seconds = 300
+timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/test_frontend_builtin_call_lowering.py", "tests/test_frontend_builtin_shape_authority.py", "tests/test_frontend_class_imports.py", "tests/test_frontend_class_namespace.py", "tests/test_frontend_compile_warnings.py", "tests/test_frontend_condition_semantics.py", "tests/test_frontend_context_unwind.py", "tests/test_frontend_diagnostics.py", "tests/test_frontend_exact_class_authority.py", "tests/test_frontend_frame_home_exception_edges.py", "tests/test_frontend_guard_availability.py", "tests/test_frontend_literal_exception_edges.py", "tests/test_frontend_literal_identity.py", "tests/test_frontend_module_publication.py", "tests/test_frontend_native_export_dispatch.py", "tests/test_frontend_op_kind_registry.py", "tests/test_frontend_sema.py", "tests/test_frontend_split_dispatch.py", "tests/test_function_annotation_lowering.py", "tests/test_python_binding_mutation_frontier.py", "tests/test_frontend_midend_passes.py", "tests/test_frontend_inline_frame_legality.py", "tests/test_python_binding_join_frontier.py", "tests/test_class_annotation_namespace_lowering.py"]
@@ -2196,7 +2198,7 @@ family = "python_unit"
 cell = "macos-arm64-py312-unit"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "python-tests"
-timeout_seconds = 300
+timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
 argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/test_frontend_builtin_call_lowering.py", "tests/test_frontend_builtin_shape_authority.py", "tests/test_frontend_class_imports.py", "tests/test_frontend_class_namespace.py", "tests/test_frontend_compile_warnings.py", "tests/test_frontend_condition_semantics.py", "tests/test_frontend_context_unwind.py", "tests/test_frontend_diagnostics.py", "tests/test_frontend_exact_class_authority.py", "tests/test_frontend_frame_home_exception_edges.py", "tests/test_frontend_guard_availability.py", "tests/test_frontend_literal_exception_edges.py", "tests/test_frontend_literal_identity.py", "tests/test_frontend_module_publication.py", "tests/test_frontend_native_export_dispatch.py", "tests/test_frontend_op_kind_registry.py", "tests/test_frontend_sema.py", "tests/test_frontend_split_dispatch.py", "tests/test_function_annotation_lowering.py", "tests/test_python_binding_mutation_frontier.py", "tests/test_frontend_midend_passes.py", "tests/test_frontend_inline_frame_legality.py", "tests/test_python_binding_join_frontier.py", "tests/test_class_annotation_namespace_lowering.py"]
