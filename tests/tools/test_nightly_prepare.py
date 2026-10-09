@@ -74,7 +74,10 @@ def test_prepare_owns_runtime_cpython_plan_and_matrix_projection(
     # the runtime generation and backend that build admitted.
     assert build_kwargs["env"] is build_env
     assert pack_kwargs["env"] is build_env
-    assert pack_argv[1:3] == ["tools/nightly_runtime_bundle.py", "pack"]
+    # The pack runs through the same launcher as the build, so the runtime
+    # identity it captures sees the same interpreter and environment.
+    assert pack_argv[:3] == build_argv[:3] == ["uv", "run", "python"]
+    assert pack_argv[3:5] == ["tools/nightly_runtime_bundle.py", "pack"]
     assert build_argv[build_argv.index("--stdlib-profile") + 1] == "full"
     assert build_argv[build_argv.index("--build-profile") + 1] == "dev"
     assert summary["source_commit"] == "a" * 40

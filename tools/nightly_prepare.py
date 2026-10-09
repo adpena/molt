@@ -109,7 +109,9 @@ def prepare(
     # export runs in the build's own environment and finds what it admitted.
     packed = COMMANDS.run(
         [
-            sys.executable,
+            "uv",
+            "run",
+            "python",
             "tools/nightly_runtime_bundle.py",
             "pack",
             "--output",
