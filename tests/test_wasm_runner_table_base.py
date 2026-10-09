@@ -170,7 +170,7 @@ def _wasm_backend() -> Path:
     )
     payload = json.loads(result.stdout)
     assert payload["status"] == "ok", payload["errors"]
-    return Path(payload["data"]["path"])
+    return Path(payload["data"]["compiler"]["path"])
 
 
 def _wasm_from_wat(
