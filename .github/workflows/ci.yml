@@ -108,7 +108,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.platform_portability == 'true'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
+    timeout-minutes: 182
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.classify-changes.outputs.platform_portability_matrix) }}
@@ -133,6 +133,8 @@ jobs:
           "MOLT_PROOF_TEST_METADATA_ROOT=$metadataRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup portability toolchains
+        # The Windows image supplies clang-cl for the C ABI header probes.
+        # Their proof command captures its exact identity before execution.
         uses: ./.github/actions/setup-project
         with:
           rust-toolchain: pinned
@@ -140,6 +142,13 @@ jobs:
           sync: "true"
           sync-frozen: "true"
           sync-groups: dev
+
+      - name: Install completion test shells
+        if: matrix.cell == 'linux-x86_64-py312-queue-portability'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes fish zsh
 
       - name: Resolve portability command evidence custody
         id: build-control
@@ -171,6 +180,8 @@ jobs:
           name: proof-diagnostics-platform-portability-${{ matrix.cell }}
           path: |
             proof-receipts/platform-portability-${{ matrix.cell }}.json
+            proof-receipts/evidence/runtime-gate-runs/
+            ${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}
             ${{ steps.build-control.outputs.profile_log }}
             ${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}
             ${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT != '' && format('{0}/tmp/pytest-memory-guard/**/*.json', env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT) || '' }}
@@ -208,7 +219,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.python_static == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 16
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -241,7 +252,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.python_unit == 'true'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
+    timeout-minutes: 41
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.classify-changes.outputs.python_unit_matrix) }}
@@ -276,7 +287,9 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.native_integration == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 43
+    env:
+      MOLT_GUARD_PROFILE: all
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -294,6 +307,13 @@ jobs:
         with:
           profile: "full"
           wasi: "true"
+      - name: Resolve native command evidence custody
+        id: build-control
+        shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: |
+          uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"
       - name: Execute selected native integration partitions
         run: python3 tools/proof_plan.py --run-family native_integration --receipt proof-receipts/native_integration.json
       - name: Upload native integration receipt
@@ -303,6 +323,19 @@ jobs:
           name: proof-receipt-native-integration
           path: proof-receipts/native_integration.json
           if-no-files-found: error
+      - name: Upload native integration command diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-diagnostics-native-integration
+          path: |
+            proof-receipts/native_integration.json
+            ${{ steps.build-control.outputs.profile_log }}
+            ${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}
+            ${{ steps.build-control.outputs.guard_state_root != '' && format('{0}/commands/**/*.json', steps.build-control.outputs.guard_state_root) || '' }}
+            ${{ steps.build-control.outputs.pytest_guard_root != '' && format('{0}/**/*.json', steps.build-control.outputs.pytest_guard_root) || '' }}
+          include-hidden-files: true
+          if-no-files-found: warn
       - name: Save Cargo dependency cache
         if: ${{ !cancelled() }}
         uses: ./.github/actions/save-cargo-cache
@@ -312,7 +345,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 254
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -355,7 +388,11 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-diagnostics-rust
-          path: proof-receipts/evidence/cargo-test-truth-runs/
+          path: |
+            proof-receipts/evidence/cargo-test-truth-runs/
+            proof-receipts/evidence/runtime-gate-runs/
+            proof-receipts/evidence/runtime-extension-admission/
+            ${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}
           include-hidden-files: true
           if-no-files-found: warn
 

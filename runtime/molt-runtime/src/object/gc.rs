@@ -1538,6 +1538,7 @@ fn promote_marked_candidates(
 /// # Safety
 /// `ptr` must be a live object of a `may_form_cycle` type. The GIL is held (the
 /// `TYPE_ID_OBJECT` arm reads class metadata through the shared inline-field walker).
+#[cfg(test)]
 pub(crate) unsafe fn molt_traverse(py: &PyToken<'_>, ptr: *mut u8, visit: &mut dyn FnMut(*mut u8)) {
     unsafe { super::heap_lifecycle::visit_owned_edges(py, ptr, visit) }
 }
@@ -1807,11 +1808,9 @@ unsafe fn detach_requirements(
             continue;
         };
         unsafe {
-            molt_traverse(py, ptr, &mut |_| {
-                edges = edges
-                    .checked_add(1)
-                    .unwrap_or_else(|| std::process::abort())
-            });
+            edges = edges
+                .checked_add(super::heap_lifecycle::detached_managed_edge_count(py, ptr))
+                .unwrap_or_else(|| std::process::abort());
             resources = resources
                 .checked_add(super::heap_lifecycle::detached_resource_count(ptr))
                 .unwrap_or_else(|| std::process::abort());
@@ -3503,7 +3502,6 @@ mod tests {
             for bits in roots {
                 dec_ref_bits(_py, bits);
             }
-            state.reset();
         });
     }
 
@@ -3580,7 +3578,6 @@ mod tests {
                 round_ns[ROUNDS * 95 / 100],
             );
             assert_eq!(registry_accesses, (OBJECTS * ROUNDS * 2) as u64);
-            state.reset();
         });
     }
 
@@ -3616,7 +3613,6 @@ mod tests {
             for bits in roots {
                 dec_ref_bits(_py, bits);
             }
-            state.reset();
         });
     }
 
@@ -3692,7 +3688,6 @@ mod tests {
             for bits in young.into_iter().chain(long_lived) {
                 dec_ref_bits(_py, bits);
             }
-            state.reset();
         });
     }
 
@@ -3703,8 +3698,10 @@ mod tests {
             let state = &crate::runtime_state(_py).gc;
             state.set_enabled(false);
             let _ = unsafe { collect_cycles(_py) };
-            state.reset();
             state.set_thresholds([2, 10, 10]);
+            state.set_enabled(true);
+            assert_eq!(state.counts(), [0, 0, 0]);
+            let collections_before = state.generation_stats()[0].collections;
 
             let roots = (0..3)
                 .map(|_| {
@@ -3714,19 +3711,21 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             assert_eq!(state.counts()[0], 3);
-            assert_eq!(state.generation_stats()[0].collections, 0);
+            assert_eq!(state.generation_stats()[0].collections, collections_before);
 
             let outcome = unsafe { collect_pending(_py) };
             assert_eq!(outcome.status, GcCollectStatus::Completed);
             assert_eq!(outcome.scanned, 3);
             assert_eq!(outcome.survivors, 3);
             assert_eq!(state.counts(), [0, 1, 0]);
-            assert_eq!(state.generation_stats()[0].collections, 1);
+            assert_eq!(
+                state.generation_stats()[0].collections,
+                collections_before + 1
+            );
 
             for bits in roots {
                 dec_ref_bits(_py, bits);
             }
-            state.reset();
         });
     }
 
@@ -3791,7 +3790,6 @@ mod tests {
             for bits in roots {
                 dec_ref_bits(_py, bits);
             }
-            state.reset();
         });
     }
 
@@ -3930,20 +3928,11 @@ mod tests {
     fn dynamic_dict_and_tuple_tracking_matches_cpython_timing() {
         let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
-            let state = crate::runtime_state(_py);
-            let saved_version = state.sys_version_info.lock().unwrap().clone();
             for minor in [12, 13, 14] {
-                *state.sys_version_info.lock().unwrap() =
-                    Some(crate::state::runtime_state::PythonVersionInfo {
-                        major: 3,
-                        minor,
-                        micro: 0,
-                        releaselevel: "final".to_string(),
-                        serial: 0,
-                    });
-                check_dynamic_container_tracking(_py, minor);
+                _guard.with_target_python_minor(_py, minor, || {
+                    check_dynamic_container_tracking(_py, minor);
+                });
             }
-            *state.sys_version_info.lock().unwrap() = saved_version;
         });
     }
 

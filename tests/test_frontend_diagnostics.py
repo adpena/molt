@@ -160,6 +160,7 @@ def test_real_frontend_rejection_is_deterministic() -> None:
     assert messages[0] == messages[1]
     assert "MOLT-FE005" in messages[0]
     assert "feature: nonlocal declarations at module scope" in messages[0]
+    assert "location: deterministic.py:1:0" in messages[0]
 
 
 CALL_SHAPE_ERRORS = (
@@ -218,6 +219,9 @@ def test_native_and_wasm_cli_share_the_frontend_diagnostic(
     source.write_text("nonlocal value\n", encoding="utf-8")
     monkeypatch.setenv("MOLT_COMPAT_WARNINGS", "0")
     monkeypatch.setenv("PYTHONHASHSEED", "0")
+    # Cache activation has separate stderr diagnostics; this fixture stops at
+    # the structured frontend error before backend compilation.
+    monkeypatch.setenv("MOLT_USE_SCCACHE", "0")
     errors: list[list[str]] = []
     for target in ("native", "wasm"):
         monkeypatch.setattr(
@@ -233,3 +237,5 @@ def test_native_and_wasm_cli_share_the_frontend_diagnostic(
         errors.append(payload["errors"])
     assert errors[0] == errors[1]
     assert "MOLT-FE005" in errors[0][0]
+    assert "feature: nonlocal declarations at module scope" in errors[0][0]
+    assert f"location: {source}:1:0" in errors[0][0]

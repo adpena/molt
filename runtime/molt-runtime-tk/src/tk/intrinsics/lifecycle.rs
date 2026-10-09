@@ -40,7 +40,9 @@ pub extern "C" fn molt_tk_available() -> u64 {
 pub extern "C" fn molt_tk_app_new(_options_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-        let use_tk = option_use_tk(_py, _options_bits);
+        let Some(use_tk) = option_use_tk(_py, _options_bits) else {
+            return MoltObject::none().bits();
+        };
         #[cfg(any(target_arch = "wasm32", not(feature = "native-tcl")))]
         let use_tk = true;
         if let Err(bits) = require_tk_app_new(_py, use_tk) {

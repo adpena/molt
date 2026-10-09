@@ -17,7 +17,13 @@ from typing import Mapping, TextIO, TypeGuard
 
 from molt.dx import bind_repo_src_pythonpath, development_artifact_env
 from molt import disk_capacity
-from molt.exact_json import ExactJsonError, loads_exact, read_exact, write_exact
+from molt.exact_json import (
+    ExactJsonError,
+    capture_exact,
+    loads_exact,
+    read_exact,
+    write_exact,
+)
 from tools.command_execution import CommandExecutor
 from tools.memory_guard_core import repro_context as guard_repro_context
 from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
@@ -641,14 +647,14 @@ def _validated_execution_context(
     ):
         raise ValueError("native process supervisor event artifact binding is invalid")
     try:
-        policy_payload = read_exact(
+        policy_identity, policy_payload = capture_exact(
             policy_path,
-            max_bytes=16 * 1024 * 1024,
+            max_bytes=supervisor_custody.SUPERVISOR_POLICY_MAX_BYTES,
             label="native proof supervisor policy",
         )
-        receipt_payload = read_exact(
+        receipt_identity, receipt_payload = capture_exact(
             receipt_path,
-            max_bytes=16 * 1024 * 1024,
+            max_bytes=supervisor_custody.SUPERVISOR_RECEIPT_MAX_BYTES,
             label="native proof supervisor receipt",
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ExactJsonError) as exc:
@@ -898,6 +904,9 @@ def _validated_execution_context(
         verification_payload.get("capability")
         if _is_receipt_object(verification_payload)
         else None
+    )
+    supervisor_custody.require_verified_input_bindings(
+        verification_payload, receipt=receipt_identity, policy=policy_identity
     )
     try:
         verified_required_environment = supervisor_custody.decode_supervisor_capability(

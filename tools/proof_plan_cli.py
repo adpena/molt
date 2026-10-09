@@ -150,7 +150,7 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
                 tier=tier,
             )
             return api.execute_commands(plan, commands, args.receipt)
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, ExceptionGroup) as exc:
             print(f"proof-plan execution: {exc}", file=sys.stderr)
             return 2
     if args.replay_commits is not None:

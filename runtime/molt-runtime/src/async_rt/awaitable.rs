@@ -1094,6 +1094,7 @@ mod tests {
                 dec_ref_bits(py, result);
                 assert_eq!(future.resets, 1);
                 let raised = errors::PyErr_GetRaisedException();
+                let raised_owner = refcount::OwnedPyObject::from_owned(raised);
                 assert!(!raised.is_null());
                 assert_ne!(
                     errors::PyErr_GivenExceptionMatches(
@@ -1103,12 +1104,16 @@ mod tests {
                     0
                 );
                 let message = molt_cpython_abi::api::typeobj::PyObject_Str(raised);
+                let message_owner = refcount::OwnedPyObject::from_owned(message);
+                assert!(!message.is_null());
+                let utf8 = strings::PyUnicode_AsUTF8(message);
+                assert!(!utf8.is_null());
                 assert_eq!(
-                    std::ffi::CStr::from_ptr(strings::PyUnicode_AsUTF8(message)).to_bytes(),
+                    std::ffi::CStr::from_ptr(utf8).to_bytes(),
                     b"future reset rejected"
                 );
-                refcount::Py_DECREF(message);
-                refcount::Py_DECREF(raised);
+                drop(message_owner);
+                drop(raised_owner);
                 dec_ref_bits(py, bits);
                 let mro = std::mem::replace(&mut class.tp_mro, std::ptr::null_mut());
                 refcount::Py_DECREF(mro);

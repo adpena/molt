@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import os
+import hashlib
 from pathlib import Path
 import stat
 import struct
@@ -55,9 +56,35 @@ def test_canonical_zip_is_deterministic_and_round_trips(tmp_path: Path) -> None:
             stat.S_IFREG | 0o644,
         ]
     output = tmp_path / "extracted"
-    release_archive.extract_zip_strict(first, output)
+    consumed = release_archive.extract_zip_strict(first, output)
+    assert consumed.sha256 == hashlib.sha256(first.read_bytes()).hexdigest()
+    assert consumed.size == len(first.read_bytes())
     assert (output / "bin" / "tool").read_bytes() == b"tool"
     assert (output / "data").read_bytes() == b"data"
+
+
+def test_extraction_identity_and_payload_use_one_archive_generation(
+    tmp_path, monkeypatch
+):
+    path = _zip(tmp_path / "archive.zip")
+    real_identity = release_archive.stable_regular_file_handle_identity
+    reached = []
+
+    def replace_after_hash(opened, **kwargs):
+        identity = real_identity(opened, **kwargs)
+        replacement = _zip(tmp_path / "replacement.zip", ("other",))
+        reached.append(opened.path)
+        os.replace(replacement, path)
+        return identity
+
+    monkeypatch.setattr(
+        release_archive, "stable_regular_file_handle_identity", replace_after_hash
+    )
+    output = tmp_path / "output"
+    with pytest.raises((ValueError, OSError)):
+        release_archive.extract_zip_strict(path, output)
+    assert reached == [path]
+    assert not output.exists()
 
 
 @pytest.mark.parametrize("epoch,year", [(1, 1980), (10**20, 2107)])

@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import tomllib
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -1157,10 +1158,16 @@ def test_delegated_cargo_target_is_the_rust_linker_selection_authority() -> None
         "--target",
         "wasm32-wasip1",
     ]
-    assert command_identity._rust_target(command, {}) == "wasm32-wasip1"
+    assert (
+        command_identity._rust_target(
+            command_admission.envelope_for_command(command), {}
+        )
+        == "wasm32-wasip1"
+    )
     with pytest.raises(ValueError, match="ambiguous"):
         command_identity._rust_target(
-            command, {"CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu"}
+            command_admission.envelope_for_command(command),
+            {"CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu"},
         )
 
 
@@ -1174,6 +1181,44 @@ def test_registered_direct_toolchain_commands_cannot_fall_back_to_an_empty_kind(
     assert envelope["kind"] == "toolchain"
     assert envelope["toolchains"] == [toolchain]
     assert envelope["proof_plan_command_ids"] == []
+
+
+def test_native_toolchain_inference_and_declared_sdk_policy_coexist() -> None:
+    command_admission._proof_command_registry.cache_clear()
+    native = command_admission.envelope_for_command(["clang", "--version"])
+    assert native["toolchains"] == ["clang"]
+    plan = proof_plan.ProofPlan.load()
+    command = next(
+        item for item in plan.commands if item.id == "wasm.test.control-flow"
+    )
+    selected = command_admission.envelope_for_command(list(command.argv))
+    assert selected["kind"] == "proof-plan"
+    assert selected["proof_plan_command_ids"] == [command.id]
+    assert "wasi-clang" in selected["toolchains"]
+    assert selected["toolchains"] == list(plan.toolchain_closure(command.toolchains))
+
+
+def test_ordinary_duplicate_executable_policy_still_rejects(monkeypatch) -> None:
+    plan = proof_plan.ProofPlan.load()
+    clang = next(policy for policy in plan.toolchain_policies if policy.name == "clang")
+    ambiguous = replace(
+        plan,
+        toolchain_policies=(
+            *plan.toolchain_policies,
+            proof_plan.ToolchainPolicy("another-native-clang", dict(clang.data)),
+        ),
+    )
+    command_admission._proof_command_registry.cache_clear()
+    try:
+        monkeypatch.setattr(
+            proof_plan.ProofPlan, "load", classmethod(lambda cls: ambiguous)
+        )
+        with pytest.raises(
+            ValueError, match="executable 'clang' has ambiguous toolchain policies"
+        ):
+            command_admission.envelope_for_command(["git", "--version"])
+    finally:
+        command_admission._proof_command_registry.cache_clear()
 
 
 def test_execution_custody_session_arms_monitor_before_child_policy() -> None:
@@ -1578,7 +1623,7 @@ def test_environment_selected_executable_inputs_are_content_bound(
     wrapper = tmp_path / Path(sys.executable).name
     shutil.copy2(sys.executable, wrapper)
     environment = {
-        "RUSTC_WRAPPER": f'"{wrapper}" --wrapper-argument',
+        "RUSTC_WRAPPER": f' \t"{wrapper}" --wrapper-argument',
         "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER": str(wrapper),
         "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": str(wrapper),
     }
@@ -1666,8 +1711,9 @@ def test_node_tool_identity_binds_runtime_versions_configuration_and_global_path
     assert re.fullmatch(r"[0-9a-f]{64}", identity["runtime_sha256"])
 
 
+@pytest.mark.parametrize("mutation", ["content", "new-member"])
 def test_quint_tool_identity_binds_resolved_node_package_tree(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
 ) -> None:
     package = tmp_path / "node_modules" / "@informalsystems" / "quint"
     package.mkdir(parents=True)
@@ -1679,6 +1725,14 @@ def test_quint_tool_identity_binds_resolved_node_package_tree(
     )
     entry.write_text("console.log('quint')\n", encoding="utf-8")
     observed: list[str] = []
+    inventories = []
+    real_directory = command_identity._directory_manifest_identity
+
+    def directory(path, **kwargs):
+        inventories.append(path)
+        return real_directory(path, **kwargs)
+
+    monkeypatch.setattr(command_identity, "_directory_manifest_identity", directory)
 
     def fake_which(
         name: str,
@@ -1724,8 +1778,49 @@ def test_quint_tool_identity_binds_resolved_node_package_tree(
         env={},
     )
     assert observed == ["quint", "node"]
-    assert before["node_package"]["package"]["file_count"] == 2
-    entry.write_text("console.log('mutated')\n", encoding="utf-8")
+    assert before["node_package"]["package"] == {"root": str(package)}
+    assert inventories == []
+    with pytest.raises(ValueError, match="armed content inventory"):
+        toolchain_capture.publish_capture(tmp_path / "quint-cas", {"quint": before})
+    monkeypatch.setattr(
+        command_identity, "_python_identity", lambda *args, **kwargs: None
+    )
+
+    def armed_capture():
+        return execution_environment._capture_toolchains(
+            {"toolchains": ["quint"]},
+            [sys.executable],
+            cwd=tmp_path,
+            env={},
+            source_root=tmp_path,
+            hash_workers=1,
+            located_toolchains={"quint": before},
+        )
+
+    first_full = armed_capture()[1]["quint"]
+    assert first_full["node_package"]["package"]["file_count"] == 2
+    assert inventories == [package]
+    _, reference, _ = toolchain_capture.publish_capture(
+        tmp_path / "quint-cas", {"quint": first_full}
+    )
+    from tools.proof_queue_pkg import custody_cas
+
+    raw = custody_cas.read_ref(reference, expected_root=tmp_path / "quint-cas")
+    raw["toolchains"] = {"quint": before}
+    raw["files"] = [row.as_dict() for row in toolchain_capture.frozen_files(before)]
+    reduced = custody_cas.put_json(tmp_path / "quint-cas", raw).as_dict()
+    with pytest.raises(ValueError, match="armed content inventory"):
+        toolchain_capture.load_capture(reduced, cas_root=tmp_path / "quint-cas")
+    changed = entry if mutation == "content" else package / "new-module.js"
+    changed.write_text("console.log('mutated')\n", encoding="utf-8")
+    if mutation == "content":
+        with pytest.raises(ValueError, match="node package finite selection changed"):
+            armed_capture()
+    else:
+        full = armed_capture()[1]["quint"]
+        assert str(changed) in {
+            row.path for row in toolchain_capture.frozen_files(full)
+        }
     observed.clear()
     after = command_identity._tool_identity(
         plan,
@@ -1735,7 +1830,9 @@ def test_quint_tool_identity_binds_resolved_node_package_tree(
         cwd=tmp_path,
         env={},
     )
-    assert before["identity_sha256"] != after["identity_sha256"]
+    assert (before["identity_sha256"] != after["identity_sha256"]) == (
+        mutation == "content"
+    )
 
 
 def test_execution_environment_authority_covers_path_rust_and_wrapper_family() -> None:
@@ -2479,6 +2576,7 @@ _REAL_METADATA_CASES = frozenset(
         "test_python_bootstrap_installs_custody_under_isolated_startup",
         "test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
         "test_python_leaf_blocks_exec_replacement_before_launch",
+        "test_guarded_identity_timeout_is_terminal_before_command_launch",
         "test_proof_queue_non_wasm_exec_does_not_load_wasm_toolchain",
         "test_proof_queue_exec_records_passed_run",
         "test_proof_queue_exec_preserves_command_help_after_delimiter",
@@ -2489,6 +2587,10 @@ _REAL_METADATA_CASES = frozenset(
         "test_proof_queue_guarded_identity_failure_is_explicit_nonexecution",
         "test_proof_queue_wasm_rows_check_rust_target_before_run",
         "test_proof_queue_wasm_preflight_fails_before_command",
+        "test_proof_queue_run_id_executes_only_selected_queued_row",
+        "test_proof_queue_run_id_executes_selected_dispatched_row",
+        "test_proof_queue_submit_run_executes_queued_row_in_place",
+        "test_proof_queue_submit_records_dag_edges_and_runs_ready_order",
     ]
 )
 
@@ -2532,6 +2634,15 @@ def _real_queue_output_arguments() -> list[str]:
     return [] if root is None else ["--cargo-output-root", root]
 
 
+def _real_queue_output_toml() -> list[str]:
+    root = _real_cargo_output_root()
+    return (
+        []
+        if root is None
+        else [f"cargo_output_root = {json.dumps(root, ensure_ascii=False)}"]
+    )
+
+
 def test_real_queue_windows_output_root_requires_owner_selection(monkeypatch):
     monkeypatch.delenv("MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT", raising=False)
     monkeypatch.setattr(sys, "platform", "win32")
@@ -2545,13 +2656,19 @@ def test_real_queue_output_root_is_declared_not_created(tmp_path, monkeypatch):
     with pytest.raises((ValueError, FileNotFoundError)):
         _real_cargo_output_root()
     assert not missing.exists()
-    owned = tmp_path / "owned-root"
+    # TOML forbids JSON surrogate-pair escapes. Windows also forbids literal
+    # quotes/backslashes in a component; its path separators still need escaping.
+    owned_name = "owned-\U0001f680-root" + ('-"\\' if os.name != "nt" else "")
+    owned = tmp_path / owned_name
     owned.mkdir()
     monkeypatch.setenv("MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT", str(owned))
     assert _real_queue_output_arguments() == [
         "--cargo-output-root",
         str(owned.resolve()),
     ]
+    assert tomllib.loads("\n".join(_real_queue_output_toml())) == {
+        "cargo_output_root": str(owned.resolve())
+    }
     assert list(owned.iterdir()) == []
 
 
@@ -2617,24 +2734,23 @@ def test_supervisor_build_environment_uses_admitted_windows_store_temp(
     }
 
 
-@pytest.fixture(scope="module")
-def guarded_execution_authorities(
-    tmp_path_factory: pytest.TempPathFactory,
+def _capture_guarded_execution_authorities(
+    python: Path,
+    source_root: Path,
 ) -> GuardedExecutionAuthorities:
     """Capture immutable process authorities once for non-capture integration tests."""
-    source_root = tmp_path_factory.mktemp("guarded-execution-source")
-    command = [sys.executable, "-c", "pass"]
+    command = [str(python), "-c", "pass"]
     envelope = command_admission.envelope_for_command(command)
     # A Python-only locator does not invoke the supervisor. Reuse the production
     # selection contract so the cached capture cannot invent launcher authority.
     assert envelope["toolchains"] == ["python"]
-    _roots, selections, _telemetry = (
+    _roots, selections, _telemetry, _selected_environment = (
         execution_environment._locate_toolchain_watch_roots(
             envelope,
             command,
             cwd=state.ROOT,
             env=os.environ,
-            supervisor_binary=Path(sys.executable),
+            supervisor_binary=python,
         )
     )
     identity = command_identity._python_identity(
@@ -2654,6 +2770,149 @@ def guarded_execution_authorities(
         selection=selections["python"],
         capture=command_identity._python_identity,
     )
+
+
+@pytest.fixture(scope="module")
+def guarded_execution_authorities(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> GuardedExecutionAuthorities:
+    return _capture_guarded_execution_authorities(
+        Path(sys.executable), tmp_path_factory.mktemp("guarded-execution-source")
+    )
+
+
+@pytest.fixture(scope="module")
+def python_location_authorities(
+    tmp_path_factory: pytest.TempPathFactory,
+    custody_python: Path,
+) -> GuardedExecutionAuthorities:
+    # Location/image joins need a real interpreter, but no installed project or
+    # third-party packages. Keep the full environment in queue execution tests.
+    return _capture_guarded_execution_authorities(
+        custody_python, tmp_path_factory.mktemp("python-location-source")
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param(
+            "selected-drive-case",
+            marks=pytest.mark.skipif(
+                os.name != "nt", reason="Windows drive coordinate"
+            ),
+        ),
+        "executable-hardlink",
+        "base_executable-hardlink",
+        "executable-copy",
+        "base_executable-copy",
+        "executable-hash",
+        "base_executable-hash",
+    ],
+)
+def test_python_selection_location_join_preserves_coordinate_and_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    python_location_authorities: GuardedExecutionAuthorities,
+    mutation: str,
+) -> None:
+    authorities = python_location_authorities
+    captured = authorities.current()
+    selection = copy.deepcopy(dict(authorities.selection))
+    location = selection["location"]
+    assert isinstance(location, dict)
+    if mutation == "selected-drive-case":
+        selected = Path(str(selection["executable"]))
+        if len(selected.drive) != 2 or selected.drive[1] != ":":
+            pytest.skip("selected interpreter has no DOS drive coordinate")
+        # An actual Windows coordinate, not an emulated platform or a mocked
+        # normalizer: drive spelling changes no selected directory entry.
+        reported = selected.drive.upper() + str(selected)[len(selected.drive) :]
+        assert reported != str(selected)
+        assert Path(reported).samefile(selected)
+        location["selected_executable"] = reported
+        location.pop("identity_sha256")
+        location["identity_sha256"] = canonical_json_sha256(location)
+    else:
+        field, change = mutation.rsplit("-", 1)
+        original = Path(str(selection[field]))
+        if change == "hash":
+            digest = str(selection[f"{field}_sha256"])
+            selection[f"{field}_sha256"] = ("0" if digest[0] != "0" else "1") + digest[
+                1:
+            ]
+        else:
+            replacement = tmp_path / f"other-{field}{original.suffix}"
+            if change == "hardlink":
+                try:
+                    replacement.hardlink_to(original.resolve(strict=True))
+                except OSError as exc:
+                    pytest.skip(f"same-file alias fixture unavailable: {exc}")
+                assert replacement.samefile(original)
+            else:
+                shutil.copyfile(original, replacement)
+                assert not replacement.samefile(original)
+            assert str(replacement) != str(original)
+            selection[field] = str(replacement)
+            with replacement.open("rb") as stream:
+                selection[f"{field}_sha256"] = hashlib.file_digest(
+                    stream, "sha256"
+                ).hexdigest()
+            assert (
+                selection[f"{field}_sha256"] == authorities.selection[f"{field}_sha256"]
+            )
+
+    # Reuse the module's real, rehashed environment capture. Only transport is
+    # replayed; the location, capture and launcher receivers remain production
+    # code and validate the complete receipt and current executable bytes.
+    payload = {
+        "schema": python_environment_identity.PYTHON_CAPTURE_SCHEMA,
+        "identity": captured["environment"],
+        "file_custody": captured["file_custody"],
+        "node_custody": captured["node_custody"],
+        "inventory_profile": captured["inventory_profile"],
+    }
+    probes = []
+
+    def replay(command, **_kwargs):
+        probes.append(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(command_identity, "_run_captured", replay)
+    location_before = copy.deepcopy(location)
+
+    def receive():
+        return command_identity._python_identity(
+            authorities.envelope,
+            authorities.command,
+            cwd=state.ROOT,
+            env=os.environ,
+            source_root=Path(str(captured["source_root"])),
+            selection=selection,
+            hash_workers=proof_plan.ProofPlan.load().inventory_hash_workers,
+        )
+
+    if mutation == "selected-drive-case":
+        identity = receive()
+        assert identity is not None
+        assert identity["location"] == location_before
+        selected_images = [
+            image
+            for image in identity["process_images"]
+            if image["role"] == "selected-interpreter"
+        ]
+        assert len(selected_images) == 1
+        assert selected_images[0]["path"] == authorities.selection["executable"]
+        assert (
+            selected_images[0]["sha256"] == authorities.selection["executable_sha256"]
+        )
+    else:
+        with pytest.raises(
+            ValueError, match="selection differs from its location receipt"
+        ):
+            receive()
+    assert len(probes) == 1
+    assert location == location_before
 
 
 def _rebind_cached_python_identity(
@@ -3704,7 +3963,6 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
 def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    guarded_execution_authorities: GuardedExecutionAuthorities,
 ) -> None:
     repo = tmp_path / "minimal-cargo-link"
     _initialize_clean_git_repo(repo)
@@ -3753,7 +4011,6 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
         execution_path,
         ["cargo", "build", "--offline"],
         resource_family="rust",
-        authorities=guarded_execution_authorities,
     )
     elapsed = time.perf_counter() - started
 
@@ -3934,7 +4191,9 @@ def test_guarded_identity_timeout_is_terminal_before_command_launch(
         "-c",
         "from pathlib import Path; Path(r'" + str(marker) + "').touch()",
     ]
-    envelope = command_admission.envelope_for_command(command)
+    envelope = command_admission.envelope_for_command(
+        command, cargo_output_root=_real_cargo_output_root()
+    )
     request = result.with_suffix(".request.json")
     request.write_text(
         json.dumps(
@@ -4059,52 +4318,112 @@ def test_guarded_rust_capture_failure_preserves_primary_error_and_durable_detail
         assert detail["artifact"]["path"] in output
 
 
-def test_rustup_content_resolution_uses_exact_cargo_execution_environment(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("role", ["cargo", "rustc", "rustfmt"])
+@pytest.mark.parametrize("retarget", [False, True])
+def test_rustup_role_content_resolution_tracks_physical_component_before_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str, retarget: bool
 ) -> None:
-    observed: list[tuple[str, str]] = []
-    execution_env = {
-        "PATH": str(Path(sys.executable).parent),
-        "RUSTUP_TOOLCHAIN": "1.96.1-x86_64-pc-windows-msvc",
-    }
+    from molt import process_guard, rust_toolchain
 
-    def fake_which(
-        name: str,
-        _envelope: object,
-        _exact: object,
-        *,
-        cwd: Path,
-        env: dict[str, str],
-    ) -> Path:
-        del cwd
-        observed.append((name, env["RUSTUP_TOOLCHAIN"]))
-        return Path(sys.executable)
-
-    def fake_run(
-        command: object, *, cwd: Path, env: dict[str, str], timeout: float = 30.0
-    ) -> subprocess.CompletedProcess[str]:
-        del cwd, timeout
-        assert env["RUSTUP_TOOLCHAIN"] == execution_env["RUSTUP_TOOLCHAIN"]
-        argv = list(command)
-        if "which" in argv:
-            return subprocess.CompletedProcess(argv, 0, str(Path(sys.executable)), "")
-        return subprocess.CompletedProcess(argv, 0, "cargo 1.96.1", "")
-
-    monkeypatch.setattr(command_identity, "_which_in_command_environment", fake_which)
-    monkeypatch.setattr(command_identity, "_run_captured", fake_run)
-    identity = command_identity._tool_identity(
-        proof_plan.ProofPlan.load(),
-        "cargo",
-        {"python": None},
-        [sys.executable],
-        cwd=Path.cwd(),
-        env=execution_env,
+    suffix = ".exe" if os.name == "nt" else ""
+    proxy_dir = tmp_path / "proxies"
+    proxy_dir.mkdir()
+    proxy, rustup = (proxy_dir / (name + suffix) for name in (role, "rustup"))
+    for path in (proxy, rustup):
+        path.write_bytes(b"identical rustup proxy bytes")
+        path.chmod(0o755)
+    first, replacement = (
+        tmp_path / (name + suffix) for name in ("first", "replacement")
     )
-    assert observed == [
-        ("cargo", execution_env["RUSTUP_TOOLCHAIN"]),
-        ("rustup", execution_env["RUSTUP_TOOLCHAIN"]),
-    ]
-    assert identity["version"] == "cargo 1.96.1"
+    for path in (first, replacement):
+        path.write_bytes(path.name.encode())
+        path.chmod(0o755)
+    alias = tmp_path / "selected-component"
+    if retarget:
+        alias.symlink_to(first)
+    selected = [alias if retarget else first]
+    environment = {"PATH": str(proxy_dir), "RUSTUP_TOOLCHAIN": "selected-by-override"}
+    resolutions, versions = [], []
+
+    def resolve(argv, **kwargs):
+        assert argv == [str(rustup), "which", role]
+        assert kwargs["env"] == environment and kwargs["cwd"] == tmp_path
+        resolutions.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, str(selected[0]) + "\n", "")
+
+    def version(argv, **kwargs):
+        assert argv[0] == str(selected[0].resolve()) and kwargs["env"] == environment
+        versions.append(list(argv))
+        return subprocess.CompletedProcess(
+            argv, 0, f"{role} 1.99.0\nhost: x86_64-unknown-linux-gnu\n", ""
+        )
+
+    monkeypatch.setattr(process_guard, "run_completed_command", resolve)
+    monkeypatch.setattr(command_identity, "_run_captured", version)
+    from types import SimpleNamespace
+    from tests.tools.test_toolchain_capture import _rust_metadata_probe
+
+    linker = tmp_path / ("retained-linker" + suffix)
+    linker.write_bytes(b"independent linker image")
+    linker.chmod(0o755)
+    phases = []
+
+    def phase(command, **kwargs):
+        phases.append(list(command))
+        metadata = _rust_metadata_probe(command, tmp_path)
+        if metadata is not None:
+            return metadata
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps(str(linker)) + "\n", ""
+        )
+
+    # Substitute compiler output only: the real v4 capture, structural receiver,
+    # image validation and warm-reuse accounting remain in the tested path.
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=phase))
+    command = [sys.executable, "-c", "pass"]
+    envelope = command_admission.envelope_for_command(command)
+    plan = proof_plan.ProofPlan.load()
+
+    def capture():
+        telemetry = []
+        identity = command_identity._tool_identity(
+            plan,
+            role,
+            envelope,
+            command,
+            cwd=tmp_path,
+            env=environment,
+            reuse_root=tmp_path / "reuse",
+            reuse_telemetry=telemetry,
+        )
+        return identity, telemetry
+
+    initial, miss = capture()
+    cold_phases = len(phases)
+    warm, hit = capture()
+    assert len(phases) == cold_phases
+    assert initial == warm and hit[0]["state"] == "hit"
+    assert len(resolutions) == 2 and len(versions) == 1
+    if retarget:
+        alias.unlink()
+        alias.symlink_to(replacement)
+    else:
+        selected[0] = replacement
+    changed, changed_telemetry = capture()
+    assert changed_telemetry[0]["state"] == "miss"
+    assert changed_telemetry[0]["key_sha256"] != miss[0]["key_sha256"]
+    assert changed["launcher_sha256"] == initial["launcher_sha256"]
+    assert changed["content_path"] == str(replacement)
+    assert changed["executable_sha256"] != initial["executable_sha256"]
+    assert len(resolutions) == 3 and len(versions) == 2
+    for _ in range(2):
+        assert (
+            rust_toolchain.resolve_rustup_proxy(
+                replacement, role=role, root=tmp_path, env=environment
+            )
+            == replacement
+        )
+    assert len(resolutions) == 3
 
 
 def test_unavailable_executable_and_input_hashes_are_never_evidence(
@@ -6044,7 +6363,10 @@ def test_proof_queue_prioritizes_running_pytest_failure_progress(
     )
     assert "failures=9" in diagnose_out
     assert "errors=0" in diagnose_out
-    assert "Keep the row running for the full pytest failure report" in diagnose_out
+    assert "Inspect the immediately flushed pytest failure details" in diagnose_out
+    assert (
+        "Keep the row running for remaining results and custody closure" in diagnose_out
+    )
     assert "running-pytest-current-test-missing" in diagnose_out
 
 
@@ -7905,6 +8227,7 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(
             scopes=[],
             log_path=logs / f"{run_id}.log",
             summary_json=logs / f"{run_id}.memory_guard.json",
+            cargo_output_root=_real_cargo_output_root(),
         )
 
     rc = cli.main(
@@ -7950,6 +8273,7 @@ def test_proof_queue_run_id_executes_selected_dispatched_row(
             scopes=[],
             log_path=logs / f"{run_id}.log",
             summary_json=logs / f"{run_id}.memory_guard.json",
+            cargo_output_root=_real_cargo_output_root(),
         )
     state._update_run(
         conn,
@@ -9377,6 +9701,7 @@ def test_proof_queue_submit_run_executes_queued_row_in_place(
         "\n".join(
             [
                 "[[proof]]",
+                *_real_queue_output_toml(),
                 'id = "queued-proof"',
                 'reason = "prove queued row"',
                 'resource_family = "python"',
@@ -9511,6 +9836,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
         "\n".join(
             [
                 "[[proof]]",
+                *_real_queue_output_toml(),
                 'id = "child-proof"',
                 'reason = "prove child waits"',
                 'resource_family = "python"',
@@ -9524,6 +9850,7 @@ def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
                 "",
                 "[[proof]]",
                 'id = "parent-proof"',
+                *_real_queue_output_toml(),
                 'reason = "prove parent first"',
                 'resource_family = "python"',
                 'contention_key = "python:parent-child"',
@@ -16406,3 +16733,419 @@ def test_cached_python_authority_never_redirects_supervisor_build_layout(
     assert authority.recaptures == 0
     assert not hasattr(authority, "supervisor_target")
     assert supervisor_generation.provision is provision
+
+
+@pytest.mark.parametrize("mode", ["direct", "relative", "absolute", "module"])
+@pytest.mark.parametrize("name", ["cargo", "cargo.exe"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
+    tmp_path, monkeypatch, mode, name, explicit
+):
+    selected_dir, proxy_dir, explicit_dir = (
+        tmp_path / "selected",
+        tmp_path / "proxy",
+        tmp_path / "explicit",
+    )
+    for directory in (selected_dir, proxy_dir, explicit_dir):
+        directory.mkdir()
+    selected, proxy, supplied = (
+        directory / name for directory in (selected_dir, proxy_dir, explicit_dir)
+    )
+    for path, content in (
+        (selected, b"selected Cargo"),
+        (proxy, b"PATH proxy"),
+        (supplied, b"explicit Cargo"),
+    ):
+        path.write_bytes(content)
+        path.chmod(0o755)
+    token = str(supplied) if explicit else name
+    payload = [
+        token,
+        "build",
+        "--locked",
+        "--profile",
+        "dev-fast",
+        "-p",
+        "molt-wasm-host",
+    ]
+    if mode == "direct":
+        command = payload
+    else:
+        target = (
+            ["-m", "tools.guarded_exec"]
+            if mode == "module"
+            else [str(state.ROOT / "tools/guarded_exec.py")]
+            if mode == "absolute"
+            else ["tools/guarded_exec.py"]
+        )
+        command = [sys.executable, *target, "--", *payload]
+    env = {"CARGO": str(selected), "PATH": str(proxy_dir)}
+    assert (
+        execution_environment.environment_override_policy_error(
+            {"CARGO": str(selected)}
+        )
+        is None
+    )
+    env, contract = execution_environment._deterministic_execution_environment(
+        env, override_names=["CARGO"]
+    )
+    envelope = command_admission.envelope_for_command(command)
+    monkeypatch.setattr(
+        execution_environment.toolchain_capture,
+        "select_cargo_build_tool_environment",
+        lambda **_kwargs: ({}, {}),
+    )
+    env, contract = execution_environment._bind_cargo_build_tool_environment(
+        envelope, env, contract, cwd=state.ROOT
+    )
+    assert env["CARGO"] == str(supplied if explicit else selected)
+    assert "CARGO" in contract["passed_names"]
+    assert "CARGO" in command_identity.compile_environment_selection(env)
+    configured = execution_environment._execution_environment_executable_identities(
+        env, cwd=state.ROOT
+    )
+    assert configured["CARGO"]["executable"]["path"] == env["CARGO"]
+    exact = command_identity._exact_command(envelope, cwd=state.ROOT, env=env)
+    _guarded, delegated = command_identity._bind_delegated_command(
+        envelope, exact, cwd=state.ROOT, env=env
+    )
+    expected = supplied if explicit else selected
+    actual = command_admission._nested_command(exact) or exact
+    assert actual == [str(expected), *payload[1:]]
+    if mode != "direct":
+        assert delegated["path"] == str(expected)
+        assert delegated["sha256"] == hashlib.sha256(expected.read_bytes()).hexdigest()
+    # Exercise the Cargo identity owner too, stopping only before its version probe.
+    monkeypatch.setattr(
+        command_identity,
+        "_capture_tool_identity",
+        lambda *args, **kwargs: {"selected": str(kwargs["path"])},
+    )
+    captured = command_identity._tool_identity(
+        proof_plan.ProofPlan.load(), "cargo", envelope, exact, cwd=state.ROOT, env=env
+    )
+    assert captured == {"selected": str(expected)}
+
+
+@pytest.mark.parametrize("selector", [None, "", "missing"])
+def test_cargo_selection_has_no_missing_selector_path_fallback(tmp_path, selector):
+    proxy = tmp_path / ("cargo.exe" if os.name == "nt" else "cargo")
+    proxy.write_bytes(b"PATH Cargo")
+    proxy.chmod(0o755)
+    env = {"PATH": str(tmp_path)}
+    if selector is not None:
+        env["CARGO"] = str(tmp_path / "missing") if selector else ""
+    command = ["cargo", "build"]
+    envelope = command_admission.envelope_for_command(command)
+    if selector == "missing":
+        with pytest.raises(ValueError, match="unavailable"):
+            command_identity._exact_command(envelope, cwd=state.ROOT, env=env)
+    else:
+        exact = command_identity._exact_command(envelope, cwd=state.ROOT, env=env)
+        assert exact[0] == str(proxy)
+
+
+def test_bound_cargo_executes_selected_child_instead_of_path_decoy(tmp_path):
+    if os.name == "nt":
+        pytest.skip(
+            "POSIX executable-script discriminator; native Windows qualification remains separate"
+        )
+    from tools import harness_memory_guard
+
+    selected_dir, path_dir = tmp_path / "selected", tmp_path / "path"
+    selected_dir.mkdir()
+    path_dir.mkdir()
+    selected_marker, decoy_marker = tmp_path / "selected-ran", tmp_path / "decoy-ran"
+    selected, decoy = selected_dir / "cargo", path_dir / "cargo"
+    for path, marker in ((selected, selected_marker), (decoy, decoy_marker)):
+        path.write_text(
+            "#!"
+            + sys.executable
+            + "\nfrom pathlib import Path\n"
+            + f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+    env = {**os.environ, "CARGO": str(selected), "PATH": str(path_dir)}
+    command = [sys.executable, "tools/guarded_exec.py", "--", "cargo", "--version"]
+    env, _contract = execution_environment._deterministic_execution_environment(
+        env, override_names=["CARGO"]
+    )
+    envelope = command_admission.envelope_for_command(command)
+    exact = command_identity._exact_command(envelope, cwd=state.ROOT, env=env)
+    command_identity._bind_delegated_command(envelope, exact, cwd=state.ROOT, env=env)
+    result = harness_memory_guard.guarded_completed_process(
+        exact,
+        prefix="MOLT_TEST_SUITE",
+        cwd=state.ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == result.child_returncode == 0, result.stderr
+    assert selected_marker.read_text(encoding="utf-8") == "ran"
+    assert not decoy_marker.exists()
+
+
+@pytest.mark.parametrize("token", ["./cargo", "sub/../cargo"])
+def test_explicit_relative_executable_uses_command_cwd_not_path(
+    tmp_path, monkeypatch, token
+):
+    selected_dir, ambient = tmp_path / "selected", tmp_path / "ambient"
+    for directory in (selected_dir, ambient):
+        directory.mkdir()
+        image = directory / "cargo"
+        image.write_bytes(directory.name.encode())
+        image.chmod(0o755)
+    (selected_dir / "sub").mkdir()
+    monkeypatch.chdir(ambient)
+    environment = {"PATH": str(ambient)}
+    expected = selected_dir / "cargo"
+    assert (
+        command_identity._resolve_outer_executable(
+            token, cwd=selected_dir, env=environment
+        )
+        == expected
+    )
+    assert (
+        execution_custody._resolve_child_executable(
+            token, environment, str(selected_dir)
+        )
+        == expected
+    )
+
+
+def test_relative_execution_path_entries_use_command_cwd(tmp_path, monkeypatch):
+    selected, ambient = tmp_path / "selected", tmp_path / "ambient"
+    for directory in (selected, ambient):
+        (directory / "bin").mkdir(parents=True)
+        image = directory / "bin/cargo"
+        image.write_bytes(directory.name.encode())
+        image.chmod(0o755)
+    monkeypatch.chdir(ambient)
+    environment = {"PATH": "bin"}
+    expected = selected / "bin/cargo"
+    assert (
+        command_identity._resolve_outer_executable(
+            "cargo", cwd=selected, env=environment
+        )
+        == expected
+    )
+    assert (
+        execution_custody._resolve_child_executable("cargo", environment, str(selected))
+        == expected
+    )
+
+
+def test_child_explicit_environment_without_path_does_not_inherit_parent_path(
+    tmp_path, monkeypatch
+):
+    # CPython os.get_exec_path({}) selects os.defpath, not the parent's PATH.
+    name = "molt-only-in-parent-path" + (".exe" if os.name == "nt" else "")
+    decoy = tmp_path / name
+    decoy.write_bytes(b"ambient executable must not be selected")
+    decoy.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert os.get_exec_path({}) == os.defpath.split(os.pathsep)
+    assert execution_custody._resolve_child_executable(name, {}, str(tmp_path)) is None
+    assert (
+        execution_custody._resolve_child_executable(name, None, str(tmp_path))
+        == decoy.resolve()
+    )
+
+
+def test_native_c_registration_is_canonical_and_persisted_envelope_cannot_drop_it():
+    from tools.proof_queue_pkg import command_admission
+    from tools import proof_plan
+
+    command = list(
+        next(
+            row.argv
+            for row in proof_plan.ProofPlan.load().commands
+            if row.id == "wasm.build.host"
+        )
+    )
+    envelope = command_admission.envelope_for_command(command)
+    assert envelope["cargo_native_c_units"] == ["target"]
+    command_admission.validate_envelope(envelope, command)
+    changed = dict(envelope)
+    changed["cargo_native_c_units"] = []
+    with pytest.raises(ValueError):
+        command_admission.validate_envelope(changed, command)
+
+
+@pytest.mark.parametrize("spelling", ["split", "equals"])
+@pytest.mark.parametrize(
+    "kinds,link_required",
+    [
+        ("lib", False),
+        ("rlib", False),
+        ("staticlib", False),
+        ("rlib,rlib", False),
+        ("cdylib,cdylib", True),
+        ("lib,rlib", False),
+        ("staticlib,cdylib", True),
+        ("cdylib", True),
+        ("proc-macro", True),
+    ],
+)
+def test_cargo_artifact_kind_projection_preserves_cargo_boundary(
+    spelling, kinds, link_required
+):
+    from tools.proof_queue_pkg import command_admission
+
+    selector = (
+        ["--crate-type", kinds] if spelling == "split" else ["--crate-type=" + kinds]
+    )
+    argv = ["cargo", "rustc", "--lib", *selector, "--", "-C", "panic=abort"]
+    invocation = command_admission.parse_cargo_invocation(argv)
+    assert invocation.crate_types == tuple(kinds.split(","))
+    assert invocation.forwarded == ("-C", "panic=abort")
+    assert command_admission.rust_link_artifact_selection(
+        argv,
+        cargo=True,
+        cargo_invocation=command_admission.parse_cargo_invocation(argv),
+        unit="target",
+    ) == {
+        "cargo_crate_types": kinds.split(","),
+        "rustc_crate_types": [],
+        "manifest_crate_types": None,
+        "link_required": link_required,
+    }
+    assert command_admission.rust_link_artifact_selection(
+        argv,
+        cargo=True,
+        cargo_invocation=command_admission.parse_cargo_invocation(argv),
+        unit="host-proc-macro",
+    ) == {
+        "cargo_crate_types": None,
+        "rustc_crate_types": ["proc-macro"],
+        "manifest_crate_types": None,
+        "link_required": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "arguments,expected",
+    [
+        (["--crate-type", "staticlib", "--crate-type=cdylib"], True),
+        (["--crate-type=lib", "--crate-type", "rlib"], False),
+    ],
+)
+def test_rust_artifact_projection_keeps_repeated_rustc_types_additive(
+    arguments, expected
+):
+    from tools.proof_queue_pkg import command_admission
+
+    cargo = ["cargo", "rustc", "--crate-type", "rlib", "--", *arguments]
+    invocation = command_admission.parse_cargo_invocation(cargo)
+    assert invocation.crate_types == ("rlib",)
+    selection = command_admission.rust_link_artifact_selection(
+        cargo, cargo=True, cargo_invocation=invocation, unit="target"
+    )
+    assert selection["rustc_crate_types"] == (
+        ["staticlib", "cdylib"] if expected else ["lib", "rlib"]
+    )
+    assert selection["link_required"] is expected
+    direct = command_admission.rust_link_artifact_selection(
+        ["rustc", *arguments], cargo=False, cargo_invocation=None, unit="target"
+    )
+    assert direct["cargo_crate_types"] is None
+    assert direct["link_required"] is expected
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["cargo", "rustc", "--crate-type"],
+        ["cargo", "rustc", "--crate-type", ""],
+        ["cargo", "rustc", "--crate-type", "bogus"],
+        ["cargo", "build", "--crate-type", "rlib"],
+    ],
+)
+def test_cargo_artifact_projection_refuses_invalid_selector(argv):
+    from tools.proof_queue_pkg import command_admission
+
+    with pytest.raises(ValueError, match="requires|require|invalid"):
+        command_admission.rust_link_artifact_selection(
+            argv,
+            cargo=True,
+            cargo_invocation=command_admission.parse_cargo_invocation(argv),
+            unit="target",
+        )
+
+
+@pytest.mark.parametrize("spelling", ["-C", "-Cjoined", "--codegen", "--codegen="])
+def test_rust_codegen_projection_preserves_observed_spelling_and_cargo_lane(spelling):
+    from tools.proof_queue_pkg import command_admission
+
+    value = "link-arg=--codegen=opaque=value with spaces"
+    option = (
+        (spelling, value)
+        if spelling in {"-C", "--codegen"}
+        else (("-C" if spelling == "-Cjoined" else spelling) + value,)
+    )
+    rust = (*option, "--crate-type", "cdylib", "--", "--codegen=linker=positional")
+    argv = [
+        "cargo",
+        "-C",
+        "working-directory",
+        "rustc",
+        "--crate-type",
+        "rlib",
+        "--",
+        *rust,
+    ]
+    invocation = command_admission.parse_cargo_invocation(argv)
+    assert invocation.forwarded == rust
+    assert command_admission.rust_link_arguments(invocation.forwarded) == (
+        *option,
+        "--crate-type",
+        "cdylib",
+    )
+    selection = command_admission.rust_link_artifact_selection(
+        argv,
+        cargo=True,
+        cargo_invocation=command_admission.parse_cargo_invocation(argv),
+        unit="target",
+    )
+    assert selection["rustc_crate_types"] == ["cdylib"] and selection["link_required"]
+
+
+@pytest.mark.parametrize("flags", [("--codegen",), ("--codegen=",), ("-C=linker=x",)])
+def test_rust_codegen_projection_refuses_malformed_lane(flags):
+    from tools.proof_queue_pkg import command_admission
+
+    with pytest.raises(ValueError, match="codegen option"):
+        command_admission.rust_link_arguments(flags)
+
+
+@pytest.mark.parametrize(
+    "operand", ["-Clinker=tools/root", "--codegen=linker=tools/root"]
+)
+def test_rust_proof_projection_retains_sysroot_operand_without_tool_reinterpretation(
+    operand,
+):
+    from tools.proof_queue_pkg import command_admission
+
+    arguments = ("--sysroot", operand, "--out-dir", operand, "--codegen=panic=abort")
+    assert command_admission.rust_link_arguments(arguments) == (
+        "--sysroot",
+        operand,
+        "--codegen=panic=abort",
+    )
+    assert command_admission.rustc_crate_types(arguments) == ()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [("-gClink_arg=--export=under_score",), ("-vC", "link_arg=--export=under_score")],
+)
+def test_rust_proof_projection_preserves_raw_cluster_and_key_spelling(arguments):
+    from tools.proof_queue_pkg import command_admission
+
+    assert command_admission.rust_link_arguments(arguments) == arguments
+    assert command_admission.rustc_crate_types((*arguments, "--crate-type=cdylib")) == (
+        "cdylib",
+    )

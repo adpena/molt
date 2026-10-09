@@ -30,7 +30,12 @@ from molt.file_publication import (
     resolve_owned_path,
 )
 from molt.portable_paths import portable_path_identity, portable_relative_path
-from molt.toolchain_identity import StableRegularFileHandle, open_stable_regular_file
+from molt.toolchain_identity import (
+    StableRegularFileHandle,
+    StableRegularFileIdentity,
+    open_stable_regular_file,
+    stable_regular_file_handle_identity,
+)
 
 MIN_ZIP_EPOCH = 315532800
 MAX_ZIP_EPOCH = 4_354_819_198
@@ -454,8 +459,8 @@ def _validated_members(
 
 def extract_zip_strict(
     archive_path: Path, output: Path, *, policy: ArchivePolicy = DEFAULT_ARCHIVE_POLICY
-) -> None:
-    """Validate, stream and rehash a new tree before no-replace publication."""
+) -> StableRegularFileIdentity:
+    """Publish a validated tree and return the identity of its consumed archive."""
     archive_path = resolve_owned_path(archive_path)
     output, parent_identity = _prepare_output(output)
     stage = Path(tempfile.mkdtemp(prefix=".molt-extract-", dir=output.parent))
@@ -465,6 +470,9 @@ def extract_zip_strict(
     try:
         with open_stable_regular_file(archive_path, label="release archive") as opened:
             _preflight_zip(opened.stream, opened.stat.st_size, policy)
+            identity = stable_regular_file_handle_identity(
+                opened, label="release archive", max_bytes=policy.max_archive_bytes
+            )
             with zipfile.ZipFile(opened.stream) as archive:
                 for member, relative, kind in _validated_members(
                     archive, policy=policy
@@ -516,6 +524,7 @@ def extract_zip_strict(
         _check_directory(output.parent, parent_identity)
         _check_directory(stage, stage_identity)
         durable_publish_directory_exclusive(stage, output)
+        return identity
     finally:
         _discard_stage(stage, stage_identity)
 

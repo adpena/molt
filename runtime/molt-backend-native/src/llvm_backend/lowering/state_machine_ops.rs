@@ -2,9 +2,24 @@ use super::*;
 use molt_tir::trampolines::TaskConstructorLayout;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
+    fn task_poll_identity(&self, name: &str) -> inkwell::values::IntValue<'ctx> {
+        let i64_ty = self.backend.context.i64_type();
+        if let Some(key) = molt_ir::runtime_callable_abi_generated::runtime_poll_native_key(name) {
+            return i64_ty.const_int(key, false);
+        }
+        let poll_fn = self.ensure_function_symbol(name, 1, false);
+        self.backend
+            .builder
+            .build_ptr_to_int(
+                poll_fn.as_global_value().as_pointer_value(),
+                i64_ty,
+                "task_poll_ptr",
+            )
+            .unwrap()
+    }
+
     pub(super) fn emit_alloc_task(&mut self, op: &TirOp) {
         let result_id = op.results[0];
-        let i64_ty = self.backend.context.i64_type();
         let closure_size = op
             .attrs
             .get("value")
@@ -27,16 +42,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.func.name
             );
         };
-        let poll_fn = self.ensure_function_symbol(poll_func_name, 1, false);
-        let poll_addr = self
-            .backend
-            .builder
-            .build_ptr_to_int(
-                poll_fn.as_global_value().as_pointer_value(),
-                i64_ty,
-                "task_poll_ptr",
-            )
-            .unwrap();
+        let poll_addr = self.task_poll_identity(poll_func_name);
         let task_bits = self.emit_task_new_with_payload(
             poll_addr,
             closure_size,
@@ -89,16 +95,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return true;
         }
 
-        let poll_fn = self.ensure_function_symbol(poll_func_name, 1, false);
-        let poll_addr = self
-            .backend
-            .builder
-            .build_ptr_to_int(
-                poll_fn.as_global_value().as_pointer_value(),
-                i64_ty,
-                "call_async_poll_ptr",
-            )
-            .unwrap();
+        let poll_addr = self.task_poll_identity(poll_func_name);
         let layout = TaskConstructorLayout::for_call_async();
         let task_bits = self.emit_task_new_with_payload(
             poll_addr,

@@ -308,11 +308,13 @@ mod tests {
                 );
                 marker(py, builtin, 42);
                 assert!(unsafe {
-                    crate::dict_order(
+                    crate::dict_live_entries(
                         obj_from_bits(module_dict_bits(obj_from_bits(sys).as_ptr().unwrap()))
                             .as_ptr()
                             .unwrap(),
                     )
+                    .flat_map(|row| [row.key, row.value])
+                    .collect::<Vec<_>>()
                     .is_empty()
                 });
                 assert!(retirement.advance());

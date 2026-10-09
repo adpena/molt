@@ -1,5 +1,5 @@
 use crate::object::ops::{
-    set_add_with_hash_in_place, set_find_entry_in_place_with_hash, set_pin_entry,
+    set_add_with_hash_in_place, set_find_entry_in_place_with_hash, set_pin_next,
 };
 use crate::*;
 use molt_obj_model::MoltObject;
@@ -90,7 +90,7 @@ pub(in crate::object) unsafe fn set_like_intersection(
             (right, left)
         };
         let mut index = 0;
-        while let Some(entry) = set_pin_entry(py, source, index) {
+        while let Some(entry) = set_pin_next(py, source, &mut index) {
             let found = set_find_entry_in_place_with_hash(py, probe, entry.bits(), entry.hash());
             if !exception_pending(py) && found.is_some() {
                 set_add_with_hash_in_place(py, result, entry.bits(), entry.hash());
@@ -105,7 +105,6 @@ pub(in crate::object) unsafe fn set_like_intersection(
                 dec_ref_bits(py, bits);
                 return MoltObject::none().bits();
             }
-            index += 1;
         }
         bits
     }
@@ -141,7 +140,7 @@ pub(in crate::object) unsafe fn set_like_difference(
             return MoltObject::none().bits();
         };
         let mut index = 0;
-        while let Some(entry) = set_pin_entry(py, left, index) {
+        while let Some(entry) = set_pin_next(py, left, &mut index) {
             let found = set_find_entry_in_place_with_hash(py, right, entry.bits(), entry.hash());
             if !exception_pending(py) && found.is_none() {
                 set_add_with_hash_in_place(py, result, entry.bits(), entry.hash());
@@ -156,7 +155,6 @@ pub(in crate::object) unsafe fn set_like_difference(
                 dec_ref_bits(py, bits);
                 return MoltObject::none().bits();
             }
-            index += 1;
         }
         bits
     }

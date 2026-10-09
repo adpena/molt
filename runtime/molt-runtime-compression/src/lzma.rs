@@ -19,33 +19,43 @@ pub(crate) const PRESET_DEFAULT: i64 = 6;
 pub(crate) const PRESET_EXTREME: i64 = 1 << 31;
 
 // ── Constant intrinsics ───────────────────────────────────────────────────────
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_format_auto() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_AUTO))
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_format_xz() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_XZ))
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_format_alone() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_ALONE))
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_format_raw() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, FORMAT_RAW))
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_check_none() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_NONE))
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_check_crc32() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_CRC32))
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_check_crc64() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_CRC64))
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_check_sha256() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, CHECK_SHA256))
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_preset_default() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, PRESET_DEFAULT))
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_preset_extreme() -> u64 {
     molt_runtime_core::with_gil_entry!(_py, int_bits_from_i64(_py, PRESET_EXTREME))
 }
@@ -118,6 +128,7 @@ fn resolve_check(check: i64) -> xz2::stream::Check {
 // ── One-shot compress ─────────────────────────────────────────────────────────
 
 /// `lzma.compress(data, format=FORMAT_XZ, check=-1, preset=None) -> bytes`
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_compress(
     data_bits: u64,
     format_bits: u64,
@@ -189,6 +200,7 @@ pub extern "C" fn molt_lzma_compress(
 // ── One-shot decompress ───────────────────────────────────────────────────────
 
 /// `lzma.decompress(data, format=FORMAT_AUTO, memlimit=None) -> bytes`
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_decompress(
     data_bits: u64,
     format_bits: u64,
@@ -272,6 +284,7 @@ fn lzma_compressor_from_bits(bits: u64) -> Option<&'static mut LzmaCompressorHan
     }
     Some(unsafe { &mut *(ptr as *mut LzmaCompressorHandle) })
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_compressor_new(
     format_bits: u64,
     check_bits: u64,
@@ -307,6 +320,7 @@ pub extern "C" fn molt_lzma_compressor_new(
 }
 
 /// `compressor.compress(data) -> bytes`
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_compressor_compress(handle_bits: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = lzma_compressor_from_bits(handle_bits) else {
@@ -325,6 +339,7 @@ pub extern "C" fn molt_lzma_compressor_compress(handle_bits: u64, data_bits: u64
 }
 
 /// `compressor.flush() -> bytes`  (finalises and returns compressed stream)
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_compressor_flush(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = lzma_compressor_from_bits(handle_bits) else {
@@ -374,6 +389,7 @@ pub extern "C" fn molt_lzma_compressor_flush(handle_bits: u64) -> u64 {
         }
     })
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_compressor_drop(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -403,6 +419,7 @@ fn lzma_decompressor_from_bits(bits: u64) -> Option<&'static mut LzmaDecompresso
     }
     Some(unsafe { &mut *(ptr as *mut LzmaDecompressorHandle) })
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_decompressor_new(format_bits: u64, _memlimit_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let format = match opt_i64(_py, format_bits, FORMAT_AUTO, "format") {
@@ -422,6 +439,7 @@ pub extern "C" fn molt_lzma_decompressor_new(format_bits: u64, _memlimit_bits: u
 }
 
 /// `decompressor.decompress(data, max_length=-1) -> bytes`
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_decompressor_decompress(
     handle_bits: u64,
     data_bits: u64,
@@ -497,6 +515,7 @@ pub extern "C" fn molt_lzma_decompressor_decompress(
 }
 
 /// `decompressor.eof` property
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_decompressor_eof(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = lzma_decompressor_from_bits(handle_bits) else {
@@ -507,6 +526,7 @@ pub extern "C" fn molt_lzma_decompressor_eof(handle_bits: u64) -> u64 {
 }
 
 /// `decompressor.needs_input` property
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_decompressor_needs_input(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = lzma_decompressor_from_bits(handle_bits) else {
@@ -517,6 +537,7 @@ pub extern "C" fn molt_lzma_decompressor_needs_input(handle_bits: u64) -> u64 {
 }
 
 /// `decompressor.unused_data` property
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_decompressor_unused_data(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = lzma_decompressor_from_bits(handle_bits) else {
@@ -526,6 +547,7 @@ pub extern "C" fn molt_lzma_decompressor_unused_data(handle_bits: u64) -> u64 {
         return_bytes(_py, &tail)
     })
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_decompressor_drop(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);
@@ -566,6 +588,7 @@ fn lzma_file_handle_from_bits(bits: u64) -> Option<&'static mut LzmaFileHandle> 
 }
 
 /// `lzma.open(filename, mode, format, check, preset) -> handle`
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_file_open(
     filename_bits: u64,
     mode_bits: u64,
@@ -678,6 +701,7 @@ pub extern "C" fn molt_lzma_file_open(
 }
 
 /// `handle.read(size=-1) -> bytes`
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_file_read(handle_bits: u64, size_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = lzma_file_handle_from_bits(handle_bits) else {
@@ -723,6 +747,7 @@ pub extern "C" fn molt_lzma_file_read(handle_bits: u64, size_bits: u64) -> u64 {
 }
 
 /// `handle.write(data) -> int`
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_file_write(handle_bits: u64, data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = lzma_file_handle_from_bits(handle_bits) else {
@@ -741,6 +766,7 @@ pub extern "C" fn molt_lzma_file_write(handle_bits: u64, data_bits: u64) -> u64 
 }
 
 /// `handle.close() -> None` (finishes the lzma stream and writes to file)
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_file_close(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let Some(handle) = lzma_file_handle_from_bits(handle_bits) else {
@@ -803,6 +829,7 @@ pub extern "C" fn molt_lzma_file_close(handle_bits: u64) -> u64 {
 }
 
 /// Free the handle.
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_lzma_file_drop(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let ptr = ptr_from_bits(handle_bits);

@@ -2052,3 +2052,46 @@ def test_failed_publication_owner_write_keeps_structured_secondary_without_prima
     assert lease.owner_persisted is True
     assert lease.closed is True
     assert calls == cleanup_calls == []
+
+
+@pytest.mark.parametrize("member", ["selected-gcc", "cc1", "as", "selected-ar"])
+def test_native_c_process_closure_participates_in_cargo_cache_inputs(
+    tmp_path, monkeypatch, member
+):
+    from tests.tools.test_toolchain_capture import _native_c_capture_fixture
+    from tools.proof_queue_pkg import toolchain_capture
+
+    identity, tools, env, command, _calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch
+    )
+    arguments = {
+        "source": {"root": str(tmp_path), "commit": "fixed"},
+        "toolchains": {"rustc": identity},
+        "command": command,
+        "outputs": _outputs(command),
+        "env": env,
+    }
+    before = cache.input_identity(**arguments)
+    tools[member].write_bytes(b"replacement C build input")
+    # A new generation must come from the actual capture producer, including
+    # helper transcripts, rather than resealing stale closure metadata.
+    images, selection = toolchain_capture.capture_rust_link_process_images(
+        rustc=tools["rustc"],
+        cargo=tools["cargo"],
+        cwd=tmp_path,
+        env=env,
+        target=None,
+        rustc_version="rustc 1.99.0\nhost: x86_64-unknown-linux-gnu\n",
+        command_argv=command,
+        admitted_command=command,
+        native_c_units=["target"],
+    )
+    refreshed = dict(
+        identity,
+        process_images=[identity["process_images"][0], *images],
+        link_selection=selection,
+    )
+    refreshed.pop("identity_sha256")
+    refreshed["identity_sha256"] = cache.canonical_json_sha256(refreshed)
+    arguments["toolchains"] = {"rustc": refreshed}
+    assert cache.input_identity(**arguments) != before

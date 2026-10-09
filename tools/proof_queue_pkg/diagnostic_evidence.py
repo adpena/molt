@@ -735,9 +735,10 @@ def _running_pytest_failures_observed_diagnostic(
         ),
         evidence=" ".join(evidence_parts),
         next_action=(
-            "Keep the row running for the full pytest failure report; do not "
-            "classify this as infra-only current-test opacity or interrupt via "
-            "Codex stdin."
+            "Inspect the immediately flushed pytest failure details in the "
+            "command output. Keep the row running for remaining results and "
+            "custody closure; do not classify this as infra-only current-test "
+            "opacity or interrupt via Codex stdin."
         ),
         scopes=("tools/proof_queue.py",),
         artifacts=(str(row["log_path"]),),

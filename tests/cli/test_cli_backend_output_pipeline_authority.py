@@ -224,7 +224,9 @@ def terminal_build(
         output_layout=layout,
         native_object_destination=None,
         prepared_backend_setup=SimpleNamespace(
-            cache_setup=cache_setup, backend_bin=backend_runtime.backend_bin
+            backend="native",
+            cache_setup=cache_setup,
+            backend_bin=backend_runtime.backend_bin,
         ),
         prepared_backend_runtime_context=backend_runtime,
         prepared_backend_compile=SimpleNamespace(
@@ -312,8 +314,10 @@ def _terminal_payload(case, capsys):
     assert sum(diagnostics["phase_sec"].values()) == diagnostics["total_sec"]
     assert diagnostics["compiler"]["fingerprint"] == "selected-compiler"
     assert diagnostics["program"] == {
-        "profile": "dev",
-        "runtime_cargo_profile": "dev-fast",
+        "backend": case.args["prepared_backend_setup"].backend,
+        "guest_profile": "dev",
+        "runtime_profile": "dev-fast",
+        "compiler_profile": "release",
         "target": case.args["target"],
     }
     return message, diagnostics
@@ -435,6 +439,7 @@ def test_wasm_terminal_snapshot_follows_requested_snapshot_header(
 ):
     case = terminal_build
     case.args["target"] = "wasm"
+    case.args["prepared_backend_setup"].backend = "wasm"
     case.args["snapshot"] = header
     case.args["output_layout"].is_wasm = True
 
@@ -508,6 +513,7 @@ def test_disabled_terminal_diagnostics_do_not_read_artifacts_or_probe_identity(
         case.failure = "link"
     if target == "wasm":
         case.args["target"] = "wasm"
+        case.args["prepared_backend_setup"].backend = "wasm"
         case.args["output_layout"].is_wasm = True
         monkeypatch.setattr(
             cli_backend_output_pipeline._non_native_output,
@@ -924,6 +930,7 @@ def test_reporting_failure_prevents_success_and_retains_published_artifact(
     else:
         artifact = tmp_path / "app.wasm"
         case.args["target"] = "wasm"
+        case.args["prepared_backend_setup"].backend = "wasm"
         case.args["output_layout"].is_wasm = True
 
         def publish_wasm(**_):
@@ -990,3 +997,59 @@ def test_text_reporting_failure_keeps_primary_error_and_avoids_success(
             in captured.err
         )
     assert len(case.snapshots) == 1
+
+
+@pytest.mark.parametrize("selected", ["native", "llvm"])
+def test_diagnostics_keep_requested_backend_after_ambient_selector_changes(
+    terminal_build, monkeypatch, capsys, selected
+):
+    case = terminal_build
+    case.args["prepared_backend_setup"].backend = selected
+    monkeypatch.setenv("MOLT_BACKEND", "llvm" if selected == "native" else "cranelift")
+    assert cli_backend_output_pipeline._emit_backend_pipeline_outputs(**case.args) == 0
+    _message, diagnostics = _terminal_payload(case, capsys)
+    assert diagnostics["program"]["backend"] == selected
+    assert diagnostics["program"]["target"] == "native"
+
+
+@pytest.mark.parametrize(
+    ("requested", "resolved"),
+    [
+        ("release", "wasm-release"),
+        ("release-output", "release-output"),
+        ("dev-fast", "dev-fast"),
+    ],
+)
+def test_wasm_terminal_diagnostics_report_resolved_runtime_profile(
+    terminal_build, monkeypatch, capsys, requested, resolved
+):
+    case = terminal_build
+    monkeypatch.delenv("MOLT_WASM_CARGO_PROFILE", raising=False)
+    monkeypatch.delenv("MOLT_RUNTIME_BUILD_PROFILE", raising=False)
+    case.args["target"] = "wasm"
+    case.args["prepared_backend_setup"].backend = "wasm"
+    case.args["profile"] = "release"
+    case.args["output_layout"].is_wasm = True
+    case.args["prepared_build_config"].runtime_cargo_profile = requested
+    monkeypatch.setattr(
+        cli_backend_output_pipeline._non_native_output,
+        "_prepare_non_native_build_result",
+        lambda **_: (None, output.fail("WASM output refused", True, command="build")),
+    )
+    assert cli_backend_output_pipeline._emit_backend_pipeline_outputs(**case.args) == 2
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    message = json.loads(captured.out)
+    assert message["status"] == "error"
+    assert message["errors"] == ["WASM output refused"]
+    diagnostics = json.loads(case.diagnostics_file.read_text(encoding="utf-8"))
+    # The non-native producer has already emitted its failure envelope. The
+    # terminal reporting boundary still publishes the selected facts to disk.
+    assert "compile_diagnostics" not in message["data"]
+    assert diagnostics["program"] == {
+        "backend": "wasm",
+        "guest_profile": "release",
+        "compiler_profile": "release",
+        "runtime_profile": resolved,
+        "target": "wasm",
+    }

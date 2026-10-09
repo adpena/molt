@@ -1225,7 +1225,7 @@ unsafe extern "C" fn native_oserror_written_set(
             (&raw mut crate::abi_types::PyExc_ValueError).cast::<PyObject>(),
         )
     };
-    if written == -1 && !unsafe { PyErr_Occurred() }.is_null() {
+    if written == -1 && raised_error_pending() {
         return -1;
     }
     unsafe { (*object).written = written };
@@ -1450,8 +1450,8 @@ unsafe fn normalize_oserror_windows_args(args: *mut PyObject) -> *mut PyObject {
         return args;
     }
     let winerror = unsafe { crate::api::numbers::PyLong_AsLong(winerror) };
-    if winerror == -1 && !unsafe { PyErr_Occurred() }.is_null() {
-        unsafe { crate::api::refcount::Py_DECREF(args) };
+    if winerror == -1 && raised_error_pending() {
+        unsafe { release_preserving_error(&[args]) };
         return ptr::null_mut();
     }
     let errno = molt_runtime_platform::windows_abi::winerror_to_errno(winerror as i32);
@@ -1528,7 +1528,7 @@ unsafe fn initialize_oserror_fields(
                     (&raw mut crate::abi_types::PyExc_ValueError).cast::<PyObject>(),
                 )
             };
-            if written == -1 && !unsafe { PyErr_Occurred() }.is_null() {
+            if written == -1 && raised_error_pending() {
                 return -1;
             }
             unsafe {
@@ -1620,11 +1620,11 @@ unsafe fn initialize_unicode_fields(
         return -1;
     }
     let start = unsafe { crate::api::numbers::PyLong_AsSsize_t(start_obj) };
-    if start == -1 && !unsafe { PyErr_Occurred() }.is_null() {
+    if start == -1 && raised_error_pending() {
         return -1;
     }
     let end = unsafe { crate::api::numbers::PyLong_AsSsize_t(end_obj) };
-    if end == -1 && !unsafe { PyErr_Occurred() }.is_null() {
+    if end == -1 && raised_error_pending() {
         return -1;
     }
     if root != UnicodeTranslateError {
@@ -1962,7 +1962,7 @@ unsafe fn allocate_native_exception(
         return ptr::null_mut();
     }
     if !generic_allocator
-        && unsafe { (crate::hooks::hooks_or_stubs().native_gc_allocate)(allocation.addr()) } < 0
+        && unsafe { crate::hooks::hooks_or_stubs().native_gc_allocate(allocation.addr()) } < 0
     {
         unsafe { check_native_status(-1, "native_gc_allocate") };
         let free = unsafe { (*subtype).tp_free }.unwrap_or(crate::api::memory::PyObject_GC_Del);
@@ -2198,8 +2198,8 @@ pub unsafe extern "C" fn molt_native_exception_new(
                 let errno_obj = unsafe { crate::api::sequences::PyTuple_GetItem(args, 0) };
                 if unsafe { crate::api::numbers::PyLong_Check(errno_obj) } != 0 {
                     let errno = unsafe { crate::api::numbers::PyLong_AsLong(errno_obj) };
-                    if errno == -1 && !unsafe { PyErr_Occurred() }.is_null() {
-                        unsafe { crate::api::refcount::Py_DECREF(args) };
+                    if errno == -1 && raised_error_pending() {
+                        unsafe { release_preserving_error(&[args]) };
                         return ptr::null_mut();
                     }
                     selected = unsafe { oserror_subtype_for_errno(errno as c_int) };
@@ -3010,15 +3010,10 @@ pub unsafe extern "C" fn PyErr_NormalizeException(
 /// remain errors, including failures during the owned handle's projection.
 fn allocate_exception_message(text: &str) -> *mut PyObject {
     let h = crate::hooks::hooks_or_stubs();
-    if std::ptr::fn_addr_eq(h.alloc_str, crate::hooks::STUB_HOOKS.alloc_str)
-        || std::ptr::fn_addr_eq(
-            h.runtime_class_borrowed,
-            crate::hooks::STUB_HOOKS.runtime_class_borrowed,
-        )
-    {
+    if h.alloc_str.is_none() || h.runtime_class_borrowed.is_none() {
         return ptr::null_mut();
     }
-    let bits = unsafe { (h.alloc_str)(text.as_ptr(), text.len()) };
+    let bits = unsafe { h.alloc_str(text.as_ptr(), text.len()) };
     if raised_error_pending() {
         with_preserved_error(|| {
             if bits != 0 {
@@ -3098,10 +3093,10 @@ unsafe fn exception_instance_class(value: *mut PyObject) -> *mut PyTypeObject {
         return ptr::null_mut();
     }
     let class = if let Some(handle) = GLOBAL_BRIDGE.molt_handle_for_pyobj(value)
-        && unsafe { (crate::hooks::hooks_or_stubs().classify_heap)(handle.bits()) }
+        && unsafe { crate::hooks::hooks_or_stubs().classify_heap(handle.bits()) }
             == MoltTypeTag::Exception as u8
     {
-        match unsafe { (crate::hooks::hooks_or_stubs().runtime_class_borrowed)(handle.bits()) }
+        match unsafe { crate::hooks::hooks_or_stubs().runtime_class_borrowed(handle.bits()) }
             .decode()
         {
             crate::hooks::DecodedHandleResult::Ok(class_bits) => unsafe {

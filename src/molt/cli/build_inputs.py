@@ -560,7 +560,9 @@ def _prepare_build_config(
     )
     if backend_profile_err:
         return None, _fail(backend_profile_err, json_output, command="build")
-    runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name(profile)
+    runtime_cargo_profile, runtime_profile_err = _resolve_cargo_profile_name(
+        profile, wasm=target in {"wasm", "wasm-freestanding"}
+    )
     if runtime_profile_err:
         return None, _fail(runtime_profile_err, json_output, command="build")
 

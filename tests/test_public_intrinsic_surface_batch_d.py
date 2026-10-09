@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 from tests.surface_process_guard import run_surface_test_process
 
@@ -12,6 +15,7 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 _PROBE = f"""
 import builtins
 import importlib.util
+import os
 import sys
 from tests.stdlib_intrinsic_registry import install_registry
 
@@ -154,7 +158,56 @@ for _name, _value in _signal_values.items():
     builtins._molt_intrinsics[_name] = (lambda value: (lambda: value))(_value)
 
 
-codecs_mod = _load_module("molt_test_codecs", {str(STDLIB_ROOT / "codecs.py")!r})
+_host_python_root = os.path.normcase(os.path.join(os.path.expanduser("~"), ".local", "share", "uv", "python"))
+
+
+def _reject_host_python_discovery(event, args):
+    if event in {{"os.listdir", "os.scandir"}} and args and isinstance(args[0], (str, bytes)):
+        selected = os.path.normcase(os.path.abspath(os.fsdecode(args[0])))
+        if selected == _host_python_root or selected.startswith(_host_python_root + os.sep):
+            raise AssertionError("guest codec import scanned a host Python installation")
+
+
+sys.addaudithook(_reject_host_python_discovery)
+codecs_mod = _load_module("molt_test_codecs", sys.argv[1])
+assert codecs_mod.__file__ == sys.argv[1]
+assert codecs_mod.__file__ == codecs_mod.__spec__.origin == codecs_mod.__loader__.path
+# Both Windows codec layers must propagate the real import owner's exception,
+# including attributes and authored origin. Check the first and second export.
+_original_codecs = sys.modules["codecs"]
+sys.modules["codecs"] = codecs_mod
+try:
+    for _codec_name in ("oem", "mbcs"):
+        _encode_name = _codec_name + "_encode"
+        _decode_name = _codec_name + "_decode"
+        assert not hasattr(codecs_mod, _encode_name)
+        assert not hasattr(codecs_mod, _decode_name)
+        for _missing_second in (False, True):
+            if _missing_second:
+                # Presence alone reaches the second IMPORT_FROM; this object
+                # is never called and does not implement an OEM/MBCS codec.
+                setattr(codecs_mod, _encode_name, object())
+            try:
+                try:
+                    exec(f"from codecs import {{_encode_name}}, {{_decode_name}}", {{}})
+                except ImportError as expected:
+                    expected_error = (str(expected), expected.name, expected.path)
+                else:
+                    raise AssertionError("test codec module unexpectedly has both exports")
+                try:
+                    _load_module(
+                        f"molt_test_{{_codec_name}}",
+                        os.path.join({str(STDLIB_ROOT / "encodings")!r}, _codec_name + ".py"),
+                    )
+                except ImportError as actual:
+                    assert (str(actual), actual.name, actual.path) == expected_error
+                else:
+                    raise AssertionError("codec import must reject the missing export")
+            finally:
+                if _missing_second:
+                    delattr(codecs_mod, _encode_name)
+finally:
+    sys.modules["codecs"] = _original_codecs
 pickle_mod = _load_module("molt_test_pickle", {str(STDLIB_ROOT / "pickle.py")!r})
 errno_mod = _load_module("molt_test_errno", {str(STDLIB_ROOT / "errno.py")!r})
 stat_mod = _load_module("molt_test_stat", {str(STDLIB_ROOT / "stat.py")!r})
@@ -196,14 +249,37 @@ for key in sorted(checks):
 """
 
 
-def test_public_intrinsic_surface_batch_d() -> None:
+@pytest.mark.parametrize("host_python_present", [False, True])
+def test_public_intrinsic_surface_batch_d(
+    tmp_path: Path, host_python_present: bool
+) -> None:
+    user_home = tmp_path / "home"
+    user_home.mkdir()
+    if host_python_present:
+        host_source = (
+            user_home
+            / ".local/share/uv/python/cpython-3.12-test/lib/python3.12/codecs.py"
+        )
+        host_source.parent.mkdir(parents=True)
+        host_source.write_text(
+            "raise AssertionError('unrelated host codecs')\n", encoding="utf-8"
+        )
+    source_origin = tmp_path / "cpython-3.12.99-guest/lib/python3.12/codecs.py"
+    source_origin.parent.mkdir(parents=True)
+    source_origin.write_bytes((STDLIB_ROOT / "codecs.py").read_bytes())
+    lookalike = tmp_path / "cpython-3.12-guest/lib/python3.12/codecs.py"
+    lookalike.parent.mkdir(parents=True)
+    lookalike.write_text("# unrelated host source\n", encoding="utf-8")
+    environment = dict(os.environ, HOME=str(user_home), USERPROFILE=str(user_home))
     proc = run_surface_test_process(
-        [sys.executable, "-c", _PROBE],
+        [sys.executable, "-c", _PROBE, str(source_origin)],
         cwd=REPO_ROOT,
+        env=environment,
         text=True,
         capture_output=True,
-        check=True,
+        check=False,
     )
+    assert proc.returncode == 0, proc.stderr
     checks: dict[str, str] = {}
     for line in proc.stdout.splitlines():
         prefix, *rest = line.split("|")

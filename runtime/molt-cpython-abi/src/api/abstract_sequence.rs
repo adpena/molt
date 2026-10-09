@@ -103,6 +103,101 @@ unsafe fn sequence_multiply_numeric_fallback(
     }
 }
 
+/// Physical sequence completion after numeric slots have all declined. This
+/// never enters PyNumber again: the caller already owns that dispatch phase.
+/// Re-read semantic types after callbacks; retain no methods-table borrow.
+pub(crate) unsafe fn numeric_sequence_fallback(
+    op: crate::hooks::NumberBinaryOp,
+    mode: crate::hooks::NumberOperationMode,
+    left: *mut PyObject,
+    right: *mut PyObject,
+) -> Option<*mut PyObject> {
+    use crate::hooks::{NumberBinaryOp, NumberOperationMode};
+    if !matches!(op, NumberBinaryOp::Add | NumberBinaryOp::Multiply) {
+        return None;
+    }
+    unsafe {
+        let left_type = crate::bridge::semantic_type(left);
+        if left_type.is_null() {
+            return Some(ptr::null_mut());
+        }
+        let methods = (*left_type).tp_as_sequence.cast::<PySequenceMethods>();
+        if !methods.is_null() {
+            if op == NumberBinaryOp::Add {
+                let slot = if mode == NumberOperationMode::InPlace
+                    && !(*methods).sq_inplace_concat.is_null()
+                {
+                    (*methods).sq_inplace_concat
+                } else {
+                    (*methods).sq_concat
+                };
+                if !slot.is_null() {
+                    let call: BinaryFunc = std::mem::transmute(slot);
+                    return Some(call(left, right));
+                }
+            } else {
+                let slot = if mode == NumberOperationMode::InPlace
+                    && !(*methods).sq_inplace_repeat.is_null()
+                {
+                    (*methods).sq_inplace_repeat
+                } else {
+                    (*methods).sq_repeat
+                };
+                if !slot.is_null() {
+                    return Some(repeat_by_index(slot, left, right));
+                }
+            }
+        }
+        if op == NumberBinaryOp::Multiply
+            && (mode == NumberOperationMode::Normal || methods.is_null())
+        {
+            // In-place multiplication admits the right tier only without a
+            // left table. Ordinary multiplication also admits an empty table.
+            // Neither mode mutates the right operand.
+            let right_type = crate::bridge::semantic_type(right);
+            if right_type.is_null() {
+                return Some(ptr::null_mut());
+            }
+            let methods = (*right_type).tp_as_sequence.cast::<PySequenceMethods>();
+            if !methods.is_null() {
+                let slot = (*methods).sq_repeat;
+                if !slot.is_null() {
+                    return Some(repeat_by_index(slot, right, left));
+                }
+            }
+        }
+        None
+    }
+}
+
+/// One index conversion and the canonical Py_ssize_t overflow/error policy.
+unsafe fn repeat_by_index(
+    slot: *mut c_void,
+    sequence: *mut PyObject,
+    count: *mut PyObject,
+) -> *mut PyObject {
+    unsafe {
+        if crate::api::abstract_number::PyIndex_Check(count) == 0 {
+            if !crate::api::errors::raised_error_pending() {
+                set_type_error(format!(
+                    "can't multiply sequence by non-int of type '{}'",
+                    type_name(count)
+                ));
+            }
+            return ptr::null_mut();
+        }
+        let count = crate::api::abstract_number::PyNumber_AsSsize_t(
+            count,
+            (&raw mut crate::abi_types::PyExc_OverflowError).cast(),
+        );
+        if count == -1 && crate::api::errors::raised_error_pending() {
+            return ptr::null_mut();
+        }
+        let call: SsizeArgFunc = std::mem::transmute(slot);
+        call(sequence, count)
+    }
+}
+
 /// One admitted sequence observation. The runtime class owns protocol slots;
 /// a managed object's physical carrier describes storage only. This value is
 /// local to a dispatch and must not be reused after a user callback.
@@ -174,7 +269,7 @@ fn classify(bits: u64) -> u8 {
         return crate::abi_types::MoltTypeTag::Other as u8;
     }
     let h = hooks_or_stubs();
-    unsafe { (h.classify_heap)(bits) }
+    unsafe { h.classify_heap(bits) }
 }
 
 #[inline]
@@ -201,7 +296,7 @@ fn tag_dict() -> u8 {
 /// Set a `TypeError` with a formatted message, unless an exception is already
 /// pending (never mask the more specific inner error).
 unsafe fn set_type_error(message: String) {
-    if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+    if crate::api::errors::raised_error_pending() {
         return;
     }
     if let Ok(cmsg) = std::ffi::CString::new(message) {
@@ -433,7 +528,7 @@ pub(crate) unsafe fn materialize_iterable_pointers(
 /// with the CPython-shaped exception set.
 ///
 /// Tiers: native list/tuple (direct index copy) → native str/bytes (element
-/// semantics per CPython) → native dict (keys, via the `dict_entry` cursor) →
+/// semantics per CPython) → native dict (keys, via the `dict_next` cursor) →
 /// the object's own iterator protocol (`PyObject_GetIter` + `PyIter_Next`, the
 /// CPython fallback for every other iterable) → TypeError.
 unsafe fn set_sequence_fast_type_error(message: *const c_char) {
@@ -545,7 +640,7 @@ pub unsafe extern "C" fn PySequence_GetItem(o: *mut PyObject, i: Py_ssize_t) -> 
             return unsafe { crate::api::sequences::PyList_GetItemRef(o, index) };
         }
         if tag == tag_tuple() && receiver.is_exact(&raw mut crate::abi_types::PyTuple_Type) {
-            let len = unsafe { (h.tuple_len)(bits) };
+            let len = unsafe { h.tuple_len(bits) };
             let actual_i = if i < 0 { len as Py_ssize_t + i } else { i };
             if actual_i < 0 || actual_i >= len as Py_ssize_t {
                 unsafe {
@@ -591,7 +686,7 @@ pub unsafe extern "C" fn PySequence_GetItem(o: *mut PyObject, i: Py_ssize_t) -> 
                 if let Some(ch) = text.chars().nth(actual_i as usize) {
                     let mut buf = [0u8; 4];
                     let s = ch.encode_utf8(&mut buf);
-                    let cb = unsafe { (h.alloc_str)(s.as_ptr(), s.len()) };
+                    let cb = unsafe { h.alloc_str(s.as_ptr(), s.len()) };
                     if cb != 0 {
                         return unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(cb) };
                     }
@@ -947,7 +1042,7 @@ pub unsafe extern "C" fn PySequence_Concat(s1: *mut PyObject, s2: *mut PyObject)
                 let mut joined = Vec::with_capacity(a.len() + b.len());
                 joined.extend_from_slice(a);
                 joined.extend_from_slice(b);
-                let nb = unsafe { (h.alloc_str)(joined.as_ptr(), joined.len()) };
+                let nb = unsafe { h.alloc_str(joined.as_ptr(), joined.len()) };
                 if nb != 0 {
                     return unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(nb) };
                 }
@@ -1036,7 +1131,7 @@ pub unsafe extern "C" fn PySequence_Repeat(o: *mut PyObject, count: Py_ssize_t) 
             && let Some(a) = unsafe { str_slice(bits) }
         {
             let repeated = a.repeat(reps);
-            let nb = unsafe { (h.alloc_str)(repeated.as_ptr(), repeated.len()) };
+            let nb = unsafe { h.alloc_str(repeated.as_ptr(), repeated.len()) };
             if nb != 0 {
                 return unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(nb) };
             }
@@ -1113,7 +1208,7 @@ pub unsafe extern "C" fn _PyList_Extend(
         return ptr::null_mut();
     }
     if let Some(iterable_bits) = GLOBAL_BRIDGE.molt_handle_for_pyobj(iterable)
-        && unsafe { (hooks_or_stubs().classify_heap)(iterable_bits.bits()) }
+        && unsafe { hooks_or_stubs().classify_heap(iterable_bits.bits()) }
             == crate::abi_types::MoltTypeTag::List as u8
         && !GLOBAL_BRIDGE.commit_list_view(iterable_bits.bits())
     {

@@ -14,6 +14,7 @@ import shutil
 import statistics
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -23,11 +24,15 @@ TMP = ROOT / "tmp" / "startup_bench"
 NODE_PROBE = ROOT / "tools" / "startup_node_probe.js"
 WASM_RUNNER = ROOT / "wasm" / "run_wasm.js"
 DEFAULT_BUDGET = ROOT / "bench" / "scoreboard" / "startup_budget.json"
-DEFAULT_BASELINE_PYTHON = Path(r"C:\Molt\molt-src\.venv\Scripts\python.exe")
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools import output_startup_size_audit as output_audit  # noqa: E402
+from molt.python_interpreter import PythonInterpreter, probe_python_command  # noqa: E402
+from molt.toolchain_identity import (  # noqa: E402
+    executable_environment_value,
+    expand_user_path,
+)
 from molt.wasm_artifact import wasm_runtime_manifest_path  # noqa: E402
 
 try:
@@ -197,31 +202,37 @@ def _cpython_env(env: dict[str, str]) -> dict[str, str]:
     return isolated
 
 
+def _baseline_python(env: dict[str, str]) -> PythonInterpreter:
+    selected = executable_environment_value(env, "MOLT_STARTUP_PYTHON", sys.executable)
+    if not selected or "\0" in selected:
+        raise ValueError("MOLT_STARTUP_PYTHON must name a CPython executable")
+    path = expand_user_path(selected, environment=env)
+    if not path.is_absolute():
+        path = ROOT / path
+    return probe_python_command((str(path), "-I"), env=_cpython_env(env), cwd=ROOT)
+
+
 def _measure_probe(
     name: str,
     script: Path,
     *,
     env: dict[str, str],
+    baseline: PythonInterpreter,
     samples: int,
     timeout: float,
     build_timeout: float,
 ) -> dict[str, Any]:
     probe_root = TMP / name
-    baseline_python = Path(
-        os.environ.get("MOLT_STARTUP_PYTHON", DEFAULT_BASELINE_PYTHON)
-    )
-    if not baseline_python.exists():
-        baseline_python = Path(sys.executable)
     baseline_env = _cpython_env(env)
     cpython = _measure(
-        [str(baseline_python), "-I", str(script)],
+        [*baseline.command, str(script)],
         env=baseline_env,
         samples=samples,
         timeout=timeout,
         label=f"{name} cpython",
     )
     cpython["importtime"] = _measure(
-        [str(baseline_python), "-I", "-X", "importtime", str(script)],
+        [*baseline.command, "-X", "importtime", str(script)],
         env=baseline_env,
         samples=1,
         timeout=timeout,
@@ -363,9 +374,10 @@ def main() -> int:
     args = parser.parse_args()
     if args.samples < 3:
         parser.error("A12 requires at least 3 samples")
+    env = output_audit._canonical_env(os.environ.copy())
+    baseline = _baseline_python(env)
     TMP.mkdir(parents=True, exist_ok=True)
     RESULTS.mkdir(parents=True, exist_ok=True)
-    env = output_audit._canonical_env(os.environ.copy())
     scripts = {}
     for name, source in PROBES.items():
         path = TMP / "probes" / f"{name}.py"
@@ -388,6 +400,7 @@ def main() -> int:
         "schema_version": 1,
         "claim": "STARTUP-BASELINE",
         "recorded_at": _stamp(),
+        "baseline_python": asdict(baseline),
         "methodology": {
             "build_profile": "release",
             "samples": args.samples,
@@ -411,6 +424,7 @@ def main() -> int:
                 name,
                 path,
                 env=env,
+                baseline=baseline,
                 samples=args.samples,
                 timeout=args.timeout,
                 build_timeout=args.build_timeout,

@@ -127,12 +127,48 @@ struct MoltHeader {
     - Table hashing follows the runtime hash secret and capability policy;
       `PYTHONHASHSEED=0` selects deterministic string and bytes hashes.
     - `dict_keys`/`dict_values`/`dict_items` return view objects backed by the dict (not materialized lists).
-    - Iteration uses an explicit iterator object that tracks the target collection and index.
+    - Iteration tracks the physical cursor, expected live count and remaining count.
     - Hot-path methods are exposed as intrinsics (e.g., `list.count/index`, `tuple.count/index`, `bytes/str.find`).
     - **Tier 0 (Structified)**: Objects of stable classes are lowered to a struct with no `__dict__`. Access is `*(base + offset)`.
     - **Tier 1 (Shape Dict)**: Uses a "Shape" pointer + a value array. If keys match the shape, access is indexed.
 - **Ranges**: `MoltRange` - Lazy sequence storing `start/stop/step` inline. `len`, `iter`, and `index` are computed without materializing lists.
 - **Slices**: `MoltSlice` - Inline `start/stop/step` object used by indexing and slicing ops.
+
+Dicts, sets and frozensets share sparse typed entries and one probe index. The
+payload contains two stable tracked owners, a live count and an occupied-index
+count: four native words. Dictionary rows occupy 24 bytes and set rows 16 bytes;
+each live row retains its admitted hash. Deletion vacates one row and leaves a
+probe tombstone, without moving other rows, allocating or rehashing keys. Ordinary
+deletion retains physical extent. Pop may trim trailing vacancies; dictionary
+`popitem` selects the last insertion, while set `pop` selects an arbitrary member
+and does not promise the same order as iteration.
+
+Insertion compacts in stable order when holes reach the live count or index
+admission reaches the load threshold. Both owners reserve before compaction;
+the commit performs no Python callbacks or allocations. Failed preparation may
+retain spare capacity but preserves semantic bindings and order. Delete-only
+workloads retain backing capacity until a later insertion, clear or destruction.
+Dictionary cursors traverse physical rows; set cursors traverse probe slots.
+Full sparse walks therefore depend on physical extent or index capacity, not
+only live count. A frozen set's first hash scans physical rows using retained
+hashes; subsequent calls use the existing object state cache without element
+callbacks. Exact frozen sets use inline state and native subtypes use the
+existing class/state sidecar.
+
+Hash iterators retain their canonical class after exhaustion. Position and
+remaining count commit before result allocation or old-edge release. Size
+failures remain sticky; forward dictionary keys-count failures detach the target.
+The supported CPython patch releases in the version authority do not apply that
+remaining-count check to reverse dictionary iterators. Their dictionary length
+hint uses unsigned target-width conversion, while set length hints use signed
+conversion. Packed cross-module snapshots retain live references in the shared
+charged snapshot owner; item tuple construction runs only after the complete
+entry observation is retained. RuntimeHooks exposes a physical dictionary
+cursor through `dict_next` with no ordinal compatibility lane.
+
+These storage invariants describe implementation. Native, WASM, free-threaded,
+backend/profile and performance acceptance require execution of their affected
+consumers; source layout and a single green cell do not establish that matrix.
 
 Hash results use the target C ABI `Py_hash_t` width, including 32-bit WASM.
 `molt-lang-obj-model::hash_policy` owns the numeric modulus (2**61-1 on 64-bit
@@ -177,6 +213,12 @@ contract is defined in `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`.
   A poll address alone does not make an ordinary generator, async generator,
   or coroutine iterator wrapper awaitable. Flagged iterable coroutines retain
   their code-owned protocol admission; user awaitables use the class protocol.
+  Compiled polls receive a raw payload address; runtime polls receive a tagged
+  object word. The WASM ABI manifest owns the runtime poll identities on both
+  native and WASM targets. Native compiler producers lower runtime poll symbols
+  to their canonical callable keys; compiled polls retain their code addresses.
+  Constructors select lifecycle shape from that identity, and polling dispatches
+  by its domain without depending on the debug pointer registry.
 - **Async (host services)**: `molt-worker` and `molt-db` use tokio/tokio-postgres
   where OS-level I/O is required.
 
@@ -230,6 +272,38 @@ In-place bytearray rejection uses the same diagnostic authority; buffer
 acquisition errors, reflected callback failures, and allocation/overflow paths
 retain their owning protocols. In-place string reuse is restricted to exact
 strings so it cannot overwrite subtype field tails.
+
+Normal and in-place numeric calls carry distinct, strictly admitted modes through
+RuntimeHooks. In-place methods may return a new object; NotImplemented resumes
+the ordinary reflected protocol before sequence fallback. The original operands
+remain borrowed and each successful result transfers one owned reference.
+`operator.concat`/`iconcat` and `PySequence_InPlace*` deliberately prefer physical
+sequence slots. These are separate protocols, not aliases for numeric addition
+or multiplication.
+
+Power uses one raw ternary slot-ordering authority for runtime and C operands.
+Python-defined ternary power is left-only for semantic targets 3.12 and 3.13;
+3.14 also admits reflected power. Python `__ipow__` remains binary even when a
+C caller supplies a modulus; a raw C in-place power slot receives all three
+arguments. The existing declared runtime target selects this semantic behavior,
+independently of the physical C ABI layout. Builtin int, bool, float and complex
+C number tables expose their declared operations; immutable in-place slots and
+matrix multiplication remain absent. Declaring int descriptors read int storage
+of bool/subtype receivers, whereas bool's own bitwise overrides preserve bool
+only for two bool operands. Bool inversion warns before the integer operation,
+and a warnings-as-errors result terminates the call. Exact builtin numeric
+kernels stay separate from subtype callback dispatch. Native, WASM and
+concurrency cells require execution and cost qualification of these contracts.
+Set in-place slots accept set/frozenset operands and otherwise decline to the
+normal reflected protocol. A fallback through dict keys/items views returns a
+new set; it must preserve the original set alias. Dict ordinary union accepts
+dicts, while dict in-place union uses the shared mapping/pair-iterable update
+protocol, including partial updates before an error. Declared keys/items view
+slots accept iterables, preserve operand direction, and test membership or
+cancel equal items before hashing result tuples. Dict values have no numeric
+set protocol. Static C set/frozenset/dict tables and dynamic view slot projections
+use these same declaring owners and existing container storage admission.
+
 Managed C-API `PyObject_IsTrue`/`PyObject_Not` and
 `PyObject_Size`/`PyObject_Length` enter the same runtime truth and length
 protocols. Physical container length hooks cannot decide these inquiries:
@@ -343,9 +417,9 @@ functions, allocate through the common builder. Its single payload extent is
 function before allocator rounding. Normal metadata initialization no longer
 allocates a metadata dictionary or retains its string-key entries. For a
 function that never needs user attributes, the avoided storage is one dict
-object (header plus three pointers), three boxed vector descriptors, and the
-order, hash-table and hash-cache backing capacities. Those buffers occupy
-`8 * order_capacity + sizeof(usize) * table_capacity + 8 * hash_capacity`
+object (header plus four native words), two tracked vector owners, and the
+typed-entry and hash-table backing capacities. Those buffers occupy
+`24 * entry_capacity + sizeof(usize) * table_capacity`
 bytes before allocator rounding. Shared interned name objects and the metadata
 values themselves are not claimed as removed allocations. A later public
 dictionary access still allocates its ordinary dictionary; that case saves

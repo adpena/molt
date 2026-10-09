@@ -79,7 +79,7 @@ fn measured_production_empty_poll(input: c_int) -> c_int {
 
 #[test]
 fn empty_poll_enqueue_and_full_paths_are_allocation_free() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+    let _abi_test = support::enter_abi_test(support::stub_runtime_hooks());
     const ROUNDS: usize = 31;
     const ITERATIONS: usize = 500_000;
 

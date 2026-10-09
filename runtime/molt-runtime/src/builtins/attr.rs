@@ -242,14 +242,28 @@ mod tests {
             let rebound = MoltObject::from_ptr(rebound_ptr).bits();
             crate::molt_set_attr_name(class, offsets_name, rebound);
             assert!(crate::exception_pending(_py));
+            let exception = crate::molt_exception_last();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                _py,
+                exception,
+                "TypeError",
+            ));
             crate::molt_exception_clear();
+            dec_ref_bits(_py, exception);
             assert_eq!(
                 unsafe { super::class_field_offset(_py, class_ptr, field) },
                 Some(0)
             );
             crate::molt_del_attr_name(class, offsets_name);
             assert!(crate::exception_pending(_py));
+            let exception = crate::molt_exception_last();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                _py,
+                exception,
+                "TypeError",
+            ));
             crate::molt_exception_clear();
+            dec_ref_bits(_py, exception);
             assert_eq!(
                 unsafe { super::class_field_offset(_py, class_ptr, field) },
                 Some(0)
@@ -298,22 +312,32 @@ mod tests {
                 1
             );
             assert_eq!(heap_refcount(offsets), 2, "local plus private record owner");
-            unsafe { crate::object::heap_lifecycle::clear_cycle_edges(_py, class_ptr) };
+            for _ in 0..2 {
+                unsafe { crate::object::heap_lifecycle::clear_cycle_edges(_py, class_ptr) };
+                assert_eq!(
+                    unsafe { crate::object::layout::class_field_layout_bits(class_ptr) },
+                    record,
+                    "cycle clear must retain the physical layout identity"
+                );
+                assert_eq!(
+                    unsafe { crate::object::layout::class_field_offsets_bits(class_ptr) },
+                    offsets,
+                    "live instances still require the exact physical field map"
+                );
+                assert_eq!(
+                    heap_refcount(offsets),
+                    2,
+                    "cycle clear must preserve the local and private-record owners"
+                );
+            }
+            dec_ref_bits(_py, class);
             assert_eq!(
                 heap_refcount(offsets),
                 1,
-                "cycle teardown detaches private owner once"
+                "terminal class release must discharge the private map edge exactly once"
             );
 
-            for bits in [
-                name,
-                field,
-                offsets_name,
-                size_name,
-                offsets,
-                rebound,
-                class,
-            ] {
+            for bits in [name, field, offsets_name, size_name, offsets, rebound] {
                 dec_ref_bits(_py, bits);
             }
             assert!(!crate::exception_pending(_py));

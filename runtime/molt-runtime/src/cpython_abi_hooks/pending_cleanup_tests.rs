@@ -291,6 +291,256 @@ fn pending_cleanup_preserves_lazy_runtime_traceback_without_projection() {
     });
 }
 
+#[repr(C)]
+struct ClassProjectionNumeric {
+    object: PyObject,
+    error: u64,
+    fail: bool,
+    calls: usize,
+    index: *mut PyObject,
+    float: *mut PyObject,
+}
+
+unsafe fn class_projection_numeric_result(object: *mut PyObject, index: bool) -> *mut PyObject {
+    let state = unsafe { &mut *object.cast::<ClassProjectionNumeric>() };
+    state.calls += 1;
+    if state.fail {
+        with_gil(|py| {
+            crate::record_exception(&py, crate::obj_from_bits(state.error).as_ptr().unwrap());
+        });
+        ptr::null_mut()
+    } else {
+        let result = if index { state.index } else { state.float };
+        unsafe { refcount::Py_INCREF(result) };
+        result
+    }
+}
+
+unsafe extern "C" fn class_projection_index(object: *mut PyObject) -> *mut PyObject {
+    unsafe { class_projection_numeric_result(object, true) }
+}
+
+unsafe extern "C" fn class_projection_float(object: *mut PyObject) -> *mut PyObject {
+    unsafe { class_projection_numeric_result(object, false) }
+}
+
+#[test]
+fn cold_exception_class_projection_failure_preserves_numeric_error_and_outputs() {
+    use super::native_test_fixture::NativeType;
+    use crate::builtins::exceptions::ExceptionValue;
+    use molt_cpython_abi::abi_types::{PyMemberDef, PyNumberMethods};
+    use molt_cpython_abi::api::{numbers, typeobj};
+    use molt_cpython_abi::hooks::PendingExceptionClass;
+
+    let transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        let name = ExceptionValue::adopt(
+            py,
+            crate::attr_name_bits_from_bytes(py, b"ColdNumericConversionError").unwrap(),
+        );
+        let namespace = crate::alloc_dict_with_pairs(py, &[]);
+        assert!(!namespace.is_null());
+        let namespace = ExceptionValue::adopt(py, MoltObject::from_ptr(namespace).bits());
+        let base = crate::builtins::exceptions::exception_type_bits_from_name(py, "LookupError");
+        let class = ExceptionValue::adopt(
+            py,
+            crate::builtins::types::molt_type_new(
+                crate::builtin_classes(py).type_obj,
+                name.bits(),
+                base,
+                namespace.bits(),
+                MoltObject::none().bits(),
+            ),
+        );
+        assert!(!crate::exception_pending(py));
+        let class_ptr = crate::obj_from_bits(class.bits()).as_ptr().unwrap();
+        let args = alloc_tuple(py, &[]);
+        assert!(!args.is_null());
+        let args = ExceptionValue::adopt(py, MoltObject::from_ptr(args).bits());
+        let exception = crate::builtins::exceptions::alloc_exception_from_class_bits(
+            py,
+            class.bits(),
+            args.bits(),
+        );
+        assert!(!exception.is_null());
+        let exception = ExceptionValue::adopt(py, MoltObject::from_ptr(exception).bits());
+        let exception_ptr = crate::obj_from_bits(exception.bits()).as_ptr().unwrap();
+        assert_eq!(
+            unsafe { crate::object_class_bits(exception_ptr) },
+            class.bits()
+        );
+        assert_eq!(
+            unsafe { object_type_id(exception_ptr) },
+            crate::TYPE_ID_EXCEPTION
+        );
+        let refs = || unsafe { (*header_from_obj_ptr(exception_ptr)).ref_count_snapshot() };
+        let before = refs();
+        let class_refs = unsafe { (*header_from_obj_ptr(class_ptr)).ref_count_snapshot() };
+        let assert_cold_class = || {
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(class_ptr)).load_synchronized_flags() }
+                    & crate::object::HEADER_FLAG_HAS_ABI_VIEW,
+                0,
+            );
+        };
+        assert_cold_class();
+
+        // This is the production Class(bits) case, not a pending marker paired
+        // with a stub None class. The existing publication admission fails;
+        // the real preserving hook restores the original exception owner.
+        crate::record_exception(py, exception_ptr);
+        let (_, attempts) = GLOBAL_BRIDGE.with_denied_publication_for_test(class.bits(), || {
+            assert!(matches!(
+                unsafe { hook_pending_exception_class() },
+                PendingExceptionClass::Class(bits) if bits == class.bits()
+            ));
+            assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+            assert!(crate::exception_pending(py));
+            assert_eq!(crate::exception_last_bits_noinc(py), Some(exception.bits()));
+            assert!(errors::take_current_error().is_none());
+            assert_eq!(refs(), before + 1);
+            assert_cold_class();
+        });
+        assert!(
+            attempts > 0,
+            "the cold class entered actual publication admission"
+        );
+        crate::clear_exception(py);
+        assert_eq!(refs(), before);
+
+        unsafe {
+            let index = refcount::OwnedPyObject::from_owned(numbers::PyLong_FromLong(41));
+            let float = refcount::OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(2.5));
+            assert!(!index.as_ptr().is_null() && !float.as_ptr().is_null());
+            let mut slots: PyNumberMethods = std::mem::zeroed();
+            slots.nb_index = class_projection_index as *const () as *mut std::ffi::c_void;
+            slots.nb_float = class_projection_float as *const () as *mut std::ffi::c_void;
+            let mut kind = NativeType::subtype(
+                &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type,
+                c"ClassProjectionNumeric",
+            );
+            kind.tp_as_number = (&raw mut slots).cast();
+            assert_eq!(kind.ready(), 0);
+            let mut value = ClassProjectionNumeric {
+                object: PyObject {
+                    ob_refcnt: 1,
+                    ob_type: &raw mut *kind,
+                },
+                error: exception.bits(),
+                fail: true,
+                calls: 0,
+                index: index.as_ptr(),
+                float: float.as_ptr(),
+            };
+            let operand = (&raw mut value).cast::<PyObject>();
+            let mut long_field: std::os::raw::c_long = 79;
+            let mut float_field = 83.0f64;
+            // CPython public structmember codes T_LONG=2 and T_DOUBLE=4.
+            let mut member = PyMemberDef {
+                name: c"field".as_ptr(),
+                type_: 2,
+                offset: 0,
+                flags: 0,
+                doc: ptr::null(),
+            };
+            let (_, attempts) =
+                GLOBAL_BRIDGE.with_denied_publication_for_test(class.bits(), || {
+                    assert_eq!(
+                        transaction.with_target_python_minor(py, 13, || {
+                            typeobj::PyMember_SetOne(
+                                (&raw mut long_field).cast(),
+                                &raw mut member,
+                                operand,
+                            )
+                        }),
+                        -1
+                    );
+                    assert_eq!(long_field, 79);
+                    assert_eq!(crate::exception_last_bits_noinc(py), Some(exception.bits()));
+                    assert_eq!(refs(), before + 1);
+                    crate::clear_exception(py);
+                    member.type_ = 4;
+                    assert_eq!(
+                        transaction.with_target_python_minor(py, 13, || {
+                            typeobj::PyMember_SetOne(
+                                (&raw mut float_field).cast(),
+                                &raw mut member,
+                                operand,
+                            )
+                        }),
+                        -1
+                    );
+                    assert_eq!(float_field, 83.0);
+                    assert_eq!(crate::exception_last_bits_noinc(py), Some(exception.bits()));
+                    assert_eq!(refs(), before + 1);
+                    crate::clear_exception(py);
+                    for minor in [13, 14] {
+                        transaction.with_target_python_minor(py, minor, || {
+                            assert_eq!(numbers::PyComplex_ImagAsDouble(operand), -1.0);
+                        });
+                        assert_eq!(crate::exception_last_bits_noinc(py), Some(exception.bits()));
+                        assert_eq!(refs(), before + 1);
+                        crate::clear_exception(py);
+                    }
+                    // An explicit type observation proves the selected class is
+                    // still unpublishable even if repaired consumers never query it.
+                    crate::record_exception(py, exception_ptr);
+                    assert!(errors::PyErr_Occurred().is_null());
+                    assert_eq!(crate::exception_last_bits_noinc(py), Some(exception.bits()));
+                    crate::clear_exception(py);
+                    assert_cold_class();
+                });
+            assert!(attempts > 0);
+            assert_eq!(value.calls, 4);
+            assert_eq!(value.object.ob_refcnt, 1);
+            assert_eq!(refs(), before);
+            assert_eq!(
+                (*header_from_obj_ptr(class_ptr)).ref_count_snapshot(),
+                class_refs
+            );
+
+            // Removing denial makes the real class observable; conversion
+            // recovery also uses the same actual callbacks and output owners.
+            crate::record_exception(py, exception_ptr);
+            let projected_class = errors::PyErr_Occurred();
+            assert!(!projected_class.is_null());
+            assert_eq!(
+                GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj(projected_class)
+                    .unwrap()
+                    .bits(),
+                class.bits()
+            );
+            assert_eq!(crate::exception_last_bits_noinc(py), Some(exception.bits()));
+            crate::clear_exception(py);
+            value.fail = false;
+            member.type_ = 2;
+            assert_eq!(
+                typeobj::PyMember_SetOne((&raw mut long_field).cast(), &raw mut member, operand),
+                0
+            );
+            assert_eq!(long_field, 41);
+            member.type_ = 4;
+            assert_eq!(
+                typeobj::PyMember_SetOne((&raw mut float_field).cast(), &raw mut member, operand),
+                0
+            );
+            assert_eq!(float_field, 2.5);
+            for minor in [13, 14] {
+                transaction.with_target_python_minor(py, minor, || {
+                    assert_eq!(numbers::PyComplex_ImagAsDouble(operand), 0.0);
+                });
+            }
+            assert_eq!(value.calls, 8);
+            assert_eq!(value.object.ob_refcnt, 1);
+            assert_eq!(refs(), before);
+            assert!(!crate::exception_pending(py));
+            assert!(errors::PyErr_Occurred().is_null());
+        }
+    });
+}
+
 #[test]
 fn pending_cleanup_restores_both_channels_through_nested_callbacks() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
@@ -324,16 +574,18 @@ fn pending_cleanup_restores_both_channels_through_nested_callbacks() {
                 });
                 assert_eq!(crate::exception_last_bits_noinc(py), Some(handled));
                 let restored = errors::PyErr_GetRaisedException();
+                let restored_owner = refcount::OwnedPyObject::from_owned(restored);
                 assert_eq!(restored, cleanup_view);
-                refcount::Py_DECREF(restored);
+                drop(restored_owner);
                 crate::record_memory_error_without_allocation(py);
                 "restored"
             });
             assert_eq!(result, "restored");
             assert_eq!(crate::exception_last_bits_noinc(py), Some(runtime));
             let restored = errors::PyErr_GetRaisedException();
+            let restored_owner = refcount::OwnedPyObject::from_owned(restored);
             assert_eq!(restored, original_view);
-            refcount::Py_DECREF(restored);
+            drop(restored_owner);
             assert!(!crate::exception_pending(py));
             assert_eq!(
                 crate::builtins::exceptions::exception_context_active_bits(),
@@ -476,8 +728,9 @@ fn pending_cleanup_restores_both_channels_before_resuming_unwind() {
             assert!(unwind.is_err());
             assert_eq!(crate::exception_last_bits_noinc(py), Some(runtime));
             let restored = errors::PyErr_GetRaisedException();
+            let restored_owner = refcount::OwnedPyObject::from_owned(restored);
             assert_eq!(restored, original_view);
-            refcount::Py_DECREF(restored);
+            drop(restored_owner);
             assert!(!crate::exception_pending(py));
             assert_eq!(
                 crate::builtins::exceptions::exception_context_active_bits(),
@@ -522,8 +775,9 @@ fn pending_cleanup_and_native_snapshot_preserve_emergency_memory_error() {
         drop(denied);
         unsafe {
             let restored = errors::PyErr_GetRaisedException();
+            let restored_owner = refcount::OwnedPyObject::from_owned(restored);
             assert_eq!(restored, original_view);
-            refcount::Py_DECREF(restored);
+            drop(restored_owner);
             assert!(!crate::exception_pending(py));
         }
         dec_ref_bits(py, original);
@@ -542,9 +796,17 @@ unsafe fn assert_c_emergency_is_observable_and_not_consumed(py: &crate::PyToken<
     );
     let (mut kind, mut value, mut traceback) = (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
     unsafe { errors::PyErr_Fetch(&raw mut kind, &raw mut value, &raw mut traceback) };
+    let kind_owner = unsafe { refcount::OwnedPyObject::from_owned(kind) };
+    let value_owner = unsafe { refcount::OwnedPyObject::from_owned(value) };
+    let traceback_owner = unsafe { refcount::OwnedPyObject::from_owned(traceback) };
     assert!(kind.is_null() && value.is_null() && traceback.is_null());
+    drop(kind_owner);
+    drop(value_owner);
+    drop(traceback_owner);
     assert_emergency_pending(py);
-    assert!(unsafe { errors::PyErr_GetRaisedException() }.is_null());
+    let raised = unsafe { refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException()) };
+    assert!(raised.as_ptr().is_null());
+    drop(raised);
     assert_emergency_pending(py);
     assert!(errors::take_current_error().is_none());
     assert_eq!(

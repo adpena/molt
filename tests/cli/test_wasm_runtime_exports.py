@@ -39,7 +39,12 @@ RUNTIME_OWNED_GPU_MODULES = {
 }
 
 RUNTIME_OWNED_GPU_EXPORTS = {
-    "molt_gpu_kernel_launch",
+    "molt_gpu_kernel_launch_python",
+    "molt_gpu_thread_id",
+    "molt_gpu_block_id",
+    "molt_gpu_block_dim",
+    "molt_gpu_grid_dim",
+    "molt_gpu_barrier",
     "molt_gpu_buffer_to_list",
     "molt_gpu_tensor_from_parts",
     "molt_gpu_linear_contiguous",

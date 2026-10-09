@@ -103,6 +103,7 @@ def test_wasm_test_process_preserves_timeout_semantics(
             stderr="memory_guard: timeout after 2.00s\n",
             elapsed_s=2.0,
             timed_out=True,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -206,6 +207,118 @@ def test_resolve_molt_wasm_host_binary_rejects_missing_explicit_binary(
     assert resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast") is None
 
 
+@pytest.mark.parametrize("selection", ["environment", "caller", "explicit"])
+def test_missing_selected_wasm_host_does_not_use_other_builds(
+    monkeypatch, tmp_path: Path, selection: str
+) -> None:
+    monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
+    for directory in (tmp_path / "target", tmp_path / "environment"):
+        host = directory / "dev-fast" / molt_wasm_host_exe_name()
+        host.parent.mkdir(parents=True)
+        host.write_bytes(b"unselected host")
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "environment"))
+    target = None
+    if selection == "environment":
+        monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "missing"))
+    elif selection == "caller":
+        target = tmp_path / "missing"
+    else:
+        monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(tmp_path / "missing"))
+    assert (
+        resolve_molt_wasm_host_binary(
+            tmp_path, cargo_profile="dev-fast", target_dir=target
+        )
+        is None
+    )
+
+
+def test_relative_cargo_host_directory_is_relative_to_build_root(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
+    monkeypatch.setenv("CARGO_TARGET_DIR", "selected target")
+    host = tmp_path / "selected target" / "dev-fast" / molt_wasm_host_exe_name()
+    host.parent.mkdir(parents=True)
+    host.write_bytes(b"selected host")
+    assert resolve_molt_wasm_host_binary(tmp_path, cargo_profile="dev-fast") == str(
+        host
+    )
+
+
+def test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from tools import run_wasm_host
+
+    output = tmp_path / "actual child arguments.json"
+    monkeypatch.setenv("MOLT_WASM_HOST_BIN", sys.executable)
+    result = run_wasm_host.main(
+        [
+            "--cargo-profile",
+            "dev-fast",
+            "--",
+            "-c",
+            "import json, pathlib, sys; "
+            "pathlib.Path(sys.argv[1]).write_text(json.dumps(sys.argv[2:]), encoding='utf-8'); "
+            "sys.exit(7)",
+            str(output),
+            "manifest with spaces.json",
+            "--host-option",
+        ]
+    )
+    assert result == 7
+    assert json.loads(output.read_text(encoding="utf-8")) == [
+        "manifest with spaces.json",
+        "--host-option",
+    ]
+
+
+def test_wasm_matrix_uses_selected_dev_fast_host(monkeypatch, tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    from tools import wasm_run_matrix as matrix
+
+    host = tmp_path / "dev-fast" / molt_wasm_host_exe_name()
+    host.parent.mkdir(parents=True)
+    host.write_bytes(b"host")
+    monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path))
+    case = matrix.SMOKE_CORPUS[0]
+    wasm = tmp_path / "app.wasm"
+    (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
+    calls = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        return SimpleNamespace(
+            returncode=0, stdout=case.expected, stderr="", elapsed_s=0.1
+        )
+
+    monkeypatch.setattr(matrix.harness_memory_guard, "guarded_completed_process", run)
+    assert matrix._runtime_present("molt-wasm-host") == (True, "")
+    result = matrix._run_molt_wasm_host(case, wasm, limits=None)
+    assert result.status == "pass"
+    assert calls == [[str(host), str(wasm_runtime_manifest_path(wasm))]]
+
+
+def test_wasm_matrix_build_only_does_not_probe_runtimes(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from contextlib import nullcontext
+    from tools import wasm_run_matrix as matrix
+
+    def unexpected_probe(*_args, **_kwargs):
+        pytest.fail("build-only operation probed execution runtimes")
+
+    monkeypatch.setattr(matrix, "_runtime_present", unexpected_probe)
+    monkeypatch.setattr(matrix, "build_corpus", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        matrix.harness_memory_guard,
+        "repo_process_sentinel",
+        lambda **_kwargs: nullcontext(),
+    )
+    assert matrix.main(["--build-only", "--out-dir", str(tmp_path)]) == 0
+
+
 def test_run_wasm_linked_uses_molt_wasm_host(
     monkeypatch,
     tmp_path: Path,
@@ -292,7 +405,7 @@ def test_run_wasm_linked_preserves_explicit_env_overrides(
     assert envs[0].get("MOLT_WASM_TEST_CHILD_RLIMIT_GB") == "0"
 
 
-def test_run_wasm_linked_scrubs_stale_direct_mode_env(
+def test_run_wasm_linked_scrubs_stale_artifact_env(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -302,9 +415,6 @@ def test_run_wasm_linked_scrubs_stale_direct_mode_env(
     host_bin = tmp_path / molt_wasm_host_exe_name()
     host_bin.write_bytes(b"host")
     monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
-    monkeypatch.setenv("MOLT_WASM_DIRECT_LINK", "1")
-    monkeypatch.setenv("MOLT_WASM_PREFER_LINKED", "0")
-    monkeypatch.setenv("MOLT_WASM_LINKED_PATH", "/tmp/stale-linked.wasm")
     monkeypatch.setenv("MOLT_WASM_TABLE_BASE", "123")
     monkeypatch.setenv("MOLT_RUNTIME_WASM", "/tmp/stale-runtime.wasm")
     monkeypatch.setenv("MOLT_WASM_MANIFEST_PATH", "/tmp/stale-manifest.json")
@@ -317,20 +427,20 @@ def test_run_wasm_linked_scrubs_stale_direct_mode_env(
     monkeypatch.setattr(wasm_runner, "_run_wasm_test_process", _fake_run)
     result = wasm_runner.run_wasm_linked(tmp_path, wasm_path)
     assert result.returncode == 0
-    env = cast(dict[str, str], recorded["env"])
-    assert "MOLT_WASM_DIRECT_LINK" not in env
-    assert "MOLT_WASM_PREFER_LINKED" not in env
-    assert "MOLT_WASM_LINKED_PATH" not in env
-    assert "MOLT_WASM_TABLE_BASE" not in env
-    assert "MOLT_RUNTIME_WASM" not in env
-    assert "MOLT_WASM_MANIFEST_PATH" not in env
+    env_names = set(cast(dict[str, str], recorded["env"]))
+    assert not env_names.intersection(
+        {"MOLT_WASM_TABLE_BASE", "MOLT_RUNTIME_WASM", "MOLT_WASM_MANIFEST_PATH"}
+    )
 
 
 def test_build_wasm_linked_treats_symlinked_ext_root_as_repo_local(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    root = Path(__file__).resolve().parents[1]
+    # This is a durable/local project contract. A real hosted checkout is
+    # source-only, and deliberately rejects artifact roots inside its tree.
+    root = tmp_path / "repo"
+    root.mkdir()
     alias_root = tmp_path / "repo-alias"
     try:
         alias_root.symlink_to(root, target_is_directory=True)

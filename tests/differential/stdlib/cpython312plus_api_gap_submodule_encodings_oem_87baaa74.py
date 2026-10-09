@@ -6,10 +6,11 @@ import importlib
 import importlib.util
 import io
 import json
+import sys
 
 MODULE_NAME = "encodings.oem"
-SPEC_ONLY_MODULES = ['antigravity']
-SPEC_ONLY_PREFIXES = ('tkinter', 'turtle', 'turtledemo')
+SPEC_ONLY_MODULES = ["antigravity"]
+SPEC_ONLY_PREFIXES = ("tkinter", "turtle", "turtledemo")
 
 
 def _digest_text(text: str) -> str:
@@ -64,14 +65,33 @@ def _probe(module_name: str) -> dict[str, object]:
     cap_stdout = io.StringIO()
     cap_stderr = io.StringIO()
     try:
-        with contextlib.redirect_stdout(cap_stdout), contextlib.redirect_stderr(cap_stderr):
+        with (
+            contextlib.redirect_stdout(cap_stdout),
+            contextlib.redirect_stderr(cap_stderr),
+        ):
             module = importlib.import_module(module_name)
     except BaseException as exc:  # noqa: BLE001
+        # An engine's authored module location legitimately differs. Preserve
+        # the complete message except that exact observed origin, and verify
+        # that the import error names it rather than forging a reference path.
+        import codecs
+
+        origin_suffix = f" ({codecs.__file__})"
+        error_text = str(exc)
+        origin_matches = isinstance(exc, ImportError) and error_text.endswith(
+            origin_suffix
+        )
+        if origin_matches:
+            error_text = error_text[: -len(origin_suffix)]
         return {
             "module": module_name,
             "status": "import_error",
             "error_type": type(exc).__name__,
-            "error_text": str(exc),
+            "error_text": error_text,
+            "origin_matches_codecs": origin_matches,
+            "error_name": getattr(exc, "name", None),
+            "error_path_matches_codecs": getattr(exc, "path", None) == codecs.__file__,
+            "error_name_from": getattr(exc, "name_from", None),
             "stdout_digest": _digest_text(cap_stdout.getvalue()),
             "stderr_digest": _digest_text(cap_stderr.getvalue()),
         }
@@ -88,4 +108,29 @@ def _probe(module_name: str) -> dict[str, object]:
     }
 
 
-print(json.dumps(_probe(MODULE_NAME), sort_keys=True, ensure_ascii=True))
+def _cache_probe(module_name: str) -> dict[str, object]:
+    missing = object()
+    original = sys.modules.get(module_name, missing)
+    marker = object()
+    try:
+        # A published object wins before provider or codec-capability checks.
+        sys.modules[module_name] = marker
+        assert importlib.import_module(module_name) is marker
+        sys.modules[module_name] = None
+        try:
+            importlib.import_module(module_name)
+        except BaseException as exc:  # noqa: BLE001
+            none_error = (type(exc).__name__, str(exc))
+        else:
+            raise AssertionError("None in sys.modules must stop import")
+    finally:
+        if original is missing:
+            del sys.modules[module_name]
+        else:
+            sys.modules[module_name] = original
+    return {"identity": True, "none_error": none_error}
+
+
+result = _probe(MODULE_NAME)
+result["public_cache"] = _cache_probe(MODULE_NAME)
+print(json.dumps(result, sort_keys=True, ensure_ascii=True))

@@ -30,8 +30,18 @@ _VECTOR_ADD_GPU_PROGRAM = (
 )
 
 
-def _write_vector_add_gpu_program(path: Path) -> None:
-    path.write_text(_VECTOR_ADD_GPU_PROGRAM, encoding="utf-8")
+def _write_vector_add_gpu_program(path: Path, *, immutable: bool = False) -> None:
+    program = _VECTOR_ADD_GPU_PROGRAM
+    if immutable:
+        program = program.replace(
+            "c = gpu.alloc(4, float)",
+            "c = gpu.to_device([11.0, 22.0, 33.0, 44.0])\noriginal = c._data",
+        )
+        program = program.replace(
+            "vector_add[1, 4](a, b, c, 4)",
+            "vector_add[1, 4](a, b, c, 0)\nassert c._data is original\nvector_add[1, 4](a, b, c, 4)\nassert isinstance(c._data, bytearray)\nassert c._data is not original",
+        )
+    path.write_text(program, encoding="utf-8")
 
 
 def _compiled_gpu_build_timeout() -> float:
@@ -46,8 +56,10 @@ def _compiled_gpu_build_timeout() -> float:
         ) from exc
 
 
+@pytest.mark.parametrize("immutable", [False, True])
 def test_browser_host_direct_mode_compiled_gpu_kernel_uses_webgpu_dispatch(
     tmp_path: Path,
+    immutable: bool,
 ) -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for browser host GPU direct-mode test")
@@ -56,7 +68,7 @@ def test_browser_host_direct_mode_compiled_gpu_kernel_uses_webgpu_dispatch(
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_host_gpu.py"
-    _write_vector_add_gpu_program(src)
+    _write_vector_add_gpu_program(src, immutable=immutable)
 
     build_env = wasm_test_build_env(
         root,
@@ -130,8 +142,7 @@ import {{ loadMoltWasm }} from {browser_host_uri!r};
 const baseUrl = {base_url!r};
 const fakeState = {{ dispatchCount: 0, shaderCount: 0 }};
 
-const readF32 = (bytes, index) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat32(index * 4, true);
-const writeF32 = (bytes, index, value) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setFloat32(index * 4, value, true);
+const writeI32 = (bytes, index, value) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setInt32(index * 4, value, true);
 const readI32 = (bytes, index) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getInt32(index * 4, true);
 
 const host = await loadMoltWasm({{
@@ -142,6 +153,8 @@ const host = await loadMoltWasm({{
     dispatchKernel(request) {{
       fakeState.dispatchCount += 1;
       fakeState.shaderCount += 1;
+      if (request.bindings.length !== {5 if immutable else 4}) throw new Error('wrong physical binding count');
+      if (request.source.includes('atomicStore(') !== {str(immutable).lower()}) throw new Error('wrong store occurrence contract');
       const a = request.bindings.find((binding) => binding.binding === 0).bytes;
       const b = request.bindings.find((binding) => binding.binding === 1).bytes;
       const c = request.bindings.find((binding) => binding.binding === 2).bytes;
@@ -150,7 +163,8 @@ const host = await loadMoltWasm({{
       const workgroupSize = workgroupSizeMatch ? Number(workgroupSizeMatch[1]) : 1;
       const totalThreads = Number(request.grid) * workgroupSize;
       for (let tid = 0; tid < totalThreads && tid < n; tid += 1) {{
-        writeF32(c, tid, readF32(a, tid) + readF32(b, tid));
+        writeI32(c, tid, readI32(a, tid) + readI32(b, tid));
+        {"writeI32(request.bindings[4].bytes, 0, 1);" if immutable else ""}
       }}
     }},
   }},
@@ -170,13 +184,18 @@ console.log(JSON.stringify(fakeState));
         assert run.returncode == 0, run.stderr
         lines = [line.strip() for line in run.stdout.splitlines() if line.strip()]
         assert lines[0] == "[11.0, 22.0, 33.0, 44.0]"
-        assert json.loads(lines[1]) == {"dispatchCount": 1, "shaderCount": 1}
+        assert json.loads(lines[1]) == {
+            "dispatchCount": 2 if immutable else 1,
+            "shaderCount": 2 if immutable else 1,
+        }
     finally:
         server.shutdown()
 
 
+@pytest.mark.parametrize("immutable", [False, True])
 def test_browser_host_split_runtime_compiled_gpu_kernel_uses_webgpu_dispatch(
     tmp_path: Path,
+    immutable: bool,
 ) -> None:
     if shutil.which("node") is None:
         pytest.skip("node is required for browser host GPU split-runtime test")
@@ -185,7 +204,7 @@ def test_browser_host_split_runtime_compiled_gpu_kernel_uses_webgpu_dispatch(
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_host_split_gpu.py"
-    _write_vector_add_gpu_program(src)
+    _write_vector_add_gpu_program(src, immutable=immutable)
 
     build_env = wasm_test_build_env(
         root,
@@ -297,8 +316,7 @@ import {{ loadMoltWasm }} from {browser_host_uri!r};
 const baseUrl = {base_url!r};
 const fakeState = {{ dispatchCount: 0, shaderCount: 0 }};
 
-const readF32 = (bytes, index) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat32(index * 4, true);
-const writeF32 = (bytes, index, value) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setFloat32(index * 4, value, true);
+const writeI32 = (bytes, index, value) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setInt32(index * 4, value, true);
 const readI32 = (bytes, index) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getInt32(index * 4, true);
 
 const host = await loadMoltWasm({{
@@ -309,6 +327,8 @@ const host = await loadMoltWasm({{
     dispatchKernel(request) {{
       fakeState.dispatchCount += 1;
       fakeState.shaderCount += 1;
+      if (request.bindings.length !== {5 if immutable else 4}) throw new Error('wrong physical binding count');
+      if (request.source.includes('atomicStore(') !== {str(immutable).lower()}) throw new Error('wrong store occurrence contract');
       const a = request.bindings.find((binding) => binding.binding === 0).bytes;
       const b = request.bindings.find((binding) => binding.binding === 1).bytes;
       const c = request.bindings.find((binding) => binding.binding === 2).bytes;
@@ -317,7 +337,8 @@ const host = await loadMoltWasm({{
       const workgroupSize = workgroupSizeMatch ? Number(workgroupSizeMatch[1]) : 1;
       const totalThreads = Number(request.grid) * workgroupSize;
       for (let tid = 0; tid < totalThreads && tid < n; tid += 1) {{
-        writeF32(c, tid, readF32(a, tid) + readF32(b, tid));
+        writeI32(c, tid, readI32(a, tid) + readI32(b, tid));
+        {"writeI32(request.bindings[4].bytes, 0, 1);" if immutable else ""}
       }}
     }},
   }},
@@ -337,7 +358,10 @@ console.log(JSON.stringify(fakeState));
         assert run.returncode == 0, run.stderr
         lines = [line.strip() for line in run.stdout.splitlines() if line.strip()]
         assert lines[0] == "[11.0, 22.0, 33.0, 44.0]"
-        assert json.loads(lines[1]) == {"dispatchCount": 1, "shaderCount": 1}
+        assert json.loads(lines[1]) == {
+            "dispatchCount": 2 if immutable else 1,
+            "shaderCount": 2 if immutable else 1,
+        }
     finally:
         server.shutdown()
 
@@ -1513,3 +1537,214 @@ console.log(JSON.stringify(fakeState));
         assert json.loads(lines[1]) == {"dispatchCount": 1}
     finally:
         server.shutdown()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "none",
+        "pipeline-reject",
+        "pipeline-validation",
+        "allocation-memory",
+        "upload-internal",
+        "dispatch-validation",
+        "readback-validation",
+        "extent",
+        "map-second",
+        "loss",
+        "uncaptured",
+        "no-write-failure",
+        "no-write-success",
+        "no-bindings-success",
+        "grid",
+    ],
+)
+def test_browser_gpu_real_worker_completes_synchronous_import_atomically(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the actual worker transport control")
+    root = Path(__file__).resolve().parents[1]
+    dispatch_uri = (root / "wasm/browser_gpu_dispatch.js").as_uri()
+    bootstrap = tmp_path / "worker-bootstrap.mjs"
+    bootstrap.write_text(
+        """
+import { parentPort, workerData } from 'node:worker_threads';
+globalThis.addEventListener = (kind, callback) => {
+  if (kind === 'message') parentPort.on('message', data => callback({ data }));
+};
+globalThis.GPUBufferUsage = { STORAGE: 1, COPY_DST: 2, COPY_SRC: 4, MAP_READ: 8 };
+globalThis.GPUMapMode = { READ: 1 };
+let source = '';
+let bound = [];
+let maps = 0;
+let lose;
+let uncaptured;
+const scopes = [];
+const record = (kind) => {
+  const scope = [...scopes].reverse().find(scope => scope.kind === kind);
+  if (!scope) throw new Error('missing error scope for ' + kind);
+  scope.error = new Error('independent ' + source + ' failure');
+};
+const device = {
+  limits: { maxComputeWorkgroupsPerDimension: 256, maxComputeWorkgroupSizeX: 256, maxComputeInvocationsPerWorkgroup: 256 },
+  lost: new Promise(resolve => { lose = resolve; }),
+  addEventListener(kind, callback) { if (kind === 'uncapturederror') uncaptured = callback; },
+  pushErrorScope(kind) { scopes.push({kind, error: null}); },
+  async popErrorScope() {
+    if (!scopes.length) throw new Error('unbalanced device scope');
+    return scopes.pop().error;
+  },
+  createShaderModule(spec) {
+    source = spec.code;
+    if (source === 'pipeline-validation') record('validation');
+    return spec;
+  },
+  async createComputePipelineAsync() {
+    if (source === 'pipeline-reject') throw new Error('independent pipeline rejection');
+    return { getBindGroupLayout() { return {}; } };
+  },
+  createBuffer({size, usage}) {
+    if (source === 'allocation-memory') record('out-of-memory');
+    if (source === 'readback-validation' && (usage & 8)) record('validation');
+    const bytes = new Uint8Array(size);
+    return {
+      bytes,
+      async mapAsync() { maps += 1; if (source === 'map-second' && maps === 2) throw new Error('second readback failed'); },
+      unmap() {}, destroy() {},
+      getMappedRange() {
+        return source === 'extent' && (usage & 8) ? bytes.buffer.slice(0, size - 1) : bytes.buffer;
+      },
+    };
+  },
+  createBindGroup({entries}) { bound = entries; return {}; },
+  createCommandEncoder() {
+    const copies = [];
+    return {
+      beginComputePass() { return { setPipeline() {}, setBindGroup() {}, dispatchWorkgroups() {
+        if (source === 'dispatch-validation') record('validation');
+      }, end() {} }; },
+      copyBufferToBuffer(from, a, to, b, length) { copies.push(() => to.bytes.set(from.bytes.subarray(a, a + length), b)); },
+      finish() { return () => {
+        if (!source.startsWith('no-write') && source !== 'no-bindings-success') {
+          bound[1].resource.buffer.bytes.set([42, 0, 0, 0]);
+          bound[2].resource.buffer.bytes.set([1, 0, 0, 0]);
+        }
+        for (const copy of copies) copy();
+      }; },
+    };
+  },
+  queue: {
+    writeBuffer(buffer, offset, bytes) {
+      if (source === 'upload-internal') record('internal');
+      buffer.bytes.set(bytes, offset);
+    },
+    submit(commands) { for (const command of commands) command(); },
+    async onSubmittedWorkDone() {
+      if (source === 'no-write-failure') throw new Error('queue completion failed without readbacks');
+      if (source === 'loss') { lose({reason: 'unknown', message: 'independent device loss'}); await Promise.resolve(); }
+      if (source === 'uncaptured') uncaptured({error: new Error('independent uncaptured error')});
+    },
+  },
+};
+Object.defineProperty(globalThis, 'navigator', { value: { gpu: {
+  async requestAdapter() { return { async requestDevice() { return device; } }; },
+} } });
+await import(workerData.url);
+""".lstrip(),
+        encoding="utf-8",
+    )
+    script = tmp_path / "worker-control.mjs"
+    script.write_text(
+        """
+import { Worker as NodeWorker } from 'node:worker_threads';
+import { createBrowserGpuHost } from DISPATCH_URI;
+// The host advertises WebGPU availability; the child bootstrap owns the device.
+Object.defineProperty(globalThis, 'navigator', { value: { gpu: {} }, configurable: true });
+let workersCreated = 0;
+globalThis.Worker = class {
+  constructor(url) {
+    workersCreated += 1;
+    this.worker = new NodeWorker(new URL(BOOTSTRAP_URI), { workerData: { url: url.href } });
+  }
+  addEventListener(name, callback) {
+    this.worker.on(name, value => callback(name === 'message' ? { data: value } : value));
+  }
+  postMessage(value) { this.worker.postMessage(value); }
+  terminate() { return this.worker.terminate(); }
+};
+const memory = new WebAssembly.Memory({initial: 1});
+const bytes = new Uint8Array(memory.buffer);
+const put = (offset, text) => { const encoded = new TextEncoder().encode(text); bytes.set(encoded, offset); return encoded.length; };
+bytes.set([10, 0, 0, 0], 512);
+bytes.set([9, 0, 0, 0], 520);
+bytes.set([0, 0, 0, 0], 528);
+const selectedFailure = FAILURE;
+const sourceLength = put(8, selectedFailure);
+const entryLength = put(64, 'kernel');
+const recordLength = put(1024, JSON.stringify({bindings: selectedFailure === 'no-bindings-success' ? [] : [
+  {binding: 0, name: 'input', access: 'read', ptr: 512, len: 4},
+  {binding: 1, name: 'output', access: selectedFailure.startsWith('no-write') ? 'read' : 'read_write', ptr: 520, len: 4},
+  {binding: 2, name: 'store_occurrence', access: selectedFailure.startsWith('no-write') ? 'read' : 'read_write', ptr: 528, len: 4},
+]}));
+const host = createBrowserGpuHost({memory}, {gpuKernelTimeoutMs: 5000});
+let result;
+try { result = host.gpuWebGpuDispatchHost(8, sourceLength, 64, entryLength, 1024, recordLength, selectedFailure === 'grid' ? 257 : 1, 1, 4096, 512, 4080); }
+finally { host.dispose(); }
+const errorLength = new DataView(memory.buffer).getUint32(4080, true);
+const detail = new TextDecoder().decode(bytes.subarray(4096, 4096 + errorLength));
+console.log(JSON.stringify({result, workersCreated, detail, input: [...bytes.slice(512, 516)], output: [...bytes.slice(520, 524)], flag: [...bytes.slice(528, 532)]}));
+""".replace("DISPATCH_URI", json.dumps(dispatch_uri))
+        .replace("BOOTSTRAP_URI", json.dumps(bootstrap.as_uri()))
+        .replace("FAILURE", json.dumps(failure)),
+        encoding="utf-8",
+    )
+    completed = _run_wasm_test_process(
+        [node, str(script)],
+        cwd=root,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
+    observed = json.loads(completed.stdout.strip())
+    assert observed["workersCreated"] == 1
+    assert observed["input"] == [10, 0, 0, 0]
+    if failure == "none":
+        assert observed == {
+            "result": 0,
+            "workersCreated": 1,
+            "detail": "",
+            "input": [10, 0, 0, 0],
+            "output": [42, 0, 0, 0],
+            "flag": [1, 0, 0, 0],
+        }
+    else:
+        assert observed["result"] == (
+            0 if failure in {"no-write-success", "no-bindings-success"} else -22
+        )
+        # Nonthrowing validation/loss/queue errors must not become success or timeout.
+        assert observed["output"] == [9, 0, 0, 0]
+        assert observed["flag"] == [0, 0, 0, 0]
+        if failure in {"no-write-success", "no-bindings-success"}:
+            assert observed["detail"] == ""
+        else:
+            # An unrelated EINVAL must not stand in for the injected failure.
+            expected_detail = {
+                "pipeline-reject": "independent pipeline rejection",
+                "pipeline-validation": "independent pipeline-validation failure",
+                "allocation-memory": "independent allocation-memory failure",
+                "upload-internal": "independent upload-internal failure",
+                "dispatch-validation": "independent dispatch-validation failure",
+                "readback-validation": "independent readback-validation failure",
+                "extent": "readback differs from physical dispatch plan",
+                "map-second": "second readback failed",
+                "loss": "independent device loss",
+                "uncaptured": "independent uncaptured error",
+                "no-write-failure": "queue completion failed without readbacks",
+                "grid": "grid exceeds device dispatch capability",
+            }[failure]
+            assert expected_detail in observed["detail"]

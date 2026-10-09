@@ -3,9 +3,8 @@
 
 from __future__ import annotations
 
-from molt.temporary_artifacts import OwnedTemporaryDirectory
-
 import argparse
+import sys
 import hashlib
 import json
 import os
@@ -15,14 +14,25 @@ import tarfile
 import time
 from typing import Any
 
-from tools.command_execution import CommandExecutor
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from .archive import extract_zip_strict
-from .build_bundle import RELEASE_BUNDLE_ARCHIVE_POLICY
-from .release_authority import (
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
+
+from tools.command_execution import CommandExecutor  # noqa: E402
+
+from tools.release import consumer_replay  # noqa: E402
+from tools.release.archive import extract_zip_strict  # noqa: E402
+from tools.release.build_bundle import RELEASE_BUNDLE_ARCHIVE_POLICY  # noqa: E402
+from tools.release.release_authority import (  # noqa: E402
     CONSUMER_EXPECTED_STDOUT,
     CONSUMER_GUEST_ARGV,
-    CONSUMER_GUEST_CELLS,
+    consumer_lanes,
     CONSUMER_SCHEMA,
     consumer_guest_command,
     consumer_guest_source,
@@ -30,28 +40,30 @@ from .release_authority import (
     _load_candidate,
     validate_consumer_proof,
 )
-from molt.compiler_distribution import InstalledCompiler, installed_compiler
-from molt.exact_json import canonical_json_sha256, loads_exact
-from molt.file_publication import durable_remove_path
-from molt.python_interpreter import probe_python_command
-from molt.rust_toolchain import rust_channel
-from molt.toolchain_identity import (
+from molt.compiler_distribution import InstalledCompiler, installed_compiler  # noqa: E402
+from molt.release_lanes import ReleaseLane, capture_release_lanes  # noqa: E402
+from molt.source_root import PACKAGED_DISTRIBUTION_PATH  # noqa: E402
+from molt.exact_json import canonical_json_sha256, loads_exact  # noqa: E402
+from molt.file_publication import durable_remove_path  # noqa: E402
+from molt.python_interpreter import probe_python_command  # noqa: E402
+from molt.rust_toolchain import rust_channel  # noqa: E402
+from molt.toolchain_identity import (  # noqa: E402
     executable_candidates,
     executable_content_identity,
     stable_regular_file_content_identity,
 )
-from molt.verified_subset import current_host_coordinate, host_coordinate
-from molt.wasm_artifact import (
+from molt.verified_subset import current_host_coordinate, host_coordinate  # noqa: E402
+from molt.wasm_artifact import (  # noqa: E402
     wasm_runtime_manifest_entry_path,
     wasm_runtime_manifest_path,
 )
-from .release_model import sha256_file, write_json
-from .binary_compatibility import (
+from tools.release.release_model import sha256_file, write_json  # noqa: E402
+from tools.release.binary_compatibility import (  # noqa: E402
     WheelCompatibilityError,
     audit_linked_executable,
     audit_wheel,
 )
-from .runtime_cells import declared_cell_keys, inventory_cell_keys
+from tools.release.runtime_cells import declared_cell_keys, inventory_cell_keys  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -231,12 +243,11 @@ def _diagnosed_compiler(
     diagnostics: Path,
     *,
     compiler: InstalledCompiler,
-    target: str,
-    profile: str,
+    lane: ReleaseLane,
 ) -> tuple[str, str]:
-    """Read one cell compiler and program identity from its own build diagnostics."""
+    """Read this product's complete selected lane and production compiler."""
     if not diagnostics.is_file():
-        raise RuntimeError(f"{target}/{profile}: the cell build wrote no diagnostics")
+        raise RuntimeError(f"{lane.id}: the cell build wrote no diagnostics")
     observed = loads_exact(diagnostics.read_text(encoding="utf-8"))
     selected = observed.get("compiler") if isinstance(observed, dict) else None
     program = observed.get("program") if isinstance(observed, dict) else None
@@ -244,13 +255,17 @@ def _diagnosed_compiler(
         not isinstance(selected, dict)
         or not isinstance(program, dict)
         or selected.get("sha256") != compiler.record["sha256"]
-        or selected.get("cargo_profile") != "release"
+        or selected.get("cargo_profile") != lane.compiler_profile
         or Path(str(selected.get("path", ""))).resolve() != compiler.binary.resolve()
-        or program.get("profile") != profile
-        or program.get("target") != target
+        or program != lane.as_record()
     ):
-        raise ValueError(f"{target}/{profile}: guest cell changed production compiler")
-    compiler.verify_binary((f"{target}-backend",), "release")
+        raise ValueError(
+            f"{lane.id}: guest cell changed production compiler or selected lane"
+        )
+    compiler.verify_binary(
+        lane.compiler_features,
+        lane.compiler_profile,
+    )
     return selected["sha256"], selected["fingerprint"]
 
 
@@ -394,6 +409,121 @@ def _audit_guest(
         raise
 
 
+def _verify_guest_cells(
+    *,
+    root: Path,
+    project: Path,
+    source: Path,
+    launcher: list[str],
+    env: dict[str, str],
+    compiler: InstalledCompiler,
+    minor: str,
+    target: dict[str, object],
+    wheel_tag: str,
+    evidence_dir: Path,
+    commands: list[dict[str, Any]],
+    role_prefix: str,
+) -> list[dict[str, object]]:
+    """One installed producer for bundle and wheel, with explicit lane selectors."""
+    runtime_env = env.copy()
+    runtime_env.pop("PYTHON", None)
+    cells: list[dict[str, object]] = []
+    for lane in consumer_lanes():
+        guest_target = lane.target
+        cell_env = {**env, **lane.environment()}
+        # One fresh directory per cell keeps outputs and manifests apart and
+        # proves every observed artifact came from this cell's command.
+        cell_root = project / lane.id
+        cell_root.mkdir()
+        diagnostics = cell_root / "diagnostics.json"
+        output = cell_root / (
+            "release_consumer.wasm"
+            if guest_target == "wasm"
+            else "release_consumer" + (".exe" if os.name == "nt" else "")
+        )
+        command = consumer_guest_command(
+            launcher,
+            lane=lane,
+            python_minor=minor,
+            diagnostics=str(diagnostics),
+            output=str(output),
+            source=str(source),
+        )
+        if guest_target == "native":
+            commands.append(
+                _run(
+                    command,
+                    cwd=root,
+                    env=cell_env,
+                    timeout=2700,
+                    role=f"{role_prefix}build_{lane.id}",
+                )
+            )
+            if not output.is_file():
+                raise RuntimeError(
+                    f"Molt did not produce the requested binary: {output}"
+                )
+            _audit_guest(
+                output, target=target, wheel_tag=wheel_tag, evidence_dir=evidence_dir
+            )
+            identity = executable_content_identity(
+                output, label="release consumer guest executable"
+            )
+            commands.append(
+                _run(
+                    [str(output), *CONSUMER_GUEST_ARGV],
+                    cwd=project,
+                    env=runtime_env,
+                    timeout=60,
+                    role=f"{role_prefix}run_{lane.id}",
+                    expected_stdout=CONSUMER_EXPECTED_STDOUT,
+                )
+            )
+            artifact = {
+                "path": str(output),
+                "sha256": identity["sha256"],
+                "size": identity["size"],
+            }
+        else:
+            # Public `molt run` owns the one linked build and its Node host.
+            commands.append(
+                _run(
+                    command,
+                    cwd=project,
+                    env=cell_env,
+                    timeout=2700,
+                    role=f"{role_prefix}run_{lane.id}",
+                    expected_stdout=CONSUMER_EXPECTED_STDOUT,
+                )
+            )
+            artifact = _linked_wasm_artifact(output)
+        compiler_sha256, fingerprint = _diagnosed_compiler(
+            diagnostics, compiler=compiler, lane=lane
+        )
+        cells.append(
+            {
+                "lane": lane.as_record(),
+                "diagnostics": str(diagnostics),
+                "output": str(output),
+                "compiler_sha256": compiler_sha256,
+                "compiler_fingerprint": fingerprint,
+                "artifact": artifact,
+                "manifest": (
+                    {
+                        "path": str(wasm_runtime_manifest_path(output)),
+                        **stable_regular_file_content_identity(
+                            wasm_runtime_manifest_path(output),
+                            label="installed consumer execution manifest",
+                        ),
+                    }
+                    if guest_target == "wasm"
+                    else None
+                ),
+            }
+        )
+    return cells
+
+
 def _verify_pip_distribution(
     *,
     root: Path,
@@ -406,7 +536,7 @@ def _verify_pip_distribution(
     wheel_tag: str,
     evidence_dir: Path,
 ) -> dict[str, Any]:
-    """Install the platform wheel with plain pip semantics and build natively."""
+    """Install one platform wheel and produce the complete logical lane set."""
     root.mkdir(parents=True)
     env = _consumer_environment(root)
     venv = root / "venv"
@@ -439,46 +569,32 @@ def _verify_pip_distribution(
     project.mkdir()
     source = project / "release_consumer.py"
     source.write_bytes(consumer_guest_source(minor).encode("utf-8"))
-    diagnostics = project / "diagnostics.json"
-    output = project / ("release_consumer" + (".exe" if os.name == "nt" else ""))
-    script = venv / ("Scripts/molt.exe" if os.name == "nt" else "bin/molt")
-    commands.append(
-        _run(
-            consumer_guest_command(
-                [str(script)],
-                target="native",
-                profile="release",
-                python_minor=minor,
-                diagnostics=str(diagnostics),
-                output=str(output),
-                source=str(source),
-            ),
-            cwd=root,
-            env=env,
-            timeout=2700,
-            role="pip_build_native_release",
-        )
+    pip_compiler = installed_compiler(
+        venv.joinpath(*PACKAGED_DISTRIBUTION_PATH) / "source"
     )
-    _audit_guest(output, target=target, wheel_tag=wheel_tag, evidence_dir=evidence_dir)
-    identity = executable_content_identity(output, label="pip consumer executable")
-    commands.append(
-        _run(
-            [str(output), *CONSUMER_GUEST_ARGV],
-            cwd=project,
-            env=env,
-            timeout=60,
-            role="pip_run_native_release",
-            expected_stdout=CONSUMER_EXPECTED_STDOUT,
-        )
-    )
-    observed = loads_exact(diagnostics.read_text(encoding="utf-8"))
-    selected = observed.get("compiler") if isinstance(observed, dict) else None
     if (
-        not isinstance(selected, dict)
-        or selected.get("sha256") != compiler.record["sha256"]
-        or venv.resolve() not in Path(str(selected.get("path", ""))).resolve().parents
+        pip_compiler is None
+        or pip_compiler.record != compiler.record
+        or pip_compiler.runtime != compiler.runtime
     ):
-        raise ValueError("pip consumer did not use the wheel's packaged compiler")
+        raise ValueError("pip consumer did not install the candidate compiler/runtime")
+    pip_compiler.verify_sources()
+    pip_compiler.verify_runtime()
+    script = venv / ("Scripts/molt.exe" if os.name == "nt" else "bin/molt")
+    cells = _verify_guest_cells(
+        root=root,
+        project=project,
+        source=source,
+        launcher=[str(script)],
+        env=env,
+        compiler=pip_compiler,
+        minor=minor,
+        target=target,
+        wheel_tag=wheel_tag,
+        evidence_dir=evidence_dir,
+        commands=commands,
+        role_prefix="pip_",
+    )
     _require_no_cargo_runtime(root / "molt-home")
     commands.append(
         _run(
@@ -495,11 +611,9 @@ def _verify_pip_distribution(
         "python": minor,
         "reference_python": reference,
         "commands": commands,
-        "artifact": {
-            "path": str(output),
-            "sha256": identity["sha256"],
-            "size": identity["size"],
-        },
+        "source": str(source),
+        "source_sha256": sha256_file(source),
+        "cells": cells,
         "compiler_sha256": compiler.record["sha256"],
     }
 
@@ -570,91 +684,20 @@ def _verify_python_coordinate(
     source = project / "release_consumer.py"
     # Bytes, not text mode: the receipt digest is the canonical program's.
     source.write_bytes(consumer_guest_source(minor).encode("utf-8"))
-    runtime_env = env.copy()
-    runtime_env.pop("PYTHON", None)
-    cells: list[dict[str, object]] = []
-    for guest_target, profile in CONSUMER_GUEST_CELLS:
-        # One fresh directory per cell keeps outputs and manifests apart and
-        # proves every observed artifact came from this cell's command.
-        cell_root = project / f"{guest_target}-{profile}"
-        cell_root.mkdir()
-        diagnostics = cell_root / "diagnostics.json"
-        output = cell_root / (
-            "release_consumer.wasm"
-            if guest_target == "wasm"
-            else "release_consumer" + (".exe" if os.name == "nt" else "")
-        )
-        command = consumer_guest_command(
-            launcher,
-            target=guest_target,
-            profile=profile,
-            python_minor=minor,
-            diagnostics=str(diagnostics),
-            output=str(output),
-            source=str(source),
-        )
-        if guest_target == "native":
-            commands.append(
-                _run(
-                    command,
-                    cwd=root,
-                    env=env,
-                    timeout=2700,
-                    role=f"build_native_{profile}",
-                )
-            )
-            if not output.is_file():
-                raise RuntimeError(
-                    f"Molt did not produce the requested binary: {output}"
-                )
-            _audit_guest(
-                output, target=target, wheel_tag=wheel_tag, evidence_dir=evidence_dir
-            )
-            identity = executable_content_identity(
-                output, label="release consumer guest executable"
-            )
-            commands.append(
-                _run(
-                    [str(output), *CONSUMER_GUEST_ARGV],
-                    cwd=project,
-                    env=runtime_env,
-                    timeout=60,
-                    role=f"run_native_{profile}",
-                    expected_stdout=CONSUMER_EXPECTED_STDOUT,
-                )
-            )
-            artifact = {
-                "path": str(output),
-                "sha256": identity["sha256"],
-                "size": identity["size"],
-            }
-        else:
-            # Public `molt run` owns the one linked build and its Node host.
-            commands.append(
-                _run(
-                    command,
-                    cwd=project,
-                    env=env,
-                    timeout=2700,
-                    role=f"run_wasm_{profile}",
-                    expected_stdout=CONSUMER_EXPECTED_STDOUT,
-                )
-            )
-            artifact = _linked_wasm_artifact(output)
-        compiler_sha256, fingerprint = _diagnosed_compiler(
-            diagnostics, compiler=compiler, target=guest_target, profile=profile
-        )
-        cells.append(
-            {
-                "target": guest_target,
-                "profile": profile,
-                "diagnostics": str(diagnostics),
-                "output": str(output),
-                "compiler_sha256": compiler_sha256,
-                "compiler_fingerprint": fingerprint,
-                "artifact": artifact,
-            }
-        )
+    cells = _verify_guest_cells(
+        root=root,
+        project=project,
+        source=source,
+        launcher=launcher,
+        env=env,
+        compiler=compiler,
+        minor=minor,
+        target=target,
+        wheel_tag=wheel_tag,
+        evidence_dir=evidence_dir,
+        commands=commands,
+        role_prefix="",
+    )
     if (
         _capture_python_execution(
             python,
@@ -680,15 +723,18 @@ def _verify_python_coordinate(
     }
 
 
-def _uninstall_and_replay_native(
+def _uninstall_and_replay(
     *,
     root: Path,
     bundle_root: Path,
     worker_root: Path,
     coordinates: tuple[tuple[str, str], ...],
     proofs: list[dict[str, Any]],
-) -> None:
-    """Remove every installed owner before replaying the exact native products."""
+    evidence: Path,
+    replay: dict[str, Any],
+    supervisor: Path,
+) -> dict[str, object]:
+    """Remove installed owners, then execute exact products in the sealed root."""
     durable_remove_path(bundle_root, retirement_scope="consumer-uninstall")
     durable_remove_path(worker_root, retirement_scope="consumer-uninstall")
     for minor, _ in coordinates:
@@ -706,39 +752,39 @@ def _uninstall_and_replay_native(
         raise RuntimeError(
             "Molt or worker remained installed after portable bundle removal"
         )
-    for (minor, _), proof in zip(coordinates, proofs, strict=True):
-        coordinate_root = root / f"python-{minor}"
-        standalone_env = _consumer_environment(coordinate_root)
+    for proof in proofs:
         for cell in proof["cells"]:
-            if cell["target"] != "native":
-                continue
-            executable = Path(cell["output"])
-            identity = executable_content_identity(
-                executable, label="release consumer standalone executable"
+            identity = stable_regular_file_content_identity(
+                Path(cell["artifact"]["path"]), label="release standalone artifact"
             )
             if (identity["sha256"], identity["size"]) != (
                 cell["artifact"]["sha256"],
                 cell["artifact"]["size"],
             ):
-                raise RuntimeError(
-                    f"{minor}/native/{cell['profile']}: guest executable "
-                    "changed before its standalone run"
-                )
-            proof["commands"].append(
-                _run(
-                    [str(executable), *CONSUMER_GUEST_ARGV],
-                    cwd=coordinate_root / "project",
-                    env=standalone_env,
-                    timeout=60,
-                    role=f"standalone_native_{cell['profile']}",
-                    expected_stdout=CONSUMER_EXPECTED_STDOUT,
-                )
-            )
+                raise RuntimeError("guest artifact changed before its standalone run")
+    return consumer_replay.execute(
+        evidence=evidence,
+        replay=replay,
+        supervisor=supervisor,
+        expected_stdout=CONSUMER_EXPECTED_STDOUT,
+    )
 
 
-def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
+def verify(
+    candidate_dir: Path, receipt: Path, *, archive_cache: Path | None = None
+) -> dict[str, object]:
+    if receipt != candidate_dir / "consumer-verification.json":
+        raise ValueError("consumer receipt must be beside its candidate")
     candidate_path = candidate_dir / "candidate.json"
     candidate = _load_candidate(candidate_path)
+    if (
+        receipt.exists()
+        or (receipt.parent / "consumer-evidence").exists()
+        or (candidate_dir / consumer_replay.archive_filename(candidate)).exists()
+    ):
+        raise ValueError(
+            "consumer evidence destination already exists; use a fresh candidate output"
+        )
     if current_host_coordinate() != (
         candidate["target"]["platform"],
         candidate["target"]["arch"],
@@ -820,11 +866,28 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
             != candidate["native_build"]["policy"]["rust_channel"]
         ):
             raise ValueError("Bundle Rust channel differs from native build receipt")
-        compiler.verify_binary(("native-backend", "wasm-backend"), "release")
+        from tools.release.native_build import llvm_policy_sha256
+
+        if (
+            llvm_policy_sha256(compiler.files)
+            != candidate["native_build"]["llvm"]["policy_sha256"]
+        ):
+            raise ValueError("Bundle LLVM policy differs from native build receipt")
+        lanes = consumer_lanes()
+        for profile in sorted({lane.compiler_profile for lane in lanes}):
+            features = {
+                feature
+                for lane in lanes
+                if lane.compiler_profile == profile
+                for feature in lane.compiler_features
+            }
+            compiler.verify_binary(tuple(sorted(features)), profile)
         compiler.verify_runtime()
         if compiler.runtime != candidate["runtime"]:
             raise ValueError("Bundle runtime cells differ from candidate")
-        if inventory_cell_keys(compiler.runtime) != declared_cell_keys():
+        if inventory_cell_keys(compiler.runtime) != declared_cell_keys(
+            compiler.source_root
+        ):
             raise ValueError(
                 "Bundle runtime cells differ from the derived release policy"
             )
@@ -846,6 +909,21 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
             policy_sha256,
         ):
             raise ValueError("Bundle Python policy differs from release authority")
+        if capture_release_lanes(compiler.source_root).lanes != consumer_lanes():
+            raise ValueError("Bundle release lanes differ from release authority")
+        if archive_cache is None:
+            raise ValueError(
+                "standalone replay requires --execution-archive-cache with the pinned OS/Node archives; no automatic fetch"
+            )
+        if candidate["target"]["platform"] != "linux":
+            raise ValueError(
+                "standalone replay has no filesystem adapter for this target; host replay is forbidden"
+            )
+        # Source/provenance admission precedes consumer work and any guest launch.
+        consumer_replay.execution_root.support_payloads(
+            archive_cache, arch=candidate["target"]["arch"]
+        )
+        supervisor, generation = consumer_replay.provision_verifier()
         proofs = [
             _verify_python_coordinate(
                 root=root / f"python-{minor}",
@@ -874,15 +952,31 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
             wheel_tag=wheel_tag,
             evidence_dir=evidence_dir,
         )
-        _uninstall_and_replay_native(
+        standalone_evidence = receipt.parent / "consumer-evidence"
+        replay = consumer_replay.prepare(
+            evidence=standalone_evidence,
+            candidate=candidate,
+            proofs=proofs,
+            pip_proof=pip_proof,
+            bundle_source=bundle_root / "source",
+            archive_cache=archive_cache,
+            supervisor=supervisor,
+            generation=generation,
+            argv=CONSUMER_GUEST_ARGV,
+        )
+        standalone = _uninstall_and_replay(
             root=root,
             bundle_root=bundle_root,
             worker_root=worker_root,
             coordinates=coordinates,
             proofs=proofs,
+            evidence=standalone_evidence,
+            replay=replay,
+            supervisor=supervisor,
         )
 
-        count = len(coordinates) * len(CONSUMER_GUEST_CELLS)
+        lanes = consumer_lanes()
+        count = (len(coordinates) + 1) * len(lanes)
         payload: dict[str, object] = {
             "schema": CONSUMER_SCHEMA,
             "candidate": candidate_path.name,
@@ -898,14 +992,20 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
             "launcher": compiler.launcher,
             "runtime": compiler.runtime,
             "pip_proof": pip_proof,
-            "guest_cells": [list(cell) for cell in CONSUMER_GUEST_CELLS],
+            "guest_cells": [lane.as_record() for lane in lanes],
             "expected_stdout": CONSUMER_EXPECTED_STDOUT,
             "python_policy_sha256": policy_sha256,
             "python_proofs": proofs,
             "uninstall_verified": True,
+            "standalone": standalone,
         }
-        validate_consumer_proof(payload, candidate)
+        validate_consumer_proof(
+            payload, candidate, evidence_root=receipt.parent, supervisor=supervisor
+        )
         write_json(receipt, payload)
+        consumer_replay.publish_archive(
+            candidate_dir=candidate_dir, receipt=receipt, candidate=candidate
+        )
         return payload
 
 
@@ -913,8 +1013,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--execution-archive-cache", type=Path, required=True)
     args = parser.parse_args()
-    payload = verify(args.candidate, args.receipt)
+    payload = verify(
+        args.candidate, args.receipt, archive_cache=args.execution_archive_cache
+    )
     print(json.dumps(payload, sort_keys=True))
 
 

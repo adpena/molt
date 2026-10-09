@@ -273,12 +273,15 @@ def _run_completed_inside_active_guard(
         elapsed = _now() - start
         stdout_tmp.seek(0)
         stderr_tmp.seek(0)
+        child_stdout = stdout_tmp.read()
+        child_stderr = stderr_tmp.read()
         completed = harness_memory_guard.GuardedCompletedProcess(
             cmd,
             proc.returncode,
-            stdout_tmp.read(),
-            stderr_tmp.read(),
+            child_stdout,
+            child_stderr,
             elapsed_s=elapsed,
+            child_stderr=child_stderr,
         )
     return completed, elapsed
 

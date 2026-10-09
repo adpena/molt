@@ -1,4 +1,3 @@
-use crate::builtins::attr::lookup_special_method_bits;
 // Type conversion operations.
 // Split from ops.rs for compilation-unit size reduction.
 
@@ -1098,22 +1097,8 @@ pub extern "C" fn molt_int_new(cls_bits: u64, val_bits: u64, base_bits: u64) -> 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_int(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(self_bits);
-        if obj.is_int() {
-            return self_bits;
-        }
-        if obj.is_bool() {
-            return MoltObject::from_int(if obj.as_bool().unwrap_or(false) { 1 } else { 0 }).bits();
-        }
-        if bigint_ptr_from_bits(self_bits).is_some() {
-            inc_ref_bits(_py, self_bits);
-            return self_bits;
-        }
-        if let Some(bits) = int_subclass_value_bits_raw(self_bits) {
-            if obj_from_bits(bits).as_ptr().is_some() {
-                inc_ref_bits(_py, bits);
-            }
-            return bits;
+        if let Some(value) = crate::builtins::numbers::exact_integer_from_storage(_py, self_bits) {
+            return value;
         }
         let type_label = class_name_for_error(type_of_bits(_py, self_bits));
         let msg = format!(
@@ -1127,22 +1112,8 @@ pub extern "C" fn molt_int_int(self_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_index(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(self_bits);
-        if obj.is_int() {
-            return self_bits;
-        }
-        if obj.is_bool() {
-            return MoltObject::from_int(if obj.as_bool().unwrap_or(false) { 1 } else { 0 }).bits();
-        }
-        if bigint_ptr_from_bits(self_bits).is_some() {
-            inc_ref_bits(_py, self_bits);
-            return self_bits;
-        }
-        if let Some(bits) = int_subclass_value_bits_raw(self_bits) {
-            if obj_from_bits(bits).as_ptr().is_some() {
-                inc_ref_bits(_py, bits);
-            }
-            return bits;
+        if let Some(value) = crate::builtins::numbers::exact_integer_from_storage(_py, self_bits) {
+            return value;
         }
         let type_label = class_name_for_error(type_of_bits(_py, self_bits));
         let msg = format!(
@@ -1289,10 +1260,12 @@ pub extern "C" fn molt_int_from_str_of_obj(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(val_bits);
         let has_base = to_i64(obj_from_bits(has_base_bits)).unwrap_or(0) != 0;
         let base_val = if has_base {
             let base = index_i64_from_obj(_py, base_bits, "int() base must be int");
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
             if base != 0 && !(2..=36).contains(&base) {
                 return raise_exception::<_>(
                     _py,
@@ -1331,50 +1304,11 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
             }
         }
         if !has_base {
-            if complex_ptr_from_bits(val_bits).is_some() {
-                let type_label = type_name(_py, obj);
-                let msg = format!(
-                    "int() argument must be a string, a bytes-like object or a real number, not '{type_label}'"
-                );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+            if let Some(value) = crate::builtins::numbers::int_from_number_protocol(_py, val_bits) {
+                return value;
             }
-            // A bare heap BigInt is already an exact `int`; return it unchanged
-            // (preserving the object). Checked BEFORE the `to_i64` fast path so a
-            // BigInt whose magnitude fits in i64 but exceeds the 47-bit inline
-            // window is NOT re-boxed through the inline path (which truncates).
-            // Int *subclasses* are not bare BigInts here, so they still fall
-            // through to the value-extracting path below that strips to base int.
-            // `int()` returns an OWNED reference, so retain the aliased object.
-            if bigint_ptr_from_bits(val_bits).is_some() {
-                inc_ref_bits(_py, val_bits);
-                return val_bits;
-            }
-            if let Some(i) = to_i64(obj) {
-                // Full-range boxing (inline for small magnitudes, heap BigInt
-                // for |i| >= 2**46) — never the inline-only `from_int`, which
-                // would silently truncate values in [2**46, 2**63).
-                return int_bits_from_i64(_py, i);
-            }
-            if let Some(f) = to_f64(obj) {
-                if f.is_nan() {
-                    return raise_exception::<_>(
-                        _py,
-                        "ValueError",
-                        "cannot convert float NaN to integer",
-                    );
-                }
-                if f.is_infinite() {
-                    return raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "cannot convert float infinity to integer",
-                    );
-                }
-                let big = bigint_from_f64_trunc(f);
-                if let Some(i) = bigint_to_inline(&big) {
-                    return MoltObject::from_int(i).bits();
-                }
-                return bigint_bits(_py, big);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
             }
         }
         if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
@@ -1439,83 +1373,6 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
                     }
                     return bigint_bits(_py, parsed);
                 }
-                if !has_base {
-                    let int_name_bits =
-                        intern_static_name(_py, &runtime_state(_py).interned.int_name, b"__int__");
-                    if let Some(call_bits) = lookup_special_method_bits(
-                        _py,
-                        MoltObject::from_ptr(ptr).bits(),
-                        int_name_bits,
-                    ) {
-                        let res_bits = call_callable0(_py, call_bits);
-                        dec_ref_bits(_py, call_bits);
-                        if exception_pending(_py) {
-                            molt_cpython_abi::api::errors::with_preserved_error(|| {
-                                dec_ref_bits(_py, res_bits)
-                            });
-                            return MoltObject::none().bits();
-                        }
-                        let res_obj = obj_from_bits(res_bits);
-                        // Bare BigInt result: return as-is, BEFORE the to_i64
-                        // path, so a fit-i64 BigInt is not re-boxed through the
-                        // truncating inline path.
-                        if bigint_ptr_from_bits(res_bits).is_some() {
-                            return res_bits;
-                        }
-                        if let Some(i) = to_i64(res_obj) {
-                            // Full-range boxing, never inline-only `from_int`.
-                            return int_bits_from_i64(_py, i);
-                        }
-                        let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                        if res_obj.as_ptr().is_some() {
-                            dec_ref_bits(_py, res_bits);
-                        }
-                        let msg = format!("__int__ returned non-int (type {res_type})");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    let index_name_bits = intern_static_name(
-                        _py,
-                        &runtime_state(_py).interned.index_name,
-                        b"__index__",
-                    );
-                    if let Some(call_bits) = lookup_special_method_bits(
-                        _py,
-                        MoltObject::from_ptr(ptr).bits(),
-                        index_name_bits,
-                    ) {
-                        let res_bits = call_callable0(_py, call_bits);
-                        dec_ref_bits(_py, call_bits);
-                        if exception_pending(_py) {
-                            molt_cpython_abi::api::errors::with_preserved_error(|| {
-                                dec_ref_bits(_py, res_bits)
-                            });
-                            return MoltObject::none().bits();
-                        }
-                        let res_obj = obj_from_bits(res_bits);
-                        // Bare BigInt result: return as-is, BEFORE the to_i64
-                        // path, so a fit-i64 BigInt is not re-boxed through the
-                        // truncating inline path.
-                        if bigint_ptr_from_bits(res_bits).is_some() {
-                            return res_bits;
-                        }
-                        if let Some(i) = to_i64(res_obj) {
-                            // Full-range boxing, never inline-only `from_int`.
-                            return int_bits_from_i64(_py, i);
-                        }
-                        let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                        if res_obj.as_ptr().is_some() {
-                            dec_ref_bits(_py, res_bits);
-                        }
-                        let msg = format!("__index__ returned non-int (type {res_type})");
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                }
             }
         }
         if has_base {
@@ -1524,7 +1381,10 @@ pub extern "C" fn molt_int_from_obj(val_bits: u64, base_bits: u64, has_base_bits
         raise_exception::<_>(
             _py,
             "TypeError",
-            "int() argument must be a string or a number",
+            &format!(
+                "int() argument must be a string, a bytes-like object or a real number, not '{}'",
+                class_name_for_error(type_of_bits(_py, val_bits))
+            ),
         )
     })
 }

@@ -22,8 +22,8 @@ use crate::object::{ObjectShapeId, object_shape_id};
 use crate::{
     FRAME_STACK, PyToken, TYPE_ID_DICT, TYPE_ID_FRAME_BINDINGS, TYPE_ID_TUPLE, TYPE_ID_TYPE,
     alloc_dict_with_pairs, alloc_instance_for_class, alloc_list, alloc_string, alloc_tuple,
-    dec_ref_bits, dict_order, exception_pending, inc_ref_bits, molt_contains, molt_dict_get,
-    molt_eq, molt_index, molt_iter, molt_len, molt_repr_from_obj, obj_from_bits, object_type_id,
+    dec_ref_bits, exception_pending, inc_ref_bits, molt_contains, molt_dict_get, molt_eq,
+    molt_index, molt_iter, molt_len, molt_repr_from_obj, obj_from_bits, object_type_id,
     raise_exception, string_obj_to_owned,
 };
 
@@ -298,7 +298,7 @@ fn positional_args(
     let keywords = obj_from_bits(kwargs_bits)
         .as_ptr()
         .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_DICT)
-        .is_some_and(|ptr| unsafe { !dict_order(ptr).is_empty() });
+        .is_some_and(|ptr| unsafe { crate::dict_len(ptr) != 0 });
     match args {
         Some(args) if !keywords && range.contains(&args.len()) => Some(args),
         _ => {
@@ -370,7 +370,15 @@ fn snapshot_list(py: &PyToken<'_>, self_bits: u64, project: impl Fn(u64, u64) ->
         let Some(dict) = obj_from_bits(snapshot).as_ptr() else {
             return MoltObject::none().bits();
         };
-        let pairs: Vec<u64> = unsafe { dict_order(dict).clone() };
+        let Some(pairs) = (unsafe {
+            crate::object::ops_dict::dict_snapshot(
+                py,
+                dict,
+                crate::object::ops_dict::DictSnapshotKind::Entries,
+            )
+        }) else {
+            return MoltObject::none().bits();
+        };
         let mut items = Vec::with_capacity(pairs.len() / 2);
         for pair in pairs.as_chunks::<2>().0 {
             let item = project(pair[0], pair[1]);
@@ -593,20 +601,23 @@ pub extern "C" fn molt_frame_locals_proxy_update(
         };
         // Items are read before the first write: a write can run a finalizer
         // that changes the source mapping.
-        let pairs: Vec<u64> =
-            unsafe { dict_order(obj_from_bits(source).as_ptr().expect("dict source")).clone() };
-        for &bits in &pairs {
-            inc_ref_bits(py, bits);
-        }
+        let Some(pairs) = (unsafe {
+            crate::object::ops_dict::dict_snapshot(
+                py,
+                obj_from_bits(source).as_ptr().expect("dict source"),
+                crate::object::ops_dict::DictSnapshotKind::Entries,
+            )
+        }) else {
+            dec_ref_bits(py, source);
+            return MoltObject::none().bits();
+        };
         for pair in pairs.as_chunks::<2>().0 {
             // The first failure leaves its exception pending.
             if proxy_write(py, self_bits, pair[0], Some(pair[1])).is_err() {
                 break;
             }
         }
-        for bits in pairs {
-            dec_ref_bits(py, bits);
-        }
+        drop(pairs);
         dec_ref_bits(py, source);
         MoltObject::none().bits()
     })

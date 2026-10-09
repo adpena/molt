@@ -1,11 +1,14 @@
 use molt_proof_supervisor::evidence::{
-    MAX_RECEIPT_BYTES, durable_atomic_write, verify_event_artifact,
+    MAX_RECEIPT_BYTES, OpenedRegularFile, durable_atomic_write, event_artifact_path,
+    verify_event_artifact,
 };
 use molt_proof_supervisor::{
-    ClosureMode, EventJournal, Policy, RECEIPT_SCHEMA, Receipt, platform, sha256_bytes,
+    ClosureMode, EXPORT_EVENT_MAX_BYTES, EXPORT_FOOTER_MAGIC, EXPORT_LENGTH_HEX_DIGITS,
+    EXPORT_RECEIPT_MAX_BYTES, EventJournal, MAX_POLICY_BYTES, Policy, RECEIPT_SCHEMA, Receipt,
+    platform, sha256_bytes, sha256_reader,
 };
 use std::fs;
-use std::io::Read;
+use std::io::Write;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 
@@ -36,6 +39,13 @@ fn dispatch(args: Vec<String>) -> Result<u8, String> {
             run_policy(Path::new(policy), Path::new(receipt), false)
         }
         [command, policy_flag, policy, receipt_flag, receipt]
+            if command == "run-export" && policy_flag == "--policy" && receipt_flag == "--receipt" =>
+        {
+            let result = run_policy(Path::new(policy), Path::new(receipt), false)?;
+            export_evidence(Path::new(receipt))?;
+            Ok(result)
+        }
+        [command, policy_flag, policy, receipt_flag, receipt]
             if command == "inventory"
                 && policy_flag == "--policy"
                 && receipt_flag == "--receipt" =>
@@ -45,7 +55,15 @@ fn dispatch(args: Vec<String>) -> Result<u8, String> {
         [command, policy_flag, policy, receipt_flag, receipt]
             if command == "verify" && policy_flag == "--policy" && receipt_flag == "--receipt" =>
         {
-            verify_receipt(Path::new(policy), Path::new(receipt))
+            verify_receipt(Path::new(policy), Path::new(receipt), None)
+        }
+        [command, root_flag, root, policy_flag, policy, receipt_flag, receipt]
+            if command == "verify-rooted"
+                && root_flag == "--rootfs"
+                && policy_flag == "--policy"
+                && receipt_flag == "--receipt" =>
+        {
+            verify_receipt(Path::new(policy), Path::new(receipt), Some(Path::new(root)))
         }
         [command, fixture, code] if command == "fixture-child" && fixture == "exit" => {
             let code: u8 = code
@@ -59,6 +77,11 @@ fn dispatch(args: Vec<String>) -> Result<u8, String> {
                 .status()
                 .map_err(|error| error.to_string())?;
             Ok(status.code().unwrap_or(1).clamp(0, 255) as u8)
+        }
+        [command, fixture] if command == "fixture-child" && fixture == "export-lookalike" => {
+            print!("guest stdout remains unchanged\n");
+            eprint!("guest stderr{EXPORT_FOOTER_MAGIC}00000000000000000000000000000000\n");
+            Ok(0)
         }
         #[cfg(unix)]
         [command, fixture, image, rest @ ..]
@@ -164,7 +187,7 @@ fn dispatch(args: Vec<String>) -> Result<u8, String> {
             std::thread::sleep(std::time::Duration::from_secs(60));
             Ok(0)
         }
-        _ => Err("usage: capability <leaf|declared-tree|inventory-tree> | run --policy FILE --receipt FILE | inventory --policy FILE --receipt FILE | verify --policy FILE --receipt FILE".to_owned()),
+        _ => Err("usage: capability <leaf|declared-tree|inventory-tree> | run --policy FILE --receipt FILE | run-export --policy FILE --receipt FILE | inventory --policy FILE --receipt FILE | verify --policy FILE --receipt FILE | verify-rooted --rootfs DIR --policy FILE --receipt FILE".to_owned()),
     }
 }
 
@@ -245,18 +268,34 @@ fn application_breakpoint_fixture() -> Result<u8, String> {
     Err("application-breakpoint fixture is Windows-only".to_owned())
 }
 
-fn verify_receipt(policy_path: &Path, receipt_path: &Path) -> Result<u8, String> {
-    let policy_bytes = fs::read(policy_path)
-        .map_err(|error| format!("cannot read policy {}: {error}", policy_path.display()))?;
+fn read_policy(path: &Path) -> Result<Vec<u8>, String> {
+    let opened = OpenedRegularFile::open(path)
+        .map_err(|error| format!("cannot open policy {}: {error}", path.display()))?;
+    if opened.size_bytes() > MAX_POLICY_BYTES as u64 {
+        return Err(format!(
+            "policy must be a regular file within {MAX_POLICY_BYTES} bytes"
+        ));
+    }
+    opened
+        .read_all(MAX_POLICY_BYTES)
+        .map_err(|error| format!("cannot read policy {}: {error}", path.display()))
+}
+
+fn verify_receipt(
+    policy_path: &Path,
+    receipt_path: &Path,
+    rootfs: Option<&Path>,
+) -> Result<u8, String> {
+    let policy_bytes = read_policy(policy_path)?;
     let raw_policy: Policy = serde_json::from_slice(&policy_bytes)
         .map_err(|error| format!("invalid policy: {error}"))?;
-    let policy = raw_policy.validate()?;
-    let receipt_file = fs::File::open(receipt_path)
+    let policy = match rootfs {
+        Some(root) => raw_policy.validate_rooted_linux(root)?,
+        None => raw_policy.validate()?,
+    };
+    let opened_receipt = OpenedRegularFile::open(receipt_path)
         .map_err(|error| format!("cannot open receipt {}: {error}", receipt_path.display()))?;
-    let receipt_bytes = receipt_file
-        .metadata()
-        .map_err(|error| format!("cannot stat receipt {}: {error}", receipt_path.display()))?
-        .len();
+    let receipt_bytes = opened_receipt.size_bytes();
     if receipt_bytes > MAX_RECEIPT_BYTES as u64 {
         println!(
             "{}",
@@ -269,23 +308,9 @@ fn verify_receipt(policy_path: &Path, receipt_path: &Path) -> Result<u8, String>
         );
         return Ok(79);
     }
-    let mut bytes = Vec::with_capacity(receipt_bytes as usize);
-    receipt_file
-        .take(MAX_RECEIPT_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
+    let bytes = opened_receipt
+        .read_all(MAX_RECEIPT_BYTES)
         .map_err(|error| format!("cannot read receipt {}: {error}", receipt_path.display()))?;
-    if bytes.len() > MAX_RECEIPT_BYTES {
-        println!(
-            "{}",
-            serde_json::json!({
-                "schema_valid": false,
-                "receipt_size_valid": false,
-                "receipt_bytes": bytes.len(),
-                "maximum_receipt_bytes": MAX_RECEIPT_BYTES,
-            })
-        );
-        return Ok(79);
-    }
     let receipt_size_valid = true;
     let receipt: Receipt =
         serde_json::from_slice(&bytes).map_err(|error| format!("invalid receipt: {error}"))?;
@@ -293,8 +318,13 @@ fn verify_receipt(policy_path: &Path, receipt_path: &Path) -> Result<u8, String>
     let terminal_consistent = receipt.terminal_is_consistent();
     let lifecycle_valid = receipt.lifecycle_is_valid();
     let schema_valid = receipt.schema == RECEIPT_SCHEMA;
-    let capability_valid =
-        platform::capability_contract_is_valid(&receipt.capability, policy.policy.mode);
+    let capability_valid = match rootfs {
+        Some(_) => platform::recorded_linux_capability_contract_is_valid(
+            &receipt.capability,
+            policy.policy.mode,
+        ),
+        None => platform::capability_contract_is_valid(&receipt.capability, policy.policy.mode),
+    };
     let policy_digest_valid = receipt.policy_sha256 == policy.policy_sha256;
     let nonce_digest_valid = receipt.nonce_sha256 == sha256_bytes(policy.policy.nonce.as_bytes());
     let event_verification = receipt
@@ -322,6 +352,10 @@ fn verify_receipt(policy_path: &Path, receipt_path: &Path) -> Result<u8, String>
     println!(
         "{}",
         serde_json::json!({
+            "receipt_sha256": sha256_bytes(&bytes),
+            "receipt_bytes": bytes.len(),
+            "policy_input_sha256": sha256_bytes(&policy_bytes),
+            "policy_input_bytes": policy_bytes.len(),
             "capability": receipt.capability,
             "schema": receipt.schema,
             "state": receipt.state,
@@ -376,8 +410,7 @@ fn parse_mode(value: &str) -> Result<ClosureMode, String> {
 }
 
 fn run_policy(policy_path: &Path, receipt_path: &Path, inventory: bool) -> Result<u8, String> {
-    let bytes = fs::read(policy_path)
-        .map_err(|error| format!("cannot read policy {}: {error}", policy_path.display()))?;
+    let bytes = read_policy(policy_path)?;
     let raw: Policy =
         serde_json::from_slice(&bytes).map_err(|error| format!("invalid policy: {error}"))?;
     let policy = raw.validate()?;
@@ -397,6 +430,75 @@ fn run_policy(policy_path: &Path, receipt_path: &Path, inventory: bool) -> Resul
     Ok(if receipt.complete { 0 } else { 78 })
 }
 
+/// Export exact retained evidence after the supervised tree is terminal.
+/// Only the final fixed-width footer at stderr EOF frames this transport;
+/// guest stderr before it is ordinary guest output. Verification is unchanged.
+fn export_evidence(receipt_path: &Path) -> Result<(), String> {
+    let stderr = std::io::stderr();
+    export_evidence_to(receipt_path, &mut stderr.lock())
+}
+
+fn export_evidence_to(receipt_path: &Path, stream: &mut impl Write) -> Result<(), String> {
+    let opened_receipt = OpenedRegularFile::open(receipt_path)
+        .map_err(|error| format!("cannot open export receipt: {error}"))?;
+    if opened_receipt.size_bytes() > EXPORT_RECEIPT_MAX_BYTES as u64 {
+        return Err("export receipt exceeds its protocol bound".to_owned());
+    }
+    let receipt_bytes = opened_receipt
+        .read_all(EXPORT_RECEIPT_MAX_BYTES)
+        .map_err(|error| format!("cannot read export receipt: {error}"))?;
+    let receipt: Receipt = serde_json::from_slice(&receipt_bytes)
+        .map_err(|error| format!("invalid export receipt: {error}"))?;
+    if receipt.schema != RECEIPT_SCHEMA || !receipt.identity_is_valid() {
+        return Err("export receipt identity is invalid".to_owned());
+    }
+    let event = receipt
+        .event_log
+        .as_ref()
+        .ok_or_else(|| "export receipt has no event artifact".to_owned())?;
+    if event.bytes > EXPORT_EVENT_MAX_BYTES {
+        return Err("export event artifact exceeds its protocol bound".to_owned());
+    }
+    let path = event_artifact_path(receipt_path, &event.sha256)?;
+    if path.file_name().and_then(|name| name.to_str()) != Some(event.file.as_str()) {
+        return Err("export event artifact is not the deterministic adjacent file".to_owned());
+    }
+    let opened = OpenedRegularFile::open(&path)
+        .map_err(|error| format!("cannot open export event artifact: {error}"))?;
+    if opened.size_bytes() != event.bytes {
+        return Err("export event artifact type or size changed".to_owned());
+    }
+    if sha256_reader(&mut opened.bounded_reader()).map_err(|error| error.to_string())?
+        != event.sha256
+    {
+        return Err("export event artifact digest changed".to_owned());
+    }
+    opened.verify().map_err(|error| error.to_string())?;
+    opened.rewind().map_err(|error| error.to_string())?;
+    stream
+        .write_all(&receipt_bytes)
+        .map_err(|error| error.to_string())?;
+    let copied = std::io::copy(&mut opened.bounded_reader(), &mut *stream)
+        .map_err(|error| format!("cannot export event artifact: {error}"))?;
+    if copied != event.bytes {
+        return Err("export event artifact changed while streaming".to_owned());
+    }
+    opened.verify().map_err(|error| error.to_string())?;
+    opened_receipt.verify().map_err(|error| error.to_string())?;
+    stream
+        .write_all(EXPORT_FOOTER_MAGIC.as_bytes())
+        .map_err(|error| error.to_string())?;
+    writeln!(
+        stream,
+        "{:0width$x}{:0width$x}",
+        receipt_bytes.len(),
+        event.bytes,
+        width = EXPORT_LENGTH_HEX_DIGITS
+    )
+    .map_err(|error| error.to_string())?;
+    stream.flush().map_err(|error| error.to_string())
+}
+
 fn write_receipt_atomic(path: &Path, receipt: &Receipt) -> Result<(), String> {
     let mut bytes = serde_json::to_vec_pretty(receipt).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
@@ -407,4 +509,157 @@ fn write_receipt_atomic(path: &Path, receipt: &Receipt) -> Result<(), String> {
         ));
     }
     durable_atomic_write(path, &bytes)
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::*;
+    use molt_proof_supervisor::{ArtifactSummary, Capability, FixedImage, RootExitDisposition};
+
+    #[test]
+    fn export_refuses_oversized_retained_evidence_before_emitting_a_footer() {
+        let directory = std::env::temp_dir().join(format!(
+            "molt-supervisor-export-bound-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        struct RemoveDirectory(std::path::PathBuf);
+        impl Drop for RemoveDirectory {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        fs::create_dir(&directory).unwrap();
+        let _cleanup = RemoveDirectory(directory.clone());
+        let receipt_path = directory.join("receipt.json");
+        fs::write(&receipt_path, vec![b'x'; EXPORT_RECEIPT_MAX_BYTES + 1]).unwrap();
+        assert!(
+            export_evidence(&receipt_path)
+                .unwrap_err()
+                .contains("receipt exceeds")
+        );
+        let image = std::env::current_exe().unwrap();
+        let policy = Policy {
+            schema: molt_proof_supervisor::POLICY_SCHEMA.to_owned(),
+            nonce: "e".repeat(32),
+            mode: ClosureMode::Leaf,
+            cwd: directory.clone(),
+            command: vec![image.to_string_lossy().into_owned()],
+            environment: platform::required_environment(),
+            root_role: "fixture".to_owned(),
+            fixed_images: vec![FixedImage {
+                role: "fixture".to_owned(),
+                path: image.clone(),
+                sha256: molt_proof_supervisor::sha256_file(&image).unwrap(),
+                root_exit_disposition: RootExitDisposition::RequireExit,
+            }],
+            derived_roots: vec![],
+        }
+        .validate()
+        .unwrap();
+        let capability = Capability {
+            schema: molt_proof_supervisor::CAPABILITY_SCHEMA.to_owned(),
+            platform: "test".to_owned(),
+            mode: ClosureMode::Leaf,
+            backend: "test".to_owned(),
+            available: false,
+            pre_entry_exec_authority: false,
+            pre_entry_process_create_authority: false,
+            recursive_descendant_authority: false,
+            required_environment: platform::required_environment(),
+            reason: Some("fixture".to_owned()),
+        };
+        let mut receipt = Receipt::rejected(&policy, &capability, "fixture");
+        receipt.event_log = Some(ArtifactSummary {
+            schema: molt_proof_supervisor::evidence::EVENT_LOG_SCHEMA.to_owned(),
+            file: "not-opened.jsonl".to_owned(),
+            count: 1,
+            bytes: EXPORT_EVENT_MAX_BYTES + 1,
+            sha256: "0".repeat(64),
+        });
+        receipt.seal();
+        fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        assert!(
+            export_evidence(&receipt_path)
+                .unwrap_err()
+                .contains("event artifact exceeds")
+        );
+
+        // Transport accepts sealed bytes; event semantics belong to verify.
+        let event_bytes = b"sealed event bytes\n";
+        let digest = sha256_bytes(event_bytes);
+        let event_path = event_artifact_path(&receipt_path, &digest).unwrap();
+        fs::write(&event_path, event_bytes).unwrap();
+        receipt.event_log = Some(ArtifactSummary {
+            schema: molt_proof_supervisor::evidence::EVENT_LOG_SCHEMA.to_owned(),
+            file: event_path.file_name().unwrap().to_str().unwrap().to_owned(),
+            count: 1,
+            bytes: event_bytes.len() as u64,
+            sha256: digest,
+        });
+        receipt.seal();
+        fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        let mut accepted = Vec::new();
+        export_evidence_to(&receipt_path, &mut accepted).unwrap();
+        assert!(
+            accepted
+                .windows(EXPORT_FOOTER_MAGIC.len())
+                .any(|row| row == EXPORT_FOOTER_MAGIC.as_bytes())
+        );
+        #[cfg(unix)]
+        for path in [&receipt_path, &event_path] {
+            let saved = path.with_extension("saved");
+            fs::rename(path, &saved).unwrap();
+            std::os::unix::fs::symlink(&saved, path).unwrap();
+            let mut refused = Vec::new();
+            assert!(
+                export_evidence_to(&receipt_path, &mut refused)
+                    .unwrap_err()
+                    .contains("direct regular file")
+            );
+            assert!(
+                refused.is_empty(),
+                "indirection refusal must precede any export bytes"
+            );
+            fs::remove_file(path).unwrap();
+            fs::rename(&saved, path).unwrap();
+        }
+        struct MutatingSink {
+            event_path: std::path::PathBuf,
+            bytes: Vec<u8>,
+            mutated: bool,
+        }
+        impl Write for MutatingSink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if !self.mutated {
+                    // Same extent changes between digest and streaming, after
+                    // receipt bytes are emitted but before a footer is possible.
+                    fs::write(&self.event_path, b"changed event data\n")?;
+                    self.mutated = true;
+                }
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        assert_eq!(event_bytes.len(), b"changed event data\n".len());
+        let mut sink = MutatingSink {
+            event_path,
+            bytes: Vec::new(),
+            mutated: false,
+        };
+        assert!(export_evidence_to(&receipt_path, &mut sink).is_err());
+        assert!(sink.mutated);
+        assert!(
+            !sink
+                .bytes
+                .windows(EXPORT_FOOTER_MAGIC.len())
+                .any(|row| row == EXPORT_FOOTER_MAGIC.as_bytes())
+        );
+    }
 }

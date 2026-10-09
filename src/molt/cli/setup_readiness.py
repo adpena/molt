@@ -567,32 +567,34 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             advice=_windows_msvc_env_advice() if not msvc_build_env_ok else None,
         )
 
-    llvm_pin = _required_llvm_backend_pin(root)
-    llvm_major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
-    if llvm_pin is None or llvm_major is None:
-        record(
-            "llvm-backend-toolchain",
-            True,
-            "no explicit LLVM backend version pin detected",
-        )
-    else:
-        llvm_detail = (
-            f"LLVM {llvm_major} via {llvm_toolchain}"
-            if llvm_toolchain is not None
-            else _clang_llvm_version_detail(llvm_major)
-            or f"LLVM {llvm_major} toolchain not found"
-        )
-        record(
-            "llvm-backend-toolchain",
-            llvm_toolchain is not None,
-            llvm_detail,
-            level="warning",
-            advice=(
-                _llvm_backend_advice_for_pin(llvm_pin)
-                if llvm_toolchain is None
-                else None
-            ),
-        )
+    llvm_toolchain: str | None = None
+    if source_checkout:
+        llvm_pin = _required_llvm_backend_pin(root)
+        llvm_major, llvm_toolchain = _detect_llvm_backend_toolchain(root)
+        if llvm_pin is None or llvm_major is None:
+            record(
+                "llvm-backend-toolchain",
+                True,
+                "no explicit LLVM backend version pin detected",
+            )
+        else:
+            llvm_detail = (
+                f"LLVM {llvm_major} via {llvm_toolchain}"
+                if llvm_toolchain is not None
+                else _clang_llvm_version_detail(llvm_major)
+                or f"LLVM {llvm_major} toolchain not found"
+            )
+            record(
+                "llvm-backend-toolchain",
+                llvm_toolchain is not None,
+                llvm_detail,
+                level="warning",
+                advice=(
+                    _llvm_backend_advice_for_pin(llvm_pin)
+                    if llvm_toolchain is None
+                    else None
+                ),
+            )
 
     # The WASM toolchain authority selects wasm-ld (MOLT_WASM_LD, WASI_SDK_PATH
     # or the provisioned wasi-sdk); its error names the provisioning command.
@@ -944,18 +946,25 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         # Installed readiness is the shipped runtime cells plus the host linker
         # and WASM tools; no Rust toolchain participates.
         readiness = installed_runtime_profile_readiness(installed)
+        available = {
+            backend: any(
+                ready and lane.backend == backend for lane, ready in readiness.items()
+            )
+            for backend in ("native", "llvm", "wasm")
+        }
         backends = {
-            "native": bool(cc_path) and any(readiness["native"].values()),
-            # The distributed compiler features exclude the LLVM backend.
-            "llvm": False,
-            "wasm": any(readiness["wasm"].values()),
-            "linked-wasm": any(readiness["wasm"].values())
-            and bool(wasm_ld_ok and wasm_tools_path),
+            "native": bool(cc_path) and available["native"],
+            "llvm": bool(cc_path) and available["llvm"],
+            "wasm": available["wasm"],
+            "linked-wasm": available["wasm"] and bool(wasm_ld_ok and wasm_tools_path),
             "luau": bool(luau_runner_path),
         }
         profiles = {
-            profile: readiness["native"][profile] or readiness["wasm"][profile]
-            for profile in ("dev", "release")
+            profile: any(
+                ready and lane.guest_profile == profile
+                for lane, ready in readiness.items()
+            )
+            for profile in sorted({lane.guest_profile for lane in readiness})
         }
     else:
         backends = {

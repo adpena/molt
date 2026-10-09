@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 
 import pytest
@@ -196,6 +196,55 @@ def runtime_fixture_root(tmp_path: Path) -> RuntimeFixtureRoot:
     from tests.runtime_build_identity_helper import RuntimeFixtureRoot
 
     return RuntimeFixtureRoot(tmp_path)
+
+
+@pytest.fixture
+def readonly_file_source(
+    tmp_path: Path,
+) -> Iterator[tuple[Path, Callable[[], int]]]:
+    """Observe a shared readonly source through a handle, not cached link metadata."""
+    source = tmp_path / "external-readonly-source"
+    source.write_bytes(b"external source must survive cleanup")
+    source.chmod(0o444)
+    try:
+        if os.name == "nt":
+            from molt import file_hashing
+
+            api = file_hashing._windows_file_api()
+            assert api is not None
+            ctypes, kernel32, file_basic_info = api
+            handle = kernel32.CreateFileW(
+                str(source), 0x0080, 0x1 | 0x2 | 0x4, None, 3, 0x00200000, None
+            )
+            assert handle not in (None, ctypes.c_void_p(-1).value)
+
+            def attributes() -> int:
+                info = file_basic_info()
+                if not kernel32.GetFileInformationByHandleEx(
+                    handle, 0, ctypes.byref(info), ctypes.sizeof(info)
+                ):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                return int(info.FileAttributes)
+
+            try:
+                assert attributes() & 0x1  # FILE_ATTRIBUTE_READONLY
+                yield source, attributes
+            finally:
+                assert kernel32.CloseHandle(handle)
+        else:
+            import stat
+
+            with source.open("rb") as handle:
+
+                def mode() -> int:
+                    return stat.S_IMODE(os.fstat(handle.fileno()).st_mode)
+
+                assert not mode() & 0o222
+                yield source, mode
+    finally:
+        # The fixture owns this source. Restoration is teardown only, after
+        # the consumer's preservation assertions and all source handles close.
+        source.chmod(0o600)
 
 
 def _remove_molt_stdlib_top_level_root() -> bool:

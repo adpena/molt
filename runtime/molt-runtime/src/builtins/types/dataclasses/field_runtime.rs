@@ -91,21 +91,12 @@ fn dc_dict_fields<'a, 'py>(
             raise_exception::<()>(py, "TypeError", "dataclass fields must be a dict");
             return Err(());
         }
-        let order = dict_order(ptr);
-        let Some(values) = crate::object::backing::tracked_vec_box_from_slice(order, order.len())
-        else {
-            raise_exception::<()>(
-                py,
-                "MemoryError",
-                "dataclass field snapshot allocation failed",
-            );
-            return Err(());
-        };
-        let values = crate::object::backing::tracked_vec_box_from_raw(values);
-        for &value in values.iter() {
-            inc_ref_bits(py, value);
-        }
-        Ok(PinnedSequenceSnapshot::from_owned_values(py, values))
+        crate::object::ops_dict::dict_snapshot(
+            py,
+            ptr,
+            crate::object::ops_dict::DictSnapshotKind::Entries,
+        )
+        .ok_or(())
     }
 }
 

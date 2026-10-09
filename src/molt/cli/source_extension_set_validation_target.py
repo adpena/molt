@@ -307,7 +307,7 @@ def _validate_meson_machine_files(
         raise SourceExtensionSetValidationError(
             "extension-set target metadata has invalid Meson include paths"
         )
-    compiler_builtins: str | None = None
+    compiler_rt: str | None = None
     if target_plan.target_triple == "wasm32-wasip1":
         toolchain = target_metadata.get("toolchain")
         archives = (
@@ -316,20 +316,18 @@ def _validate_meson_machine_files(
             else None
         )
         builtins = (
-            archives.get("compiler_builtins") if isinstance(archives, Mapping) else None
+            archives.get("compiler_rt") if isinstance(archives, Mapping) else None
         )
-        compiler_builtins = (
-            builtins.get("path") if isinstance(builtins, Mapping) else None
-        )
-        if not isinstance(compiler_builtins, str) or not compiler_builtins:
+        compiler_rt = builtins.get("path") if isinstance(builtins, Mapping) else None
+        if not isinstance(compiler_rt, str) or not compiler_rt:
             raise SourceExtensionSetValidationError(
-                "extension-set target metadata has no Meson compiler-builtins path"
+                "extension-set target metadata has no Meson compiler-rt path"
             )
     expected_cross = _meson_cross_text(
         target_plan=target_plan,
         pkg_config_dir=pkg_config_dir,
         commands=commands,
-        compiler_builtins=compiler_builtins,
+        compiler_rt=compiler_rt,
         include_dirs=tuple(include_dirs),
     )
     expected_native = _meson_native_text(commands=build_commands)

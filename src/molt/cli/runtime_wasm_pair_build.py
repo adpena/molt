@@ -189,7 +189,6 @@ def _combined_runtime_wasm_command(
     plan = ctx.shared_spec.cargo_plan
     if plan is None:
         raise ValueError("runtime WASM execution requires its resolved Cargo plan")
-    plan.verify()
     return dict(plan.environment), list(plan.command)
 
 
@@ -742,13 +741,8 @@ def _publish_runtime_wasm_pair(ctx: _RuntimeWasmPairBuild) -> bool:
         plan = ctx.shared_spec.cargo_plan
         if plan is None:
             raise ValueError("runtime WASM build lost its resolved Cargo plan")
-        plan.verify()
-        post_shared = post_shared.with_cargo_plan(plan)._replace(
-            link_inputs=ctx.shared_spec.link_inputs
-        )
-        post_reloc = post_reloc.with_cargo_plan(plan)._replace(
-            link_inputs=ctx.reloc_spec.link_inputs
-        )
+        post_shared = post_shared.with_cargo_plan(plan)
+        post_reloc = post_reloc.with_cargo_plan(plan)
         post_identity = _resolve_runtime_wasm_pair_identity(
             ctx, post_shared, post_reloc, mode="post_build"
         )

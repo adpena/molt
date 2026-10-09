@@ -17,6 +17,40 @@ thread_local! {
 
 }
 
+// Fault injection belongs to the existing fallible publication admission, not
+// the runtime exception/class hooks. No state or branch exists in normal builds.
+#[cfg(feature = "runtime-test-support")]
+thread_local! {
+    static DENIED_PUBLICATION: std::cell::Cell<Option<(usize, AbiHandle, usize)>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[cfg(feature = "runtime-test-support")]
+impl ObjectBridge {
+    /// Exercise the real reservation-failure branch for one cold runtime view.
+    /// The caller owns the handle and the runtime test transaction throughout.
+    pub fn with_denied_publication_for_test<T>(
+        &self,
+        bits: AbiHandle,
+        operation: impl FnOnce() -> T,
+    ) -> (T, usize) {
+        struct Restore(Option<(usize, AbiHandle, usize)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                DENIED_PUBLICATION.with(|state| state.set(self.0));
+            }
+        }
+        assert_ne!(bits, 0);
+        let previous = DENIED_PUBLICATION
+            .with(|state| state.replace(Some((std::ptr::from_ref(self).addr(), bits, 0))));
+        let _restore = Restore(previous);
+        let result = operation();
+        let attempts = DENIED_PUBLICATION.with(|state| state.get().unwrap().2);
+        (result, attempts)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum PublicationState {
     Building { owner: std::thread::ThreadId },
@@ -81,6 +115,19 @@ impl<'a> PublicationBuildGuard<'a> {
             let mut stack = stack.borrow_mut();
             if stack.find(bridge, bits).is_some() {
                 return Err(false);
+            }
+            #[cfg(feature = "runtime-test-support")]
+            if DENIED_PUBLICATION.with(|state| {
+                let Some((address, target, attempts)) = state.get() else {
+                    return false;
+                };
+                if address != std::ptr::from_ref(bridge).addr() || target != bits {
+                    return false;
+                }
+                state.set(Some((address, target, attempts + 1)));
+                true
+            }) {
+                return Err(true);
             }
             if stack.frames.try_reserve(1).is_err() || stack.active.try_reserve(1).is_err() {
                 return Err(true);
@@ -228,16 +275,20 @@ pub(super) enum ManagedEntryRejection {
     Occupied,
     NoMemory,
     Deallocating,
+    InvalidNumericTransfer,
 }
 
 impl ManagedEntryRejection {
-    unsafe fn set_error(self) {
+    pub(super) unsafe fn set_error(self) {
         match self {
             Self::Occupied => unsafe {
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
                     c"ABI view runtime identity was already published".as_ptr(),
                 )
+            },
+            Self::InvalidNumericTransfer => unsafe {
+                ensure_result_error(c"numeric ABI ownership transfer failed validation");
             },
             Self::NoMemory => unsafe {
                 crate::api::errors::PyErr_NoMemory();
@@ -249,6 +300,125 @@ impl ManagedEntryRejection {
                 )
             },
         }
+    }
+}
+
+/// One insertion authority accepts both already-built recursive projections
+/// and an immutable numeric owner whose external allocation cannot be armed
+/// until commit. Rejection returns the original staging owner after locks drop.
+pub(super) trait ManagedEntryInput {
+    fn pointer(&self) -> *mut PyObject;
+    fn validate(&self, _address: &AddressShard) -> bool {
+        true
+    }
+    fn commit(self, _address: &mut AddressShard) -> Box<BridgeEntry>;
+}
+
+impl ManagedEntryInput for Box<BridgeEntry> {
+    fn pointer(&self) -> *mut PyObject {
+        self.view.py_obj()
+    }
+    fn commit(self, _address: &mut AddressShard) -> Box<BridgeEntry> {
+        self
+    }
+}
+
+pub(super) struct PendingNumericEntry {
+    storage: Box<std::mem::MaybeUninit<BridgeEntry>>,
+    pointer: *mut PyObject,
+    record: NumericCarrierRecord,
+    bits: AbiHandle,
+    external_refs: isize,
+    published_refs: isize,
+    runtime_refs: usize,
+    lifecycle: BridgeLifecycle,
+}
+
+impl PendingNumericEntry {
+    pub(super) fn new(
+        pointer: *mut PyObject,
+        record: NumericCarrierRecord,
+        bits: AbiHandle,
+    ) -> Option<Self> {
+        let external_refs = unsafe { (*pointer).ob_refcnt };
+        let runtime_refs = unsafe { crate::hooks::hooks_or_stubs().ref_count(bits) };
+        if external_refs <= 0 || runtime_refs == 0 {
+            unsafe { ManagedEntryRejection::InvalidNumericTransfer.set_error() };
+            return None;
+        }
+        let lifecycle = if runtime_refs > 1 {
+            BridgeLifecycle::RuntimeOwned
+        } else {
+            BridgeLifecycle::ViewHoldOnly
+        };
+        let published_refs = if runtime_refs == molt_codegen_abi::IMMORTAL_REFCOUNT as usize {
+            crate::abi_types::IMMORTAL_REFCNT
+        } else if crate::abi_types::is_immortal_refcnt(external_refs) {
+            external_refs
+        } else {
+            let Some(refs) = external_refs.checked_add(isize::from(lifecycle.has_c_bias())) else {
+                unsafe { ManagedEntryRejection::InvalidNumericTransfer.set_error() };
+                return None;
+            };
+            refs
+        };
+        let storage = unsafe {
+            let raw = std::alloc::alloc(std::alloc::Layout::new::<BridgeEntry>())
+                .cast::<std::mem::MaybeUninit<BridgeEntry>>();
+            if raw.is_null() {
+                crate::api::errors::PyErr_NoMemory();
+                return None;
+            }
+            Box::from_raw(raw)
+        };
+        Some(Self {
+            storage,
+            pointer,
+            record,
+            bits,
+            external_refs,
+            published_refs,
+            runtime_refs,
+            lifecycle,
+        })
+    }
+}
+
+impl ManagedEntryInput for PendingNumericEntry {
+    fn pointer(&self) -> *mut PyObject {
+        self.pointer
+    }
+    fn validate(&self, address: &AddressShard) -> bool {
+        let pointer = self.pointer();
+        let key = pointer.addr();
+        let source_matches = address.numeric_carriers.get(&key) == Some(&self.record);
+        source_matches
+            && !address.from_py.contains_key(&key)
+            && !address.direct_molt_py.contains_key(&key)
+            && !address.foreign.contains_key(&key)
+            && !address.foreign_inflight.contains(&key)
+            && unsafe { (*pointer).ob_refcnt == self.external_refs }
+            && unsafe { crate::hooks::hooks_or_stubs().ref_count(self.bits) == self.runtime_refs }
+    }
+    fn commit(self, address: &mut AddressShard) -> Box<BridgeEntry> {
+        address.numeric_carriers.remove(&self.pointer.addr());
+        let allocation = NumericAllocation {
+            pointer: self.pointer,
+            kind: self.record.kind,
+        };
+        unsafe { (*allocation.pointer).ob_refcnt = self.published_refs };
+        // Storage was reserved before locking. From here ownership transfer,
+        // header update and publication cannot allocate, fail or invoke Python.
+        Box::write(
+            self.storage,
+            BridgeEntry {
+                view: ManagedView::Numeric(allocation),
+                bits: self.bits,
+                unicode: None,
+                publication: PublicationState::Ready,
+                lifecycle: self.lifecycle,
+            },
+        )
     }
 }
 
@@ -338,7 +508,7 @@ impl ObjectBridge {
     /// both come from `handle_to_borrowed_pyobj`; neither changes the physical
     /// storage type of the value whose class is requested.
     pub(super) unsafe fn runtime_class_view(&self, bits: u64) -> *mut PyTypeObject {
-        let result = unsafe { (crate::hooks::hooks_or_stubs().runtime_class_borrowed)(bits) };
+        let result = unsafe { crate::hooks::hooks_or_stubs().runtime_class_borrowed(bits) };
         let class_bits = match result.decode() {
             crate::hooks::DecodedHandleResult::Ok(class_bits) if class_bits != 0 => class_bits,
             _ => {
@@ -369,7 +539,14 @@ impl ObjectBridge {
         } else {
             unsafe { tag_to_type(tag) }
         };
-        let view = if tag == MoltTypeTag::Type {
+        let view = if matches!(
+            tag,
+            MoltTypeTag::Int | MoltTypeTag::Float | MoltTypeTag::Complex
+        ) {
+            let allocation = unsafe { crate::api::numbers::allocate_numeric_view(bits) }?;
+            unsafe { (*allocation.pointer).ob_refcnt = ob_refcnt };
+            ManagedView::Numeric(allocation)
+        } else if tag == MoltTypeTag::Type {
             let creation_doc = unsafe { Self::managed_type_creation_doc(bits) }?;
             let (name, base_bits, semantic_flags) = unsafe { Self::managed_type_metadata(bits) }?;
             let exception_layout = ExceptionLayoutKind::from_u8(unsafe {
@@ -450,13 +627,18 @@ impl ObjectBridge {
                 object: Box::new(UnsafeCell::new(object)),
                 format: c"B".to_owned(),
             }
-        } else if tag == MoltTypeTag::BuiltinCallable {
-            let mut object: PyCMethodObject = unsafe { std::mem::zeroed() };
-            object.func.ob_base = PyObject { ob_refcnt, ob_type };
-            object.func.vectorcall = Some(crate::api::object::molt_runtime_vectorcall);
+        } else if tag == MoltTypeTag::BoundMethod {
+            let mut object: crate::abi_types::PyMethodObject = unsafe { std::mem::zeroed() };
+            object.ob_base = PyObject { ob_refcnt, ob_type };
+            object.vectorcall = Some(crate::api::object::molt_runtime_vectorcall);
+            ManagedView::Method(Box::new(UnsafeCell::new(object)))
+        } else if tag == MoltTypeTag::RuntimeCallable {
+            let mut object: crate::abi_types::PyCFunctionObject = unsafe { std::mem::zeroed() };
+            object.ob_base = PyObject { ob_refcnt, ob_type };
+            object.vectorcall = Some(crate::api::object::molt_runtime_vectorcall);
             ManagedView::RuntimeCallable(Box::new(UnsafeCell::new(object)))
         } else if tag == MoltTypeTag::Tuple {
-            let len = unsafe { (crate::hooks::hooks_or_stubs().tuple_len)(bits) };
+            let len = unsafe { crate::hooks::hooks_or_stubs().tuple_len(bits) };
             let allocation = TupleAllocation::new(ob_refcnt, ob_type, len)?;
             ManagedView::Tuple { allocation }
         } else if tag == MoltTypeTag::List {
@@ -847,15 +1029,18 @@ impl ObjectBridge {
 
     /// The sole managed-view insertion transaction. A rejected entry is
     /// returned unpublished; the caller unwinds it after both locks drop.
-    pub(super) fn insert_managed_entry(
+    pub(super) fn insert_managed_entry<I: ManagedEntryInput>(
         &self,
         bits: AbiHandle,
-        entry: Box<BridgeEntry>,
-    ) -> Result<(), (Box<BridgeEntry>, ManagedEntryRejection)> {
-        let addr = entry.view.py_obj().addr();
+        entry: I,
+    ) -> Result<(), (I, ManagedEntryRejection)> {
+        let addr = entry.pointer().addr();
         let (mut address, mut handle) = self.lock_address_then_handle(addr, bits);
         if handle.to_py.contains_key(&bits) || handle.raw_py.contains_key(&bits) {
             return Err((entry, ManagedEntryRejection::Occupied));
+        }
+        if !entry.validate(&address) {
+            return Err((entry, ManagedEntryRejection::InvalidNumericTransfer));
         }
         if address.from_py.try_reserve(1).is_err() || handle.to_py.try_reserve(1).is_err() {
             return Err((entry, ManagedEntryRejection::NoMemory));
@@ -863,6 +1048,7 @@ impl ObjectBridge {
         if unsafe { (crate::hooks::hooks_or_stubs().try_mark_abi_view)(bits, 1) } == 0 {
             return Err((entry, ManagedEntryRejection::Deallocating));
         }
+        let entry = entry.commit(&mut address);
         address.from_py.insert(addr, bits);
         handle.to_py.insert(bits, entry);
         Ok(())
@@ -984,7 +1170,7 @@ impl ObjectBridge {
     ) -> Result<(), crate::ErrorIndicatorSet> {
         unsafe {
             assert_eq!(
-                (crate::hooks::hooks_or_stubs().classify_heap)(bits),
+                crate::hooks::hooks_or_stubs().classify_heap(bits),
                 MoltTypeTag::Type as u8,
                 "semantic flags require a live managed type handle"
             );
@@ -1050,8 +1236,7 @@ impl ObjectBridge {
             return Ok(None);
         };
         let bits = value.bits();
-        if unsafe { (crate::hooks::hooks_or_stubs().classify_heap)(bits) }
-            != MoltTypeTag::Type as u8
+        if unsafe { crate::hooks::hooks_or_stubs().classify_heap(bits) } != MoltTypeTag::Type as u8
         {
             return Ok(None);
         }
@@ -1342,7 +1527,7 @@ impl ObjectBridge {
             if !owned {
                 unsafe { (crate::hooks::hooks_or_stubs().inc_ref)(bits) };
             }
-            let runtime_refs = unsafe { (crate::hooks::hooks_or_stubs().ref_count)(bits) };
+            let runtime_refs = unsafe { crate::hooks::hooks_or_stubs().ref_count(bits) };
             let (initial_refs, has_non_view_runtime_owner) =
                 initial_managed_view_refs(runtime_refs, owned);
             let pinned_refs = if crate::abi_types::is_immortal_refcnt(initial_refs) {
@@ -1392,6 +1577,7 @@ impl ObjectBridge {
             }
 
             if !self.refresh_type_view(bits)
+                || !self.refresh_method_view_with_origins(bits, None)
                 || !self.refresh_tuple_view(bits)
                 || !self.refresh_slice_view_with_origins(bits, None)
                 || !self.refresh_list_view(bits)
@@ -1562,6 +1748,87 @@ fn cfunction_clinic_document<'a>(name: &[u8], document: &'a [u8]) -> Option<(&'a
 
 // Concrete C callable publication and GC traversal.
 impl ObjectBridge {
+    /// Populate only after the null-field skeleton has canonical Building
+    /// identity. Recursive func/receiver projections can therefore resolve it.
+    /// The existing mirror ledger discounts these C pins from graph ownership;
+    /// rollback and terminal retirement use the same owned-field inventory.
+    pub(crate) fn refresh_method_view_with_origins(
+        &self,
+        bits: AbiHandle,
+        origins: Option<[*mut PyObject; 2]>,
+    ) -> bool {
+        let is_method = {
+            let handle = self.handle_shard(bits).lock();
+            matches!(
+                handle.to_py.get(&bits).map(|entry| &entry.view),
+                Some(ManagedView::Method(_))
+            )
+        };
+        if !is_method {
+            if origins.is_some() {
+                unsafe { ensure_result_error(c"method constructor did not publish a method view") };
+                return false;
+            }
+            return true;
+        }
+        let mut staged = [std::ptr::null_mut(); 2];
+        let prepared = (|| {
+            for (index, part) in [
+                crate::hooks::MethodPart::Function,
+                crate::hooks::MethodPart::Receiver,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let result = unsafe { (crate::hooks::hooks_or_stubs().method_part)(bits, part) };
+                let crate::hooks::DecodedHandleResult::Ok(value) = result.decode() else {
+                    unsafe { ensure_result_error(c"runtime method field unavailable") };
+                    return false;
+                };
+                let pointer = if let Some(origins) = origins {
+                    let pointer = origins[index];
+                    if !self.pyobj_matches_handle(pointer, value) {
+                        unsafe { ensure_result_error(c"method origin differs from runtime field") };
+                        return false;
+                    }
+                    if !unsafe { self.projection_incref(pointer) } {
+                        return false;
+                    }
+                    pointer
+                } else {
+                    let Some(pointer) = self.list_projection_pointer(value) else {
+                        return false;
+                    };
+                    pointer
+                };
+                staged[index] = pointer;
+            }
+            true
+        })();
+        let committed = if prepared {
+            let mut handle = self.handle_shard(bits).lock();
+            match handle.to_py.get_mut(&bits).map(|entry| &mut entry.view) {
+                Some(ManagedView::Method(object)) => unsafe {
+                    std::mem::swap(&mut (*object.get()).im_func, &mut staged[0]);
+                    std::mem::swap(&mut (*object.get()).im_self, &mut staged[1]);
+                    true
+                },
+                _ => false,
+            }
+        } else {
+            false
+        };
+        crate::api::errors::with_preserved_error(|| {
+            for pointer in staged {
+                unsafe { self.projection_decref(pointer) };
+            }
+        });
+        if !committed {
+            unsafe { ensure_result_error(c"method field publication failed") };
+        }
+        committed
+    }
+
     /// Runtime callable carriers have actual vectorcall storage even though
     /// their physical header intentionally does not claim a native C function.
     pub(crate) fn runtime_vectorcall(
@@ -1570,10 +1837,11 @@ impl ObjectBridge {
     ) -> Option<crate::abi_types::PyVectorcallFunc> {
         let bits = self.managed_handle_for_pyobj(object)?;
         let handle = self.handle_shard(bits).lock();
-        let ManagedView::RuntimeCallable(callable) = &handle.to_py.get(&bits)?.view else {
-            return None;
-        };
-        unsafe { (*callable.get()).func.vectorcall }
+        match &handle.to_py.get(&bits)?.view {
+            ManagedView::RuntimeCallable(callable) => unsafe { (*callable.get()).vectorcall },
+            ManagedView::Method(method) => unsafe { (*method.get()).vectorcall },
+            _ => None,
+        }
     }
 
     /// Publish a fresh runtime C callable as its canonical concrete view and
@@ -1613,7 +1881,7 @@ impl ObjectBridge {
             (object.func.m_module, false),
             (object.mm_class.cast::<PyObject>(), true),
         ];
-        let runtime_refs = unsafe { (crate::hooks::hooks_or_stubs().ref_count)(bits) };
+        let runtime_refs = unsafe { crate::hooks::hooks_or_stubs().ref_count(bits) };
         let (initial_refs, has_non_view_runtime_owner) =
             initial_managed_view_refs(runtime_refs, true);
         let mut object = object;
@@ -1816,12 +2084,14 @@ impl ObjectBridge {
         }
         if obj.is_ptr() {
             let hooks = crate::hooks::hooks_or_stubs();
-            let tag = unsafe { (hooks.classify_heap)(bits) };
+            let tag = unsafe { hooks.classify_heap(bits) };
             match tag {
-                value if value == MoltTypeTag::BuiltinCallable as u8 => {
-                    MoltTypeTag::BuiltinCallable
+                value if value == MoltTypeTag::RuntimeCallable as u8 => {
+                    MoltTypeTag::RuntimeCallable
                 }
+                value if value == MoltTypeTag::BoundMethod as u8 => MoltTypeTag::BoundMethod,
                 value if value == MoltTypeTag::Int as u8 => MoltTypeTag::Int,
+                value if value == MoltTypeTag::Float as u8 => MoltTypeTag::Float,
                 value if value == MoltTypeTag::Complex as u8 => MoltTypeTag::Complex,
                 value if value == MoltTypeTag::Str as u8 => MoltTypeTag::Str,
                 value if value == MoltTypeTag::Bytes as u8 => MoltTypeTag::Bytes,

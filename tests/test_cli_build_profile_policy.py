@@ -57,6 +57,115 @@ def test_prepare_build_config_uses_release_runtime_profile_for_release_builds(
     assert prepared.runtime_cargo_profile == "release-output"
 
 
+@pytest.mark.parametrize(
+    ("target", "profile", "requested", "resolved"),
+    [
+        ("native", "release", "release-output", "release-output"),
+        ("llvm", "release", "release-output", "release-output"),
+        ("wasm", "release", "release", "wasm-release"),
+        ("wasm-freestanding", "release", "release", "wasm-release"),
+        ("native", "dev", "dev-fast", "dev-fast"),
+        ("wasm", "dev", "dev-fast", "dev-fast"),
+        ("wasm-freestanding", "dev", "dev-fast", "dev-fast"),
+    ],
+)
+def test_public_runtime_profile_request_preserves_target_policy(
+    tmp_path, monkeypatch, target, profile, requested, resolved
+):
+    for name in (
+        "MOLT_DEV_CARGO_PROFILE",
+        "MOLT_RELEASE_CARGO_PROFILE",
+        "MOLT_RUNTIME_BUILD_PROFILE",
+        "MOLT_WASM_CARGO_PROFILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    prepared, error = cli_build_inputs._prepare_build_config(
+        project_root=tmp_path,
+        warnings=[],
+        json_output=False,
+        target=target,
+        profile=profile,
+        pgo_profile=None,
+        runtime_feedback=None,
+        capabilities=None,
+    )
+    assert error is None
+    assert prepared is not None
+    assert prepared.runtime_cargo_profile == requested
+    actual = (
+        cli_runtime_build._resolve_wasm_cargo_profile(prepared.runtime_cargo_profile)
+        if target in {"wasm", "wasm-freestanding"}
+        else prepared.runtime_cargo_profile
+    )
+    assert actual == resolved
+
+
+@pytest.mark.parametrize("target", ["native", "wasm", "wasm-freestanding"])
+@pytest.mark.parametrize(
+    ("explicit", "iteration", "wasm_override", "wasm_expected"),
+    [
+        ("release-output", None, None, "release-output"),
+        ("wasm-release", None, None, "wasm-release"),
+        ("custom-release", None, None, "custom-release"),
+        ("release-output", "dev-fast", None, "dev-fast"),
+        ("release-output", "dev-fast", "wasm-release", "wasm-release"),
+        ("wasm-release", None, "release-output", "release-output"),
+    ],
+)
+def test_explicit_runtime_profile_survives_public_selection(
+    tmp_path, monkeypatch, target, explicit, iteration, wasm_override, wasm_expected
+):
+    monkeypatch.setenv("MOLT_RELEASE_CARGO_PROFILE", explicit)
+    for name, value in (
+        ("MOLT_RUNTIME_BUILD_PROFILE", iteration),
+        ("MOLT_WASM_CARGO_PROFILE", wasm_override),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    prepared, error = cli_build_inputs._prepare_build_config(
+        project_root=tmp_path,
+        warnings=[],
+        json_output=False,
+        target=target,
+        profile="release",
+        pgo_profile=None,
+        runtime_feedback=None,
+        capabilities=None,
+    )
+    assert error is None
+    assert prepared is not None
+    assert prepared.runtime_cargo_profile == explicit
+    if target in {"wasm", "wasm-freestanding"}:
+        assert cli_runtime_build._resolve_wasm_cargo_profile(explicit) == wasm_expected
+    else:
+        assert prepared.runtime_cargo_profile == explicit
+
+
+@pytest.mark.parametrize("target", ["native", "wasm", "wasm-freestanding"])
+def test_invalid_public_runtime_profile_is_rejected_for_every_target(
+    tmp_path, monkeypatch, capsys, target
+):
+    monkeypatch.setenv("MOLT_RELEASE_CARGO_PROFILE", "bad profile")
+    prepared, error = cli_build_inputs._prepare_build_config(
+        project_root=tmp_path,
+        warnings=[],
+        json_output=False,
+        target=target,
+        profile="release",
+        pgo_profile=None,
+        runtime_feedback=None,
+        capabilities=None,
+    )
+    assert prepared is None
+    assert error == 2
+    assert (
+        capsys.readouterr().err.strip()
+        == "Invalid MOLT_RELEASE_CARGO_PROFILE value: bad profile"
+    )
+
+
 @pytest.mark.parametrize("profile", ["dev", "release"])
 def test_build_profile_flag_routes_to_build_profile(
     profile: str,
@@ -177,7 +286,7 @@ def test_nested_build_keeps_platform_profile_and_forwards_build_profile(
 
 # ---------------------------------------------------------------------------
 # Runtime-wasm iteration knobs (Hotspot 1/2): dev-fast profile + incremental
-# target dir. Default-off so acceptance / final-green stays release-output.
+# target dir. Overrides are explicit; public WASM release resolves to wasm-release.
 # ---------------------------------------------------------------------------
 
 
@@ -185,13 +294,13 @@ def _clear_wasm_profile_cache() -> None:
     cli_runtime_build._resolve_wasm_cargo_profile_cached.cache_clear()
 
 
-def test_runtime_build_profile_default_is_release_output(
+def test_runtime_build_profile_preserves_explicit_release_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("MOLT_RUNTIME_BUILD_PROFILE", raising=False)
     monkeypatch.delenv("MOLT_WASM_CARGO_PROFILE", raising=False)
     _clear_wasm_profile_cache()
-    # release-output is passed through untouched (already wasm-resolved upstream)
+    # An explicit physical profile remains available independently of defaults.
     assert cli_runtime_build._resolve_wasm_cargo_profile("release-output") == (
         "release-output"
     )

@@ -26,10 +26,10 @@ use std::ptr;
 // ── Minimal fake runtime backend ───────────────────────────────────────────
 // A tiny handle-keyed store: dicts are handles mapping key-bits -> value-bits.
 
-fn install_hooks() {
+fn install_hooks() -> support::AbiTestThreadStateTransaction {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 unsafe extern "C" fn dummy_method(_self: *mut PyObject, _args: *mut PyObject) -> *mut PyObject {
@@ -49,7 +49,7 @@ fn method_def(name: &'static [u8]) -> PyMethodDef {
 
 #[test]
 fn cfunction_newex_returns_bridge_resolvable_object() {
-    install_hooks();
+    let _abi_test = install_hooks();
     let mut ml = method_def(b"reduce\0");
     let func = unsafe {
         molt_cpython_abi::api::object::PyCFunction_NewEx(&mut ml, ptr::null_mut(), ptr::null_mut())
@@ -77,7 +77,7 @@ fn cfunction_newex_returns_bridge_resolvable_object() {
 
 #[test]
 fn cfunction_descriptor_stores_and_retrieves_in_type_dict() {
-    install_hooks();
+    let _abi_test = install_hooks();
     // Full chain: PyType_Ready publishes native method descriptors, dictionary
     // ownership retains them, and descriptor binding constructs a CFunction.
     let mut methods = [
@@ -147,7 +147,7 @@ fn cfunction_descriptor_stores_and_retrieves_in_type_dict() {
 
 #[test]
 fn cfunction_newex_null_methoddef_returns_null() {
-    install_hooks();
+    let _abi_test = install_hooks();
     let out = unsafe {
         molt_cpython_abi::api::object::PyCFunction_NewEx(
             ptr::null_mut(),
@@ -160,7 +160,7 @@ fn cfunction_newex_null_methoddef_returns_null() {
 
 #[test]
 fn runtime_backed_callable_views_own_member_edges_until_runtime_retirement() {
-    install_hooks();
+    let _abi_test = install_hooks();
     let bridge = &*molt_cpython_abi::bridge::GLOBAL_BRIDGE;
     unsafe {
         let receiver = bridge.owned_handle_to_pyobj(fresh_handle());

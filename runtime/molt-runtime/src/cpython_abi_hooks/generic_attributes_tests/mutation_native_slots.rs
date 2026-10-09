@@ -1100,3 +1100,306 @@ mod builtin_slot_identity;
 
 #[path = "physical_alias_hierarchy.rs"]
 mod physical_alias_hierarchy;
+
+thread_local! {
+    static POWER_PROTOCOL_EVENTS: std::cell::RefCell<Vec<(&'static str, u64)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+extern "C" fn power_protocol_left(_: u64, _: u64, modulus: u64) -> u64 {
+    POWER_PROTOCOL_EVENTS.with(|events| events.borrow_mut().push(("left", modulus)));
+    with_gil(|py| crate::not_implemented_bits(&py))
+}
+extern "C" fn power_protocol_right(_: u64, _: u64, modulus: u64) -> u64 {
+    POWER_PROTOCOL_EVENTS.with(|events| events.borrow_mut().push(("right", modulus)));
+    MoltObject::from_int(73).bits()
+}
+extern "C" fn power_protocol_inplace(_: u64, _: u64) -> u64 {
+    POWER_PROTOCOL_EVENTS.with(|events| {
+        events
+            .borrow_mut()
+            .push(("inplace", MoltObject::none().bits()))
+    });
+    with_gil(|py| crate::not_implemented_bits(&py))
+}
+
+#[test]
+fn power_c_api_and_source_share_versioned_reflection_and_binary_python_ipow() {
+    let transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil(|py| unsafe {
+        let name = crate::attr_name_bits_from_bytes(&py, b"NumericPowerProtocol").unwrap();
+        let left_class = crate::molt_class_new(name);
+        let right_class = crate::molt_class_new(name);
+        dec_ref_bits(&py, name);
+        crate::molt_class_set_base(left_class, crate::builtin_classes(&py).object);
+        crate::molt_class_set_base(right_class, left_class);
+        for (class, name, target) in [
+            (
+                left_class,
+                b"__pow__".as_slice(),
+                power_protocol_left as *const (),
+            ),
+            (
+                right_class,
+                b"__rpow__".as_slice(),
+                power_protocol_right as *const (),
+            ),
+        ] {
+            let callable = function(&py, target, 3);
+            assert!(crate::builtins::methods::set_function_defaults(
+                &py,
+                obj_from_bits(callable).as_ptr().unwrap(),
+                &[MoltObject::none().bits()]
+            ));
+            member(&py, class, name, callable);
+            dec_ref_bits(&py, callable);
+        }
+        method(
+            &py,
+            left_class,
+            b"__ipow__",
+            power_protocol_inplace as *const (),
+            2,
+        );
+        for class in [left_class, right_class] {
+            crate::object::class_finish_definition(&py, obj_from_bits(class).as_ptr().unwrap())
+                .unwrap();
+        }
+        let left = crate::call_callable0(&py, left_class);
+        let right = crate::call_callable0(&py, right_class);
+        let left_view = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(left));
+        let right_view =
+            OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(right));
+        let modulus = MoltObject::from_int(5).bits();
+        let modulus_view =
+            OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(modulus));
+        assert!(!left_view.as_ptr().is_null() && !right_view.as_ptr().is_null());
+        assert!(!crate::exception_pending(&py));
+        for minor in [12, 13, 14] {
+            transaction.with_target_python_minor(&py, minor, || {
+                for inplace in [false, true] {
+                    for modulo in [MoltObject::none().bits(), modulus] {
+                        let expected_tail = if modulo == modulus && minor < 14 {
+                            "left"
+                        } else {
+                            "right"
+                        };
+                        let mut expected = Vec::new();
+                        if inplace {
+                            expected.push(("inplace", MoltObject::none().bits()));
+                        }
+                        expected.push((expected_tail, modulo));
+                        for c_api in [false, true] {
+                            POWER_PROTOCOL_EVENTS.with(|events| events.borrow_mut().clear());
+                            let before = (
+                                (*left_view.as_ptr()).ob_refcnt,
+                                (*right_view.as_ptr()).ob_refcnt,
+                            );
+                            if c_api {
+                                let modulo = if modulo == modulus {
+                                    modulus_view.as_ptr()
+                                } else {
+                                    &raw mut Py_None
+                                };
+                                let output = OwnedPyObject::from_owned(if inplace {
+                                    abstract_number::PyNumber_InPlacePower(
+                                        left_view.as_ptr(),
+                                        right_view.as_ptr(),
+                                        modulo,
+                                    )
+                                } else {
+                                    abstract_number::PyNumber_Power(
+                                        left_view.as_ptr(),
+                                        right_view.as_ptr(),
+                                        modulo,
+                                    )
+                                });
+                                if expected_tail == "left" {
+                                    assert!(output.as_ptr().is_null());
+                                    assert_eq!(
+                                        errors::PyErr_ExceptionMatches(
+                                            (&raw mut PyExc_TypeError).cast()
+                                        ),
+                                        1
+                                    );
+                                    errors::PyErr_Clear();
+                                } else {
+                                    assert!(!output.as_ptr().is_null());
+                                    assert_eq!(numbers::PyLong_AsLong(output.as_ptr()), 73);
+                                }
+                            } else {
+                                let output = crate::object::ops_arith::number_power(
+                                    left, right, modulo, inplace,
+                                );
+                                if expected_tail == "left" {
+                                    assert!(crate::exception_pending(&py));
+                                    assert_eq!(
+                                        errors::PyErr_ExceptionMatches(
+                                            (&raw mut PyExc_TypeError).cast()
+                                        ),
+                                        1
+                                    );
+                                    errors::PyErr_Clear();
+                                } else {
+                                    assert_eq!(obj_from_bits(output).as_int(), Some(73));
+                                }
+                                dec_ref_bits(&py, output);
+                            }
+                            assert_eq!(
+                                POWER_PROTOCOL_EVENTS.with(|events| events.borrow().clone()),
+                                expected
+                            );
+                            assert_eq!(
+                                (
+                                    (*left_view.as_ptr()).ob_refcnt,
+                                    (*right_view.as_ptr()).ob_refcnt
+                                ),
+                                before
+                            );
+                            assert!(errors::PyErr_Occurred().is_null());
+                            assert!(!crate::exception_pending(&py));
+                        }
+                    }
+                }
+            });
+        }
+        for value in [left, right, left_class, right_class] {
+            dec_ref_bits(&py, value);
+        }
+    });
+}
+
+extern "C" fn numeric_normal_owned(_: u64, _: u64) -> u64 {
+    with_gil(|py| {
+        MoltObject::from_ptr(crate::alloc_list(&py, &[MoltObject::from_int(23).bits()])).bits()
+    })
+}
+extern "C" fn numeric_inplace_owned(_: u64, _: u64) -> u64 {
+    with_gil(|py| {
+        MoltObject::from_ptr(crate::alloc_list(&py, &[MoltObject::from_int(71).bits()])).bits()
+    })
+}
+
+#[test]
+fn complete_number_c_api_modes_invoke_real_methods_and_transfer_owned_results() {
+    use molt_cpython_abi::api::sequences;
+    type Operation = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
+    let transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil(|py| unsafe {
+        let name = crate::attr_name_bits_from_bytes(&py, b"NumericModeOwner").unwrap();
+        let class = crate::molt_class_new(name);
+        dec_ref_bits(&py, name);
+        crate::molt_class_set_base(class, crate::builtin_classes(&py).object);
+        // Literal public API/name pairs, not an iteration of implementation enums.
+        let operations: [(&[u8], &[u8], Operation, Operation); 12] = [
+            (
+                b"__add__",
+                b"__iadd__",
+                abstract_number::PyNumber_Add,
+                abstract_number::PyNumber_InPlaceAdd,
+            ),
+            (
+                b"__sub__",
+                b"__isub__",
+                abstract_number::PyNumber_Subtract,
+                abstract_number::PyNumber_InPlaceSubtract,
+            ),
+            (
+                b"__mul__",
+                b"__imul__",
+                abstract_number::PyNumber_Multiply,
+                abstract_number::PyNumber_InPlaceMultiply,
+            ),
+            (
+                b"__truediv__",
+                b"__itruediv__",
+                abstract_number::PyNumber_TrueDivide,
+                abstract_number::PyNumber_InPlaceTrueDivide,
+            ),
+            (
+                b"__floordiv__",
+                b"__ifloordiv__",
+                abstract_number::PyNumber_FloorDivide,
+                abstract_number::PyNumber_InPlaceFloorDivide,
+            ),
+            (
+                b"__mod__",
+                b"__imod__",
+                abstract_number::PyNumber_Remainder,
+                abstract_number::PyNumber_InPlaceRemainder,
+            ),
+            (
+                b"__lshift__",
+                b"__ilshift__",
+                abstract_number::PyNumber_Lshift,
+                abstract_number::PyNumber_InPlaceLshift,
+            ),
+            (
+                b"__rshift__",
+                b"__irshift__",
+                abstract_number::PyNumber_Rshift,
+                abstract_number::PyNumber_InPlaceRshift,
+            ),
+            (
+                b"__and__",
+                b"__iand__",
+                abstract_number::PyNumber_And,
+                abstract_number::PyNumber_InPlaceAnd,
+            ),
+            (
+                b"__or__",
+                b"__ior__",
+                abstract_number::PyNumber_Or,
+                abstract_number::PyNumber_InPlaceOr,
+            ),
+            (
+                b"__xor__",
+                b"__ixor__",
+                abstract_number::PyNumber_Xor,
+                abstract_number::PyNumber_InPlaceXor,
+            ),
+            (
+                b"__matmul__",
+                b"__imatmul__",
+                abstract_number::PyNumber_MatrixMultiply,
+                abstract_number::PyNumber_InPlaceMatrixMultiply,
+            ),
+        ];
+        for (normal, inplace, _, _) in operations {
+            method(&py, class, normal, numeric_normal_owned as *const (), 2);
+            method(&py, class, inplace, numeric_inplace_owned as *const (), 2);
+        }
+        crate::object::class_finish_definition(&py, obj_from_bits(class).as_ptr().unwrap())
+            .unwrap();
+        let instance = crate::call_callable0(&py, class);
+        let view = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(instance));
+        let rhs = OwnedPyObject::from_owned(numbers::PyLong_FromLong(3));
+        assert!(!view.as_ptr().is_null() && !rhs.as_ptr().is_null());
+        for (_, _, normal, inplace) in operations {
+            for (operation, expected) in [(normal, 23), (inplace, 71)] {
+                let before = ((*view.as_ptr()).ob_refcnt, (*rhs.as_ptr()).ob_refcnt);
+                let output = OwnedPyObject::from_owned(operation(view.as_ptr(), rhs.as_ptr()));
+                assert!(!output.as_ptr().is_null());
+                assert_eq!(sequences::PyList_CheckExact(output.as_ptr()), 1);
+                assert_eq!(sequences::PyList_Size(output.as_ptr()), 1);
+                assert_eq!(
+                    numbers::PyLong_AsLong(sequences::PyList_GetItem(output.as_ptr(), 0)),
+                    expected
+                );
+                assert_eq!(
+                    (*output.as_ptr()).ob_refcnt,
+                    1,
+                    "one returned C edge owns the fresh result"
+                );
+                drop(output);
+                assert_eq!(
+                    ((*view.as_ptr()).ob_refcnt, (*rhs.as_ptr()).ob_refcnt),
+                    before
+                );
+                assert!(errors::PyErr_Occurred().is_null());
+                assert!(!crate::exception_pending(&py));
+            }
+        }
+        dec_ref_bits(&py, instance);
+        dec_ref_bits(&py, class);
+    });
+    drop(transaction);
+}

@@ -737,6 +737,11 @@ def test_static_js_isolate_import_bridges_use_single_i64_handle() -> None:
     assert "exports?.molt_runtime_execution_enter" not in run_wasm
     assert "exports?.molt_runtime_execution_leave" not in run_wasm
     assert "const runtimeExport = runtimeExportNameForImport(entry.name);" in run_wasm
+    # Reserved callables use the shared dispatcher; direct module imports
+    # retain the name-resolution contract below. The dispatcher's argument and
+    # result semantics execute in test_wasm_reserved_callable_arity.py.
+    assert "return callReservedRuntimeCallable({" in run_wasm
+    assert "entry: reservedRuntimeCallable," in run_wasm
     assert ": runtimeFallbackFunction(runtimeInst.exports, entry.name);" in run_wasm
     assert "entry.name.startsWith('molt_')" not in run_wasm
     assert "`molt_${entry.name}`" not in run_wasm

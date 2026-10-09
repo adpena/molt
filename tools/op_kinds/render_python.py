@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .registration import (
     backend_private_kinds,
+    frontend_kinds_for_wire_kind,
     registered_frontend_kinds,
     registered_simpleir_kinds,
 )
@@ -43,9 +44,10 @@ def _render_py_frozenset(name: str, values: list[str]) -> str:
 def _frontend_truthiness_control_kinds(data: dict) -> set[str]:
     control = {row["kind"] for row in data.get("simpleir_control_kind", [])}
     return {
-        kind.upper()
+        frontend_kind
         for kind in data.get("simpleir_truthiness_semantics_kinds", [])
         if kind in control
+        for frontend_kind in frontend_kinds_for_wire_kind(data, kind)
     }
 
 
@@ -61,7 +63,8 @@ def _frontend_arbitrary_heap_map(data: dict) -> dict[str, bool]:
         if row.get("mapper_opcode") not in opcodes:
             continue
         for spelling in [row["canonical"], *row.get("aliases", [])]:
-            effects[spelling.upper()] = opcodes[row["mapper_opcode"]]
+            for kind in frontend_kinds_for_wire_kind(data, spelling):
+                effects[kind] = opcodes[row["mapper_opcode"]]
     for table in ("frontend_raising_kind", "frontend_check_exception_skip"):
         for row in data.get(table, []):
             if row.get("opcode") in opcodes:
@@ -386,6 +389,13 @@ def render_py(data: dict) -> str:
             "FRONTEND_REGISTERED_KINDS", sorted(registered_frontend_kinds(data))
         )
     )
+    out.append("# Explicit frontend spellings replacing the uppercase wire default.\n")
+    out.append("FRONTEND_LOWERING_KINDS_BY_WIRE: dict[str, tuple[str, ...]] = {\n")
+    for wire in sorted(
+        {row["wire_kind"] for row in data.get("frontend_lowering_kind", ())}
+    ):
+        out.append(f"    {wire!r}: {frontend_kinds_for_wire_kind(data, wire)!r},\n")
+    out.append("}\n\n")
     out.append(
         _render_py_frozenset(
             "SIMPLEIR_STRUCTURAL_KINDS",
@@ -396,9 +406,10 @@ def render_py(data: dict) -> str:
         _render_py_frozenset(
             "FRONTEND_REPOLL_KINDS",
             [
-                row["kind"].upper()
+                kind
                 for row in data["simpleir_control_kind"]
                 if row["repoll"]
+                for kind in frontend_kinds_for_wire_kind(data, row["kind"])
             ],
         )
     )
@@ -408,10 +419,11 @@ def render_py(data: dict) -> str:
         if "predicate_semantics" in row
     }
     comparisons = {
-        spelling.upper(): comparison_by_opcode[row["mapper_opcode"]]
+        kind: comparison_by_opcode[row["mapper_opcode"]]
         for row in kinds
         if row.get("mapper_opcode") in comparison_by_opcode
         for spelling in (row["canonical"], *row.get("aliases", []))
+        for kind in frontend_kinds_for_wire_kind(data, spelling)
     }
     callback_operators = set(frontend_operator_map(data)) | set(comparisons)
     for row in data["binary_op"]:
@@ -470,10 +482,11 @@ def render_py(data: dict) -> str:
         row["opcode"]: row["domain"] for row in data["canonicalize_commutative_reorder"]
     }
     frontend_commutative = {
-        spelling.upper(): commutative[row["mapper_opcode"]]
+        kind: commutative[row["mapper_opcode"]]
         for row in kinds
         if row.get("mapper_opcode") in commutative
         for spelling in (row["canonical"], *row.get("aliases", []))
+        for kind in frontend_kinds_for_wire_kind(data, spelling)
     }
     out.append(
         f"FRONTEND_COMMUTATIVE_DOMAINS: dict[str, str] = {dict(sorted(frontend_commutative.items()))!r}\n\n"
@@ -518,7 +531,8 @@ def render_py(data: dict) -> str:
         scalar = intrinsic_types[row["mapper_opcode"]]
         hint = {"i64": "int", "f64": "float", "none": "None"}.get(scalar, scalar)
         for spelling in (row["canonical"], *row.get("aliases", [])):
-            out.append(f"    {spelling.upper()!r}: {hint!r},\n")
+            for kind in frontend_kinds_for_wire_kind(data, spelling):
+                out.append(f"    {kind!r}: {hint!r},\n")
     for row in data.get("frontend_effect_kind", []):
         if "exact_scalar_result_type" in row:
             hint = PRIMITIVE_FRONTEND_TYPES[row["exact_scalar_result_type"]]
@@ -534,9 +548,10 @@ def render_py(data: dict) -> str:
     for row in kinds:
         if row.get("mapper_opcode") in intrinsic_arities:
             for spelling in (row["canonical"], *row.get("aliases", [])):
-                out.append(
-                    f"    {spelling.upper()!r}: {intrinsic_arities[row['mapper_opcode']]},\n"
-                )
+                for kind in frontend_kinds_for_wire_kind(data, spelling):
+                    out.append(
+                        f"    {kind!r}: {intrinsic_arities[row['mapper_opcode']]},\n"
+                    )
     for row in data.get("frontend_effect_kind", []):
         if "exact_scalar_result_type" in row:
             out.append(
@@ -676,7 +691,9 @@ def render_py(data: dict) -> str:
         "    admission. This check never collapses local binding aliases or invents\n"
     )
     out.append('    a target support claim for a registered wire operation."""\n')
-    out.append("    if kind in FRONTEND_EFFECT_CLASS:\n")
+    out.append(
+        "    if kind in FRONTEND_REGISTERED_KINDS and kind not in SIMPLEIR_REGISTERED_KINDS:\n"
+    )
     out.append(
         '        raise ValueError(f"function {function_name!r}: frontend operation {kind!r} escaped serialization")\n'
     )

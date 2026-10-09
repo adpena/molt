@@ -403,9 +403,7 @@ impl ProcessLedger {
     }
 
     fn validate_image(&self, image: &FileIdentity) -> Result<(), String> {
-        if !image.path.is_absolute() {
-            return Err("observed executable image path is not absolute".to_owned());
-        }
+        self.policy.validate_observed_image_path(&image.path)?;
         validate_digest(&image.sha256, "observed executable image")?;
         let expected = self.policy.classify_observed_image(
             &image.path,

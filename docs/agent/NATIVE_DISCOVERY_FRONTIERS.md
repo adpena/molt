@@ -581,8 +581,15 @@ so it is correct for both ABI-layout and bridge-managed tuples. Wired as
 
 ### VERIFICATION — mask-proof, native, 0.03 s
 
-`runtime/molt-cpython-abi/tests/frontier_repro.rs::ufunc_frontier_tuple_structural_richcompare`
-(NOT `#[ignore]`d — a permanent regression guard):
+`runtime/molt-runtime/src/cpython_abi_hooks/inquiry_tests.rs::ufunc_frontier_tuple_structural_richcompare`
+(not ignored) owns the current witness with the actual runtime comparison hooks.
+The historical results below belong to its former
+`runtime/molt-cpython-abi/tests/frontier_repro.rs` location. The fixture-only
+comparison no longer models managed tuple semantics after the ownership
+migration; current execution qualification is tracked in
+[the V1 findings ledger](V1_HANDOFF_FINDINGS.md).
+
+Historical slot-repair evidence:
 * **Pre-fix:** `PyObject_RichCompareBool((7,7,7),(7,7,7), Py_EQ)` returned **0**
   (FAILED) — the exact `get_info_no_cast` miss.
 * **Post-fix:** returns **1** (PASS). Also asserts the discriminator cases the

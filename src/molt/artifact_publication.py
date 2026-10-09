@@ -32,6 +32,7 @@ from molt.exact_json import canonical_json_bytes, encode_exact, loads_exact
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     open_stable_regular_file,
+    iter_stable_regular_file_chunks,
     stable_regular_file_version,
     verify_stable_regular_file_content,
     verify_stable_regular_file_identity,
@@ -223,7 +224,9 @@ def staged_copy_file(
                 digest = hashlib.sha256()
                 size = 0
                 with tmp_path.open("xb") as destination:
-                    while block := opened.stream.read(1024 * 1024):
+                    for block in iter_stable_regular_file_chunks(
+                        opened, chunk_bytes=1024 * 1024
+                    ):
                         digest.update(block)
                         size += len(block)
                         destination.write(block)

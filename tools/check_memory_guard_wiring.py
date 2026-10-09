@@ -421,6 +421,7 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         "src/molt/pytest_memory_guard_config_plugin.py",
         (
             "pytest_load_initial_conftests",
+            "pytest_configure",
             "pytest_runtest_call",
         ),
         "repo pytest config plugin must keep memory-guard startup active even "
@@ -446,6 +447,8 @@ PYTHON_GUARD_CONTRACTS: tuple[TokenContract, ...] = (
         (
             "_bind_confirmed_test_repository",
             "pytest_load_initial_conftests",
+            "pytest_configure",
+            "pytest_runtest_logreport",
             "pytest_runtest_call",
             "MOLT_MEMORY_GUARD_ACTIVE",
             "MOLT_MEMORY_GUARD_PID",

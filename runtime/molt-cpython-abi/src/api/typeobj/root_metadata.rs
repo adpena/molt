@@ -64,7 +64,7 @@ unsafe fn runtime_type(tp: *mut PyTypeObject) -> bool {
     GLOBAL_BRIDGE
         .observed_handle_for_pyobj(tp.cast())
         .is_some_and(|value| unsafe {
-            (crate::hooks::hooks_or_stubs().classify_heap)(value.bits())
+            crate::hooks::hooks_or_stubs().classify_heap(value.bits())
                 == crate::abi_types::MoltTypeTag::Type as u8
         })
 }

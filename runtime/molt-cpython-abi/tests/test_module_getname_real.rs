@@ -22,10 +22,10 @@ use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::hooks::RuntimeHooks;
 use std::ffi::CStr;
 
-fn install_hooks() {
+fn install_hooks() -> support::AbiTestThreadStateTransaction {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 /// Build a module named `name` and set its `__name__` in its own dict via the
@@ -55,7 +55,7 @@ unsafe fn module_named(name: &CStr) -> *mut PyObject {
 
 #[test]
 fn module_getname_returns_real_distinct_names() {
-    install_hooks();
+    let _abi_test = install_hooks();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let m1 = unsafe { module_named(c"numpy._core._multiarray_umath") };
@@ -87,7 +87,7 @@ fn module_getname_returns_real_distinct_names() {
 
 #[test]
 fn module_getname_null_sets_systemerror() {
-    install_hooks();
+    let _abi_test = install_hooks();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let n = unsafe { molt_cpython_abi::api::modules::PyModule_GetName(std::ptr::null_mut()) };
     assert!(n.is_null(), "NULL module must return NULL");

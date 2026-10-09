@@ -13,15 +13,49 @@ from pathlib import Path
 import re
 import sys
 import tomllib
-from typing import Mapping, Sequence
+from typing import Iterator, Mapping, Sequence
 
-from molt import process_guard
+from molt.exact_json import string_keyed_mapping
 from molt.toolchain_identity import (
     executable_environment_value,
     find_executable,
     resolve_executable,
     stable_executable_probe,
 )
+
+
+def cargo_configuration_value(
+    document: Mapping[str, object], *keys: str
+) -> object | None:
+    """Read one Cargo configuration path without selecting or probing tools."""
+    value: object = document
+    for key in keys:
+        if not isinstance(value, Mapping) or key not in value:
+            return None
+        table = string_keyed_mapping(value)
+        if table is None:
+            raise ValueError(f"runtime Cargo {key} must be a string-keyed table")
+        value = table[key]
+    return value
+
+
+def cargo_selected_value(
+    config: Mapping[str, object],
+    cli: Mapping[str, object],
+    env: Mapping[str, str],
+    keys: tuple[str, ...],
+    names: tuple[str, ...],
+    default: object = None,
+) -> object:
+    """Apply Cargo command-line, environment, configuration, then default priority."""
+    cli_value = cargo_configuration_value(cli, *keys)
+    if cli_value is not None:
+        return cli_value
+    for name in names:
+        if name in env:
+            return env[name]
+    value = cargo_configuration_value(config, *keys)
+    return default if value is None else value
 
 
 def rust_channel(data: bytes) -> str:
@@ -74,6 +108,8 @@ def resolve_rustup_proxy(
             ):
                 if selected.sha256 != proxy.sha256:
                     continue
+                from molt import process_guard
+
                 result = process_guard.run_completed_command(
                     [os.fspath(entrypoint), "which", role],
                     cwd=root,
@@ -223,23 +259,143 @@ def cargo_configuration_paths(root: Path, env: Mapping[str, str]) -> tuple[Path,
     return tuple(paths)
 
 
+@dataclass(frozen=True, slots=True)
+class RustFlagSpan:
+    """An exact Rust argument span with any preceding short no-value flags.
+
+    Values retain their original bytes. ``codegen`` is a semantic projection;
+    original argv and relative-tool indexes never use that projection.
+    """
+
+    start: int
+    stop: int
+    option: str | None = None
+    value: str | None = None
+    leading: tuple[str, ...] = ()
+
+    @property
+    def codegen(self) -> str | None:
+        return (
+            canonical_rust_codegen_option(self.value)
+            if self.option == "-C" and self.value is not None
+            else None
+        )
+
+
+def canonical_rust_codegen_option(value: str) -> str:
+    """rustc accepts underscores and hyphens in keys, not rewritten values."""
+    key, separator, operand = value.partition("=")
+    return key.replace("_", "-") + separator + operand
+
+
+# rustc 1.99 --help -v outer arity, not a codegen option-name registry.
+# -Z retains the existing unstable-resource lane. A value-taking short option
+# ends a cluster; preceding no-value flags remain part of the raw argument.
+_RUST_VALUE_OPTIONS = frozenset(
+    {
+        "--cfg",
+        "--check-cfg",
+        "--crate-type",
+        "--crate-name",
+        "--edition",
+        "--emit",
+        "--print",
+        "--sysroot",
+        "--target",
+        "--extern",
+        "--out-dir",
+        "--explain",
+        "--color",
+        "--error-format",
+        "--json",
+        "--diagnostic-width",
+        "--remap-path-prefix",
+        "--remap-path-scope",
+        "--cap-lints",
+        "--force-warn",
+        "--allow",
+        "--warn",
+        "--deny",
+        "--forbid",
+    }
+)
+_RUST_SHORT_VALUE_OPTIONS = frozenset("CLloAWDFZ")
+_RUST_SHORT_FLAGS = frozenset("hVvgO")
+
+
+def rust_flag_spans(arguments: Sequence[str]) -> Iterator[RustFlagSpan]:
+    """Consume rustc's lexical option boundaries without shell tokenization."""
+    index = 0
+    while index < len(arguments):
+        start = index
+        argument = arguments[index]
+        index += 1
+        if argument == "--":
+            yield RustFlagSpan(start, len(arguments))
+            return
+        option = value = None
+        leading: tuple[str, ...] = ()
+        if argument.startswith("--"):
+            key, separator, operand = argument.partition("=")
+            if key == "--codegen" or key in _RUST_VALUE_OPTIONS:
+                option = "-C" if key == "--codegen" else key
+                if separator:
+                    value = operand
+        elif argument.startswith("-"):
+            for offset, character in enumerate(argument[1:], start=1):
+                if character in _RUST_SHORT_FLAGS:
+                    continue
+                if character in _RUST_SHORT_VALUE_OPTIONS:
+                    option = "-" + character
+                    leading = (argument[:offset],) if offset > 1 else ()
+                    value = argument[offset + 1 :] or None
+                break  # A value consumes the rest; unknown options stay rustc-owned.
+        if option is not None and value is None:
+            if index == len(arguments):
+                label = "a codegen option" if option == "-C" else "an operand"
+                raise ValueError(f"Rust {option} requires {label}")
+            value = arguments[index]
+            index += 1
+        if option == "-C" and (not value or value.startswith(("=", "-"))):
+            raise ValueError(f"invalid Rust codegen option: {argument!r}")
+        yield RustFlagSpan(start, index, option, value, leading)
+
+
+def canonical_rust_codegen_flags(arguments: Sequence[str]) -> tuple[str, ...]:
+    """Project codegen spelling only; preserve operand bytes and other tokens."""
+    result: list[str] = []
+    for span in rust_flag_spans(arguments):
+        result.extend(
+            (*span.leading, "-C", span.codegen)
+            if span.codegen is not None
+            else arguments[span.start : span.stop]
+        )
+    return tuple(result)
+
+
 def relative_rustc_tool_paths(arguments: Sequence[str]) -> list[tuple[int, str, str]]:
-    """Find path operands without interpreting Cargo's flag precedence."""
+    """Find tool operands at their original indexes without Cargo precedence."""
     result = []
-    for index, argument in enumerate(arguments):
+    for span in rust_flag_spans(arguments):
+        index = span.start
+        argument = arguments[index]
         prefix = ""
-        if index and arguments[index - 1] == "--sysroot":
-            path = argument
-        elif argument.startswith("--sysroot="):
-            prefix, path = "--sysroot=", argument[len("--sysroot=") :]
-        elif argument.startswith("-Clinker="):
-            prefix, path = "-Clinker=", argument[len("-Clinker=") :]
-        elif index and arguments[index - 1] == "-C" and argument.startswith("linker="):
-            prefix, path = "linker=", argument[len("linker=") :]
+        if span.codegen is not None:
+            if not span.codegen.startswith("linker="):
+                continue
+            index = span.stop - 1
+            path = span.codegen[len("linker=") :]
+            prefix = arguments[index][: len(arguments[index]) - len(path)]
+            if not any(separator in path for separator in "/\\"):
+                continue  # Bare linker names select a tool, not a relative path.
+        elif argument == "--":
+            break
+        elif span.option == "--sysroot":
+            assert span.value is not None
+            index, path = span.stop - 1, span.value
+            prefix = arguments[index][: len(arguments[index]) - len(path)]
         else:
             continue
-        if "linker=" in prefix and not any(separator in path for separator in "/\\"):
-            continue  # A bare linker name is a tool-search selection, not a path.
         if not Path(path).is_absolute():
             result.append((index, prefix, path))
     return result

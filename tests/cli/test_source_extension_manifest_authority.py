@@ -1827,6 +1827,7 @@ def test_receipt_issuance_detects_installed_byte_mutation(
         (("schema_version",), 5.0, "manifest schema is invalid"),
         (("target",), "wasm", "keys differ from schema"),
         (("target_metadata", "schema_version"), True, "metadata contract differs"),
+        (("target_metadata", "schema_version"), 4, "metadata contract differs"),
         (("target_metadata", "schema_version"), 4.0, "metadata contract differs"),
         (
             ("target_metadata", "build_toolchain", "target_triple"),
@@ -1868,11 +1869,11 @@ def test_receipt_issuance_detects_installed_byte_mutation(
                 "target_metadata",
                 "toolchain",
                 "link_probe_archives",
-                "compiler_builtins",
+                "compiler_rt",
                 "path",
             ),
             None,
-            "no Meson compiler-builtins path",
+            "no Meson compiler-rt path",
         ),
         (
             ("target_metadata", "target", "requested"),

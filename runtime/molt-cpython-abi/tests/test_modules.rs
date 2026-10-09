@@ -113,45 +113,14 @@ struct FakeModuleCapi {
 unsafe extern "C" fn fake_alloc_bytes(_data: *const u8, _len: usize) -> u64 {
     support::fake_runtime::fresh_handle()
 }
-unsafe extern "C" fn fake_int_from_i64(_value: i64) -> u64 {
-    support::fake_runtime::fresh_handle()
+unsafe extern "C" fn fake_int_from_i64(value: i64) -> u64 {
+    MoltObject::try_from_int(value).map_or_else(
+        || support::fake_runtime::heap_integer(i128::from(value)),
+        |value| value.bits(),
+    )
 }
-unsafe extern "C" fn fake_int_from_u64(_value: u64) -> u64 {
-    support::fake_runtime::fresh_handle()
-}
-unsafe extern "C" fn fake_int_as_i64(_bits: u64) -> i64 {
-    -1
-}
-unsafe extern "C" fn fake_int_as_i64_checked(_bits: u64, out: *mut i64) -> std::os::raw::c_int {
-    if !out.is_null() {
-        unsafe {
-            *out = -1;
-        }
-    }
-    0
-}
-unsafe extern "C" fn fake_int_as_u64_checked(_bits: u64, out: *mut u64) -> std::os::raw::c_int {
-    if !out.is_null() {
-        unsafe {
-            *out = 0;
-        }
-    }
-    0
-}
-unsafe extern "C" fn fake_int_as_u64_mask(
-    _bits: u64,
-    _width: u32,
-    _out: *mut u64,
-) -> std::os::raw::c_int {
-    -1
-}
-unsafe extern "C" fn fake_int_from_bytes(
-    _data: *const u8,
-    _len: usize,
-    _little_endian: std::os::raw::c_int,
-    _signed: std::os::raw::c_int,
-) -> u64 {
-    support::fake_runtime::fresh_handle()
+unsafe extern "C" fn fake_int_from_u64(value: u64) -> u64 {
+    support::fake_runtime::heap_integer(i128::from(value))
 }
 
 unsafe extern "C" fn fake_int_from_digits(
@@ -165,36 +134,6 @@ unsafe extern "C" fn fake_int_from_digits(
 
 unsafe extern "C" fn fake_int_from_f64_trunc(value: f64) -> u64 {
     unsafe { fake_int_from_i64(value.trunc() as i64) }
-}
-
-unsafe extern "C" fn fake_int_sign(bits: u64) -> i32 {
-    unsafe { fake_int_as_i64(bits) }.signum() as i32
-}
-
-unsafe extern "C" fn fake_int_signed_byte_width(bits: u64, out: *mut usize) -> i32 {
-    let value = unsafe { fake_int_as_i64(bits) };
-    unsafe {
-        *out = ((65
-            - if value >= 0 {
-                value.leading_zeros()
-            } else {
-                (!value).leading_zeros()
-            }) as usize)
-            .div_ceil(8)
-    };
-    0
-}
-unsafe extern "C" fn fake_int_to_bytes(
-    _bits: u64,
-    _data: *mut u8,
-    _len: usize,
-    _little_endian: std::os::raw::c_int,
-    _signed: std::os::raw::c_int,
-) -> std::os::raw::c_int {
-    -1
-}
-unsafe extern "C" fn fake_int_num_bits(_bits: u64, _out: *mut usize) -> std::os::raw::c_int {
-    -1
 }
 
 unsafe extern "C" fn fake_int_max_str_digits() -> usize {
@@ -372,12 +311,6 @@ unsafe extern "C" fn fake_sys_get_object_borrowed(
     _policy: molt_cpython_abi::hooks::SysLookupPolicy,
 ) -> BorrowedHandleResult {
     BorrowedHandleResult::missing()
-}
-unsafe extern "C" fn fake_try_mark_abi_view(
-    _bits: u64,
-    _present: std::os::raw::c_int,
-) -> std::os::raw::c_int {
-    1
 }
 unsafe extern "C" fn fake_import_add_module_borrowed(
     _data: *const u8,
@@ -666,21 +599,20 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     thread_state_drop_leave: fake_thread_state_drop_leave,
     attached_runtime_context: fake_attached_runtime_context,
     pending_call_error: fake_pending_call_error,
-    alloc_str: support::fake_runtime::alloc_str,
+    alloc_str: Some(support::fake_runtime::alloc_str),
     alloc_bytes: fake_alloc_bytes,
+    numeric_identity_new: Some(support::fake_runtime::numeric_identity_new),
+    float_payload: support::fake_runtime::float_payload,
     int_from_i64: fake_int_from_i64,
     int_from_u64: fake_int_from_u64,
-    int_as_i64: fake_int_as_i64,
-    int_as_i64_checked: fake_int_as_i64_checked,
-    int_as_u64_checked: fake_int_as_u64_checked,
-    int_as_u64_mask: fake_int_as_u64_mask,
+
     int_from_digits: fake_int_from_digits,
     int_from_f64_trunc: fake_int_from_f64_trunc,
-    int_sign: fake_int_sign,
-    int_signed_byte_width: fake_int_signed_byte_width,
-    int_from_bytes: fake_int_from_bytes,
-    int_to_bytes: fake_int_to_bytes,
-    int_num_bits: fake_int_num_bits,
+    int_sign: support::fake_runtime::int_sign,
+
+    int_from_bytes: support::fake_runtime::int_from_bytes,
+    int_to_bytes: support::fake_runtime::int_to_bytes,
+    int_num_bits: support::fake_runtime::int_num_bits,
     int_max_str_digits: fake_int_max_str_digits,
     complex_parts: fake_complex_parts,
     alloc_list: fake_alloc_list,
@@ -693,17 +625,17 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     list_sort: fake_list_sort,
     list_reverse: fake_list_reverse,
     list_set_slice: fake_list_set_slice,
-    alloc_tuple: fake_alloc_tuple,
-    tuple_set: fake_tuple_set,
-    tuple_len: fake_tuple_len,
-    tuple_item: fake_tuple_item,
+    alloc_tuple: Some(fake_alloc_tuple),
+    tuple_set: Some(fake_tuple_set),
+    tuple_len: Some(fake_tuple_len),
+    tuple_item: Some(fake_tuple_item),
     alloc_dict: support::fake_runtime::alloc_dict,
     dict_resolve: support::fake_runtime::dict_resolve,
     dict_mutate: support::fake_runtime::dict_mutate,
     dict_get: support::fake_runtime::dict_get,
     dict_pop: support::fake_runtime::dict_pop,
     dict_len: support::fake_runtime::dict_len,
-    dict_entry: support::fake_runtime::dict_entry,
+    dict_next: support::fake_runtime::dict_next,
     str_data: support::fake_runtime::str_data,
     bytes_data: fake_bytes_data,
     buffer_acquire: fake_buffer_acquire,
@@ -717,11 +649,11 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     object_repr: support::fake_runtime::object_repr,
     sys_get_object_borrowed: fake_sys_get_object_borrowed,
     eval_get_builtins_borrowed: fake_eval_get_builtins_borrowed,
-    classify_heap: support::fake_runtime::classify_heap,
+    classify_heap: Some(support::fake_runtime::classify_heap),
     inc_ref: support::fake_runtime::inc_ref,
     dec_ref: support::fake_runtime::dec_ref,
-    ref_count: support::fake_runtime::ref_count,
-    try_mark_abi_view: fake_try_mark_abi_view,
+    ref_count: Some(support::fake_runtime::ref_count),
+    try_mark_abi_view: support::fake_runtime::try_mark_abi_view,
     alloc_module: support::fake_runtime::alloc_module,
     module_get_dict_borrowed: support::fake_runtime::module_get_dict,
     import_add_module_borrowed: fake_import_add_module_borrowed,
@@ -733,12 +665,13 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     module_state_find: fake_module_state_find,
     module_state_remove: fake_module_state_remove,
     module_exec_begin: fake_module_exec_begin,
-    register_c_function: fake_register_c_function,
+    register_c_function: Some(fake_register_c_function),
     import_module: fake_import_module,
     exception_pending: fake_exception_pending,
     number_binary_op: fake_number_binary_op,
     number_unary_op: fake_number_unary_op,
     number_power: fake_number_power,
+    target_python_minor: test_target_python_minor,
     dict_op: support::fake_runtime::dict_op,
     set_op: fake_set_op,
     set_new: fake_set_new,
@@ -748,12 +681,15 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     set_discard: fake_set_discard,
     object_dir: fake_object_dir,
     object_call: fake_object_call,
+    object_vectorcall: fake_object_vectorcall,
+    method_new: Some(support::fake_runtime::method_new),
+    method_part: support::fake_runtime::method_part,
     object_is_callable: fake_object_is_callable,
     foreign_new: fake_foreign_new,
     report_unraisable: fake_report_unraisable,
     exception_set_field: fake_exception_set_field,
     exception_get_field: fake_exception_get_field,
-    runtime_class_borrowed: fake_runtime_class_borrowed,
+    runtime_class_borrowed: Some(fake_runtime_class_borrowed),
     take_pending_exception: fake_take_pending_exception,
     clear_pending_exception: fake_clear_pending_exception,
     with_preserved_pending_exception: molt_cpython_abi::hooks::STUB_HOOKS
@@ -766,6 +702,29 @@ unsafe extern "C" fn fake_object_call(
     _args: u64,
     _kwargs: u64,
 ) -> OwnedHandleResult {
+    fake_call_result(callable)
+}
+
+unsafe extern "C" fn fake_object_vectorcall(
+    callable: u64,
+    values: *const u64,
+    positional_count: usize,
+    names: *const u64,
+    keyword_count: usize,
+) -> OwnedHandleResult {
+    let Some(count) = positional_count.checked_add(keyword_count) else {
+        return OwnedHandleResult::error();
+    };
+    if count > isize::MAX as usize / std::mem::size_of::<u64>()
+        || (count != 0 && values.is_null())
+        || (keyword_count != 0 && names.is_null())
+    {
+        return OwnedHandleResult::error();
+    }
+    fake_call_result(callable)
+}
+
+fn fake_call_result(callable: u64) -> OwnedHandleResult {
     if FAKE_CALL_ENABLED.load(Ordering::Relaxed) {
         FAKE_LAST_CALLED.store(callable, Ordering::Relaxed);
         FAKE_CALLS.fetch_add(1, Ordering::Relaxed);
@@ -814,13 +773,23 @@ unsafe extern "C" fn fake_foreign_new(c_ptr: usize) -> u64 {
     }
     bits
 }
-unsafe extern "C" fn fake_number_binary_op(_op: u32, _a: u64, _b: u64) -> OwnedHandleResult {
+unsafe extern "C" fn fake_number_binary_op(
+    _op: u32,
+    _mode: u32,
+    _a: u64,
+    _b: u64,
+) -> OwnedHandleResult {
     OwnedHandleResult::error()
 }
 unsafe extern "C" fn fake_number_unary_op(_op: u32, _a: u64) -> OwnedHandleResult {
     OwnedHandleResult::error()
 }
-unsafe extern "C" fn fake_number_power(_a: u64, _b: u64, _mod_bits: u64) -> OwnedHandleResult {
+unsafe extern "C" fn fake_number_power(
+    _mode: u32,
+    _a: u64,
+    _b: u64,
+    _mod_bits: u64,
+) -> OwnedHandleResult {
     OwnedHandleResult::error()
 }
 unsafe extern "C" fn fake_set_new(_iterable: BorrowedHandleResult, _frozen: bool) -> u64 {
@@ -847,14 +816,17 @@ unsafe extern "C" fn fake_object_dir(_obj: u64) -> OwnedHandleResult {
 
 /// Acquire the binary-wide serialization guard (poison-tolerant, so one test's
 /// failure never cascades into the rest) and run the idempotent ABI + hook init.
-/// Every test binds the returned guard for its whole body — see `TEST_LOCK`.
-/// The returned `MutexGuard` is itself `#[must_use]`, so a test that drops it
-/// early (a bare `init();`) is caught at compile time.
-fn init() -> MutexGuard<'static, ()> {
+/// Every test binds both guards for its whole body — see `TEST_LOCK`.
+/// Tuple field order retires the ABI transaction before releasing TEST_LOCK.
+#[must_use = "retain ABI and fixture-lock custody for the whole test"]
+fn init() -> (
+    support::AbiTestThreadStateTransaction,
+    MutexGuard<'static, ()>,
+) {
     let guard = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    support::prepare_abi_test_thread(TEST_HOOKS);
+    let transaction = support::enter_abi_test(TEST_HOOKS);
     support::fake_runtime::prepare_class_bindings();
-    guard
+    (transaction, guard)
 }
 
 #[test]
@@ -1264,7 +1236,7 @@ fn test_module_new_non_null() {
         };
         let (mut name_key, mut name_value) = (0, 0);
         assert_eq!(
-            support::fake_runtime::dict_entry(dict, 0, &mut name_key, &mut name_value),
+            support::fake_runtime::dict_next(dict, &mut 0, &mut name_key, &mut name_value),
             1
         );
         let text = strings::PyUnicode_FromString(c"projected string lifetime".as_ptr());
@@ -2507,7 +2479,7 @@ unsafe extern "C" fn observe_module_publication(context: *mut c_void) -> i32 {
         DecodedHandleResult::Missing => observation.expected.is_none(),
         DecodedHandleResult::Error => false,
     };
-    observation.owner_alive = unsafe { (hooks.ref_count)(observation.displaced) == 1 };
+    observation.owner_alive = unsafe { hooks.ref_count(observation.displaced) == 1 };
     observation.deallocs = CROSSING_DEALLOCS.load(Ordering::Relaxed);
     if observation.fail {
         unsafe {
@@ -2549,7 +2521,7 @@ fn module_dictionary_publication_precedes_foreign_retirement_and_preserves_error
         };
         let (mut original_key, mut original_value) = (0, 0);
         assert_eq!(
-            (hooks.dict_entry)(dict, 1, &mut original_key, &mut original_value),
+            (hooks.dict_next)(dict, &mut 1, &mut original_key, &mut original_value),
             1
         );
         assert_eq!(original_value, old);
@@ -2602,7 +2574,7 @@ fn module_dictionary_publication_precedes_foreign_retirement_and_preserves_error
         let mut stored_key = 0;
         let mut stored_value = 0;
         assert_eq!(
-            (hooks.dict_entry)(dict, 1, &mut stored_key, &mut stored_value),
+            (hooks.dict_next)(dict, &mut 1, &mut stored_key, &mut stored_value),
             1
         );
         assert_eq!(stored_key, original_key);
@@ -2643,4 +2615,8 @@ fn module_dictionary_publication_precedes_foreign_retirement_and_preserves_error
         molt_cpython_abi::api::refcount::Py_DECREF(module);
         assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
     }
+}
+
+unsafe extern "C" fn test_target_python_minor() -> i64 {
+    12
 }

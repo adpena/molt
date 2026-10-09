@@ -11,14 +11,14 @@ use std::{f64::consts::PI, hint::black_box, ptr, sync::Arc, thread, time::Instan
 
 use molt_lang_obj_model::MoltObject;
 
-fn init() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+fn init() -> support::AbiTestThreadStateTransaction {
+    support::enter_abi_test(support::stub_runtime_hooks())
 }
 
 #[test]
 #[ignore = "wall-clock profiler; run with --ignored --nocapture --release"]
 fn bridge_crossing_timing_profile() {
-    init();
+    let _abi_test = init();
     const LOOKUPS_PER_THREAD: usize = 2_000_000;
     const GLOBAL_MUTEX_BASELINE_NS: f64 = 18.72;
     let max_threads = thread::available_parallelism()
@@ -101,7 +101,7 @@ fn bridge_crossing_timing_profile() {
 
 #[test]
 fn test_bridge_int_roundtrip() {
-    init();
+    let _abi_test = init();
     let bits = MoltObject::from_int(42).bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(!py.is_null());
@@ -114,7 +114,7 @@ fn test_bridge_int_roundtrip() {
 
 #[test]
 fn test_bridge_float_roundtrip() {
-    init();
+    let _abi_test = init();
     let bits = MoltObject::from_float(PI).bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(!py.is_null());
@@ -131,7 +131,7 @@ fn test_bridge_float_roundtrip() {
 
 #[test]
 fn test_bridge_none_returns_singleton() {
-    init();
+    let _abi_test = init();
     let bits = MoltObject::none().bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(std::ptr::eq(py, &raw mut Py_None));
@@ -139,7 +139,7 @@ fn test_bridge_none_returns_singleton() {
 
 #[test]
 fn test_bridge_true_returns_singleton() {
-    init();
+    let _abi_test = init();
     let bits = MoltObject::from_bool(true).bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(std::ptr::eq(py, (&raw mut Py_True).cast::<PyObject>()));
@@ -147,7 +147,7 @@ fn test_bridge_true_returns_singleton() {
 
 #[test]
 fn test_bridge_false_returns_singleton() {
-    init();
+    let _abi_test = init();
     let bits = MoltObject::from_bool(false).bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(std::ptr::eq(py, (&raw mut Py_False).cast::<PyObject>()));
@@ -159,7 +159,7 @@ fn test_bridge_false_returns_singleton() {
 
 #[test]
 fn test_pyobj_to_handle_none() {
-    init();
+    let _abi_test = init();
     let none_ptr = &raw mut Py_None;
     let handle = GLOBAL_BRIDGE.pyobj_to_handle(none_ptr);
     assert_eq!(
@@ -170,7 +170,7 @@ fn test_pyobj_to_handle_none() {
 
 #[test]
 fn test_pyobj_to_handle_true() {
-    init();
+    let _abi_test = init();
     let true_ptr = (&raw mut Py_True).cast::<PyObject>();
     let handle = GLOBAL_BRIDGE.pyobj_to_handle(true_ptr);
     assert_eq!(
@@ -181,7 +181,7 @@ fn test_pyobj_to_handle_true() {
 
 #[test]
 fn test_pyobj_to_handle_false() {
-    init();
+    let _abi_test = init();
     let false_ptr = (&raw mut Py_False).cast::<PyObject>();
     let handle = GLOBAL_BRIDGE.pyobj_to_handle(false_ptr);
     assert_eq!(
@@ -192,14 +192,14 @@ fn test_pyobj_to_handle_false() {
 
 #[test]
 fn test_pyobj_to_handle_null_returns_none() {
-    init();
+    let _abi_test = init();
     let handle = GLOBAL_BRIDGE.pyobj_to_handle(ptr::null_mut());
     assert_eq!(handle, None);
 }
 
 #[test]
 fn test_none_hash_uses_pointer_width_py_hash() {
-    init();
+    let _abi_test = init();
     let hash = unsafe {
         molt_cpython_abi::api::typeobj::PyObject_Hash(&raw mut molt_cpython_abi::abi_types::Py_None)
     };
@@ -217,7 +217,7 @@ fn test_none_hash_uses_pointer_width_py_hash() {
 
 #[test]
 fn test_bridge_caches_second_lookup() {
-    init();
+    let _abi_test = init();
     let bits = MoltObject::from_int(12345).bits();
     let py1 = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     let py2 = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
@@ -235,7 +235,7 @@ fn test_bridge_caches_second_lookup() {
 
 #[test]
 fn test_bridge_borrowed_lookup_does_not_incref_cached_entry() {
-    init();
+    let _abi_test = init();
     let bits = MoltObject::from_int(54321).bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert_eq!(unsafe { (*py).ob_refcnt }, 1);
@@ -256,7 +256,7 @@ fn test_bridge_borrowed_lookup_does_not_incref_cached_entry() {
 
 #[test]
 fn test_bridge_borrowed_lookup_materializes_cache_anchor() {
-    init();
+    let _abi_test = init();
     let bits = MoltObject::from_int(54322).bits();
     let py = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };
     assert!(!py.is_null());
@@ -279,7 +279,7 @@ fn test_bridge_borrowed_lookup_materializes_cache_anchor() {
 
 #[test]
 fn test_release_pyobj_removes_mapping() {
-    init();
+    let _abi_test = init();
     let bits = MoltObject::from_int(77777).bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(GLOBAL_BRIDGE.pyobj_to_handle(py).is_some());
@@ -297,7 +297,7 @@ fn test_release_pyobj_removes_mapping() {
 
 #[test]
 fn tag_table_uses_physical_types_only_for_exact_layout_carriers() {
-    init();
+    let _abi_test = init();
     let managed = &raw mut MoltManaged_Type;
     let expected = [
         (MoltTypeTag::Bool, &raw mut PyBool_Type),

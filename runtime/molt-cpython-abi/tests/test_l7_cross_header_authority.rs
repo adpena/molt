@@ -247,6 +247,7 @@ fn external_c_api_data_uses_one_shared_linkage_policy() {
             &[
                 "PyAPI_DATA(PyTypeObject) MoltManaged_Type;",
                 "PyAPI_DATA(PyLongObject) _Py_TrueStruct;",
+                "PyAPI_DATA(int) Py_OptimizeFlag;",
             ][..],
         ),
         (
@@ -281,13 +282,38 @@ fn external_c_api_data_uses_one_shared_linkage_policy() {
             );
         }
     }
-    assert!(source.contains("static int Py_OptimizeFlag = 0;"));
+    assert!(!source.contains("static int Py_OptimizeFlag"));
 }
 
 #[test]
 fn overlay_probe_rejects_raw_pointer_as_pyobject_contract() {
+    // Source-policy checks belong to this repository consumer, not the
+    // standalone measurement binary. Walk the current authority so a module
+    // consolidation neither leaves obsolete includes nor narrows the check.
+    let root = repo_root();
+    let mut paths = vec![
+        root.join("runtime/molt-cpython-abi/src/bridge.rs"),
+        root.join("runtime/molt-cpython-abi/src/bridge"),
+    ];
+    let raw_variant = ["Raw", "Molt"].concat();
+    while let Some(path) = paths.pop() {
+        if path.is_dir() {
+            paths.extend(
+                std::fs::read_dir(&path)
+                    .expect("read bridge authority directory")
+                    .map(|entry| entry.expect("read bridge authority entry").path()),
+            );
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            let source = std::fs::read_to_string(&path).expect("read bridge authority");
+            assert!(
+                !source.contains(&raw_variant),
+                "legacy raw-handle PyObject variant remains in {}",
+                path.display()
+            );
+        }
+    }
     let probe = std::fs::read_to_string(
-        repo_root().join("runtime/molt-cpython-abi-test-support/l7_overlay_probe.c"),
+        root.join("runtime/molt-cpython-abi-test-support/l7_overlay_probe.c"),
     )
     .expect("read overlay probe");
     let raw_symbol = ["molt_l7_overlay_", "raw_"].concat();
@@ -323,9 +349,22 @@ fn scalar_results_and_lifetime_use_single_provenance_authorities() {
     let root = repo_root();
     let numbers = std::fs::read_to_string(root.join("runtime/molt-cpython-abi/src/api/numbers.rs"))
         .expect("read numeric ABI authority");
-    assert!(
-        !numbers.contains("GLOBAL_BRIDGE.owned_handle_to_pyobj"),
-        "a public numeric result bypasses the concrete scalar carrier"
+    // Runtime numeric results enter the shared publication owner through one
+    // materializer. That owner selects NumericAllocation before publication;
+    // public numeric APIs must not introduce another direct crossing.
+    let delegation = "GLOBAL_BRIDGE.owned_handle_to_pyobj";
+    let materializer = numbers
+        .split_once("pub(crate) unsafe fn materialize_numeric_owned_handle(")
+        .expect("canonical numeric materializer")
+        .1
+        .split_once("\n}\n")
+        .expect("complete numeric materializer")
+        .0;
+    assert_eq!(materializer.matches(delegation).count(), 1);
+    assert_eq!(
+        numbers.matches(delegation).count(),
+        1,
+        "numeric results must share the canonical materializer"
     );
     assert!(!numbers.contains("PyObject_Free(op.cast())"));
     let protocol =

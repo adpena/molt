@@ -1,275 +1,188 @@
-//! CPython context variable C-API surface, faithful to `Python/context.c`.
-//!
-//! Bindings live in a CURRENT-CONTEXT mapping keyed by the `ContextVar`
-//! object (not in a mutable field on the var itself), matching CPython's
-//! per-context HAMT model. Until a `copy_context()`/`Context.run()` surface
-//! exists there is exactly one context per `PyThreadState`; the canonical
-//! thread-state owner tears down its retained values under live GIL custody.
-//! `PyContextVar_Set` returns a real reset token consumed by
-//! `PyContextVar_Reset`, never the previous value itself.
-
-use crate::abi_types::{PyContextVarObject, PyObject, PyTypeObject};
-use std::os::raw::c_int;
+//! Public Context C API. The runtime owns every object, binding and token.
+//! A C view is the bridge's canonical projection, never a second semantic map.
+use crate::abi_types::{PyObject, PyTypeObject};
+use crate::bridge::{GLOBAL_BRIDGE, RuntimeValue};
+use crate::hooks::{DecodedHandleResult, RuntimeGilGuard, hooks_or_stubs};
+use std::os::raw::{c_char, c_int};
 use std::ptr;
-
-// ── Reset token object ───────────────────────────────────────────────────────
-// CPython's PyContextToken wraps (var, old value | MISSING, used flag).
-
-#[repr(C)]
-struct ContextTokenObject {
-    ob_base: PyObject,
-    var: *mut PyObject,
-    /// Previous value (owned) or NULL for CPython's `Token.MISSING`.
-    old_value: *mut PyObject,
-    used: bool,
+unsafe fn input(value: *mut PyObject) -> Option<RuntimeValue> {
+    unsafe { RuntimeValue::acquire_edge(value) }
 }
-
-fn token_type() -> *mut PyTypeObject {
-    static TOKEN_TYPE: once_cell::sync::Lazy<usize> = once_cell::sync::Lazy::new(|| {
-        let mut ty: Box<PyTypeObject> = Box::new(unsafe { std::mem::zeroed() });
-        ty.tp_name = c"Token".as_ptr();
-        ty.ob_base.ob_base.ob_type = &raw mut crate::abi_types::PyType_Type;
-        ty.ob_base.ob_base.ob_refcnt = 1;
-        Box::into_raw(ty) as usize
-    });
-    *TOKEN_TYPE as *mut PyTypeObject
+fn status_error() -> c_int {
+    crate::api::errors::transfer_runtime_pending_to_current();
+    -1
 }
-
-unsafe fn token_object(op: *mut PyObject) -> Option<*mut ContextTokenObject> {
-    if op.is_null() || !std::ptr::eq(unsafe { (*op).ob_type }, token_type()) {
-        return None;
-    }
-    Some(op.cast::<ContextTokenObject>())
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyContext_New() -> *mut PyObject {
+    let _gil = RuntimeGilGuard::ensure();
+    unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj((hooks_or_stubs().context_new)()) }
 }
-
-/// Deallocator for token objects (wired through the refcount drop path when
-/// the bridge sees a raw C object; tokens are short-lived C-side objects).
-pub unsafe extern "C" fn molt_context_token_dealloc(op: *mut PyObject) {
-    let Some(token) = (unsafe { token_object(op) }) else {
-        return;
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyContext_CopyCurrent() -> *mut PyObject {
+    let _gil = RuntimeGilGuard::ensure();
+    unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj((hooks_or_stubs().context_copy_current)()) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyContext_Copy(ctx: *mut PyObject) -> *mut PyObject {
+    let _gil = RuntimeGilGuard::ensure();
+    let Some(ctx) = (unsafe { input(ctx) }) else {
+        return ptr::null_mut();
     };
-    unsafe {
-        crate::api::refcount::Py_XDECREF((*token).var);
-        crate::api::refcount::Py_XDECREF((*token).old_value);
-        drop(Box::from_raw(token));
-    }
+    unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj((hooks_or_stubs().context_copy)(ctx.bits())) }
 }
-
-unsafe fn is_contextvar(var: *mut PyObject) -> bool {
-    !var.is_null()
-        && std::ptr::eq(
-            unsafe { (*var).ob_type },
-            &raw mut crate::abi_types::PyContextVar_Type,
-        )
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyContext_Enter(ctx: *mut PyObject) -> c_int {
+    let _gil = RuntimeGilGuard::ensure();
+    let Some(ctx) = (unsafe { input(ctx) }) else {
+        return -1;
+    };
+    let status = unsafe { (hooks_or_stubs().context_enter)(ctx.bits()) };
+    if status < 0 { status_error() } else { status }
 }
-
-/// CPython `ENSURE_ContextVar`: any non-exact input is a TypeError — the C API
-/// never duck-types through Python-level `get`/`set` attributes.
-unsafe fn ensure_contextvar(var: *mut PyObject) -> bool {
-    if unsafe { is_contextvar(var) } {
-        return true;
-    }
-    unsafe {
-        crate::api::errors::PyErr_SetString(
-            (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
-            c"an instance of ContextVar was expected".as_ptr(),
-        );
-    }
-    false
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyContext_Exit(ctx: *mut PyObject) -> c_int {
+    let _gil = RuntimeGilGuard::ensure();
+    let Some(ctx) = (unsafe { input(ctx) }) else {
+        return -1;
+    };
+    let status = unsafe { (hooks_or_stubs().context_exit)(ctx.bits()) };
+    if status < 0 { status_error() } else { status }
 }
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyContextVar_New(
-    name: *const std::os::raw::c_char,
-    default_value: *mut PyObject,
+    name: *const c_char,
+    default: *mut PyObject,
 ) -> *mut PyObject {
+    let _gil = RuntimeGilGuard::ensure();
     if name.is_null() {
         unsafe {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
-                c"context variable name must not be NULL".as_ptr(),
-            );
+            crate::api::errors::PyErr_BadInternalCall();
         }
         return ptr::null_mut();
     }
-    // NOTE: CPython imposes NO non-empty-name constraint — ContextVar('') is
-    // legal (Python/context.c contextvar_new); the previous ValueError here was
-    // an invented restriction.
-    let name_obj = unsafe { crate::api::strings::PyUnicode_FromString(name) };
-    if name_obj.is_null() {
+    let name = unsafe { crate::api::strings::PyUnicode_FromString(name) };
+    if name.is_null() {
         return ptr::null_mut();
     }
-    if !default_value.is_null() {
-        unsafe { crate::api::refcount::Py_INCREF(default_value) };
+    let Some(name_value) = (unsafe { input(name) }) else {
+        unsafe {
+            crate::api::errors::release_preserving_error(&[name]);
+        }
+        return ptr::null_mut();
+    };
+    let default_value = if default.is_null() {
+        None
+    } else {
+        let Some(value) = (unsafe { input(default) }) else {
+            unsafe {
+                crate::api::errors::release_preserving_error(&[name]);
+            }
+            return ptr::null_mut();
+        };
+        Some(value)
+    };
+    let result = unsafe {
+        (hooks_or_stubs().context_var_new)(
+            name_value.bits(),
+            default_value.as_ref().map_or(0, |v| v.bits()),
+            c_int::from(default_value.is_some()),
+        )
+    };
+    let out = unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) };
+    unsafe {
+        crate::api::errors::release_preserving_error(&[name]);
     }
-    let obj = Box::new(PyContextVarObject {
-        ob_base: PyObject {
-            ob_refcnt: 1,
-            ob_type: &raw mut crate::abi_types::PyContextVar_Type,
-        },
-        name: name_obj,
-        default_value,
-        // Legacy field retained for ABI layout; bindings live in the
-        // current-context map, never here.
-        current_value: ptr::null_mut(),
-    });
-    Box::into_raw(obj).cast::<PyObject>()
+    out
 }
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyContextVar_Get(
     var: *mut PyObject,
-    default_value: *mut PyObject,
+    default: *mut PyObject,
     value: *mut *mut PyObject,
 ) -> c_int {
-    if var.is_null() || value.is_null() {
-        unsafe { crate::api::errors::PyErr_BadInternalCall() };
-        return -1;
-    }
-    if !unsafe { ensure_contextvar(var) } {
-        return -1;
-    }
-    // Current-context binding.
-    let bound =
-        crate::api::object::with_thread_state_context(|ctx| ctx.get(&(var as usize)).copied());
-    if let Some(bound) = bound {
-        let bound = bound as *mut PyObject;
+    let _gil = RuntimeGilGuard::ensure();
+    if value.is_null() {
         unsafe {
-            crate::api::refcount::Py_INCREF(bound);
-            *value = bound;
+            crate::api::errors::PyErr_BadInternalCall();
         }
-        return 0;
-    }
-    // Python/context.c: the CALLER's def argument wins unconditionally; the
-    // var's own default is consulted only when def == NULL.
-    let context_var = var.cast::<PyContextVarObject>();
-    let candidate = if !default_value.is_null() {
-        default_value
-    } else {
-        unsafe { (*context_var).default_value }
-    };
-    if candidate.is_null() {
-        // No value, no default: *value = NULL and SUCCESS (0) with no
-        // exception — only Python-level ContextVar.get() raises LookupError,
-        // never the C API.
-        unsafe { *value = ptr::null_mut() };
-        return 0;
+        return -1;
     }
     unsafe {
-        crate::api::refcount::Py_INCREF(candidate);
-        *value = candidate;
+        *value = ptr::null_mut();
+    }
+    let Some(var) = (unsafe { input(var) }) else {
+        return -1;
+    };
+    let default = if default.is_null() {
+        None
+    } else {
+        let Some(v) = (unsafe { input(default) }) else {
+            return -1;
+        };
+        Some(v)
+    };
+    let result = unsafe {
+        (hooks_or_stubs().context_var_get)(
+            var.bits(),
+            default.as_ref().map_or(0, |v| v.bits()),
+            c_int::from(default.is_some()),
+        )
+    };
+    if matches!(result.decode(), DecodedHandleResult::Missing) {
+        return 0;
+    }
+    let out = unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) };
+    if out.is_null() {
+        return -1;
+    }
+    unsafe {
+        *value = out;
     }
     0
 }
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyContextVar_Set(
     var: *mut PyObject,
     value: *mut PyObject,
 ) -> *mut PyObject {
-    if var.is_null() || value.is_null() {
-        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+    let _gil = RuntimeGilGuard::ensure();
+    let Some(var) = (unsafe { input(var) }) else {
         return ptr::null_mut();
-    }
-    if !unsafe { ensure_contextvar(var) } {
+    };
+    let Some(value) = (unsafe { input(value) }) else {
         return ptr::null_mut();
+    };
+    unsafe {
+        GLOBAL_BRIDGE
+            .owned_result_to_pyobj((hooks_or_stubs().context_var_set)(var.bits(), value.bits()))
     }
-    // Store the binding in the CURRENT CONTEXT (owned reference), capturing the
-    // previous binding for the token.
-    unsafe { crate::api::refcount::Py_INCREF(value) };
-    let previous = crate::api::object::with_thread_state_context(|ctx| {
-        ctx.insert(var as usize, value as usize)
-            .map(|old| old as *mut PyObject)
-    });
-    // Mint a real reset token wrapping (var, old-or-MISSING). The token owns
-    // both references; `previous` ownership transfers from the map.
-    unsafe { crate::api::refcount::Py_INCREF(var) };
-    let token = Box::new(ContextTokenObject {
-        ob_base: PyObject {
-            ob_refcnt: 1,
-            ob_type: token_type(),
-        },
-        var,
-        old_value: previous.unwrap_or(ptr::null_mut()),
-        used: false,
-    });
-    Box::into_raw(token).cast::<PyObject>()
 }
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyContextVar_Reset(var: *mut PyObject, token: *mut PyObject) -> c_int {
-    if var.is_null() || token.is_null() {
-        unsafe { crate::api::errors::PyErr_BadInternalCall() };
-        return -1;
-    }
-    if !unsafe { ensure_contextvar(var) } {
-        return -1;
-    }
-    let Some(token) = (unsafe { token_object(token) }) else {
-        unsafe {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
-                c"an instance of Token was expected".as_ptr(),
-            );
-        }
+    let _gil = RuntimeGilGuard::ensure();
+    let Some(var) = (unsafe { input(var) }) else {
         return -1;
     };
-    if unsafe { (*token).used } {
-        unsafe {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_RuntimeError)
-                    .cast::<crate::abi_types::PyObject>(),
-                c"Token has already been used once".as_ptr(),
-            );
-        }
+    let Some(token) = (unsafe { input(token) }) else {
         return -1;
-    }
-    if !std::ptr::eq(unsafe { (*token).var }, var) {
-        unsafe {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
-                c"Token was created by a different ContextVar".as_ptr(),
-            );
-        }
-        return -1;
-    }
-    let old_value = unsafe { (*token).old_value };
-    let displaced = crate::api::object::with_thread_state_context(|ctx| {
-        if old_value.is_null() {
-            // Token.MISSING: the var had no binding before Set — remove it.
-            ctx.remove(&(var as usize)).map(|v| v as *mut PyObject)
-        } else {
-            // Restore the previous binding (the map takes a new owned ref).
-            unsafe { crate::api::refcount::Py_INCREF(old_value) };
-            ctx.insert(var as usize, old_value as usize)
-                .map(|v| v as *mut PyObject)
-        }
-    });
-    if let Some(displaced) = displaced {
-        unsafe { crate::api::refcount::Py_DECREF(displaced) };
-    }
-    unsafe { (*token).used = true };
-    0
+    };
+    let status = unsafe { (hooks_or_stubs().context_var_reset)(var.bits(), token.bits()) };
+    if status < 0 { status_error() } else { status }
 }
-
-pub unsafe extern "C" fn molt_contextvar_dealloc(op: *mut PyObject) {
-    if op.is_null() {
-        return;
-    }
-    // Drop any current-context binding for this var (the map key is the var
-    // pointer; a dangling key would leak the bound value).
-    let bound = crate::api::object::with_existing_thread_state_context(|ctx| {
-        ctx.remove(&(op as usize)).map(|v| v as *mut PyObject)
-    })
-    .flatten();
-    if let Some(bound) = bound {
-        unsafe { crate::api::refcount::Py_DECREF(bound) };
-    }
-    let obj = op.cast::<PyContextVarObject>();
-    unsafe {
-        crate::api::refcount::Py_XDECREF((*obj).name);
-        crate::api::refcount::Py_XDECREF((*obj).default_value);
-        crate::api::refcount::Py_XDECREF((*obj).current_value);
-        drop(Box::from_raw(obj));
-    }
+unsafe fn exact(value: *mut PyObject, ty: *mut PyTypeObject) -> c_int {
+    // Public CheckExact follows Py_TYPE identity. The generic bridge carrier
+    // describes physical storage and is not the Context object's Python class.
+    unsafe { crate::bridge::is_exact_semantic_type(value, ty) as c_int }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyContext_CheckExact(value: *mut PyObject) -> c_int {
+    unsafe { exact(value, &raw mut crate::abi_types::PyContext_Type) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyContextVar_CheckExact(value: *mut PyObject) -> c_int {
+    unsafe { exact(value, &raw mut crate::abi_types::PyContextVar_Type) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyContextToken_CheckExact(value: *mut PyObject) -> c_int {
+    unsafe { exact(value, &raw mut crate::abi_types::PyContextToken_Type) }
 }

@@ -734,15 +734,13 @@ pub unsafe extern "C" fn PyDict_Size(op: *mut PyObject) -> Py_ssize_t {
     }
 }
 
-/// Real dict iteration over a Molt-native dict.
+/// Traverse insertion-ordered dictionary storage, skipping deleted slots.
 ///
-/// Backed by the allocation-free O(1) [`crate::hooks::RuntimeHooks::dict_entry`]
-/// cursor (indexes the runtime dict's flat entry vector by `*pos`), so a
-/// `while (PyDict_Next(d, &pos, &k, &v))` loop yields every entry with **borrowed**
-/// key/value refs and returns `0` only at the true end — with **no** exception,
-/// matching CPython. The previous stub observed an empty dict and left a stray
-/// pending `RuntimeError`, breaking exactly the walks numpy runs during type/module
-/// init.
+/// The runtime's `dict_next` hook advances a physical cursor, so a full walk is
+/// O(physical extent). Key/value references are borrowed. Exhaustion, negative
+/// positions, or bridge conversion failure leave the caller's outputs unchanged.
+/// As in CPython, replacing values is supported; changing the key set during
+/// traversal is not. Bridge views may allocate on first exposure.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_Next(
     op: *mut PyObject,
@@ -753,41 +751,59 @@ pub unsafe extern "C" fn PyDict_Next(
     if op.is_null() || pos.is_null() {
         return 0;
     }
-    let dict_bits = match resolve_dict(op, false) {
-        Ok(Some(bits)) => bits,
-        Ok(None) | Err(crate::ErrorIndicatorSet) => return 0,
-    };
     let index = unsafe { *pos };
     if index < 0 {
         return 0;
     }
-    let h = hooks_or_stubs();
-    let mut key_bits: u64 = 0;
-    let mut val_bits: u64 = 0;
-    let found = unsafe {
-        (h.dict_entry)(
+    let dict_bits = match resolve_dict(op, false) {
+        Ok(Some(bits)) => bits,
+        Ok(None) | Err(crate::ErrorIndicatorSet) => return 0,
+    };
+    let mut cursor = index as usize;
+    let mut key_bits = 0;
+    let mut val_bits = 0;
+    if unsafe {
+        (hooks_or_stubs().dict_next)(
             dict_bits,
-            index as usize,
+            &raw mut cursor,
             &raw mut key_bits,
             &raw mut val_bits,
         )
-    };
-    if found != 1 {
-        // End of iteration (or non-dict): return 0 and set NO exception.
+    } != 1
+    {
         return 0;
     }
-    unsafe {
-        *pos = index + 1;
-    }
-    // Borrowed references (CPython contract — caller must not DECREF). O(1) and
-    // allocation-free per step for keys/values already anchored in the bridge
-    // (the common init path, where every entry entered via PyDict_SetItem).
+    let Ok(next_position) = Py_ssize_t::try_from(cursor) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return 0;
+    };
     let bridge = &*GLOBAL_BRIDGE;
-    if !key.is_null() {
-        unsafe { *key = bridge.handle_to_borrowed_pyobj(key_bits) };
-    }
-    if !value.is_null() {
-        unsafe { *value = bridge.handle_to_borrowed_pyobj(val_bits) };
+    let key_view = if key.is_null() {
+        ptr::null_mut()
+    } else {
+        let view = unsafe { bridge.handle_to_borrowed_pyobj(key_bits) };
+        if view.is_null() {
+            return 0;
+        }
+        view
+    };
+    let value_view = if value.is_null() {
+        ptr::null_mut()
+    } else {
+        let view = unsafe { bridge.handle_to_borrowed_pyobj(val_bits) };
+        if view.is_null() {
+            return 0;
+        }
+        view
+    };
+    unsafe {
+        *pos = next_position;
+        if !key.is_null() {
+            *key = key_view;
+        }
+        if !value.is_null() {
+            *value = value_view;
+        }
     }
     1
 }

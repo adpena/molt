@@ -33,6 +33,8 @@ from typing import Any
 
 import pytest
 
+from tests.process_guard_common import run_isolated_python_probe
+
 from molt.exact_json import (
     canonical_json_bytes,
     canonical_json_sha256,
@@ -237,7 +239,9 @@ def _verified_execution(
     runner_os = {"linux": "Linux", "macos": "macOS", "windows": "Windows"}
     return {
         "backend": backend,
-        "profiles": vs.execution_profiles(coordinate.build_profile),
+        "profiles": vs.execution_profiles(
+            coordinate.build_profile, backend=coordinate.backend
+        ),
         "ci": {
             "job": "verified-subset",
             "provider": "github-actions",
@@ -511,7 +515,7 @@ def _board(
                 / "build-observations"
                 / backend
                 / f"{Path(benchmark).stem}.fixture",
-                target=cell.target,
+                backend=cell.backend,
                 profile=cell.profile,
             )
             cell.build_ok = cell.molt_ok = cell.cpython_ok = cell.stable = True
@@ -1296,6 +1300,7 @@ def test_green_perf_statistics_cannot_admit_unknown_used_toolchain(
         observation = cell["build_observation"]
         assert observation["kind"] == "molt-build-observation-v1"
         assert observation["selected_profiles"] == {
+            "backend": cell["backend"],
             "guest_profile": "release",
             "compiler_profile": "release",
             "runtime_profile": "release-fast",
@@ -1370,3 +1375,40 @@ def test_fixture_release_admission_still_rejects_unbound_profiles(
     with pytest.raises(ValueError, match="invalid E2 scoreboard") as rejected:
         _release_bundle(workspace, board, tmp_path / "unbound-dist")
     assert diagnostic in str(rejected.value)
+
+
+def test_phase_input_allocation_does_not_reserve_policy_headroom(tmp_path):
+    path = tmp_path / "small-phase-input.json"
+    raw = b'{"phase":"C0"}'
+    path.write_bytes(raw)
+    measurements = run_isolated_python_probe(
+        """
+        import gc
+        import json
+        from pathlib import Path
+        import sys
+        import tracemalloc
+        from tools import phase_exit_manifest as pem
+
+        path = Path(sys.argv[1])
+        measurements = []
+        if tracemalloc.is_tracing():
+            raise RuntimeError("probe requires exclusive allocation tracing")
+        for allowance in (1024 * 1024, 8 * 1024 * 1024):
+            pem._MAX_JSON_BYTES = allowance
+            gc.collect()
+            tracemalloc.start()
+            try:
+                raw = pem._read_bytes(path, label="phase fixture")
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            measurements.append({"raw_hex": raw.hex(), "peak": peak})
+        print(json.dumps(measurements))
+        """,
+        args=[path],
+    )
+    assert [bytes.fromhex(row["raw_hex"]) for row in measurements] == [raw] * 2
+    peaks = [row["peak"] for row in measurements]
+    # A seven-MiB increase in permission must not allocate that unused space.
+    assert peaks[1] - peaks[0] < 256 * 1024

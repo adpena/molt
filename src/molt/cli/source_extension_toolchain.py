@@ -16,6 +16,7 @@ from typing import Any
 
 from molt.file_hashing import _sha256_file
 from molt.cli.compiler_target import (
+    common_compiler_arguments,
     compiler_target_triple,
     is_zig_compiler_command,
     validate_compiler_target,
@@ -40,8 +41,8 @@ from molt.cli.source_extension_target import (
     SOURCE_EXTENSION_TARGET_METADATA_SCHEMA_VERSION,
 )
 from molt.cli.source_extension_compiler_inputs import (
-    compiler_sysroot_arguments,
     source_extension_compiler_environment,
+    compiler_sysroot_arguments,
     validate_source_extension_compiler_command,
 )
 from molt.cli.source_extension_link_inputs import (
@@ -52,10 +53,10 @@ from molt.source_extension_link_inputs import (
     validate_source_extension_link_inputs,
 )
 from molt.target_python import _parse_target_python_version
-from molt.cli.wasm_link_inputs import (
-    normalize_wasi_sysroot,
-    resolve_wasi_sysroot as _resolve_wasi_sysroot,
-)
+from molt.llvm_toolchain import apply_provisioned_wasm_toolchain
+from molt.source_root import compiler_source_root
+from molt.wasi_sdk_identity import WasiCAbiProjection, wasi_c_abi_projection
+from molt.wasi_sysroot import normalize_wasi_sysroot
 
 _SOURCE_EXTENSION_ABI_TIERS = {"source-compat", "cpython-abi"}
 MOLT_PKGCONF_REQUIREMENT = "pkgconf==3.0.1.post0"
@@ -75,6 +76,7 @@ class _SourceExtensionWasmToolchain:
     compiler_kind: str | None
     tools: LlvmWasiToolFamily
     wasi_sysroot: Path | None
+    wasi_c_abi: WasiCAbiProjection | None
     detail: str
 
 
@@ -85,6 +87,7 @@ class _ResolvedSourceExtensionToolchain:
     tools: LlvmWasiToolFamily
     commands: dict[str, tuple[str, ...]]
     wasi_sysroot: Path | None
+    wasi_c_abi: WasiCAbiProjection | None
     link_inputs: SourceExtensionLinkInputs
     detail: str
 
@@ -105,13 +108,8 @@ class _SourceExtensionTargetMetadata:
 
 def _wasi_sysroot_setup_advice(_system: str) -> list[str]:
     return [
-        "Set MOLT_WASI_SYSROOT=<path-to-wasi-sysroot>",
-        "Set WASI_SYSROOT=<path-to-wasi-sysroot>",
-        "or set WASI_SDK_PATH=<path-to-wasi-sdk>",
-        "or set MOLT_TARGET_ROOT=<path-with-toolchains/wasi-sysroot*>",
-        "or install zig for the wasm source-extension compiler path",
-        "or set MOLT_WASM_CC=<wasm-capable-compiler-with-sysroot>",
-        "or set MOLT_CROSS_CC=<wasm-capable-compiler-with-sysroot>",
+        "Provision the pinned complete WASI SDK with tools/provision_wasi_sdk.py",
+        "select that installation with WASI_SDK_PATH; unrelated libc/header overrides are refused",
     ]
 
 
@@ -203,11 +201,58 @@ def _probe_wasm_source_extension_compiler(
     return detail.splitlines()[0]
 
 
+def _admit_wasi_source_compiler(
+    command: tuple[str, ...],
+    *,
+    role: str,
+    plan: WasiCAbiProjection,
+    environment: Mapping[str, str],
+) -> tuple[str, ...]:
+    """Bind direct and discovered source compilers to the same SDK C ABI."""
+    if role not in {"c", "cpp"} or not command:
+        raise ValueError("WASI source compiler requires a C or C++ command")
+    # clang and clang++ may resolve to the same image, but their lexical
+    # entrypoints select different language and final-link defaults.
+    selected_path = Path(command[0])
+    # An ancestor alias preserves the SDK entrypoint; resolving the final leaf
+    # could instead turn a different driver name into an admitted compiler.
+    selected = selected_path.parent.resolve(strict=True) / selected_path.name
+    permitted = {
+        plan.driver.absolute(),
+        plan.driver.with_name("clang++" + plan.driver.suffix).absolute(),
+    }
+    if selected not in permitted:
+        raise ValueError(f"{role} compiler must select the admitted WASI SDK clang")
+    validated = validate_source_extension_compiler_command(
+        command,
+        role=role,
+        target_triple="wasm32-wasip1",
+        sysroot_policy="optional",
+    )
+    materialized = list(command)
+    if validated.sysroot is not None:
+        selected = normalize_wasi_sysroot(
+            expand_user_path(validated.sysroot, environment=environment)
+        )
+        if selected != plan.sysroot:
+            raise ValueError(
+                "source compiler sysroot differs from the admitted WASI C ABI"
+            )
+        for index, prefix, _raw in compiler_sysroot_arguments(command):
+            materialized[index] = prefix + str(plan.sysroot)
+    else:
+        materialized.extend(("--sysroot", str(plan.sysroot)))
+    if "--no-default-config" not in materialized:
+        materialized.append("--no-default-config")
+    return tuple(materialized)
+
+
 def _resolve_env_wasm_compiler(
     *,
     env_name: str,
     raw_command: str,
     target_plan: SourceExtensionTargetPlan,
+    wasi_c_abi: WasiCAbiProjection | None,
     environment: Mapping[str, str] | None = None,
 ) -> _SourceExtensionWasmToolchain:
     try:
@@ -216,6 +261,7 @@ def _resolve_env_wasm_compiler(
         )
     except ValueError as exc:
         return _SourceExtensionWasmToolchain(
+            wasi_c_abi=wasi_c_abi,
             ok=False,
             compiler_kind=env_name.lower(),
             tools=resolve_llvm_wasi_tool_family(
@@ -227,7 +273,7 @@ def _resolve_env_wasm_compiler(
     compiler = _wasm_source_extension_compiler_command(
         compiler, environment=environment
     )
-    validated = validate_source_extension_compiler_command(
+    validate_source_extension_compiler_command(
         compiler,
         role="c",
         target_triple=target_plan.target_triple,
@@ -235,45 +281,31 @@ def _resolve_env_wasm_compiler(
         if target_plan.target_triple == "wasm32-wasip1"
         else "forbidden",
     )
-    raw_sysroot = validated.sysroot
-    wasi_sysroot = (
-        normalize_wasi_sysroot(expand_user_path(raw_sysroot, environment=environment))
-        if target_plan.target_triple == "wasm32-wasip1" and raw_sysroot is not None
-        else None
-    )
-    if (
-        target_plan.target_triple == "wasm32-wasip1"
-        and raw_sysroot is not None
-        and wasi_sysroot is None
-    ):
-        return _SourceExtensionWasmToolchain(
-            ok=False,
-            compiler_kind=env_name.lower(),
-            tools=resolve_llvm_wasi_tool_family(
-                target_family="wasm",
-                explicit_commands={"cc": compiler},
-                environment=environment,
-            ),
-            wasi_sysroot=None,
-            detail=(
-                f"{env_name} has an invalid WASI sysroot argument: {raw_sysroot!r}"
-            ),
+    wasi_sysroot = None
+    explicit_commands: dict[LlvmToolRole, tuple[str, ...]] = {"cc": compiler}
+    if target_plan.target_triple == "wasm32-wasip1":
+        assert environment is not None
+        if wasi_c_abi is None:
+            raise ValueError("WASI source compiler lost its selected C ABI plan")
+        plan = wasi_c_abi
+        wasi_sysroot = plan.sysroot
+        compiler = _admit_wasi_source_compiler(
+            compiler,
+            role="c",
+            plan=plan,
+            environment=environment,
         )
-    if wasi_sysroot is not None:
-        # Admission and the actual compiler must consume the same selected path,
-        # including user-expanded roots and supported include-directory aliases.
-        materialized = list(compiler)
-        for index, prefix, _raw in compiler_sysroot_arguments(compiler):
-            materialized[index] = prefix + str(wasi_sysroot)
-        compiler = tuple(materialized)
+        explicit_commands["cc"] = compiler
+        explicit_commands["cxx"] = (environment["CXX_wasm32-wasip1"],)
     tools = resolve_llvm_wasi_tool_family(
         target_family="wasm",
-        explicit_commands={"cc": compiler},
+        explicit_commands=explicit_commands,
         environment=environment,
     )
     missing = tools.missing_roles()
     if missing:
         return _SourceExtensionWasmToolchain(
+            wasi_c_abi=wasi_c_abi,
             ok=False,
             compiler_kind=env_name.lower(),
             tools=tools,
@@ -284,8 +316,12 @@ def _resolve_env_wasm_compiler(
                 + f"; {env_name} is configured"
             ),
         )
-    probe_error = _probe_wasm_source_extension_compiler(
-        compiler, target_plan=target_plan, environment=environment
+    probe_error = (
+        None
+        if wasi_c_abi is not None
+        else _probe_wasm_source_extension_compiler(
+            compiler, target_plan=target_plan, environment=environment
+        )
     )
     if probe_error is not None:
         probe_kind = (
@@ -294,6 +330,7 @@ def _resolve_env_wasm_compiler(
             else f"{target_plan.target_triple} freestanding source-extension probe"
         )
         return _SourceExtensionWasmToolchain(
+            wasi_c_abi=wasi_c_abi,
             ok=False,
             compiler_kind=env_name.lower(),
             tools=tools,
@@ -304,6 +341,7 @@ def _resolve_env_wasm_compiler(
             ),
         )
     return _SourceExtensionWasmToolchain(
+        wasi_c_abi=wasi_c_abi,
         ok=True,
         compiler_kind=env_name.lower(),
         tools=tools,
@@ -345,9 +383,18 @@ def _resolve_source_extension_wasm_toolchain(
     environment = source_extension_compiler_environment(
         os.environ if environment is None else environment
     )
+    requires_wasi = target_plan.target_triple == "wasm32-wasip1"
+    wasi_c_abi = None
+    if requires_wasi:
+        if not apply_provisioned_wasm_toolchain(compiler_source_root(), environment):
+            raise ValueError(
+                "the pinned WASI SDK is missing; run tools/provision_wasi_sdk.py"
+            )
+        wasi_c_abi = wasi_c_abi_projection(environment)
     raw_wasm_cc = executable_environment_value(environment, "MOLT_WASM_CC").strip()
     if raw_wasm_cc:
         return _resolve_env_wasm_compiler(
+            wasi_c_abi=wasi_c_abi,
             env_name="MOLT_WASM_CC",
             raw_command=raw_wasm_cc,
             target_plan=target_plan,
@@ -357,15 +404,24 @@ def _resolve_source_extension_wasm_toolchain(
     raw_cross_cc = executable_environment_value(environment, "MOLT_CROSS_CC").strip()
     if raw_cross_cc:
         return _resolve_env_wasm_compiler(
+            wasi_c_abi=wasi_c_abi,
             env_name="MOLT_CROSS_CC",
             raw_command=raw_cross_cc,
             target_plan=target_plan,
             environment=environment,
         )
 
-    tools = resolve_llvm_wasi_tool_family(target_family="wasm", environment=environment)
-    requires_wasi = target_plan.target_triple == "wasm32-wasip1"
-    wasi_sysroot = _resolve_wasi_sysroot(env=environment) if requires_wasi else None
+    tools = resolve_llvm_wasi_tool_family(
+        target_family="wasm",
+        environment=environment,
+        explicit_commands={
+            "cc": (environment["CC_wasm32-wasip1"],),
+            "cxx": (environment["CXX_wasm32-wasip1"],),
+        }
+        if requires_wasi
+        else {},
+    )
+    wasi_sysroot = wasi_c_abi.sysroot if wasi_c_abi is not None else None
     if tools.cc is not None and (wasi_sysroot is not None or not requires_wasi):
         clang_cmd = (
             (*tools.cc.command, "--sysroot", str(wasi_sysroot))
@@ -379,6 +435,7 @@ def _resolve_source_extension_wasm_toolchain(
         missing = tools.missing_roles()
         if missing:
             return _SourceExtensionWasmToolchain(
+                wasi_c_abi=wasi_c_abi,
                 ok=False,
                 compiler_kind="clang",
                 tools=tools,
@@ -389,11 +446,16 @@ def _resolve_source_extension_wasm_toolchain(
                     + "; clang and WASI sysroot are available"
                 ),
             )
-        probe_error = _probe_wasm_source_extension_compiler(
-            clang_cmd, target_plan=target_plan, environment=environment
+        probe_error = (
+            None
+            if wasi_c_abi is not None
+            else _probe_wasm_source_extension_compiler(
+                clang_cmd, target_plan=target_plan, environment=environment
+            )
         )
         if probe_error is not None:
             return _SourceExtensionWasmToolchain(
+                wasi_c_abi=wasi_c_abi,
                 ok=False,
                 compiler_kind="clang",
                 tools=tools,
@@ -405,6 +467,7 @@ def _resolve_source_extension_wasm_toolchain(
                 ),
             )
         return _SourceExtensionWasmToolchain(
+            wasi_c_abi=wasi_c_abi,
             ok=True,
             compiler_kind="clang",
             tools=tools,
@@ -419,6 +482,15 @@ def _resolve_source_extension_wasm_toolchain(
             ),
         )
 
+    if requires_wasi:
+        return _SourceExtensionWasmToolchain(
+            wasi_c_abi=wasi_c_abi,
+            ok=False,
+            compiler_kind="clang",
+            tools=tools,
+            wasi_sysroot=wasi_sysroot,
+            detail="selected WASI SDK compiler family is incomplete",
+        )
     try:
         zig_command = resolve_explicit_tool_command(
             "zig", label="zig", environment=environment
@@ -442,6 +514,7 @@ def _resolve_source_extension_wasm_toolchain(
         missing = zig_tools.missing_roles()
         if missing:
             return _SourceExtensionWasmToolchain(
+                wasi_c_abi=wasi_c_abi,
                 ok=False,
                 compiler_kind="zig",
                 tools=zig_tools,
@@ -458,6 +531,7 @@ def _resolve_source_extension_wasm_toolchain(
         )
         if probe_error is not None:
             return _SourceExtensionWasmToolchain(
+                wasi_c_abi=wasi_c_abi,
                 ok=False,
                 compiler_kind="zig",
                 tools=zig_tools,
@@ -468,6 +542,7 @@ def _resolve_source_extension_wasm_toolchain(
                 ),
             )
         return _SourceExtensionWasmToolchain(
+            wasi_c_abi=wasi_c_abi,
             ok=True,
             compiler_kind="zig",
             tools=zig_tools,
@@ -480,6 +555,7 @@ def _resolve_source_extension_wasm_toolchain(
         "zig, valid MOLT_WASM_CC, valid MOLT_CROSS_CC, or clang+WASI sysroot"
     )
     return _SourceExtensionWasmToolchain(
+        wasi_c_abi=wasi_c_abi,
         ok=False,
         compiler_kind=None,
         tools=tools,
@@ -642,10 +718,23 @@ def _source_extension_c_commands(
     if is_zig_compiler_command(tools.cc.command) or len(tools.cxx.command) > 1:
         cxx_base = tools.cxx.command
     else:
-        cxx_base = (*tools.cxx.command, *tools.cc.command[1:])
+        cxx_base = (*tools.cxx.command, *common_compiler_arguments(tools.cc.command))
     cpp_cmd = _wasm_source_extension_compiler_command(
         _compiler_command_with_target(cxx_base, target_arg), environment=environment
     )
+    if target_plan.target_triple == "wasm32-wasip1":
+        if toolchain.wasi_c_abi is None:
+            raise ValueError("WASI source commands require the selected C ABI plan")
+        selected_environment = os.environ if environment is None else environment
+        c_cmd = _admit_wasi_source_compiler(
+            c_cmd, role="c", plan=toolchain.wasi_c_abi, environment=selected_environment
+        )
+        cpp_cmd = _admit_wasi_source_compiler(
+            cpp_cmd,
+            role="cpp",
+            plan=toolchain.wasi_c_abi,
+            environment=selected_environment,
+        )
     commands: dict[str, tuple[str, ...]] = {
         "ar": tools.ar.command,
         "c": c_cmd,
@@ -756,12 +845,12 @@ def _resolve_source_extension_native_toolchain(
         source_extension_compiler_dialect(c_command)
         is SourceExtensionCompilerDialect.CLANG_CL
     ):
-        explicit_tools["cxx"] = c_command
+        explicit_tools["cxx"] = (c_command[0], *common_compiler_arguments(c_command))
     elif is_zig_compiler_command(c_command):
         explicit_tools["cxx"] = (
             c_command[0],
             "c++",
-            *c_command[2:],
+            *common_compiler_arguments(c_command),
         )
 
     tools = resolve_llvm_wasi_tool_family(
@@ -789,7 +878,7 @@ def _resolve_source_extension_native_toolchain(
     elif tools.cxx is not None:
         cxx_base = tools.cxx.command
         if len(cxx_base) == 1 and len(c_command) > 1:
-            cxx_base = (*cxx_base, *c_command[1:])
+            cxx_base = (*cxx_base, *common_compiler_arguments(c_command))
         commands["cpp"] = _compiler_command_with_target(
             cxx_base,
             target_plan.target_triple,
@@ -810,13 +899,14 @@ def _resolve_source_extension_native_toolchain(
                 require_explicit_target=cross_target is not None,
             )
     return _ResolvedSourceExtensionToolchain(
+        wasi_c_abi=None,
         target_plan=target_plan,
         compiler_kind=compiler_kind,
         tools=tools,
         commands=commands,
         wasi_sysroot=None,
         link_inputs=resolve_source_extension_link_inputs(
-            target_plan.target_triple, environment=environment
+            target_plan.target_triple, wasi_c_abi=None, environment=environment
         ),
         detail=_llvm_wasi_tool_family_detail(tools),
     )
@@ -846,13 +936,16 @@ def _resolve_source_extension_toolchain(
         environment=environment,
     )
     return _ResolvedSourceExtensionToolchain(
+        wasi_c_abi=wasm.wasi_c_abi,
         target_plan=target_plan,
         compiler_kind=wasm.compiler_kind or "wasm",
         tools=wasm.tools,
         commands=commands,
         wasi_sysroot=wasm.wasi_sysroot,
         link_inputs=resolve_source_extension_link_inputs(
-            target_plan.target_triple, environment=environment
+            target_plan.target_triple,
+            wasi_c_abi=wasm.wasi_c_abi,
+            environment=environment,
         ),
         detail=wasm.detail,
     )
@@ -958,7 +1051,7 @@ def _meson_cross_text(
     target_plan: SourceExtensionTargetPlan,
     pkg_config_dir: str | Path,
     commands: Mapping[str, tuple[str, ...]],
-    compiler_builtins: str | Path | None,
+    compiler_rt: str | Path | None,
     include_dirs: tuple[str | Path, ...],
 ) -> str:
     # These paths are serialized producer facts. Receipt verification may run
@@ -990,26 +1083,12 @@ def _meson_cross_text(
         ),
     ]
     if target_plan.target_triple == "wasm32-wasip1":
-        if compiler_builtins is None:
-            raise ValueError("WASI Meson cross file requires compiler-builtins")
-        built_in_options.extend(
-            (
-                "c_link_args = "
-                + _meson_array(
-                    ("-nodefaultlibs", "-lc", _meson_serialized_path(compiler_builtins))
-                ),
-                "cpp_link_args = "
-                + _meson_array(
-                    (
-                        "-nodefaultlibs",
-                        "-lc",
-                        "-lc++",
-                        "-lc++abi",
-                        _meson_serialized_path(compiler_builtins),
-                    )
-                ),
-            )
-        )
+        if compiler_rt is None:
+            raise ValueError("WASI Meson cross file requires captured SDK compiler-rt")
+        # The admitted SDK clang/clang++ commands own libc, CRT, compiler-rt
+        # and the selected C++ default-library policy. Do not substitute Rust
+        # archives or bypass that driver with -nodefaultlibs.
+        built_in_options.extend(("c_link_args = []", "cpp_link_args = []"))
     elif target_plan.is_wasm:
         built_in_options.extend(
             (
@@ -1103,9 +1182,15 @@ def _materialize_source_extension_target_metadata_with_toolchain(
         raise ValueError(
             "source-extension metadata toolchain differs from the requested target"
         )
-    validate_source_extension_link_inputs(
+    captured = validate_source_extension_link_inputs(
         toolchain.link_inputs.metadata(), target_triple=target_plan.target_triple
     )
+    captured.verify_c_abi(toolchain.wasi_c_abi)
+    if (
+        toolchain.wasi_c_abi is not None
+        and toolchain.wasi_sysroot != toolchain.wasi_c_abi.sysroot
+    ):
+        raise ValueError("source-extension sysroot differs from selected C ABI plan")
     resolved_target = target_plan.target_triple
     resolved_abi_tier = _normalize_source_extension_abi_tier(abi_tier)
     include_dirs = _source_extension_include_dirs_for_abi_tier(
@@ -1132,13 +1217,13 @@ def _materialize_source_extension_target_metadata_with_toolchain(
     include_surface = _source_extension_include_surface(include_dirs)
     meson_cross_properties = _source_extension_meson_cross_properties(target_plan)
     materialized_commands = toolchain.commands
-    compiler_builtins = toolchain.link_inputs.compiler_builtins
+    compiler_rt = toolchain.link_inputs.compiler_rt
     if resolved_target == "wasm32-wasip1" and (
-        compiler_builtins is None or not compiler_builtins.is_file()
+        compiler_rt is None or not compiler_rt.is_file()
     ):
         return None, [
-            "WASI source-extension target metadata requires the target Rust "
-            "compiler-builtins archive for Meson configure links"
+            "WASI source-extension target metadata requires the selected SDK "
+            "compiler-rt archive for Meson configure links"
         ]
     host_plan = resolve_source_extension_target_plan("native")
     if host_plan.target_triple == target_plan.target_triple:
@@ -1178,9 +1263,7 @@ def _materialize_source_extension_target_metadata_with_toolchain(
             target_plan=target_plan,
             pkg_config_dir=pkg_config_dir,
             commands=toolchain.commands,
-            compiler_builtins=(
-                compiler_builtins.resolve() if compiler_builtins is not None else None
-            ),
+            compiler_rt=(compiler_rt.resolve() if compiler_rt is not None else None),
             include_dirs=include_dirs,
         ).encode("utf-8"),
     )
@@ -1220,12 +1303,12 @@ def _materialize_source_extension_target_metadata_with_toolchain(
             "detail": toolchain.detail,
             "link_probe_archives": (
                 {
-                    "compiler_builtins": {
-                        "path": str(compiler_builtins.resolve()),
+                    "compiler_rt": {
+                        "path": str(compiler_rt.resolve()),
                         "sha256": toolchain.link_inputs.sha256,
                     }
                 }
-                if compiler_builtins is not None
+                if compiler_rt is not None
                 else {}
             ),
         },

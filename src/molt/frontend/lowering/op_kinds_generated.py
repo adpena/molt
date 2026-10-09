@@ -1014,14 +1014,11 @@ FRONTEND_REGISTERED_KINDS: frozenset[str] = frozenset(
         "CLASS_DEF",
         "CLASS_LAYOUT_FIELD_COUNT",
         "CLASS_LAYOUT_SLOT_COUNT",
-        "CLASS_LAYOUT_VERSION",
         "CLASS_MERGE_LAYOUT",
         "CLASS_NEW",
         "CLASS_SET_BASE",
         "CLASS_SET_LAYOUT_VERSION",
         "CLASS_VERSION",
-        "CLOSURE_LOAD",
-        "CLOSURE_STORE",
         "CMP_EQ",
         "CMP_GE",
         "CMP_GT",
@@ -1064,8 +1061,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[str] = frozenset(
         "DELATTR_NAME",
         "DELETE_VAR",
         "DEL_ATTR",
-        "DEL_ATTR_GENERIC_OBJ",
-        "DEL_ATTR_GENERIC_PTR",
         "DEL_ATTR_NAME",
         "DEL_BOUNDARY",
         "DEL_INDEX",
@@ -1243,7 +1238,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[str] = frozenset(
         "IS_NATIVE_AWAITABLE",
         "IS_NOT",
         "IS_PENDING",
-        "ITER",
         "ITER_NEW",
         "ITER_NEXT",
         "ITER_NEXT_UNBOXED",
@@ -1334,8 +1328,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[str] = frozenset(
         "RELEASE",
         "REPR_FROM_OBJ",
         "RERAISE",
-        "RET",
-        "RET_VOID",
         "REVERSED",
         "ROUND",
         "RSHIFT",
@@ -1465,6 +1457,18 @@ FRONTEND_REGISTERED_KINDS: frozenset[str] = frozenset(
         "ret_void",
     }
 )
+
+# Explicit frontend spellings replacing the uppercase wire default.
+FRONTEND_LOWERING_KINDS_BY_WIRE: dict[str, tuple[str, ...]] = {
+    'class_layout_version': ('CLASS_VERSION',),
+    'closure_load': ('LOAD_CLOSURE',),
+    'closure_store': ('STORE_CLOSURE',),
+    'del_attr_generic_obj': ('DELATTR_GENERIC_OBJ',),
+    'del_attr_generic_ptr': ('DELATTR_GENERIC_PTR',),
+    'iter': ('ITER_NEW',),
+    'ret': ('ret',),
+    'ret_void': ('ret_void',),
+}
 
 SIMPLEIR_STRUCTURAL_KINDS: frozenset[str] = frozenset(
     {
@@ -2226,8 +2230,6 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "CHECKED_ADD": "writes_heap",
     "CHECKED_MUL": "writes_heap",
     "CHECK_EXCEPTION": "control",
-    "CLOSURE_LOAD": "reads_heap",
-    "CLOSURE_STORE": "writes_heap",
     "CONST": "pure",
     "CONST_BIGINT": "pure",
     "CONST_BOOL": "pure",
@@ -2243,11 +2245,11 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "COPY_VAR": "reads_heap",
     "DEC_REF": "writes_heap",
     "DELATTR": "writes_heap",
+    "DELATTR_GENERIC_OBJ": "writes_heap",
+    "DELATTR_GENERIC_PTR": "writes_heap",
     "DELATTR_NAME": "writes_heap",
     "DELETE_VAR": "writes_heap",
     "DEL_ATTR": "writes_heap",
-    "DEL_ATTR_GENERIC_OBJ": "writes_heap",
-    "DEL_ATTR_GENERIC_PTR": "writes_heap",
     "DEL_ATTR_NAME": "writes_heap",
     "DEL_BOUNDARY": "writes_heap",
     "DEL_INDEX": "writes_heap",
@@ -2368,6 +2370,7 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "LIST_REVERSE": "writes_heap",
     "LOAD": "writes_heap",
     "LOAD_ATTR": "writes_heap",
+    "LOAD_CLOSURE": "reads_heap",
     "LOAD_CONST": "pure",
     "LOAD_VAR": "reads_heap",
     "LOOP_BREAK": "control",
@@ -2412,8 +2415,6 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "RANGE_NEW": "writes_heap",
     "RELEASE": "writes_heap",
     "RERAISE": "control",
-    "RET": "control",
-    "RET_VOID": "control",
     "RSHIFT": "writes_heap",
     "SETATTR": "writes_heap",
     "SETATTR_GENERIC_OBJ": "writes_heap",
@@ -2436,6 +2437,7 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "STATE_YIELD": "control",
     "STORE": "writes_heap",
     "STORE_ATTR": "writes_heap",
+    "STORE_CLOSURE": "writes_heap",
     "STORE_INDEX": "writes_heap",
     "STORE_VAR": "writes_heap",
     "STRING_EQ": "writes_heap",
@@ -2453,6 +2455,8 @@ FRONTEND_EFFECT_CLASS: dict[str, str] = {
     "WARN_STDERR": "writes_heap",
     "YIELD": "writes_heap",
     "YIELD_FROM": "writes_heap",
+    "ret": "control",
+    "ret_void": "control",
 }
 
 # Control operations whose condition executes Python truthiness. Derived
@@ -2512,8 +2516,6 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {
     "CHECKED_ADD": True,
     "CHECKED_MUL": True,
     "CHECK_EXCEPTION": False,
-    "CLOSURE_LOAD": True,
-    "CLOSURE_STORE": True,
     "CONST": False,
     "CONST_BIGINT": False,
     "CONST_BOOL": False,
@@ -2529,11 +2531,11 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {
     "COPY_VAR": True,
     "DEC_REF": True,
     "DELATTR": True,
+    "DELATTR_GENERIC_OBJ": True,
+    "DELATTR_GENERIC_PTR": True,
     "DELATTR_NAME": True,
     "DELETE_VAR": True,
     "DEL_ATTR": True,
-    "DEL_ATTR_GENERIC_OBJ": True,
-    "DEL_ATTR_GENERIC_PTR": True,
     "DEL_ATTR_NAME": True,
     "DEL_BOUNDARY": True,
     "DEL_INDEX": True,
@@ -2656,6 +2658,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {
     "LIST_REVERSE": True,
     "LOAD": True,
     "LOAD_ATTR": True,
+    "LOAD_CLOSURE": True,
     "LOAD_CONST": False,
     "LOAD_VAR": False,
     "LOOP_BREAK": False,
@@ -2700,8 +2703,6 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {
     "RANGE_NEW": True,
     "RELEASE": True,
     "RERAISE": False,
-    "RET": False,
-    "RET_VOID": False,
     "RSHIFT": True,
     "SETATTR": True,
     "SETATTR_GENERIC_OBJ": True,
@@ -2726,6 +2727,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {
     "STATE_YIELD": True,
     "STORE": True,
     "STORE_ATTR": True,
+    "STORE_CLOSURE": True,
     "STORE_INDEX": True,
     "STORE_VAR": True,
     "STRING_EQ": True,
@@ -2744,6 +2746,8 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[str, bool] = {
     "WARN_STDERR": True,
     "YIELD": True,
     "YIELD_FROM": True,
+    "ret": False,
+    "ret_void": False,
 }
 
 # Exact s_value edges retaining defined functions at static link time.
@@ -3422,7 +3426,6 @@ FRONTEND_EFFECT_READS_HEAP_KINDS: frozenset[str] = frozenset(
         "BUILD_SET",
         "BUILD_SLICE",
         "BUILD_TUPLE",
-        "CLOSURE_LOAD",
         "COPY",
         "COPY_VAR",
         "EXCEPTION_MATCH_BUILTIN",
@@ -3431,6 +3434,7 @@ FRONTEND_EFFECT_READS_HEAP_KINDS: frozenset[str] = frozenset(
         "GET_ITER",
         "ITER_NEXT",
         "ITER_NEXT_UNBOXED",
+        "LOAD_CLOSURE",
         "LOAD_VAR",
         "ORD_AT",
         "STACK_ALLOC",
@@ -3470,15 +3474,14 @@ FRONTEND_EFFECT_WRITES_HEAP_KINDS: frozenset[str] = frozenset(
         "CAST_BOOL",
         "CHECKED_ADD",
         "CHECKED_MUL",
-        "CLOSURE_STORE",
         "CONTAINS",
         "DEC_REF",
         "DELATTR",
+        "DELATTR_GENERIC_OBJ",
+        "DELATTR_GENERIC_PTR",
         "DELATTR_NAME",
         "DELETE_VAR",
         "DEL_ATTR",
-        "DEL_ATTR_GENERIC_OBJ",
-        "DEL_ATTR_GENERIC_PTR",
         "DEL_ATTR_NAME",
         "DEL_BOUNDARY",
         "DEL_INDEX",
@@ -3606,6 +3609,7 @@ FRONTEND_EFFECT_WRITES_HEAP_KINDS: frozenset[str] = frozenset(
         "STATE_SET",
         "STORE",
         "STORE_ATTR",
+        "STORE_CLOSURE",
         "STORE_INDEX",
         "STORE_VAR",
         "STRING_EQ",
@@ -3664,14 +3668,14 @@ FRONTEND_EFFECT_CONTROL_KINDS: frozenset[str] = frozenset(
         "RAISE",
         "RAISE_CAUSE",
         "RERAISE",
-        "RET",
-        "RET_VOID",
         "STATE_LABEL",
         "STATE_SWITCH",
         "STATE_TRANSITION",
         "STATE_YIELD",
         "TRY_END",
         "TRY_START",
+        "ret",
+        "ret_void",
     }
 )
 
@@ -4062,7 +4066,7 @@ def validate_serialized_kind(kind: str, function_name: str = "<direct>") -> None
     Preserved wire operations retain their spelling and target-specific
     admission. This check never collapses local binding aliases or invents
     a target support claim for a registered wire operation."""
-    if kind in FRONTEND_EFFECT_CLASS:
+    if kind in FRONTEND_REGISTERED_KINDS and kind not in SIMPLEIR_REGISTERED_KINDS:
         raise ValueError(f"function {function_name!r}: frontend operation {kind!r} escaped serialization")
     if kind in SIMPLEIR_BACKEND_PRIVATE_KINDS:
         raise ValueError(f"function {function_name!r}: backend-private SimpleIR op kind {kind!r} escaped frontend serialization")

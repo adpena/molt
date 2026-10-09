@@ -50,6 +50,7 @@ class _GeneratorProtocolAttrs(Protocol):
     _deferred_runtime_warnings: list[str]
     _emitted_syntax_warnings: set[tuple[str, int, str]]
     _expr_col: tuple[int, int] | None
+    _gpu_body_origin_candidates: dict[int, dict[str, Any]]
     _lexical_dependency_cache: PythonDependencyAuthority | None
     _lexical_dependency_index: PythonBindingIndex | None
     _list_int_containers: set[str]
@@ -99,7 +100,6 @@ class _GeneratorProtocolAttrs(Protocol):
     control_flow_depth: Any
     current_class: str | None
     current_func_name: str
-    current_gpu_kernel_context: bool
     current_line: int | None
     current_method_first_param: str | None
     current_ops: list[MoltOp]
@@ -142,4 +142,3 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_modules: dict[str, str]
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
-    gpu_kernel_symbols_by_name: dict[str, str]

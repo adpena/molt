@@ -27,7 +27,7 @@ fn pickle_apply_dict_state(
     // CPython BUILD updates __dict__ directly; only the separate slot-state
     // dictionary below uses setattr. Materialization moves inferred fields to
     // their canonical dictionary owner before this update.
-    if unsafe { crate::dict_order(state_ptr).is_empty() } {
+    if unsafe { crate::dict_len(state_ptr) == 0 } {
         return Ok(());
     }
     let Some(name) = attr_name_bits_from_bytes(_py, b"__dict__") else {
@@ -236,7 +236,7 @@ pub(crate) fn pickle_apply_newobj(
         dec_ref_bits(_py, new_bits);
         return Err(MoltObject::none().bits());
     };
-    let kw_len = if let Some(kw_bits) = kwargs_bits {
+    if let Some(kw_bits) = kwargs_bits {
         let Some(kw_ptr) = obj_from_bits(kw_bits).as_ptr() else {
             dec_ref_bits(_py, new_bits);
             return Err(pickle_raise(
@@ -251,39 +251,11 @@ pub(crate) fn pickle_apply_newobj(
                 "pickle.loads: NEWOBJ_EX kwargs must be dict",
             ));
         }
-        unsafe { crate::dict_order(kw_ptr).len() / 2 }
-    } else {
-        0
-    };
-    let builder_bits = crate::molt_callargs_new((args.len() + 1) as u64, kw_len as u64);
-    let _ = unsafe { crate::molt_callargs_push_pos(builder_bits, cls_bits) };
-    if exception_pending(_py) {
-        dec_ref_bits(_py, new_bits);
-        return Err(MoltObject::none().bits());
     }
-    for arg in args.iter().copied() {
-        let _ = unsafe { crate::molt_callargs_push_pos(builder_bits, arg) };
-        if exception_pending(_py) {
-            dec_ref_bits(_py, new_bits);
-            return Err(MoltObject::none().bits());
-        }
-    }
-    if let Some(kw_bits) = kwargs_bits {
-        let kw_ptr = obj_from_bits(kw_bits).as_ptr().expect("checked above");
-        let pairs = unsafe { crate::dict_order(kw_ptr).to_vec() };
-        let mut idx = 0usize;
-        while idx + 1 < pairs.len() {
-            let key_bits = pairs[idx];
-            let val_bits = pairs[idx + 1];
-            let _ = unsafe { crate::molt_callargs_push_kw(builder_bits, key_bits, val_bits) };
-            if exception_pending(_py) {
-                dec_ref_bits(_py, new_bits);
-                return Err(MoltObject::none().bits());
-            }
-            idx += 2;
-        }
-    }
-    let out_bits = crate::molt_call_bind(new_bits, builder_bits);
+    let mapping = kwargs_bits.unwrap_or_else(|| MoltObject::none().bits());
+    let out_bits =
+        unsafe { crate::call::bind::call_bind_capi(_py, new_bits, Some(cls_bits), &args, mapping) };
+
     dec_ref_bits(_py, new_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());

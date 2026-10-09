@@ -316,17 +316,14 @@ pub(crate) fn env_from_bits(
         if object_type_id(ptr) != TYPE_ID_DICT {
             return Err("env must be a dict".to_string());
         }
-        let order = dict_order(ptr);
-        let mut out = Vec::with_capacity(order.len() / 2);
-        let mut idx = 0;
-        while idx + 1 < order.len() {
-            let key_bits = order[idx];
-            let val_bits = order[idx + 1];
+        let mut out = Vec::with_capacity(dict_len(ptr));
+        for row in dict_live_entries(ptr) {
+            let key_bits = row.key;
+            let val_bits = row.value;
             out.push((
                 os_string_from_bits(_py, key_bits)?,
                 os_string_from_bits(_py, val_bits)?,
             ));
-            idx += 2;
         }
         Ok(Some(out))
     }

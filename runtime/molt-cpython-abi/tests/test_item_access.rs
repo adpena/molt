@@ -43,18 +43,18 @@ unsafe extern "C" fn dict_get_item_miss(
     molt_cpython_abi::hooks::OwnedHandleResult::error()
 }
 
-fn init_hooks() {
+fn init_hooks() -> support::AbiTestThreadStateTransaction {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
     hooks.object_get_item = dict_get_item_miss;
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 /// (c) A native dict miss must raise `KeyError` with the key as its argument
 /// (CPython `dict_subscript`), never the prior bare NULL with no exception.
 #[test]
 fn get_item_native_dict_miss_raises_keyerror_with_key() {
-    init_hooks();
+    let _abi_test = init_hooks();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let dict_obj = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
@@ -126,7 +126,7 @@ unsafe extern "C" fn foreign_map_subscript(_o: *mut PyObject, key: *mut PyObject
 /// invoking the slot.
 #[test]
 fn mapping_getitemstring_routes_foreign_mapping_through_getitem() {
-    init_hooks();
+    let _abi_test = init_hooks();
 
     let mut mapping: PyMappingMethods = unsafe { std::mem::zeroed() };
     mapping.mp_subscript = foreign_map_subscript as *mut c_void;

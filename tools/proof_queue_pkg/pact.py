@@ -26,7 +26,7 @@ from molt.cli.source_extension_target import (
     resolve_source_extension_target_plan,
 )
 from molt.target_python import _parse_target_python_version
-from molt.dx import DxConfigError, _reject_onedrive, checkout_custody
+from molt.dx import checkout_custody
 from tools import proof_plan
 from tools.pact_witness_acceptance import ACCEPTANCE_ENV
 from molt.scientific_stack_versions import (
@@ -135,11 +135,6 @@ def _source_extension_producer_plan(
     root = repo_root.resolve(strict=True)
     source_root = Path(source).expanduser().resolve(strict=True)
     resolved_build_root = Path(build_root).expanduser().resolve(strict=False)
-    try:
-        _reject_onedrive(source_root, "source-extension source root")
-        _reject_onedrive(resolved_build_root, "source-extension build root")
-    except DxConfigError as exc:
-        raise SystemExit(str(exc)) from exc
     registry = load_source_extension_registry()
     extension_set = source_extension_set(
         package,

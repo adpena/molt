@@ -1553,7 +1553,14 @@ fn object_to_json_with_options(
                 stack.push(marker);
             }
 
-            let order = unsafe { crate::builtins::containers::dict_order(ptr) };
+            let order = unsafe {
+                crate::object::ops_dict::dict_snapshot(
+                    _py,
+                    ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                )
+            }
+            .ok_or_else(|| JsonEncodeError::Raised(MoltObject::none().bits()))?;
             let mut entries: Vec<(String, u64)> = Vec::with_capacity(order.len() / 2);
             for idx in 0..(order.len() / 2) {
                 let key_bits = order[idx * 2];

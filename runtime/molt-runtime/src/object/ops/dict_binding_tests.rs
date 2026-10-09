@@ -197,7 +197,10 @@ fn string_binding_commits_every_key_as_one_transition() {
             // Every binding is visible before any displaced owner is released,
             // and the present key keeps its original key object.
             assert_eq!(
-                dict_order(dict).as_slice(),
+                dict_live_entries(dict)
+                    .flat_map(|row| [row.key, row.value])
+                    .collect::<Vec<_>>()
+                    .as_slice(),
                 &[omega, none, alpha, value, beta, value, gamma, value]
             );
             assert_ne!(dict_structural_epoch(dict), epoch);
@@ -243,7 +246,7 @@ fn string_binding_failure_leaves_every_binding_unchanged() {
             assert!(!dict.is_null());
             // Exhaust entry storage: binding two new keys must grow it.
             let mut filler = 0;
-            while dict_order(dict).capacity() - dict_order(dict).len() >= 4 {
+            while dict_entries(dict).capacity() - dict_entries(dict).len() >= 2 {
                 dict_set_in_place(
                     py,
                     dict,
@@ -252,7 +255,9 @@ fn string_binding_failure_leaves_every_binding_unchanged() {
                 );
                 filler += 1;
             }
-            let order = dict_order(dict).clone();
+            let order = dict_live_entries(dict)
+                .flat_map(|row| [row.key, row.value])
+                .collect::<Vec<_>>();
             let epoch = dict_structural_epoch(dict);
             let owners_before = (owners(old), owners(value));
             let entries = [(present, value), (first, value), (second, value)];
@@ -268,7 +273,13 @@ fn string_binding_failure_leaves_every_binding_unchanged() {
             let _ = crate::molt_exception_clear();
             // The present key was probed and its replacement planned, yet no
             // binding, order, key or owner changed.
-            assert_eq!(dict_order(dict).as_slice(), order.as_slice());
+            assert_eq!(
+                dict_live_entries(dict)
+                    .flat_map(|row| [row.key, row.value])
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                order.as_slice()
+            );
             assert_eq!(dict_structural_epoch(dict), epoch);
             assert_eq!((owners(old), owners(value)), owners_before);
             // The identical transition commits once storage may grow.
@@ -301,7 +312,9 @@ fn probe_failure_leaves_every_binding_unchanged() {
             let beta = string_key(py, b"beta");
             let value = mortal_value(py);
             let dict = dict_with_same_hash_key(py, &[], probe, b"beta");
-            let order = dict_order(dict).clone();
+            let order = dict_live_entries(dict)
+                .flat_map(|row| [row.key, row.value])
+                .collect::<Vec<_>>();
             let epoch = dict_structural_epoch(dict);
             let value_owners = owners(value);
             PROBE_CALLS.store(0, Ordering::SeqCst);
@@ -314,7 +327,13 @@ fn probe_failure_leaves_every_binding_unchanged() {
             assert!(failed);
             assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 1);
             take_pending_error(py, "RuntimeError");
-            assert_eq!(dict_order(dict).as_slice(), order.as_slice());
+            assert_eq!(
+                dict_live_entries(dict)
+                    .flat_map(|row| [row.key, row.value])
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                order.as_slice()
+            );
             assert_eq!(dict_structural_epoch(dict), epoch);
             assert_eq!(owners(value), value_owners);
             // Ordinary equality decides both keys once it succeeds.
@@ -323,7 +342,10 @@ fn probe_failure_leaves_every_binding_unchanged() {
                     .expect("binding commits"),
             );
             assert_eq!(
-                dict_order(dict).as_slice(),
+                dict_live_entries(dict)
+                    .flat_map(|row| [row.key, row.value])
+                    .collect::<Vec<_>>()
+                    .as_slice(),
                 &[
                     probe,
                     MoltObject::from_int(7).bits(),
@@ -394,7 +416,10 @@ fn probe_restructuring_restarts_against_the_live_table() {
                 "equality was consulted"
             );
             assert_eq!(
-                dict_order(dict).as_slice(),
+                dict_live_entries(dict)
+                    .flat_map(|row| [row.key, row.value])
+                    .collect::<Vec<_>>()
+                    .as_slice(),
                 &[
                     gamma,
                     value,
@@ -613,7 +638,10 @@ fn exact_string_reads_keep_same_hash_equality_order_and_errors() {
                 assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 1);
                 take_pending_error(py, "RuntimeError");
                 assert_eq!(
-                    dict_order(dict).as_slice(),
+                    dict_live_entries(dict)
+                        .flat_map(|row| [row.key, row.value])
+                        .collect::<Vec<_>>()
+                        .as_slice(),
                     &[probe, MoltObject::from_int(7).bits(), stored, value]
                 );
             }
@@ -636,7 +664,10 @@ fn exact_string_reads_keep_same_hash_equality_order_and_errors() {
                 assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 1);
                 take_pending_error(py, "RuntimeError");
                 assert_eq!(
-                    dict_order(dict).as_slice(),
+                    dict_live_entries(dict)
+                        .flat_map(|row| [row.key, row.value])
+                        .collect::<Vec<_>>()
+                        .as_slice(),
                     &[probe, MoltObject::from_int(7).bits(), stored, value]
                 );
             }
@@ -705,7 +736,10 @@ fn exact_string_reads_reacquire_entries_after_equality_mutates_the_table() {
                 // speculative string probe itself may not call equality.
                 assert_eq!(PROBE_CALLS.load(Ordering::SeqCst), 3);
                 assert_eq!(
-                    dict_order(dict).as_slice(),
+                    dict_live_entries(dict)
+                        .flat_map(|row| [row.key, row.value])
+                        .collect::<Vec<_>>()
+                        .as_slice(),
                     &[
                         probe,
                         MoltObject::from_int(7).bits(),
@@ -764,7 +798,13 @@ fn exact_string_reads_setdefault_hashes_once_and_balances_result_ownership() {
                 };
                 assert!(!exception_pending(py));
                 assert_eq!(SETDEFAULT_HASH_CALLS.load(Ordering::SeqCst), 1);
-                assert_eq!(dict_order(dict).as_slice(), &[key, result]);
+                assert_eq!(
+                    dict_live_entries(dict)
+                        .flat_map(|row| [row.key, row.value])
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                    &[key, result]
+                );
                 assert_eq!(owners(result), if empty_list { 2 } else { 3 });
                 assert_eq!(owners(default), if empty_list { 1 } else { 3 });
                 dec_ref_bits(py, result);
@@ -827,21 +867,46 @@ fn exact_string_reads_setdefault_reuses_probe_and_observes_reentrant_insertion()
                         PROBE_RAISE => {
                             assert!(obj_from_bits(result).is_none());
                             take_pending_error(py, "RuntimeError");
-                            assert_eq!(dict_order(dict).len(), 4);
+                            assert_eq!(
+                                dict_live_entries(dict)
+                                    .flat_map(|row| [row.key, row.value])
+                                    .collect::<Vec<_>>()
+                                    .len(),
+                                4
+                            );
                             assert_eq!(owners(default), 1);
                         }
                         PROBE_EQUAL => assert_eq!(result, MoltObject::from_int(7).bits()),
                         PROBE_RESTRUCTURE => {
                             assert_eq!(result, MoltObject::from_int(40).bits());
                             assert_eq!(
-                                dict_order(dict).as_slice(),
+                                dict_live_entries(dict)
+                                    .flat_map(|row| [row.key, row.value])
+                                    .collect::<Vec<_>>()
+                                    .as_slice(),
                                 &[probe, MoltObject::from_int(7).bits(), query, result]
                             );
                         }
                         _ => {
-                            assert_eq!(dict_order(dict).len(), 6);
-                            assert_eq!(dict_order(dict)[4], query);
-                            assert_eq!(dict_order(dict)[5], result);
+                            assert_eq!(
+                                dict_live_entries(dict)
+                                    .flat_map(|row| [row.key, row.value])
+                                    .collect::<Vec<_>>()
+                                    .len(),
+                                6
+                            );
+                            assert_eq!(
+                                dict_live_entries(dict)
+                                    .flat_map(|row| [row.key, row.value])
+                                    .collect::<Vec<_>>()[4],
+                                query
+                            );
+                            assert_eq!(
+                                dict_live_entries(dict)
+                                    .flat_map(|row| [row.key, row.value])
+                                    .collect::<Vec<_>>()[5],
+                                result
+                            );
                             assert_eq!(owners(result), if empty_list { 2 } else { 3 });
                         }
                     }
@@ -894,13 +959,131 @@ fn exact_string_reads_setdefault_reservation_failure_keeps_entries_and_owners() 
                 assert!(obj_from_bits(raised).is_none());
                 crate::clear_exception(py);
                 assert!(!exception_pending(py));
-                assert!(dict_order(dict).is_empty());
+                assert!(
+                    dict_live_entries(dict)
+                        .flat_map(|row| [row.key, row.value])
+                        .collect::<Vec<_>>()
+                        .is_empty()
+                );
                 assert_eq!(dict_structural_epoch(dict), epoch);
                 assert_eq!((owners(key), owners(default)), before);
                 dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
             }
             dec_ref_bits(py, key);
             dec_ref_bits(py, default);
+            assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn sparse_erase_is_allocation_free_and_reinsertion_preserves_live_order() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let int = |value| MoltObject::from_int(value).bits();
+            let dict = alloc_dict_with_pairs(
+                py,
+                &[
+                    int(0),
+                    int(10),
+                    int(1),
+                    int(11),
+                    int(2),
+                    int(12),
+                    int(3),
+                    int(13),
+                ],
+            );
+            let entries_owner = dict_entries_ptr(dict);
+            let table_owner = dict_table_ptr(dict);
+            let reset = TrackerReset;
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(0),
+                max_allocations: Some(0),
+                ..Default::default()
+            })));
+            assert!(dict_del_in_place(py, dict, int(1)));
+            assert!(dict_del_in_place(py, dict, int(3)));
+            assert!(!exception_pending(py));
+            drop(reset);
+            assert_eq!(dict_len(dict), 2);
+            assert_eq!(
+                dict_entries(dict).len(),
+                4,
+                "ordinary erase preserves physical cursor extent"
+            );
+            assert_eq!(dict_entries_ptr(dict), entries_owner);
+            assert_eq!(dict_table_ptr(dict), table_owner);
+            assert_eq!(
+                dict_live_entries(dict)
+                    .map(|row| row.key)
+                    .collect::<Vec<_>>(),
+                vec![int(0), int(2)]
+            );
+            // Insertion crosses the holes >= live compaction boundary. The live
+            // order is the CPython oracle; physical row addresses are internal.
+            dict_set_in_place(py, dict, int(1), int(21));
+            assert_eq!(
+                dict_live_entries(dict)
+                    .flat_map(|row| [row.key, row.value])
+                    .collect::<Vec<_>>(),
+                vec![int(0), int(10), int(2), int(12), int(1), int(21)]
+            );
+            assert_eq!(dict_entries_ptr(dict), entries_owner);
+            assert_eq!(dict_table_ptr(dict), table_owner);
+            assert_eq!(dict_get_in_place(py, dict, int(1)), Some(int(21)));
+            dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
+        }
+    });
+}
+
+#[test]
+fn stored_hash_sentinel_is_rejected_before_ownership_or_storage_changes() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let key = string_key(py, b"sentinel key");
+            let value = mortal_value(py);
+            let dict = alloc_dict_with_pairs(py, &[]);
+            let before = (owners(key), owners(value), dict_structural_epoch(dict));
+            dict_set_with_hash_in_place(py, dict, key, value, u64::MAX);
+            assert!(exception_pending(py));
+            crate::molt_exception_clear();
+            assert_eq!(
+                (owners(key), owners(value), dict_structural_epoch(dict)),
+                before
+            );
+            assert_eq!(dict_len(dict), 0);
+            assert!(dict_entries(dict).is_empty());
+            assert!(dict_del_with_hash_deferred(py, dict, key, u64::MAX).is_none());
+            assert!(exception_pending(py));
+            crate::molt_exception_clear();
+            assert_eq!(
+                (owners(key), owners(value), dict_structural_epoch(dict)),
+                before
+            );
+            let set = crate::molt_set_new(0);
+            let ptr = obj_from_bits(set).as_ptr().unwrap();
+            let before = owners(key);
+            set_add_with_hash_in_place(py, ptr, key, u64::MAX);
+            assert!(exception_pending(py));
+            crate::molt_exception_clear();
+            assert_eq!(owners(key), before);
+            assert_eq!(set_len(ptr), 0);
+            assert!(set_entries(ptr).is_empty());
+            assert!(!set_del_with_hash_in_place(py, ptr, key, u64::MAX));
+            assert!(exception_pending(py));
+            crate::molt_exception_clear();
+            assert_eq!(owners(key), before);
+            // Every other hash bit pattern, including zero and -2, is storable.
+            for hash in [0, 1, i64::MIN as u64, u64::MAX - 1] {
+                let stored = StoredHash::new(hash).expect("valid Python stored hash");
+                assert_eq!(stored.get(), hash);
+            }
+            for bits in [MoltObject::from_ptr(dict).bits(), set, key, value] {
+                dec_ref_bits(py, bits);
+            }
             assert!(!exception_pending(py));
         }
     });

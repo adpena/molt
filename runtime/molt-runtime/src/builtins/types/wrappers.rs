@@ -5,7 +5,6 @@
 //! subclasses keep ordinary Python method lookup and construction semantics.
 
 use super::*;
-use crate::PtrDropGuard;
 use crate::builtins::attr::clear_attribute_error_if_pending;
 use crate::builtins::native_arguments::{NamedBinding, NativeArguments, NativeKeywords};
 use crate::object::layout::{
@@ -273,43 +272,16 @@ pub(crate) fn try_construct_exact_wrapper(
     class: u64,
     args: &[u64],
     names: &[u64],
-    values: &[u64],
+    mapping: u64,
 ) -> Option<u64> {
     let kind = WrapperKind::exact_class(py, class)?;
-    let mut pairs = Vec::new();
-    if pairs
-        .try_reserve_exact(names.len().saturating_mul(2))
-        .is_err()
-    {
-        return Some(raise_exception(
-            py,
-            "MemoryError",
-            "wrapper keyword allocation failed",
-        ));
-    }
-    for (&name, &value) in names.iter().zip(values) {
-        if unsafe { crate::object::ops_format::with_string_bytes(obj_from_bits(name), |_| ()) }
-            .is_none()
-        {
-            return Some(raise_exception::<_>(
-                py,
-                "TypeError",
-                "keywords must be strings",
-            ));
-        }
-        pairs.extend([name, value]);
-    }
-    // Exact-type acceleration still enters the dictionary protocol of tp_init.
-    let dictionary = alloc_dict_with_pairs(py, &pairs);
-    let _dictionary = PtrDropGuard::preserving(dictionary);
-    if dictionary.is_null() || exception_pending(py) {
-        return Some(MoltObject::none().bits());
-    }
+    // type.__call__ lends its original mapping to tp_init. The caller owns
+    // both the mapping and any inspected names through callback completion.
     Some(wrapper_construct(
         py,
         kind,
         args,
-        NativeKeywords::mapping(MoltObject::from_ptr(dictionary).bits(), names),
+        NativeKeywords::mapping(mapping, names),
     ))
 }
 
@@ -413,7 +385,7 @@ pub(crate) unsafe fn wrapper_get(
                         .unwrap_or_else(|| MoltObject::none().bits());
                     }
                 }
-                crate::builtins::functions::bound_method_new(py, target, owner, false)
+                crate::builtins::functions::explicit_bound_method_new(py, target, owner)
             }
         }
     }

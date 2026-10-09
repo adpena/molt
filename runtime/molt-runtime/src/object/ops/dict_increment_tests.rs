@@ -158,7 +158,12 @@ fn in_place_increment_arithmetic_reentry_reacquires_mapping() {
                 let ptr = obj_from_bits(dictionary).as_ptr().unwrap();
                 assert_eq!(unsafe { dict_get_in_place(py, ptr, key) }, Some(expected));
                 assert_eq!(
-                    unsafe { dict_order(ptr).len() },
+                    unsafe {
+                        dict_live_entries(ptr)
+                            .flat_map(|row| [row.key, row.value])
+                            .collect::<Vec<_>>()
+                            .len()
+                    },
                     130,
                     "no duplicate stale-index entry"
                 );
@@ -192,7 +197,15 @@ fn in_place_increment_missing_key_reverse_addition_rechecks_after_callback_inser
                 unsafe { dict_get_in_place(py, ptr, key) },
                 Some(MoltObject::from_int(42).bits())
             );
-            assert_eq!(unsafe { dict_order(ptr).len() }, 130);
+            assert_eq!(
+                unsafe {
+                    dict_live_entries(ptr)
+                        .flat_map(|row| [row.key, row.value])
+                        .collect::<Vec<_>>()
+                        .len()
+                },
+                130
+            );
             CALLBACK_DICT.store(0, Ordering::SeqCst);
             CALLBACK_KEY.store(0, Ordering::SeqCst);
             for bits in [dictionary, key, delta, class, function] {
@@ -226,7 +239,16 @@ fn exact_statement_declines_before_any_callback_or_mutation() {
         assert_eq!(exact_statement(py, list, other, one), Some(false));
         assert_eq!(CALLBACK_CALLS.load(Ordering::SeqCst), 0);
         let ptr = obj_from_bits(dictionary).as_ptr().unwrap();
-        assert_eq!(unsafe { dict_order(ptr).len() }, 2, "nothing was inserted");
+        assert_eq!(
+            unsafe {
+                dict_live_entries(ptr)
+                    .flat_map(|row| [row.key, row.value])
+                    .collect::<Vec<_>>()
+                    .len()
+            },
+            2,
+            "nothing was inserted"
+        );
         // Exact ints: the statement's value, the statement's key object.
         assert_eq!(exact_statement(py, dictionary, other, one), Some(true));
         assert_eq!(
@@ -234,7 +256,14 @@ fn exact_statement_declines_before_any_callback_or_mutation() {
             Some(true)
         );
         assert_eq!(int_value(py, dictionary, "other"), Some(2));
-        assert_eq!(unsafe { dict_order(ptr)[2] }, other);
+        assert_eq!(
+            unsafe {
+                dict_live_entries(ptr)
+                    .flat_map(|row| [row.key, row.value])
+                    .collect::<Vec<_>>()[2]
+            },
+            other
+        );
         assert!(!exception_pending(py));
         for bits in [
             dictionary,
@@ -336,7 +365,12 @@ fn split_increment_declines_inputs_the_loop_would_dispatch_or_reject() {
         assert!(!split_increment(py, "a", None, dictionary, one, list).1);
         dec_ref_bits(py, list);
         assert_eq!(
-            unsafe { dict_order(obj_from_bits(dictionary).as_ptr().unwrap()).len() },
+            unsafe {
+                dict_live_entries(obj_from_bits(dictionary).as_ptr().unwrap())
+                    .flat_map(|row| [row.key, row.value])
+                    .collect::<Vec<_>>()
+                    .len()
+            },
             0,
             "every decline leaves the dict unchanged"
         );
@@ -408,7 +442,11 @@ fn split_increment_binds_the_inserted_key_only_when_its_own_iteration_inserted_i
         );
         assert!(ok);
         let ptr = obj_from_bits(dictionary).as_ptr().unwrap();
-        let inserted = unsafe { dict_order(ptr)[2] };
+        let inserted = unsafe {
+            dict_live_entries(ptr)
+                .flat_map(|row| [row.key, row.value])
+                .collect::<Vec<_>>()[2]
+        };
         assert_eq!(last, inserted, "the loop target is the new key object");
         dec_ref_bits(py, last);
         let (last, ok) =

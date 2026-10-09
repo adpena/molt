@@ -310,6 +310,11 @@ typedef struct PyCriticalSection {
 #define PyState_AddModule ((int (*)(PyObject *, PyModuleDef *))_molt_host_abi_symbol("PyState_AddModule"))
 #define PyState_FindModule ((PyObject *(*)(PyModuleDef *))_molt_host_abi_symbol("PyState_FindModule"))
 #define PyState_RemoveModule ((int (*)(PyModuleDef *))_molt_host_abi_symbol("PyState_RemoveModule"))
+#define PyMethod_Type (*(PyTypeObject *)_molt_host_abi_symbol("PyMethod_Type"))
+#define PyMethod_New ((PyObject *(*)(PyObject *, PyObject *))_molt_host_abi_symbol("PyMethod_New"))
+#define PyMethod_Check ((int (*)(PyObject *))_molt_host_abi_symbol("PyMethod_Check"))
+#define PyMethod_GET_FUNCTION ((PyObject *(*)(PyObject *))_molt_host_abi_symbol("PyMethod_GET_FUNCTION"))
+#define PyMethod_GET_SELF ((PyObject *(*)(PyObject *))_molt_host_abi_symbol("PyMethod_GET_SELF"))
 #define PyCFunction_New ((PyObject *(*)(PyMethodDef *, PyObject *))_molt_host_abi_symbol("PyCFunction_New"))
 #define PyCFunction_NewEx ((PyObject *(*)(PyMethodDef *, PyObject *, PyObject *))_molt_host_abi_symbol("PyCFunction_NewEx"))
 #define PyCMethod_New ((PyObject *(*)(PyMethodDef *, PyObject *, PyObject *, PyTypeObject *))_molt_host_abi_symbol("PyCMethod_New"))
@@ -454,7 +459,6 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 #define NOWAIT_LOCK 0
 #define WAIT_LOCK 1
 
-#define Py_GIL_DISABLED 0
 #define Py_MOD_GIL_USED ((void *)0)
 #define Py_MOD_GIL_NOT_USED ((void *)1)
 #define Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED ((void *)0)
@@ -467,7 +471,8 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 
 #define Py_CLEANUP_SUPPORTED 0x20000
 
-static int Py_OptimizeFlag = 0;
+/* Both header transports observe the runtime-owned process flag. */
+PyAPI_DATA(int) Py_OptimizeFlag;
 
 #ifndef Py_LIMITED_API
 #define Py_LIMITED_API 0x030C0000
@@ -1231,32 +1236,6 @@ extern int PyByteArray_CheckExact(PyObject *obj);
 PyAPI_DATA(PyTypeObject) PyNone_Type;
 
 #include "shared/_object_observation_exports.h"
-
-static inline PyObject *PyMethod_New(PyObject *func, PyObject *self) {
-    PyObject *types_mod;
-    PyObject *method_type;
-    PyObject *result;
-    if (func == NULL) {
-        PyErr_SetString(PyExc_TypeError, "function must not be NULL");
-        return NULL;
-    }
-    if (self == NULL) {
-        Py_INCREF(func);
-        return func;
-    }
-    types_mod = PyImport_ImportModule("types");
-    if (types_mod == NULL) {
-        return NULL;
-    }
-    method_type = PyObject_GetAttrString(types_mod, "MethodType");
-    Py_DECREF(types_mod);
-    if (method_type == NULL) {
-        return NULL;
-    }
-    result = PyObject_CallFunctionObjArgs(method_type, func, self, NULL);
-    Py_DECREF(method_type);
-    return result;
-}
 
 static inline PyObject *Py_GenericAlias(PyObject *origin, PyObject *args) {
     PyObject *types_mod;
@@ -2073,159 +2052,7 @@ static inline PyObject *_molt_datetime_timezone_utc(void) {
  * Context Variables C API
  * ======================================================================== */
 
-static inline PyObject *PyContext_New(void) {
-    PyObject *contextvars_mod = PyImport_ImportModule("contextvars");
-    PyObject *copy_context_fn;
-    PyObject *ctx;
-    if (contextvars_mod == NULL) {
-        PyErr_Clear();
-        return PyDict_New();
-    }
-    copy_context_fn = PyObject_GetAttrString(contextvars_mod, "copy_context");
-    Py_DECREF(contextvars_mod);
-    if (copy_context_fn == NULL) {
-        PyErr_Clear();
-        return PyDict_New();
-    }
-    ctx = PyObject_CallObject(copy_context_fn, NULL);
-    Py_DECREF(copy_context_fn);
-    return ctx;
-}
-
-static inline PyObject *PyContext_Copy(PyObject *ctx) {
-    PyObject *copy_fn;
-    PyObject *result;
-    if (ctx == NULL) {
-        return PyContext_New();
-    }
-    copy_fn = PyObject_GetAttrString(ctx, "copy");
-    if (copy_fn == NULL) {
-        PyErr_Clear();
-        return PyContext_New();
-    }
-    result = PyObject_CallObject(copy_fn, NULL);
-    Py_DECREF(copy_fn);
-    return result;
-}
-
-static inline int PyContext_Enter(PyObject *ctx) {
-    (void)ctx;
-    return 0;
-}
-
-static inline int PyContext_Exit(PyObject *ctx) {
-    (void)ctx;
-    return 0;
-}
-
-static inline PyObject *PyContextVar_New(const char *name, PyObject *def) {
-    PyObject *contextvars_mod = PyImport_ImportModule("contextvars");
-    PyObject *contextvar_cls;
-    PyObject *var;
-    MoltHandle args[2];
-    MoltHandle args_tuple;
-    uint64_t nargs;
-    if (contextvars_mod == NULL) {
-        return NULL;
-    }
-    contextvar_cls = PyObject_GetAttrString(contextvars_mod, "ContextVar");
-    Py_DECREF(contextvars_mod);
-    if (contextvar_cls == NULL) {
-        return NULL;
-    }
-    args[0] = _molt_string_from_utf8(name);
-    if (args[0] == 0 || molt_err_pending() != 0) {
-        Py_DECREF(contextvar_cls);
-        return NULL;
-    }
-    if (def != NULL) {
-        args[1] = _molt_py_handle(def);
-        nargs = 2;
-    } else {
-        nargs = 1;
-    }
-    args_tuple = molt_tuple_from_array(args, nargs);
-    if (args_tuple == 0 || molt_err_pending() != 0) {
-        molt_handle_decref(args[0]);
-        Py_DECREF(contextvar_cls);
-        return NULL;
-    }
-    var = _molt_pyobject_from_result(
-        molt_object_call(_molt_py_handle(contextvar_cls), args_tuple, molt_none()));
-    molt_handle_decref(args[0]);
-    molt_handle_decref(args_tuple);
-    Py_DECREF(contextvar_cls);
-    return var;
-}
-
-static inline int PyContextVar_Get(
-    PyObject *var, PyObject *default_value, PyObject **value)
-{
-    PyObject *get_fn;
-    PyObject *result;
-    MoltHandle args[1];
-    MoltHandle args_tuple;
-    if (var == NULL || value == NULL) {
-        PyErr_SetString(PyExc_TypeError, "var and value pointer must not be NULL");
-        return -1;
-    }
-    get_fn = PyObject_GetAttrString(var, "get");
-    if (get_fn == NULL) {
-        return -1;
-    }
-    if (default_value != NULL) {
-        args[0] = _molt_py_handle(default_value);
-        args_tuple = molt_tuple_from_array(args, 1);
-        if (args_tuple == 0 || molt_err_pending() != 0) {
-            Py_DECREF(get_fn);
-            return -1;
-        }
-        result = _molt_pyobject_from_result(
-            molt_object_call(_molt_py_handle(get_fn), args_tuple, molt_none()));
-        molt_handle_decref(args_tuple);
-    } else {
-        result = PyObject_CallObject(get_fn, NULL);
-    }
-    Py_DECREF(get_fn);
-    if (result == NULL) {
-        if (default_value != NULL) {
-            PyErr_Clear();
-            Py_INCREF(default_value);
-            *value = default_value;
-            return 0;
-        }
-        *value = NULL;
-        return -1;
-    }
-    *value = result;
-    return 0;
-}
-
-static inline PyObject *PyContextVar_Set(PyObject *var, PyObject *value) {
-    PyObject *set_fn;
-    PyObject *result;
-    MoltHandle args[1];
-    MoltHandle args_tuple;
-    if (var == NULL) {
-        PyErr_SetString(PyExc_TypeError, "context var must not be NULL");
-        return NULL;
-    }
-    set_fn = PyObject_GetAttrString(var, "set");
-    if (set_fn == NULL) {
-        return NULL;
-    }
-    args[0] = (value != NULL) ? _molt_py_handle(value) : molt_none();
-    args_tuple = molt_tuple_from_array(args, 1);
-    if (args_tuple == 0 || molt_err_pending() != 0) {
-        Py_DECREF(set_fn);
-        return NULL;
-    }
-    result = _molt_pyobject_from_result(
-        molt_object_call(_molt_py_handle(set_fn), args_tuple, molt_none()));
-    molt_handle_decref(args_tuple);
-    Py_DECREF(set_fn);
-    return result;
-}
+#include "shared/_context_exports.h"
 
 /* ========================================================================
  * Marshal C API — delegates to pickle for serialization

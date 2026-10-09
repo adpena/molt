@@ -14,7 +14,7 @@ use molt_cpython_abi::hooks::PendingExceptionClass;
 thread_local! { static EMERGENCY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 thread_local! { static UNADMITTED_TEXT_ALLOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
-fn init() {
+fn init() -> support::AbiTestThreadStateTransaction {
     unsafe extern "C" fn text_without_class_authority(_: *const u8, _: usize) -> u64 {
         UNADMITTED_TEXT_ALLOCATIONS.with(|calls| calls.set(calls.get() + 1));
         0
@@ -45,25 +45,26 @@ fn init() {
     hooks.pending_exception_class = pending_class;
     hooks.clear_pending_exception = clear;
     hooks.with_preserved_pending_exception = preserve;
-    hooks.alloc_str = text_without_class_authority;
-    support::prepare_abi_test_thread(hooks);
+    hooks.alloc_str = Some(text_without_class_authority);
+    support::enter_abi_test(hooks)
 }
 
 #[test]
 fn diagnostic_text_requires_class_custody_before_allocation() {
     use molt_cpython_abi::api::{errors, refcount};
-    init();
+    let _abi_test = init();
     unsafe {
         errors::PyErr_SetString((&raw mut PyExc_ValueError).cast(), c"bootstrap".as_ptr());
         assert_eq!(UNADMITTED_TEXT_ALLOCATIONS.with(std::cell::Cell::get), 0);
         assert_eq!(errors::PyErr_Occurred(), (&raw mut PyExc_ValueError).cast());
         let raised = errors::PyErr_GetRaisedException();
+        let raised_owner = refcount::OwnedPyObject::from_owned(raised);
         assert!(
             !raised.is_null(),
             "native construction remains available without managed text"
         );
         assert_eq!((*raised).ob_type, &raw mut PyExc_ValueError);
-        refcount::Py_DECREF(raised);
+        drop(raised_owner);
         assert!(errors::PyErr_Occurred().is_null());
     }
 }
@@ -74,7 +75,7 @@ fn diagnostic_text_requires_class_custody_before_allocation() {
 
 #[test]
 fn test_no_exception_initially() {
-    init();
+    let _abi_test = init();
     // Clear any leftover state from other tests
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let occurred = unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() };
@@ -84,8 +85,8 @@ fn test_no_exception_initially() {
 #[test]
 fn pending_emergency_type_query_needs_no_runtime_class_bootstrap() {
     use molt_cpython_abi::abi_types::{PyExc_Exception, PyExc_MemoryError};
-    use molt_cpython_abi::api::errors;
-    init();
+    use molt_cpython_abi::api::{errors, refcount};
+    let _abi_test = init();
     EMERGENCY.with(|state| state.set(true));
     unsafe {
         assert_eq!(
@@ -96,7 +97,9 @@ fn pending_emergency_type_query_needs_no_runtime_class_bootstrap() {
             errors::PyErr_ExceptionMatches((&raw mut PyExc_Exception).cast()),
             1
         );
-        assert!(errors::PyErr_GetRaisedException().is_null());
+        let raised = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert!(raised.as_ptr().is_null());
+        drop(raised);
         assert_eq!(
             errors::PyErr_Occurred(),
             (&raw mut PyExc_MemoryError).cast()
@@ -110,14 +113,14 @@ fn pending_emergency_type_query_needs_no_runtime_class_bootstrap() {
 
 #[test]
 fn test_warning_exception_singleton_is_exported() {
-    init();
+    let _abi_test = init();
     let warning = (&raw mut PyExc_Warning).cast::<PyObject>();
     assert!(!warning.is_null());
 }
 
 #[test]
 fn test_set_string_and_occurred() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let exc = (&raw mut PyExc_ValueError).cast::<PyObject>();
@@ -136,7 +139,7 @@ fn test_set_string_and_occurred() {
 
 #[test]
 fn take_current_error_transfers_physical_instance_and_clears_indicator() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let exc = (&raw mut PyExc_ValueError).cast::<PyObject>();
@@ -157,7 +160,7 @@ fn take_current_error_transfers_physical_instance_and_clears_indicator() {
 
 #[test]
 fn test_set_string_with_null_message() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let exc = (&raw mut PyExc_TypeError).cast::<PyObject>();
@@ -172,7 +175,7 @@ fn test_set_string_with_null_message() {
 
 #[test]
 fn test_set_string_with_null_exc_type() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     unsafe {
@@ -190,7 +193,7 @@ fn test_set_string_with_null_exc_type() {
 
 #[test]
 fn test_set_none() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let exc = (&raw mut PyExc_ValueError).cast::<PyObject>();
@@ -207,7 +210,7 @@ fn test_set_none() {
 
 #[test]
 fn test_clear_when_no_exception() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     // Clearing when nothing set should be a noop
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
@@ -217,7 +220,7 @@ fn test_clear_when_no_exception() {
 
 #[test]
 fn test_double_clear() {
-    init();
+    let _abi_test = init();
     let exc = (&raw mut PyExc_ValueError).cast::<PyObject>();
     unsafe {
         molt_cpython_abi::api::errors::PyErr_SetString(exc, c"err".as_ptr());
@@ -234,7 +237,7 @@ fn test_double_clear() {
 
 #[test]
 fn test_print_clears_exception() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let exc = (&raw mut PyExc_ValueError).cast::<PyObject>();
@@ -254,7 +257,7 @@ fn test_print_clears_exception() {
 
 #[test]
 fn test_print_when_no_exception() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     // Should not crash
     unsafe { molt_cpython_abi::api::errors::PyErr_Print() };
@@ -266,7 +269,7 @@ fn test_print_when_no_exception() {
 
 #[test]
 fn test_format_sets_exception_returns_null() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let exc = (&raw mut PyExc_TypeError).cast::<PyObject>();
@@ -280,7 +283,7 @@ fn test_format_sets_exception_returns_null() {
 
 #[test]
 fn test_fetch_consumes_current_error_message() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let exc = (&raw mut PyExc_ValueError).cast::<PyObject>();
@@ -294,6 +297,12 @@ fn test_fetch_consumes_current_error_message() {
     unsafe {
         molt_cpython_abi::api::errors::PyErr_Fetch(&mut exc_type, &mut exc_value, &mut exc_tb);
     }
+    let exc_type_owner =
+        unsafe { molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(exc_type) };
+    let exc_value_owner =
+        unsafe { molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(exc_value) };
+    let exc_tb_owner =
+        unsafe { molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(exc_tb) };
 
     // Fetch transfers the REAL type (Python/errors.c), not a Py_None sentinel:
     // Fetch/Restore round-trips must preserve exception identity.
@@ -313,7 +322,11 @@ fn test_fetch_consumes_current_error_message() {
 
     // Restore re-installs what Fetch produced: the round-trip preserves type.
     unsafe {
-        molt_cpython_abi::api::errors::PyErr_Restore(exc_type, exc_value, exc_tb);
+        molt_cpython_abi::api::errors::PyErr_Restore(
+            exc_type_owner.into_ptr(),
+            exc_value_owner.into_ptr(),
+            exc_tb_owner.into_ptr(),
+        );
     }
     assert_eq!(
         unsafe {
@@ -330,7 +343,7 @@ fn test_fetch_consumes_current_error_message() {
 
 #[test]
 fn setobject_never_installs_the_argument_as_the_exception_value() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let exc_type = (&raw mut PyExc_TypeError).cast::<PyObject>();
     let payload = &raw mut molt_cpython_abi::abi_types::Py_None;
@@ -345,6 +358,12 @@ fn setobject_never_installs_the_argument_as_the_exception_value() {
             &mut fetched_tb,
         );
     }
+    let fetched_type_owner =
+        unsafe { molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(fetched_type) };
+    let fetched_value_owner =
+        unsafe { molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(fetched_value) };
+    let fetched_tb_owner =
+        unsafe { molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(fetched_tb) };
     assert!(std::ptr::eq(fetched_type, exc_type));
     assert!(
         !std::ptr::eq(fetched_value, payload),
@@ -357,15 +376,14 @@ fn setobject_never_installs_the_argument_as_the_exception_value() {
         "CPython 3.12 normalizes an explicit Py_None value as zero arguments"
     );
     assert!(fetched_tb.is_null());
-    unsafe {
-        molt_cpython_abi::api::refcount::Py_XDECREF(fetched_type);
-        molt_cpython_abi::api::refcount::Py_XDECREF(fetched_value);
-    }
+    drop(fetched_type_owner);
+    drop(fetched_value_owner);
+    drop(fetched_tb_owner);
 }
 
 #[test]
 fn setnone_without_runtime_authority_preserves_class_and_empty_args() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let exc_type = (&raw mut PyExc_ValueError).cast::<PyObject>();
     unsafe { molt_cpython_abi::api::errors::PyErr_SetNone(exc_type) };
@@ -379,6 +397,12 @@ fn setnone_without_runtime_authority_preserves_class_and_empty_args() {
             &mut fetched_tb,
         );
     }
+    let fetched_type_owner =
+        unsafe { molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(fetched_type) };
+    let fetched_value_owner =
+        unsafe { molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(fetched_value) };
+    let fetched_tb_owner =
+        unsafe { molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(fetched_tb) };
     assert!(std::ptr::eq(fetched_type, exc_type));
     assert!(!fetched_value.is_null());
     let args = unsafe { (*fetched_value.cast::<PyBaseExceptionObject>()).args };
@@ -386,15 +410,14 @@ fn setnone_without_runtime_authority_preserves_class_and_empty_args() {
         unsafe { molt_cpython_abi::api::sequences::PyTuple_Size(args) },
         0
     );
-    unsafe {
-        molt_cpython_abi::api::refcount::Py_XDECREF(fetched_type);
-        molt_cpython_abi::api::refcount::Py_XDECREF(fetched_value);
-    }
+    drop(fetched_type_owner);
+    drop(fetched_value_owner);
+    drop(fetched_tb_owner);
 }
 
 #[test]
 fn test_set_from_errno_sets_exception_returns_null() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let result = unsafe {
@@ -415,7 +438,7 @@ fn test_set_from_errno_sets_exception_returns_null() {
 
 #[test]
 fn test_overwrite_exception() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let val_exc = (&raw mut PyExc_ValueError).cast::<PyObject>();
@@ -445,7 +468,7 @@ fn test_err_setobject_sets_exception_without_generic_placeholder() {
     // F1 teeth: PyErr_SetObject previously dropped `value` (`let _ = value;`) and
     // set a generic c"<exception>" message. It must set the exception with the
     // caller's type and NOT fabricate the "<exception>" placeholder payload.
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let exc = (&raw mut PyExc_ValueError).cast::<PyObject>();
     // A NULL value cannot be resolved; the fix records the type with an empty
@@ -470,7 +493,7 @@ fn test_err_setobject_sets_exception_without_generic_placeholder() {
 fn test_err_exception_matches_no_exception_returns_zero() {
     // PyErr_ExceptionMatches with no pending exception must return 0 (CPython's
     // PyErr_GivenExceptionMatches(NULL, exc) == 0), NOT the old "is any set" 1.
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let exc = (&raw mut PyExc_ValueError).cast::<PyObject>();
     let rc = unsafe { molt_cpython_abi::api::errors::PyErr_ExceptionMatches(exc) };
@@ -485,7 +508,7 @@ fn test_err_exception_matches_does_not_report_any_pending() {
     // statics resolve to type bits 0, so a genuine match cannot be asserted here;
     // what we CAN prove is the burned-down fail-open: a pending exception must NOT
     // make ExceptionMatches return 1 unconditionally.
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let type_exc = (&raw mut PyExc_TypeError).cast::<PyObject>();
     unsafe {
@@ -504,7 +527,7 @@ fn test_err_exception_matches_does_not_report_any_pending() {
 fn test_err_write_unraisable_does_not_panic_with_object() {
     // F1 teeth: PyErr_WriteUnraisable previously dropped `obj` (`let _ = obj;`).
     // It now includes obj's context in the report and must clear the exception.
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let exc = (&raw mut PyExc_ValueError).cast::<PyObject>();
     unsafe {
@@ -522,7 +545,7 @@ fn test_err_write_unraisable_does_not_panic_with_object() {
 
 #[test]
 fn occurred_returns_the_real_pending_type() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let exc = (&raw mut molt_cpython_abi::abi_types::PyExc_KeyError).cast::<PyObject>();
     unsafe { molt_cpython_abi::api::errors::PyErr_SetString(exc, c"k".as_ptr()) };
@@ -538,7 +561,7 @@ fn occurred_returns_the_real_pending_type() {
 
 #[test]
 fn exception_matches_walks_the_builtin_subclass_chain() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     // Pending IndexError must match LookupError AND Exception AND BaseException
     // (the documented 3.12 hierarchy), and must NOT match KeyError/TypeError.
@@ -576,7 +599,7 @@ fn exception_matches_walks_the_builtin_subclass_chain() {
 
 #[test]
 fn given_exception_matches_is_subclass_aware() {
-    init();
+    let _abi_test = init();
     let given = unsafe {
         molt_cpython_abi::api::errors::PyErr_GivenExceptionMatches(
             (&raw mut molt_cpython_abi::abi_types::PyExc_ModuleNotFoundError).cast::<PyObject>(),
@@ -595,7 +618,7 @@ fn given_exception_matches_is_subclass_aware() {
 
 #[test]
 fn bad_internal_call_is_system_error() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     unsafe { molt_cpython_abi::api::errors::PyErr_BadInternalCall() };
     assert_eq!(
@@ -612,7 +635,7 @@ fn bad_internal_call_is_system_error() {
 
 #[test]
 fn set_from_errno_reports_memoryerror_without_string_allocator() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let result = unsafe {
         molt_cpython_abi::api::errors::PyErr_SetFromErrno(

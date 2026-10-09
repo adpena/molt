@@ -261,11 +261,6 @@ fn alloc_hash_aggregate_for_class_unpublished(
     if exception_pending(_py) {
         return std::ptr::null_mut();
     }
-    let Some(order_capacity) = capacity.checked_mul(if type_id == TYPE_ID_DICT { 2 } else { 1 })
-    else {
-        record_memory_error_without_allocation(_py);
-        return std::ptr::null_mut();
-    };
     let table_capacity = if capacity == 0 {
         0
     } else {
@@ -275,10 +270,7 @@ fn alloc_hash_aggregate_for_class_unpublished(
         };
         capacity
     };
-    let total = std::mem::size_of::<MoltHeader>()
-        + std::mem::size_of::<*mut Vec<u64>>()
-        + std::mem::size_of::<*mut Vec<usize>>()
-        + std::mem::size_of::<*mut Vec<u64>>();
+    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<HashStorage<DictEntry>>();
     let ptr = if let Some(class) = class {
         let kind = match type_id {
             TYPE_ID_SET => super::native_instance::NativePayload::Set,
@@ -291,7 +283,11 @@ fn alloc_hash_aggregate_for_class_unpublished(
             _py,
             total,
             type_id,
-            ObjectAuxPreselection::Default,
+            if type_id == TYPE_ID_FROZENSET {
+                ObjectAuxPreselection::StateInline
+            } else {
+                ObjectAuxPreselection::Default
+            },
         )
     };
     if ptr.is_null() {
@@ -299,13 +295,17 @@ fn alloc_hash_aggregate_for_class_unpublished(
     }
     unsafe {
         let initialized = (|| {
-            *(ptr as *mut *mut Vec<u64>) =
-                crate::object::backing::tracked_vec_box_with_capacity::<u64>(order_capacity)?;
-            *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) =
-                crate::object::backing::tracked_vec_box_zeroed::<usize>(table_capacity)?;
-            *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
-                as *mut *mut Vec<u64>) =
-                crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity)?;
+            if type_id == TYPE_ID_DICT {
+                dict_storage(ptr).entries =
+                    crate::object::backing::tracked_vec_box_with_capacity::<DictEntry>(capacity)?;
+                dict_storage(ptr).table =
+                    crate::object::backing::tracked_vec_box_zeroed::<usize>(table_capacity)?;
+            } else {
+                set_storage(ptr).entries =
+                    crate::object::backing::tracked_vec_box_with_capacity::<SetEntry>(capacity)?;
+                set_storage(ptr).table =
+                    crate::object::backing::tracked_vec_box_zeroed::<usize>(table_capacity)?;
+            }
             Some(())
         })();
         if initialized.is_none() {
@@ -1581,13 +1581,14 @@ pub(crate) fn alloc_code_obj(
     // `types.FunctionType` reconstruction, 17 binds the compiled frame slot,
     // 18 selects the generated execution trampoline policy, 19..20 own the
     // immutable freevar/cellvar positional-name contracts, and 21 is the
-    // immutable callable-context provenance paired with slots 9..11.
+    // immutable callable-context provenance paired with slots 9..11. Slot 22
+    // owns optional immutable GPU body metadata; no function payload grows.
     let empty_lexical_ptr = alloc_tuple(_py, &[]);
     if empty_lexical_ptr.is_null() {
         return std::ptr::null_mut();
     }
     let empty_lexical_bits = MoltObject::from_ptr(empty_lexical_ptr).bits();
-    let total = std::mem::size_of::<MoltHeader>() + 22 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 23 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_CODE);
     if ptr.is_null() {
         dec_ref_bits(_py, empty_lexical_bits);
@@ -1618,6 +1619,7 @@ pub(crate) fn alloc_code_obj(
         *(ptr.add(19 * std::mem::size_of::<u64>()) as *mut u64) = empty_lexical_bits;
         *(ptr.add(20 * std::mem::size_of::<u64>()) as *mut u64) = empty_lexical_bits;
         *(ptr.add(21 * std::mem::size_of::<u64>()) as *mut u64) = u64::MAX;
+        *(ptr.add(22 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         if filename_bits != 0 {
             inc_ref_bits(_py, filename_bits);
         }
@@ -1695,6 +1697,13 @@ pub(crate) unsafe fn clone_code_obj_with_protocol_flags(
             code_freevars_bits(source),
             code_cellvars_bits(source),
         ) {
+            dec_ref_bits(_py, MoltObject::from_ptr(clone).bits());
+            return std::ptr::null_mut();
+        }
+        let descriptor = crate::object::layout::code_gpu_descriptor_bits(source);
+        if descriptor != 0
+            && !crate::object::layout::code_publish_gpu_descriptor(_py, clone, descriptor)
+        {
             dec_ref_bits(_py, MoltObject::from_ptr(clone).bits());
             return std::ptr::null_mut();
         }
@@ -2814,7 +2823,10 @@ mod sequence_builder_tests {
                         }
                     }
                     assert!(completed, "bounded admission never succeeded for {type_id}");
-                    assert!(failures >= 4, "must exercise object and all three buffers");
+                    assert!(
+                        failures >= 3,
+                        "must exercise object, typed entries and index owners"
+                    );
                 }
             }
             dec_ref_bits(py, item);
@@ -3273,6 +3285,9 @@ mod tests {
             let name = alloc_string(py, b"clone_lexical");
             let freevar = alloc_string(py, b"captured");
             let cellvar = alloc_string(py, b"local_cell");
+            let _name_owner = super::PtrDropGuard::preserving(name);
+            let _freevar_owner = super::PtrDropGuard::preserving(freevar);
+            let _cellvar_owner = super::PtrDropGuard::preserving(cellvar);
             assert!(!name.is_null() && !freevar.is_null() && !cellvar.is_null());
             let name_bits = MoltObject::from_ptr(name).bits();
             let freevar_bits = MoltObject::from_ptr(freevar).bits();
@@ -3280,6 +3295,9 @@ mod tests {
             let empty = alloc_tuple(py, &[]);
             let freevars = alloc_tuple(py, &[freevar_bits]);
             let cellvars = alloc_tuple(py, &[cellvar_bits]);
+            let _empty_owner = super::PtrDropGuard::preserving(empty);
+            let _freevars_owner = super::PtrDropGuard::preserving(freevars);
+            let _cellvars_owner = super::PtrDropGuard::preserving(cellvars);
             assert!(!empty.is_null() && !freevars.is_null() && !cellvars.is_null());
             let empty_bits = MoltObject::from_ptr(empty).bits();
             let freevars_bits = MoltObject::from_ptr(freevars).bits();
@@ -3296,6 +3314,7 @@ mod tests {
                 0,
                 0,
             );
+            let source_owner = super::PtrDropGuard::preserving(source);
             assert!(!source.is_null());
             unsafe {
                 assert!(code_publish_lexical_metadata(
@@ -3312,23 +3331,36 @@ mod tests {
                     custody: crate::object::layout::EntryCustody::Adopting,
                 };
                 assert_eq!(code_publish_callable_identity(source, identity), Ok(()));
+                let descriptor = alloc_string(py, b"{\"kind\":\"molt_gpu_kernel\"}");
+                assert!(!descriptor.is_null());
+                let descriptor_owner = super::PtrDropGuard::preserving(descriptor);
+                let descriptor_bits = MoltObject::from_ptr(descriptor).bits();
+                assert!(crate::object::layout::code_publish_gpu_descriptor(
+                    py,
+                    source,
+                    descriptor_bits
+                ));
+                let refs = || (*crate::header_from_obj_ptr(descriptor)).ref_count_snapshot();
+                assert_eq!(refs(), 2);
                 let clone = clone_code_obj_with_protocol_flags(py, source, 0);
+                let clone_owner = super::PtrDropGuard::preserving(clone);
                 assert!(!clone.is_null());
                 assert_eq!(code_freevars_bits(clone), freevars_bits);
                 assert_eq!(code_cellvars_bits(clone), cellvars_bits);
                 assert_eq!(code_callable_identity(clone), Some(identity));
-                dec_ref_bits(py, MoltObject::from_ptr(clone).bits());
-                dec_ref_bits(py, MoltObject::from_ptr(source).bits());
-            }
-            for bits in [
-                cellvars_bits,
-                freevars_bits,
-                empty_bits,
-                cellvar_bits,
-                freevar_bits,
-                name_bits,
-            ] {
-                dec_ref_bits(py, bits);
+                assert_eq!(
+                    crate::object::layout::code_gpu_descriptor_bits(clone),
+                    descriptor_bits
+                );
+                assert_eq!(refs(), 3);
+                drop(clone_owner);
+                drop(source_owner);
+                assert_eq!(
+                    refs(),
+                    1,
+                    "both code owners must retire their descriptor edge"
+                );
+                drop(descriptor_owner);
             }
         });
     }

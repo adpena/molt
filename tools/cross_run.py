@@ -66,6 +66,10 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
+import json
+import re
+import secrets
 import datetime as _dt
 import os
 import shlex
@@ -77,6 +81,7 @@ import time
 import tomllib
 from abc import ABC, abstractmethod
 from pathlib import Path
+from collections.abc import Callable
 
 # Repo root: tools/cross_run.py -> tools -> repo
 REPO = Path(__file__).resolve().parents[1]
@@ -101,6 +106,10 @@ def _guarded_run(
     timeout: float | None = None,
     env: dict[str, str] | None = None,
     cwd: str | Path | None = None,
+    stdout_capture_path: Path | None = None,
+    stderr_capture_path: Path | None = None,
+    capture_tail_bytes: int | None = None,
+    cancellation_requested: Callable[[], bool] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     proc = harness_memory_guard.guarded_completed_process(
         cmd,
@@ -110,6 +119,20 @@ def _guarded_run(
         capture_output=capture_output,
         text=text,
         timeout=timeout,
+        **(
+            {"cancellation_requested": cancellation_requested}
+            if cancellation_requested is not None
+            else {}
+        ),
+        **(
+            {
+                "stdout_capture_path": stdout_capture_path,
+                "stderr_capture_path": stderr_capture_path,
+                "capture_tail_bytes": capture_tail_bytes,
+            }
+            if stdout_capture_path is not None
+            else {}
+        ),
     )
     if (
         timeout is not None
@@ -611,6 +634,11 @@ class SSHTransport(Transport):
         )
 
 
+def _file_sha256(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
 class DockerTransport(Transport):
     """Spin up a container per ``run`` invocation, mounting a stage dir."""
 
@@ -622,25 +650,20 @@ class DockerTransport(Transport):
         # Verify docker is available locally.
         if shutil.which("docker") is None:
             raise RuntimeError("docker not found on PATH for docker transport")
-        # Pre-pull the image so the first ``run`` doesn't time out on a
-        # slow network. Failure here is fatal — the host is unusable.
+        # A mutable tag or a missing image is not execution authority. Provision
+        # the exact digest out of band; cross execution never pulls implicitly.
+        if not self.host.container or not re.fullmatch(
+            r"(?:[^\s@]+@)?sha256:[0-9a-f]{64}", self.host.container
+        ):
+            raise ValueError("docker transport requires an immutable image digest")
         proc = _guarded_run(
             ["docker", "image", "inspect", self.host.container],
-            capture_output=True,
-            text=True,
             timeout=30,
         )
         if proc.returncode != 0:
-            pull = _guarded_run(
-                ["docker", "pull", self.host.container],
-                capture_output=True,
-                text=True,
-                timeout=600,
+            raise RuntimeError(
+                f"pinned Docker image is absent: {self.host.container}; provision explicitly; no automatic pull"
             )
-            if pull.returncode != 0:
-                raise RuntimeError(
-                    f"docker pull {self.host.container} failed: {pull.stderr[:300]}"
-                )
         # Create a stage directory we will mount as remote_dir.
         self._stage = Path(tempfile.mkdtemp(prefix="molt_cross_docker_"))
 
@@ -659,6 +682,7 @@ class DockerTransport(Transport):
             "docker",
             "run",
             "--rm",
+            "--pull=never",
             "-v",
             f"{self._stage}:{mount}",
             "-w",
@@ -668,9 +692,450 @@ class DockerTransport(Transport):
         proc = _guarded_run(cmd, capture_output=True, text=True, timeout=timeout)
         return proc.returncode, proc.stdout, proc.stderr
 
+    def import_sealed_root(
+        self, archive: Path, *, sha256: str, arch: str, evidence: Path
+    ) -> dict[str, object]:
+        """Import only the explicit sealed root; no image/base/network lookup."""
+        binary = shutil.which("docker")
+        if not binary:
+            raise RuntimeError(
+                "sealed guest requires an already installed Docker provider"
+            )
+        self._docker = str(Path(binary).resolve(strict=True))
+        self._docker_sha256 = _file_sha256(Path(self._docker))
+        self._sealed_evidence = evidence
+        evidence.mkdir(parents=True, exist_ok=False)
+        self._sealed_commands = []
+        # Select the local Linux engine explicitly. Context files, credential
+        # helpers and DOCKER_* selectors are development ambient inputs.
+        self._docker_prefix = [
+            self._docker,
+            "--host",
+            "unix:///var/run/docker.sock",
+            "--config",
+            str(evidence / "client-config"),
+        ]
+        (evidence / "client-config").mkdir()
+        self._docker_env = {
+            "PATH": "/absent",
+            "HOME": "/absent",
+            "LANG": "C",
+            "LC_ALL": "C",
+        }
+        self._sealed_provider = self._sealed_provider_identity()
+        validate_sealed_docker_provider(self._sealed_provider, arch=arch)
+        if arch not in {"x86_64", "aarch64"}:
+            raise ValueError("sealed Docker guest supports Linux x86_64/aarch64")
+        docker_arch = {"x86_64": "amd64", "aarch64": "arm64"}[arch]
+        if _file_sha256(archive) != sha256:
+            raise ValueError("sealed root archive identity changed before import")
+        imported = self._sealed_command(
+            ["image", "import", "--platform", f"linux/{docker_arch}", str(archive)],
+            timeout=120,
+        )
+        image_id = imported.stdout.strip()
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+            raise ValueError("Docker import did not return an exact image identity")
+        self._sealed_image = image_id
+        inspected = self._sealed_inspect("image", image_id)
+        validate_sealed_docker_image(inspected, sha256=sha256, arch=arch)
+        if _file_sha256(archive) != sha256:
+            raise ValueError("sealed root archive changed during Docker import")
+        return {
+            "archive_sha256": sha256,
+            "image": inspected,
+            "docker": {
+                "path": self._docker,
+                "sha256": self._docker_sha256,
+                "endpoint": "unix:///var/run/docker.sock",
+                "provider": self._sealed_provider,
+            },
+        }
+
+    def _sealed_command(
+        self, args: list[str], *, timeout: int, capture: Path | None = None
+    ):
+        if _file_sha256(Path(self._docker)) != self._docker_sha256:
+            raise ValueError("Docker provider changed during sealed execution")
+        command = [*self._docker_prefix, *args]
+        record = {"argv": command, "timeout_seconds": timeout}
+        self._sealed_commands.append(record)
+        log = self._sealed_evidence / "commands.json"
+        log.write_text(
+            json.dumps(self._sealed_commands, indent=2) + "\n", encoding="utf-8"
+        )
+        capture_paths = (
+            []
+            if capture is None
+            else [capture.with_suffix(".stdout"), capture.with_suffix(".stderr")]
+        )
+
+        def capture_exceeded() -> bool:
+            return any(
+                path.exists() and path.stat().st_size > 16 * 1024 * 1024
+                for path in capture_paths
+            )
+
+        result = _guarded_run(
+            command,
+            timeout=timeout,
+            env=self._docker_env,
+            cancellation_requested=capture_exceeded if capture_paths else None,
+            **(
+                {
+                    "stdout_capture_path": capture.with_suffix(".stdout"),
+                    "stderr_capture_path": capture.with_suffix(".stderr"),
+                    "capture_tail_bytes": 4096,
+                }
+                if capture is not None
+                else {}
+            ),
+        )
+        record.update(
+            returncode=result.returncode, stdout=result.stdout, stderr=result.stderr
+        )
+        log.write_text(
+            json.dumps(self._sealed_commands, indent=2) + "\n", encoding="utf-8"
+        )
+        if result.returncode:
+            raise RuntimeError(
+                f"sealed Docker operation failed ({result.returncode}): {command!r}: {result.stderr}"
+            )
+        if capture_exceeded():
+            raise ValueError("sealed Docker capture exceeded 16 MiB per stream")
+        return result
+
+    def _sealed_provider_identity(self) -> dict:
+        version = json.loads(
+            self._sealed_command(
+                ["version", "--format", "{{json .Server}}"], timeout=30
+            ).stdout
+        )
+        # Select only execution fields: full docker info can contain proxies.
+        fields = (
+            "OSType",
+            "Architecture",
+            "KernelVersion",
+            "DefaultRuntime",
+            "Runtimes",
+            "SecurityOptions",
+            "Driver",
+        )
+        template = (
+            "{"
+            + ",".join('"' + key + '":{{json .' + key + "}}" for key in fields)
+            + "}"
+        )
+        info = json.loads(
+            self._sealed_command(["info", "--format", template], timeout=30).stdout
+        )
+        return {"version": version, "info": info}
+
+    def _sealed_inspect(self, kind: str, identifier: str) -> dict:
+        value = json.loads(
+            self._sealed_command([kind, "inspect", identifier], timeout=30).stdout
+        )
+        if (
+            not isinstance(value, list)
+            or len(value) != 1
+            or not isinstance(value[0], dict)
+        ):
+            raise ValueError("Docker inspect did not return exactly one object")
+        return value[0]
+
+    def run_sealed(self, command: list[str], *, timeout: int) -> dict[str, object]:
+        """Inspect before entry, capture output, prove stopped, then remove ours.
+
+        Both writable destinations are bounded tmpfs. Evidence must leave through
+        the canonical supervisor export stream before the container stops.
+        """
+        nonce = secrets.token_hex(16)
+        name = "molt-release-" + nonce
+        label = "org.molt.release-custody=" + nonce
+        argv = [
+            "container",
+            "create",
+            "--pull=never",
+            "--name",
+            name,
+            "--label",
+            label,
+            "--hostname",
+            "molt-guest",
+            "--network",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--cgroupns",
+            "private",
+            "--ipc",
+            "private",
+            "--runtime",
+            "runc",
+            "--shm-size",
+            "16m",
+            "--log-driver",
+            "none",
+            "--dns",
+            "127.0.0.1",
+            "--dns-search",
+            ".",
+            "--dns-option",
+            "ndots:0",
+            "--user",
+            "65534:65534",
+            "--memory",
+            "1g",
+            "--memory-swap",
+            "1g",
+            "--cpus",
+            "1",
+            "--pids-limit",
+            "64",
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777",
+            "--tmpfs",
+            "/evidence:rw,noexec,nosuid,nodev,size=16m,mode=1777",
+            "--workdir",
+            "/app",
+            "--env",
+            "PATH=/absent",
+            "--env",
+            "HOME=/absent",
+            "--env",
+            "LANG=C",
+            "--env",
+            "LC_ALL=C",
+            "--entrypoint",
+            command[0],
+            self._sealed_image,
+            *command[1:],
+        ]
+        created = self._sealed_command(argv, timeout=30)
+        identifier = created.stdout.strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", identifier):
+            raise ValueError("Docker create returned no exact container identity")
+        before = self._sealed_inspect("container", identifier)
+        # Ownership is established before any cleanup; arbitrary IDs never grant it.
+        if (
+            before.get("Id") != identifier
+            or before.get("Config", {})
+            .get("Labels", {})
+            .get("org.molt.release-custody")
+            != nonce
+        ):
+            raise ValueError("Docker container identity differs from the created owner")
+        result = None
+        try:
+            validate_sealed_docker_configuration(
+                before, image=self._sealed_image, command=command
+            )
+            result = self._sealed_command(
+                ["container", "start", "--attach", identifier],
+                timeout=timeout,
+                capture=self._sealed_evidence / nonce,
+            )
+        finally:
+            after = self._sealed_inspect("container", identifier)
+            if (
+                after.get("Id") != identifier
+                or after.get("Config", {})
+                .get("Labels", {})
+                .get("org.molt.release-custody")
+                != nonce
+            ):
+                raise ValueError(
+                    "Docker cleanup lost exact container custody; retained"
+                )
+            if after.get("State", {}).get("Running") is True:
+                self._sealed_command(["container", "kill", identifier], timeout=30)
+                after = self._sealed_inspect("container", identifier)
+            if (
+                after.get("State", {}).get("Running") is not False
+                or after.get("State", {}).get("Pid") != 0
+            ):
+                raise ValueError("Docker container did not close; retained")
+            self._sealed_command(["container", "rm", identifier], timeout=30)
+        if (
+            result is None
+            or after["State"].get("ExitCode") != 0
+            or after["State"].get("OOMKilled") is not False
+        ):
+            raise ValueError("sealed guest did not finish successfully")
+        return {
+            "before": before,
+            "after": after,
+            "stdout_path": str(self._sealed_evidence / (nonce + ".stdout")),
+            "stderr_path": str(self._sealed_evidence / (nonce + ".stderr")),
+        }
+
+    def remove_sealed_root(self) -> None:
+        # The content ID returned by our import is the only image removable here.
+        if image := getattr(self, "_sealed_image", None):
+            self._sealed_command(["image", "rm", image], timeout=30)
+            self._sealed_image = None
+            if self._sealed_provider_identity() != self._sealed_provider:
+                raise ValueError(
+                    "Docker provider identity changed during sealed replay"
+                )
+
     def cleanup(self) -> None:
         if self._stage and self._stage.exists():
             shutil.rmtree(self._stage, ignore_errors=True)
+
+
+def validate_sealed_docker_provider(value: dict, *, arch: str) -> None:
+    """Admit the concrete local Linux engine capability, not a CLI hash alone.
+
+    Engine/kernel are trusted execution providers, captured for qualification.
+    Guest executable and library bytes are separately pinned from source.
+    """
+    if not isinstance(value, dict) or set(value) != {"version", "info"}:
+        raise ValueError("sealed Docker provider identity is invalid")
+    version, info = value["version"], value["info"]
+    api = str(version.get("ApiVersion", "")).split(".")
+    compatible = (
+        len(api) == 2
+        and all(part.isdecimal() for part in api)
+        and tuple(map(int, api)) >= (1, 41)
+    )
+    machine = {"x86_64": ("amd64", "x86_64"), "aarch64": ("arm64", "aarch64")}.get(arch)
+    if (
+        not compatible
+        or machine is None
+        or version.get("Os") != "linux"
+        or version.get("Arch") != machine[0]
+        or info.get("OSType") != "linux"
+        or info.get("Architecture") != machine[1]
+        or not version.get("Version")
+        or not version.get("GitCommit")
+        or not info.get("KernelVersion")
+        or info["KernelVersion"] != version.get("KernelVersion")
+        or "runc" not in info.get("Runtimes", {})
+        or not any(
+            str(item).startswith("name=seccomp,")
+            for item in info.get("SecurityOptions", [])
+        )
+    ):
+        raise ValueError(
+            "sealed Docker provider lacks the declared Linux/runc/seccomp capability"
+        )
+
+
+def validate_sealed_docker_image(value: dict, *, sha256: str, arch: str) -> None:
+    """Moby import's sole uncompressed layer digest must be the sealed tar."""
+    docker_arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(arch)
+    if (
+        not docker_arch
+        or not isinstance(value, dict)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(value.get("Id")))
+        or value.get("Os") != "linux"
+        or value.get("Architecture") != docker_arch
+        or value.get("RootFS") != {"Type": "layers", "Layers": ["sha256:" + sha256]}
+        or any(
+            value.get("Config", {}).get(key)
+            for key in (
+                "Env",
+                "Cmd",
+                "Entrypoint",
+                "Volumes",
+                "WorkingDir",
+                "User",
+                "Healthcheck",
+                "OnBuild",
+            )
+        )
+    ):
+        raise ValueError(
+            "sealed image does not name the exact root/platform/configuration"
+        )
+
+
+def validate_sealed_docker_configuration(
+    value: dict, *, image: str, command: list[str]
+) -> None:
+    """The receiver and the pre-entry check share one effective launch contract."""
+    host, config = value.get("HostConfig", {}), value.get("Config", {})
+    expected_env = {"PATH=/absent", "HOME=/absent", "LANG=C", "LC_ALL=C"}
+    expected_tmpfs = {
+        "/tmp": "rw,noexec,nosuid,nodev,size=64m,mode=1777",
+        "/evidence": "rw,noexec,nosuid,nodev,size=16m,mode=1777",
+    }
+    if (
+        value.get("Image") != image
+        or value.get("Path") != command[0]
+        or value.get("Args") != command[1:]
+        or config.get("Entrypoint") != [command[0]]
+        or config.get("Cmd") != command[1:]
+        or config.get("WorkingDir") != "/app"
+        or config.get("User") != "65534:65534"
+        or set(config.get("Env", [])) != expected_env
+        or config.get("Hostname") != "molt-guest"
+        or config.get("Volumes")
+        or config.get("Healthcheck")
+        or config.get("Tty") is not False
+        or config.get("OpenStdin") is not False
+        or host.get("NetworkMode") != "none"
+        or host.get("ReadonlyRootfs") is not True
+        or host.get("Privileged") is not False
+        or host.get("CapAdd")
+        or host.get("CapDrop") != ["ALL"]
+        or host.get("SecurityOpt") != ["no-new-privileges"]
+        or host.get("PidMode") != ""
+        or host.get("IpcMode") != "private"
+        or host.get("UTSMode") != ""
+        or host.get("UsernsMode") not in ("", "private")
+        or host.get("CgroupnsMode") != "private"
+        or host.get("Runtime") != "runc"
+        or host.get("ShmSize") != 16777216
+        or host.get("LogConfig") != {"Type": "none", "Config": {}}
+        or host.get("Dns") != ["127.0.0.1"]
+        or host.get("DnsSearch") != ["."]
+        or host.get("DnsOptions") != ["ndots:0"]
+        or host.get("Binds")
+        or host.get("Devices")
+        or host.get("VolumesFrom")
+        or host.get("DeviceRequests")
+        or host.get("DeviceCgroupRules")
+        or host.get("PortBindings")
+        or host.get("PublishAllPorts")
+        or host.get("Tmpfs") != expected_tmpfs
+        or host.get("Memory") != 1073741824
+        or host.get("MemorySwap") != 1073741824
+        or host.get("PidsLimit") != 64
+        or host.get("NanoCpus") != 1000000000
+        or host.get("AutoRemove") is not False
+        or host.get("RestartPolicy", {}).get("Name") != "no"
+        or value.get("State", {}).get("Running") is not False
+    ):
+        raise ValueError(
+            "sealed Docker effective configuration violates guest isolation"
+        )
+    mounts = value.get("Mounts")
+    if not isinstance(mounts, list) or any(
+        row.get("Type") != "tmpfs" or row.get("Destination") not in expected_tmpfs
+        for row in mounts
+    ):
+        raise ValueError("sealed Docker root exposes an unadmitted host mount")
+    # Standard private proc/dev/sys mounts and Docker's three generated /etc
+    # files are explicit engine inputs, not members of the imported layer.
+    # No provider may relax the proc/sys write boundary or add host mounts.
+    readonly = host.get("ReadonlyPaths", [])
+    masked = host.get("MaskedPaths", [])
+    if not {
+        "/proc/bus",
+        "/proc/fs",
+        "/proc/irq",
+        "/proc/sys",
+        "/proc/sysrq-trigger",
+    } <= set(readonly) or not {"/proc/kcore", "/sys/firmware"} <= set(masked):
+        raise ValueError("sealed Docker provider lacks protected proc/sys mounts")
+    networks = value.get("NetworkSettings", {}).get("Networks", {})
+    if set(networks) - {"none"}:
+        raise ValueError("sealed Docker root has an external network")
 
 
 def transport_for(host: Host) -> Transport:

@@ -340,3 +340,36 @@ fn app_callable_manifest_captures_reachable_builtin_function_runtime_name() {
         BTreeSet::from(["molt_len".to_string(), "molt_ord".to_string()])
     );
 }
+
+#[test]
+fn gpu_body_identity_retains_actual_application_target_without_runtime_import() {
+    let payload = r#"{"python_bodies":{"buffer_get":{"symbol":"selected_buffer_get"}}}"#;
+    let literal = make_const_str("metadata", payload);
+    let mut body = manifest_func(Vec::new());
+    body.name = "selected_buffer_get".into();
+    for published in [false, true] {
+        let mut ops = vec![literal.clone()];
+        if published {
+            ops.push(OpIR {
+                kind: "call".into(),
+                s_value: Some("molt_gpu_kernel_descriptor_set".into()),
+                args: Some(vec!["kernel".into(), "metadata".into()]),
+                ..Default::default()
+            });
+        }
+        let functions = [manifest_func(ops), body.clone()];
+        let expected = if published {
+            BTreeSet::from(["selected_buffer_get".to_owned()])
+        } else {
+            BTreeSet::new()
+        };
+        let requirements = collect_app_callable_requirements(&functions);
+        assert_eq!(requirements.compiled_body_symbols, expected);
+        assert!(requirements.intrinsic_names.is_empty());
+        assert!(requirements.builtin_trampolines.is_empty());
+        assert_eq!(
+            compute_app_callable_manifest(&functions, &BTreeSet::new()),
+            expected
+        );
+    }
+}

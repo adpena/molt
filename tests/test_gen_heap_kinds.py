@@ -56,13 +56,15 @@ def test_inventory_preserves_active_ids_and_retires_holes() -> None:
         ("OBJECT", 100)
     ]
     dense = [row["id"] for row in kinds if row["id"] >= 200]
-    assert dense == [value for value in range(200, 260) if value not in (205, 220, 231)]
+    assert dense == [value for value in range(200, 262) if value not in (205, 220, 231)]
     assert next(row for row in kinds if row["name"] == "CELL")["id"] == 258
     by_name = {row["name"]: row for row in kinds}
     assert by_name["WEAKREF"]["id"] == 256
     assert by_name["NATIVE_DESCRIPTOR"]["id"] == 257
     assert by_name["FRAME_BINDINGS"]["id"] == 259
-    assert kinds[-1]["name"] == "FRAME_BINDINGS"
+    assert by_name["CONTEXT_BITMAP_NODE"]["id"] == 260
+    assert by_name["CONTEXT_COLLISION_NODE"]["id"] == 261
+    assert kinds[-1]["name"] == "CONTEXT_COLLISION_NODE"
 
 
 def test_green_reference_holders_carry_closed_acyclic_capabilities() -> None:
@@ -434,7 +436,12 @@ def test_gc_clear_handlers_are_detach_only_until_sink_release() -> None:
     lifecycle = (ROOT / "runtime/molt-runtime/src/object/heap_lifecycle.rs").read_text(
         encoding="utf-8"
     )
-    clear = lifecycle.split("pub(crate) unsafe fn clear_cycle_edges_with_sink", 1)[1]
+    # Both production detach authorities must remain release-free. Selecting
+    # their bodies also excludes the later Rust tests' legitimate teardown.
+    clear = "\n".join(
+        _rust_function(lifecycle, name)
+        for name in ("clear_cycle_edges_with_sink", "detach_terminal_owned_edges")
+    )
     for forbidden in (
         "dec_ref_bits(",
         "dec_ref_ptr(",
@@ -442,11 +449,93 @@ def test_gc_clear_handlers_are_detach_only_until_sink_release() -> None:
         "weakcontainer_clear_state(",
         "asyncgen_clear_owned_edges(",
         "exception_release_detached_edges(",
+        "release_all(",
     ):
-        assert forbidden not in clear
+        assert forbidden not in clear, f"detach authority releases through {forbidden}"
     assert "weakref_object_detach_owned_edges" in clear
     assert "weakcontainer_detach_state" in clear
     assert "asyncgen_detach_owned_edges" in clear
+
+
+@pytest.fixture
+def detach_audit_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = tmp_path / "runtime/molt-runtime/src/object/heap_lifecycle.rs"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        """pub(crate) unsafe fn clear_cycle_edges_with_sink() {
+    weakref_object_detach_owned_edges();
+    weakcontainer_detach_state();
+    asyncgen_detach_owned_edges();
+    if nested_condition {
+        for edge in edges {
+            sink.detach_if_heap(edge);
+        }
+    }
+    // inject mutable release
+}
+
+pub(crate) unsafe fn detach_terminal_owned_edges() {
+    clear_cycle_edges_with_sink();
+    if nested_condition {
+        for edge in immutable_edges {
+            sink.detach_if_heap(edge);
+        }
+    }
+    // inject terminal release
+}
+
+fn actual_release_boundary() {
+    sink.release_all(py);
+}
+
+#[cfg(test)]
+mod tests {
+    fn legitimate_teardown() {
+        dec_ref_bits(py, value);
+        dec_ref_ptr(py, ptr);
+        weakref_object_release(py, ptr);
+        weakcontainer_clear_state(py, ptr);
+        asyncgen_clear_owned_edges(py, ptr);
+        exception_release_detached_edges(py, edges);
+    }
+}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(globals(), "ROOT", tmp_path)
+    return path
+
+
+def test_detach_audit_excludes_later_release_and_test_teardown(
+    detach_audit_source: Path,
+) -> None:
+    test_gc_clear_handlers_are_detach_only_until_sink_release()
+
+
+@pytest.mark.parametrize("owner", ["mutable", "terminal"])
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        "dec_ref_bits(",
+        "dec_ref_ptr(",
+        "weakref_object_release(",
+        "weakcontainer_clear_state(",
+        "asyncgen_clear_owned_edges(",
+        "exception_release_detached_edges(",
+        "release_all(",
+    ],
+)
+def test_detach_audit_still_rejects_release_inside_each_authority(
+    detach_audit_source: Path, owner: str, forbidden: str
+) -> None:
+    source = detach_audit_source.read_text(encoding="utf-8")
+    marker = f"// inject {owner} release"
+    assert source.count(marker) == 1
+    detach_audit_source.write_text(
+        source.replace(marker, f"{forbidden}py, value);"), encoding="utf-8"
+    )
+    with pytest.raises(AssertionError, match=re.escape(forbidden)):
+        test_gc_clear_handlers_are_detach_only_until_sink_release()
 
 
 def test_terminal_object_shape_dealloc_has_no_rediscovery_lane() -> None:

@@ -55,6 +55,7 @@ unsafe extern "C" fn crossing_set_override(
 // Restore the same raised instance after rendering, including its traceback.
 unsafe fn native_error_description() -> String {
     let error = unsafe { errors::PyErr_GetRaisedException() };
+    let error_owner = unsafe { refcount::OwnedPyObject::from_owned(error) };
     if error.is_null() {
         return "no native error".into();
     }
@@ -73,13 +74,14 @@ unsafe fn native_error_description() -> String {
             }
         })
     };
-    unsafe { errors::PyErr_SetRaisedException(error) };
+    unsafe { errors::PyErr_SetRaisedException(error_owner.into_ptr()) };
     description
 }
 
 unsafe fn assert_native_setter_rejection(delete: bool, type_name: &str) {
     unsafe {
         let raised = errors::PyErr_GetRaisedException();
+        let raised_owner = refcount::OwnedPyObject::from_owned(raised);
         assert!(!raised.is_null());
         assert_ne!(
             errors::PyErr_GivenExceptionMatches(
@@ -89,6 +91,7 @@ unsafe fn assert_native_setter_rejection(delete: bool, type_name: &str) {
             0
         );
         let text = molt_cpython_abi::api::typeobj::PyObject_Str(raised);
+        let text_owner = refcount::OwnedPyObject::from_owned(text);
         assert!(!text.is_null());
         let bytes = strings::PyUnicode_AsUTF8(text);
         assert!(!bytes.is_null());
@@ -97,14 +100,13 @@ unsafe fn assert_native_setter_rejection(delete: bool, type_name: &str) {
             std::ffi::CStr::from_ptr(bytes).to_string_lossy(),
             format!("can't apply this {operation} to {type_name} object")
         );
-        refcount::Py_DECREF(text);
-        refcount::Py_DECREF(raised);
+        drop(text_owner);
+        drop(raised_owner);
         assert!(errors::PyErr_Occurred().is_null());
     }
 }
 
-#[test]
-fn native_namespaces_bind_and_mutate_managed_descriptors() {
+fn exercise_native_namespaces(unwind_after_read: bool, receiver_address: &Cell<usize>) {
     use molt_cpython_abi::abi_types::{
         Py_None, Py_TPFLAGS_READY, PyBaseObject_Type, PyType_Type, PyTypeObject,
     };
@@ -114,12 +116,21 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
         object: PyObject,
         dictionary: *mut PyObject,
     }
-    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    use super::native_test_fixture::NativeType;
+    use crate::builtins::exceptions::ExceptionValue;
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             CALLS.with(|calls| calls.set([0; 6]));
             FAILURE.with(|failure| failure.set(0));
-            let mut class: PyTypeObject = std::mem::zeroed();
+            // Every type outlives the dictionaries and foreign wrappers that
+            // borrow it, including when a Rust assertion unwinds this fixture.
+            let mut meta = NativeType::<PyTypeObject>::new();
+            let mut native_type = NativeType::<PyTypeObject>::new();
+            let mut native = PyObject {
+                ob_refcnt: 1,
+                ob_type: &raw mut *native_type,
+            };
+            let mut class = NativeType::<PyTypeObject>::new();
             class.ob_base.ob_base.ob_refcnt = 1;
             class.ob_base.ob_base.ob_type = &raw mut PyType_Type;
             class.tp_base = &raw mut PyBaseObject_Type;
@@ -132,9 +143,12 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
             // CPython's hackcheck and cannot witness native override rejection.
             class.tp_mro = sequences::PyTuple_New(2);
             assert!(!class.tp_mro.is_null());
-            for (index, base) in [(&raw mut class).cast(), (&raw mut PyBaseObject_Type).cast()]
-                .into_iter()
-                .enumerate()
+            for (index, base) in [
+                (&raw mut *class).cast(),
+                (&raw mut PyBaseObject_Type).cast(),
+            ]
+            .into_iter()
+            .enumerate()
             {
                 refcount::Py_INCREF(base);
                 assert_eq!(
@@ -142,26 +156,42 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
                     0
                 );
             }
+            let receiver_dictionary = refcount::OwnedPyObject::from_owned(mapping::PyDict_New());
             let mut receiver = NativeReceiver {
                 object: PyObject {
                     ob_refcnt: 1,
-                    ob_type: &raw mut class,
+                    ob_type: &raw mut *class,
                 },
-                dictionary: mapping::PyDict_New(),
+                dictionary: receiver_dictionary.as_ptr(),
             };
             assert!(!class.tp_dict.is_null() && !receiver.dictionary.is_null());
             let receiver_ptr = &raw mut receiver.object;
             let receiver_bits = GLOBAL_BRIDGE.molt_value_for_pyobj(receiver_ptr).unwrap();
+            let _receiver_owner = ExceptionValue::adopt(py, receiver_bits);
+            receiver_address.set(receiver_ptr.addr());
+            assert!(GLOBAL_BRIDGE.pyobj_to_handle(receiver_ptr).is_some());
             let get = function(py, descriptor_get as *const (), 1);
+            let _get_owner = ExceptionValue::adopt(py, get);
             let set = function(py, descriptor_set as *const (), 2);
+            let _set_owner = ExceptionValue::adopt(py, set);
             let delete = function(py, descriptor_delete as *const (), 1);
+            let _delete_owner = ExceptionValue::adopt(py, delete);
             let property = crate::molt_property_new(get, set, delete);
+            let _property_owner = ExceptionValue::adopt(py, property);
             let method = function(py, crossing_receiver as *const (), 1);
+            let _method_owner = ExceptionValue::adopt(py, method);
             let property_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(property);
             let method_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(method);
-            let name = strings::PyUnicode_FromString(c"field".as_ptr());
-            let method_name = strings::PyUnicode_FromString(c"method".as_ptr());
-            let shadow = numbers::PyLong_FromLong(7);
+            let name_owner = refcount::OwnedPyObject::from_owned(strings::PyUnicode_FromString(
+                c"field".as_ptr(),
+            ));
+            let name = name_owner.as_ptr();
+            let method_name_owner = refcount::OwnedPyObject::from_owned(
+                strings::PyUnicode_FromString(c"method".as_ptr()),
+            );
+            let method_name = method_name_owner.as_ptr();
+            let shadow_owner = refcount::OwnedPyObject::from_owned(numbers::PyLong_FromLong(7));
+            let shadow = shadow_owner.as_ptr();
             assert_eq!(
                 mapping::PyDict_SetItem(class.tp_dict, name, property_view),
                 0
@@ -177,36 +207,56 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
             assert_eq!(typeobj::PyDescr_IsData(property_view), 1);
             assert_eq!(typeobj::PyDescr_IsData(method_view), 0);
             let read = object::PyObject_GenericGetAttr(receiver_ptr, name);
+            let read_owner = refcount::OwnedPyObject::from_owned(read);
             assert!(!read.is_null());
             assert_eq!(
                 numbers::PyLong_AsLong(read),
                 222,
                 "managed data descriptor wins over native instance dict"
             );
-            refcount::Py_DECREF(read);
+            drop(read_owner);
             // Runtime explicit object lookup must cross the same generic
             // boundary instead of invoking a native getattribute override.
             class.tp_getattro = Some(crossing_get_override);
             let name_bits = GLOBAL_BRIDGE.molt_value_for_pyobj(name).unwrap();
+            let name_bits_owner = ExceptionValue::adopt(py, name_bits);
             let normal = crate::molt_get_attr_name(receiver_bits, name_bits);
-            assert_eq!(normal, MoltObject::from_int(777).bits());
-            dec_ref_bits(py, normal);
+            let normal_owner = ExceptionValue::adopt(py, normal);
+            assert_eq!(
+                crate::type_of_bits(py, normal),
+                crate::builtin_classes(py).int
+            );
+            assert_eq!(crate::to_i64(obj_from_bits(normal)), Some(777));
+            drop(normal_owner);
+            if unwind_after_read {
+                crate::test_support::with_expected_panic(|| {
+                    std::panic::panic_any("native descriptor fixture unwind");
+                });
+            }
             let generic = crate::molt_object_getattribute(receiver_bits, name_bits);
-            assert_eq!(generic, MoltObject::from_int(222).bits());
+            let generic_owner = ExceptionValue::adopt(py, generic);
+            assert_eq!(
+                crate::type_of_bits(py, generic),
+                crate::builtin_classes(py).int
+            );
+            assert_eq!(crate::to_i64(obj_from_bits(generic)), Some(222));
             assert!(!crate::exception_pending(py));
-            dec_ref_bits(py, generic);
-            dec_ref_bits(py, name_bits);
+            drop(generic_owner);
+            drop(name_bits_owner);
             class.tp_getattro = None;
             let bound = object::PyObject_GenericGetAttr(receiver_ptr, method_name);
+            let bound_owner = refcount::OwnedPyObject::from_owned(bound);
             assert!(!bound.is_null());
             let result = object::PyObject_CallNoArgs(bound);
+            let result_owner = refcount::OwnedPyObject::from_owned(result);
             assert_eq!(
                 result, receiver_ptr,
                 "managed function binds the actual native receiver"
             );
-            refcount::Py_DECREF(result);
-            refcount::Py_DECREF(bound);
-            let class_read = object::PyObject_GetAttr((&raw mut class).cast(), name);
+            drop(result_owner);
+            drop(bound_owner);
+            let class_read = object::PyObject_GetAttr((&raw mut *class).cast(), name);
+            let class_read_owner = refcount::OwnedPyObject::from_owned(class_read);
             assert_eq!(
                 GLOBAL_BRIDGE
                     .molt_handle_for_pyobj(class_read)
@@ -214,7 +264,7 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
                 Some(property),
                 "NULL receiver is class access"
             );
-            refcount::Py_DECREF(class_read);
+            drop(class_read_owner);
 
             assert_eq!(
                 object::PyObject_GenericSetAttr(receiver_ptr, name, &raw mut Py_None),
@@ -242,6 +292,7 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
             );
             assert_eq!(FOREIGN_MUTATIONS.with(Cell::get), 2);
             let name_bits = GLOBAL_BRIDGE.molt_value_for_pyobj(name).unwrap();
+            let name_bits_owner = ExceptionValue::adopt(py, name_bits);
             for delete in [false, true] {
                 let result = if delete {
                     crate::molt_object_delattr(receiver_bits, name_bits)
@@ -293,17 +344,20 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
                 dec_ref_bits(py, result);
                 assert_native_setter_rejection(delete, "NativeManagedDescriptorReceiver");
             }
-            let mro = std::mem::replace(&mut class.tp_mro, ptr::null_mut());
+            let mro = refcount::OwnedPyObject::from_owned(std::mem::replace(
+                &mut class.tp_mro,
+                ptr::null_mut(),
+            ));
             let result =
                 crate::molt_object_setattr(receiver_bits, name_bits, MoltObject::none().bits());
             dec_ref_bits(py, result);
             let result = crate::molt_object_delattr(receiver_bits, name_bits);
             dec_ref_bits(py, result);
-            class.tp_mro = mro;
+            class.tp_mro = mro.into_ptr();
             assert_eq!(&CALLS.with(Cell::get)[3..5], &[4, 4]);
             assert_eq!(FOREIGN_MUTATIONS.with(Cell::get), 2);
             assert!(!crate::exception_pending(py));
-            dec_ref_bits(py, name_bits);
+            drop(name_bits_owner);
             // No mutation protocol means ordinary instance-dictionary assignment.
             let zero = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(MoltObject::from_float(0.0).bits());
             assert_eq!(
@@ -311,8 +365,9 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
                 0
             );
             let read = object::PyObject_GenericGetAttr(receiver_ptr, method_name);
+            let read_owner = refcount::OwnedPyObject::from_owned(read);
             assert_eq!(numbers::PyFloat_AsDouble(read), 0.0);
-            refcount::Py_DECREF(read);
+            drop(read_owner);
             assert_eq!(
                 object::PyObject_GenericSetAttr(receiver_ptr, method_name, ptr::null_mut()),
                 0
@@ -324,10 +379,22 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
                 "managed descriptor body",
             ))
             .bits();
+            let _failure_owner = ExceptionValue::adopt(py, failure);
+            struct ResetObservations;
+            impl Drop for ResetObservations {
+                fn drop(&mut self) {
+                    FAILURE.with(|slot| slot.set(0));
+                    ASSIGNED.with(|slot| slot.set(0));
+                }
+            }
+            let _observations = ResetObservations;
             FAILURE.with(|slot| slot.set(failure));
             for operation in 0..3 {
                 if operation == 0 {
-                    assert!(object::PyObject_GenericGetAttr(receiver_ptr, name).is_null());
+                    let result = refcount::OwnedPyObject::from_owned(
+                        object::PyObject_GenericGetAttr(receiver_ptr, name),
+                    );
+                    assert!(result.as_ptr().is_null());
                 } else {
                     let value = if operation == 1 {
                         &raw mut Py_None
@@ -340,6 +407,7 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
                     );
                 }
                 let raised = errors::PyErr_GetRaisedException();
+                let raised_owner = refcount::OwnedPyObject::from_owned(raised);
                 assert!(!raised.is_null());
                 assert_eq!(
                     GLOBAL_BRIDGE
@@ -347,7 +415,7 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
                         .map(|value| value.bits()),
                     Some(failure)
                 );
-                refcount::Py_DECREF(raised);
+                drop(raised_owner);
                 assert_eq!(
                     mapping::PyDict_GetItem(receiver.dictionary, name),
                     shadow,
@@ -357,7 +425,6 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
             FAILURE.with(|slot| slot.set(0));
 
             // Metaclass data descriptors have the same precedence on native types.
-            let mut meta: PyTypeObject = std::mem::zeroed();
             meta.ob_base.ob_base.ob_refcnt = 1;
             meta.ob_base.ob_base.ob_type = &raw mut PyType_Type;
             meta.tp_base = &raw mut PyType_Type;
@@ -370,31 +437,28 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
                 mapping::PyDict_SetItem(meta.tp_dict, name, property_view),
                 0
             );
-            class.ob_base.ob_base.ob_type = &raw mut meta;
-            let class_read = object::PyObject_GetAttr((&raw mut class).cast(), name);
+            class.ob_base.ob_base.ob_type = &raw mut *meta;
+            let class_read = object::PyObject_GetAttr((&raw mut *class).cast(), name);
+            let class_read_owner = refcount::OwnedPyObject::from_owned(class_read);
             assert!(!class_read.is_null());
             assert_eq!(numbers::PyLong_AsLong(class_read), 222);
-            refcount::Py_DECREF(class_read);
+            drop(class_read_owner);
             assert_eq!(
-                object::PyObject_GenericSetAttr((&raw mut class).cast(), name, &raw mut Py_None),
+                object::PyObject_GenericSetAttr((&raw mut *class).cast(), name, &raw mut Py_None),
                 0
             );
             assert_eq!(
-                object::PyObject_GenericSetAttr((&raw mut class).cast(), name, ptr::null_mut()),
+                object::PyObject_GenericSetAttr((&raw mut *class).cast(), name, ptr::null_mut()),
                 0
             );
             class.ob_base.ob_base.ob_type = &raw mut PyType_Type;
-            refcount::Py_DECREF(meta.tp_dict);
+            refcount::Py_CLEAR(&raw mut meta.tp_dict);
 
             // A native descriptor remains on its exact C slot after acquiring a
             // foreign runtime wrapper; that wrapper is not a managed C view.
-            let mut native_type: PyTypeObject = std::mem::zeroed();
             native_type.tp_descr_get = Some(crossing_native_get);
-            let mut native = PyObject {
-                ob_refcnt: 1,
-                ob_type: &raw mut native_type,
-            };
             let native_bits = GLOBAL_BRIDGE.molt_value_for_pyobj(&raw mut native).unwrap();
+            let native_owner = ExceptionValue::adopt(py, native_bits);
             assert!(
                 GLOBAL_BRIDGE
                     .molt_handle_for_pyobj(&raw mut native)
@@ -405,30 +469,43 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
                 0
             );
             let result = object::PyObject_GenericGetAttr(receiver_ptr, method_name);
+            let result_owner = refcount::OwnedPyObject::from_owned(result);
             assert_eq!(result, receiver_ptr);
             assert_eq!(CALLS.with(Cell::get)[5], 1);
-            refcount::Py_DECREF(result);
+            drop(result_owner);
             assert_eq!(mapping::PyDict_DelItem(class.tp_dict, method_name), 0);
-            dec_ref_bits(py, native_bits);
-            let mro = std::mem::replace(&mut class.tp_mro, ptr::null_mut());
-            for value in [
-                mro,
-                receiver.dictionary,
-                class.tp_dict,
-                name,
-                method_name,
-                shadow,
-            ] {
-                refcount::Py_DECREF(value);
-            }
-            for bits in [failure, method, property, get, set, delete, receiver_bits] {
-                dec_ref_bits(py, bits);
-            }
+            drop(native_owner);
             ASSIGNED.with(|slot| slot.set(0));
             assert!(!crate::exception_pending(py));
             assert!(errors::PyErr_Occurred().is_null());
         }
     });
+}
+
+#[test]
+fn native_namespaces_bind_and_mutate_managed_descriptors() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    exercise_native_namespaces(false, &Cell::new(0));
+}
+
+#[test]
+fn native_descriptor_fixture_unwind_retires_foreign_receiver_binding() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    let address = Cell::new(0);
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        exercise_native_namespaces(true, &address);
+    }))
+    .expect_err("the fixture must reach its intentional unwind");
+    assert_eq!(
+        failure.downcast_ref::<&str>(),
+        Some(&"native descriptor fixture unwind")
+    );
+    assert_ne!(address.get(), 0);
+    assert!(
+        GLOBAL_BRIDGE
+            .pyobj_to_handle(std::ptr::with_exposed_provenance_mut(address.get()))
+            .is_none()
+    );
 }
 
 extern "C" fn overridden_get(_receiver: u64, _name: u64) -> u64 {
@@ -490,9 +567,9 @@ fn member(py: &crate::PyToken<'_>, class: u64, name: &[u8], value: u64) {
 }
 
 fn method(py: &crate::PyToken<'_>, class: u64, name: &[u8], target: *const (), arity: u64) {
-    let callable = function(py, target, arity);
-    member(py, class, name, callable);
-    dec_ref_bits(py, callable);
+    let callable =
+        crate::builtins::exceptions::ExceptionValue::adopt(py, function(py, target, arity));
+    member(py, class, name, callable.bits());
 }
 
 fn attribute_class(py: &crate::PyToken<'_>, base: u64, dictless: bool) -> u64 {
@@ -531,13 +608,54 @@ fn attribute_class(py: &crate::PyToken<'_>, base: u64, dictless: bool) -> u64 {
 }
 
 unsafe fn take_bits(value: *mut PyObject) -> u64 {
+    let value_owner = unsafe { refcount::OwnedPyObject::from_owned(value) };
     assert!(!value.is_null());
     let bits = GLOBAL_BRIDGE
         .observed_handle_for_pyobj(value)
         .unwrap()
         .bits();
-    unsafe { refcount::Py_DECREF(value) };
+    drop(value_owner);
     bits
+}
+
+#[test]
+fn raised_error_conversion_unwind_retires_unprojected_native_owner() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(super::register_cpython_hooks());
+    crate::concurrency::gil::with_gil(|py| unsafe {
+        let args = refcount::OwnedPyObject::from_owned(sequences::PyTuple_New(0));
+        assert!(!args.as_ptr().is_null());
+        let native = refcount::OwnedPyObject::from_owned(errors::molt_native_exception_new(
+            &raw mut molt_cpython_abi::abi_types::PyExc_ValueError,
+            args.as_ptr(),
+            ptr::null_mut(),
+        ));
+        assert!(!native.as_ptr().is_null());
+        let address = native.as_ptr().addr();
+        assert!(crate::object::gc::native_gc_is_enrolled(address));
+        assert!(
+            GLOBAL_BRIDGE
+                .observed_handle_for_pyobj(native.as_ptr())
+                .is_none()
+        );
+        errors::PyErr_SetRaisedException(native.into_ptr());
+        // The existing consuming helper requires a managed projection. A real
+        // unprojected native exception exercises its conversion failure after
+        // the public getter has transferred the last C owner.
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            take_bits(errors::PyErr_GetRaisedException())
+        }));
+        assert!(
+            failure.is_err(),
+            "the unprojected fixture must fail conversion"
+        );
+        assert!(
+            !crate::object::gc::native_gc_is_enrolled(address),
+            "conversion unwind leaked the transferred native exception"
+        );
+        assert!(errors::PyErr_Occurred().is_null());
+        assert!(!crate::exception_pending(&py));
+    });
 }
 
 #[test]

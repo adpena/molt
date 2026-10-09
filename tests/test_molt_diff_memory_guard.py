@@ -46,6 +46,7 @@ def test_run_subprocess_keeps_infrastructure_outcome_without_inventing_rss_trip(
         elapsed_s=0.1,
         child_returncode=child_returncode,
         infrastructure_failure=failure,
+        child_stderr="",
     )
     monkeypatch.setattr(module, "_memory_guard_trip_outcome", lambda: None)
     monkeypatch.setattr(module, "_diff_root", lambda: tmp_path)
@@ -61,7 +62,7 @@ def test_run_subprocess_keeps_infrastructure_outcome_without_inventing_rss_trip(
     monkeypatch.setattr(module, "_record_memory_guard_event", events.append)
     result = module._run_subprocess(["fixture"], env={}, timeout=5)
     assert isinstance(result, module.compat_backends.BackendResult)
-    assert result.diagnostic_stderr == guarded.child_stderr
+    assert result.child_stderr == guarded.child_stderr
     assert result.child_returncode == child_returncode
     assert result.infrastructure_failure is failure
     assert result.stdout == "partial" and result.stderr == "custody incomplete"
@@ -1027,6 +1028,7 @@ def test_native_resource_evidence_survives_build_and_run(
             violation=module.memory_guard.RssViolation(7, 2048, "fixture")
             if exhausted and source != "metrics"
             else None,
+            child_stderr="child diagnostic",
         )
 
     monkeypatch.setattr(
@@ -1059,6 +1061,81 @@ def test_native_resource_evidence_survives_build_and_run(
     )
     assert actual.rss_limit_exceeded and actual.resource_failure == "rss_limit_exceeded"
     assert actual.build_failed is (phase == "build")
-    assert actual.diagnostic_stderr == "child diagnostic"
+    assert actual.child_stderr == "child diagnostic"
     assert actual.child_returncode == (0 if source == "metrics" else -9)
     assert "partial stdout" in (actual.stderr if phase == "build" else actual.stdout)
+
+
+@pytest.mark.parametrize("phase", ["build", "run"])
+def test_native_timeout_preserves_guard_outcome_and_raw_streams(
+    tmp_path, monkeypatch, phase
+):
+    module = _load_diff_module()
+    source = tmp_path / "fixture.py"
+    source.write_text("print('guest')\n", encoding="utf-8")
+    layout = SimpleNamespace(
+        repo_root=tmp_path,
+        cargo_target_root=tmp_path / "target",
+        diff_root=tmp_path / "diff",
+        cache_root=tmp_path / "cache",
+    )
+    monkeypatch.setattr(module, "_apply_memory_limit", lambda: None)
+    monkeypatch.setattr(module, "_diff_artifact_layout", lambda **k: layout)
+    monkeypatch.setattr(module, "_diff_measure_rss", lambda: False)
+    monkeypatch.setattr(module, "_diff_batch_compile_server_enabled", lambda: False)
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: "fixture-python")
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda _: None)
+    monkeypatch.setattr(module, "_memory_guard_trip_outcome", lambda: None)
+    monkeypatch.setattr(module, "_diff_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_diff_memory_guard_limits", lambda *_: None)
+    monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: None)
+    metrics = []
+    monkeypatch.setattr(
+        module, "_record_rss_metrics", lambda *a, **k: metrics.append(k)
+    )
+    calls = []
+
+    def launch(command, **kwargs):
+        calls.append(command)
+        assert kwargs["text"] is False
+        timed_out = ("molt.cli" in command) == (phase == "build")
+        return module.harness_memory_guard.GuardedCompletedProcess(
+            command,
+            124 if timed_out else 0,
+            b"partial stdout\r\n\xff",
+            b"guest\r\n\xfe\nmemory_guard: timeout" if timed_out else b"",
+            child_stderr=b"guest\r\n\xfe" if timed_out else b"",
+            elapsed_s=5.1,
+            child_returncode=-9 if timed_out else 0,
+            timed_out=timed_out,
+            guard_signal=9 if timed_out else None,
+        )
+
+    monkeypatch.setattr(
+        module.harness_memory_guard.HarnessExecutionContext,
+        "from_env",
+        lambda *a, **k: SimpleNamespace(run=launch),
+    )
+    actual = module._run_molt_owned(
+        str(source),
+        build_only=False,
+        build_profile="dev",
+        daemon_enabled=False,
+        no_cache=False,
+        rebuild=False,
+        extra_env=None,
+        execution_context=None,
+        output_root=tmp_path,
+        environment={},
+    )
+    assert actual.timed_out and actual.returncode == 124
+    assert actual.child_returncode == -9 and actual.guard_signal == 9
+    assert actual.build_failed is (phase == "build")
+    assert (
+        actual.child_stderr.encode("utf-8", errors="surrogateescape")
+        == b"guest\r\n\xfe"
+    )
+    assert "memory_guard: timeout" in actual.stderr
+    assert actual.resource_failure is None
+    assert metrics[-1]["status"] == phase + "_timeout"
+    assert len(calls) == (1 if phase == "build" else 2)

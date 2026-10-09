@@ -83,14 +83,14 @@ unsafe extern "C" fn fake_import_module_fails(_data: *const u8, _len: usize) -> 
     0 // every import fails — the mirror-error path must fire
 }
 
-fn install() {
+fn install() -> support::AbiTestThreadStateTransaction {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
     hooks.bytes_data = fake_bytes_data;
     hooks.sys_get_object_borrowed = fake_sys_get_object_borrowed;
     hooks.import_add_module_borrowed = fake_import_add_module_borrowed;
     hooks.import_module = fake_import_module_fails;
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 unsafe fn str_obj(text: &str) -> *mut PyObject {
@@ -126,7 +126,7 @@ unsafe fn err_set() -> bool {
 
 #[test]
 fn as_utf8_non_str_is_null_with_typeerror_not_empty_string() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let n = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(3) };
     let p = unsafe { molt_cpython_abi::api::strings::PyUnicode_AsUTF8(n) };
@@ -140,7 +140,7 @@ fn as_utf8_non_str_is_null_with_typeerror_not_empty_string() {
 
 #[test]
 fn unicode_compare_non_str_sets_typeerror() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let s = unsafe { str_obj("a") };
     let n = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
@@ -155,7 +155,7 @@ fn unicode_compare_non_str_sets_typeerror() {
 
 #[test]
 fn as_ascii_string_non_ascii_raises_unicode_encode_error() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let s = unsafe { str_obj("café") };
     let r = unsafe { molt_cpython_abi::api::strings::PyUnicode_AsASCIIString(s) };
@@ -169,7 +169,7 @@ fn as_ascii_string_non_ascii_raises_unicode_encode_error() {
 
 #[test]
 fn replace_empty_needle_inserts_at_codepoint_boundaries() {
-    install();
+    let _abi_test = install();
     let text = unsafe { str_obj("aé") };
     let needle = unsafe { str_obj("") };
     let dash = unsafe { str_obj("-") };
@@ -182,7 +182,7 @@ fn replace_empty_needle_inserts_at_codepoint_boundaries() {
 
 #[test]
 fn tailmatch_uses_codepoint_indices_and_cpython_direction() {
-    install();
+    let _abi_test = install();
     // "ééx": start=2 in CODE POINTS selects "x" (byte-offset math would slice
     // inside the second é and never match).
     let text = unsafe { str_obj("ééx") };
@@ -201,7 +201,7 @@ fn tailmatch_uses_codepoint_indices_and_cpython_direction() {
 
 #[test]
 fn from_encoded_object_rejects_str_input() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let s = unsafe { str_obj("abc") };
     let r = unsafe {
@@ -218,7 +218,7 @@ fn from_encoded_object_rejects_str_input() {
 
 #[test]
 fn decode_utf8_invalid_bytes_raise_unicode_decode_error() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let bad = [0xffu8, 0x30];
     let r = unsafe {
@@ -235,7 +235,7 @@ fn decode_utf8_invalid_bytes_raise_unicode_decode_error() {
 
 #[test]
 fn decode_dispatches_latin1_not_utf8() {
-    install();
+    let _abi_test = install();
     let bytes = [0xe9u8]; // é in latin-1; INVALID as UTF-8
     let r = unsafe {
         molt_cpython_abi::api::strings::PyUnicode_Decode(
@@ -264,7 +264,7 @@ fn decode_dispatches_latin1_not_utf8() {
 
 #[test]
 fn format_applies_width_precision_and_hex() {
-    install();
+    let _abi_test = install();
     let fmt = unsafe { str_obj("[%5s][%-4d][%.2s][%#x]") };
     let args = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(4) };
     unsafe {
@@ -298,7 +298,7 @@ fn format_applies_width_precision_and_hex() {
 #[test]
 #[allow(clippy::approx_constant)] // 3.14159 deliberately exercises %.2f truncation, not math::PI
 fn format_float_conversions() {
-    install();
+    let _abi_test = install();
     let fmt = unsafe { str_obj("%.2f|%e|%g") };
     let args = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(3) };
     unsafe {
@@ -333,7 +333,7 @@ fn format_float_conversions() {
 
 #[test]
 fn format_not_enough_and_surplus_args_are_typeerrors() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let fmt = unsafe { str_obj("%s %s") };
     let args = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(1) };
@@ -366,7 +366,7 @@ fn format_not_enough_and_surplus_args_are_typeerrors() {
 
 #[test]
 fn format_d_of_non_number_is_typeerror_not_minus_one() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let fmt = unsafe { str_obj("%d") };
     let args = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(1) };
@@ -383,7 +383,7 @@ fn format_d_of_non_number_is_typeerror_not_minus_one() {
 
 #[test]
 fn join_concatenates_with_separator_and_rejects_non_str_items() {
-    install();
+    let _abi_test = install();
     let sep = unsafe { str_obj(", ") };
     let list = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(3) };
     unsafe {
@@ -425,7 +425,7 @@ fn join_concatenates_with_separator_and_rejects_non_str_items() {
 
 #[test]
 fn zero_size_allocations_return_unique_non_null() {
-    install();
+    let _abi_test = install();
     let p = unsafe { molt_cpython_abi::api::memory::PyMem_Malloc(0) };
     assert!(!p.is_null(), "Malloc(0) must be a unique non-NULL pointer");
     let q = unsafe { molt_cpython_abi::api::memory::PyMem_Realloc(p, 0) };
@@ -438,7 +438,7 @@ fn zero_size_allocations_return_unique_non_null() {
 
 #[test]
 fn allocator_zeroes_preserves_and_rejects_size_overflow() {
-    install();
+    let _abi_test = install();
     let ptr = unsafe { molt_cpython_abi::api::memory::PyMem_Calloc(4, 8) }.cast::<u8>();
     assert!(!ptr.is_null());
     assert!((0..32).all(|index| unsafe { *ptr.add(index) } == 0));
@@ -454,7 +454,7 @@ fn allocator_zeroes_preserves_and_rejects_size_overflow() {
 
 #[test]
 fn object_init_null_sets_memory_error() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
     let r = unsafe { molt_cpython_abi::api::memory::PyObject_Init(ptr::null_mut(), &mut ty) };
@@ -465,7 +465,7 @@ fn object_init_null_sets_memory_error() {
 
 #[test]
 fn object_init_increfs_heap_type() {
-    install();
+    let _abi_test = install();
     let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
     ty.tp_flags = molt_cpython_abi::abi_types::Py_TPFLAGS_HEAPTYPE;
     ty.ob_base.ob_base.ob_refcnt = 5;
@@ -482,7 +482,7 @@ fn object_init_increfs_heap_type() {
 
 #[test]
 fn recursive_call_guard_trips_with_recursion_error() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let mut tripped = false;
     let mut entered = 0usize;
@@ -510,7 +510,7 @@ unsafe extern "C" fn resurrecting_finalizer(op: *mut PyObject) {
 
 #[test]
 fn finalizer_resurrection_aborts_the_free() {
-    install();
+    let _abi_test = install();
     let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
     ty.tp_finalize = Some(resurrecting_finalizer);
     let mut obj = PyObject {
@@ -530,7 +530,7 @@ fn finalizer_resurrection_aborts_the_free() {
 
 #[test]
 fn weakref_getobject_fails_loud_never_fabricates_none() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let n = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let r = unsafe { molt_cpython_abi::api::weakref::PyWeakref_GetObject(n) };
@@ -542,108 +542,9 @@ fn weakref_getobject_fails_loud_never_fabricates_none() {
     unsafe { err_clear() };
 }
 
-// ===========================================================================
-// contextvars.rs
-// ===========================================================================
-
-#[test]
-fn contextvar_empty_name_is_legal() {
-    install();
-    let var = unsafe {
-        molt_cpython_abi::api::contextvars::PyContextVar_New(c"".as_ptr(), ptr::null_mut())
-    };
-    assert!(!var.is_null(), "ContextVar('') is legal in CPython");
-}
-
-#[test]
-fn contextvar_get_caller_default_beats_var_default() {
-    install();
-    let var_default = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(10) };
-    let var = unsafe {
-        molt_cpython_abi::api::contextvars::PyContextVar_New(c"v1".as_ptr(), var_default)
-    };
-    let caller_default = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(20) };
-    let mut out: *mut PyObject = ptr::null_mut();
-    let rc = unsafe {
-        molt_cpython_abi::api::contextvars::PyContextVar_Get(var, caller_default, &mut out)
-    };
-    assert_eq!(rc, 0);
-    assert_eq!(
-        out, caller_default,
-        "the caller's def argument wins unconditionally over var_default"
-    );
-}
-
-#[test]
-fn contextvar_get_no_value_is_success_with_null() {
-    install();
-    unsafe { err_clear() };
-    let var = unsafe {
-        molt_cpython_abi::api::contextvars::PyContextVar_New(c"v2".as_ptr(), ptr::null_mut())
-    };
-    let mut out: *mut PyObject = usize::MAX as *mut PyObject;
-    let rc = unsafe {
-        molt_cpython_abi::api::contextvars::PyContextVar_Get(var, ptr::null_mut(), &mut out)
-    };
-    assert_eq!(
-        rc, 0,
-        "C API returns SUCCESS for no-value (never LookupError)"
-    );
-    assert!(out.is_null());
-    assert!(!unsafe { err_set() });
-}
-
-#[test]
-fn contextvar_set_returns_token_and_reset_restores() {
-    install();
-    let var = unsafe {
-        molt_cpython_abi::api::contextvars::PyContextVar_New(c"v3".as_ptr(), ptr::null_mut())
-    };
-    let v1 = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(111) };
-    let token = unsafe { molt_cpython_abi::api::contextvars::PyContextVar_Set(var, v1) };
-    assert!(!token.is_null());
-    assert_ne!(token, v1, "Set returns a TOKEN, never the value");
-    assert_ne!(
-        token,
-        &raw mut molt_cpython_abi::abi_types::Py_None,
-        "Set must not fabricate Py_None as a token"
-    );
-    // The bound value is observable via Get.
-    let mut out: *mut PyObject = ptr::null_mut();
-    unsafe { molt_cpython_abi::api::contextvars::PyContextVar_Get(var, ptr::null_mut(), &mut out) };
-    assert_eq!(out, v1);
-    // Reset consumes the token and restores the unbound state.
-    let rc = unsafe { molt_cpython_abi::api::contextvars::PyContextVar_Reset(var, token) };
-    assert_eq!(rc, 0);
-    let mut out2: *mut PyObject = usize::MAX as *mut PyObject;
-    unsafe {
-        molt_cpython_abi::api::contextvars::PyContextVar_Get(var, ptr::null_mut(), &mut out2)
-    };
-    assert!(out2.is_null(), "Reset(MISSING token) must unbind the var");
-    // A second Reset with the same token is a RuntimeError.
-    unsafe { err_clear() };
-    let rc2 = unsafe { molt_cpython_abi::api::contextvars::PyContextVar_Reset(var, token) };
-    assert_eq!(rc2, -1);
-    assert!(unsafe { err_set() });
-    unsafe { err_clear() };
-}
-
-#[test]
-fn contextvar_get_rejects_non_contextvar_without_ducktyping() {
-    install();
-    unsafe { err_clear() };
-    let n = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(5) };
-    let mut out: *mut PyObject = ptr::null_mut();
-    let rc = unsafe {
-        molt_cpython_abi::api::contextvars::PyContextVar_Get(n, ptr::null_mut(), &mut out)
-    };
-    assert_eq!(
-        rc, -1,
-        "non-exact ContextVar must be a TypeError (no duck-typing)"
-    );
-    assert!(unsafe { err_set() });
-    unsafe { err_clear() };
-}
+// Context semantic cases exercise the real runtime in
+// molt-runtime/src/builtins/contextvars/tests.rs. ABI-only stubs cover ingress
+// failure in tests/test_contextvars.rs; no fake Context owner is installed.
 
 // ===========================================================================
 // imports.rs
@@ -651,7 +552,7 @@ fn contextvar_get_rejects_non_contextvar_without_ducktyping() {
 
 #[test]
 fn failed_import_always_leaves_a_pending_exception() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let m = unsafe { molt_cpython_abi::api::imports::PyImport_ImportModule(c"nope".as_ptr()) };
     assert!(m.is_null());
@@ -664,7 +565,7 @@ fn failed_import_always_leaves_a_pending_exception() {
 
 #[test]
 fn add_module_creates_and_registers_in_sys_modules() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let first =
         unsafe { molt_cpython_abi::api::imports::PyImport_AddModule(c"fresh_mod".as_ptr()) };
@@ -682,7 +583,7 @@ fn add_module_creates_and_registers_in_sys_modules() {
 
 #[test]
 fn get_module_dict_is_backed_by_sys_modules() {
-    install();
+    let _abi_test = install();
     let d1 = unsafe { molt_cpython_abi::api::imports::PyImport_GetModuleDict() };
     assert!(!d1.is_null());
     let bits = GLOBAL_BRIDGE
@@ -738,7 +639,7 @@ fn foreign_instance(ty: *mut PyTypeObject) -> *mut PyObject {
 
 #[test]
 fn get_buffer_dispatches_foreign_bf_getbuffer() {
-    install();
+    let _abi_test = install();
     let ty = foreign_buffer_type();
     let inst = foreign_instance(ty);
     let before = *GETBUFFER_CALLS.lock().unwrap();
@@ -751,7 +652,7 @@ fn get_buffer_dispatches_foreign_bf_getbuffer() {
 
 #[test]
 fn get_buffer_without_slot_is_typeerror() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let mut ty: Box<PyTypeObject> = Box::new(unsafe { std::mem::zeroed() });
     ty.tp_name = c"NoBuffer".as_ptr();
@@ -768,7 +669,7 @@ fn get_buffer_without_slot_is_typeerror() {
 
 #[test]
 fn check_buffer_is_pure_and_side_effect_free() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     // Foreign with slot -> 1; without -> 0; and a pending exception SURVIVES.
     let with = foreign_instance(foreign_buffer_type());
@@ -804,7 +705,7 @@ fn check_buffer_is_pure_and_side_effect_free() {
 
 #[test]
 fn is_contiguous_suboffsets_and_empty() {
-    install();
+    let _abi_test = install();
     let mut suboffsets: [isize; 1] = [0];
     let mut view: Py_buffer = unsafe { std::mem::zeroed() };
     view.len = 8;
@@ -827,7 +728,7 @@ fn is_contiguous_suboffsets_and_empty() {
 
 #[test]
 fn fill_info_null_view_sets_buffer_error() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let rc = unsafe {
         molt_cpython_abi::api::buffer::PyBuffer_FillInfo(
@@ -850,7 +751,7 @@ fn fill_info_null_view_sets_buffer_error() {
 
 #[test]
 fn feb_30_is_rejected_leap_aware() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let bad = unsafe {
         molt_cpython_abi::api::datetime::molt_cpython_abi_date_from_date(
@@ -891,7 +792,7 @@ fn feb_30_is_rejected_leap_aware() {
 
 #[test]
 fn delta_normalizes_and_rejects_overflow() {
-    install();
+    let _abi_test = install();
     let delta = unsafe {
         molt_cpython_abi::api::datetime::molt_cpython_abi_delta_from_delta(
             0,
@@ -941,7 +842,7 @@ fn delta_normalizes_and_rejects_overflow() {
 
 #[test]
 fn timezone_utc_singleton_and_range_check() {
-    install();
+    let _abi_test = install();
     // Zero offset + no name -> the UTC singleton.
     let zero = unsafe {
         molt_cpython_abi::api::datetime::molt_cpython_abi_delta_from_delta(
@@ -991,7 +892,7 @@ fn timezone_utc_singleton_and_range_check() {
 
 #[test]
 fn datetime_fromtimestamp_epoch() {
-    install();
+    let _abi_test = install();
     let args = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(1) };
     unsafe {
         molt_cpython_abi::api::sequences::PyTuple_SetItem(
@@ -1023,7 +924,7 @@ fn datetime_fromtimestamp_epoch() {
 
 #[test]
 fn datetime_fold_out_of_range_is_valueerror() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let dt = unsafe {
         molt_cpython_abi::api::datetime::molt_cpython_abi_datetime_from_date_and_time_and_fold(
@@ -1049,7 +950,7 @@ fn datetime_fold_out_of_range_is_valueerror() {
 
 #[test]
 fn non_tzinfo_argument_is_typeerror() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let not_tz = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(3) };
     let dt = unsafe {
@@ -1079,7 +980,7 @@ fn non_tzinfo_argument_is_typeerror() {
 
 #[test]
 fn capsule_import_miss_sets_import_error() {
-    install();
+    let _abi_test = install();
     unsafe { err_clear() };
     let p = unsafe {
         molt_cpython_abi::api::capsule::PyCapsule_Import(c"totally.absent._CAPI".as_ptr(), 0)
@@ -1091,7 +992,7 @@ fn capsule_import_miss_sets_import_error() {
 
 #[test]
 fn capsule_import_registry_fast_path_still_resolves() {
-    install();
+    let _abi_test = install();
     let mut data = 42u32;
     let capsule = unsafe {
         molt_cpython_abi::api::capsule::PyCapsule_New(

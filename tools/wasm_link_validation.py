@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from pathlib import Path
 import sys
 
@@ -13,51 +12,6 @@ import wasm_link_edit as _edit
 import wasm_link_export_contract as _export_contract
 from wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
 import wasm_link_format as _format
-
-
-_WASM_VALUE_TYPE_ENCODINGS = {
-    "i32": (0x7F,),
-    "i64": (0x7E,),
-    "f32": (0x7D,),
-    "f64": (0x7C,),
-    "v128": (0x7B,),
-    "funcref": (0x70,),
-    "externref": (0x6F,),
-}
-
-
-def _generated_function_type(
-    import_name: str,
-) -> dict[str, object] | None:
-    signature = _runtime_exports.wasm_split_runtime_import_signature(import_name)
-    if signature is None:
-        return None
-    params, results = signature
-    try:
-        encoded_params = tuple(_WASM_VALUE_TYPE_ENCODINGS[value] for value in params)
-        encoded_results = tuple(_WASM_VALUE_TYPE_ENCODINGS[value] for value in results)
-    except KeyError as exc:
-        raise ValueError(
-            f"generated split-runtime signature uses unsupported value type {exc.args[0]!r}"
-        ) from exc
-    return {
-        "kind": "function",
-        "exact": False,
-        "params": encoded_params,
-        "results": encoded_results,
-    }
-
-
-def _canonical_json_value(value: object) -> object:
-    if isinstance(value, Mapping):
-        return tuple(
-            sorted(
-                (str(key), _canonical_json_value(item)) for key, item in value.items()
-            )
-        )
-    if isinstance(value, (list, tuple)):
-        return tuple(_canonical_json_value(item) for item in value)
-    return value
 
 
 def _validate_split_runtime_typed_edges(
@@ -91,9 +45,9 @@ def _validate_split_runtime_typed_edges(
                 "split-runtime app import is absent from staged shared runtime: "
                 f"{import_name} (expected {export_name})"
             )
-        if _canonical_json_value(import_fact.extern_type) != _canonical_json_value(
-            export_fact.extern_type
-        ):
+        if _format.canonical_extern_type(
+            import_fact.extern_type
+        ) != _format.canonical_extern_type(export_fact.extern_type):
             return (
                 "split-runtime ABI type mismatch for "
                 f"{import_name} -> {export_name}: "
@@ -116,7 +70,7 @@ def _validate_split_runtime_typed_edges(
                     "shared": False,
                 }
             else:
-                generated_type = _generated_function_type(import_name)
+                generated_type = _format.generated_function_type(import_name)
         except ValueError as exc:
             return str(exc)
         if generated_type is None:
@@ -124,9 +78,9 @@ def _validate_split_runtime_typed_edges(
                 "split-runtime app import has no generated function signature: "
                 f"{import_name}"
             )
-        if _canonical_json_value(import_fact.extern_type) != _canonical_json_value(
-            generated_type
-        ):
+        if _format.canonical_extern_type(
+            import_fact.extern_type
+        ) != _format.canonical_extern_type(generated_type):
             return (
                 "split-runtime app import disagrees with generated ABI signature: "
                 f"{import_name}: app={dict(import_fact.extern_type)!r}, "

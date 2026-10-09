@@ -842,6 +842,7 @@ fn native_call_returns_publish_direct_and_hidden_operands_with_original_errors()
                 assert_eq!(result.is_null(), fail || invalid, "mode {mode}");
                 if fail || invalid {
                     let raised = errors::PyErr_GetRaisedException();
+                    let raised_owner = refcount::OwnedPyObject::from_owned(raised);
                     assert!(!raised.is_null());
                     if fail {
                         assert_eq!(
@@ -858,7 +859,7 @@ fn native_call_returns_publish_direct_and_hidden_operands_with_original_errors()
                             "mode {mode} reports the publication error",
                         );
                     }
-                    refcount::Py_DECREF(raised);
+                    drop(raised_owner);
                 }
                 (*views[1].cast::<PyBaseExceptionObject>()).suppress_context = 0;
                 for pointer in [

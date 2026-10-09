@@ -12,6 +12,29 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
+/// Reuse the executable identity and mutation-token authority for retained inputs.
+pub(crate) fn opened_file_key(file: &std::fs::File) -> std::io::Result<crate::ImageCacheKey> {
+    #[cfg(target_os = "linux")]
+    return file
+        .metadata()
+        .map(|metadata| linux::linux_cache_key(&metadata));
+    #[cfg(target_os = "macos")]
+    return file
+        .metadata()
+        .map(|metadata| macos::macos_cache_key(&metadata));
+    #[cfg(target_os = "windows")]
+    return windows::windows_cache_key(file)
+        .map(|(_, key)| key)
+        .map_err(std::io::Error::other);
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    {
+        let _ = file;
+        Err(std::io::Error::other(
+            "opened-file identity unsupported on this platform",
+        ))
+    }
+}
+
 /// Environment that callers must capture and seal before any supervised launch.
 /// Backends must not inject these values after policy identity is established.
 pub fn required_environment() -> BTreeMap<String, String> {
@@ -44,12 +67,28 @@ pub fn capability_contract_is_valid(recorded: &Capability, mode: ClosureMode) ->
     #[cfg(target_os = "windows")]
     return recorded == &capability(mode);
     #[cfg(target_os = "linux")]
-    return recorded.platform == "linux"
+    return recorded_linux_capability_contract_is_valid(recorded, mode);
+    #[cfg(target_os = "macos")]
+    return macos::capability_contract_is_valid(recorded, mode);
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    return recorded == &capability(mode);
+}
+
+/// The recorded Linux contract is independent of the verifier host. This
+/// authenticates its shape, not the container provider or historical kernel.
+/// Native Linux and rooted offline verification use the same predicate.
+pub fn recorded_linux_capability_contract_is_valid(
+    recorded: &Capability,
+    mode: ClosureMode,
+) -> bool {
+    recorded.schema == CAPABILITY_SCHEMA
+        && recorded.mode == mode
+        && recorded.platform == "linux"
         && recorded.backend == "ptrace-exitkill"
         && recorded.pre_entry_exec_authority
         && recorded.pre_entry_process_create_authority
         && recorded.recursive_descendant_authority
-        && recorded.required_environment == required_environment()
+        && recorded.required_environment.is_empty()
         && if recorded.available {
             recorded.reason.is_none()
         } else {
@@ -57,11 +96,7 @@ pub fn capability_contract_is_valid(recorded: &Capability, mode: ClosureMode) ->
                 .reason
                 .as_ref()
                 .is_some_and(|reason| !reason.is_empty())
-        };
-    #[cfg(target_os = "macos")]
-    return macos::capability_contract_is_valid(recorded, mode);
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    return recorded == &capability(mode);
+        }
 }
 
 pub fn run(
@@ -69,6 +104,16 @@ pub fn run(
     _events: &mut EventJournal,
     capability: Capability,
 ) -> Receipt {
+    if matches!(
+        policy.path_namespace,
+        crate::PolicyPathNamespace::LinuxGuest
+    ) {
+        return Receipt::rejected(
+            policy,
+            &capability,
+            "retained Linux policy is an offline verification input, not a launch authority",
+        );
+    }
     #[cfg(target_os = "windows")]
     return windows::run(policy, _events, capability);
     #[cfg(target_os = "linux")]

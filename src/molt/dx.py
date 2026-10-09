@@ -24,13 +24,8 @@ from molt.environment_registry import (
 )
 from molt.source_root import compiler_source_root
 from molt.path_custody import (
-    CustodyPathRole,
-    PathCustodyError,
-    forbidden_for_role,
     host_path_is_within,
     same_host_path,
-    validate_path_role,
-    windows_drive,
 )
 
 
@@ -68,7 +63,6 @@ CANONICAL_RUN_ENV_KEYS = (
     "CARGO_INCREMENTAL",
     "MOLT_SESSION_ID",
     "MOLT_SESSION_ID_GENERATED",
-    "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
 )
 DX_ENV_KEYS = (
     *CANONICAL_RUN_ENV_KEYS,
@@ -819,18 +813,6 @@ def _github_actions_checkout_custody(
         )
     runner_temp = runner_temp.resolve()
     custody_root = custody_root.resolve()
-    for path, role, authority in (
-        (source_root, CustodyPathRole.HOSTED_SOURCE, "GitHub Actions source"),
-        (
-            custody_root,
-            CustodyPathRole.HOSTED_EXECUTION,
-            "GitHub Actions execution custody",
-        ),
-    ):
-        try:
-            validate_path_role(path, role, authority=authority)
-        except PathCustodyError as exc:  # pragma: no cover - roles currently allow all.
-            raise DxConfigError(str(exc)) from exc
     if verify_checkout_files and not runner_temp.is_dir():
         raise DxConfigError(f"GitHub Actions RUNNER_TEMP does not exist: {runner_temp}")
     if custody_root == runner_temp or not _path_is_within(custody_root, runner_temp):
@@ -899,19 +881,9 @@ def canonical_molt_root(repo_root: str | Path, *, require_exists: bool = True) -
     The authority is derived from the invoking checkout family (``molt-src`` or
     a sibling under ``worktrees``). It never consults artifact-output
     environment, volume labels, free-space policy, or preservation switches.
-    A normal installed/user project therefore has no global ``C:\\Molt``
-    requirement, while this workstation's ``C:\\Molt`` family resolves there
-    deterministically. D: is refused for durable custody, while hosted-runner
-    D:\\a paths are validated under hosted roles.
+    The same checkout-family rule applies on every filesystem; drive letters
+    and directory names carry no custody authority.
     """
-    try:
-        validate_path_role(
-            repo_root,
-            CustodyPathRole.DURABLE_AUTHORITY,
-            authority="canonical Molt custody",
-        )
-    except PathCustodyError as exc:
-        raise DxConfigError(str(exc)) from exc
     root = custody_layout.custody_root(repo_root)
     if require_exists and not root.is_dir():
         raise DxConfigError(f"canonical Molt custody root does not exist: {root}")
@@ -923,7 +895,7 @@ def _host_scratch_roots() -> tuple[Path, ...]:
 
     ``RunContext`` accepts an explicit child environment, but that mapping is
     configuration rather than custody proof: it must neither erase the hosted
-    runner's real temp root nor fabricate a D: scratch exemption.  The Python
+    runner's real temp root nor fabricate a scratch classification.  The Python
     temp authority is always host-local.  ``RUNNER_TEMP`` is additionally
     trusted only when the current process is itself running under GitHub
     Actions; a caller-supplied mapping cannot self-attest that fact.
@@ -960,14 +932,7 @@ def checkout_custody(
         return hosted
     scratch_roots = _host_scratch_roots()
     if any(host_path_is_within(source_root, root) for root in scratch_roots):
-        # Test/build projects created beneath the OS-issued temp root are
-        # explicit scratch, not durable checkout authority. This distinction is
-        # essential on hosted Windows, where pytest fixtures live under D:\a.
-        validate_path_role(
-            source_root,
-            CustodyPathRole.EXPLICIT_SCRATCH,
-            authority="temporary project scratch",
-        )
+        # Projects beneath the OS-issued temp root have explicit scratch custody.
         return CheckoutCustody(
             source_root=source_root,
             custody_root=source_root,
@@ -990,74 +955,22 @@ def canonical_toolchain_root(repo_root: Path, *, require_exists: bool = True) ->
     )
 
 
-def _should_rehome_toolchain_root(
-    raw: str,
-    artifact_root: Path,
-    env: Mapping[str, str],
-) -> bool:
-    """True when inherited toolchain custody conflicts with durable authority.
-
-    D: is unconditionally forbidden for durable authority. An intentional
-    non-poison custom toolchain may be retained with
-    ``MOLT_PRESERVE_TARGET_ROOT=1``.
-    """
-    if os.name != "nt":
-        return False
-    if forbidden_for_role(raw, CustodyPathRole.DURABLE_AUTHORITY):
-        return True
-    if _env_bool(env, ("MOLT_PRESERVE_TARGET_ROOT",), default=False):
-        return False
-    target_path = Path(raw).expanduser()
-    target_drive = _path_drive(target_path)
-    artifact_drive = _path_drive(artifact_root)
-    if bool(target_drive and artifact_drive) and target_drive != artifact_drive:
-        return True
-    return False
-
-
-def _requires_external_artifacts(
-    repo_root: Path,
-    env: Mapping[str, str],
-    *,
-    prefer_external: bool,
-) -> bool:
-    del repo_root, prefer_external
-    if _env_bool(env, ("MOLT_ALLOW_C_DRIVE_ARTIFACTS",), default=False):
-        return False
+def _requires_external_artifacts(env: Mapping[str, str]) -> bool:
     return _env_bool(env, ("MOLT_REQUIRE_EXTERNAL_ARTIFACTS",), default=False)
 
 
-def _allow_c_drive_artifacts(env: Mapping[str, str]) -> bool:
-    return _env_bool(env, ("MOLT_ALLOW_C_DRIVE_ARTIFACTS",), default=False)
-
-
-def _is_windows_c_drive_path(path: Path) -> bool:
-    return os.name == "nt" and windows_drive(path) == "C:"
-
-
-def _reject_c_drive_artifact_path(
+def _require_external_path(
     key: str,
     path: Path,
     env: Mapping[str, str],
     *,
     repo_root: Path,
-    prefer_external: bool,
 ) -> None:
-    if not _requires_external_artifacts(
-        repo_root,
-        env,
-        prefer_external=prefer_external,
-    ):
-        return
-    if _allow_c_drive_artifacts(env):
-        return
-    if _is_windows_c_drive_path(path.resolve()):
-        raise DxConfigError(
-            f"{key} resolved to {path}; Molt build artifacts must live on an "
-            "approved artifact root. Prefer C:\\Molt on this workstation; set "
-            "MOLT_ALLOW_C_DRIVE_ARTIFACTS=1 for the canonical C:\\Molt root "
-            "or MOLT_EXTERNAL_ARTIFACT_ROOTS for an explicit fallback."
-        )
+    if _requires_external_artifacts(env):
+        if host_path_is_within(path, repo_root):
+            raise DxConfigError(
+                f"{key} must be outside the checkout when MOLT_REQUIRE_EXTERNAL_ARTIFACTS=1: {path}"
+            )
 
 
 def _candidate_roots(repo_root: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
@@ -1116,11 +1029,7 @@ def select_external_artifact_root(
 
     if env.get("MOLT_EXT_ROOT"):
         return None
-    require_external = _requires_external_artifacts(
-        repo_root,
-        env,
-        prefer_external=prefer_external,
-    )
+    require_external = _requires_external_artifacts(env)
     if (
         not _env_bool(
             env,
@@ -1181,70 +1090,17 @@ def require_external_artifact_root(
     )
     if selected is not None:
         return selected
-    if _requires_external_artifacts(
-        repo_root,
-        env,
-        prefer_external=prefer_external,
-    ):
+    if _requires_external_artifacts(env):
         candidates = (
             ", ".join(str(path) for path in _candidate_roots(repo_root, env))
             or "<none>"
         )
         raise DxConfigError(
-            "Molt build artifacts must not be placed on C:. Configure a healthy "
-            "non-C artifact root with MOLT_EXTERNAL_ARTIFACT_ROOTS or MOLT_EXT_ROOT. "
+            "Molt build artifacts must be outside the checkout. Configure a healthy "
+            "root with MOLT_EXTERNAL_ARTIFACT_ROOTS or MOLT_EXT_ROOT. "
             f"Checked candidates: {candidates}"
         )
     return None
-
-
-def _is_onedrive_path(path: Path) -> bool:
-    """True if *path* is under a OneDrive-synced tree — forbidden for molt.
-
-    OneDrive continuously syncs the `.git` + build tree (thousands of tiny objects),
-    throttling every git/build op and corrupting the working set; it was the root of
-    the drift retired 2026-07-08. Each host's canonical checkout and artifact root
-    are listed in docs/agent/ORCHESTRATION.md — nothing may drift back onto OneDrive.
-    """
-    try:
-        parts = path.resolve().parts
-    except (OSError, ValueError):
-        parts = path.parts
-    return any("onedrive" in str(p).lower() for p in parts)
-
-
-def _reject_onedrive(path: Path, kind: str) -> None:
-    if _is_onedrive_path(path):
-        raise DxConfigError(
-            f"Molt {kind} must NOT be under OneDrive (it throttles/corrupts git + "
-            f"builds and was the retired drift root). Rejected: {path}. Use the "
-            f"host's canonical checkout and artifact root "
-            f"(see docs/agent/ORCHESTRATION.md canonical paths)."
-        )
-
-
-def _validate_windows_artifact_root(
-    artifact_root: Path,
-    *,
-    repo_root: Path,
-    env: Mapping[str, str],
-    prefer_external: bool,
-) -> None:
-    # Fail closed against OneDrive re-drift — the checkout AND the artifact root.
-    _reject_onedrive(repo_root, "checkout / repo root")
-    _reject_onedrive(artifact_root, "build-artifact root")
-    if not _requires_external_artifacts(
-        repo_root,
-        env,
-        prefer_external=prefer_external,
-    ):
-        return
-    if not _is_windows_c_drive_path(artifact_root.resolve()):
-        return
-    raise DxConfigError(
-        "Molt build artifacts must not be placed on C:. "
-        f"Rejected artifact root: {artifact_root}"
-    )
 
 
 def _backend_daemon_socket_root(env: Mapping[str, str]) -> Path:
@@ -1500,18 +1356,13 @@ class RunContext:
                 ) or custody.custody_root
         else:
             ext_root = self._resolve_env_path(env["MOLT_EXT_ROOT"])
-        _validate_windows_artifact_root(
+        _require_external_path(
+            "MOLT_EXT_ROOT",
             ext_root,
+            env,
             repo_root=self.root,
-            env=env,
-            prefer_external=self.prefer_external_artifacts,
         )
         env["MOLT_EXT_ROOT"] = str(ext_root)
-        if _is_windows_c_drive_path(ext_root.resolve()):
-            # RunContext is the artifact-root authority. Once it has accepted a
-            # Windows C: root, downstream guards must receive the same policy
-            # attestation instead of re-litigating the old non-C default.
-            env["MOLT_ALLOW_C_DRIVE_ARTIFACTS"] = "1"
 
         def install_default(key: str, value: Path | str) -> None:
             if key in forced or not env.get(key):
@@ -1561,9 +1412,7 @@ class RunContext:
         # elsewhere explicitly.
         default_toolchain_root = custody.toolchain_root
         raw_target_root = env.get("MOLT_TARGET_ROOT")
-        if not raw_target_root or _should_rehome_toolchain_root(
-            raw_target_root, ext_root, env
-        ):
+        if not raw_target_root:
             env["MOLT_TARGET_ROOT"] = str(default_toolchain_root)
         install_default("PYTHONPYCACHEPREFIX", scratch_root / "pycache")
         install_default("TMPDIR", scratch_root)
@@ -1575,12 +1424,13 @@ class RunContext:
             if value:
                 env[key] = str(self._resolve_env_path(value))
                 value = env[key]
-                _reject_c_drive_artifact_path(
+                if key == "MOLT_TARGET_ROOT":
+                    continue  # Toolchain custody is independent of artifact placement.
+                _require_external_path(
                     key,
                     Path(value).expanduser(),
                     env,
                     repo_root=self.root,
-                    prefer_external=self.prefer_external_artifacts,
                 )
 
         if create_dirs:
@@ -1758,11 +1608,11 @@ class DxProject:
                 )
                 or self.root
             )
-        _validate_windows_artifact_root(
+        _require_external_path(
+            "MOLT_EXT_ROOT",
             artifact_root,
+            env,
             repo_root=self.root,
-            env=env,
-            prefer_external=prefer_external,
         )
         env_cfg = dx.get("env", {})
         if isinstance(env_cfg, dict):

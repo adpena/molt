@@ -618,7 +618,7 @@ pub(crate) unsafe fn class_runtime_contents_empty(ptr: *mut u8) -> bool {
         ClassReferenceSlot::DICTIONARIES.into_iter().all(|slot| {
             crate::obj_from_bits(slot.load(ptr))
                 .as_ptr()
-                .is_none_or(|dict| crate::dict_order(dict).is_empty())
+                .is_none_or(|dict| crate::dict_len(dict) == 0)
         })
     }
 }
@@ -770,7 +770,7 @@ impl RuntimeClassRetirement {
                         }
                         ClassReferenceSlot::Dictionary | ClassReferenceSlot::InstanceDictionary => {
                             let dict = self.assert_exact_metadata(py, bits, crate::TYPE_ID_DICT);
-                            assert!(crate::dict_order(dict).is_empty());
+                            assert!(crate::dict_len(dict) == 0);
                         }
                         ClassReferenceSlot::Bases | ClassReferenceSlot::Mro => {
                             let tuple = self.assert_exact_metadata(py, bits, crate::TYPE_ID_TUPLE);
@@ -802,9 +802,8 @@ impl RuntimeClassRetirement {
                             let (map, rows) = super::class_layout::projection_parts(bits);
                             if !crate::obj_from_bits(map).is_none() {
                                 let dict = self.assert_exact_metadata(py, map, crate::TYPE_ID_DICT);
-                                let entries = crate::dict_order(dict);
-                                assert_eq!(entries.len() % 2, 0);
-                                for pair in entries.as_chunks::<2>().0 {
+                                for row in crate::dict_live_entries(dict) {
+                                    let pair = [row.key, row.value];
                                     self.assert_exact_metadata(py, pair[0], crate::TYPE_ID_STRING);
                                     assert!(crate::obj_from_bits(pair[1]).as_int().is_some());
                                 }

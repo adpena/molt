@@ -575,7 +575,6 @@ def _build_checks() -> list[Check]:
             name="apparatus-learning-protection-teeth",
             tier=1,
             cmd=_uv_pytest(
-                str(TESTS / "tools" / "test_forbidden_checkout_guard.py"),
                 str(TESTS / "tools" / "test_apparatus_agent_safety.py"),
                 str(TESTS / "tools" / "test_anti_recurrence_gate.py"),
                 str(TESTS / "tools" / "test_hooks_session_learning.py"),

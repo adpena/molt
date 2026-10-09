@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 import re
+from molt.wasi_sdk_identity import WASI_C_ABI_PLAN_ENV, validate_wasi_c_abi_identity
+
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
@@ -241,16 +243,14 @@ def _validated_build_script_environment(
     if value is None:
         raise ValueError("runtime build-script environment must be an object")
     schema = value.get("schema")
-    fields = {"schema", "build_python", "python_import_policy"}
-    runtime = schema == "molt.runtime-build-script-environment.v2"
+    fields = {"schema", "build_python", "python_import_policy", WASI_C_ABI_PLAN_ENV}
+    runtime = schema == "molt.runtime-build-script-environment.v3"
     if runtime:
         fields |= {
             "MOLT_WASM_CPYTHON_ABI_EXPORTS",
             "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS",
-            "MOLT_WASM_LONGDOUBLE_ARCHIVE",
-            "MOLT_WASM_BUILTINS_ARCHIVE",
         }
-    elif schema != "molt.cpython-abi-build-script-environment.v2":
+    elif schema != "molt.cpython-abi-build-script-environment.v3":
         raise ValueError("runtime build-script schema is invalid")
     if set(value) != fields:
         raise ValueError("runtime build-script environment shape is invalid")
@@ -279,6 +279,17 @@ def _validated_build_script_environment(
         raise ValueError("runtime build-script Python differs from toolchain custody")
     if value["python_import_policy"] != "isolated-no-site-v1":
         raise ValueError("runtime build-script Python import policy is invalid")
+    c_abi = value[WASI_C_ABI_PLAN_ENV]
+    if target in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
+        if (
+            not isinstance(c_abi, Mapping)
+            or set(c_abi) != {"state", "content"}
+            or c_abi["state"] != "selected"
+        ):
+            raise ValueError("WASM build-script requires selected C-runtime content")
+        validate_wasi_c_abi_identity(c_abi["content"])
+    elif c_abi != {"state": "ignored-for-target"}:
+        raise ValueError("non-WASI build-script has WASI C-runtime inputs")
     if not runtime:
         return
     wasm = target.startswith("wasm32-")
@@ -296,31 +307,6 @@ def _validated_build_script_environment(
         symbols.append(items)
     if wasm and not set(symbols[1]).issubset(symbols[0]):
         raise ValueError("runtime build-script data exports are unowned")
-    for name in ("MOLT_WASM_LONGDOUBLE_ARCHIVE", "MOLT_WASM_BUILTINS_ARCHIVE"):
-        archive = string_keyed_mapping(value[name])
-        if archive is None:
-            raise ValueError("runtime build-script archive state is invalid")
-        state = archive.get("state")
-        if not wasm:
-            if archive != {"state": "ignored-for-target"}:
-                raise ValueError("native runtime has WASM archive inputs")
-        elif state in ("unset", "empty", "fallback"):
-            if set(archive) != {"state"}:
-                raise ValueError("runtime absent archive has content")
-        elif state == "resolved":
-            content = string_keyed_mapping(archive.get("content"))
-            if (
-                set(archive) != {"state", "content"}
-                or content is None
-                or set(content) != {"logical_name", "sha256", "size"}
-                or content["logical_name"] != name.lower()
-                or not _valid_sha256(content["sha256"])
-                or type(content["size"]) is not int
-                or content["size"] < 0
-            ):
-                raise ValueError("runtime build-script archive content is invalid")
-        else:
-            raise ValueError("runtime build-script archive selector is invalid")
 
 
 def _validated_publication_authority(payload: object) -> Mapping[str, object]:
@@ -583,8 +569,10 @@ def _validated_runtime_toolchain_content(
     expected_sysroots = {"wasi"} if target_triple.startswith("wasm32-") else set()
     if sysroots is None or set(sysroots) != expected_sysroots:
         raise ValueError("runtime sysroot identity is invalid")
-    for name, raw in sysroots.items():
-        _validated_tree_summary(raw, label=f"{name} sysroot")
+    for raw in sysroots.values():
+        from molt.wasi_sdk_identity import validate_wasi_c_abi_identity
+
+        validate_wasi_c_abi_identity(raw)
     archives = value.get("archives")
     if not isinstance(archives, (list, tuple)):
         raise ValueError("runtime archive identities are invalid")
@@ -704,7 +692,6 @@ def _validated_runtime_build_payload(
             for item in cast(Sequence[object], archives)
         ) != (
             "wasi-libc",
-            "rust-compiler-builtins",
             "wasi-long-double",
             "clang-rt-builtins",
         ):

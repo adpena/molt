@@ -54,12 +54,26 @@ unsafe extern "C" fn list_set(bits: u64, index: usize, value: u64) -> OwnedHandl
     }
 }
 unsafe extern "C" fn list_append(bits: u64, value: u64, pointer: *mut PyObject) -> i32 {
-    let index = {
+    unsafe { list_insert(bits, isize::MAX, value, pointer) }
+}
+
+unsafe extern "C" fn list_insert(
+    bits: u64,
+    index: isize,
+    value: u64,
+    pointer: *mut PyObject,
+) -> i32 {
+    let length = {
         let values = VALUES.lock().unwrap();
         match values.get(&bits).map(|entry| &entry.value) {
             Some(Value::List(items)) => items.len(),
             _ => return -1,
         }
+    };
+    let index = if index < 0 {
+        length.saturating_sub(index.unsigned_abs())
+    } else {
+        (index as usize).min(length)
     };
     let Some(prepared) = GLOBAL_BRIDGE.prepare_list_insert_from_pyobj(bits, value, pointer) else {
         return -1;
@@ -70,7 +84,7 @@ unsafe extern "C" fn list_append(bits: u64, value: u64, pointer: *mut PyObject) 
         let Value::List(items) = &mut values.get_mut(&bits).unwrap().value else {
             unreachable!()
         };
-        items.push(value);
+        items.insert(index, value);
     }
     assert!(
         unsafe { prepared.publish_insert(index) },
@@ -137,7 +151,7 @@ unsafe extern "C" fn object_supports_subscript(bits: u64) -> i32 {
     }
     // This profile has only the builtin classes above. Storage-owning sibling
     // fixtures may supply their own classifier without splitting class identity.
-    let tag = unsafe { (molt_cpython_abi::hooks::hooks_or_stubs().classify_heap)(bits) };
+    let tag = unsafe { molt_cpython_abi::hooks::hooks_or_stubs().classify_heap(bits) };
     i32::from(
         [
             MoltTypeTag::List,
@@ -153,7 +167,7 @@ fn length(values: &HashMap<u64, Entry>, bits: u64) -> Option<usize> {
     match &values.get(&bits)?.value {
         Value::List(items) => Some(items.len()),
         Value::Tuple(items) => Some(items.len()),
-        Value::Dict(items) => Some(items.len()),
+        Value::Dict(items) => Some(items.iter().flatten().count()),
         Value::String(bytes) => Some(
             std::str::from_utf8(&bytes[..bytes.len() - 1])
                 .expect("fixture UTF-8 string")
@@ -229,6 +243,7 @@ unsafe extern "C" fn iter_next(bits: u64, exhausted: *mut i32) -> OwnedHandleRes
             return OwnedHandleResult::error();
         };
         let (source, index) = (*source, *index);
+        let mut next_index = index.saturating_add(1);
         let step = match values.get(&source).map(|entry| &entry.value) {
             Some(Value::List(items)) => items
                 .get(index)
@@ -240,10 +255,20 @@ unsafe extern "C" fn iter_next(bits: u64, exhausted: *mut i32) -> OwnedHandleRes
                 Some(None) => Step::Invalid,
                 None => Step::Done,
             },
-            Some(Value::Dict(items)) => items
-                .get(index)
-                .map(|(key, _)| Step::Item(*key))
-                .unwrap_or(Step::Done),
+            Some(Value::Dict(items)) => {
+                match items
+                    .iter()
+                    .enumerate()
+                    .skip(index)
+                    .find_map(|(position, row)| row.as_ref().map(|pair| (position, pair)))
+                {
+                    Some((position, &(key, _))) => {
+                        next_index = position + 1;
+                        Step::Item(key)
+                    }
+                    None => Step::Done,
+                }
+            }
             Some(Value::String(bytes)) => std::str::from_utf8(&bytes[..bytes.len() - 1])
                 .expect("fixture UTF-8 string")
                 .chars()
@@ -256,7 +281,7 @@ unsafe extern "C" fn iter_next(bits: u64, exhausted: *mut i32) -> OwnedHandleRes
             let Value::Iterator { index, .. } = &mut values.get_mut(&bits).unwrap().value else {
                 unreachable!()
             };
-            *index += 1;
+            *index = next_index;
         }
         step
     };
@@ -286,10 +311,11 @@ pub(super) fn wire(hooks: &mut RuntimeHooks) {
     hooks.list_item = list_item;
     hooks.list_set = list_set;
     hooks.list_append = list_append;
-    hooks.alloc_tuple = alloc_tuple;
-    hooks.tuple_len = tuple_len;
-    hooks.tuple_item = tuple_item;
-    hooks.tuple_set = tuple_set;
+    hooks.list_insert = list_insert;
+    hooks.alloc_tuple = Some(alloc_tuple);
+    hooks.tuple_len = Some(tuple_len);
+    hooks.tuple_item = Some(tuple_item);
+    hooks.tuple_set = Some(tuple_set);
     hooks.object_supports_subscript = object_supports_subscript;
     hooks.object_length = object_length;
     hooks.object_length_hint = object_length_hint;

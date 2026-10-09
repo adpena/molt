@@ -11,7 +11,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import NamedTuple, Sequence
+from typing import TYPE_CHECKING, Sequence
 
 from molt.cli.compiler_metadata import (
     _compiler_clean_pathspec_source_state,
@@ -30,6 +30,10 @@ from molt.cli.python_source_closure import (
     local_python_import_closure,
     local_python_import_graph_transaction,
 )
+
+
+if TYPE_CHECKING:
+    from molt.cli.module_source import PythonSourceSnapshot
 
 
 _CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v3"
@@ -124,6 +128,10 @@ _FRONTEND_AUX_SOURCE_RELPATHS: tuple[str, ...] = (
     "_wasm_runtime_exports.py",
     "_intrinsic_symbols.py",
     "_runtime_feature_gates.py",
+    # Hardware descriptor origin is compared with these compiler-owned bodies.
+    # Installed releases already bind them in the source-wide identity.
+    "gpu/__init__.py",
+    "stdlib/struct.py",
 )
 
 
@@ -251,13 +259,17 @@ def _frontend_semantic_tooling_sources(project_root: Path) -> _SourceFingerprint
         paths.append(source)
     # Force-include the shared aux semantic files even if a future refactor drops
     # them from the import closure -- they are load-bearing frontend inputs.
+    source_sha256 = dict(closure.source_sha256)
     for relpath in _FRONTEND_AUX_SOURCE_RELPATHS:
         source = molt_root / relpath
         # Existing aux sources have already been admitted and captured by the
         # closure. Only absent or aliased lexical paths still need resolving.
-        paths.append(source if source in closure.source_sha256 else source.resolve())
+        selected = source if source in closure.source_sha256 else source.resolve()
+        paths.append(selected)
+        if selected not in source_sha256:
+            source_sha256[selected] = _file_content_signature(selected)
     return _SourceFingerprintInputs(
-        tuple(sorted(set(paths))), closure.source_sha256, closure.topology_digest
+        tuple(sorted(set(paths))), source_sha256, closure.topology_digest
     )
 
 
@@ -273,12 +285,37 @@ _SOURCE_TREE_CONTENT_DIGEST_CACHE: dict[tuple[str, ...], str] = {}
 _SOURCE_TREE_CONTENT_DIGEST_CACHE_LIMIT = 64
 
 
-class _FrontendSemanticSourceSnapshot(NamedTuple):
+@dataclass(frozen=True)
+class _FrontendSemanticSourceSnapshot:
     """Resolved tooling inputs and their identity for one immutable operation."""
 
     root: Path
     source_paths: tuple[Path, ...]
     fingerprint: str
+    reference_sha256: Mapping[str, str] = field(default_factory=dict, compare=False)
+    # Captured only when a semantic consumer actually needs source contents.
+    # This lives for the existing immutable operation, never process-wide.
+    reference_sources: dict[str, PythonSourceSnapshot] = field(
+        default_factory=dict, compare=False
+    )
+
+    def reference_source(self, relative_path: str) -> PythonSourceSnapshot:
+        from molt.cli.module_source import PythonSourceSnapshot
+
+        if relative_path not in _FRONTEND_AUX_SOURCE_RELPATHS:
+            raise ValueError("reference source is outside frontend semantic inputs")
+        captured = self.reference_sources.get(relative_path)
+        if captured is None:
+            captured = PythonSourceSnapshot.capture(
+                _compiler_python_source_root(self.root) / "molt" / relative_path
+            )
+            if captured.sha256 != self.reference_sha256.get(relative_path):
+                raise ValueError(
+                    "frontend reference source changed after semantic generation admission"
+                )
+            self.reference_sources[relative_path] = captured
+        assert isinstance(captured, PythonSourceSnapshot)
+        return captured
 
 
 @dataclass
@@ -618,6 +655,15 @@ def _frontend_semantic_tooling_snapshot() -> _FrontendSemanticSourceSnapshot:
         snapshot = _FrontendSemanticSourceSnapshot(
             root=root,
             source_paths=(),
+            reference_sha256=MappingProxyType(
+                {
+                    entry["path"][len("src/molt/") :]: entry["sha256"]
+                    for entry in installed.compiler.files
+                    if entry["path"].startswith("src/molt/")
+                    and entry["path"][len("src/molt/") :]
+                    in _FRONTEND_AUX_SOURCE_RELPATHS
+                }
+            ),
             fingerprint=_compute_source_tree_content_digest(
                 (), "frontend-semantic-tooling", f"installed:{installed.fingerprint}\n"
             ),
@@ -627,6 +673,20 @@ def _frontend_semantic_tooling_snapshot() -> _FrontendSemanticSourceSnapshot:
         snapshot = _FrontendSemanticSourceSnapshot(
             root=root,
             source_paths=inputs.paths,
+            reference_sha256=MappingProxyType(
+                {
+                    relative: inputs.source_sha256.get(
+                        _compiler_python_source_root(root) / "molt" / relative
+                    )
+                    or inputs.source_sha256.get(
+                        (
+                            _compiler_python_source_root(root) / "molt" / relative
+                        ).resolve(),
+                        "unreadable",
+                    )
+                    for relative in _FRONTEND_AUX_SOURCE_RELPATHS
+                }
+            ),
             fingerprint=_source_tree_cache_fingerprint(
                 root=root,
                 inputs=inputs,

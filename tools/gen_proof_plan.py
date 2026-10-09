@@ -174,7 +174,12 @@ def _index_projection(*, manifest: Path, check: bool) -> int:
 
 
 def _envelope_record(
-    plan: ProofPlan, family_name: str, budget: int, **scope: str | None
+    plan: ProofPlan,
+    family_name: str,
+    budget: int,
+    *,
+    job_reserve_seconds: int,
+    **scope: str | None,
 ) -> dict[str, object]:
     envelope = plan.timeout_envelope(family_name, **scope)
     return {
@@ -182,14 +187,23 @@ def _envelope_record(
         "projected_makespan_seconds": envelope.projected_makespan_seconds,
         "critical_path_seconds": envelope.critical_path_seconds,
         "resource_capacity_floor_seconds": envelope.resource_capacity_floor_seconds,
-        "headroom_seconds": budget - envelope.projected_makespan_seconds,
+        "job_reserve_seconds": job_reserve_seconds,
+        "required_job_seconds": (
+            envelope.projected_makespan_seconds + job_reserve_seconds
+        ),
+        "headroom_seconds": (
+            budget - envelope.projected_makespan_seconds - job_reserve_seconds
+        ),
     }
 
 
 def _timeout_envelope_projection(plan: ProofPlan) -> dict[str, dict[str, object]]:
     return {
         family.name: _envelope_record(
-            plan, family.name, int(family.data["timeout_minutes"]) * 60
+            plan,
+            family.name,
+            int(family.data["timeout_minutes"]) * 60,
+            job_reserve_seconds=int(family.data["job_reserve_seconds"]),
         )
         for family in plan.families
         if family.data["executor"] == "github-job"
@@ -206,6 +220,7 @@ def _matrix_timeout_envelope_projection(
                 plan,
                 family.name,
                 int(family.data["timeout_minutes"]) * 60,
+                job_reserve_seconds=int(family.data["job_reserve_seconds"]),
                 matrix_cell=cell,
             )
             for cell in plan.family_cells(family.name)
@@ -220,7 +235,10 @@ def _scheduled_timeout_envelope_projection(
 ) -> dict[str, dict[str, object]]:
     return {
         family.name: _envelope_record(
-            plan, family.name, int(family.data["timeout_minutes"]) * 60
+            plan,
+            family.name,
+            int(family.data["timeout_minutes"]) * 60,
+            job_reserve_seconds=int(family.data["job_reserve_seconds"]),
         )
         for family in plan.scheduled_families
     }
@@ -251,7 +269,7 @@ def _json_projection(plan: ProofPlan) -> str:
         for rule in plan.local_rules
     ]
     payload = {
-        "schema": "molt.proof-plan-projection.v6",
+        "schema": "molt.proof-plan-projection.v7",
         "authority": str(plan.path.relative_to(ROOT)).replace("\\", "/"),
         "authority_inputs": list(plan.authority_inputs),
         "authority_sha256": _authority_sha256(plan),
@@ -381,38 +399,54 @@ def _markdown_projection(plan: ProofPlan) -> str:
             for policy in plan.resource_policies
         ],
         "",
-        "GitHub job budgets are validated against a deterministic worst-case "
-        "DAG schedule in which every admitted command consumes its full declared "
-        "timeout. The projection accounts for dependencies, the global worker "
-        "ceiling, and per-resource capacity. A `github-matrix` job runs one "
-        "cell, so its budget binds each cell's schedule separately.",
+        "GitHub job budgets cover the deterministic command-deadline DAG "
+        "projection plus each family's positive operational reserve. The "
+        "projection accounts for dependencies, the global worker ceiling, and "
+        "per-resource capacity. A `github-matrix` job runs one cell, so its "
+        "budget binds each cell separately. Reserve covers setup, identity "
+        "capture, guard finalization, and artifact transport outside command "
+        "deadlines; headroom is what remains after this reserve. Observed "
+        "minimum allowances and declared scheduled allowances are not hard "
+        "upper bounds on provisioning or OS process cleanup.",
         "",
-        "| Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Selection parents | Admission | Inputs |",
-        "|---|---|---:|---|---:|---:|---:|---|---|---|---:|",
+        "| Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |",
+        "|---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|",
     ]
     for family in plan.families:
         data = family.data
-        if data["executor"] == "github-job":
-            projected = plan.timeout_envelope(family.name).projected_makespan_seconds
-            projected_cell = f"{projected} s"
-            headroom_cell = f"{int(data['timeout_minutes']) * 60 - projected} s"
-        elif data["executor"] == "github-matrix":
-            # The budget binds each cell's job; report the tightest cell.
-            projected = max(
-                plan.timeout_envelope(
-                    family.name, matrix_cell=cell
-                ).projected_makespan_seconds
-                for cell in plan.family_cells(family.name)
+        record = None
+        if data["executor"] in {"github-job", "github-matrix"}:
+            cells = (
+                (None,)
+                if data["executor"] == "github-job"
+                else plan.family_cells(family.name)
             )
-            projected_cell = f"{projected} s per cell"
-            headroom_cell = f"{int(data['timeout_minutes']) * 60 - projected} s"
+            # Matrix caps bind each runner independently; show the tightest cell.
+            record = min(
+                (
+                    _envelope_record(
+                        plan,
+                        family.name,
+                        int(data["timeout_minutes"]) * 60,
+                        job_reserve_seconds=int(data["job_reserve_seconds"]),
+                        matrix_cell=cell,
+                    )
+                    for cell in cells
+                ),
+                key=lambda item: int(item["headroom_seconds"]),
+            )
+        if record is None:
+            projected_cell = reserve_cell = headroom_cell = "n/a"
         else:
-            projected_cell = "n/a"
-            headroom_cell = "n/a"
+            suffix = " per cell" if data["executor"] == "github-matrix" else ""
+            projected_cell = f"{record['projected_makespan_seconds']} s{suffix}"
+            reserve_cell = f"{record['job_reserve_seconds']} s"
+            headroom_cell = f"{record['headroom_seconds']} s"
         lines.append(
             f"| `{family.name}` | {', '.join(data['tiers'])} | "
             f"{'yes' if data['required'] else 'no'} | `{data['executor']}` | "
-            f"{data['timeout_minutes']} min | {projected_cell} | {headroom_cell} | "
+            f"{data['timeout_minutes']} min | {projected_cell} | {reserve_cell} | "
+            f"{headroom_cell} | "
             f"`{data['resource_class']}` | "
             f"{', '.join(f'`{name}`' for name in data['dependencies']) or 'none'} | "
             f"`{data['admission_job']}` needs "
@@ -427,19 +461,25 @@ def _markdown_projection(plan: ProofPlan) -> str:
             "Scheduled workflows consume the same typed command DAG and receipt "
             "executor without entering changed-path CI admission.",
             "",
-            "| Family | Workflow job | Timeout | Projected | Headroom | Resource | Commands |",
-            "|---|---|---:|---:|---:|---|---:|",
+            "| Family | Workflow job | Timeout | Commands | Reserve | Headroom | Resource | Partitions |",
+            "|---|---|---:|---:|---:|---:|---|---:|",
         ]
     )
     for family in plan.scheduled_families:
         data = family.data
-        envelope = plan.timeout_envelope(family.name)
         budget = int(data["timeout_minutes"]) * 60
+        record = _envelope_record(
+            plan,
+            family.name,
+            budget,
+            job_reserve_seconds=int(data["job_reserve_seconds"]),
+        )
         command_count = sum(command.family == family.name for command in plan.commands)
         lines.append(
             f"| `{family.name}` | `{data['job']}` | {budget} s | "
-            f"{envelope.projected_makespan_seconds} s | "
-            f"{budget - envelope.projected_makespan_seconds} s | "
+            f"{record['projected_makespan_seconds']} s | "
+            f"{record['job_reserve_seconds']} s | "
+            f"{record['headroom_seconds']} s | "
             f"`{data['resource_class']}` | {command_count} |"
         )
     lines.extend(

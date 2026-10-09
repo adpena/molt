@@ -618,8 +618,8 @@ unsafe fn groupby_curr_val_bits(ptr: *mut u8) -> u64 {
 }
 
 // Presence never depends on a Python value or borrowed singleton. The seventh
-// existing payload word is the non-owning active-grouper identity, like CPython's
-// currgrouper; it is compared only, never traversed or dereferenced.
+// native word is the non-owning active-grouper identity, like CPython's
+// currgrouper. Shared class backing follows it; only comparison may read it.
 const GROUPBY_HAS_TARGET: i64 = 1;
 const GROUPBY_HAS_CURRENT: i64 = 2;
 const GROUPBY_EXHAUSTED: i64 = 4;
@@ -1004,7 +1004,7 @@ fn groupby_class(_py: &PyToken) -> u64 {
         _py,
         &state.groupby_class,
         "groupby",
-        56,
+        64, // seven native words, then the shared class dictionary tail
         molt_itertools_groupby_next as *const () as usize as u64,
         ObjectShapeId::ItertoolsGroupby,
         None,

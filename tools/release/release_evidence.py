@@ -235,12 +235,12 @@ def archive_release_exit(
             mode_resolver=lambda _path: 0o644,
         )
         extracted = stage / "verified"
-        extract_zip_strict(archive, extracted)
+        identity = extract_zip_strict(archive, extracted)
         verify_release_exit_manifest(
             extracted / "release-exit.json", source_sha=source_sha, repo_root=repo_root
         )
-        identity = stable_regular_file_identity(
-            archive, label="verified evidence archive"
+        verify_stable_regular_file_identity(
+            identity, label="verified evidence archive", hash_content=True
         )
         durable_publish_exclusive(archive, output)
         result = file_record(output, kind=RELEASE_EXIT_ARCHIVE_KIND)
@@ -264,14 +264,13 @@ def extract_release_exit(
     expected_name = release_exit_archive_filename(source_sha)
     if archive.name != expected_name:
         raise ValueError(f"release-exit archive must be named {expected_name}")
-    identity = stable_regular_file_identity(archive, label="staged release evidence")
     output.parent.mkdir(parents=True, exist_ok=True)
     with OwnedTemporaryDirectory(
         prefix=".release-extract-", dir=output.parent
     ) as temporary:
         stage = Path(temporary)
         extracted = stage / "bundle"
-        extract_zip_strict(archive, extracted)
+        identity = extract_zip_strict(archive, extracted)
         if version is None:
             verify_release_exit_manifest(
                 extracted / "release-exit.json",
@@ -298,6 +297,8 @@ def extract_release_exit(
             raise ValueError(
                 "release-exit archive bytes are not the canonical reproducible ZIP"
             )
-        verify_stable_regular_file_identity(identity, label="staged release evidence")
+        verify_stable_regular_file_identity(
+            identity, label="staged release evidence", hash_content=True
+        )
         durable_publish_directory_exclusive(extracted, output)
     return output / "release-exit.json"

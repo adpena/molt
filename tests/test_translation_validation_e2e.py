@@ -53,7 +53,7 @@ def _make_simple_ops():
         },
         {"kind": "CONST", "args": [99], "result": _val("d"), "metadata": None},
         {
-            "kind": "RETURN",
+            "kind": "ret",
             "args": [_val("c")],
             "result": {"name": "none", "type_hint": "Unknown"},
             "metadata": None,
