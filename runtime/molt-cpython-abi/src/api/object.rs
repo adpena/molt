@@ -2704,7 +2704,7 @@ pub(crate) unsafe fn molt_tuple_bits_from_c_tuple(args: *mut PyObject) -> Option
         values.push(value);
     }
     let h = hooks_or_stubs();
-    let tuple_bits = unsafe { (h.alloc_tuple)(n) };
+    let tuple_bits = unsafe { h.alloc_tuple(n) };
     if tuple_bits == 0 {
         if !crate::api::errors::transfer_runtime_pending_to_current() {
             unsafe { crate::api::errors::PyErr_NoMemory() };
@@ -2714,7 +2714,7 @@ pub(crate) unsafe fn molt_tuple_bits_from_c_tuple(args: *mut PyObject) -> Option
     let tuple_owner = unsafe { crate::bridge::RuntimeValue::from_owned(tuple_bits) };
     for (i, value) in values.iter().enumerate() {
         let pointer = unsafe { *items.add(i) };
-        match unsafe { (h.tuple_set)(tuple_bits, i, value.bits(), pointer) }.decode() {
+        match unsafe { h.tuple_set(tuple_bits, i, value.bits(), pointer) }.decode() {
             crate::hooks::DecodedHandleResult::Ok(old_bits) if old_bits != 0 => {
                 drop(unsafe { crate::bridge::RuntimeValue::from_owned(old_bits) });
             }
@@ -3021,6 +3021,7 @@ unsafe fn invoke_native_vectorcall(
 ) -> *mut PyObject {
     if std::ptr::fn_addr_eq(func, molt_runtime_vectorcall as PyVectorcallFunc)
         || std::ptr::fn_addr_eq(func, molt_cfunction_vectorcall as PyVectorcallFunc)
+        || std::ptr::fn_addr_eq(func, molt_method_vectorcall as PyVectorcallFunc)
         || crate::api::typeobj::method_descriptor_completes_vectorcall(func)
     {
         let result = unsafe { func(callable, args, nargsf, kwnames) };
@@ -3395,7 +3396,7 @@ pub(crate) unsafe fn classinfo_match(
     let class_bits = unsafe { GLOBAL_BRIDGE.molt_value_for_pyobj(classinfo) };
     let result = match class_bits {
         Some(class_bits) => unsafe {
-            (hooks.object_classinfo_match)(operation, value_bits, class_bits)
+            hooks.object_classinfo_match(operation, value_bits, class_bits)
         },
         None => -1,
     };
@@ -3459,38 +3460,6 @@ unsafe fn tuple_arg_vec(args: *mut PyObject) -> Option<Vec<*mut PyObject>> {
     Some(items)
 }
 
-unsafe fn prepend_bound_self(self_: *mut PyObject, args: *mut PyObject) -> Option<*mut PyObject> {
-    let len = unsafe { tuple_arg_len(args) }?;
-    let bound_args = unsafe { crate::api::sequences::PyTuple_New(len + 1) };
-    if bound_args.is_null() {
-        return None;
-    }
-    unsafe { crate::api::refcount::Py_INCREF(self_) };
-    if unsafe { crate::api::sequences::PyTuple_SetItem(bound_args, 0, self_) } != 0 {
-        unsafe {
-            crate::api::refcount::Py_DECREF(self_);
-            crate::api::refcount::Py_DECREF(bound_args);
-        }
-        return None;
-    }
-    for index in 0..len {
-        let item = unsafe { tuple_arg_item(args, index) };
-        if item.is_null() {
-            unsafe { crate::api::refcount::Py_DECREF(bound_args) };
-            return None;
-        }
-        unsafe { crate::api::refcount::Py_INCREF(item) };
-        if unsafe { crate::api::sequences::PyTuple_SetItem(bound_args, index + 1, item) } != 0 {
-            unsafe {
-                crate::api::refcount::Py_DECREF(item);
-                crate::api::refcount::Py_DECREF(bound_args);
-            }
-            return None;
-        }
-    }
-    Some(bound_args)
-}
-
 pub unsafe extern "C" fn molt_cfunction_call(
     callable: *mut PyObject,
     args: *mut PyObject,
@@ -3499,12 +3468,49 @@ pub unsafe extern "C" fn molt_cfunction_call(
     if unsafe { runtime_call_authority(callable, false) } {
         return unsafe { call_managed_callable(callable, args, kwargs) };
     }
-    // Always use the same tuple/dict-to-vector adapter as PyObject_Call.
-    // Calling the slot directly must not bypass convention or result checks.
-    unsafe { vectorcall_call_with_tuple(molt_cfunction_vectorcall, callable, args, kwargs) }
+    if unsafe { PyCFunction_Check(callable) } == 0 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    }
+    let cfunc = callable.cast::<PyCFunctionObject>();
+    let Some(method) = (unsafe { (*cfunc).m_ml.as_ref() }) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    };
+    let (Some(convention), Some(target)) = (
+        crate::api::cfunction::CFunctionConvention::from_flags(method.ml_flags),
+        method.ml_meth,
+    ) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    };
+    if !convention.uses_tuple_arguments() {
+        return unsafe {
+            vectorcall_call_with_tuple(molt_cfunction_vectorcall, callable, args, kwargs)
+        };
+    }
+    let self_ = unsafe { PyCFunction_GetSelf(callable) };
+    let Some(operands) = (unsafe {
+        CallbackOperands::from_tuple_dict([callable, self_, args, kwargs], args, kwargs)
+    }) else {
+        return ptr::null_mut();
+    };
+    let result = unsafe {
+        convention.invoke(
+            target as *const (),
+            self_,
+            ptr::null_mut(),
+            crate::api::cfunction::CFunctionArguments::Mapping {
+                positional: args,
+                keywords: kwargs,
+            },
+            || cfunction_name(cfunc),
+        )
+    };
+    unsafe { operands.complete_result(result, "native callable") }
 }
 
-/// The vectorcall tail of a runtime-defined builtin carrier. The native call
+/// The vectorcall tail of a runtime function or bound-method carrier. The native call
 /// convention adapter is not applicable: no PyMethodDef exists for this value.
 pub(crate) unsafe extern "C" fn molt_runtime_vectorcall(
     callable: *mut PyObject,
@@ -3515,16 +3521,77 @@ pub(crate) unsafe extern "C" fn molt_runtime_vectorcall(
     let Some(values) = (unsafe { vectorcall_argument_span(args, nargsf, kwnames) }) else {
         return ptr::null_mut();
     };
-    let Some(packed) = (unsafe {
-        crate::api::cfunction::TupleDictArguments::from_vector(
-            values,
-            vectorcall_nargs(nargsf) as usize,
-            kwnames,
-        )
-    }) else {
+    if unsafe { crate::bridge::semantic_type(callable) }.is_null() {
+        return ptr::null_mut();
+    }
+    let Some(callable_owner) = (unsafe { crate::bridge::RuntimeValue::acquire(callable) }) else {
         return ptr::null_mut();
     };
-    unsafe { call_managed_callable(callable, packed.tuple, packed.dict) }
+    let positional_count = vectorcall_nargs(nargsf) as usize;
+    let keyword_count = values.len() - positional_count;
+    let Some(total_handles) = values.len().checked_add(keyword_count) else {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return ptr::null_mut();
+    };
+    // RuntimeValue is the existing crossing authority: canonical managed values
+    // are borrowed; temporary foreign wrappers stay owned until dispatch ends.
+    // A flat handle array supplies the stable C hook spans without containers.
+    let mut owners = Vec::new();
+    let mut handles = Vec::new();
+    if handles.try_reserve_exact(total_handles).is_err() {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return ptr::null_mut();
+    }
+    for &value in values {
+        let Some(owner) = (unsafe { crate::bridge::RuntimeValue::acquire(value) }) else {
+            return ptr::null_mut();
+        };
+        handles.push(owner.bits());
+        if let Some(owner) = owner.into_temporary_owner() {
+            if owners.try_reserve(1).is_err() {
+                unsafe { crate::api::errors::PyErr_NoMemory() };
+                return ptr::null_mut();
+            }
+            owners.push(owner);
+        }
+    }
+    for index in 0..keyword_count {
+        let name = unsafe { crate::api::sequences::PyTuple_GetItem(kwnames, index as isize) };
+        if name.is_null() {
+            return ptr::null_mut();
+        }
+        if unsafe { crate::api::strings::PyUnicode_Check(name) } == 0 {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_TypeError).cast(),
+                    c"keywords must be strings".as_ptr(),
+                )
+            };
+            return ptr::null_mut();
+        }
+        let Some(owner) = (unsafe { crate::bridge::RuntimeValue::acquire(name) }) else {
+            return ptr::null_mut();
+        };
+        handles.push(owner.bits());
+        if let Some(owner) = owner.into_temporary_owner() {
+            if owners.try_reserve(1).is_err() {
+                unsafe { crate::api::errors::PyErr_NoMemory() };
+                return ptr::null_mut();
+            }
+            owners.push(owner);
+        }
+    }
+    let result = unsafe {
+        (hooks_or_stubs().object_vectorcall)(
+            callable_owner.bits(),
+            handles.as_ptr(),
+            positional_count,
+            handles[values.len()..].as_ptr(),
+            keyword_count,
+        )
+    };
+    drop(owners);
+    unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) }
 }
 
 pub unsafe extern "C" fn molt_cfunction_vectorcall(
@@ -3576,11 +3643,13 @@ pub unsafe extern "C" fn molt_cfunction_vectorcall(
             target as *const (),
             self_,
             class,
-            crate::api::cfunction::VectorcallArguments {
-                values,
-                positional_count: vectorcall_nargs(nargsf) as usize,
-                kwnames,
-            },
+            crate::api::cfunction::CFunctionArguments::Vector(
+                crate::api::cfunction::VectorcallArguments {
+                    values,
+                    positional_count: vectorcall_nargs(nargsf) as usize,
+                    kwnames,
+                },
+            ),
             || cfunction_name(cfunc),
         )
     };
@@ -3651,30 +3720,57 @@ pub unsafe extern "C" fn molt_cfunction_dealloc(op: *mut PyObject) {
     }
 }
 
-pub unsafe extern "C" fn molt_method_call(
+/// CPython method_vectorcall: borrow the caller's scratch slot when offered,
+/// otherwise prepend self in bounded stack storage or one fallible spill.
+/// The underlying callable's public vector boundary owns native publication.
+pub(crate) unsafe extern "C" fn molt_method_vectorcall(
     callable: *mut PyObject,
-    args: *mut PyObject,
-    kwargs: *mut PyObject,
+    args: *mut *mut PyObject,
+    nargsf: usize,
+    kwnames: *mut PyObject,
 ) -> *mut PyObject {
-    if callable.is_null() {
+    if unsafe { PyMethod_Check(callable) } == 0 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
+    let Some(values) = (unsafe { vectorcall_argument_span(args, nargsf, kwnames) }) else {
+        return ptr::null_mut();
+    };
     let method = callable.cast::<PyMethodObject>();
     let func = unsafe { (*method).im_func };
     let self_ = unsafe { (*method).im_self };
-    if func.is_null() {
+    if func.is_null() || self_.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
-    if self_.is_null() {
-        return unsafe { PyObject_Call(func, args, kwargs) };
+    let positional = vectorcall_nargs(nargsf) as usize;
+    if nargsf & PY_VECTORCALL_ARGUMENTS_OFFSET != 0 {
+        let scratch = unsafe { args.sub(1) };
+        let saved = unsafe { *scratch };
+        unsafe { *scratch = self_ };
+        let result = unsafe { PyObject_Vectorcall(func, scratch, positional + 1, kwnames) };
+        unsafe { *scratch = saved };
+        return result;
     }
-    let bound_args = match unsafe { prepend_bound_self(self_, args) } {
-        Some(bound_args) => bound_args,
-        None => return ptr::null_mut(),
+    let Some(total) = values.len().checked_add(1) else {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return ptr::null_mut();
     };
-    let result = unsafe { PyObject_Call(func, bound_args, kwargs) };
-    unsafe { crate::api::errors::release_preserving_error(&[bound_args]) };
-    result
+    let mut inline = [ptr::null_mut(); 8];
+    let mut spill = Vec::new();
+    let arguments = if total <= inline.len() {
+        &mut inline[..total]
+    } else {
+        if spill.try_reserve_exact(total).is_err() {
+            unsafe { crate::api::errors::PyErr_NoMemory() };
+            return ptr::null_mut();
+        }
+        spill.resize(total, ptr::null_mut());
+        spill.as_mut_slice()
+    };
+    arguments[0] = self_;
+    arguments[1..].copy_from_slice(values);
+    unsafe { PyObject_Vectorcall(func, arguments.as_mut_ptr(), positional + 1, kwnames) }
 }
 
 pub unsafe extern "C" fn molt_method_dealloc(op: *mut PyObject) {
@@ -3683,8 +3779,9 @@ pub unsafe extern "C" fn molt_method_dealloc(op: *mut PyObject) {
     }
     let method = op.cast::<PyMethodObject>();
     unsafe {
-        crate::api::refcount::Py_XDECREF((*method).im_func);
-        crate::api::refcount::Py_XDECREF((*method).im_self);
+        let function = std::mem::replace(&mut (*method).im_func, ptr::null_mut());
+        let receiver = std::mem::replace(&mut (*method).im_self, ptr::null_mut());
+        crate::api::errors::release_preserving_error(&[function, receiver]);
         drop(Box::from_raw(method));
     }
 }
@@ -3764,7 +3861,7 @@ pub unsafe extern "C" fn PyCMethod_New(
             unsafe { std::ffi::CStr::from_ptr(method.ml_name) }.to_bytes()
         };
         let bits = unsafe {
-            (hooks_or_stubs().register_c_function)(
+            hooks_or_stubs().register_c_function(
                 target as *const () as usize as u64,
                 method.ml_flags,
                 self_owner
@@ -3803,7 +3900,13 @@ pub unsafe extern "C" fn PyCMethod_New(
         m_self: self_,
         m_module: module,
         m_weakreflist: ptr::null_mut(),
-        vectorcall: Some(molt_cfunction_vectorcall),
+        // CPython's tuple-based C conventions have no vectorcall slot.
+        // PyObject_Call therefore preserves the caller's original mapping.
+        vectorcall: if convention.uses_tuple_arguments() {
+            None
+        } else {
+            Some(molt_cfunction_vectorcall)
+        },
     };
     if let Some(bits) = handle {
         // A runtime-backed callable is a canonical managed view: its physical
@@ -3847,8 +3950,37 @@ unsafe fn cfunction_construction_error() -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMethod_New(func: *mut PyObject, self_: *mut PyObject) -> *mut PyObject {
-    if func.is_null() {
+    if func.is_null() || self_.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
+    }
+    if crate::hooks::method_construction_available() {
+        let Some(function) = (unsafe { crate::bridge::RuntimeValue::acquire(func) }) else {
+            return ptr::null_mut();
+        };
+        let Some(receiver) = (unsafe { crate::bridge::RuntimeValue::acquire(self_) }) else {
+            return ptr::null_mut();
+        };
+        let result =
+            unsafe { crate::hooks::hooks_or_stubs().method_new(function.bits(), receiver.bits()) };
+        let method = unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) };
+        if method.is_null() {
+            return method;
+        }
+        let Some(bits) = GLOBAL_BRIDGE.managed_handle_for_pyobj(method) else {
+            unsafe {
+                crate::api::errors::release_preserving_error(&[method]);
+                crate::api::errors::PyErr_BadInternalCall();
+            }
+            return ptr::null_mut();
+        };
+        if !GLOBAL_BRIDGE.refresh_method_view_with_origins(bits, Some([func, self_])) {
+            unsafe {
+                crate::api::errors::release_preserving_error(&[method]);
+            }
+            return ptr::null_mut();
+        }
+        return method;
     }
     unsafe {
         crate::api::refcount::Py_INCREF(func);
@@ -3861,6 +3993,8 @@ pub unsafe extern "C" fn PyMethod_New(func: *mut PyObject, self_: *mut PyObject)
         },
         im_func: func,
         im_self: self_,
+        im_weakreflist: ptr::null_mut(),
+        vectorcall: Some(molt_method_vectorcall),
     });
     Box::into_raw(obj).cast::<PyObject>()
 }
@@ -3918,7 +4052,7 @@ unsafe fn checked_native_cfunction(op: *mut PyObject) -> Option<*mut PyCFunction
             unsafe {
                 cfunction_error(
                     (&raw mut crate::abi_types::PyExc_TypeError).cast(),
-                    "runtime-defined builtin has no native C method definition".to_owned(),
+                    "runtime callable has no native C method definition".to_owned(),
                 )
             };
         } else {
@@ -4630,7 +4764,7 @@ fn install_abi_unit_test_native_gc_hooks() {
     INSTALL.call_once(|| {
         let mut hooks = crate::hooks::STUB_HOOKS;
         hooks.runtime_is_initialized = abi_test_runtime_is_initialized;
-        hooks.native_gc_allocate = abi_test_native_gc_allocate;
+        hooks.native_gc_allocate = Some(abi_test_native_gc_allocate);
         hooks.native_gc_track = abi_test_native_gc_track;
         hooks.native_gc_untrack = abi_test_native_gc_untrack;
         hooks.native_gc_deallocate = abi_test_native_gc_deallocate;

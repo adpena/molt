@@ -453,8 +453,10 @@ pub extern "C" fn molt_configparser_new(defaults_bits: u64, interpolation_bits: 
             if let Some(ptr) = obj.as_ptr() {
                 unsafe {
                     if object_type_id(ptr) == TYPE_ID_DICT {
-                        // dict_order returns &mut Vec<u64> of [k0, v0, k1, v1, ...].
-                        let order = dict_order_clone(_py, ptr);
+                        // The snapshot pins insertion-ordered key/value pairs through conversion.
+                        let Some(order) = (dict_snapshot(_py, ptr)) else {
+                            return MoltObject::none().bits();
+                        };
                         for pair in order.chunks(2) {
                             if pair.len() != 2 {
                                 continue;

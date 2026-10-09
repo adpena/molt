@@ -19,7 +19,7 @@ use molt_cpython_abi::api::numbers::{
 };
 use molt_cpython_abi::api::refcount::Py_DECREF;
 use molt_cpython_abi::bridge::{GLOBAL_BRIDGE, PyObjRelease, molt_capi_pyobj_to_handle};
-use molt_cpython_abi::hooks::{INT_BYTES_OK, OwnedHandleResult, STUB_HOOKS};
+use molt_cpython_abi::hooks::{OwnedHandleResult, STUB_HOOKS};
 use molt_cpython_abi::l7_attestation::{
     CALIBRATION_TARGET_NS, MINIMUM_SAMPLE_NS, SAMPLE_COUNT, calibrate_timed_iterations,
     enforce_current_thread_affinity, normalized_affinity_mask, summarize_samples,
@@ -28,7 +28,7 @@ use molt_lang_obj_model::MoltObject;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::ffi::{CString, c_char};
 use std::hint::black_box;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
 unsafe extern "C" {
@@ -46,13 +46,8 @@ static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
 static LIVE_BYTES: AtomicU64 = AtomicU64::new(0);
 static PEAK_LIVE_BYTES: AtomicU64 = AtomicU64::new(0);
 static HOOK_CALLS: AtomicU64 = AtomicU64::new(0);
-static BYTE_WIDTH: AtomicUsize = AtomicUsize::new(0);
 static TRACK_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
 static TRACK_HOOKS: AtomicBool = AtomicBool::new(false);
-static mut BYTE_HEAP_TOKEN: u8 = 0;
-static mut COMPLEX_HEAP_TOKEN: u8 = 0;
-static COMPLEX_REAL_BITS: AtomicU64 = AtomicU64::new(0);
-static COMPLEX_IMAG_BITS: AtomicU64 = AtomicU64::new(0);
 
 struct CountingAllocator;
 
@@ -159,14 +154,15 @@ unsafe extern "C" fn counted_from_bytes(
     _signed: i32,
 ) -> u64 {
     count_hook();
-    BYTE_WIDTH.store(len, Ordering::Relaxed);
-    if data.is_null() && len != 0 {
+    if data.is_null() || len == 0 {
         return 0;
     }
-    if len != 0 {
-        black_box(unsafe { *data.add(len - 1) });
-    }
-    MoltObject::from_ptr(&raw mut BYTE_HEAP_TOKEN).bits()
+    // This measured control deliberately models only the asserted input family.
+    // The fixture owner has real reference transitions; payload work stays out
+    // of the real-runtime BigInt measurement family.
+    assert_eq!(unsafe { *data }, 0xa5);
+    assert_eq!(unsafe { *data.add(len - 1) }, 0xa5);
+    support::fake_runtime::pattern_integer(0xa5, len)
 }
 
 unsafe extern "C" fn counted_i64_checked(_bits: u64, _out: *mut i64) -> i32 {
@@ -179,7 +175,13 @@ unsafe extern "C" fn counted_u64_checked(_bits: u64, _out: *mut u64) -> i32 {
     -1
 }
 
-unsafe extern "C" fn counted_binary(op: u32, _left: u64, _right: u64) -> OwnedHandleResult {
+unsafe extern "C" fn counted_binary(
+    op: u32,
+    mode: u32,
+    _left: u64,
+    _right: u64,
+) -> OwnedHandleResult {
+    assert_eq!(mode, 0, "ordinary numeric caller must not request mutation");
     count_hook();
     match op {
         op if op == molt_cpython_abi::hooks::NumberBinaryOp::Add as u32 => {
@@ -193,92 +195,83 @@ unsafe extern "C" fn counted_binary(op: u32, _left: u64, _right: u64) -> OwnedHa
 }
 
 unsafe extern "C" fn counted_to_bytes(
-    _bits: u64,
+    bits: u64,
     data: *mut u8,
     len: usize,
-    _little_endian: i32,
-    _signed: i32,
+    little: i32,
+    signed: i32,
 ) -> i32 {
     count_hook();
-    if data.is_null() && len != 0 {
-        return -1;
-    }
-    if len != 0 {
-        let payload_len = BYTE_WIDTH.load(Ordering::Relaxed).min(len);
-        unsafe {
-            std::ptr::write_bytes(data, 0xa5, payload_len);
-            std::ptr::write_bytes(data.add(payload_len), 0, len - payload_len);
-        }
-    }
-    INT_BYTES_OK
+    unsafe { support::fake_runtime::int_to_bytes(bits, data, len, little, signed) }
 }
-
-unsafe extern "C" fn counted_num_bits(_bits: u64, out: *mut usize) -> i32 {
+unsafe extern "C" fn counted_num_bits(bits: u64, out: *mut usize) -> i32 {
     count_hook();
-    if out.is_null() {
-        return -1;
-    }
-    unsafe { *out = BYTE_WIDTH.load(Ordering::Relaxed).saturating_mul(8) };
-    0
+    unsafe { support::fake_runtime::int_num_bits(bits, out) }
 }
-
 unsafe extern "C" fn counted_int_sign(bits: u64) -> i32 {
     count_hook();
-    let byte_token = MoltObject::from_ptr(&raw mut BYTE_HEAP_TOKEN).bits();
-    i32::from(bits == byte_token)
+    unsafe { support::fake_runtime::int_sign(bits) }
 }
-
 unsafe extern "C" fn counted_complex_from_doubles(real: f64, imag: f64) -> OwnedHandleResult {
     count_hook();
-    COMPLEX_REAL_BITS.store(real.to_bits(), Ordering::Relaxed);
-    COMPLEX_IMAG_BITS.store(imag.to_bits(), Ordering::Relaxed);
-    OwnedHandleResult::ok(MoltObject::from_ptr(&raw mut COMPLEX_HEAP_TOKEN).bits())
+    OwnedHandleResult::ok(support::fake_runtime::heap_complex(real, imag))
 }
-
 unsafe extern "C" fn counted_complex_parts(bits: u64, real: *mut f64, imag: *mut f64) -> i32 {
     count_hook();
-    let token = MoltObject::from_ptr(&raw mut COMPLEX_HEAP_TOKEN).bits();
-    if bits != token || real.is_null() || imag.is_null() {
-        return -1;
-    }
-    unsafe {
-        *real = f64::from_bits(COMPLEX_REAL_BITS.load(Ordering::Relaxed));
-        *imag = f64::from_bits(COMPLEX_IMAG_BITS.load(Ordering::Relaxed));
-    }
-    0
+    unsafe { support::fake_complex::parts(bits, real, imag) }
 }
-
 unsafe extern "C" fn counted_classify(bits: u64) -> u8 {
     count_hook();
-    let byte_token = MoltObject::from_ptr(&raw mut BYTE_HEAP_TOKEN).bits();
-    let complex_token = MoltObject::from_ptr(&raw mut COMPLEX_HEAP_TOKEN).bits();
-    if bits == byte_token {
-        molt_cpython_abi::abi_types::MoltTypeTag::Int as u8
-    } else if bits == complex_token {
-        molt_cpython_abi::abi_types::MoltTypeTag::Complex as u8
-    } else {
-        molt_cpython_abi::abi_types::MoltTypeTag::Other as u8
+    unsafe { support::fake_runtime::classify_heap(bits) }
+}
+unsafe extern "C" fn counted_inc_ref(bits: u64) {
+    count_hook();
+    if support::fake_runtime::contains(bits) {
+        unsafe { support::fake_runtime::inc_ref(bits) };
     }
 }
-
-unsafe extern "C" fn counted_inc_ref(_bits: u64) {
-    count_hook();
-}
-
 unsafe extern "C" fn counted_dec_ref(bits: u64) {
     count_hook();
-    // The boundary-control hook has no backing runtime allocator. Mirror the
-    // real terminal runtime path: once c_ref_zero delegates the last heap hold,
-    // finalization is vacuous and deferred retirement removes canonical
-    // identity before releasing its projection-owned C edges.
-    if MoltObject::from_bits(bits).is_ptr() {
+    if support::fake_runtime::contains(bits) {
+        unsafe { support::fake_runtime::dec_ref(bits) };
+    } else if MoltObject::from_bits(bits).is_ptr() {
+        // The existing nonnumeric proxy control has only Box-backed identity,
+        // no runtime payload. Keep its explicit terminal projection witness.
         drop(GLOBAL_BRIDGE.retire_runtime_object_deferred(bits));
+    }
+}
+unsafe extern "C" fn counted_ref_count(bits: u64) -> usize {
+    count_hook();
+    unsafe { support::fake_runtime::ref_count(bits) }
+}
+unsafe extern "C" fn counted_numeric_new(bits: u64) -> OwnedHandleResult {
+    count_hook();
+    unsafe { support::fake_runtime::numeric_identity_new(bits) }
+}
+
+unsafe extern "C" fn counted_mark(bits: u64, present: i32) -> i32 {
+    count_hook();
+    if support::fake_runtime::contains(bits) {
+        unsafe { support::fake_runtime::try_mark_abi_view(bits, present) }
+    } else {
+        // The separately labelled Box-backed opaque proxy control has no
+        // runtime payload, and its existing witness drives transitions itself.
+        // Numeric identities never use this branch: their classifier/payload
+        // producer is the shared owner and rejects unregistered numeric handles.
+        i32::from(
+            unsafe { counted_classify(bits) }
+                == molt_cpython_abi::abi_types::MoltTypeTag::Other as u8,
+        )
     }
 }
 
 fn initialize_hooks() {
     molt_cpython_abi_test_support::link();
     let mut hooks = STUB_HOOKS;
+    hooks.try_mark_abi_view = counted_mark;
+    hooks.numeric_identity_new = Some(counted_numeric_new);
+    hooks.float_payload = support::fake_runtime::float_payload;
+    hooks.ref_count = Some(counted_ref_count);
     hooks.int_from_digits = counted_from_digits;
     hooks.int_from_bytes = counted_from_bytes;
     hooks.int_as_i64_checked = counted_i64_checked;
@@ -289,7 +282,7 @@ fn initialize_hooks() {
     hooks.complex_from_doubles = counted_complex_from_doubles;
     hooks.complex_parts = counted_complex_parts;
     hooks.number_binary_op = counted_binary;
-    hooks.classify_heap = counted_classify;
+    hooks.classify_heap = Some(counted_classify);
     hooks.inc_ref = counted_inc_ref;
     hooks.dec_ref = counted_dec_ref;
     support::prepare_abi_test_thread(hooks);

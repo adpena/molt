@@ -126,9 +126,9 @@ use crate::{
     bytearray_len, bytearray_vec_ptr, code_filename_bits, code_name_bits, code_names_bits,
     code_varnames_bits, contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
-    contextlib_asyncgen_exit_poll_fn_addr, dict_hashes_ptr, dict_order_ptr, dict_table_ptr,
+    contextlib_asyncgen_exit_poll_fn_addr, dict_entries_ptr, dict_table_ptr,
     io_wait_detach_resource, io_wait_poll_fn_addr, map_iters_ptr, process_poll_fn_addr,
-    profile_hit, profile_hit_bytes, seq_vec_ptr, set_hashes_ptr, set_order_ptr, set_table_ptr,
+    profile_hit, profile_hit_bytes, seq_vec_ptr, set_entries_ptr, set_table_ptr,
     thread_poll_fn_addr, utf8_cache_remove, weakref_clear_for_ptr, ws_wait_detach_resource,
     zip_iters_ptr,
 };
@@ -2869,16 +2869,8 @@ pub(crate) unsafe fn validate_class_field_offsets(
     field_extent: usize,
 ) -> Result<(), ()> {
     unsafe {
-        let entries = crate::dict_order(offsets_ptr);
-        if !entries.len().is_multiple_of(2) {
-            crate::raise_exception::<()>(
-                _py,
-                "SystemError",
-                "class field-offset map has an incomplete entry",
-            );
-            return Err(());
-        }
-        for (index, pair) in entries.as_chunks::<2>().0.iter().enumerate() {
+        for (index, row) in crate::dict_live_entries(offsets_ptr).enumerate() {
+            let pair = [row.key, row.value];
             let key_is_exact_string = obj_from_bits(pair[0]).as_ptr().is_some_and(|key| {
                 object_type_id(key) == TYPE_ID_STRING
                     && (object_class_bits(key) == 0
@@ -2925,11 +2917,9 @@ pub(crate) unsafe fn validate_class_field_offsets(
                 );
                 return Err(());
             }
-            if entries[..index * 2]
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .any(|prior| obj_from_bits(prior[1]).as_int() == Some(offset as i64))
+            if crate::dict_live_entries(offsets_ptr)
+                .take(index)
+                .any(|prior| obj_from_bits(prior.value).as_int() == Some(offset as i64))
             {
                 crate::raise_exception::<()>(
                     _py,
@@ -4334,9 +4324,8 @@ unsafe fn dec_ref_ptr_terminal(
                 }
                 Some(HeapDropPolicy::List) => drop_detached_tracked_vec(seq_vec_ptr(ptr)),
                 Some(HeapDropPolicy::Dict) => {
-                    drop_detached_tracked_vec(dict_order_ptr(ptr));
+                    drop_detached_tracked_vec(dict_entries_ptr(ptr));
                     drop_detached_tracked_vec(dict_table_ptr(ptr));
-                    drop_detached_tracked_vec(dict_hashes_ptr(ptr));
                 }
                 Some(HeapDropPolicy::ListBuilder) => {
                     drop_detached_linear_builder_vec(ptr);
@@ -4345,9 +4334,8 @@ unsafe fn dec_ref_ptr_terminal(
                     drop_detached_tracked_vec(bytearray_vec_ptr(ptr))
                 }
                 Some(HeapDropPolicy::Set | HeapDropPolicy::Frozenset) => {
-                    drop_detached_tracked_vec(set_order_ptr(ptr));
+                    drop_detached_tracked_vec(set_entries_ptr(ptr));
                     drop_detached_tracked_vec(set_table_ptr(ptr));
-                    drop_detached_tracked_vec(set_hashes_ptr(ptr));
                 }
                 Some(HeapDropPolicy::Memoryview) => {
                     drop_detached_tracked_vec(memoryview_shape_ptr(ptr));

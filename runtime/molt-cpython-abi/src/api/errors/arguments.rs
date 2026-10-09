@@ -1073,7 +1073,7 @@ fn arg_int_like(obj: &MoltObject, bits: u64) -> Option<i64> {
 /// wrong-typed arg raises TypeError instead of fabricating an empty string.
 fn arg_heap_tag(obj: &MoltObject, bits: u64) -> Option<u8> {
     obj.is_ptr()
-        .then(|| unsafe { (crate::hooks::hooks_or_stubs().classify_heap)(bits) })
+        .then(|| unsafe { crate::hooks::hooks_or_stubs().classify_heap(bits) })
 }
 
 fn arg_is_str(obj: &MoltObject, bits: u64) -> bool {

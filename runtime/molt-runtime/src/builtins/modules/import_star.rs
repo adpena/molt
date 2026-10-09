@@ -46,7 +46,13 @@ pub(super) fn import_star(py: &PyToken<'_>, source: u64, destination: u64) -> u6
         } else {
             // Snapshot keys before invoking arbitrary attribute callbacks. This
             // also preserves source==destination and partial namespace writes.
-            let keys: Vec<u64> = dict_order(src_dict).iter().step_by(2).copied().collect();
+            let Some(keys) = crate::object::ops_dict::dict_snapshot(
+                py,
+                src_dict,
+                crate::object::ops_dict::DictSnapshotKind::Keys,
+            ) else {
+                return none;
+            };
             let ptr = alloc_tuple(py, &keys);
             if ptr.is_null() {
                 return none;

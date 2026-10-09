@@ -492,7 +492,7 @@ def test_sdk_identity_roundtrip_reuses_only_complete_current_closure(
         }[mutation]
         path.write_bytes((path.read_bytes() if path.exists() else b"") + b"changed")
     else:
-        record = json.loads(record_path.read_text())
+        record = json.loads(record_path.read_text(encoding="utf-8"))
         identity = record["identity"]
         closure = identity["wasi_sdk"]
         if mutation == "missing-closure":
@@ -523,7 +523,7 @@ def test_sdk_identity_roundtrip_reuses_only_complete_current_closure(
             del closure["receipt"]["path"]
         elif mutation == "substituted-receipt":
             unrelated = tmp_path / "another-receipt.json"
-            unrelated.write_text("{}")
+            unrelated.write_text("{}", encoding="utf-8")
             closure["receipt"] = command_identity._file_identity(unrelated)
         elif mutation == "substituted-sdk":
             closure["sdk"] = str(tmp_path / "foreign" / "sdk")
@@ -535,7 +535,7 @@ def test_sdk_identity_roundtrip_reuses_only_complete_current_closure(
             pytest.fail(f"unhandled independent mutation {mutation}")
         identity.pop("identity_sha256")
         identity["identity_sha256"] = command_identity.canonical_json_sha256(identity)
-        record_path.write_text(json.dumps(record))
+        record_path.write_text(json.dumps(record), encoding="utf-8")
         with pytest.raises(ValueError, match="SDK"):
             command_identity._validate_toolchain_identity(plan, "wasi-clang", identity)
     if file_mutation:
@@ -565,12 +565,12 @@ def test_native_identity_rejects_extra_sdk_closure_even_with_valid_digest(tmp_pa
     reuse_root = tmp_path / "reuse"
     first, telemetry = _identity(tmp_path, reuse_root)
     record_path = Path(telemetry[0]["record"])
-    record = json.loads(record_path.read_text())
+    record = json.loads(record_path.read_text(encoding="utf-8"))
     identity = record["identity"]
     identity["wasi_sdk"] = {}
     identity.pop("identity_sha256")
     identity["identity_sha256"] = command_identity.canonical_json_sha256(identity)
-    record_path.write_text(json.dumps(record))
+    record_path.write_text(json.dumps(record), encoding="utf-8")
     with pytest.raises(ValueError, match="SDK closure differs"):
         command_identity._validate_toolchain_identity(
             proof_plan.ProofPlan.load(), "git", identity

@@ -21,7 +21,19 @@ fn test_hooks_or_stubs_returns_stubs() {
     let h = hooks_or_stubs();
     // The test transaction changes only lifecycle custody. All object hooks
     // retain the fail-closed stub behavior verified below.
-    let str_bits = unsafe { (h.alloc_str)(b"hello".as_ptr(), 5) };
+    assert!(matches!(
+        unsafe { h.numeric_identity_new(molt_lang_obj_model::MoltObject::from_int(1000).bits()) }
+            .decode(),
+        DecodedHandleResult::Error
+    ));
+    let mut payload = 99.0;
+    assert_eq!(unsafe { (h.float_payload)(0, &raw mut payload) }, -1);
+    assert_eq!(
+        payload, 99.0,
+        "refused extraction must not publish a payload"
+    );
+
+    let str_bits = unsafe { h.alloc_str(b"hello".as_ptr(), 5) };
     assert_eq!(str_bits, 0);
 
     let bytes_bits = unsafe { (h.alloc_bytes)(b"data".as_ptr(), 4) };
@@ -39,7 +51,7 @@ fn test_hooks_or_stubs_returns_stubs() {
     let list_bits = unsafe { (h.alloc_list)() };
     assert_eq!(list_bits, 0);
 
-    let tuple_bits = unsafe { (h.alloc_tuple)(3) };
+    let tuple_bits = unsafe { h.alloc_tuple(3) };
     assert_eq!(tuple_bits, 0);
 
     assert!(matches!(
@@ -51,8 +63,32 @@ fn test_hooks_or_stubs_returns_stubs() {
         DecodedHandleResult::Error
     ));
 
+    assert!(matches!(
+        unsafe { h.method_new(0, 0) }.decode(),
+        DecodedHandleResult::Error
+    ));
+    for part in [
+        molt_cpython_abi::hooks::MethodPart::Function,
+        molt_cpython_abi::hooks::MethodPart::Receiver,
+    ] {
+        assert!(matches!(
+            unsafe { (h.method_part)(0, part) }.decode(),
+            DecodedHandleResult::Error
+        ));
+    }
     let dict_bits = unsafe { (h.alloc_dict)() };
+
     assert_eq!(dict_bits, 0);
+
+    // A missing runtime must not turn either an empty vector or a malformed
+    // span into an accepted call or attempt to read unavailable operands.
+    for (positional, keywords) in [(0, 0), (1, 0), (0, 1), (usize::MAX, 1)] {
+        assert!(matches!(
+            unsafe { (h.object_vectorcall)(1, ptr::null(), positional, ptr::null(), keywords) }
+                .decode(),
+            DecodedHandleResult::Error
+        ));
+    }
 }
 
 #[test]
@@ -75,14 +111,14 @@ fn test_stub_tuple_operations() {
     init();
     let h = hooks_or_stubs();
 
-    let len = unsafe { (h.tuple_len)(0) };
+    let len = unsafe { h.tuple_len(0) };
     assert_eq!(len, 0);
 
-    let item = unsafe { (h.tuple_item)(0, 0) };
+    let item = unsafe { h.tuple_item(0, 0) };
     assert!(matches!(item.decode(), DecodedHandleResult::Error));
 
     assert!(matches!(
-        unsafe { (h.tuple_set)(0, 0, 0, std::ptr::null_mut()) }.decode(),
+        unsafe { h.tuple_set(0, 0, 0, std::ptr::null_mut()) }.decode(),
         DecodedHandleResult::Error
     ));
 }
@@ -161,7 +197,7 @@ fn test_stub_buffer_hooks_fail_closed_and_clear_view() {
 fn test_stub_classify_heap() {
     init();
     let h = hooks_or_stubs();
-    let tag = unsafe { (h.classify_heap)(0) };
+    let tag = unsafe { h.classify_heap(0) };
     assert_eq!(tag, molt_cpython_abi::abi_types::MoltTypeTag::Other as u8);
 }
 
@@ -190,7 +226,7 @@ fn test_stub_number_hooks_fail_closed() {
     // Every discriminant must return the typed error status under the stub table.
     for op in 0..12u32 {
         assert!(matches!(
-            unsafe { (h.number_binary_op)(op, 1, 2) }.decode(),
+            unsafe { (h.number_binary_op)(op, 0, 1, 2) }.decode(),
             DecodedHandleResult::Error
         ));
     }
@@ -201,11 +237,11 @@ fn test_stub_number_hooks_fail_closed() {
         ));
     }
     assert!(matches!(
-        unsafe { (h.number_power)(2, 3, 0) }.decode(),
+        unsafe { (h.number_power)(0, 2, 3, 0) }.decode(),
         DecodedHandleResult::Error
     ));
     assert!(matches!(
-        unsafe { (h.number_power)(2, 3, 5) }.decode(),
+        unsafe { (h.number_power)(0, 2, 3, 5) }.decode(),
         DecodedHandleResult::Error
     ));
 }
@@ -251,4 +287,24 @@ fn test_pyarg_parse_missing_required_arg_fails_closed() {
         "a failed PyArg_ParseTuple must leave an exception set"
     );
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn numeric_mode_and_semantic_target_are_strict_hook_contracts() {
+    use molt_cpython_abi::hooks::{NumberOperationMode, RUNTIME_HOOKS_ABI_VERSION, STUB_HOOKS};
+    assert_eq!(
+        NumberOperationMode::from_abi(0),
+        Some(NumberOperationMode::Normal)
+    );
+    assert_eq!(
+        NumberOperationMode::from_abi(1),
+        Some(NumberOperationMode::InPlace)
+    );
+    for invalid in [2, u32::MAX] {
+        assert_eq!(NumberOperationMode::from_abi(invalid), None);
+    }
+    assert_eq!(unsafe { (STUB_HOOKS.target_python_minor)() }, -1);
+    let mut prior = support::stub_runtime_hooks();
+    prior.abi_version = RUNTIME_HOOKS_ABI_VERSION - 1;
+    assert!(!unsafe { molt_cpython_abi::try_set_runtime_hooks(prior) });
 }

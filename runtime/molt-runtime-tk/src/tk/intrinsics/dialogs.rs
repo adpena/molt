@@ -12,9 +12,9 @@ use super::super::dialogs::{
 };
 use super::super::dialogs::{
     commondialog_is_supported_command, dispatch_commondialog_via_tk_call,
-    filedialog_is_supported_command, parse_commondialog_options, parse_simpledialog_f64,
-    parse_simpledialog_i64, raise_unsupported_commondialog_command,
-    raise_unsupported_filedialog_command,
+    filedialog_is_supported_command, parse_simpledialog_f64, parse_simpledialog_i64,
+    raise_unsupported_commondialog_command, raise_unsupported_filedialog_command,
+    with_commondialog_options,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use super::super::state::TkAppState;
@@ -154,18 +154,18 @@ pub extern "C" fn molt_tk_commondialog_show(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let options = match parse_commondialog_options(_py, handle, options_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
+        match with_commondialog_options(_py, handle, options_bits, |options| {
+            if !commondialog_is_supported_command(command.as_str()) {
+                return raise_unsupported_commondialog_command(_py, handle, command.as_str());
+            }
 
-        if !commondialog_is_supported_command(command.as_str()) {
-            return raise_unsupported_commondialog_command(_py, handle, command.as_str());
-        }
-
-        match dispatch_commondialog_via_tk_call(_py, handle, &_master_path, &command, &options) {
-            Ok(bits) => bits,
-            Err(bits) => bits,
+            match dispatch_commondialog_via_tk_call(_py, handle, &_master_path, &command, &options)
+            {
+                Ok(bits) => bits,
+                Err(bits) => bits,
+            }
+        }) {
+            Ok(bits) | Err(bits) => bits,
         }
     })
 }
@@ -197,19 +197,19 @@ pub extern "C" fn molt_tk_messagebox_show(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let options = match parse_commondialog_options(_py, handle, options_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        match dispatch_commondialog_via_tk_call(
-            _py,
-            handle,
-            &master_path,
-            "tk_messageBox",
-            &options,
-        ) {
-            Ok(bits) => bits,
-            Err(bits) => bits,
+        match with_commondialog_options(_py, handle, options_bits, |options| {
+            match dispatch_commondialog_via_tk_call(
+                _py,
+                handle,
+                &master_path,
+                "tk_messageBox",
+                &options,
+            ) {
+                Ok(bits) => bits,
+                Err(bits) => bits,
+            }
+        }) {
+            Ok(bits) | Err(bits) => bits,
         }
     })
 }
@@ -249,13 +249,13 @@ pub extern "C" fn molt_tk_filedialog_show(
         if !filedialog_is_supported_command(command.as_str()) {
             return raise_unsupported_filedialog_command(_py, handle, command.as_str());
         }
-        let options = match parse_commondialog_options(_py, handle, options_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        match dispatch_commondialog_via_tk_call(_py, handle, &master_path, &command, &options) {
-            Ok(bits) => bits,
-            Err(bits) => bits,
+        match with_commondialog_options(_py, handle, options_bits, |options| {
+            match dispatch_commondialog_via_tk_call(_py, handle, &master_path, &command, &options) {
+                Ok(bits) => bits,
+                Err(bits) => bits,
+            }
+        }) {
+            Ok(bits) | Err(bits) => bits,
         }
     })
 }

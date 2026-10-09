@@ -1415,6 +1415,122 @@ fn c_api_dict_extended_operations() {
 }
 
 #[test]
+fn c_api_frozenset_unique_construction_preserves_observed_hash() {
+    use molt_cpython_abi::api::{refcount::OwnedPyObject, sequences, typeobj};
+
+    let _guard = CApiTestGuard::new();
+    crate::cpython_abi_hooks::register_cpython_hooks();
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            let frozen =
+                OwnedPyObject::from_owned(sequences::PyFrozenSet_New(std::ptr::null_mut()));
+            assert!(!frozen.as_ptr().is_null());
+            assert_eq!(sequences::PyFrozenSet_CheckExact(frozen.as_ptr()), 1);
+            assert_eq!(sequences::PySet_Size(frozen.as_ptr()), 0);
+            let hash = typeobj::PyObject_Hash(frozen.as_ptr());
+            assert_ne!(hash, -1);
+            let key = OwnedPyObject::from_owned(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .owned_handle_to_pyobj(MoltObject::from_int(7).bits()),
+            );
+            assert!(!key.as_ptr().is_null());
+            assert_eq!(sequences::PySet_Add(frozen.as_ptr(), key.as_ptr()), 0);
+            assert_eq!(sequences::PySet_Size(frozen.as_ptr()), 1);
+            assert_eq!(sequences::PySet_Contains(frozen.as_ptr(), key.as_ptr()), 1);
+            // CPython's PySet_Add accepts the unique under-construction object
+            // and leaves an already observed frozenset hash cached.
+            assert_eq!(typeobj::PyObject_Hash(frozen.as_ptr()), hash);
+            assert!(!exception_pending(_py));
+        }
+    });
+}
+
+static C_API_FROZEN_KEY_HASH_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+unsafe extern "C" fn c_api_frozen_key_hash(
+    _key: *mut molt_cpython_abi::abi_types::PyObject,
+) -> isize {
+    C_API_FROZEN_KEY_HASH_CALLS.fetch_add(1, Ordering::Relaxed);
+    123
+}
+
+#[test]
+fn c_api_frozenset_alias_refusal_precedes_native_key_hash() {
+    use molt_cpython_abi::abi_types::{PyObject, PyType_Slot, PyType_Spec, PyTypeObject};
+    use molt_cpython_abi::api::{errors, refcount::OwnedPyObject, sequences, typeobj};
+    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+
+    let _guard = CApiTestGuard::new();
+    crate::cpython_abi_hooks::register_cpython_hooks();
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            let mut slots = [
+                PyType_Slot {
+                    slot: molt_cpython_abi::type_slots::Py_tp_hash,
+                    pfunc: c_api_frozen_key_hash as *const () as *mut std::ffi::c_void,
+                },
+                PyType_Slot {
+                    slot: 0,
+                    pfunc: std::ptr::null_mut(),
+                },
+            ];
+            let mut spec = PyType_Spec {
+                name: c"tests.FrozenConstructionKey".as_ptr(),
+                basicsize: std::mem::size_of::<PyObject>() as i32,
+                itemsize: 0,
+                flags: 0,
+                slots: slots.as_mut_ptr(),
+            };
+            let class = OwnedPyObject::from_owned(typeobj::PyType_FromSpec(&raw mut spec));
+            assert!(!class.as_ptr().is_null());
+            let key = OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+                class.as_ptr().cast::<PyTypeObject>(),
+                0,
+            ));
+            assert!(!key.as_ptr().is_null());
+            C_API_FROZEN_KEY_HASH_CALLS.store(0, Ordering::Relaxed);
+            assert_eq!(typeobj::PyObject_Hash(key.as_ptr()), 123);
+            assert_eq!(C_API_FROZEN_KEY_HASH_CALLS.load(Ordering::Relaxed), 1);
+
+            for runtime_alias in [false, true] {
+                let frozen =
+                    OwnedPyObject::from_owned(sequences::PyFrozenSet_New(std::ptr::null_mut()));
+                assert!(!frozen.as_ptr().is_null());
+                let bits = GLOBAL_BRIDGE
+                    .managed_handle_for_pyobj(frozen.as_ptr())
+                    .unwrap();
+                let c_alias = if runtime_alias {
+                    inc_ref_bits(_py, bits);
+                    None
+                } else {
+                    Some(OwnedPyObject::from_borrowed(frozen.as_ptr()))
+                };
+                C_API_FROZEN_KEY_HASH_CALLS.store(0, Ordering::Relaxed);
+                assert_eq!(sequences::PySet_Add(frozen.as_ptr(), key.as_ptr()), -1);
+                assert_eq!(C_API_FROZEN_KEY_HASH_CALLS.load(Ordering::Relaxed), 0);
+                assert_eq!(
+                    errors::PyErr_ExceptionMatches(
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast(),
+                    ),
+                    1
+                );
+                errors::PyErr_Clear();
+                assert_eq!(sequences::PySet_Size(frozen.as_ptr()), 0);
+                if runtime_alias {
+                    dec_ref_bits(_py, bits);
+                }
+                drop(c_alias);
+                // Releasing either kind of actual alias restores admission.
+                assert_eq!(sequences::PySet_Add(frozen.as_ptr(), key.as_ptr()), 0);
+                assert_eq!(C_API_FROZEN_KEY_HASH_CALLS.load(Ordering::Relaxed), 1);
+                assert_eq!(sequences::PySet_Size(frozen.as_ptr()), 1);
+                assert!(!exception_pending(_py));
+            }
+        }
+    });
+}
+
+#[test]
 fn c_api_list_extended_operations() {
     let _guard = CApiTestGuard::new();
     let list = PyList_New(0);

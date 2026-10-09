@@ -1321,13 +1321,7 @@ pub extern "C" fn molt_hash_builtin(val: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_hash(val: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(val);
-        let hash = if let Some(ptr) = obj.as_ptr() {
-            hash_pointer(ptr as u64)
-        } else {
-            hash_pointer(val)
-        };
-        int_bits_from_i64(_py, hash)
+        int_bits_from_i64(_py, crate::object::ops_hash::identity_hash(val))
     })
 }
 

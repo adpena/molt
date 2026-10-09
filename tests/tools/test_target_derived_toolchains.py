@@ -690,7 +690,7 @@ def test_wasi_readiness_never_adopts_ambient_header_tree(
     ambient = tmp_path / "ambient"
     (ambient / "wasi-sdk/share/wasi-sysroot/include").mkdir(parents=True)
     (ambient / "wasi-sdk/share/wasi-sysroot/include/errno.h").write_text(
-        "#define EINVAL 22\n"
+        "#define EINVAL 22\n", encoding="utf-8"
     )
     monkeypatch.setenv(ambient_key, str(ambient))
     monkeypatch.setattr(
@@ -708,7 +708,7 @@ def test_wasi_standalone_sysroot_cannot_replace_selected_sdk(tmp_path, selector)
     install = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
     foreign = tmp_path / "foreign"
     (foreign / "include").mkdir(parents=True)
-    (foreign / "include/errno.h").write_text("#define EINVAL 22\n")
+    (foreign / "include/errno.h").write_text("#define EINVAL 22\n", encoding="utf-8")
     with pytest.raises(ValueError, match="differs|conflict"):
         wasm_link_inputs.resolve_wasi_sysroot(
             env={"WASI_SDK_PATH": str(install.sdk), selector: str(foreign)}

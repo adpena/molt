@@ -226,13 +226,7 @@ fn raw_c_generic_mutation_roundtrips_name_subclass_identity_and_hash() {
                     Some(value_bits)
                 );
                 assert_eq!(crate::dict_get_in_place(py, dictionary, spelling), None);
-                assert!(
-                    crate::dict_order(dictionary)
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .any(|&[key, _]| key == name)
-                );
+                assert!(crate::dict_live_entries(dictionary).any(|row| row.key == name));
                 let read = object::PyObject_GenericGetAttr(view, name_view);
                 assert_eq!(take_bits(read), value_bits);
                 assert_eq!(
@@ -362,15 +356,13 @@ fn managed_type_defaults_canonicalize_names_without_projection() {
                     crate::dict_get_in_place(py, dictionary, spelling),
                     Some(MoltObject::from_int(31).bits())
                 );
-                let key = crate::dict_order(dictionary)
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .find(|pair| {
-                        crate::string_obj_to_owned(obj_from_bits(pair[0])).as_deref()
+                let key = crate::dict_live_entries(dictionary)
+                    .find(|row| {
+                        crate::string_obj_to_owned(obj_from_bits(row.key)).as_deref()
                             == Some("mutation_name_identity")
                     })
-                    .expect("stored class key")[0];
+                    .expect("stored class key")
+                    .key;
                 assert_eq!(crate::type_of_bits(py, key), crate::builtin_classes(py).str);
                 assert_ne!(key, name);
                 assert!(!GLOBAL_BRIDGE.type_has_projection(class));

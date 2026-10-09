@@ -39,7 +39,7 @@ use molt_runtime_core::prelude::*;
 
 use crate::bridge::{
     alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
-    call_callable1, dec_ref_bits, dict_get_in_place, dict_order_clone, dict_set_in_place,
+    call_callable1, dec_ref_bits, dict_get_in_place, dict_set_in_place, dict_snapshot,
     exception_pending, inc_ref_bits, is_truthy, molt_iter, molt_iter_next, object_type_id,
     raise_exception, seq_snapshot, string_obj_to_owned, to_i64,
 };

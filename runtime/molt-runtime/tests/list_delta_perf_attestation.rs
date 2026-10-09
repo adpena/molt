@@ -158,7 +158,7 @@ fn runtime_item(bits: u64, index: usize) -> Option<u64> {
 }
 
 fn runtime_tuple_item(bits: u64, index: usize) -> Option<u64> {
-    let result = unsafe { (hooks().expect("runtime hooks").tuple_item)(bits, index) };
+    let result = unsafe { hooks().expect("runtime hooks").tuple_item(bits, index) };
     match result.decode() {
         DecodedHandleResult::Ok(item) => Some(item),
         DecodedHandleResult::Missing | DecodedHandleResult::Error => None,
@@ -560,7 +560,7 @@ fn empty_tuple_steady_state_case() -> Value {
             let valid = candidate == empty_pointer
                 && handle_bits(candidate) == Some(empty_bits)
                 && unsafe { PyTuple_GET_SIZE(candidate) } == 0
-                && unsafe { (runtime_hooks.tuple_len)(empty_bits) } == 0;
+                && unsafe { runtime_hooks.tuple_len(empty_bits) } == 0;
             unsafe { Py_DECREF(candidate) };
             u64::from(black_box(valid))
         },
@@ -675,7 +675,7 @@ fn tuple_construction_case(item_pointer: *mut PyObject, item_bits: u64) -> Value
             };
             let fast_items = unsafe { PySequence_Fast_ITEMS(tuple_pointer) };
             let valid = unsafe { PyTuple_GET_SIZE(tuple_pointer) } == LEN as isize
-                && unsafe { (hooks().expect("runtime hooks").tuple_len)(tuple_bits) } == LEN
+                && unsafe { hooks().expect("runtime hooks").tuple_len(tuple_bits) } == LEN
                 && runtime_tuple_item(tuple_bits, 0) == Some(item_bits)
                 && runtime_tuple_item(tuple_bits, LEN - 1) == Some(item_bits)
                 && unsafe { PyTuple_GetItem(tuple_pointer, 0) } == item_pointer

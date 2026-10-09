@@ -51,8 +51,7 @@ pub extern "C" fn molt_types_dynamic_class_attr_init(
         else {
             return MoltObject::none().bits();
         };
-        let Some((_, keywords)) =
-            call_vararg_kwargs(_py, "DynamicClassAttribute.__init__", kwargs_bits)
+        let Some(keywords) = call_vararg_kwargs(_py, "DynamicClassAttribute.__init__", kwargs_bits)
         else {
             return MoltObject::none().bits();
         };
@@ -193,16 +192,16 @@ pub extern "C" fn molt_types_dynamic_class_attr_get(
             else {
                 return MoltObject::none().bits();
             };
-            let Some((_, keywords)) =
+            let Some(keywords) =
                 call_vararg_kwargs(_py, "DynamicClassAttribute.__get__", kwargs_bits)
             else {
                 return MoltObject::none().bits();
             };
-            (positional, keywords)
+            (positional, Some(keywords))
         } else {
             // Descriptor protocol dispatch may call __get__ directly with
             // `(instance, ownerclass)` instead of vararg tuple/dict packing.
-            (vec![args_bits, kwargs_bits], Vec::new())
+            (vec![args_bits, kwargs_bits], None)
         };
         if positional.len() > 2 {
             let msg = format!(
@@ -214,7 +213,9 @@ pub extern "C" fn molt_types_dynamic_class_attr_get(
         let none = MoltObject::none().bits();
         let mut instance_bits = positional.first().copied().unwrap_or(0);
         let mut has_instance = !positional.is_empty();
-        for (key, val_bits) in keywords.iter() {
+        // Packed ingress keeps the canonical keyword snapshot alive through
+        // fget callbacks; direct descriptor ingress has no keyword carrier.
+        for (key, val_bits) in keywords.iter().flat_map(|owned| owned.iter()) {
             match key.as_str() {
                 "instance" => {
                     if has_instance {

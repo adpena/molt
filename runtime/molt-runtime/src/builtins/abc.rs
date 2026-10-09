@@ -6,7 +6,7 @@ use crate::{
     TYPE_ID_DICT, TYPE_ID_TYPE, alloc_bytearray, alloc_bytes, alloc_dict_with_pairs, alloc_list,
     alloc_string, alloc_tuple, attr_name_bits_from_bytes, builtin_classes, call_callable1,
     class_bases_bits, class_bases_vec, class_dict_bits, class_mro_vec, dec_ref_bits,
-    dict_get_in_place, dict_order, exception_pending, inc_ref_bits, int_bits_from_i64, is_truthy,
+    dict_get_in_place, exception_pending, inc_ref_bits, int_bits_from_i64, is_truthy,
     issubclass_bits, maybe_ptr_from_bits, obj_from_bits, object_type_id, raise_exception,
     runtime_state, type_of_bits,
 };
@@ -465,7 +465,17 @@ fn abc_collect_abstractmethods_frozenset(
     if let Some(dict_ptr) = maybe_ptr_from_bits(dict_bits) {
         unsafe {
             if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                let entries = dict_order(dict_ptr).clone();
+                let entries = unsafe {
+                    crate::object::ops_dict::dict_snapshot(
+                        _py,
+                        dict_ptr,
+                        crate::object::ops_dict::DictSnapshotKind::Entries,
+                    )
+                }
+                .ok_or_else(|| {
+                    dec_ref_bits(_py, abstracts_bits);
+                    MoltObject::none().bits()
+                })?;
                 for pair in entries.chunks(2) {
                     if pair.len() < 2 {
                         continue;
@@ -1275,7 +1285,14 @@ fn protocol_collect_own_members(
     if let Some(dict_ptr) = maybe_ptr_from_bits(dict_bits) {
         unsafe {
             if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                let entries = dict_order(dict_ptr).clone();
+                let entries = unsafe {
+                    crate::object::ops_dict::dict_snapshot(
+                        _py,
+                        dict_ptr,
+                        crate::object::ops_dict::DictSnapshotKind::Entries,
+                    )
+                }
+                .ok_or_else(|| MoltObject::none().bits())?;
                 for pair in entries.chunks(2) {
                     if pair.len() < 2 {
                         continue;

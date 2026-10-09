@@ -1717,12 +1717,31 @@ pub(crate) fn bound_method_new(
             return raise_exception::<_>(_py, "TypeError", "bound method expects callable object");
         }
     }
+    allocate_bound_method(_py, func_bits, self_bits, native_binding)
+}
+
+/// Explicit binding preserves an already-bound function and does not apply
+/// descriptor admission. Python MethodType and C PyMethod_New validate their
+/// distinct public policies before reaching this one allocation authority.
+pub(crate) fn explicit_bound_method_new(_py: &PyToken<'_>, func_bits: u64, self_bits: u64) -> u64 {
+    allocate_bound_method(_py, func_bits, self_bits, false)
+}
+
+fn allocate_bound_method(
+    _py: &PyToken<'_>,
+    func_bits: u64,
+    self_bits: u64,
+    native_binding: bool,
+) -> u64 {
     let ptr = alloc_bound_method_obj(_py, func_bits, self_bits);
     if ptr.is_null() {
         MoltObject::none().bits()
     } else {
         let method_bits = {
-            let func_class_bits = unsafe { object_class_bits(func_ptr) };
+            let func_class_bits = obj_from_bits(func_bits)
+                .as_ptr()
+                .map(|ptr| unsafe { object_class_bits(ptr) })
+                .unwrap_or(0);
             if native_binding
                 && let Some(kind) =
                     crate::builtins::functions::native_callable::NativeCallableKind::from_class(
@@ -1735,7 +1754,11 @@ pub(crate) fn bound_method_new(
                 crate::builtins::types::method_class(_py)
             }
         };
-        if method_bits != 0 {
+        if method_bits == 0 || exception_pending(_py) {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return MoltObject::none().bits();
+        }
+        {
             unsafe {
                 let old_bits = object_class_bits(ptr);
                 if old_bits != method_bits

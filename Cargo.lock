@@ -2726,6 +2726,8 @@ dependencies = [
  "libc",
  "molt-lang-cpython-abi",
  "molt-runtime",
+ "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]

@@ -218,3 +218,17 @@ def test_negative_control_reordered_field_changes_offsets() -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+def test_generated_header_pins_physical_bound_method_vector_layout() -> None:
+    gen = _load()
+    text = gen.build()
+    # CPython classobject.h: object head, function, self, weakref head, vector.
+    # Weakref capability is not implied by reserving its required layout field.
+    assert "sizeof(PyMethodObject) == 48u" in text
+    assert "offsetof(PyMethodObject, im_func) == 16u" in text
+    assert "offsetof(PyMethodObject, im_self) == 24u" in text
+    assert "offsetof(PyMethodObject, im_weakreflist) == 32u" in text
+    assert "offsetof(PyMethodObject, vectorcall) == 40u" in text
+    assert "sizeof(PyMethodObject) == 24u" in text
+    assert "offsetof(PyMethodObject, vectorcall) == 20u" in text

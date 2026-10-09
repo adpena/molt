@@ -19,31 +19,22 @@ def resolve_molt_wasm_host_binary(
     """Resolve the host built with the same Cargo profile as the runtime.
 
     ``MOLT_WASM_HOST_BIN`` is the explicit deployment authority.  Otherwise
-    search the selected target directory and the repository target directory;
-    callers that isolate a test target pass it explicitly rather than growing a
-    second locator.
+    select the caller's target directory, CARGO_TARGET_DIR, or the repository
+    target directory, in that order. A missing selected binary never falls
+    through to another build. Relative Cargo target directories are relative to
+    the source root, where callers run Cargo.
     """
     requested = os.environ.get("MOLT_WASM_HOST_BIN", "").strip()
     if requested:
         path = Path(requested).expanduser()
-        return os.fspath(path) if path.is_file() else None
+        return os.fspath(path.absolute()) if path.is_file() else None
 
-    target_dirs: list[Path] = []
-    if target_dir is not None:
-        target_dirs.append(target_dir)
-    configured = os.environ.get("CARGO_TARGET_DIR", "").strip()
-    if configured:
-        target_dirs.append(Path(configured).expanduser())
-    target_dirs.append(root / "target")
-
-    seen: set[str] = set()
-    exe_name = molt_wasm_host_exe_name()
-    for candidate_dir in target_dirs:
-        key = os.path.normcase(os.fspath(candidate_dir.resolve(strict=False)))
-        if key in seen:
-            continue
-        seen.add(key)
-        candidate = candidate_dir / cargo_profile / exe_name
-        if candidate.is_file():
-            return os.fspath(candidate)
-    return None
+    root = root.absolute()
+    if target_dir is None:
+        configured = os.environ.get("CARGO_TARGET_DIR", "").strip()
+        target_dir = Path(configured) if configured else root / "target"
+    target_dir = target_dir.expanduser()
+    if not target_dir.is_absolute():
+        target_dir = root / target_dir
+    candidate = target_dir / cargo_profile / molt_wasm_host_exe_name()
+    return os.fspath(candidate.absolute()) if candidate.is_file() else None

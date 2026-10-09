@@ -377,5 +377,5 @@ fn test_dict_check_on_int_returns_zero() {
 // these stub-only unit tests.
 //
 // PyDict_Next / PyDict_Merge real-iteration teeth (which need a fake dict model
-// whose `dict_entry`/`dict_mutate` hooks conflict with this file's first-wins hook
+// whose `dict_next`/`dict_mutate` hooks conflict with this file's first-wins hook
 // OnceLock) live in their own binary, `tests/test_dict_cursor.rs`.

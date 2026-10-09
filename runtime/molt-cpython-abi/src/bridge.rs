@@ -28,9 +28,9 @@
 use crate::abi_types::{
     MoltManaged_Type, MoltTypeTag, Py_False, Py_None, Py_True, PyAttributeErrorObject,
     PyBaseExceptionGroupObject, PyBaseExceptionObject, PyBaseObject_Type, PyBool_Type,
-    PyCMethodObject, PyImportErrorObject, PyList_Type, PyNameErrorObject, PyOSErrorObject,
-    PyObject, PyStopIterationObject, PySyntaxErrorObject, PySystemExitObject, PyTuple_Type,
-    PyType_Type, PyTypeObject, PyUnicodeErrorObject,
+    PyCFunctionObject, PyCMethodObject, PyImportErrorObject, PyList_Type, PyNameErrorObject,
+    PyOSErrorObject, PyObject, PyStopIterationObject, PySyntaxErrorObject, PySystemExitObject,
+    PyTuple_Type, PyType_Type, PyTypeObject, PyUnicodeErrorObject,
 };
 use molt_lang_obj_model::{ExceptionLayoutKind, MAX_EXCEPTION_TYPED_FIELDS, MoltObject};
 use once_cell::sync::OnceCell;
@@ -52,8 +52,8 @@ mod slice;
 use identity::RawBinding;
 pub use identity::{BridgeIdentity, MoltValueHandle, StaticBindingError};
 pub(crate) use identity::{
-    NumericCarrierKind, NumericCarrierRecord, ResolvedPyObject, RuntimeValue, observe_pyobject,
-    resolve_pyobject, resolved_molt_handle,
+    NumericCarrierKind, NumericCarrierRecord, ResolvedPyObject, RuntimeValue, admit_reference,
+    observe_pyobject, resolve_pyobject, resolved_molt_handle,
 };
 use lifecycle::BridgeLifecycle;
 pub use lifecycle::{
@@ -938,16 +938,33 @@ impl Drop for ManagedTypeAllocation {
     }
 }
 
+/// Physical numeric allocation, owned either by a local construction guard or
+/// by the canonical entry. Runtime references belong to the entry's stable hold,
+/// never to this allocation destructor.
+pub(crate) struct NumericAllocation {
+    pub(crate) pointer: *mut PyObject,
+    pub(crate) kind: NumericCarrierKind,
+}
+
+impl Drop for NumericAllocation {
+    fn drop(&mut self) {
+        unsafe { crate::api::numbers::free_numeric_allocation(self.pointer, self.kind) };
+    }
+}
+
 enum ManagedView {
+    Numeric(NumericAllocation),
     Object(Box<BridgeHeader>),
     /// Concrete `PyCFunctionObject`/`PyCMethodObject` callable layout. A plain
     /// function uses the method allocation with a null `mm_class`, so one
     /// release path owns every C member edge.
     CFunction(Box<UnsafeCell<PyCMethodObject>>),
-    /// Runtime-defined builtin callable: real vectorcall storage at the public
+    /// Runtime function or bound method: real vectorcall storage at the public
     /// callable offset, but no invented native PyMethodDef or C receiver.
     /// Physical MoltManaged_Type keeps native introspection distinct.
-    RuntimeCallable(Box<UnsafeCell<PyCMethodObject>>),
+    RuntimeCallable(Box<UnsafeCell<PyCFunctionObject>>),
+    /// Immutable field mirrors of the canonical runtime method owner.
+    Method(Box<UnsafeCell<crate::abi_types::PyMethodObject>>),
     Type {
         object: ManagedTypeAllocation,
         _name: std::ffi::CString,
@@ -971,9 +988,11 @@ unsafe impl Send for ManagedView {}
 impl ManagedView {
     fn py_obj(&self) -> *mut PyObject {
         match self {
+            Self::Numeric(allocation) => allocation.pointer,
             Self::Object(header) => header.py_obj.get(),
             Self::CFunction(object) => object.get().cast::<PyObject>(),
             Self::RuntimeCallable(object) => object.get().cast::<PyObject>(),
+            Self::Method(object) => object.get().cast::<PyObject>(),
             Self::Type { object, .. } => object.get().cast::<PyObject>(),
             Self::Slice(object) => object.get().cast::<PyObject>(),
             Self::Tuple { allocation, .. } => allocation.py_obj(),
@@ -1055,6 +1074,11 @@ impl ManagedView {
                     visit(pointer, false);
                 }
             },
+            Self::Method(object) => unsafe {
+                let object = object.get();
+                visit(field(&raw mut (*object).im_func, detach), true);
+                visit(field(&raw mut (*object).im_self, detach), true);
+            },
             Self::CFunction(object) => unsafe {
                 let object = object.get();
                 let receiver = field(&raw mut (*object).func.m_self, detach);
@@ -1094,7 +1118,10 @@ impl ManagedView {
                     visit(root, true);
                 }
             },
-            Self::Object(_) | Self::RuntimeCallable(_) | Self::MemoryView { .. } => {}
+            Self::Numeric(_)
+            | Self::Object(_)
+            | Self::RuntimeCallable(_)
+            | Self::MemoryView { .. } => {}
         }
     }
 
@@ -1358,6 +1385,9 @@ pub fn init_tag_table() {
 /// `init_tag_table()` must have been called before first use.
 #[inline]
 pub unsafe fn tag_to_type(tag: MoltTypeTag) -> *mut PyTypeObject {
+    if tag == MoltTypeTag::BoundMethod {
+        return &raw mut crate::abi_types::PyMethod_Type;
+    }
     if tag == MoltTypeTag::Slice {
         return &raw mut crate::abi_types::PySlice_Type;
     }
@@ -1366,7 +1396,7 @@ pub unsafe fn tag_to_type(tag: MoltTypeTag) -> *mut PyTypeObject {
     }
     // Runtime callable storage has a vectorcall tail, not a native C method
     // definition. It shares the generic physical discriminator.
-    let tag = if tag == MoltTypeTag::BuiltinCallable {
+    let tag = if tag == MoltTypeTag::RuntimeCallable {
         MoltTypeTag::Other
     } else {
         tag
@@ -1825,9 +1855,9 @@ pub unsafe extern "C" fn molt_capi_pyobj_to_handle(ptr: *mut PyObject) -> u64 {
     if ptr.is_null() {
         return 0;
     }
-    match GLOBAL_BRIDGE.observed_handle_for_pyobj(ptr) {
-        Some(handle) => handle.bits(),
-        None if matches!(resolve_pyobject(ptr), Some(ResolvedPyObject::Foreign)) => {
+    match observe_pyobject(ptr) {
+        Some(ResolvedPyObject::ManagedMolt(handle)) => handle.bits(),
+        Some(ResolvedPyObject::Foreign) => {
             unsafe {
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_TypeError)
@@ -1852,10 +1882,17 @@ pub unsafe extern "C" fn molt_capi_pyobj_is_bridge_managed(ptr: *mut PyObject) -
 /// Physical `ob_type` remains an honest layout discriminator, not a substitute
 /// for the runtime class of a managed heap value.
 pub(crate) unsafe fn semantic_type(ptr: *mut PyObject) -> *mut PyTypeObject {
-    let Some(resolved) = resolve_pyobject(ptr) else {
+    // Asking for a type does not export a runtime value. A fresh standalone
+    // numeric already owns truthful immutable physical type information; avoid
+    // adopting it merely for Py_TYPE/Check. Managed values still use the live
+    // runtime class edge, including legal __class__ changes.
+    if let Some(handle) = GLOBAL_BRIDGE.molt_handle_for_pyobj(ptr) {
+        return unsafe { semantic_type_for_resolved(ptr, ResolvedPyObject::ManagedMolt(handle)) };
+    }
+    if !identity::admit_reference(ptr) {
         return std::ptr::null_mut();
-    };
-    unsafe { semantic_type_for_resolved(ptr, resolved) }
+    }
+    unsafe { (*ptr).ob_type }
 }
 
 /// The caller owns an admitted observation of this same live pointer. Reuse it
@@ -1967,8 +2004,9 @@ pub unsafe extern "C" fn molt_capi_result_to_pyobj(bits: u64) -> *mut PyObject {
         || obj.is_float()
         || obj.is_ptr()
             && matches!(
-                unsafe { (crate::hooks::hooks_or_stubs().classify_heap)(bits) },
+                unsafe { crate::hooks::hooks_or_stubs().classify_heap(bits) },
                 tag if tag == crate::abi_types::MoltTypeTag::Int as u8
+                    || tag == crate::abi_types::MoltTypeTag::Float as u8
                     || tag == crate::abi_types::MoltTypeTag::Complex as u8
             );
     if scalar {
@@ -1986,19 +2024,15 @@ pub unsafe extern "C" fn molt_capi_result_to_pyobj(bits: u64) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_capi_any_incref(ptr: *mut PyObject) {
-    match resolve_pyobject(ptr) {
-        Some(ResolvedPyObject::ManagedMolt(_)) => unsafe { crate::api::refcount::Py_INCREF(ptr) },
-        Some(ResolvedPyObject::Foreign) => unsafe { crate::api::refcount::Py_INCREF(ptr) },
-        None => {}
+    if identity::admit_reference(ptr) {
+        unsafe { crate::api::refcount::Py_INCREF(ptr) };
     }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_capi_any_decref(ptr: *mut PyObject) {
-    match resolve_pyobject(ptr) {
-        Some(ResolvedPyObject::ManagedMolt(_)) => unsafe { crate::api::refcount::Py_DECREF(ptr) },
-        Some(ResolvedPyObject::Foreign) => unsafe { crate::api::refcount::Py_DECREF(ptr) },
-        None => {}
+    if identity::admit_reference(ptr) {
+        unsafe { crate::api::refcount::Py_DECREF(ptr) };
     }
 }
 

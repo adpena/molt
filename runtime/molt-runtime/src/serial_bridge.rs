@@ -719,14 +719,14 @@ extern "C" fn bridge_alloc_dict_with_pairs(pairs_ptr: *const u64, pairs_len: usi
     })
 }
 
-extern "C" fn bridge_dict_order_clone(
+extern "C" fn bridge_dict_snapshot(
     ptr: *mut u8,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
-    let order = unsafe { crate::builtins::containers::dict_order(ptr) }.clone();
-    let boxed = order.into_boxed_slice();
-    unsafe { crate::resource::bridge_buffer::export_u64_box(boxed, out_ptr, out_len) }
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe { crate::seq_snapshot_bridge::export_dict(_py, ptr, out_ptr, out_len) }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -875,7 +875,7 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     dict_set_in_place: bridge_dict_set_in_place,
     list_len: bridge_list_len,
     seq_snapshot: bridge_seq_snapshot,
-    dict_order_clone: bridge_dict_order_clone,
+    dict_snapshot: bridge_dict_snapshot,
     molt_iter: bridge_molt_iter,
     molt_iter_next: bridge_molt_iter_next,
     raise_not_iterable: bridge_raise_not_iterable,

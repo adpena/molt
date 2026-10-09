@@ -158,7 +158,7 @@ extern "C" fn c_api_test_meth_varargs_keywords(
                 if object_type_id(kwargs_ptr) != TYPE_ID_DICT {
                     return raise_exception::<u64>(_py, "TypeError", "kwargs payload must be dict");
                 }
-                (dict_order(kwargs_ptr).len() / 2) as i64
+                dict_len(kwargs_ptr) as i64
             }
         } else {
             0
@@ -464,14 +464,16 @@ extern "C" fn c_api_test_gc_clear_observes_published_empty(_self_bits: u64) -> u
         let empty = unsafe {
             match crate::object::object_type_id(ptr) {
                 crate::TYPE_ID_DICT => {
-                    (*crate::builtins::containers::dict_order_ptr(ptr)).is_empty()
+                    (*crate::builtins::containers::dict_entries_ptr(ptr)).is_empty()
                         && (*crate::builtins::containers::dict_table_ptr(ptr)).is_empty()
-                        && (*crate::builtins::containers::dict_hashes_ptr(ptr)).is_empty()
+                        && crate::builtins::containers::dict_storage(ptr).live == 0
+                        && crate::builtins::containers::dict_storage(ptr).fill == 0
                 }
                 crate::TYPE_ID_SET | crate::TYPE_ID_FROZENSET => {
-                    (*crate::builtins::containers::set_order_ptr(ptr)).is_empty()
+                    (*crate::builtins::containers::set_entries_ptr(ptr)).is_empty()
                         && (*crate::builtins::containers::set_table_ptr(ptr)).is_empty()
-                        && (*crate::builtins::containers::set_hashes_ptr(ptr)).is_empty()
+                        && crate::builtins::containers::set_storage(ptr).live == 0
+                        && crate::builtins::containers::set_storage(ptr).fill == 0
                 }
                 _ => false,
             }

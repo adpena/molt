@@ -324,16 +324,18 @@ fn pending_cleanup_restores_both_channels_through_nested_callbacks() {
                 });
                 assert_eq!(crate::exception_last_bits_noinc(py), Some(handled));
                 let restored = errors::PyErr_GetRaisedException();
+                let restored_owner = refcount::OwnedPyObject::from_owned(restored);
                 assert_eq!(restored, cleanup_view);
-                refcount::Py_DECREF(restored);
+                drop(restored_owner);
                 crate::record_memory_error_without_allocation(py);
                 "restored"
             });
             assert_eq!(result, "restored");
             assert_eq!(crate::exception_last_bits_noinc(py), Some(runtime));
             let restored = errors::PyErr_GetRaisedException();
+            let restored_owner = refcount::OwnedPyObject::from_owned(restored);
             assert_eq!(restored, original_view);
-            refcount::Py_DECREF(restored);
+            drop(restored_owner);
             assert!(!crate::exception_pending(py));
             assert_eq!(
                 crate::builtins::exceptions::exception_context_active_bits(),
@@ -476,8 +478,9 @@ fn pending_cleanup_restores_both_channels_before_resuming_unwind() {
             assert!(unwind.is_err());
             assert_eq!(crate::exception_last_bits_noinc(py), Some(runtime));
             let restored = errors::PyErr_GetRaisedException();
+            let restored_owner = refcount::OwnedPyObject::from_owned(restored);
             assert_eq!(restored, original_view);
-            refcount::Py_DECREF(restored);
+            drop(restored_owner);
             assert!(!crate::exception_pending(py));
             assert_eq!(
                 crate::builtins::exceptions::exception_context_active_bits(),
@@ -522,8 +525,9 @@ fn pending_cleanup_and_native_snapshot_preserve_emergency_memory_error() {
         drop(denied);
         unsafe {
             let restored = errors::PyErr_GetRaisedException();
+            let restored_owner = refcount::OwnedPyObject::from_owned(restored);
             assert_eq!(restored, original_view);
-            refcount::Py_DECREF(restored);
+            drop(restored_owner);
             assert!(!crate::exception_pending(py));
         }
         dec_ref_bits(py, original);
@@ -542,9 +546,17 @@ unsafe fn assert_c_emergency_is_observable_and_not_consumed(py: &crate::PyToken<
     );
     let (mut kind, mut value, mut traceback) = (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
     unsafe { errors::PyErr_Fetch(&raw mut kind, &raw mut value, &raw mut traceback) };
+    let kind_owner = unsafe { refcount::OwnedPyObject::from_owned(kind) };
+    let value_owner = unsafe { refcount::OwnedPyObject::from_owned(value) };
+    let traceback_owner = unsafe { refcount::OwnedPyObject::from_owned(traceback) };
     assert!(kind.is_null() && value.is_null() && traceback.is_null());
+    drop(kind_owner);
+    drop(value_owner);
+    drop(traceback_owner);
     assert_emergency_pending(py);
-    assert!(unsafe { errors::PyErr_GetRaisedException() }.is_null());
+    let raised = unsafe { refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException()) };
+    assert!(raised.as_ptr().is_null());
+    drop(raised);
     assert_emergency_pending(py);
     assert!(errors::take_current_error().is_none());
     assert_eq!(

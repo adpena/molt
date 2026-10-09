@@ -59,3 +59,17 @@ construction), and `Objects/tupleobject.c` (element-wise rich comparison).
 Architecture witnesses follow the current include graph and source owner.
 Transport forwarding macros are not duplicate local classifiers. Tuple
 write-once exports must remain distinct from checked replacement setters.
+
+Numeric protocol fixtures use `fake_runtime`'s existing reference-counted owner
+for boxed integer, float, and complex values, including payload extraction and
+view admission. C-only construction/layout fixtures may leave numeric ownership
+absent; a semantic crossing must then fail explicitly. Do not use token-only
+heap addresses to claim numeric ownership. `wire_numeric` supplies the complete
+numeric payload/refcount/mark contract, while `wire_sequences` additionally owns
+container edges. Custom comparison or arithmetic fixtures keep independent
+literal oracles over these owned values.
+
+RuntimeHooks absence-selected fields are `Option<callback>`. Fixture overrides
+install `Some(callback)`; absence is `None`, never a function-address comparison.
+The invocation methods select the existing failure callback only for `None`.
+The explicit module table is built at runtime and transports the same schema.

@@ -12,84 +12,17 @@ use molt_cpython_abi::hooks::{
     INT_BYTES_OVERFLOW, NumberBinaryOp, NumberUnaryOp, OwnedHandleResult, STUB_HOOKS,
 };
 use molt_lang_obj_model::MoltObject;
-use std::collections::HashMap;
 use std::ffi::{c_char, c_void};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
 
-static VALUES: OnceLock<Mutex<HashMap<u64, i128>>> = OnceLock::new();
-static STRINGS: OnceLock<Mutex<HashMap<u64, Box<[u8]>>>> = OnceLock::new();
-static BYTES: OnceLock<Mutex<HashMap<u64, Box<[u8]>>>> = OnceLock::new();
-static TUPLES: OnceLock<Mutex<HashMap<u64, Vec<u64>>>> = OnceLock::new();
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 static BINARY_CALLS: AtomicUsize = AtomicUsize::new(0);
 static SYS_GET_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-fn values() -> &'static Mutex<HashMap<u64, i128>> {
-    VALUES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn strings() -> &'static Mutex<HashMap<u64, Box<[u8]>>> {
-    STRINGS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn byte_values() -> &'static Mutex<HashMap<u64, Box<[u8]>>> {
-    BYTES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn tuples() -> &'static Mutex<HashMap<u64, Vec<u64>>> {
-    TUPLES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
 #[cfg(feature = "l7-test-probe")]
 fn bits_for_tuple(items: Vec<u64>) -> u64 {
-    let bits = MoltObject::from_ptr(Box::into_raw(Box::new(0u8))).bits();
-    tuples().lock().unwrap().insert(bits, items);
-    bits
-}
-
-unsafe extern "C" fn alloc_text(data: *const u8, len: usize) -> u64 {
-    let value = if len == 0 {
-        Box::<[u8]>::default()
-    } else {
-        unsafe { std::slice::from_raw_parts(data, len) }
-            .to_vec()
-            .into_boxed_slice()
-    };
-    let bits = MoltObject::from_ptr(Box::into_raw(Box::new(0u8))).bits();
-    strings().lock().unwrap().insert(bits, value);
-    bits
-}
-
-unsafe extern "C" fn alloc_byte_value(data: *const u8, len: usize) -> u64 {
-    let value = if len == 0 {
-        Box::<[u8]>::default()
-    } else {
-        unsafe { std::slice::from_raw_parts(data, len) }
-            .to_vec()
-            .into_boxed_slice()
-    };
-    let bits = MoltObject::from_ptr(Box::into_raw(Box::new(0u8))).bits();
-    byte_values().lock().unwrap().insert(bits, value);
-    bits
-}
-
-unsafe extern "C" fn str_data(bits: u64, out_len: *mut usize) -> *const u8 {
-    let values = strings().lock().unwrap();
-    let Some(value) = values.get(&bits) else {
-        return std::ptr::null();
-    };
-    unsafe { *out_len = value.len() };
-    value.as_ptr()
-}
-
-unsafe extern "C" fn bytes_data(bits: u64, out_len: *mut usize) -> *const u8 {
-    let values = byte_values().lock().unwrap();
-    let Some(value) = values.get(&bits) else {
-        return std::ptr::null();
-    };
-    unsafe { *out_len = value.len() };
-    value.as_ptr()
+    support::fake_runtime::tuple_from_owned(items)
 }
 
 unsafe extern "C" fn sys_get_object(
@@ -107,10 +40,7 @@ unsafe extern "C" fn sys_get_object(
 }
 
 fn value_for_bits(bits: u64) -> Option<i128> {
-    MoltObject::from_bits(bits)
-        .as_int()
-        .map(i128::from)
-        .or_else(|| values().lock().unwrap().get(&bits).copied())
+    support::fake_runtime::integer_value(bits)
 }
 
 fn bits_for_value(value: i128) -> u64 {
@@ -119,10 +49,7 @@ fn bits_for_value(value: i128) -> u64 {
     {
         return obj.bits();
     }
-    let ptr = Box::into_raw(Box::new(0u8));
-    let bits = MoltObject::from_ptr(ptr).bits();
-    values().lock().unwrap().insert(bits, value);
-    bits
+    support::fake_runtime::heap_integer(value)
 }
 
 unsafe extern "C" fn int_from_i64(value: i64) -> u64 {
@@ -131,49 +58,6 @@ unsafe extern "C" fn int_from_i64(value: i64) -> u64 {
 
 unsafe extern "C" fn int_from_u64(value: u64) -> u64 {
     bits_for_value(value as i128)
-}
-
-unsafe extern "C" fn classify(bits: u64) -> u8 {
-    if values().lock().unwrap().contains_key(&bits) {
-        molt_cpython_abi::abi_types::MoltTypeTag::Int as u8
-    } else if strings().lock().unwrap().contains_key(&bits) {
-        molt_cpython_abi::abi_types::MoltTypeTag::Str as u8
-    } else if byte_values().lock().unwrap().contains_key(&bits) {
-        molt_cpython_abi::abi_types::MoltTypeTag::Bytes as u8
-    } else if support::fake_complex::contains(bits) {
-        molt_cpython_abi::abi_types::MoltTypeTag::Complex as u8
-    } else if tuples().lock().unwrap().contains_key(&bits) {
-        molt_cpython_abi::abi_types::MoltTypeTag::Tuple as u8
-    } else {
-        molt_cpython_abi::abi_types::MoltTypeTag::Other as u8
-    }
-}
-
-unsafe extern "C" fn tuple_len(bits: u64) -> usize {
-    tuples().lock().unwrap().get(&bits).map_or(0, Vec::len)
-}
-
-unsafe extern "C" fn tuple_item(bits: u64, index: usize) -> BorrowedHandleResult {
-    tuples()
-        .lock()
-        .unwrap()
-        .get(&bits)
-        .and_then(|items| items.get(index).copied())
-        .map_or_else(BorrowedHandleResult::error, BorrowedHandleResult::ok)
-}
-
-unsafe extern "C" fn tuple_set(
-    bits: u64,
-    index: usize,
-    value: u64,
-    _exact_pointer: *mut PyObject,
-) -> OwnedHandleResult {
-    let mut tuples = tuples().lock().unwrap();
-    let Some(slot) = tuples.get_mut(&bits).and_then(|items| items.get_mut(index)) else {
-        return OwnedHandleResult::error();
-    };
-    let old = std::mem::replace(slot, value);
-    OwnedHandleResult::ok(old)
 }
 
 unsafe extern "C" fn as_i64(bits: u64, out: *mut i64) -> i32 {
@@ -205,7 +89,8 @@ unsafe extern "C" fn as_u64_mask(bits: u64, width: u32, out: *mut u64) -> i32 {
     0
 }
 
-unsafe extern "C" fn binary(op: u32, a: u64, b: u64) -> OwnedHandleResult {
+unsafe extern "C" fn binary(op: u32, mode: u32, a: u64, b: u64) -> OwnedHandleResult {
+    assert_eq!(mode, 0, "ordinary numeric caller must not request mutation");
     BINARY_CALLS.fetch_add(1, Ordering::Relaxed);
     let (Some(a), Some(b)) = (value_for_bits(a), value_for_bits(b)) else {
         return OwnedHandleResult::error();
@@ -361,6 +246,9 @@ fn init() {
     molt_cpython_abi_test_support::link();
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     let mut hooks = STUB_HOOKS;
+    support::fake_runtime::wire_sequences(&mut hooks);
+    hooks.alloc_bytes = support::fake_runtime::alloc_bytes;
+    hooks.bytes_data = support::fake_runtime::bytes_data;
     hooks.int_from_i64 = int_from_i64;
     hooks.int_from_u64 = int_from_u64;
     hooks.int_as_i64_checked = as_i64;
@@ -375,18 +263,10 @@ fn init() {
     hooks.int_num_bits = num_bits;
     hooks.number_binary_op = binary;
     hooks.number_unary_op = unary;
-    hooks.classify_heap = classify;
-    hooks.alloc_str = alloc_text;
-    hooks.alloc_bytes = alloc_byte_value;
-    hooks.str_data = str_data;
-    hooks.bytes_data = bytes_data;
     hooks.sys_get_object_borrowed = sys_get_object;
     hooks.complex_parts = support::fake_complex::parts;
     hooks.complex_from_doubles = support::fake_complex::from_doubles;
     hooks.object_hash = support::fake_complex::hash;
-    hooks.tuple_len = tuple_len;
-    hooks.tuple_item = tuple_item;
-    hooks.tuple_set = tuple_set;
     support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
@@ -1028,7 +908,14 @@ fn overlay_compiled_tuple_set_and_direct_get_share_the_canonical_sidecar() {
     // the tuple view itself is retired.
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(value) };
     assert_eq!(
-        value_for_bits(tuples().lock().unwrap().get(&tuple_bits).unwrap()[0]),
+        value_for_bits(
+            match unsafe { molt_cpython_abi::hooks::hooks_or_stubs().tuple_item(tuple_bits, 0) }
+                .decode()
+            {
+                molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) => bits,
+                _ => panic!("retained tuple item missing"),
+            }
+        ),
         Some(42)
     );
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(tuple) };

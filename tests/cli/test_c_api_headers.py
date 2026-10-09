@@ -20,7 +20,7 @@ from tests.cli.process_guard import run_cli_test_process
 def test_descriptor_headers_share_layout_and_compiled_constructors(
     tmp_path: Path, transport: str
 ) -> None:
-    """Prove the physical descriptor carrier and every transport's linked owner.
+    """Prove descriptor/method carriers and every transport's linked owner.
 
     Independent owners check exact argument and return identities. A local
     method factory, identity wrapper or builtin-name lookup cannot satisfy this
@@ -42,6 +42,8 @@ _Static_assert(offsetof(PyMethodDescrObject, vectorcall) == sizeof(PyDescrObject
 _Static_assert(sizeof(PyMethodDescrObject) == sizeof(PyDescrObject) + 2 * sizeof(void *), "method layout");
 _Static_assert(sizeof(PyMemberDescrObject) == sizeof(PyDescrObject) + sizeof(void *), "member layout");
 _Static_assert(sizeof(PyGetSetDescrObject) == sizeof(PyDescrObject) + sizeof(void *), "getset layout");
+_Static_assert(offsetof(PyMethodObject, vectorcall) == sizeof(PyObject) + 3 * sizeof(void *), "bound method vector offset");
+_Static_assert(sizeof(PyMethodObject) == sizeof(PyObject) + 4 * sizeof(void *), "bound method layout");
 int probe(void **token, void **types) {
     PyTypeObject *owner = token[0];
     PyMethodDef *method = token[1];
@@ -57,6 +59,11 @@ int probe(void **token, void **types) {
     REQUIRE(&_PyMethodWrapper_Type == types[5]);
     REQUIRE(&PyClassMethod_Type == types[6]);
     REQUIRE(&PyStaticMethod_Type == types[7]);
+    REQUIRE(&PyMethod_Type == types[8]);
+    REQUIRE(PyMethod_New(value, result) == result);
+    REQUIRE(PyMethod_Check(result) == 29);
+    REQUIRE(PyMethod_GET_FUNCTION(result) == value);
+    REQUIRE(PyMethod_GET_SELF(result) == result);
     REQUIRE(PyDescr_NewMethod(owner, method) == result);
     REQUIRE(PyDescr_NewClassMethod(owner, method) == result);
     REQUIRE(PyDescr_NewMember(owner, member) == result);
@@ -85,7 +92,7 @@ int probe(void **token, void **types) {
 EXPORT intptr_t PyMethodDescr_Type[64], PyClassMethodDescr_Type[64];
 EXPORT intptr_t PyMemberDescr_Type[64], PyGetSetDescr_Type[64];
 EXPORT intptr_t PyWrapperDescr_Type[64], _PyMethodWrapper_Type[64];
-EXPORT intptr_t PyClassMethod_Type[64], PyStaticMethod_Type[64];
+EXPORT intptr_t PyClassMethod_Type[64], PyStaticMethod_Type[64], PyMethod_Type[64];
 static intptr_t storage[7][64];
 static unsigned int calls;
 #define MATCH(index, expr) do { if (!(expr)) return 0; calls |= 1U << (index); } while (0)
@@ -101,13 +108,18 @@ EXPORT void *PyDescr_NAME(void *descr) { MATCH(8, descr == storage[6]); return s
 EXPORT int PyDescr_IsData(void *descr) { MATCH(9, descr == storage[6]); return 19; }
 EXPORT void *PyMember_GetOne(void *value, void *member) { MATCH(10, value == storage[5] && member == storage[2]); return storage[6]; }
 EXPORT int PyMember_SetOne(void *value, void *member, void *result) { MATCH(11, value == storage[5] && member == storage[2] && result == storage[6]); return 23; }
+EXPORT void *PyMethod_New(void *func, void *self) { MATCH(12, func == storage[5] && self == storage[6]); return storage[6]; }
+EXPORT int PyMethod_Check(void *value) { MATCH(13, value == storage[6]); return 29; }
+EXPORT void *PyMethod_GET_FUNCTION(void *value) { MATCH(14, value == storage[6]); return storage[5]; }
+EXPORT void *PyMethod_GET_SELF(void *value) { MATCH(15, value == storage[6]); return storage[6]; }
 extern int probe(void **, void **);
+
 int main(void) {
     void *token[] = {storage[0], storage[1], storage[2], storage[3], storage[4], storage[5], storage[6]};
-    void *types[] = {PyMethodDescr_Type, PyClassMethodDescr_Type, PyMemberDescr_Type, PyGetSetDescr_Type, PyWrapperDescr_Type, _PyMethodWrapper_Type, PyClassMethod_Type, PyStaticMethod_Type};
+    void *types[] = {PyMethodDescr_Type, PyClassMethodDescr_Type, PyMemberDescr_Type, PyGetSetDescr_Type, PyWrapperDescr_Type, _PyMethodWrapper_Type, PyClassMethod_Type, PyStaticMethod_Type, PyMethod_Type};
     int result = probe(token, types);
     if (result) return result;
-    return calls != ((1U << 12) - 1);
+    return calls != ((1U << 16) - 1);
 }
 """,
         encoding="utf-8",
@@ -843,9 +855,6 @@ static int *tracking(void *object) {
     if (object == variable) return &variable_tracked;
     ++invalid;
     return &invalid;
-}
-EXPORT Py_ssize_t PyObject_LengthHint(PyObject *obj, Py_ssize_t defaultvalue) {
-    ++calls[18]; bad |= obj != &storage || defaultvalue != 31; return 37;
 }
 EXPORT int32_t molt_c_heap_contains(uintptr_t object) {
     return object == (uintptr_t)private_header;

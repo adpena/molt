@@ -43,4 +43,14 @@ typedef struct {
     PyTypeObject *mm_class;
 } PyCMethodObject;
 
+/* CPython bound-method prefix. Native weakref creation remains unsupported;
+ * the reserved weakref head is initialized null and is not advertised. */
+typedef struct {
+    PyObject_HEAD
+    PyObject *im_func;
+    PyObject *im_self;
+    PyObject *im_weakreflist;
+    vectorcallfunc vectorcall;
+} PyMethodObject;
+
 #endif /* MOLT_CFUNCTION_ABI_H */

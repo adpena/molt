@@ -445,7 +445,7 @@ impl ObjectBridge {
             return false;
         };
         let runtime_owners = if MoltObject::from_bits(entry.bits).as_ptr().is_some() {
-            let runtime_refs = unsafe { (crate::hooks::hooks_or_stubs().ref_count)(entry.bits) };
+            let runtime_refs = unsafe { crate::hooks::hooks_or_stubs().ref_count(entry.bits) };
             if runtime_refs == molt_codegen_abi::IMMORTAL_REFCOUNT as usize {
                 return false;
             }
@@ -661,7 +661,7 @@ impl ObjectBridge {
                 release_bridge_entry(*entry);
                 return ManagedDecref::RetiredInline;
             }
-            let runtime_refs = unsafe { (crate::hooks::hooks_or_stubs().ref_count)(bits) };
+            let runtime_refs = unsafe { crate::hooks::hooks_or_stubs().ref_count(bits) };
             if runtime_refs > 1 {
                 unsafe { (*ptr).ob_refcnt = 1 };
                 entry.lifecycle = BridgeLifecycle::RuntimeOwned;
@@ -1260,7 +1260,7 @@ impl ObjectBridge {
                 unsafe { (*entry.view.py_obj()).ob_refcnt = 1 };
                 return CRefZero::ViewRetained;
             }
-            let runtime_refs = unsafe { (crate::hooks::hooks_or_stubs().ref_count)(bits) };
+            let runtime_refs = unsafe { crate::hooks::hooks_or_stubs().ref_count(bits) };
             if runtime_refs > 1 {
                 unsafe { (*entry.view.py_obj()).ob_refcnt = 1 };
                 entry.lifecycle = BridgeLifecycle::RuntimeOwned;

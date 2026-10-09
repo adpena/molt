@@ -256,13 +256,11 @@ unsafe fn initialize_builtin_exception_from_positional(
 pub(crate) unsafe fn construct_exception_from_args(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,
-    pos: &[u64],
-    kw_names: &[u64],
-    kw_values: &[u64],
+    arguments: &mut crate::call::bind::CallArguments<'_, '_>,
 ) -> u64 {
     unsafe {
-        if kw_names.len() != kw_values.len() {
-            return raise_exception::<_>(_py, "SystemError", "malformed constructor keywords");
+        if let Err(error) = arguments.prepare_constructor_mapping() {
+            return error;
         }
         let class_bits = MoltObject::from_ptr(class_ptr).bits();
         let builtins = builtin_classes(_py);
@@ -282,7 +280,7 @@ pub(crate) unsafe fn construct_exception_from_args(
             let default_new =
                 callable_matches_runtime_symbol(Some(new_bits), fn_key!(molt_exception_new_bound));
             let result = if default_new {
-                let args_ptr = alloc_tuple(_py, pos);
+                let args_ptr = alloc_tuple(_py, arguments.positional());
                 if args_ptr.is_null() {
                     return MoltObject::none().bits();
                 }
@@ -296,14 +294,10 @@ pub(crate) unsafe fn construct_exception_from_args(
             } else {
                 // `type.__call__` lends its arguments to each constructor
                 // phase; the phase retains its own argument vector.
-                crate::call::bind::call_bind_borrowed(
-                    _py,
-                    new_bits,
-                    Some(class_bits),
-                    pos,
-                    kw_names,
-                    kw_values,
-                )
+                match arguments.constructor_child(Some(class_bits), arguments.positional()) {
+                    Ok(child) => crate::call::bind::call_bind_with_arguments(_py, new_bits, child),
+                    Err(error) => error,
+                }
             };
             if exception_pending(_py) {
                 return MoltObject::none().bits();
@@ -313,7 +307,7 @@ pub(crate) unsafe fn construct_exception_from_args(
             }
             (result, default_new)
         } else {
-            let args_ptr = alloc_tuple(_py, pos);
+            let args_ptr = alloc_tuple(_py, arguments.positional());
             if args_ptr.is_null() {
                 return MoltObject::none().bits();
             }
@@ -347,6 +341,13 @@ pub(crate) unsafe fn construct_exception_from_args(
                     fn_key!(molt_exceptiongroup_init),
                 );
         if tuple_init && initialized_by_default_new {
+            if let Err(error) = arguments.observe_constructor_keywords() {
+                dec_ref_bits(_py, init_bits);
+                dec_ref_bits(_py, inst_bits);
+                return error;
+            }
+            let view = arguments.constructor_view();
+            let (kw_names, kw_values) = (view.kw_names, view.kw_values);
             let failed =
                 apply_builtin_exception_keywords(_py, class_bits, inst_bits, kw_names, kw_values);
             // `class_attr_lookup` returns an owned descriptor result.  For
@@ -361,7 +362,19 @@ pub(crate) unsafe fn construct_exception_from_args(
             return inst_bits;
         }
         if tuple_init {
-            initialize_builtin_exception_from_positional(_py, init_bits, inst_bits, pos);
+            initialize_builtin_exception_from_positional(
+                _py,
+                init_bits,
+                inst_bits,
+                arguments.positional(),
+            );
+            if let Err(error) = arguments.observe_constructor_keywords() {
+                dec_ref_bits(_py, init_bits);
+                dec_ref_bits(_py, inst_bits);
+                return error;
+            }
+            let view = arguments.constructor_view();
+            let (kw_names, kw_values) = (view.kw_names, view.kw_values);
             let failed = exception_pending(_py)
                 || apply_builtin_exception_keywords(
                     _py, class_bits, inst_bits, kw_names, kw_values,
@@ -372,9 +385,10 @@ pub(crate) unsafe fn construct_exception_from_args(
                 return MoltObject::none().bits();
             }
         } else {
-            let init_result = crate::call::bind::call_bind_borrowed(
-                _py, init_bits, None, pos, kw_names, kw_values,
-            );
+            let init_result = match arguments.constructor_child(None, arguments.positional()) {
+                Ok(child) => crate::call::bind::call_bind_with_arguments(_py, init_bits, child),
+                Err(error) => error,
+            };
             dec_ref_bits(_py, init_bits);
             return resolve_construct_after_init(_py, inst_bits, init_result);
         }
@@ -416,7 +430,16 @@ pub(crate) unsafe fn call_class_init_with_args(
             return crate::builtins::functions::function_type_new_from_args(_py, args);
         }
         if issubclass_bits(class_bits, builtins.base_exception) {
-            return construct_exception_from_args(_py, class_ptr, args, &[], &[]);
+            let mut arguments = match crate::call::bind::CallArguments::capi(
+                _py,
+                None,
+                args,
+                MoltObject::none().bits(),
+            ) {
+                Ok(arguments) => arguments,
+                Err(error) => return error,
+            };
+            return construct_exception_from_args(_py, class_ptr, &mut arguments);
         }
         if class_bits == builtins.slice {
             match args.len() {
@@ -478,11 +501,20 @@ pub(crate) unsafe fn call_class_init_with_args(
             class_bits,
             args,
             &[],
-            &[],
+            MoltObject::none().bits(),
         ) {
             return result;
         }
-        construct_regular_class(_py, class_ptr, args, &[], &[])
+        let arguments = match crate::call::bind::CallArguments::capi(
+            _py,
+            None,
+            args,
+            MoltObject::none().bits(),
+        ) {
+            Ok(arguments) => arguments,
+            Err(error) => return error,
+        };
+        construct_regular_class(_py, class_ptr, &arguments)
     }
 }
 
@@ -492,9 +524,7 @@ pub(crate) unsafe fn call_class_init_with_args(
 pub(crate) unsafe fn construct_regular_class(
     py: &PyToken<'_>,
     class: *mut u8,
-    positional: &[u64],
-    names: &[u64],
-    values: &[u64],
+    arguments: &crate::call::bind::CallArguments<'_, '_>,
 ) -> u64 {
     unsafe {
         let class_bits = MoltObject::from_ptr(class).bits();
@@ -512,20 +542,16 @@ pub(crate) unsafe fn construct_regular_class(
         });
         let instance = match new {
             Some(new) if !resolved_new_is_default_object_new(Some(new)) => {
-                crate::call::bind::call_bind_borrowed(
-                    py,
-                    new,
-                    Some(class_bits),
-                    positional,
-                    names,
-                    values,
-                )
+                match arguments.constructor_child(Some(class_bits), arguments.positional()) {
+                    Ok(child) => crate::call::bind::call_bind_with_arguments(py, new, child),
+                    Err(error) => error,
+                }
             }
             _ => {
                 let init = class_attr_lookup_raw_mro(py, class, init_name);
                 if resolved_constructor_init_policy(new, init)
                     == InitArgPolicy::RejectConstructorArgs
-                    && (!positional.is_empty() || !names.is_empty())
+                    && (!arguments.positional().is_empty() || arguments.keyword_count() != 0)
                 {
                     return raise_exception::<_>(
                         py,
@@ -557,7 +583,9 @@ pub(crate) unsafe fn construct_regular_class(
         };
         let actual_new = class_attr_lookup_raw_mro(py, actual, new_name);
         match resolved_constructor_init_policy(actual_new, Some(raw_init)) {
-            InitArgPolicy::RejectConstructorArgs if !positional.is_empty() || !names.is_empty() => {
+            InitArgPolicy::RejectConstructorArgs
+                if !arguments.positional().is_empty() || arguments.keyword_count() != 0 =>
+            {
                 dec_ref_bits(py, instance);
                 return raise_exception::<_>(
                     py,
@@ -581,8 +609,10 @@ pub(crate) unsafe fn construct_regular_class(
             }
             return instance;
         };
-        let result =
-            crate::call::bind::call_bind_borrowed(py, init, None, positional, names, values);
+        let result = match arguments.constructor_child(None, arguments.positional()) {
+            Ok(child) => crate::call::bind::call_bind_with_arguments(py, init, child),
+            Err(error) => error,
+        };
         dec_ref_bits(py, init);
         resolve_construct_after_init(py, instance, result)
     }
@@ -1215,7 +1245,17 @@ mod tests {
             let value_bits = MoltObject::from_int(1).bits();
 
             let result = unsafe {
-                construct_exception_from_args(_py, class_ptr, &[], &[name_bits], &[value_bits])
+                construct_exception_from_args(
+                    _py,
+                    class_ptr,
+                    &mut crate::call::bind::CallArguments::capi_vector(
+                        _py,
+                        &[],
+                        &[name_bits],
+                        &[value_bits],
+                    )
+                    .unwrap(),
+                )
             };
             assert!(obj_from_bits(result).is_none());
             assert!(exception_pending(_py));
@@ -1245,9 +1285,13 @@ mod tests {
                 construct_exception_from_args(
                     _py,
                     class_ptr,
-                    &[message_bits],
-                    &[keyword_bits],
-                    &[field_bits],
+                    &mut crate::call::bind::CallArguments::capi_vector(
+                        _py,
+                        &[message_bits],
+                        &[keyword_bits],
+                        &[field_bits],
+                    )
+                    .unwrap(),
                 )
             };
             let result_ptr = obj_from_bits(result)
@@ -1284,9 +1328,13 @@ mod tests {
                 construct_exception_from_args(
                     _py,
                     class_ptr,
-                    &[MoltObject::from_int(2).bits(), message_bits, filename_bits],
-                    &[keyword_bits],
-                    &[MoltObject::from_int(1).bits()],
+                    &mut crate::call::bind::CallArguments::capi_vector(
+                        _py,
+                        &[MoltObject::from_int(2).bits(), message_bits, filename_bits],
+                        &[keyword_bits],
+                        &[MoltObject::from_int(1).bits()],
+                    )
+                    .unwrap(),
                 )
             };
             assert!(obj_from_bits(result).is_none());

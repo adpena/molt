@@ -3948,7 +3948,7 @@ def test_wasi_c_abi_witness_is_required_and_selects_sdk_compiler():
     assert all(item.id != "wasm.execute.c-abi" for item in PLAN.commands)
     workflow = (
         Path(__file__).resolve().parents[1] / ".github/workflows/molt-wasm-ci.yml"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     steps = workflow.split("      - ")
     setup_index = next(
         index
@@ -3966,6 +3966,26 @@ def test_wasi_c_abi_witness_is_required_and_selects_sdk_compiler():
     assert policies["wasi-clang"].data["wasi_sdk_tool"] == "clang"
     assert policies["wasi-clang"].identity_kind == "executable"
     assert policies["clang"].data["setup_value"] == "22.1.8"
+
+
+def test_wasm_execution_uses_selected_host_from_its_completed_build():
+    commands = {command.id: command for command in PLAN.commands}
+    for name in ("hello", "comprehension", "sieve"):
+        execute = commands[f"wasm.run.{name}"]
+        compile = commands[f"wasm.compile.{name}"]
+        assert compile.id in execute.dependencies
+        assert "wasm.build.host" in compile.dependencies
+        assert execute.argv == (
+            "python3",
+            "tools/venv_exec.py",
+            "python3",
+            "tools/run_wasm_host.py",
+            "--cargo-profile",
+            "dev-fast",
+            "--",
+            f"/tmp/molt-wasm-ci/{name}/manifest.json",
+        )
+        assert execute.toolchains == ("python",)
 
 
 def test_wasi_compiler_fingerprint_bypasses_native_path_and_binds_helpers(
@@ -4039,7 +4059,9 @@ def test_ninja_identity_binds_locked_release_and_observed_distribution_banner(
     root = Path(__file__).resolve().parents[1]
     package = next(
         item
-        for item in tomllib.loads((root / "uv.lock").read_text())["package"]
+        for item in tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))[
+            "package"
+        ]
         if item["name"] == "ninja"
     )
     assert package["version"] == policy.data["setup_value"] == "1.13.0"
@@ -4105,16 +4127,16 @@ def test_receipt_verdict_binds_sdk_closure_without_changing_native_hashes(tmp_pa
     ).hexdigest()
     receipt["toolchains"]["wasi-clang"] = sdk
     path = tmp_path / "sdk.json"
-    path.write_text(json.dumps(receipt))
+    path.write_text(json.dumps(receipt), encoding="utf-8")
     assert proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path) == []
     sdk["wasi_sdk_sha256"] = "3" * 64
-    path.write_text(json.dumps(receipt))
+    path.write_text(json.dumps(receipt), encoding="utf-8")
     assert any(
         "wasi-clang toolchain identity hash is invalid" in error
         for error in proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
     )
     del sdk["wasi_sdk_sha256"]
-    path.write_text(json.dumps(receipt))
+    path.write_text(json.dumps(receipt), encoding="utf-8")
     assert any(
         "invalid wasi-clang toolchain identity" in error
         for error in proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
@@ -4146,7 +4168,7 @@ def test_selected_sdk_fingerprint_roundtrips_through_actual_receipt_receiver(
     receipt = _receipt_for(command, receipt_root)
     receipt["toolchains"]["wasi-clang"] = sdk
     path = receipt_root / "sdk.json"
-    path.write_text(json.dumps(receipt))
+    path.write_text(json.dumps(receipt), encoding="utf-8")
     assert proof_plan.verify_receipts(PLAN, ["python_static"], receipt_root) == []
     native_name = next(name for name in receipt["toolchains"] if name != "wasi-clang")
     native = receipt["toolchains"][native_name]
@@ -4167,7 +4189,7 @@ def test_selected_sdk_fingerprint_roundtrips_through_actual_receipt_receiver(
             )
         ).encode()
     ).hexdigest()
-    path.write_text(json.dumps(receipt))
+    path.write_text(json.dumps(receipt), encoding="utf-8")
     assert any(
         f"invalid {native_name} toolchain identity" in error
         for error in proof_plan.verify_receipts(PLAN, ["python_static"], receipt_root)

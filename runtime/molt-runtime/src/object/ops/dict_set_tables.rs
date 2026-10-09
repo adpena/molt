@@ -8,12 +8,12 @@ mod dict_binding_tests;
 mod dict_increment_tests;
 
 pub(crate) unsafe fn dict_structural_epoch(ptr: *mut u8) -> u64 {
-    unsafe { crate::object::backing::tracked_vec_mutation_epoch(dict_hashes(ptr) as *mut Vec<u64>) }
+    unsafe { crate::object::backing::tracked_vec_mutation_epoch(dict_entries_ptr(ptr)) }
 }
 
 pub(crate) unsafe fn dict_commit_structure(ptr: *mut u8) {
     unsafe {
-        crate::object::backing::tracked_vec_bump_mutation_epoch(dict_hashes(ptr) as *mut Vec<u64>);
+        crate::object::backing::tracked_vec_bump_mutation_epoch(dict_entries_ptr(ptr));
     }
 }
 
@@ -54,16 +54,15 @@ pub(crate) unsafe fn dict_publish_staged(py: &PyToken<'_>, live: *mut u8, staged
             None,
             None,
         );
-        let live_order = dict_order(live) as *mut Vec<u64>;
-        let live_hashes = dict_hashes(live) as *mut Vec<u64>;
+        let live_entries = dict_entries_ptr(live);
         let live_table = dict_table(live) as *mut Vec<usize>;
-        let _order_lock = crate::object::backing::tracked_vec_mutation_lock(live_order);
-        let _hashes_lock = crate::object::backing::tracked_vec_mutation_lock(live_hashes);
+        let _order_lock = crate::object::backing::tracked_vec_mutation_lock(live_entries);
         let _table_lock = crate::object::backing::tracked_vec_mutation_lock(live_table);
         let tracked =
             crate::object::gc::gc_is_tracked(live) || crate::object::gc::gc_is_tracked(staged);
-        crate::object::backing::tracked_vec_swap_contents(live_order, dict_order(staged));
-        crate::object::backing::tracked_vec_swap_contents(live_hashes, dict_hashes(staged));
+        crate::object::backing::tracked_vec_swap_contents(live_entries, dict_entries_ptr(staged));
+        std::mem::swap(&mut dict_storage(live).live, &mut dict_storage(staged).live);
+        std::mem::swap(&mut dict_storage(live).fill, &mut dict_storage(staged).fill);
         crate::object::backing::tracked_vec_swap_contents(live_table, dict_table(staged));
         let live_refs =
             (*header_from_obj_ptr(live)).has_flag(crate::object::HEADER_FLAG_CONTAINS_REFS);
@@ -85,25 +84,44 @@ pub(crate) unsafe fn dict_publish_staged(py: &PyToken<'_>, live: *mut u8, staged
     }
 }
 
-/// Detached dictionary ownership, released only after the caller has published
-/// any dependent metadata. No borrow of dictionary backing survives this value.
-pub(crate) struct DetachedDictReferences<'a, 'py, Storage: AsRef<[u64]> = [u64; 2]> {
-    py: &'a PyToken<'py>,
-    bits: Storage,
+/// Detached buffers preserve their resource charge until their actual allocation
+/// is freed. Small replacements and whole sparse contents share edge custody.
+pub(crate) trait DetachedDictEdges {
+    fn visit_edges(&self, visit: impl FnMut(u64));
 }
-
-impl<Storage: AsRef<[u64]>> Drop for DetachedDictReferences<'_, '_, Storage> {
-    fn drop(&mut self) {
-        for &bits in self.bits.as_ref() {
-            dec_ref_bits(self.py, bits);
+impl<const N: usize> DetachedDictEdges for [u64; N] {
+    fn visit_edges(&self, mut visit: impl FnMut(u64)) {
+        for &bits in self {
+            visit(bits);
+        }
+    }
+}
+impl DetachedDictEdges for crate::object::backing::TrackedVecContents<DictEntry> {
+    fn visit_edges(&self, mut visit: impl FnMut(u64)) {
+        for row in self.iter().filter(|row| row.hash.is_some()) {
+            visit(row.key);
+            visit(row.value);
         }
     }
 }
 
-impl<Storage: AsRef<[u64]>> DetachedDictReferences<'_, '_, Storage> {
+/// Detached dictionary ownership, released only after the caller has published
+/// any dependent metadata. No borrow of dictionary backing survives this value.
+pub(crate) struct DetachedDictReferences<'a, 'py, Storage: DetachedDictEdges = [u64; 2]> {
+    py: &'a PyToken<'py>,
+    bits: Storage,
+}
+
+impl<Storage: DetachedDictEdges> Drop for DetachedDictReferences<'_, '_, Storage> {
+    fn drop(&mut self) {
+        self.bits.visit_edges(|bits| dec_ref_bits(self.py, bits));
+    }
+}
+
+impl<Storage: DetachedDictEdges> DetachedDictReferences<'_, '_, Storage> {
     /// Transfer the displaced references to the caller instead of releasing
     /// them. The dictionary was already published without them.
-    pub(crate) fn into_owned_bits(self) -> Storage {
+    pub(crate) fn into_owned_storage(self) -> Storage {
         let detached = std::mem::ManuallyDrop::new(self);
         // SAFETY: `detached` is never dropped, so `bits` moves out exactly once.
         unsafe { std::ptr::read(&detached.bits) }
@@ -139,7 +157,7 @@ unsafe fn dict_replace_value(
     new_bits: u64,
 ) -> u64 {
     unsafe {
-        let old_bits = dict_order(ptr)[value_index];
+        let old_bits = dict_entries(ptr)[value_index].value;
         crate::object::field_storage::debug::replacement(
             _py,
             "dict_replace_before",
@@ -155,7 +173,7 @@ unsafe fn dict_replace_value(
             (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
         // Publish the slot and tracking state before releasing the old edge.
-        dict_order(ptr)[value_index] = new_bits;
+        dict_entries(ptr)[value_index].value = new_bits;
         crate::object::gc::gc_track_dict_references(_py, ptr, &[new_bits]);
         crate::object::field_storage::debug::replacement(
             _py,
@@ -428,8 +446,8 @@ unsafe fn dict_increment_scalar_entry(
     delta: u64,
 ) -> bool {
     unsafe {
-        let index = entry * 2 + 1;
-        let current = dict_order(dict)[index];
+        let index = entry;
+        let current = dict_entries(dict)[index].value;
         let Some(sum) = inline_increment_sum(current, delta) else {
             return false;
         };
@@ -466,7 +484,7 @@ pub(crate) unsafe fn dict_increment_exact_statement(
         let hash = hash_string_bytes(py, key) as u64;
         match dict_exact_string_lookup(py, dict, key, hash) {
             ExactStringLookup::Found(entry) => {
-                if !exact_int_or_bool_bits(dict_order(dict)[entry * 2 + 1]) {
+                if !exact_int_or_bool_bits(dict_entries(dict)[entry].value) {
                     return Ok(false);
                 }
                 if dict_increment_scalar_entry(py, dict, entry, delta_bits) {
@@ -541,11 +559,13 @@ pub(crate) unsafe fn dict_exact_string_lookup(
             }
             if entry != TABLE_TOMBSTONE {
                 let index = entry - 1;
-                if dict_hashes(dict).get(index).copied() == Some(hash) {
-                    let Some(key_index) = index.checked_mul(2) else {
-                        return ExactStringLookup::Undecided;
-                    };
-                    let Some(&key) = dict_order(dict).get(key_index) else {
+                if dict_entries(dict)
+                    .get(index)
+                    .and_then(|row| row.hash)
+                    .map(StoredHash::get)
+                    == Some(hash)
+                {
+                    let Some(key) = dict_entries(dict).get(index).map(|row| row.key) else {
                         return ExactStringLookup::Undecided;
                     };
                     let Some(key) = exact_string_bytes(py, key) else {
@@ -590,7 +610,7 @@ unsafe fn dict_increment_validated_word(
             if dict_increment_scalar_entry(py, dict, entry, delta) {
                 return Some(None);
             }
-            let key = dict_order(dict)[entry * 2];
+            let key = dict_entries(dict)[entry].key;
             inc_ref_bits(py, key);
             let done = dict_inc_in_place(py, dict, key, delta);
             dec_ref_bits(py, key);
@@ -704,7 +724,7 @@ unsafe fn split_dict_increment_exact(
             let hash = hash_string_bytes(py, word) as u64;
             match dict_exact_string_lookup(py, dict, word, hash) {
                 ExactStringLookup::Found(entry) => {
-                    if !exact_int_or_bool_bits(dict_order(dict)[entry * 2 + 1]) {
+                    if !exact_int_or_bool_bits(dict_entries(dict)[entry].value) {
                         return SplitIncrement::Declined;
                     }
                 }
@@ -804,131 +824,156 @@ pub(crate) fn checked_dict_table_capacity(entries: usize) -> Option<usize> {
     Some(cap)
 }
 
-pub(crate) fn dict_table_capacity(entries: usize) -> usize {
-    checked_dict_table_capacity(entries)
-        .expect("live dict entry count must fit the addressable table capacity")
-}
-
 const TABLE_TOMBSTONE: usize = usize::MAX;
 
-#[inline]
-unsafe fn reserve_dict_order(_py: &PyToken<'_>, order: &mut Vec<u64>, additional: usize) -> bool {
-    let Some(required_len) = order.len().checked_add(additional) else {
-        let _ = raise_exception::<u64>(_py, "MemoryError", "dict allocation failed");
-        return false;
-    };
-    unsafe {
-        crate::object::backing::tracked_vec_reserve_or_raise(
-            _py,
-            order as *mut Vec<u64>,
-            required_len,
-            "dict allocation failed",
-        )
+/// Both families use the same callback-free preparation and index authority.
+trait HashRow: Copy + Default {
+    fn stored_hash(self) -> Option<StoredHash>;
+}
+impl HashRow for DictEntry {
+    fn stored_hash(self) -> Option<StoredHash> {
+        self.hash
+    }
+}
+impl HashRow for SetEntry {
+    fn stored_hash(self) -> Option<StoredHash> {
+        self.hash
     }
 }
 
-#[inline]
-unsafe fn reserve_set_order(_py: &PyToken<'_>, order: &mut Vec<u64>, additional: usize) -> bool {
-    let Some(required_len) = order.len().checked_add(additional) else {
-        let _ = raise_exception::<u64>(_py, "MemoryError", "set allocation failed");
-        return false;
-    };
-    unsafe {
-        crate::object::backing::tracked_vec_reserve_or_raise(
-            _py,
-            order as *mut Vec<u64>,
-            required_len,
-            "set allocation failed",
-        )
+fn admit_stored_hash(py: &PyToken<'_>, hash: u64) -> Option<StoredHash> {
+    match StoredHash::new(hash) {
+        Some(hash) => Some(hash),
+        None => {
+            if !exception_pending(py) {
+                raise_exception::<()>(py, "SystemError", "invalid stored hash sentinel");
+            }
+            None
+        }
     }
 }
 
-#[inline]
-unsafe fn reserve_hashes(
-    _py: &PyToken<'_>,
-    hashes: &mut Vec<u64>,
-    additional: usize,
-    message: &'static str,
+/// Returns whether insertion consumed an empty slot rather than a tombstone.
+fn install_hash_index(table: &mut [usize], row: usize, hash: StoredHash) -> bool {
+    let mask = table.len() - 1;
+    let mut slot = hash.get() as usize & mask;
+    let mut vacant = None;
+    loop {
+        match table[slot] {
+            0 => {
+                let target = vacant.unwrap_or(slot);
+                table[target] = row + 1;
+                return vacant.is_none();
+            }
+            TABLE_TOMBSTONE if vacant.is_none() => vacant = Some(slot),
+            _ => {}
+        }
+        slot = (slot + 1) & mask;
+    }
+}
+
+/// Reserve every allocation before moving any live row or changing the index.
+/// The only saved indices are the bounded namespace transaction's at most four.
+unsafe fn reserve_hash_storage<E: HashRow>(
+    py: &PyToken<'_>,
+    storage: *mut HashStorage<E>,
+    added: usize,
+    resolved: &mut [Option<usize>],
 ) -> bool {
-    let Some(required_len) = hashes.len().checked_add(additional) else {
-        let _ = raise_exception::<u64>(_py, "MemoryError", message);
-        return false;
-    };
     unsafe {
-        crate::object::backing::tracked_vec_reserve_or_raise(
-            _py,
-            hashes as *mut Vec<u64>,
-            required_len,
-            message,
-        )
-    }
-}
-
-fn dict_insert_entry(_py: &PyToken<'_>, hashes: &[u64], table: &mut [usize], entry_idx: usize) {
-    let mask = table.len() - 1;
-    let hash = hashes[entry_idx];
-    let mut slot = (hash as usize) & mask;
-    let mut first_tombstone = None;
-    loop {
-        let entry = table[slot];
-        if entry == 0 {
-            let target = first_tombstone.unwrap_or(slot);
-            table[target] = entry_idx + 1;
-            return;
-        }
-        if entry == TABLE_TOMBSTONE && first_tombstone.is_none() {
-            first_tombstone = Some(slot);
-        }
-        slot = (slot + 1) & mask;
-    }
-}
-
-pub(crate) fn dict_insert_entry_with_hash(
-    _py: &PyToken<'_>,
-    _order: &[u64],
-    table: &mut [usize],
-    entry_idx: usize,
-    hash: u64,
-) {
-    let mask = table.len() - 1;
-    let mut slot = (hash as usize) & mask;
-    let mut first_tombstone = None;
-    loop {
-        let entry = table[slot];
-        if entry == 0 {
-            let target = first_tombstone.unwrap_or(slot);
-            table[target] = entry_idx + 1;
-            return;
-        }
-        if entry == TABLE_TOMBSTONE && first_tombstone.is_none() {
-            first_tombstone = Some(slot);
-        }
-        slot = (slot + 1) & mask;
-    }
-}
-pub(crate) fn dict_rebuild(
-    _py: &PyToken<'_>,
-    order: &[u64],
-    hashes: &[u64],
-    table: &mut Vec<usize>,
-    capacity: usize,
-) {
-    if !unsafe {
-        crate::object::backing::tracked_vec_reserve_or_raise(
-            _py,
-            table as *mut Vec<usize>,
+        assert!(resolved.len() <= DICT_STRING_BINDING_LIMIT);
+        let entries = (*storage).entries;
+        let table = (*storage).table;
+        let live = (*storage).live;
+        let extent = (*entries).len();
+        let Some(next_live) = live.checked_add(added) else {
+            return raise_exception(py, "MemoryError", "hash storage capacity overflow");
+        };
+        let Some(next_fill) = (*storage).fill.checked_add(added) else {
+            return raise_exception(py, "MemoryError", "hash storage capacity overflow");
+        };
+        let load_full = match (next_fill.checked_mul(10), (*table).len().checked_mul(7)) {
+            (Some(fill), Some(limit)) => fill >= limit,
+            _ => return raise_exception(py, "MemoryError", "hash storage capacity overflow"),
+        };
+        let compact = load_full || (extent > live && extent - live >= live);
+        let capacity = if compact {
+            let Some(capacity) = checked_dict_table_capacity(next_live) else {
+                return raise_exception(py, "MemoryError", "hash storage capacity overflow");
+            };
+            capacity
+        } else {
+            (*table).len()
+        };
+        let Some(required) = (if compact { live } else { extent }).checked_add(added) else {
+            return raise_exception(py, "MemoryError", "hash storage capacity overflow");
+        };
+        if !crate::object::backing::tracked_vec_reserve_or_raise(
+            py,
+            entries,
+            required,
+            "hash entries allocation failed",
+        ) || !crate::object::backing::tracked_vec_reserve_or_raise(
+            py,
+            table,
             capacity,
-            "dict allocation failed",
-        )
-    } {
-        return;
+            "hash index allocation failed",
+        ) {
+            return false;
+        }
+        if compact {
+            let mut target = 0;
+            for source in 0..extent {
+                let row = (&*entries)[source];
+                if row.stored_hash().is_none() {
+                    continue;
+                }
+                for index in resolved.iter_mut() {
+                    if *index == Some(source) {
+                        *index = Some(target);
+                    }
+                }
+                (&mut *entries)[target] = row;
+                target += 1;
+            }
+            debug_assert_eq!(target, live);
+            (*entries).truncate(live);
+            (*table).clear();
+            (*table).resize(capacity, 0);
+            for (index, row) in (*entries).iter().enumerate() {
+                if let Some(hash) = row.stored_hash() {
+                    install_hash_index(&mut *table, index, hash);
+                }
+            }
+            (*storage).fill = live;
+            crate::object::backing::tracked_vec_bump_mutation_epoch(entries);
+        }
+        true
     }
-    table.clear();
-    table.resize(capacity, 0);
-    let entry_count = order.len() / 2;
-    for entry_idx in 0..entry_count {
-        dict_insert_entry(_py, hashes, table, entry_idx);
+}
+
+#[derive(Clone, Copy)]
+struct HashProbe {
+    row: usize,
+    slot: usize,
+}
+
+/// Pop already owns a physical row. Resolve its index using only its retained
+/// hash and identity, never hashing or comparing its Python key again.
+fn hash_slot_for_row(table: &[usize], row: usize, hash: StoredHash) -> Option<usize> {
+    if table.is_empty() {
+        return None;
     }
+    let mask = table.len() - 1;
+    let mut slot = hash.get() as usize & mask;
+    for _ in 0..table.len() {
+        match table[slot] {
+            0 => return None,
+            found if found == row + 1 => return Some(slot),
+            _ => slot = (slot + 1) & mask,
+        }
+    }
+    None
 }
 
 /// The dictionary key's hashability/hash protocol, shared by ordinary reads,
@@ -1251,11 +1296,20 @@ unsafe fn string_bits_eq(_py: &PyToken<'_>, a_bits: u64, b_bits: u64) -> Option<
 }
 
 pub(crate) unsafe fn dict_find_entry_with_hash(
+    py: &PyToken<'_>,
+    dict: *mut u8,
+    key: u64,
+    hash: u64,
+) -> Option<usize> {
+    unsafe { dict_probe_with_hash(py, dict, key, hash).map(|probe| probe.row) }
+}
+
+unsafe fn dict_probe_with_hash(
     _py: &PyToken<'_>,
     dict: *mut u8,
     key_bits: u64,
     hash: u64,
-) -> Option<usize> {
+) -> Option<HashProbe> {
     unsafe {
         'restart: loop {
             let epoch = dict_structural_epoch(dict);
@@ -1275,10 +1329,11 @@ pub(crate) unsafe fn dict_find_entry_with_hash(
                 }
                 if entry != TABLE_TOMBSTONE {
                     let index = entry - 1;
-                    let key_index = index.checked_mul(2);
-                    let candidate =
-                        key_index.and_then(|index| dict_order(dict).get(index).copied());
-                    let candidate_hash = dict_hashes(dict).get(index).copied();
+                    let candidate = dict_entries(dict).get(index).map(|row| row.key);
+                    let candidate_hash = dict_entries(dict)
+                        .get(index)
+                        .and_then(|row| row.hash)
+                        .map(StoredHash::get);
                     let (Some(candidate), Some(candidate_hash)) = (candidate, candidate_hash)
                     else {
                         return raise_exception::<_>(
@@ -1289,11 +1344,11 @@ pub(crate) unsafe fn dict_find_entry_with_hash(
                     };
                     if candidate_hash == hash {
                         if candidate == key_bits {
-                            return Some(index);
+                            return Some(HashProbe { row: index, slot });
                         }
                         if let Some(equal) = string_bits_eq(_py, candidate, key_bits) {
                             if equal {
-                                return Some(index);
+                                return Some(HashProbe { row: index, slot });
                             }
                         } else {
                             inc_ref_bits(_py, candidate);
@@ -1308,14 +1363,20 @@ pub(crate) unsafe fn dict_find_entry_with_hash(
                                 dict_structural_epoch(dict) == epoch
                                     && table.as_ptr() == table_address
                                     && table.len() == table_len
-                                    && dict_order(dict).get(index * 2).copied() == Some(candidate)
-                                    && dict_hashes(dict).get(index).copied() == Some(hash)
+                                    && table.get(slot).copied() == Some(entry)
+                                    && dict_entries(dict).get(index).map(|row| row.key)
+                                        == Some(candidate)
+                                    && dict_entries(dict)
+                                        .get(index)
+                                        .and_then(|row| row.hash)
+                                        .map(StoredHash::get)
+                                        == Some(hash)
                             };
                             if !unchanged {
                                 continue 'restart;
                             }
                             if equal {
-                                return Some(index);
+                                return Some(HashProbe { row: index, slot });
                             }
                         }
                     }
@@ -1335,8 +1396,18 @@ pub(crate) unsafe fn set_find_entry_in_place_with_hash(
     key: u64,
     hash: u64,
 ) -> Option<usize> {
+    unsafe { set_probe_with_hash(py, set, key, hash).map(|probe| probe.row) }
+}
+
+unsafe fn set_probe_with_hash(
+    py: &PyToken<'_>,
+    set: *mut u8,
+    key: u64,
+    hash: u64,
+) -> Option<HashProbe> {
     unsafe {
         'restart: loop {
+            let epoch = crate::object::backing::tracked_vec_mutation_epoch(set_entries_ptr(set));
             let (address, length) = {
                 let table = set_table(set);
                 (table.as_ptr(), table.len())
@@ -1353,8 +1424,11 @@ pub(crate) unsafe fn set_find_entry_in_place_with_hash(
                 }
                 if entry != TABLE_TOMBSTONE {
                     let index = entry - 1;
-                    let candidate = set_order(set).get(index).copied();
-                    let candidate_hash = set_hashes(set).get(index).copied();
+                    let candidate = set_entries(set).get(index).map(|row| row.key);
+                    let candidate_hash = set_entries(set)
+                        .get(index)
+                        .and_then(|row| row.hash)
+                        .map(StoredHash::get);
                     let (Some(candidate), Some(candidate_hash)) = (candidate, candidate_hash)
                     else {
                         return raise_exception(
@@ -1365,11 +1439,11 @@ pub(crate) unsafe fn set_find_entry_in_place_with_hash(
                     };
                     if candidate_hash == hash {
                         if candidate == key {
-                            return Some(index);
+                            return Some(HashProbe { row: index, slot });
                         }
                         if let Some(equal) = string_bits_eq(py, candidate, key) {
                             if equal {
-                                return Some(index);
+                                return Some(HashProbe { row: index, slot });
                             }
                         } else {
                             inc_ref_bits(py, candidate);
@@ -1378,17 +1452,25 @@ pub(crate) unsafe fn set_find_entry_in_place_with_hash(
                             let equal = equal?;
                             let unchanged = {
                                 let table = set_table(set);
-                                table.as_ptr() == address
+                                crate::object::backing::tracked_vec_mutation_epoch(set_entries_ptr(
+                                    set,
+                                )) == epoch
+                                    && table.as_ptr() == address
                                     && table.len() == length
                                     && table.get(slot).copied() == Some(entry)
-                                    && set_order(set).get(index).copied() == Some(candidate)
-                                    && set_hashes(set).get(index).copied() == Some(hash)
+                                    && set_entries(set).get(index).map(|row| row.key)
+                                        == Some(candidate)
+                                    && set_entries(set)
+                                        .get(index)
+                                        .and_then(|row| row.hash)
+                                        .map(StoredHash::get)
+                                        == Some(hash)
                             };
                             if !unchanged {
                                 continue 'restart;
                             }
                             if equal {
-                                return Some(index);
+                                return Some(HashProbe { row: index, slot });
                             }
                         }
                     }
@@ -1397,76 +1479,6 @@ pub(crate) unsafe fn set_find_entry_in_place_with_hash(
             }
             return raise_exception(py, "SystemError", "set table has no empty slot");
         }
-    }
-}
-
-pub(crate) fn set_table_capacity(entries: usize) -> usize {
-    dict_table_capacity(entries)
-}
-
-fn set_insert_entry(_py: &PyToken<'_>, hashes: &[u64], table: &mut [usize], entry_idx: usize) {
-    let mask = table.len() - 1;
-    let mut slot = (hashes[entry_idx] as usize) & mask;
-    let mut first_tombstone = None;
-    loop {
-        let entry = table[slot];
-        if entry == 0 {
-            let target = first_tombstone.unwrap_or(slot);
-            table[target] = entry_idx + 1;
-            return;
-        }
-        if entry == TABLE_TOMBSTONE && first_tombstone.is_none() {
-            first_tombstone = Some(slot);
-        }
-        slot = (slot + 1) & mask;
-    }
-}
-
-fn set_insert_entry_with_hash(
-    _py: &PyToken<'_>,
-    _order: &[u64],
-    table: &mut [usize],
-    entry_idx: usize,
-    hash: u64,
-) {
-    let mask = table.len() - 1;
-    let mut slot = (hash as usize) & mask;
-    let mut first_tombstone = None;
-    loop {
-        let entry = table[slot];
-        if entry == 0 {
-            let target = first_tombstone.unwrap_or(slot);
-            table[target] = entry_idx + 1;
-            return;
-        }
-        if entry == TABLE_TOMBSTONE && first_tombstone.is_none() {
-            first_tombstone = Some(slot);
-        }
-        slot = (slot + 1) & mask;
-    }
-}
-pub(in crate::object) fn set_rebuild(
-    _py: &PyToken<'_>,
-    order: &[u64],
-    hashes: &[u64],
-    table: &mut Vec<usize>,
-    capacity: usize,
-) {
-    crate::gil_assert();
-    if !unsafe {
-        crate::object::backing::tracked_vec_reserve_or_raise(
-            _py,
-            table as *mut Vec<usize>,
-            capacity,
-            "set allocation failed",
-        )
-    } {
-        return;
-    }
-    table.clear();
-    table.resize(capacity, 0);
-    for entry_idx in 0..order.len() {
-        set_insert_entry(_py, hashes, table, entry_idx);
     }
 }
 
@@ -1506,18 +1518,13 @@ impl Drop for PinnedSetEntry<'_, '_> {
     }
 }
 
-pub(crate) unsafe fn set_pin_entry<'a, 'py>(
+pub(crate) unsafe fn set_pin_next<'a, 'py>(
     py: &'a PyToken<'py>,
     set: *mut u8,
-    index: usize,
+    cursor: &mut usize,
 ) -> Option<PinnedSetEntry<'a, 'py>> {
-    unsafe {
-        Some(PinnedSetEntry::borrow(
-            py,
-            *set_order(set).get(index)?,
-            *set_hashes(set).get(index)?,
-        ))
-    }
+    let row = unsafe { set_next_entry(set, cursor)? };
+    Some(PinnedSetEntry::borrow(py, row.key, row.hash?.get()))
 }
 
 pub(in crate::object) fn concat_bytes_like(
@@ -1630,17 +1637,18 @@ unsafe fn dict_set_with_hash_deferred<'a, 'py>(
     val_bits: u64,
     hash: u64,
 ) -> Result<DetachedDictReferences<'a, 'py>, ()> {
+    let hash = admit_stored_hash(_py, hash).ok_or(())?;
     unsafe {
         if (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
             raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
             return Err(());
         }
-        let found = dict_find_entry_with_hash(_py, ptr, key_bits, hash);
+        let found = dict_find_entry_with_hash(_py, ptr, key_bits, hash.get());
         if exception_pending(_py) {
             return Err(());
         }
         if let Some(entry_idx) = found {
-            let val_idx = entry_idx * 2 + 1;
+            let val_idx = entry_idx;
             return Ok(dict_commit_value_replacement(_py, ptr, val_idx, val_bits));
         }
 
@@ -1678,13 +1686,13 @@ pub(crate) unsafe fn dict_setdefault_in_place(
             inc_ref_bits(py, bits);
         }
         let result = (|| {
-            let hash = dict_key_hash(py, key)?;
-            let found = dict_find_entry_with_hash(py, dict, key, hash);
+            let hash = admit_stored_hash(py, dict_key_hash(py, key)?)?;
+            let found = dict_find_entry_with_hash(py, dict, key, hash.get());
             if exception_pending(py) {
                 return None;
             }
             if let Some(index) = found {
-                let value = dict_order(dict)[index * 2 + 1];
+                let value = dict_entries(dict)[index].value;
                 inc_ref_bits(py, value);
                 return Some(value);
             }
@@ -1720,61 +1728,41 @@ pub(crate) unsafe fn dict_setdefault_in_place(
     }
 }
 
-/// Reserve table load, order and hash capacity for `added` new entries, so the
-/// appends that follow cannot grow or fail. Calls no Python and moves no entry:
-/// every index and the structural epoch are unchanged.
+/// Ordinary insertion has no resolved namespace indices to remap.
 #[inline]
-unsafe fn dict_reserve_entries(_py: &PyToken<'_>, ptr: *mut u8, added: usize) -> bool {
-    unsafe {
-        let order = dict_order(ptr);
-        let hashes = dict_hashes(ptr);
-        let table = dict_table(ptr);
-        let new_entries = (order.len() / 2) + added;
-        let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
-        if needs_resize {
-            let capacity = dict_table_capacity(new_entries);
-            dict_rebuild(_py, order, hashes, table, capacity);
-            if exception_pending(_py) {
-                return false;
-            }
-        }
-        reserve_dict_order(_py, order, 2 * added)
-            && reserve_hashes(_py, hashes, added, "dict allocation failed")
-    }
+unsafe fn dict_reserve_entries(py: &PyToken<'_>, ptr: *mut u8, added: usize) -> bool {
+    unsafe { reserve_hash_storage(py, ptr.cast::<HashStorage<DictEntry>>(), added, &mut []) }
 }
 
-/// Append one new entry into reserved capacity, then publish its references,
-/// tracking and structure. Cannot grow, fail or call Python.
-#[inline]
+/// All capacity was admitted before this callback-free publication.
 unsafe fn dict_append_reserved_entry(
-    _py: &PyToken<'_>,
+    py: &PyToken<'_>,
     ptr: *mut u8,
-    key_bits: u64,
-    val_bits: u64,
-    hash: u64,
+    key: u64,
+    value: u64,
+    hash: StoredHash,
 ) {
     unsafe {
-        let order = dict_order(ptr);
-        let hashes = dict_hashes(ptr);
-        order.push(key_bits);
-        order.push(val_bits);
-        hashes.push(hash);
-        if crate::object::refcount_opt::is_heap_ref(key_bits) {
-            inc_ref_bits(_py, key_bits);
+        inc_ref_bits(py, key);
+        inc_ref_bits(py, value);
+        let index = dict_entries(ptr).len();
+        dict_entries(ptr).push(DictEntry {
+            key,
+            value,
+            hash: Some(hash),
+        });
+        if install_hash_index(dict_table(ptr), index, hash) {
+            dict_storage(ptr).fill += 1;
         }
-        if crate::object::refcount_opt::is_heap_ref(val_bits) {
-            inc_ref_bits(_py, val_bits);
-        }
-        let entry_idx = order.len() / 2 - 1;
-        dict_insert_entry_with_hash(_py, order, dict_table(ptr), entry_idx, hash);
-        dict_commit_insertion(_py, ptr, key_bits, val_bits);
+        dict_storage(ptr).live += 1;
+        dict_commit_insertion(py, ptr, key, value);
         crate::object::field_storage::debug::dictionary(
-            _py,
+            py,
             "dict_insert",
             std::ptr::null_mut(),
             MoltObject::from_ptr(ptr).bits(),
-            Some(key_bits),
-            Some(val_bits),
+            Some(key),
+            Some(value),
         );
     }
 }
@@ -1818,7 +1806,7 @@ pub(crate) unsafe fn dict_bind_string_entries<'a, 'py>(
             raise_exception::<()>(_py, "SystemError", "string binding exceeds its bound");
             return Err(());
         }
-        let mut hashes = [0u64; DICT_STRING_BINDING_LIMIT];
+        let mut hashes = [None; DICT_STRING_BINDING_LIMIT];
         for (index, &(key_bits, _)) in entries.iter().enumerate() {
             let Some(key) = exact_string_bytes(_py, key_bits) else {
                 raise_exception::<()>(_py, "SystemError", "string binding keys must be str");
@@ -1830,13 +1818,14 @@ pub(crate) unsafe fn dict_bind_string_entries<'a, 'py>(
                     return Err(());
                 }
             }
-            hashes[index] = hash_bits(_py, key_bits);
+            hashes[index] = Some(admit_stored_hash(_py, hash_bits(_py, key_bits)).ok_or(())?);
         }
         let mut found = [None; DICT_STRING_BINDING_LIMIT];
         loop {
             let epoch = dict_structural_epoch(dict);
             for (index, &(key_bits, _)) in entries.iter().enumerate() {
-                found[index] = dict_find_entry_with_hash(_py, dict, key_bits, hashes[index]);
+                found[index] =
+                    dict_find_entry_with_hash(_py, dict, key_bits, hashes[index].unwrap().get());
                 if exception_pending(_py) {
                     return Err(());
                 }
@@ -1845,23 +1834,35 @@ pub(crate) unsafe fn dict_bind_string_entries<'a, 'py>(
                 .iter()
                 .filter(|entry| entry.is_none())
                 .count();
-            if added != 0 && !dict_reserve_entries(_py, dict, added) {
+            if dict_structural_epoch(dict) != epoch {
+                continue;
+            }
+            if added != 0
+                && !reserve_hash_storage(
+                    _py,
+                    dict.cast::<HashStorage<DictEntry>>(),
+                    added,
+                    &mut found,
+                )
+            {
                 return Err(());
             }
-            // Only a probe callback can restructure the mapping; reservation
-            // cannot. Every probe result is current while the epoch is.
-            if dict_structural_epoch(dict) == epoch {
-                break;
-            }
+            break;
         }
         let mut displaced = [0; DICT_STRING_BINDING_LIMIT];
         for (index, &(key_bits, value_bits)) in entries.iter().enumerate() {
             match found[index] {
                 Some(entry) => {
-                    displaced[index] = dict_replace_value(_py, dict, entry * 2 + 1, value_bits);
+                    displaced[index] = dict_replace_value(_py, dict, entry, value_bits);
                 }
                 None => {
-                    dict_append_reserved_entry(_py, dict, key_bits, value_bits, hashes[index]);
+                    dict_append_reserved_entry(
+                        _py,
+                        dict,
+                        key_bits,
+                        value_bits,
+                        hashes[index].unwrap(),
+                    );
                 }
             }
         }
@@ -1913,10 +1914,13 @@ pub(crate) unsafe fn set_add_with_hash_in_place(
     key_bits: u64,
     hash: u64,
 ) {
-    let _key = PinnedSetEntry::borrow(_py, key_bits, hash);
+    let Some(hash) = admit_stored_hash(_py, hash) else {
+        return;
+    };
+    let _key = PinnedSetEntry::borrow(_py, key_bits, hash.get());
     unsafe {
         crate::gil_assert();
-        let found = set_find_entry_in_place_with_hash(_py, ptr, key_bits, hash);
+        let found = set_find_entry_in_place_with_hash(_py, ptr, key_bits, hash.get());
         if exception_pending(_py) || found.is_some() {
             return;
         }
@@ -1926,33 +1930,23 @@ pub(crate) unsafe fn set_add_with_hash_in_place(
 
 /// The caller has proved absence or is copying distinct stored source keys.
 /// This callback-free insertion is shared by normal insertion and exact copy.
-unsafe fn set_insert_absent_with_hash(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64, hash: u64) {
+unsafe fn set_insert_absent_with_hash(py: &PyToken<'_>, ptr: *mut u8, key: u64, hash: StoredHash) {
     unsafe {
-        // Lookup may mutate/reallocate storage; acquire backing only now.
-        let order = set_order(ptr);
-        let hashes = set_hashes(ptr);
-        let table = set_table(ptr);
-        let new_entries = order.len() + 1;
-        let needs_resize = table.is_empty() || new_entries * 10 >= table.len() * 7;
-        if needs_resize {
-            let capacity = set_table_capacity(new_entries);
-            set_rebuild(_py, order, hashes, table, capacity);
-            if exception_pending(_py) {
-                return;
-            }
-        }
-
-        if !reserve_set_order(_py, order, 1)
-            || !reserve_hashes(_py, hashes, 1, "set allocation failed")
-        {
+        if !reserve_hash_storage(py, ptr.cast::<HashStorage<SetEntry>>(), 1, &mut []) {
             return;
         }
-        order.push(key_bits);
-        hashes.push(hash);
-        inc_ref_bits(_py, key_bits);
-        let entry_idx = order.len() - 1;
-        set_insert_entry_with_hash(_py, order, table, entry_idx, hash);
-        if crate::object::refcount_opt::is_heap_ref(key_bits) {
+        inc_ref_bits(py, key);
+        let index = set_entries(ptr).len();
+        set_entries(ptr).push(SetEntry {
+            key,
+            hash: Some(hash),
+        });
+        if install_hash_index(set_table(ptr), index, hash) {
+            set_storage(ptr).fill += 1;
+        }
+        set_storage(ptr).live += 1;
+        crate::object::backing::tracked_vec_bump_mutation_epoch(set_entries_ptr(ptr));
+        if crate::object::refcount_opt::is_heap_ref(key) {
             (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
     }
@@ -1963,14 +1957,18 @@ unsafe fn set_insert_absent_with_hash(_py: &PyToken<'_>, ptr: *mut u8, key_bits:
 /// them and invoke user equality during set.copy().
 pub(crate) unsafe fn set_copy_into_empty(py: &PyToken<'_>, source: *mut u8, target: *mut u8) {
     unsafe {
-        assert!(set_order(target).is_empty());
+        assert_eq!(set_len(target), 0);
         let mut index = 0;
-        while let Some(entry) = set_pin_entry(py, source, index) {
-            set_insert_absent_with_hash(py, target, entry.bits(), entry.hash());
+        while let Some(entry) = set_pin_next(py, source, &mut index) {
+            set_insert_absent_with_hash(
+                py,
+                target,
+                entry.bits(),
+                admit_stored_hash(py, entry.hash()).expect("stored source hash"),
+            );
             if exception_pending(py) {
                 return;
             }
-            index += 1;
         }
     }
 }
@@ -1986,7 +1984,7 @@ pub(crate) unsafe fn dict_get_with_hash_in_place(
 ) -> Option<u64> {
     unsafe {
         let index = dict_find_entry_with_hash(py, dict, key_bits, hash)?;
-        Some(dict_order(dict)[index * 2 + 1])
+        Some(dict_entries(dict)[index].value)
     }
 }
 
@@ -2000,7 +1998,7 @@ pub(crate) unsafe fn dict_get_in_place(
             return dict_get_inline_int_in_place(py, dict, key_bits, integer);
         }
         let index = dict_find_entry(py, dict, key_bits)?;
-        Some(dict_order(dict)[index * 2 + 1])
+        Some(dict_entries(dict)[index].value)
     }
 }
 
@@ -2010,7 +2008,7 @@ pub(crate) unsafe fn dict_get_in_place(
 /// equality: a user lookup must use dict_find_entry, or preserve Undecided
 /// from dict_exact_string_lookup rather than treating it as absence.
 pub(crate) unsafe fn dict_get_str_bytes_borrowed(
-    _py: &PyToken<'_>,
+    py: &PyToken<'_>,
     ptr: *mut u8,
     key: &[u8],
 ) -> Option<u64> {
@@ -2018,47 +2016,32 @@ pub(crate) unsafe fn dict_get_str_bytes_borrowed(
         if object_type_id(ptr) != TYPE_ID_DICT {
             return None;
         }
+        let hash = hash_string_bytes(py, key) as u64;
         let table = dict_table(ptr);
         if table.is_empty() {
             return None;
         }
-        let hash = hash_string_bytes(_py, key) as u64;
-        let order = dict_order(ptr);
-        let hashes = dict_hashes(ptr);
         let mask = table.len() - 1;
-        let mut slot = (hash as usize) & mask;
-        loop {
-            let entry = table[slot];
-            if entry == 0 {
+        let mut slot = hash as usize & mask;
+        for _ in 0..table.len() {
+            let index = table[slot];
+            if index == 0 {
                 return None;
             }
-            if entry == TABLE_TOMBSTONE {
-                slot = (slot + 1) & mask;
-                continue;
-            }
-            let entry_idx = entry - 1;
-            if entry_idx * 2 >= order.len() {
-                slot = (slot + 1) & mask;
-                continue;
-            }
-            if hashes.get(entry_idx).copied() != Some(hash) {
-                slot = (slot + 1) & mask;
-                continue;
-            }
-            let entry_key_bits = order[entry_idx * 2];
-            let Some(entry_key_ptr) = obj_from_bits(entry_key_bits).as_ptr() else {
-                slot = (slot + 1) & mask;
-                continue;
-            };
-            if object_type_id(entry_key_ptr) == TYPE_ID_STRING {
-                let len = string_len(entry_key_ptr);
-                if len == key.len() && simd_bytes_eq(string_bytes(entry_key_ptr), key.as_ptr(), len)
+            if index != TABLE_TOMBSTONE {
+                let row = dict_entries(ptr)[index - 1];
+                if row.hash.map(StoredHash::get) == Some(hash)
+                    && let Some(key_ptr) = obj_from_bits(row.key).as_ptr()
+                    && object_type_id(key_ptr) == TYPE_ID_STRING
+                    && string_len(key_ptr) == key.len()
+                    && simd_bytes_eq(string_bytes(key_ptr), key.as_ptr(), key.len())
                 {
-                    return Some(order[entry_idx * 2 + 1]);
+                    return Some(row.value);
                 }
             }
             slot = (slot + 1) & mask;
         }
+        None
     }
 }
 
@@ -2069,9 +2052,8 @@ pub(crate) unsafe fn dict_find_entry_kv_in_place(
 ) -> Option<(u64, u64)> {
     unsafe {
         let index = dict_find_entry(py, dict, key_bits)?;
-        let order = dict_order(dict);
-        let key_index = index * 2;
-        Some((order[key_index], order[key_index + 1]))
+        let row = dict_entries(dict)[index];
+        Some((row.key, row.value))
     }
 }
 
@@ -2088,57 +2070,61 @@ pub(crate) unsafe fn set_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits:
 }
 
 pub(crate) unsafe fn set_del_with_hash_in_place(
-    _py: &PyToken<'_>,
+    py: &PyToken<'_>,
     ptr: *mut u8,
-    key_bits: u64,
+    key: u64,
     hash: u64,
 ) -> bool {
-    let _key = PinnedSetEntry::borrow(_py, key_bits, hash);
+    let Some(hash) = admit_stored_hash(py, hash) else {
+        return false;
+    };
+    let hash = hash.get();
+    let _key = PinnedSetEntry::borrow(py, key, hash);
     unsafe {
-        let found = set_find_entry_in_place_with_hash(_py, ptr, key_bits, hash);
-        if exception_pending(_py) {
-            return false;
-        }
-        let Some(entry_idx) = found else {
+        let Some(probe) = set_probe_with_hash(py, ptr, key, hash) else {
             return false;
         };
-        let order = set_order(ptr);
-        let hashes = set_hashes(ptr);
-        let table = set_table(ptr);
-        let key_val = order[entry_idx];
-        order.remove(entry_idx);
-        hashes.remove(entry_idx);
-        let removed_slot_val = entry_idx + 1;
-        let mut tombstones = 0usize;
-        for slot in table.iter_mut() {
-            if *slot == 0 {
-                continue;
-            }
-            if *slot == TABLE_TOMBSTONE {
-                tombstones = tombstones.saturating_add(1);
-                continue;
-            }
-            if *slot == removed_slot_val {
-                *slot = TABLE_TOMBSTONE;
-                tombstones = tombstones.saturating_add(1);
-                continue;
-            }
-            if *slot > removed_slot_val {
-                *slot -= 1;
-            }
+        if exception_pending(py) {
+            return false;
         }
-        let entries = order.len();
-        let desired_capacity = set_table_capacity(entries.max(1));
-        if table.len() > desired_capacity.saturating_mul(4)
-            || tombstones.saturating_mul(4) > table.len()
-        {
-            set_rebuild(_py, order, hashes, table, desired_capacity);
-        }
-        if order.is_empty() {
+        let key = set_remove_row(ptr, probe);
+        dec_ref_bits(py, key);
+        true
+    }
+}
+
+unsafe fn set_remove_row(ptr: *mut u8, probe: HashProbe) -> u64 {
+    unsafe {
+        let row = std::mem::take(&mut set_entries(ptr)[probe.row]);
+        set_table(ptr)[probe.slot] = TABLE_TOMBSTONE;
+        set_storage(ptr).live -= 1;
+        crate::object::backing::tracked_vec_bump_mutation_epoch(set_entries_ptr(ptr));
+        if set_len(ptr) == 0 {
             (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
-        dec_ref_bits(_py, key_val);
-        true
+        row.key
+    }
+}
+
+pub(crate) unsafe fn set_pop_owned(ptr: *mut u8) -> Option<u64> {
+    unsafe {
+        while set_entries(ptr)
+            .last()
+            .is_some_and(|row| row.hash.is_none())
+        {
+            set_entries(ptr).pop();
+        }
+        let row = set_entries(ptr).len().checked_sub(1)?;
+        let hash = set_entries(ptr)[row].hash?;
+        let slot = hash_slot_for_row(set_table(ptr), row, hash)?;
+        let key = set_remove_row(ptr, HashProbe { row, slot });
+        while set_entries(ptr)
+            .last()
+            .is_some_and(|row| row.hash.is_none())
+        {
+            set_entries(ptr).pop();
+        }
+        Some(key)
     }
 }
 
@@ -2150,14 +2136,15 @@ pub(crate) unsafe fn set_publish_staged(_py: &PyToken<'_>, live: *mut u8, staged
         assert_ne!(live, staged);
         assert_eq!(object_type_id(live), TYPE_ID_SET);
         assert_eq!(object_type_id(staged), TYPE_ID_SET);
-        let order = set_order_ptr(live);
-        let hashes = set_hashes_ptr(live);
+        let order = set_entries_ptr(live);
         let table = set_table_ptr(live);
         let _order_lock = crate::object::backing::tracked_vec_mutation_lock(order);
-        let _hashes_lock = crate::object::backing::tracked_vec_mutation_lock(hashes);
         let _table_lock = crate::object::backing::tracked_vec_mutation_lock(table);
-        crate::object::backing::tracked_vec_swap_contents(order, set_order(staged));
-        crate::object::backing::tracked_vec_swap_contents(hashes, set_hashes(staged));
+        crate::object::backing::tracked_vec_swap_contents(order, set_entries_ptr(staged));
+        std::mem::swap(&mut set_storage(live).live, &mut set_storage(staged).live);
+        std::mem::swap(&mut set_storage(live).fill, &mut set_storage(staged).fill);
+        crate::object::backing::tracked_vec_bump_mutation_epoch(order);
+        crate::object::backing::tracked_vec_bump_mutation_epoch(set_entries_ptr(staged));
         crate::object::backing::tracked_vec_swap_contents(table, set_table(staged));
         let live_refs =
             (*header_from_obj_ptr(live)).has_flag(crate::object::HEADER_FLAG_CONTAINS_REFS);
@@ -2176,12 +2163,17 @@ pub(crate) unsafe fn set_publish_staged(_py: &PyToken<'_>, live: *mut u8, staged
 }
 
 pub(crate) unsafe fn set_clear_in_place(py: &PyToken<'_>, set: *mut u8) {
-    let replacement = molt_set_new(0);
-    let Some(ptr) = obj_from_bits(replacement).as_ptr() else {
-        return;
-    };
-    unsafe { set_publish_staged(py, set, ptr) };
-    dec_ref_bits(py, replacement);
+    unsafe {
+        let rows = crate::object::backing::tracked_vec_take_contents(set_entries_ptr(set));
+        set_table(set).clear();
+        set_storage(set).live = 0;
+        set_storage(set).fill = 0;
+        crate::object::backing::tracked_vec_bump_mutation_epoch(set_entries_ptr(set));
+        (*header_from_obj_ptr(set)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
+        for row in rows.iter().filter(|row| row.hash.is_some()) {
+            dec_ref_bits(py, row.key);
+        }
+    }
 }
 
 pub(crate) unsafe fn dict_del_in_place(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64) -> bool {
@@ -2193,66 +2185,82 @@ pub(crate) unsafe fn dict_del_deferred<'a, 'py>(
     ptr: *mut u8,
     key_bits: u64,
 ) -> Option<DetachedDictReferences<'a, 'py>> {
+    unsafe { dict_delete_deferred(_py, ptr, key_bits, None) }
+}
+
+/// The supplied hash belongs to the caller's retained actual dictionary entry.
+/// Only lookup changes: mutation, restart, epochs and deferred release stay here.
+pub(crate) unsafe fn dict_del_with_hash_deferred<'a, 'py>(
+    py: &'a PyToken<'py>,
+    ptr: *mut u8,
+    key_bits: u64,
+    hash: u64,
+) -> Option<DetachedDictReferences<'a, 'py>> {
+    let hash = admit_stored_hash(py, hash)?;
+    unsafe { dict_delete_deferred(py, ptr, key_bits, Some(hash.get())) }
+}
+
+unsafe fn dict_delete_deferred<'a, 'py>(
+    py: &'a PyToken<'py>,
+    ptr: *mut u8,
+    key: u64,
+    hash: Option<u64>,
+) -> Option<DetachedDictReferences<'a, 'py>> {
     unsafe {
-        if (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
-            raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
+        if dict_layout_frozen(ptr) {
+            return raise_exception(py, "TypeError", "class layout metadata is immutable");
+        }
+        let hash = match hash {
+            Some(hash) => hash,
+            None => dict_key_hash(py, key)?,
+        };
+        let probe = dict_probe_with_hash(py, ptr, key, hash)?;
+        if exception_pending(py) {
             return None;
         }
-        let found = dict_find_entry(_py, ptr, key_bits);
-        crate::object::field_storage::debug::dictionary(
-            _py,
-            "dict_delete",
-            std::ptr::null_mut(),
-            MoltObject::from_ptr(ptr).bits(),
-            Some(key_bits),
-            None,
-        );
-        let order = dict_order(ptr);
-        let hashes = dict_hashes(ptr);
-        let table = dict_table(ptr);
-        if exception_pending(_py) {
-            return None;
-        }
-        let entry_idx = found?;
-        let key_idx = entry_idx * 2;
-        let val_idx = key_idx + 1;
-        let removed = [order[key_idx], order[val_idx]];
-        order.drain(key_idx..=val_idx);
-        hashes.remove(entry_idx);
-        let removed_slot_val = entry_idx + 1;
-        let mut tombstones = 0usize;
-        for slot in table.iter_mut() {
-            if *slot == 0 {
-                continue;
-            }
-            if *slot == TABLE_TOMBSTONE {
-                tombstones = tombstones.saturating_add(1);
-                continue;
-            }
-            if *slot == removed_slot_val {
-                *slot = TABLE_TOMBSTONE;
-                tombstones = tombstones.saturating_add(1);
-                continue;
-            }
-            if *slot > removed_slot_val {
-                *slot -= 1;
-            }
-        }
-        let entries = order.len() / 2;
-        let desired_capacity = dict_table_capacity(entries.max(1));
-        if table.len() > desired_capacity.saturating_mul(4)
-            || tombstones.saturating_mul(4) > table.len()
-        {
-            dict_rebuild(_py, order, hashes, table, desired_capacity);
-        }
-        if order.is_empty() {
+        Some(dict_remove_row(py, ptr, probe))
+    }
+}
+
+unsafe fn dict_remove_row<'a, 'py>(
+    py: &'a PyToken<'py>,
+    ptr: *mut u8,
+    probe: HashProbe,
+) -> DetachedDictReferences<'a, 'py> {
+    unsafe {
+        let row = std::mem::take(&mut dict_entries(ptr)[probe.row]);
+        dict_table(ptr)[probe.slot] = TABLE_TOMBSTONE;
+        dict_storage(ptr).live -= 1;
+        dict_commit_structure(ptr);
+        if dict_len(ptr) == 0 {
             (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         }
-        dict_commit_structure(ptr);
-        Some(DetachedDictReferences {
-            py: _py,
-            bits: removed,
-        })
+        DetachedDictReferences {
+            py,
+            bits: [row.key, row.value],
+        }
+    }
+}
+
+/// The caller prepares its result before committing this nonfallible removal.
+pub(crate) unsafe fn dict_remove_last<'a, 'py>(
+    py: &'a PyToken<'py>,
+    ptr: *mut u8,
+) -> Option<DetachedDictReferences<'a, 'py>> {
+    unsafe {
+        let row = dict_entries(ptr)
+            .iter()
+            .rposition(|row| row.hash.is_some())?;
+        let hash = dict_entries(ptr)[row].hash?;
+        let slot = hash_slot_for_row(dict_table(ptr), row, hash)?;
+        let removed = dict_remove_row(py, ptr, HashProbe { row, slot });
+        while dict_entries(ptr)
+            .last()
+            .is_some_and(|row| row.hash.is_none())
+        {
+            dict_entries(ptr).pop();
+        }
+        Some(removed)
     }
 }
 
@@ -2261,7 +2269,8 @@ pub(crate) unsafe fn dict_del_deferred<'a, 'py>(
 pub(crate) unsafe fn dict_clear_deferred<'a, 'py>(
     _py: &'a PyToken<'py>,
     ptr: *mut u8,
-) -> Option<DetachedDictReferences<'a, 'py, Vec<u64>>> {
+) -> Option<DetachedDictReferences<'a, 'py, crate::object::backing::TrackedVecContents<DictEntry>>>
+{
     unsafe {
         if (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP) {
             raise_exception::<()>(_py, "TypeError", "class layout metadata is immutable");
@@ -2274,23 +2283,16 @@ pub(crate) unsafe fn dict_clear_deferred<'a, 'py>(
     }
 }
 
-unsafe fn dict_detach_contents(_py: &PyToken<'_>, ptr: *mut u8) -> Vec<u64> {
+unsafe fn dict_detach_contents(
+    _py: &PyToken<'_>,
+    ptr: *mut u8,
+) -> crate::object::backing::TrackedVecContents<DictEntry> {
     unsafe {
         crate::gil_assert();
-        crate::object::field_storage::debug::dictionary(
-            _py,
-            "dict_detach",
-            std::ptr::null_mut(),
-            MoltObject::from_ptr(ptr).bits(),
-            None,
-            None,
-        );
-        let order = dict_order(ptr);
-        let removed: Vec<u64> = std::mem::take(order);
-        let hashes = dict_hashes(ptr);
-        hashes.clear();
-        let table = dict_table(ptr);
-        table.clear();
+        let removed = crate::object::backing::tracked_vec_take_contents(dict_entries_ptr(ptr));
+        dict_table(ptr).clear();
+        dict_storage(ptr).live = 0;
+        dict_storage(ptr).fill = 0;
         (*header_from_obj_ptr(ptr)).fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
         dict_commit_structure(ptr);
         removed

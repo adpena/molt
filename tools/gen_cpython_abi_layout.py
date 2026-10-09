@@ -279,6 +279,7 @@ C_TO_RUST: dict[str, str] = {
     "PySliceObject": "PySliceObject",
     "PyGenericAliasObject": "PyGenericAliasObject",
     "PyCFunctionObject": "PyCFunctionObject",
+    "PyMethodObject": "PyMethodObject",
     "Py_complex": "Py_complex",
     "PyLongObject": "PyLongObject",
     "PyBaseExceptionObject": "PyBaseExceptionObject",
@@ -318,6 +319,7 @@ ASSERTED_STRUCTS: tuple[str, ...] = (
     "PySliceObject",
     "PyGenericAliasObject",
     "PyCFunctionObject",
+    "PyMethodObject",
     "PyLongObject",
     "PyLongValue",
     "PyCapsuleObject",
@@ -580,6 +582,7 @@ _C_TYPE_EXPR: dict[str, str | None] = {
     "PySliceObject": "PySliceObject",
     "PyGenericAliasObject": "PyGenericAliasObject",
     "PyCFunctionObject": "PyCFunctionObject",
+    "PyMethodObject": "PyMethodObject",
     "PyLongObject": "PyLongObject",
     "PyLongValue": "_PyLongValue",
     "PyCapsuleObject": None,  # asserted only if C spelling present; see resolve

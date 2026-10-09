@@ -200,32 +200,50 @@ ABI_CASES = (
         ),
     )
 )
-RUNTIME_CASES = tuple(
-    (
-        f"runtime.decimal.{digits}",
-        "runtime_bigint",
-        {
-            "digits": digits,
-            "base": 10,
-            "value_class": "power_of_two" if digits == 4096 else "dense_nines",
-            "real_runtime_hook": "int_from_digits",
-        },
+RUNTIME_CASES = (
+    tuple(
+        (
+            f"runtime.decimal.{digits}",
+            "runtime_bigint",
+            {
+                "digits": digits,
+                "base": 10,
+                "value_class": "power_of_two" if digits == 4096 else "dense_nines",
+                "real_runtime_hook": "int_from_digits",
+            },
+        )
+        for digits in (25, 37, 256, 4096, 4300)
     )
-    for digits in (25, 37, 256, 4096, 4300)
-) + tuple(
-    (
-        f"runtime.bytes.{width}",
-        "runtime_bigint",
-        {
-            "bytes": width,
-            "little_endian": True,
-            "signed": False,
-            "operations": ["int_from_bytes", "int_to_bytes", "int_num_bits"],
-            "real_runtime_hooks": True,
-        },
+    + tuple(
+        (
+            f"runtime.bytes.{width}",
+            "runtime_bigint",
+            {
+                "bytes": width,
+                "little_endian": True,
+                "signed": False,
+                "operations": ["int_from_bytes", "int_to_bytes", "int_num_bits"],
+                "real_runtime_hooks": True,
+            },
+        )
+        for width in (1, 2, 4, 8, 17, 256, 4096)
     )
-    for width in (1, 2, 4, 8, 17, 256, 4096)
+    + tuple(
+        (
+            f"runtime.scalar.{scalar}.{operation}",
+            "runtime_scalar_bridge",
+            {
+                "scalar": scalar,
+                "value": value,
+                "operation": operation,
+                "real_runtime_hooks": True,
+            },
+        )
+        for scalar, value in (("int", 1000), ("float", 1.25))
+        for operation in ("construct_extract_release", "runtime_hold_roundtrip")
+    )
 )
+
 
 COMPONENTS = {
     "abi_boundary": {

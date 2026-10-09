@@ -802,7 +802,7 @@ fn native_descriptor_method(
     let Some(args) = call_vararg_args(py, method, args_bits) else {
         return MoltObject::none().bits();
     };
-    let Some((_, keywords)) = call_vararg_kwargs(py, method, kwargs_bits) else {
+    let Some(keywords) = call_vararg_kwargs(py, method, kwargs_bits) else {
         return MoltObject::none().bits();
     };
     let Some((&receiver, args)) = args.split_first() else {

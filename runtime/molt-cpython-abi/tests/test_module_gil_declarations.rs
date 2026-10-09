@@ -67,7 +67,7 @@ unsafe extern "C" fn exec_begin(bits: u64, _definition: usize) -> c_int {
 fn install_hooks() {
     let mut hooks = support::stub_runtime_hooks();
     support::fake_strings::wire(&mut hooks);
-    hooks.classify_heap = classify;
+    hooks.classify_heap = Some(classify);
     hooks.alloc_module = alloc_module;
     hooks.module_exec_begin = exec_begin;
     support::prepare_runtime_class_abi_test_thread(hooks);

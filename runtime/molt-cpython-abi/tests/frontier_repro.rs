@@ -47,24 +47,14 @@ use molt_cpython_abi::hooks::RuntimeHooks;
 // the `RuntimeHooks` vtable at load time. Inline ints and raw pointers need no
 // hooks, but any frontier that materializes a *str* (repr/str/format paths)
 // needs a working `alloc_str`/`str_data` pair to read the result back. We supply
-// the smallest possible one — a content-addressed leaked-bytes arena — so these
+// the existing shared payload/refcount fixture owner so these
 // tests never depend on the (heavy) full `molt-runtime` crate.
 // ─────────────────────────────────────────────────────────────────────────────
-
-unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
-    if support::fake_strings::contains(bits) {
-        molt_cpython_abi::abi_types::MoltTypeTag::Str as u8
-    } else {
-        molt_cpython_abi::abi_types::MoltTypeTag::Other as u8
-    }
-}
 
 /// Install this binary's str hooks and own one real runtime execution boundary.
 fn install_min_hooks() -> support::AbiTestThreadStateTransaction {
     let mut hooks: RuntimeHooks = support::stub_runtime_hooks();
-    support::fake_strings::wire(&mut hooks);
-    support::fake_runtime::wire_class_identity(&mut hooks);
-    hooks.classify_heap = fake_classify_heap;
+    support::fake_runtime::wire_sequences(&mut hooks);
     hooks.object_richcompare_builtin = support::fake_numbers::compare_builtin;
     hooks.object_richcompare = support::fake_runtime::richcompare;
     let transaction = support::AbiTestThreadStateTransaction::new(hooks);

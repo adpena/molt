@@ -568,3 +568,161 @@ fn test_object_delitem_null_returns_error() {
     };
     assert_eq!(rc, -1);
 }
+
+thread_local! {
+    static METHOD_VECTOR_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static METHOD_VECTOR_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+unsafe extern "C" fn method_vector_probe(
+    _function: *mut PyObject,
+    args: *mut *mut PyObject,
+    nargsf: usize,
+    names: *mut PyObject,
+) -> *mut PyObject {
+    assert!(names.is_null());
+    assert_eq!(
+        nargsf,
+        METHOD_VECTOR_COUNT.get() + 1,
+        "receiver is prepended and scratch permission consumed"
+    );
+    unsafe {
+        for index in 1..nargsf {
+            assert_eq!(*args.add(index), *args);
+        }
+        if METHOD_VECTOR_FAIL.get() {
+            molt_cpython_abi::api::errors::PyErr_SetString(
+                (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast(),
+                c"method vector failure".as_ptr(),
+            );
+            ptr::null_mut()
+        } else {
+            molt_cpython_abi::api::refcount::Py_INCREF(*args);
+            *args
+        }
+    }
+}
+
+#[test]
+fn physical_method_vectorcall_restores_scratch_and_handles_inline_spill_and_failure() {
+    use molt_cpython_abi::abi_types::{Py_TPFLAGS_HAVE_VECTORCALL, PyTypeObject, PyVectorcallFunc};
+    use molt_cpython_abi::api::{errors, object, refcount};
+    let _guard = init();
+    #[repr(C)]
+    struct Target {
+        object: PyObject,
+        vector: Option<PyVectorcallFunc>,
+    }
+    unsafe {
+        let mut kind: PyTypeObject = std::mem::zeroed();
+        kind.tp_name = c"method_vector_target".as_ptr();
+        kind.tp_flags = Py_TPFLAGS_HAVE_VECTORCALL;
+        kind.tp_vectorcall_offset = std::mem::offset_of!(Target, vector) as isize;
+        let mut target = Target {
+            object: PyObject {
+                ob_refcnt: 1,
+                ob_type: &raw mut kind,
+            },
+            vector: Some(method_vector_probe),
+        };
+        let receiver = molt_cpython_abi::api::numbers::PyLong_FromLong(77);
+        let method = object::PyMethod_New(&raw mut target.object, receiver);
+        assert!(!method.is_null());
+        assert!(object::PyVectorcall_Function(method).is_some());
+        assert!(
+            (*method.cast::<molt_cpython_abi::abi_types::PyMethodObject>())
+                .im_weakreflist
+                .is_null()
+        );
+        assert_eq!(
+            (*(*method).ob_type).tp_weaklistoffset,
+            0,
+            "native weakref support is not advertised"
+        );
+        let offset = 1usize << (usize::BITS - 1);
+        for fail in [false, true] {
+            for count in [0, 1, 8, 17] {
+                for scratch in [false, true] {
+                    METHOD_VECTOR_FAIL.set(fail);
+                    METHOD_VECTOR_COUNT.set(count);
+                    let sentinel = &raw mut target.object;
+                    let mut values = vec![receiver; count + 1];
+                    values[0] = sentinel;
+                    let result = object::PyObject_Vectorcall(
+                        method,
+                        values.as_mut_ptr().add(1),
+                        count | if scratch { offset } else { 0 },
+                        ptr::null_mut(),
+                    );
+                    assert_eq!(
+                        values[0], sentinel,
+                        "scratch restored: count={count}, failure={fail}"
+                    );
+                    if fail {
+                        assert!(result.is_null());
+                        assert!(!errors::PyErr_Occurred().is_null());
+                        errors::PyErr_Clear();
+                    } else {
+                        assert_eq!(result, receiver);
+                        refcount::Py_DECREF(result);
+                    }
+                }
+            }
+        }
+        assert!(object::PyMethod_New(&raw mut target.object, ptr::null_mut()).is_null());
+        assert!(!errors::PyErr_Occurred().is_null());
+        errors::PyErr_Clear();
+        refcount::Py_DECREF(method);
+        assert_eq!(target.object.ob_refcnt, 1);
+        refcount::Py_DECREF(receiver);
+    }
+}
+
+thread_local! {
+    static METHOD_RETIRED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+unsafe extern "C" fn method_operand_finalizer(object: *mut PyObject) {
+    METHOD_RETIRED.set(METHOD_RETIRED.get() + 1);
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_SetString(
+            (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast(),
+            c"operand finalizer must not replace caller error".as_ptr(),
+        );
+        drop(Box::from_raw(object));
+    }
+}
+
+#[test]
+fn physical_method_retirement_preserves_pending_error_across_operand_finalizers() {
+    use molt_cpython_abi::api::{errors, object, refcount};
+    let _guard = init();
+    unsafe {
+        let mut kind: molt_cpython_abi::abi_types::PyTypeObject = std::mem::zeroed();
+        kind.tp_name = c"method_owned_operand".as_ptr();
+        kind.tp_dealloc = Some(method_operand_finalizer);
+        let function = Box::into_raw(Box::new(PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut kind,
+        }));
+        let receiver = Box::into_raw(Box::new(PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut kind,
+        }));
+        let method = object::PyMethod_New(function, receiver);
+        assert!(!method.is_null());
+        refcount::Py_DECREF(function);
+        refcount::Py_DECREF(receiver);
+        errors::PyErr_SetString(
+            (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast(),
+            c"original method caller error".as_ptr(),
+        );
+        let original = errors::PyErr_GetRaisedException();
+        assert!(!original.is_null());
+        errors::PyErr_SetRaisedException(original);
+        METHOD_RETIRED.set(0);
+        refcount::Py_DECREF(method);
+        assert_eq!(METHOD_RETIRED.get(), 2);
+        let preserved = errors::PyErr_GetRaisedException();
+        assert_eq!(preserved, original);
+        refcount::Py_DECREF(preserved);
+    }
+}

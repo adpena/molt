@@ -36,23 +36,8 @@ static MAX_I64_BITS: AtomicU64 = AtomicU64::new(0);
 const BIG_U64_VALUE: u64 = u64::MAX - 1;
 const HUGE_LOW_U64: u64 = 0x1234_5678_9abc_def0;
 const NEG_HUGE_LOW_U64: u64 = 7;
-/// The f64 the mock TrueDivide authority reports for HUGE (exact-authority path).
-const HUGE_AS_F64: f64 = 1.0e25;
-
-unsafe extern "C" fn mock_classify_heap(bits: u64) -> u8 {
-    if support::fake_strings::contains(bits) {
-        molt_cpython_abi::abi_types::MoltTypeTag::Str as u8
-    } else if bits == BIG_U64_BITS.load(Ordering::SeqCst)
-        || bits == HUGE_BITS.load(Ordering::SeqCst)
-        || bits == NEG_HUGE_BITS.load(Ordering::SeqCst)
-        || bits == MIN_I64_BITS.load(Ordering::SeqCst)
-        || bits == MAX_I64_BITS.load(Ordering::SeqCst)
-    {
-        molt_cpython_abi::abi_types::MoltTypeTag::Int as u8
-    } else {
-        molt_cpython_abi::abi_types::MoltTypeTag::Other as u8
-    }
-}
+/// Independently rounded binary64 for (2**80 + 0x123456789abcdef0).
+const HUGE_AS_F64: f64 = 1.2089271313830967e24;
 
 unsafe extern "C" fn mock_int_as_i64_checked(bits: u64, out: *mut i64) -> std::os::raw::c_int {
     if bits == MIN_I64_BITS.load(Ordering::SeqCst) {
@@ -98,23 +83,15 @@ unsafe extern "C" fn mock_int_as_u64_mask(
     0
 }
 
-unsafe extern "C" fn mock_int_sign(bits: u64) -> std::os::raw::c_int {
-    if bits == NEG_HUGE_BITS.load(Ordering::SeqCst) {
-        -1
-    } else if bits == HUGE_BITS.load(Ordering::SeqCst) {
-        1
-    } else {
-        0
-    }
-}
-
 /// The runtime numeric authority stand-in: `HUGE / 1` (TrueDivide) yields the
 /// exact float; everything else fails closed.
 unsafe extern "C" fn mock_number_binary_op(
     op: u32,
+    mode: u32,
     a: u64,
     _b: u64,
 ) -> molt_cpython_abi::hooks::OwnedHandleResult {
+    assert_eq!(mode, 0, "ordinary numeric caller must not request mutation");
     if op == molt_cpython_abi::hooks::NumberBinaryOp::TrueDivide as u32
         && a == HUGE_BITS.load(Ordering::SeqCst)
     {
@@ -145,7 +122,7 @@ unsafe extern "C" fn mock_number_unary_op(
         } else if bits == HUGE_BITS.load(Ordering::SeqCst) {
             Some(HUGE_AS_F64)
         } else if bits == NEG_HUGE_BITS.load(Ordering::SeqCst) {
-            Some(-HUGE_AS_F64)
+            Some(-1.2089258196146292e24)
         } else if bits == MIN_I64_BITS.load(Ordering::SeqCst) {
             Some(i64::MIN as f64)
         } else if bits == MAX_I64_BITS.load(Ordering::SeqCst) {
@@ -163,31 +140,41 @@ unsafe extern "C" fn mock_number_unary_op(
 fn install_hooks() {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     if BIG_U64_BITS.load(Ordering::SeqCst) == 0 {
-        let a: *mut u8 = Box::into_raw(Box::new(0u8));
-        let b: *mut u8 = Box::into_raw(Box::new(0u8));
-        let c: *mut u8 = Box::into_raw(Box::new(0u8));
-        let d: *mut u8 = Box::into_raw(Box::new(0u8));
-        let e: *mut u8 = Box::into_raw(Box::new(0u8));
-        BIG_U64_BITS.store(MoltObject::from_ptr(a).bits(), Ordering::SeqCst);
-        HUGE_BITS.store(MoltObject::from_ptr(b).bits(), Ordering::SeqCst);
-        NEG_HUGE_BITS.store(MoltObject::from_ptr(c).bits(), Ordering::SeqCst);
-        MIN_I64_BITS.store(MoltObject::from_ptr(d).bits(), Ordering::SeqCst);
-        MAX_I64_BITS.store(MoltObject::from_ptr(e).bits(), Ordering::SeqCst);
+        // These fixtures now have physical numeric payloads and real retained
+        // owners. The independent low-word mask literals remain unchanged.
+        BIG_U64_BITS.store(
+            support::fake_runtime::heap_integer(i128::from(BIG_U64_VALUE)),
+            Ordering::SeqCst,
+        );
+        HUGE_BITS.store(
+            support::fake_runtime::heap_integer((1i128 << 80) + i128::from(HUGE_LOW_U64)),
+            Ordering::SeqCst,
+        );
+        NEG_HUGE_BITS.store(
+            support::fake_runtime::heap_integer(-(1i128 << 80) + i128::from(NEG_HUGE_LOW_U64)),
+            Ordering::SeqCst,
+        );
+        MIN_I64_BITS.store(
+            support::fake_runtime::heap_integer(i128::from(i64::MIN)),
+            Ordering::SeqCst,
+        );
+        MAX_I64_BITS.store(
+            support::fake_runtime::heap_integer(i128::from(i64::MAX)),
+            Ordering::SeqCst,
+        );
     }
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.classify_heap = mock_classify_heap;
+    support::fake_runtime::wire(&mut hooks);
     hooks.int_as_i64_checked = mock_int_as_i64_checked;
     hooks.int_as_u64_checked = mock_int_as_u64_checked;
     hooks.int_as_u64_mask = mock_int_as_u64_mask;
-    hooks.int_sign = mock_int_sign;
     hooks.number_binary_op = mock_number_binary_op;
     hooks.number_unary_op = mock_number_unary_op;
-    support::fake_strings::wire(&mut hooks);
     support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 fn proxy(bits: u64) -> *mut PyObject {
-    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
+    unsafe { GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(bits) }
 }
 fn int_obj(v: i64) -> *mut PyObject {
     proxy(MoltObject::from_int(v).bits())

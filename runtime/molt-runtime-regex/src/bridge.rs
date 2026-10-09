@@ -193,7 +193,7 @@ unsafe extern "C" {
         out_ptr: *mut *const u64,
         out_len: *mut usize,
     ) -> i32;
-    fn __molt_regex_dict_order_clone(
+    fn __molt_regex_dict_snapshot(
         ptr: *mut u8,
         out_ptr: *mut *const u64,
         out_len: *mut usize,
@@ -241,20 +241,19 @@ pub unsafe fn seq_snapshot(ptr: *mut u8) -> OwnedBridgeHandleSnapshot {
     unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) }
 }
 
-/// Returns a cloned copy of the dict's insertion order as a Vec of [k0, v0, k1, v1, ...].
+/// Returns owned, pinned key/value pairs in insertion order.
 /// # Safety
 ///
 /// `ptr` must refer to a live Molt dictionary object for the duration of this
 /// call.
-pub unsafe fn dict_order_clone(_py: &CoreGilToken, ptr: *mut u8) -> Vec<u64> {
+pub unsafe fn dict_snapshot(_py: &CoreGilToken, ptr: *mut u8) -> Option<OwnedBridgeHandleSnapshot> {
     let mut out_ptr: *const u64 = std::ptr::null();
     let mut out_len: usize = 0;
-    let ok = unsafe { __molt_regex_dict_order_clone(ptr, &mut out_ptr, &mut out_len) };
-    if ok == 0 || out_len == 0 {
-        return Vec::new();
+    let ok = unsafe { __molt_regex_dict_snapshot(ptr, &mut out_ptr, &mut out_len) };
+    if ok == 0 {
+        return None;
     }
-    let boxed = unsafe { bridge_owned_u64_buffer(out_ptr, out_len) };
-    boxed.into_vec()
+    Some(unsafe { bridge_owned_handle_snapshot(out_ptr, out_len) })
 }
 
 // ---------------------------------------------------------------------------

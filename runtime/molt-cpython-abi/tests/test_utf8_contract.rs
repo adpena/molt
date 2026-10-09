@@ -96,11 +96,11 @@ unsafe extern "C" fn noop_ref(_bits: u64) {}
 
 fn init() {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.alloc_str = alloc_str;
+    hooks.alloc_str = Some(alloc_str);
     hooks.alloc_bytes = alloc_bytes;
     hooks.str_data = str_data;
     hooks.bytes_data = bytes_data;
-    hooks.classify_heap = classify_heap;
+    hooks.classify_heap = Some(classify_heap);
     hooks.inc_ref = noop_ref;
     hooks.dec_ref = noop_ref;
     support::prepare_runtime_class_abi_test_thread(hooks);

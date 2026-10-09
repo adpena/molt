@@ -586,6 +586,27 @@ _MOLT_ABI_SASSERT(offsetof(PyCFunctionObject, m_weakreflist) == 40u, "layout dri
 _MOLT_ABI_SASSERT(offsetof(PyCFunctionObject, vectorcall) == 48u, "layout drift: offsetof(PyCFunctionObject, vectorcall) != 48");
 #endif
 
+/* PyMethodObject  <-  abi_types.rs */
+#if SIZEOF_VOID_P == 4
+_MOLT_ABI_SASSERT(sizeof(PyMethodObject) == 24u, "layout drift: sizeof(PyMethodObject) != 24 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyMethodObject, im_func) == 8u, "layout drift: offsetof(PyMethodObject, im_func) != 8");
+_MOLT_ABI_SASSERT(offsetof(PyMethodObject, im_self) == 12u, "layout drift: offsetof(PyMethodObject, im_self) != 12");
+_MOLT_ABI_SASSERT(offsetof(PyMethodObject, im_weakreflist) == 16u, "layout drift: offsetof(PyMethodObject, im_weakreflist) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyMethodObject, vectorcall) == 20u, "layout drift: offsetof(PyMethodObject, vectorcall) != 20");
+#elif SIZEOF_LONG == 4
+_MOLT_ABI_SASSERT(sizeof(PyMethodObject) == 48u, "layout drift: sizeof(PyMethodObject) != 48 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyMethodObject, im_func) == 16u, "layout drift: offsetof(PyMethodObject, im_func) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyMethodObject, im_self) == 24u, "layout drift: offsetof(PyMethodObject, im_self) != 24");
+_MOLT_ABI_SASSERT(offsetof(PyMethodObject, im_weakreflist) == 32u, "layout drift: offsetof(PyMethodObject, im_weakreflist) != 32");
+_MOLT_ABI_SASSERT(offsetof(PyMethodObject, vectorcall) == 40u, "layout drift: offsetof(PyMethodObject, vectorcall) != 40");
+#else
+_MOLT_ABI_SASSERT(sizeof(PyMethodObject) == 48u, "layout drift: sizeof(PyMethodObject) != 48 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");
+_MOLT_ABI_SASSERT(offsetof(PyMethodObject, im_func) == 16u, "layout drift: offsetof(PyMethodObject, im_func) != 16");
+_MOLT_ABI_SASSERT(offsetof(PyMethodObject, im_self) == 24u, "layout drift: offsetof(PyMethodObject, im_self) != 24");
+_MOLT_ABI_SASSERT(offsetof(PyMethodObject, im_weakreflist) == 32u, "layout drift: offsetof(PyMethodObject, im_weakreflist) != 32");
+_MOLT_ABI_SASSERT(offsetof(PyMethodObject, vectorcall) == 40u, "layout drift: offsetof(PyMethodObject, vectorcall) != 40");
+#endif
+
 /* PyLongObject  <-  abi_types.rs */
 #if SIZEOF_VOID_P == 4
 _MOLT_ABI_SASSERT(sizeof(PyLongObject) == 16u, "layout drift: sizeof(PyLongObject) != 16 (regen tools/gen_cpython_abi_layout.py / fix abi_types.rs)");

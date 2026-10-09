@@ -526,18 +526,13 @@ unsafe fn reversed_impl(_py: &PyToken<'_>, seq_bits: u64, builtin_only: bool) ->
                 let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                     return MoltObject::none().bits();
                 };
-                let idx = dict_len(dict_ptr);
-                let total = std::mem::size_of::<MoltHeader>()
-                    + std::mem::size_of::<u64>()
-                    + std::mem::size_of::<usize>();
-                let rev_ptr = alloc_object(_py, total, TYPE_ID_REVERSED);
-                if rev_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                inc_ref_bits(_py, dict_bits);
-                *(rev_ptr as *mut u64) = dict_bits;
-                reversed_set_index(rev_ptr, idx);
-                return MoltObject::from_ptr(rev_ptr).bits();
+                return alloc_hash_iterator(_py, MoltObject::from_ptr(dict_ptr).bits(), true);
+            }
+            if matches!(
+                type_id,
+                TYPE_ID_DICT_KEYS_VIEW | TYPE_ID_DICT_VALUES_VIEW | TYPE_ID_DICT_ITEMS_VIEW
+            ) {
+                return alloc_hash_iterator(_py, seq_bits, true);
             }
             if type_id == TYPE_ID_LIST
                 || type_id == TYPE_ID_LIST_INT
@@ -546,22 +541,11 @@ unsafe fn reversed_impl(_py: &PyToken<'_>, seq_bits: u64, builtin_only: bool) ->
                 || type_id == TYPE_ID_STRING
                 || type_id == TYPE_ID_BYTES
                 || type_id == TYPE_ID_BYTEARRAY
-                || type_id == TYPE_ID_DICT
-                || type_id == TYPE_ID_DICT_KEYS_VIEW
-                || type_id == TYPE_ID_DICT_VALUES_VIEW
-                || type_id == TYPE_ID_DICT_ITEMS_VIEW
             {
                 let idx = if type_id == TYPE_ID_STRING {
                     string_len(ptr)
                 } else if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
                     bytes_len(ptr)
-                } else if type_id == TYPE_ID_DICT {
-                    dict_order(ptr).len() / 2
-                } else if type_id == TYPE_ID_DICT_KEYS_VIEW
-                    || type_id == TYPE_ID_DICT_VALUES_VIEW
-                    || type_id == TYPE_ID_DICT_ITEMS_VIEW
-                {
-                    dict_view_len(ptr)
                 } else if type_id == TYPE_ID_LIST
                     || type_id == TYPE_ID_LIST_INT
                     || type_id == TYPE_ID_LIST_BOOL
@@ -739,19 +723,9 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                         if obj_from_bits(target_bits).is_none() {
                             return MoltObject::none().bits();
                         }
-                        let total = std::mem::size_of::<MoltHeader>()
-                            + std::mem::size_of::<u64>()
-                            + std::mem::size_of::<usize>()
-                            + std::mem::size_of::<*mut u8>();
-                        let iter_ptr = alloc_object(_py, total, TYPE_ID_ITER);
-                        if iter_ptr.is_null() {
-                            dec_ref_bits(_py, target_bits);
-                            return MoltObject::none().bits();
-                        }
-                        *(iter_ptr as *mut u64) = target_bits;
-                        iter_set_index(iter_ptr, 0);
-                        iter_set_cached_tuple(iter_ptr, std::ptr::null_mut());
-                        return MoltObject::from_ptr(iter_ptr).bits();
+                        let result = alloc_hash_iterator(_py, target_bits, false);
+                        dec_ref_bits(_py, target_bits);
+                        return result;
                     }
                     if type_id == TYPE_ID_GENERATOR {
                         inc_ref_bits(_py, iter_bits);
@@ -797,6 +771,9 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                             return MoltObject::from_ptr(iter_ptr).bits();
                         }
                     }
+                    if hash_iterator_target(ptr).is_some() {
+                        return alloc_hash_iterator(_py, iter_bits, false);
+                    }
                     if type_id == TYPE_ID_LIST
                         || type_id == TYPE_ID_LIST_INT
                         || type_id == TYPE_ID_LIST_BOOL
@@ -806,12 +783,6 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                         || type_id == TYPE_ID_STRING
                         || type_id == TYPE_ID_BYTES
                         || type_id == TYPE_ID_BYTEARRAY
-                        || type_id == TYPE_ID_DICT
-                        || type_id == TYPE_ID_SET
-                        || type_id == TYPE_ID_FROZENSET
-                        || type_id == TYPE_ID_DICT_KEYS_VIEW
-                        || type_id == TYPE_ID_DICT_VALUES_VIEW
-                        || type_id == TYPE_ID_DICT_ITEMS_VIEW
                         || type_id == TYPE_ID_RANGE
                         || type_id == TYPE_ID_MEMORYVIEW
                     {
@@ -1079,6 +1050,316 @@ unsafe fn cached_pair_clear(_py: &PyToken<'_>, slot_ptr: *mut *mut u8) {
             dec_ref_ptr(_py, cached);
         }
     }
+}
+
+/// Canonical class edges identify both the public type and the specialized
+/// physical tail, including after exhaustion has released the target.
+unsafe fn hash_iterator_kind(py: &PyToken<'_>, ptr: *mut u8) -> Option<(bool, u32)> {
+    unsafe {
+        let class = object_class_bits(ptr);
+        let b = builtin_classes(py);
+        if object_type_id(ptr) == TYPE_ID_ITER {
+            if class == b.dict_keyiterator {
+                Some((false, TYPE_ID_DICT_KEYS_VIEW))
+            } else if class == b.dict_valueiterator {
+                Some((false, TYPE_ID_DICT_VALUES_VIEW))
+            } else if class == b.dict_itemiterator {
+                Some((false, TYPE_ID_DICT_ITEMS_VIEW))
+            } else if class == b.set_iterator {
+                Some((false, TYPE_ID_SET))
+            } else {
+                None
+            }
+        } else if object_type_id(ptr) == TYPE_ID_REVERSED {
+            if class == b.dict_reversekeyiterator {
+                Some((true, TYPE_ID_DICT_KEYS_VIEW))
+            } else if class == b.dict_reversevalueiterator {
+                Some((true, TYPE_ID_DICT_VALUES_VIEW))
+            } else if class == b.dict_reverseitemiterator {
+                Some((true, TYPE_ID_DICT_ITEMS_VIEW))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+}
+
+unsafe fn hash_iterator_target(target: *mut u8) -> Option<*mut u8> {
+    unsafe {
+        match object_type_id(target) {
+            TYPE_ID_DICT | TYPE_ID_SET | TYPE_ID_FROZENSET => Some(target),
+            TYPE_ID_DICT_KEYS_VIEW | TYPE_ID_DICT_VALUES_VIEW | TYPE_ID_DICT_ITEMS_VIEW => {
+                obj_from_bits(dict_view_dict_bits(target)).as_ptr()
+            }
+            _ => None,
+        }
+    }
+}
+
+unsafe fn alloc_hash_iterator(py: &PyToken<'_>, target_bits: u64, reverse: bool) -> u64 {
+    unsafe {
+        let target = obj_from_bits(target_bits)
+            .as_ptr()
+            .expect("live hash iterable");
+        let storage = hash_iterator_target(target).expect("hash iterable storage");
+        let ty = object_type_id(target);
+        let set = matches!(ty, TYPE_ID_SET | TYPE_ID_FROZENSET);
+        let expected = if set {
+            set_len(storage)
+        } else {
+            dict_len(storage)
+        };
+        let b = builtin_classes(py);
+        let class = match (reverse, ty) {
+            (true, TYPE_ID_DICT_VALUES_VIEW) => b.dict_reversevalueiterator,
+            (true, TYPE_ID_DICT_ITEMS_VIEW) => b.dict_reverseitemiterator,
+            (true, _) => b.dict_reversekeyiterator,
+            (false, TYPE_ID_DICT_VALUES_VIEW) => b.dict_valueiterator,
+            (false, TYPE_ID_DICT_ITEMS_VIEW) => b.dict_itemiterator,
+            (false, TYPE_ID_SET | TYPE_ID_FROZENSET) => b.set_iterator,
+            (false, _) => b.dict_keyiterator,
+        };
+        let base = if reverse {
+            super::layout::HASH_REVERSED_BASE
+        } else {
+            super::layout::HASH_ITER_BASE
+        };
+        let total = std::mem::size_of::<MoltHeader>()
+            + base
+            + std::mem::size_of::<super::layout::HashIteratorState>();
+        let ptr = super::alloc_object_zeroed_unpublished_with_aux(
+            py,
+            total,
+            if reverse {
+                TYPE_ID_REVERSED
+            } else {
+                TYPE_ID_ITER
+            },
+            ObjectAuxPreselection::ClassInline,
+        );
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        inc_ref_bits(py, target_bits);
+        super::layout::iter_set_target_bits(ptr, target_bits);
+        iter_set_index(
+            ptr,
+            if reverse {
+                dict_entries(storage).len()
+            } else {
+                0
+            },
+        );
+        let state = super::layout::hash_iterator_state(ptr, reverse);
+        state.expected = expected;
+        state.remaining = expected as isize;
+        if !super::object_init_class_edge_unpublished(
+            py,
+            ptr,
+            class,
+            super::ClassEdgeOwnership::Owned,
+        ) {
+            dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
+            return raise_exception(py, "SystemError", "hash iterator class publication failed");
+        }
+        super::gc::gc_publish_initialized(py, ptr);
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+unsafe fn hash_iterator_finish(py: &PyToken<'_>, ptr: *mut u8, reverse: bool) {
+    unsafe {
+        let target = iter_target_bits(ptr);
+        super::layout::iter_set_target_bits(ptr, MoltObject::none().bits());
+        iter_set_index(ptr, ITER_EXHAUSTED);
+        super::layout::hash_iterator_state(ptr, reverse).remaining = 0;
+        if !reverse {
+            cached_pair_clear(py, iter_pair_slot(ptr));
+        }
+        dec_ref_bits(py, target);
+    }
+}
+
+struct HashIteratorRow<'a, 'py> {
+    py: &'a PyToken<'py>,
+    key: u64,
+    value: u64,
+}
+impl Drop for HashIteratorRow<'_, '_> {
+    fn drop(&mut self) {
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            dec_ref_bits(self.py, self.key);
+            dec_ref_bits(self.py, self.value);
+        });
+    }
+}
+impl HashIteratorRow<'_, '_> {
+    fn value(mut self, projection: u32) -> u64 {
+        if projection == TYPE_ID_DICT_ITEMS_VIEW {
+            let tuple = alloc_tuple(self.py, &[self.key, self.value]);
+            if tuple.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(tuple).bits()
+            }
+        } else if projection == TYPE_ID_DICT_VALUES_VIEW {
+            std::mem::take(&mut self.value)
+        } else {
+            std::mem::take(&mut self.key)
+        }
+    }
+}
+
+/// CPython commits position and remaining count before result allocation or
+/// cached-result edge destruction. Size errors stay attached and sticky;
+/// key-count failure and exhaustion release the target permanently.
+unsafe fn hash_iterator_step<'a, 'py>(
+    py: &'a PyToken<'py>,
+    ptr: *mut u8,
+    reverse: bool,
+    projection: u32,
+) -> Result<Option<HashIteratorRow<'a, 'py>>, ()> {
+    unsafe {
+        let Some(target) = obj_from_bits(iter_target_bits(ptr)).as_ptr() else {
+            return Ok(None);
+        };
+        let Some(storage) = hash_iterator_target(target) else {
+            return Ok(None);
+        };
+        let set = projection == TYPE_ID_SET;
+        let len = if set {
+            set_len(storage)
+        } else {
+            dict_len(storage)
+        };
+        let expected = super::layout::hash_iterator_state(ptr, reverse).expected;
+        if expected == usize::MAX || expected != len {
+            super::layout::hash_iterator_state(ptr, reverse).expected = usize::MAX;
+            raise_exception::<()>(
+                py,
+                "RuntimeError",
+                if set {
+                    "Set changed size during iteration"
+                } else {
+                    "dictionary changed size during iteration"
+                },
+            );
+            return Err(());
+        }
+        let mut cursor = iter_index(ptr);
+        let selected = if set {
+            set_next_entry(storage, &mut cursor).map(|row| (row.key, 0))
+        } else if reverse {
+            // Same-size mutation may shrink the backing below the saved
+            // cursor. Some supported CPython patches read past their entries
+            // here; retain memory safety instead of reproducing that fault.
+            cursor = cursor.min(dict_entries(storage).len());
+            let mut selected = None;
+            while cursor > 0 {
+                cursor -= 1;
+                let row = dict_entries(storage)[cursor];
+                if row.hash.is_some() {
+                    selected = Some((row.key, row.value));
+                    break;
+                }
+            }
+            selected
+        } else {
+            dict_next_entry(storage, &mut cursor).map(|row| (row.key, row.value))
+        };
+        let Some((key, value)) = selected else {
+            hash_iterator_finish(py, ptr, reverse);
+            return Ok(None);
+        };
+        let remaining = super::layout::hash_iterator_state(ptr, reverse).remaining;
+        // Canonical CPython 3.12.13/3.13.11/3.14.3 reverse iterators omit
+        // this check. Later maintenance releases changed that behavior.
+        if !set && !reverse && remaining == 0 {
+            raise_exception::<()>(
+                py,
+                "RuntimeError",
+                "dictionary keys changed during iteration",
+            );
+            molt_cpython_abi::api::errors::with_preserved_error(|| {
+                hash_iterator_finish(py, ptr, reverse);
+            });
+            return Err(());
+        }
+        inc_ref_bits(py, key);
+        inc_ref_bits(py, value);
+        iter_set_index(ptr, cursor);
+        super::layout::hash_iterator_state(ptr, reverse).remaining = remaining - 1;
+        Ok(Some(HashIteratorRow { py, key, value }))
+    }
+}
+
+unsafe fn hash_iterator_pair(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    reverse: bool,
+    projection: u32,
+) -> u64 {
+    unsafe {
+        match hash_iterator_step(py, ptr, reverse, projection) {
+            Err(()) => MoltObject::none().bits(),
+            Ok(None) => generator_done_tuple(py, MoltObject::none().bits()),
+            Ok(Some(row)) => {
+                let value = row.value(projection);
+                if exception_pending(py) {
+                    dec_ref_bits(py, value);
+                    return MoltObject::none().bits();
+                }
+                if !reverse {
+                    return iter_return_cached(py, ptr, value, false, true);
+                }
+                let pair = alloc_tuple(py, &[value, MoltObject::from_bool(false).bits()]);
+                dec_ref_bits(py, value);
+                if pair.is_null() {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_ptr(pair).bits()
+                }
+            }
+        }
+    }
+}
+
+pub(crate) extern "C" fn hash_iterator_length_hint(bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(ptr) = obj_from_bits(bits).as_ptr() else {
+            return raise_exception(py, "TypeError", "hash iterator required");
+        };
+        unsafe {
+            let Some((reverse, projection)) = hash_iterator_kind(py, ptr) else {
+                return raise_exception(py, "TypeError", "hash iterator required");
+            };
+            let remaining = if let Some(target) = obj_from_bits(iter_target_bits(ptr))
+                .as_ptr()
+                .and_then(|target| hash_iterator_target(target))
+            {
+                let len = if projection == TYPE_ID_SET {
+                    set_len(target)
+                } else {
+                    dict_len(target)
+                };
+                let state = super::layout::hash_iterator_state(ptr, reverse);
+                if state.expected == len {
+                    state.remaining
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+            if projection == TYPE_ID_SET {
+                int_bits_from_i64(py, remaining as i64)
+            } else {
+                int_bits_from_i128(py, remaining as usize as i128)
+            }
+        }
+    })
 }
 
 /// Build or reuse a (value, done) 2-tuple from the iterator's cached slot.
@@ -1613,6 +1894,9 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                     dec_ref_bits(_py, val_bits);
                     return MoltObject::from_ptr(out_ptr).bits();
                 }
+                if let Some((reverse, projection)) = hash_iterator_kind(_py, ptr) {
+                    return hash_iterator_pair(_py, ptr, reverse, projection);
+                }
                 if object_type_id(ptr) == TYPE_ID_REVERSED {
                     let target_bits = reversed_target_bits(ptr);
                     let target_obj = obj_from_bits(target_bits);
@@ -1722,41 +2006,6 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                                 let pos = idx - 1;
                                 let val_bits = MoltObject::from_int(bytes[pos] as i64).bits();
                                 (idx - 1, Some(val_bits), false)
-                            }
-                        } else if target_type == TYPE_ID_DICT {
-                            let order = dict_order(target_ptr);
-                            let len = order.len() / 2;
-                            let idx = idx.min(len);
-                            if idx == 0 {
-                                (0, None, false)
-                            } else {
-                                let entry = (idx - 1) * 2;
-                                (idx - 1, Some(order[entry]), false)
-                            }
-                        } else if target_type == TYPE_ID_DICT_KEYS_VIEW
-                            || target_type == TYPE_ID_DICT_VALUES_VIEW
-                            || target_type == TYPE_ID_DICT_ITEMS_VIEW
-                        {
-                            let len = dict_view_len(target_ptr);
-                            let idx = idx.min(len);
-                            if idx == 0 {
-                                (0, None, false)
-                            } else if let Some((key_bits, val_bits)) =
-                                dict_view_entry(target_ptr, idx - 1)
-                            {
-                                if target_type == TYPE_ID_DICT_ITEMS_VIEW {
-                                    let tuple_ptr = alloc_tuple(_py, &[key_bits, val_bits]);
-                                    if tuple_ptr.is_null() {
-                                        return MoltObject::none().bits();
-                                    }
-                                    (idx - 1, Some(MoltObject::from_ptr(tuple_ptr).bits()), true)
-                                } else if target_type == TYPE_ID_DICT_KEYS_VIEW {
-                                    (idx - 1, Some(key_bits), false)
-                                } else {
-                                    (idx - 1, Some(val_bits), false)
-                                }
-                            } else {
-                                (0, None, false)
                             }
                         } else {
                             (0, None, false)
@@ -1884,29 +2133,6 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                             }
                             Err(()) => MoltObject::none().bits(),
                         };
-                    }
-                    if target_type == TYPE_ID_SET || target_type == TYPE_ID_FROZENSET {
-                        let table = set_table(target_ptr);
-                        let order = set_order(target_ptr);
-                        let mut slot = idx;
-                        while slot < table.len() && (table[slot] == 0 || table[slot] == usize::MAX)
-                        {
-                            slot += 1;
-                        }
-                        if slot >= table.len() {
-                            iter_set_index(ptr, table.len());
-                            return iter_return_cached(
-                                _py,
-                                ptr,
-                                MoltObject::none().bits(),
-                                true,
-                                false,
-                            );
-                        }
-                        let entry_idx = table[slot] - 1;
-                        let val_bits = order[entry_idx];
-                        iter_set_index(ptr, slot + 1);
-                        return iter_return_cached(_py, ptr, val_bits, false, false);
                     }
                 }
                 if let Some(target_ptr) = target_obj.as_ptr() {
@@ -2143,29 +2369,6 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                         }
                     } else if target_type == TYPE_ID_RANGE {
                         (0, None, false)
-                    } else if target_type == TYPE_ID_DICT_KEYS_VIEW
-                        || target_type == TYPE_ID_DICT_VALUES_VIEW
-                        || target_type == TYPE_ID_DICT_ITEMS_VIEW
-                    {
-                        let len = dict_view_len(target_ptr);
-                        if idx >= len {
-                            (len, None, false)
-                        } else if let Some((key_bits, val_bits)) = dict_view_entry(target_ptr, idx)
-                        {
-                            if target_type == TYPE_ID_DICT_ITEMS_VIEW {
-                                let tuple_ptr = alloc_tuple(_py, &[key_bits, val_bits]);
-                                if tuple_ptr.is_null() {
-                                    return MoltObject::none().bits();
-                                }
-                                (len, Some(MoltObject::from_ptr(tuple_ptr).bits()), true)
-                            } else if target_type == TYPE_ID_DICT_KEYS_VIEW {
-                                (len, Some(key_bits), false)
-                            } else {
-                                (len, Some(val_bits), false)
-                            }
-                        } else {
-                            (len, None, false)
-                        }
                     } else {
                         (0, None, false)
                     }
@@ -2226,6 +2429,22 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: 
         };
 
         unsafe {
+            if let Some((reverse, projection)) = hash_iterator_kind(_py, ptr) {
+                return match hash_iterator_step(_py, ptr, reverse, projection) {
+                    Err(()) => no_value,
+                    Ok(None) => done_true,
+                    Ok(Some(row)) => {
+                        let value = row.value(projection);
+                        if exception_pending(_py) {
+                            dec_ref_bits(_py, value);
+                            no_value
+                        } else {
+                            *value_out = value;
+                            done_false
+                        }
+                    }
+                };
+            }
             // Fast paths for TYPE_ID_ITER wrapping list/tuple/range.
             // Generators, enumerate, map, filter, zip, reversed, etc.
             // go through the slow path below.
@@ -2332,62 +2551,6 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: 
                         return done_true;
                     }
                     // BigInt range — fall through to slow path.
-
-                    // ── DICT_KEYS_VIEW fast path (zero alloc) ──────
-                    if target_type == TYPE_ID_DICT_KEYS_VIEW {
-                        let len = dict_view_len(target_ptr);
-                        if idx == ITER_EXHAUSTED || idx >= len {
-                            iter_finish(_py, ptr);
-                            return done_true;
-                        }
-                        if let Some((key_bits, _val_bits)) = dict_view_entry(target_ptr, idx) {
-                            inc_ref_bits(_py, key_bits);
-                            *value_out = key_bits;
-                            iter_set_index(ptr, idx + 1);
-                            return done_false;
-                        }
-                        iter_finish(_py, ptr);
-                        return done_true;
-                    }
-
-                    // ── DICT_VALUES_VIEW fast path (zero alloc) ────
-                    if target_type == TYPE_ID_DICT_VALUES_VIEW {
-                        let len = dict_view_len(target_ptr);
-                        if idx == ITER_EXHAUSTED || idx >= len {
-                            iter_finish(_py, ptr);
-                            return done_true;
-                        }
-                        if let Some((_key_bits, val_bits)) = dict_view_entry(target_ptr, idx) {
-                            inc_ref_bits(_py, val_bits);
-                            *value_out = val_bits;
-                            iter_set_index(ptr, idx + 1);
-                            return done_false;
-                        }
-                        iter_finish(_py, ptr);
-                        return done_true;
-                    }
-
-                    // ── DICT_ITEMS_VIEW fast path (1 alloc: (k,v) tuple) ──
-                    // Avoids the wrapper (value, done) tuple allocation and
-                    // the is_truthy dispatch on the done flag.
-                    if target_type == TYPE_ID_DICT_ITEMS_VIEW {
-                        let len = dict_view_len(target_ptr);
-                        if idx == ITER_EXHAUSTED || idx >= len {
-                            iter_finish(_py, ptr);
-                            return done_true;
-                        }
-                        if let Some((key_bits, val_bits)) = dict_view_entry(target_ptr, idx) {
-                            let tuple_ptr = alloc_tuple(_py, &[key_bits, val_bits]);
-                            if tuple_ptr.is_null() {
-                                return no_value;
-                            }
-                            *value_out = MoltObject::from_ptr(tuple_ptr).bits();
-                            iter_set_index(ptr, idx + 1);
-                            return done_false;
-                        }
-                        iter_finish(_py, ptr);
-                        return done_true;
-                    }
                 }
             }
 
@@ -2478,37 +2641,16 @@ pub unsafe extern "C" fn molt_iter_next_dict_items(
         };
 
         unsafe {
-            if object_type_id(ptr) == TYPE_ID_ITER {
-                let target_bits = iter_target_bits(ptr);
-                let target_obj = obj_from_bits(target_bits);
-                let idx = iter_index(ptr);
-
-                if let Some(target_ptr) = target_obj.as_ptr() {
-                    let target_type = object_type_id(target_ptr);
-
-                    if target_type == TYPE_ID_DICT_ITEMS_VIEW {
-                        let len = dict_view_len(target_ptr);
-                        if idx == ITER_EXHAUSTED || idx >= len {
-                            iter_finish(_py, ptr);
-                            return done_true;
-                        }
-                        if let Some((kb, vb)) = dict_view_entry(target_ptr, idx) {
-                            // Write key and value directly — zero allocation.
-                            if crate::object::refcount_opt::is_heap_ref(kb) {
-                                inc_ref_bits(_py, kb);
-                            }
-                            if crate::object::refcount_opt::is_heap_ref(vb) {
-                                inc_ref_bits(_py, vb);
-                            }
-                            *key_out = kb;
-                            *value_out = vb;
-                            iter_set_index(ptr, idx + 1);
-                            return done_false;
-                        }
-                        iter_finish(_py, ptr);
-                        return done_true;
+            if let Some((reverse, TYPE_ID_DICT_ITEMS_VIEW)) = hash_iterator_kind(_py, ptr) {
+                return match hash_iterator_step(_py, ptr, reverse, TYPE_ID_DICT_ITEMS_VIEW) {
+                    Err(()) => no_value,
+                    Ok(None) => done_true,
+                    Ok(Some(mut row)) => {
+                        *key_out = std::mem::take(&mut row.key);
+                        *value_out = std::mem::take(&mut row.value);
+                        done_false
                     }
-                }
+                };
             }
 
             // Fallback: use molt_iter_next_unboxed and unpack the tuple.
@@ -2593,6 +2735,239 @@ mod tests {
             .expect("fixture instance");
         assert!(unsafe { (*header_from_obj_ptr(ptr)).gc_is_published() });
         bits
+    }
+
+    unsafe fn hash_test_next(iter: u64) -> (bool, u64) {
+        let mut value = MoltObject::none().bits();
+        let done = unsafe { molt_iter_next_unboxed(iter, (&raw mut value) as usize as u64) };
+        (MoltObject::from_bits(done).as_bool() == Some(true), value)
+    }
+
+    #[test]
+    fn sparse_dictionary_iterators_skip_holes_and_keep_their_type_after_release() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let int = |value| MoltObject::from_int(value).bits();
+                let dict = alloc_dict_with_pairs(
+                    py,
+                    &[
+                        int(0),
+                        int(10),
+                        int(1),
+                        int(11),
+                        int(2),
+                        int(12),
+                        int(3),
+                        int(13),
+                    ],
+                );
+                assert!(crate::object::ops::dict_del_in_place(py, dict, int(1)));
+                assert!(crate::object::ops::dict_del_in_place(py, dict, int(3)));
+                let bits = MoltObject::from_ptr(dict).bits();
+                // Literal CPython insertion-order oracle. Values remain current
+                // until selected; deletion never makes a hole into a live item.
+                for reverse in [false, true] {
+                    let iter = if reverse {
+                        super::reversed_impl(py, bits, true)
+                    } else {
+                        molt_iter(bits)
+                    };
+                    let original_type = crate::type_of_bits(py, iter);
+                    assert_eq!(super::hash_iterator_length_hint(iter), int(2));
+                    for expected in if reverse { [2, 0] } else { [0, 2] } {
+                        let (done, value) = hash_test_next(iter);
+                        assert!(!done);
+                        assert_eq!(value, int(expected));
+                        dec_ref_bits(py, value);
+                    }
+                    assert_eq!(super::hash_iterator_length_hint(iter), int(0));
+                    assert!(hash_test_next(iter).0);
+                    assert_eq!(crate::type_of_bits(py, iter), original_type);
+                    assert!(
+                        MoltObject::from_bits(crate::object::layout::iter_target_bits(
+                            MoltObject::from_bits(iter).as_ptr().unwrap()
+                        ))
+                        .is_none()
+                    );
+                    assert!(hash_test_next(iter).0);
+                    dec_ref_bits(py, iter);
+                }
+                dec_ref_bits(py, bits);
+                assert!(!crate::exception_pending(py));
+            }
+        });
+    }
+
+    #[test]
+    fn dictionary_iterator_size_failure_is_sticky_and_keys_failure_is_terminal() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let int = |value| MoltObject::from_int(value).bits();
+                for size_change in [false, true] {
+                    let dict = alloc_dict_with_pairs(
+                        py,
+                        &[int(0), int(10), int(1), int(11), int(2), int(12)],
+                    );
+                    let bits = MoltObject::from_ptr(dict).bits();
+                    let iter = molt_iter(bits);
+                    assert_eq!(hash_test_next(iter), (false, int(0)));
+                    assert!(crate::object::ops::dict_del_in_place(py, dict, int(0)));
+                    if size_change {
+                        hash_test_next(iter);
+                        assert!(crate::exception_pending(py));
+                        crate::molt_exception_clear();
+                        crate::object::ops::dict_set_in_place(py, dict, int(3), int(13));
+                        hash_test_next(iter);
+                        assert!(
+                            crate::exception_pending(py),
+                            "restoring the size does not clear the sticky error"
+                        );
+                        crate::molt_exception_clear();
+                        assert_eq!(super::hash_iterator_length_hint(iter), int(0));
+                    } else {
+                        crate::object::ops::dict_set_in_place(py, dict, int(3), int(13));
+                        assert_eq!(hash_test_next(iter), (false, int(1)));
+                        assert_eq!(hash_test_next(iter), (false, int(2)));
+                        hash_test_next(iter);
+                        assert!(
+                            crate::exception_pending(py),
+                            "new key after the original remaining count raises"
+                        );
+                        crate::molt_exception_clear();
+                        assert!(
+                            hash_test_next(iter).0,
+                            "keys-changed failure permanently releases the target"
+                        );
+                        assert!(!crate::exception_pending(py));
+                    }
+                    dec_ref_bits(py, iter);
+                    dec_ref_bits(py, bits);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn dictionary_items_allocation_failure_consumes_the_selected_row() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let int = |value| MoltObject::from_int(value).bits();
+                let dict = alloc_dict_with_pairs(py, &[int(0), int(10), int(1), int(11)]);
+                let bits = MoltObject::from_ptr(dict).bits();
+                let view = molt_dict_items(bits);
+                let iter = molt_iter(view);
+                crate::resource::set_tracker(Box::new(crate::resource::LimitedTracker::new(
+                    &crate::resource::ResourceLimits {
+                        max_memory: Some(0),
+                        ..Default::default()
+                    },
+                )));
+                let (_, failed) = hash_test_next(iter);
+                crate::resource::set_tracker(Box::new(crate::resource::UnlimitedTracker));
+                assert!(crate::exception_pending(py));
+                crate::molt_exception_clear();
+                dec_ref_bits(py, failed);
+                assert_eq!(super::hash_iterator_length_hint(iter), int(1));
+                let (done, pair) = hash_test_next(iter);
+                assert!(!done);
+                let tuple = MoltObject::from_bits(pair).as_ptr().unwrap();
+                assert_eq!(
+                    crate::object::seq_access::with_immutable_tuple_slice(tuple, |items| items
+                        .to_vec()),
+                    Some(vec![int(1), int(11)])
+                );
+                dec_ref_bits(py, pair);
+                assert!(hash_test_next(iter).0);
+                for value in [iter, view, bits] {
+                    dec_ref_bits(py, value);
+                }
+                assert!(!crate::exception_pending(py));
+            }
+        });
+    }
+
+    #[test]
+    fn supported_cpython_reverse_and_set_remaining_counts_use_the_public_method() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let int = |value| MoltObject::from_int(value).bits();
+                let dict = alloc_dict_with_pairs(py, &[]);
+                for key in 0..5 {
+                    crate::object::ops::dict_set_in_place(py, dict, int(key), int(key));
+                }
+                for key in 0..4 {
+                    assert!(crate::object::ops::dict_del_in_place(py, dict, int(key)));
+                }
+                let bits = MoltObject::from_ptr(dict).bits();
+                let reverse = super::reversed_impl(py, bits, true);
+                assert_eq!(hash_test_next(reverse), (false, int(4)));
+                assert!(crate::object::ops::dict_del_in_place(py, dict, int(4)));
+                crate::object::ops::dict_set_in_place(py, dict, int(1), int(1));
+                // CPython 3.12.13/3.13.11/3.14.3 allow the additional reverse
+                // row and project the negative hint through PyLong_FromSize_t.
+                assert_eq!(hash_test_next(reverse), (false, int(1)));
+                let name = MoltObject::from_ptr(alloc_string(py, b"__length_hint__")).bits();
+                let method = crate::molt_get_attr_name(reverse, name);
+                let hint = crate::call_callable0(py, method);
+                assert_eq!(
+                    crate::builtins::numbers::index_bigint_integral_bits(hint),
+                    Some(num_bigint::BigInt::from(usize::MAX))
+                );
+                crate::molt_operator_length_hint(reverse, int(0));
+                let error = crate::builtins::exceptions::molt_exception_last_pending();
+                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    py,
+                    error,
+                    "OverflowError"
+                ));
+                crate::molt_exception_clear();
+                dec_ref_bits(py, error);
+                for value in [hint, method, reverse, bits] {
+                    dec_ref_bits(py, value);
+                }
+                let set = crate::molt_set_new(0);
+                crate::molt_set_add(set, int(0));
+                let iter = molt_iter(set);
+                assert_eq!(hash_test_next(iter), (false, int(0)));
+                crate::molt_set_discard(set, int(0));
+                crate::molt_set_add(set, int(1));
+                assert_eq!(hash_test_next(iter), (false, int(1)));
+                let method = crate::molt_get_attr_name(iter, name);
+                let hint = crate::call_callable0(py, method);
+                assert_eq!(hint, int(-1), "set length hint uses signed Py_ssize_t");
+                crate::molt_operator_length_hint(iter, int(0));
+                let error = crate::builtins::exceptions::molt_exception_last_pending();
+                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    py,
+                    error,
+                    "ValueError"
+                ));
+                crate::molt_exception_clear();
+                dec_ref_bits(py, error);
+                for value in [hint, method, iter, set, name] {
+                    dec_ref_bits(py, value);
+                }
+                assert!(!crate::exception_pending(py));
+            }
+        });
+    }
+
+    #[test]
+    fn sets_are_not_reversible() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let set = crate::molt_set_new(0);
+                super::reversed_impl(py, set, true);
+                assert!(crate::exception_pending(py));
+                crate::molt_exception_clear();
+                dec_ref_bits(py, set);
+            }
+        });
     }
 
     static REENTRANT_WEAK_ITER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

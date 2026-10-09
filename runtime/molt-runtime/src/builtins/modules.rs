@@ -22,14 +22,14 @@ use crate::{
     HashContext, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_SET, TYPE_ID_STRING,
     alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string, alloc_tuple, call_callable0,
     call_callable1, call_callable2, class_mro_vec, clear_exception, dec_ref_bits,
-    dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place, exception_pending,
-    format_obj_str, frame_stack_active_globals_bits, has_capability, inc_ref_bits,
-    init_atomic_bits, intern_static_name, is_missing_bits, is_truthy, missing_bits,
-    module_dict_bits, module_name_bits, molt_call_bind, molt_callargs_expand_kwstar,
-    molt_callargs_expand_star, molt_callargs_new, molt_callargs_push_pos, molt_exception_kind,
-    molt_exception_last, molt_getattr_builtin, molt_int_from_obj, molt_is_callable, obj_from_bits,
-    object_type_id, ptr_from_bits, raise_exception, runtime_state, set_add_in_place, string_bytes,
-    string_len, string_obj_to_owned, to_i64, type_name, type_of_bits,
+    dict_del_in_place, dict_get_in_place, dict_set_in_place, exception_pending, format_obj_str,
+    frame_stack_active_globals_bits, has_capability, inc_ref_bits, init_atomic_bits,
+    intern_static_name, is_missing_bits, is_truthy, missing_bits, module_dict_bits,
+    module_name_bits, molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star,
+    molt_callargs_new, molt_callargs_push_pos, molt_exception_kind, molt_exception_last,
+    molt_getattr_builtin, molt_int_from_obj, molt_is_callable, obj_from_bits, object_type_id,
+    ptr_from_bits, raise_exception, runtime_state, set_add_in_place, string_bytes, string_len,
+    string_obj_to_owned, to_i64, type_name, type_of_bits,
 };
 
 mod execution;
@@ -2490,10 +2490,10 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                 .unwrap_or_else(|| "<attr>".to_string());
             if debug_attr {
                 let mut present = false;
-                let order = dict_order(_dict_ptr);
-                let entries = order.len() / 2;
-                for pair in order.as_chunks::<2>().0 {
-                    if let Some(key_name) = string_obj_to_owned(obj_from_bits(pair[0]))
+                let order = crate::dict_live_entries(_dict_ptr);
+                let entries = crate::dict_len(_dict_ptr);
+                for row in order {
+                    if let Some(key_name) = string_obj_to_owned(obj_from_bits(row.key))
                         && key_name == attr_name
                     {
                         present = true;
@@ -2819,14 +2819,14 @@ pub extern "C" fn molt_namespace_del(namespace_bits: u64, name_bits: u64) -> u64
 fn global_name_suggestion(py: &PyToken<'_>, dictionary: u64, name: &str) -> Option<String> {
     let ptr = crate::builtins::frames::globals_namespace_storage_ptr(py, dictionary)?;
     unsafe {
-        let order = crate::builtins::containers::dict_order(ptr);
+        let length = crate::dict_len(ptr);
         use crate::builtins::diagnostic_suggestions::{MAX_CANDIDATE_ITEMS, calculate_suggestion};
-        if order.len() / 2 >= MAX_CANDIDATE_ITEMS {
+        if length >= MAX_CANDIDATE_ITEMS {
             return None;
         }
-        let mut candidates = Vec::with_capacity(order.len() / 2);
-        for pair in order.as_chunks::<2>().0 {
-            let key = obj_from_bits(pair[0]).as_ptr()?;
+        let mut candidates = Vec::with_capacity(length);
+        for row in crate::dict_live_entries(ptr) {
+            let key = obj_from_bits(row.key).as_ptr()?;
             if object_type_id(key) != TYPE_ID_STRING {
                 return None;
             }
@@ -3932,38 +3932,41 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let state = runtime_state(py);
-            let previous = crate::object::ops_sys::runtime_target_python_info(state);
-            let mut target = previous.clone();
-            target.minor = 13;
-            *state.sys_version_info.lock().unwrap() = Some(target);
-            let sys_name = attr_name_bits_from_bytes(py, b"sys").unwrap();
-            let _sys_restore = ModuleCacheRestore::new(py, sys_name);
-            let sys = molt_module_new(sys_name);
-            crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
-            let modules_bits = sys_modules_dict_bits(py, sys).unwrap();
-            let modules = obj_from_bits(modules_bits).as_ptr().unwrap();
-            let _modules_owner = crate::PtrDropGuard::new(modules);
-            let name = attr_name_bits_from_bytes(py, b"msilib.schema").unwrap();
-            assert!(matches!(module_import_attempt(name),
-                Ok(ModuleImportOutcome::Missing { diagnostic_name }) if diagnostic_name == "msilib"));
-            assert!(!exception_pending(py));
-            let replacement = MoltObject::from_int(42).bits();
-            unsafe { dict_set_in_place(py, modules, name, replacement) };
-            assert!(matches!(module_import_attempt(name),
-                Ok(ModuleImportOutcome::Imported(bits)) if bits == replacement));
-            assert!(unsafe { dict_del_in_place(py, modules, name) });
-            #[cfg(not(target_os = "windows"))]
-            {
-                let dependency =
-                    attr_name_bits_from_bytes(py, b"multiprocessing.popen_spawn_win32").unwrap();
-                assert!(module_import_attempt(dependency).is_err());
-                assert_pending_exception_class(py, "ModuleNotFoundError");
-                dec_ref_bits(py, dependency);
-            }
-            dec_ref_bits(py, name);
-            dec_ref_bits(py, sys);
-            *state.sys_version_info.lock().unwrap() = Some(previous);
-            assert!(!exception_pending(py));
+            let original = state.sys_version_info.lock().unwrap().clone();
+            _guard.with_target_python(py, original, || {
+                let previous = crate::object::ops_sys::runtime_target_python_info(state);
+                let mut target = previous.clone();
+                target.minor = 13;
+                _guard.with_target_python(py, Some(target), || {
+                    let sys_name = attr_name_bits_from_bytes(py, b"sys").unwrap();
+                    let _sys_restore = ModuleCacheRestore::new(py, sys_name);
+                    let sys = molt_module_new(sys_name);
+                    crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
+                    let modules_bits = sys_modules_dict_bits(py, sys).unwrap();
+                    let modules = obj_from_bits(modules_bits).as_ptr().unwrap();
+                    let _modules_owner = crate::PtrDropGuard::new(modules);
+                    let name = attr_name_bits_from_bytes(py, b"msilib.schema").unwrap();
+                    assert!(matches!(module_import_attempt(name),
+                        Ok(ModuleImportOutcome::Missing { diagnostic_name }) if diagnostic_name == "msilib"));
+                    assert!(!exception_pending(py));
+                    let replacement = MoltObject::from_int(42).bits();
+                    unsafe { dict_set_in_place(py, modules, name, replacement) };
+                    assert!(matches!(module_import_attempt(name),
+                        Ok(ModuleImportOutcome::Imported(bits)) if bits == replacement));
+                    assert!(unsafe { dict_del_in_place(py, modules, name) });
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        let dependency =
+                            attr_name_bits_from_bytes(py, b"multiprocessing.popen_spawn_win32").unwrap();
+                        assert!(module_import_attempt(dependency).is_err());
+                        assert_pending_exception_class(py, "ModuleNotFoundError");
+                        dec_ref_bits(py, dependency);
+                    }
+                    dec_ref_bits(py, name);
+                    dec_ref_bits(py, sys);
+                    assert!(!exception_pending(py));
+                });
+            });
         });
     }
 

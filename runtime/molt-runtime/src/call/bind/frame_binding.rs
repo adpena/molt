@@ -279,7 +279,7 @@ pub(super) unsafe fn function_binding_shape(
         ));
         if !kwdefaults.is_none() {
             full_binder |= match kwdefaults.as_ptr() {
-                Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => !dict_order(ptr).is_empty(),
+                Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => dict_len(ptr) != 0,
                 _ => true,
             };
         }
@@ -385,6 +385,13 @@ pub(super) unsafe fn call_function_with_arguments(
             return MoltObject::none().bits();
         }
 
+        if let Some(result) = crate::cpython_abi_hooks::try_call_cext(
+            _py,
+            func_ptr,
+            crate::cpython_abi_hooks::CExtCallArguments::Owned(&mut args),
+        ) {
+            return result;
+        }
         if function_trampoline_ptr(func_ptr) != 0
             && args.keyword_count() == 0
             && !function_raw_positional_call_needs_binding(_py, func_ptr, args.positional().len())
@@ -418,15 +425,6 @@ pub(super) unsafe fn call_function_with_arguments(
             Ok(view) => view,
             Err(err) => return err,
         };
-        if let Some(result) = crate::cpython_abi_hooks::try_call_cext(
-            _py,
-            func_ptr,
-            view.pos,
-            view.kw_names,
-            view.kw_values,
-        ) {
-            return result;
-        }
         if let Some(binding) = builtin_args::builtin_call_binding(_py, func_ptr) {
             return binding.call(_py, func_bits, func_ptr, &view);
         }

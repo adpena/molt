@@ -18,210 +18,15 @@
 
 mod support;
 
-use molt_cpython_abi::abi_types::{MoltTypeTag, PyList_Type, PyListObject, PyObject};
-use molt_lang_obj_model::MoltObject;
-use std::collections::HashMap;
+use molt_cpython_abi::abi_types::{PyList_Type, PyListObject, PyObject};
 use std::ptr;
 use std::sync::Mutex;
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
-// handle bits → the list's item vector.
-static LISTS: Mutex<Option<HashMap<u64, Vec<u64>>>> = Mutex::new(None);
-static TUPLES: Mutex<Option<HashMap<u64, Vec<u64>>>> = Mutex::new(None);
-static NEXT_LIST: Mutex<u64> = Mutex::new(0x9000);
-static NEXT_TUPLE: Mutex<u64> = Mutex::new(0x19_0000);
-static NEXT_FOREIGN: Mutex<u64> = Mutex::new(0xF0DE_0000_0000_0010);
-
-unsafe extern "C" fn fx_alloc_list() -> u64 {
-    let mut next = NEXT_LIST.lock().unwrap();
-    let addr = *next as usize;
-    *next += 0x100;
-    let bits = MoltObject::from_ptr(addr as *mut u8).bits();
-    LISTS
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .insert(bits, Vec::new());
-    bits
-}
-unsafe extern "C" fn fx_alloc_list_presized(len: usize) -> u64 {
-    let mut next = NEXT_LIST.lock().unwrap();
-    let addr = *next as usize;
-    *next += 0x100;
-    let bits = MoltObject::from_ptr(addr as *mut u8).bits();
-    LISTS
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .insert(bits, vec![MoltObject::none().bits(); len]);
-    bits
-}
-unsafe extern "C" fn fx_list_append(list_bits: u64, item_bits: u64, _item: *mut PyObject) -> i32 {
-    if let Some(v) = LISTS
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .get_mut(&list_bits)
-    {
-        v.push(item_bits);
-    }
-    0
-}
-unsafe extern "C" fn fx_list_len(bits: u64) -> usize {
-    LISTS
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .get(&bits)
-        .map_or(0, |v| v.len())
-}
-unsafe extern "C" fn fx_list_item(
-    bits: u64,
-    i: usize,
-) -> molt_cpython_abi::hooks::BorrowedHandleResult {
-    match LISTS
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .get(&bits)
-        .and_then(|v| v.get(i).copied())
-    {
-        Some(value) => molt_cpython_abi::hooks::BorrowedHandleResult::ok(value),
-        None => molt_cpython_abi::hooks::BorrowedHandleResult::missing(),
-    }
-}
-unsafe extern "C" fn fx_list_set(
-    list_bits: u64,
-    i: usize,
-    val_bits: u64,
-) -> molt_cpython_abi::hooks::OwnedHandleResult {
-    let mut lists = LISTS.lock().unwrap();
-    match lists.get_or_insert_default().get_mut(&list_bits) {
-        Some(v) if i < v.len() => {
-            let old = std::mem::replace(&mut v[i], val_bits);
-            molt_cpython_abi::hooks::OwnedHandleResult::ok(old)
-        }
-        _ => molt_cpython_abi::hooks::OwnedHandleResult::error(),
-    }
-}
-unsafe extern "C" fn fx_list_insert(
-    list_bits: u64,
-    where_: isize,
-    item_bits: u64,
-    _item: *mut PyObject,
-) -> i32 {
-    let mut lists = LISTS.lock().unwrap();
-    let Some(list) = lists.get_or_insert_default().get_mut(&list_bits) else {
-        return -1;
-    };
-    let index = if where_ < 0 {
-        (where_ + list.len() as isize).max(0) as usize
-    } else {
-        (where_ as usize).min(list.len())
-    };
-    list.insert(index, item_bits);
-    0
-}
-unsafe extern "C" fn fx_alloc_tuple(len: usize) -> u64 {
-    let mut next = NEXT_TUPLE.lock().unwrap();
-    let addr = *next as usize;
-    *next += 0x100;
-    let bits = MoltObject::from_ptr(addr as *mut u8).bits();
-    TUPLES
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .insert(bits, vec![MoltObject::none().bits(); len]);
-    bits
-}
-unsafe extern "C" fn fx_tuple_set(
-    tuple_bits: u64,
-    i: usize,
-    val_bits: u64,
-    _item: *mut PyObject,
-) -> molt_cpython_abi::hooks::OwnedHandleResult {
-    let mut tuples = TUPLES.lock().unwrap();
-    match tuples.get_or_insert_default().get_mut(&tuple_bits) {
-        Some(tuple) if i < tuple.len() => {
-            let old = std::mem::replace(&mut tuple[i], val_bits);
-            molt_cpython_abi::hooks::OwnedHandleResult::ok(old)
-        }
-        _ => molt_cpython_abi::hooks::OwnedHandleResult::error(),
-    }
-}
-unsafe extern "C" fn fx_tuple_len(bits: u64) -> usize {
-    TUPLES
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .get(&bits)
-        .map_or(0, Vec::len)
-}
-unsafe extern "C" fn fx_tuple_item(
-    bits: u64,
-    i: usize,
-) -> molt_cpython_abi::hooks::BorrowedHandleResult {
-    match TUPLES
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .get(&bits)
-        .and_then(|tuple| tuple.get(i).copied())
-    {
-        Some(value) => molt_cpython_abi::hooks::BorrowedHandleResult::ok(value),
-        None => molt_cpython_abi::hooks::BorrowedHandleResult::missing(),
-    }
-}
-unsafe extern "C" fn fx_ref_count(_bits: u64) -> usize {
-    1
-}
-unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
-    if LISTS
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .contains_key(&bits)
-    {
-        MoltTypeTag::List as u8
-    } else if TUPLES
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .contains_key(&bits)
-    {
-        MoltTypeTag::Tuple as u8
-    } else {
-        MoltTypeTag::Other as u8
-    }
-}
-unsafe extern "C" fn fx_int_from_i64(v: i64) -> u64 {
-    MoltObject::from_int(v).bits()
-}
-unsafe extern "C" fn fx_foreign_new(_c_ptr: usize) -> u64 {
-    let mut next = NEXT_FOREIGN.lock().unwrap();
-    let w = *next;
-    *next += 0x10;
-    w
-}
-
 fn install() {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.alloc_list = fx_alloc_list;
-    hooks.alloc_list_presized = fx_alloc_list_presized;
-    hooks.list_append = fx_list_append;
-    hooks.list_len = fx_list_len;
-    hooks.list_item = fx_list_item;
-    hooks.list_set = fx_list_set;
-    hooks.list_insert = fx_list_insert;
-    hooks.alloc_tuple = fx_alloc_tuple;
-    hooks.tuple_set = fx_tuple_set;
-    hooks.tuple_len = fx_tuple_len;
-    hooks.tuple_item = fx_tuple_item;
-    hooks.ref_count = fx_ref_count;
-    hooks.classify_heap = fx_classify_heap;
-    hooks.int_from_i64 = fx_int_from_i64;
-    hooks.foreign_new = fx_foreign_new;
-    support::prepare_abi_test_thread(hooks);
+    support::fake_runtime::wire_sequences(&mut hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 use molt_cpython_abi::api::{errors, numbers, sequences};
@@ -255,12 +60,6 @@ fn cython_direct_ob_item_construction_commits_one_truthful_list() {
             numbers::PyLong_FromLong(303),
         ]
     };
-    let source_bits = source.map(|pointer| {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .molt_handle_for_pyobj(pointer)
-            .expect("numeric carrier must retain its runtime identity")
-            .bits()
-    });
 
     // This is the unavoidable Cython `__Pyx_copy_object_array` operation:
     // each source element is first INCREF'd and then copied directly into the
@@ -275,17 +74,18 @@ fn cython_direct_ob_item_construction_commits_one_truthful_list() {
     // The first checked C observation commits the complete pointer snapshot
     // into the runtime list, consumes the three stolen construction refs, and
     // republishes one owned projection of that canonical runtime state.
-    for (index, expected_bits) in source_bits.into_iter().enumerate() {
+    for (index, expected_value) in [101, 202, 303].into_iter().enumerate() {
         let item = unsafe { sequences::PyList_GetItem(list, index as isize) };
         assert!(
             !item.is_null(),
             "direct slot {index} must become observable"
         );
-        let actual_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .molt_handle_for_pyobj(item)
-            .expect("committed item must retain runtime identity")
-            .bits();
-        assert_eq!(actual_bits, expected_bits, "direct slot {index}");
+        assert_eq!(item, source[index], "direct slot retains exact C origin");
+        assert_eq!(
+            unsafe { numbers::PyLong_AsLong(item) },
+            expected_value,
+            "direct slot {index}"
+        );
     }
     assert!(unsafe { errors::PyErr_Occurred() }.is_null());
 
@@ -293,22 +93,13 @@ fn cython_direct_ob_item_construction_commits_one_truthful_list() {
     // PyListObject ABI. `sealed` describes completeness, not cleanliness: the
     // next semantic observation must detect and commit this direct replacement.
     let replacement = unsafe { numbers::PyLong_FromLong(909) };
-    let replacement_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-        .molt_handle_for_pyobj(replacement)
-        .expect("replacement must retain runtime identity")
-        .bits();
     unsafe {
         molt_cpython_abi::api::refcount::Py_INCREF(replacement);
         *(*physical).ob_item.add(1) = replacement;
     }
     let observed = unsafe { sequences::PyList_GetItem(list, 1) };
-    assert_eq!(
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .molt_handle_for_pyobj(observed)
-            .expect("direct replacement must commit")
-            .bits(),
-        replacement_bits
-    );
+    assert_eq!(observed, replacement);
+    assert_eq!(unsafe { numbers::PyLong_AsLong(observed) }, 909);
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(list) };
 }
 
@@ -332,16 +123,8 @@ fn setitem_places_items_at_index_out_of_order() {
     let a = unsafe { numbers::PyLong_FromLong(111) };
     let b = unsafe { numbers::PyLong_FromLong(222) };
     let c = unsafe { numbers::PyLong_FromLong(333) };
-    let bridge_bits = |p: *mut PyObject| {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .molt_handle_for_pyobj(p)
-            .map(|value| value.bits())
-            .unwrap()
-    };
-    // Capture the values before SetItem steals and releases the three physical
-    // carriers. The list retains the runtime handles, not those carrier
-    // addresses, and GetItem may materialize different borrowed carriers.
-    let (ab, bb, cb) = (bridge_bits(a), bridge_bits(b), bridge_bits(c));
+    // SetItem transports these exact origins; semantic adoption happens in the
+    // operation under test, not in an oracle that pre-adopts each operand.
     assert_eq!(unsafe { sequences::PyList_SetItem(list, 2, c) }, 0);
     assert_eq!(unsafe { sequences::PyList_SetItem(list, 0, a) }, 0);
     assert_eq!(unsafe { sequences::PyList_SetItem(list, 1, b) }, 0);
@@ -351,21 +134,13 @@ fn setitem_places_items_at_index_out_of_order() {
         "indexed store must REPLACE, never append-grow"
     );
     unsafe {
-        assert_eq!(
-            bridge_bits(sequences::PyList_GetItem(list, 0)),
-            ab,
-            "slot 0"
-        );
-        assert_eq!(
-            bridge_bits(sequences::PyList_GetItem(list, 1)),
-            bb,
-            "slot 1"
-        );
-        assert_eq!(
-            bridge_bits(sequences::PyList_GetItem(list, 2)),
-            cb,
-            "slot 2"
-        );
+        for (index, (expected_pointer, expected_value)) in
+            [(a, 111), (b, 222), (c, 333)].into_iter().enumerate()
+        {
+            let item = sequences::PyList_GetItem(list, index as isize);
+            assert_eq!(item, expected_pointer, "slot {index}");
+            assert_eq!(numbers::PyLong_AsLong(item), expected_value, "slot {index}");
+        }
     }
     assert!(
         unsafe { errors::PyErr_Occurred() }.is_null(),
@@ -469,14 +244,12 @@ fn append_and_insert_accept_incomplete_list_reference_edges() {
     let insert_target_bits = bits(insert_target);
     let inserted_bits = bits(inserted);
     {
-        let lists = LISTS.lock().unwrap();
-        let lists = lists.as_ref().expect("fake list storage");
         assert_eq!(
-            lists.get(&append_target_bits).map(Vec::as_slice),
+            support::fake_runtime::list_values(append_target_bits).as_deref(),
             Some(&[appended_bits][..])
         );
         assert_eq!(
-            lists.get(&insert_target_bits).map(Vec::as_slice),
+            support::fake_runtime::list_values(insert_target_bits).as_deref(),
             Some(&[inserted_bits][..])
         );
     }
