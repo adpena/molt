@@ -235,3 +235,46 @@ def test_invalid_configuration_fails_before_filesystem_measurement(
 def test_no_output_paths_rejects() -> None:
     with pytest.raises(DiskCapacityError, match="at least one output path"):
         require_build_capacity([], env={}, measure_free_bytes=lambda path: 10**15)
+
+
+def test_cargo_admission_measures_the_roots_the_cargo_build_writes(
+    tmp_path: Path,
+) -> None:
+    from molt.cargo_execution_policy import (
+        cargo_output_paths,
+        require_cargo_build_capacity,
+    )
+
+    workspace = tmp_path / "workspace"
+    target = tmp_path / "artifacts" / "target"
+    build = tmp_path / "artifacts" / "build"
+    command = ["cargo", "build", "-p", "molt-ir"]
+    env = {"CARGO_TARGET_DIR": str(target), "CARGO_BUILD_BUILD_DIR": str(build)}
+
+    assert cargo_output_paths(command, cwd=workspace, env=env) == (target, build)
+    # --target-dir names the same root; `--` ends Cargo's own options.
+    assert cargo_output_paths(
+        [*command, f"--target-dir={target}", "--", "--target-dir", "x"],
+        cwd=workspace,
+        env={},
+    ) == (target,)
+    # Without a declared target Cargo writes below the workspace holding cwd.
+    assert cargo_output_paths(command, cwd=workspace, env={}) == (workspace,)
+    with pytest.raises(ValueError, match="conflicts"):
+        cargo_output_paths(
+            [*command, "--target-dir", str(tmp_path / "other")],
+            cwd=workspace,
+            env=env,
+        )
+
+    measured: list[Path] = []
+    with pytest.raises(DiskCapacityError):
+        require_cargo_build_capacity(
+            command,
+            cwd=workspace,
+            env=env,
+            measure_free_bytes=lambda path: (
+                measured.append(path) or DEFAULT_MINIMUM_HEADROOM_BYTES - 1
+            ),
+        )
+    assert set(measured) == {tmp_path}  # the nearest existing parent of each root
