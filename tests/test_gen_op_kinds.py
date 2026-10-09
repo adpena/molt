@@ -27,7 +27,6 @@ import json
 import re
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -272,42 +271,6 @@ def test_generated_rs_is_in_sync() -> None:
         f"{OUT_RS.relative_to(ROOT)} is stale — run "
         "`python3 tools/gen_op_kinds.py --write` to regenerate from op_kinds.toml."
     )
-
-
-def test_render_rs_rustfmt_uses_shared_memory_guard(monkeypatch) -> None:
-    render_rust = _render_rust()
-    calls: list[dict[str, object]] = []
-
-    def fake_guarded_completed_process(cmd, **kwargs):
-        assert kwargs["input"] == "fn main(){}\n"
-        calls.append({"cmd": list(cmd), **kwargs})
-        return SimpleNamespace(
-            returncode=0,
-            stdout="fn main() {}\n",
-            stderr="",
-            check_returncode=lambda: None,
-        )
-
-    monkeypatch.setattr(
-        render_rust.harness_memory_guard,
-        "guarded_completed_process",
-        fake_guarded_completed_process,
-    )
-
-    formatted = render_rust._rustfmt_rust_source("fn main(){}\n")
-
-    assert formatted == "fn main() {}\n"
-    assert len(calls) == 1
-    call = calls[0]
-    cmd = call["cmd"]
-    assert isinstance(cmd, list)
-    assert cmd == ["rustfmt", "--edition", "2024", "--emit", "stdout"]
-    assert call["prefix"] == "MOLT_GENERATOR"
-    assert call["cwd"] == ROOT
-    assert call["input"] == "fn main(){}\n"
-    assert call["capture_output"] is True
-    assert call["text"] is True
-    assert call["timeout"] == 60.0
 
 
 def test_generated_py_is_in_sync() -> None:

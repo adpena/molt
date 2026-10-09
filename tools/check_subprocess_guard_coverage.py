@@ -401,24 +401,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "bounded git metadata/status probe for landing-safety diagnostics",
     ),
     AllowedRawSubprocessUse(
-        "tools/gen_codecs.py",
-        "_rustfmt_rust_source",
-        "run",
-        "bounded rustfmt stdout child for generated codec Rust tables",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/gen_stringprep_tables.py",
-        "_rustfmt_text",
-        "run",
-        "bounded rustfmt child for checked-in generated Rust stringprep tables",
-    ),
-    AllowedRawSubprocessUse(
-        "tools/gen_wasm_abi.py",
-        "_rustfmt",
-        "run",
-        "bounded rustfmt stdout child for one generated WASM ABI Rust module",
-    ),
-    AllowedRawSubprocessUse(
         "tools/gen_wasm_abi.py",
         "_rustfmt_many",
         "run",

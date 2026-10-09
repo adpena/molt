@@ -88,6 +88,37 @@ def write_outputs(outputs: GeneratedOutputs) -> list[Path]:
     return changed
 
 
+def rustfmt_source(source: str, *, label: str) -> str:
+    """Format generated Rust the one way every generator does.
+
+    The repository rustfmt reads the source on stdin with edition 2024, under
+    the generator memory guard; inside ``tools/generators.py`` that guard
+    shares the run's repository sentinel. ``label`` names the output in errors.
+    """
+    try:  # the package module shares the generator runner's sentinel state
+        from tools import harness_memory_guard
+    except ModuleNotFoundError:  # a generator launched by path
+        import harness_memory_guard  # type: ignore[no-redef]
+
+    try:
+        result = harness_memory_guard.guarded_completed_process(
+            ["rustfmt", "--edition", "2024", "--emit", "stdout"],
+            prefix="MOLT_GENERATOR",
+            cwd=ROOT,
+            input=source,
+            capture_output=True,
+            text=True,
+            timeout=60.0,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"rustfmt is required to generate {label}") from exc
+    if result.returncode != 0:
+        raise RuntimeError(f"rustfmt failed for {label}:\n{result.stderr}")
+    if not isinstance(result.stdout, str):
+        raise TypeError("rustfmt stdout must be text when text=True")
+    return result.stdout
+
+
 def display_path(path: Path) -> str:
     try:
         return path.resolve().relative_to(ROOT).as_posix()
