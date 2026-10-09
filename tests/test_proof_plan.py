@@ -397,6 +397,67 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     }.issubset(filters)
 
 
+def test_extension_admission_proof_executes_required_public_resolver_witness() -> None:
+    import tomllib
+
+    command = next(
+        item
+        for item in PLAN.commands
+        if item.id == "rust.test.runtime-extension-admission"
+    )
+    cargo, libtest = (
+        command.argv[: command.argv.index("--")],
+        command.argv[command.argv.index("--") + 1 :],
+    )
+    assert cargo[:2] == ("cargo", "test")
+    assert cargo[cargo.index("-p") + 1] == "molt-runtime"
+    assert cargo.count("-p") == 1 and cargo.count("--lib") == 1
+    assert "--no-default-features" not in cargo and "--no-run" not in cargo
+    assert cargo[cargo.index("--features") + 1] == "cext_loader"
+    target = cargo[cargo.index("--target") + 1]
+    assert target == "x86_64-unknown-linux-gnu"
+    assert libtest == ("builtins::platform::tests::", "--nocapture", "--test-threads=1")
+    config = {}
+    for index, argument in enumerate(cargo[:-1]):
+        if argument == "--config":
+            config.update(tomllib.loads(cargo[index + 1]))
+    runner = config["target"][target]["runner"]
+    assert runner[:4] == [
+        "uv",
+        "run",
+        "--frozen",
+        "python3",
+    ]
+    root = Path(__file__).resolve().parents[1]
+    package_root = root / "runtime/molt-runtime"
+    assert (
+        package_root / runner[4]
+    ).resolve() == root / "tools/cargo_test_binary_runner.py"
+    receipt_root = (package_root / runner[runner.index("--receipt-dir") + 1]).resolve()
+    assert runner[-1] == "--"
+    assert [
+        runner[index + 1]
+        for index, argument in enumerate(runner[:-1])
+        if argument == "--require-passed-test"
+    ] == [
+        "builtins::platform::tests::resolver_admission_tests::"
+        "public_import_resolver_miss_and_error_do_not_load_extension_candidates"
+    ]
+    assert command.data["cell"] == "linux-x86_64-rust-native-dev"
+    assert command.dependencies == ()
+    assert command.data["evidence_outputs"] == [
+        receipt_root.relative_to(root).as_posix()
+    ]
+    job = proof_plan._workflow_job_block(
+        (root / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
+        "rust-build-unit-smoke",
+    )
+    assert job is not None
+    assert command.data["evidence_outputs"][0] + "/" in job
+    assert proof_plan.cargo_native_c_units(command.data) == ("target",)
+    assert {"python", "uv", "rustc", "cargo"} <= set(PLAN.required_toolchains(command))
+
+
 def test_shipping_runtime_gate_requires_full_parallel_and_fresh_child_accounting() -> (
     None
 ):
@@ -2655,6 +2716,7 @@ def test_actual_rust_roots_continue_after_failure_without_overlapping_capacity(
         "rust.test.compiler-authorities",
         "rust.test.ir-wasm-runtime-authorities",
         "rust.test.runtime-cold-lifecycle",
+        "rust.test.runtime-extension-admission",
     ]
     declared = tuple(command for command in PLAN.commands if command.id in expected)
     assert [command.id for command in declared] == expected
@@ -2693,6 +2755,9 @@ def test_actual_rust_roots_continue_after_failure_without_overlapping_capacity(
                 ],
                 "toolchains": ["python"],
                 "timeout_seconds": 30,
+                # These finite scheduler children emit the fixture marker, not
+                # Cargo receipts. Never clear or claim real repository evidence.
+                "evidence_outputs": [],
             },
         )
         for command in declared
@@ -2718,6 +2783,7 @@ def test_actual_rust_roots_continue_after_failure_without_overlapping_capacity(
     assert receipt["execution"]["completed_commands"] == len(expected)
     assert [record["status"] for record in receipt["commands"]] == [
         "failure",
+        "success",
         "success",
         "success",
         "success",
@@ -4060,7 +4126,14 @@ def test_wasm_execution_uses_selected_host_from_its_completed_build():
         execute = commands[f"wasm.run.{name}"]
         compile = commands[f"wasm.compile.{name}"]
         assert compile.id in execute.dependencies
-        assert "wasm.build.host" in compile.dependencies
+        assert "wasm.build.host" in execute.dependencies
+        assert "wasm.build.host" not in compile.dependencies
+        order = [
+            command.id
+            for command in proof_plan._topological_commands(PLAN, command_id=execute.id)
+        ]
+        assert order.index("wasm.build.host") < order.index(execute.id)
+        assert order.index(compile.id) < order.index(execute.id)
         assert execute.argv == (
             "python3",
             "tools/venv_exec.py",
@@ -4302,6 +4375,30 @@ def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
         "wasm.compile.hello",
         "wasm.compile.comprehension",
         "wasm.compile.sieve",
+        "wasm.test.freestanding-e2e",
+    ):
+        selected = {
+            command.id
+            for command in proof_plan._topological_commands(PLAN, command_id=name)
+        }
+        assert "wasm.build.host" not in selected
+        assert {name, "wasm.build.backend", "wasm.build.shared-runtime"} <= selected
+    # These consumers execute a host; removing the build-only edge must not
+    # detach their selected runtime from its actual completed producer.
+    for name in (
+        "wasm.run.hello",
+        "wasm.run.comprehension",
+        "wasm.run.sieve",
+        "wasm.test.control-flow",
+        "wasm.test.finally-pending-observer-parity",
+        "wasm.integration.split-runtime",
+        "wasm.integration.host-exports",
+    ):
+        assert "wasm.build.host" in commands[name].dependencies
+    for name in (
+        "wasm.compile.hello",
+        "wasm.compile.comprehension",
+        "wasm.compile.sieve",
         "wasm.test.control-flow",
         "wasm.test.freestanding-e2e",
         "wasm.test.finally-pending-observer-parity",
@@ -4322,6 +4419,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
         "portability.rust.linux-aarch64.clippy-workspace",
         "portability.rust.macos.clippy-workspace",
         "rust.test.default-truth",
+        "rust.test.runtime-extension-admission",
         "runtime.cost.candidate",
     }
     for name in ("wasm.build.shared-runtime", "wasm.build.split-runtime-release"):

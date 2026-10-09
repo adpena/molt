@@ -1082,7 +1082,7 @@ pub(crate) fn is_compiled_body_materialization(
         if identity.fn_ptr != target
             || identity.arity != arity
             || identity.call_abi != crate::function_call_abi(function)
-            || identity.custody != crate::function_entry_custody(function)
+            || identity.custody != crate::object::layout::function_entry_custody(function)
             || identity.trampoline_ptr != crate::function_trampoline_ptr(function)
             || !function_default_bits_are(function, defaults.len(), |i| defaults[i])
         {

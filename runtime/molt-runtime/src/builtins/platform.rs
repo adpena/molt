@@ -3108,70 +3108,13 @@ fn importlib_import_with_fallback(
         return Ok(module);
     }
 
-    // Only an actual resolver miss reaches another admission mechanism. Errors
-    // from a registered initializer, finder, loader or publication propagate as
-    // the original pending exception, without text inspection or reconstruction.
-    #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
-    if let Some(module) = importlib_try_cext_on_sys_path(_py, resolved)? {
-        if let Err(error) = importlib_bind_submodule_on_parent(_py, resolved, module, modules_ptr) {
-            dec_ref_bits(_py, module);
-            return Err(error);
-        }
-        return Ok(module);
-    }
+    // The spec resolver owns filesystem admission. A miss is terminal; a
+    // second path scan would bypass its finder and extension-metadata policy.
     Err(raise_exception::<_>(
         _py,
         "ModuleNotFoundError",
         &format!("No module named '{resolved}'"),
     ))
-}
-
-/// Scan `sys.path` directories for a native C extension matching `module_name`,
-/// load it via dlopen, register it in sys.modules, and return its module bits.
-#[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
-fn importlib_try_cext_on_sys_path(
-    _py: &PyToken<'_>,
-    module_name: &str,
-) -> Result<Option<u64>, u64> {
-    // Retrieve sys.path as a Vec<String>.
-    let sys = importlib_system_module(_py)?;
-    let path_name = intern_runtime_static_name(_py, b"path");
-    let Some(path_attr) = getattr_optional_bits(_py, sys.bits(), path_name)? else {
-        return Ok(None);
-    };
-    let search_paths = string_sequence_arg_from_bits(_py, path_attr, "sys.path");
-    if !obj_from_bits(path_attr).is_none() {
-        dec_ref_bits(_py, path_attr);
-    }
-    let search_paths = search_paths?;
-
-    // Search each directory for a matching .so / .dylib file.
-    for dir in &search_paths {
-        if let Some(ext_path) = importlib_find_extension_module(dir, module_name) {
-            // Found a candidate – attempt dlopen.
-            molt_cpython_abi::bridge::molt_cpython_abi_init();
-            if !crate::cpython_abi_hooks::register_cpython_hooks() {
-                return Err(MoltObject::none().bits());
-            }
-
-            let path_obj = std::path::Path::new(&ext_path);
-            let module_bits = match unsafe {
-                molt_cpython_abi::loader::load_cpython_extension(path_obj, module_name)
-            } {
-                Ok(bits) => bits,
-                Err(error) => {
-                    if crate::cpython_abi_hooks::transfer_pending_cpython_exception()
-                        || exception_pending(_py)
-                    {
-                        return Err(MoltObject::none().bits());
-                    }
-                    return Err(raise_exception::<_>(_py, "ImportError", &error.to_string()));
-                }
-            };
-            return Ok(Some(module_bits));
-        }
-    }
-    Ok(None)
 }
 
 fn importlib_bind_submodule_on_parent(

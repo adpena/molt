@@ -338,7 +338,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 250
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -384,6 +384,7 @@ jobs:
           path: |
             proof-receipts/evidence/cargo-test-truth-runs/
             proof-receipts/evidence/runtime-gate-runs/
+            proof-receipts/evidence/runtime-extension-admission/
             ${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}
           include-hidden-files: true
           if-no-files-found: warn

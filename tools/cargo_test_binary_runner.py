@@ -1010,6 +1010,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--receipt-dir", type=Path, required=True)
     parser.add_argument("--run-id")
     parser.add_argument("--source-identity-json")
+    parser.add_argument(
+        "--require-passed-test",
+        action="append",
+        default=[],
+        metavar="IDENTITY",
+        help="require this exact identity to pass in the completed libtest results",
+    )
     parser.add_argument("command", nargs=argparse.REMAINDER)
     return parser
 
@@ -1025,6 +1032,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.timeout_seconds <= 0:
         print("cargo test binary runner timeout must be positive", file=sys.stderr)
+        return 2
+    if any(not identity.strip() for identity in args.require_passed_test):
+        print("required test identities must not be blank", file=sys.stderr)
         return 2
     source_identity: dict[str, object] | None = None
     if args.source_identity_json is not None:
@@ -1161,6 +1171,7 @@ def main(argv: list[str] | None = None) -> int:
         "executable_size": executable_size,
         "executable_sha256": executable_sha256,
         "inherited_args": inherited_args,
+        "required_passed_tests": args.require_passed_test,
         "resource_process_isolation": resource_isolation,
         "status": (
             "infrastructure_error"
@@ -1184,6 +1195,24 @@ def main(argv: list[str] | None = None) -> int:
         receipt["status"] = "failed"
         receipt["returncode"] = returncode
         receipt["diagnosis"] = {"kind": "libtest-accounting-error", "error": problem}
+    elif returncode == 0 and args.require_passed_test:
+        # Accounting owns parsing and completeness. A filtered proof may also
+        # require named witnesses; ignored or unrelated rows cannot satisfy it.
+        passed = {row["identity"] for row in results if row["status"] == "pass"}
+        missing = [name for name in args.require_passed_test if name not in passed]
+        if missing:
+            returncode = 2
+            receipt["status"] = "failed"
+            receipt["returncode"] = returncode
+            receipt["diagnosis"] = {
+                "kind": "required-test-not-passed",
+                "identities": missing,
+            }
+            print(
+                "cargo-test-binary-runner: required tests did not pass: "
+                + ", ".join(missing),
+                file=sys.stderr,
+            )
     descendants = runtime_descendant_receipts.receipt_outcome(
         receipt, receipt_root=args.receipt_dir
     )

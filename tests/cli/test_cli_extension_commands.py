@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -162,10 +163,13 @@ def _write_fake_compiler_depfile(cmd: list[str], *dependencies: Path) -> None:
 
 
 def _select_native_extension_fixture_compiler(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str = "native"
 ) -> Path:
     """Fake tool discovery only; preserve real compiler dialect/target admission."""
-    msvc = target.endswith("-windows-msvc")
+    target_plan = cli_source_extension_target.resolve_source_extension_target_plan(
+        target
+    )
+    msvc = target_plan.target_triple.endswith("-windows-msvc")
     compiler = RuntimeFixtureRoot(tmp_path).native_executable(
         "native-family/clang-cl" if msvc else "native-family/clang"
     )
@@ -1861,6 +1865,8 @@ def test_cpython_abi_pyarg_format_parity_masks() -> None:
         ("symbols", True),
         ("replacement", False),
         ("replacement", True),
+        ("archiver", False),
+        ("archiver", True),
     ],
 )
 def test_extension_build_emits_wheel_and_manifest(
@@ -1870,14 +1876,19 @@ def test_extension_build_emits_wheel_and_manifest(
     inspection_failure: str | None,
     json_output: bool,
 ) -> None:
+    _select_native_extension_fixture_compiler(tmp_path, monkeypatch)
     project_root = tmp_path / "extproj"
     project_root.mkdir()
-    _write_extension_project(project_root)
+    _write_extension_project(
+        project_root, extension_extra_lines=['python-version = "3.14"']
+    )
     commands: list[list[str]] = []
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
         commands.append(cmd)
+        if inspection_failure == "archiver" and "rcsD" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, "", "ar: illegal option -- D")
         _materialize_fake_extension_command(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
@@ -1887,7 +1898,7 @@ def test_extension_build_emits_wheel_and_manifest(
         default_init_symbol="PyInit_demoext",
     )
 
-    if inspection_failure is not None:
+    if inspection_failure not in (None, "archiver"):
         from molt.cli.native_symbol_inspection import NativeSymbolInspectionError
 
         original_inspection = (
@@ -1914,18 +1925,32 @@ def test_extension_build_emits_wheel_and_manifest(
         )
 
     out_dir = project_root / "dist"
-    rc = cli_commands.extension_build(
-        project=str(project_root),
-        out_dir=str(out_dir),
-        deterministic=False,
-        python_version="3.13",
-        json_output=json_output,
-        verbose=False,
+    monkeypatch.chdir(project_root)
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    monkeypatch.setenv("MOLT_HASH_SEED", "0")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "molt",
+            "extension",
+            "build",
+            "--project",
+            str(project_root),
+            "--out-dir",
+            str(out_dir),
+            "--no-deterministic",
+            "--python-version",
+            "3.13",
+            *(["--json"] if json_output else []),
+        ],
     )
+    rc = cli.main()
     if inspection_failure is not None:
         assert rc == 2
         captured = capsys.readouterr()
         expected = {
+            "archiver": "ar: illegal option -- D",
             "symbols": "symbol reader unavailable",
             "io": "artifact read denied",
             "replacement": "Extension artifact changed after symbol inspection",
@@ -1936,6 +1961,9 @@ def test_extension_build_emits_wheel_and_manifest(
             assert expected in " ".join(payload["errors"])
         else:
             assert expected in captured.err
+        if inspection_failure == "archiver":
+            assert len([command for command in commands if "rcsD" in command]) == 1
+            assert all("rcs" not in command for command in commands)
         assert not list(out_dir.glob("*.whl"))
         assert not (out_dir / "extension_manifest.json").exists()
         return
@@ -1971,6 +1999,59 @@ def test_extension_build_emits_wheel_and_manifest(
         names = set(zf.namelist())
         assert "extension_manifest.json" in names
         assert manifest["extension"] in names
+
+
+@pytest.mark.parametrize(
+    ("version", "diagnostic"),
+    [
+        ("not-a-version", "invalid Python target version 'not-a-version'"),
+        (
+            "3.11",
+            "unsupported Python target version '3.11'; supported versions: 3.12, 3.13, 3.14",
+        ),
+    ],
+)
+def test_extension_build_cli_rejects_invalid_target_before_artifact_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    version: str,
+    diagnostic: str,
+) -> None:
+    project_root = tmp_path / "extproj"
+    project_root.mkdir()
+    _write_extension_project(project_root)
+    out_dir = project_root / "dist"
+    monkeypatch.chdir(project_root)
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    monkeypatch.setenv("MOLT_HASH_SEED", "0")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "molt",
+            "extension",
+            "build",
+            "--project",
+            str(project_root),
+            "--out-dir",
+            str(out_dir),
+            "--python-version",
+            version,
+            "--json",
+        ],
+    )
+
+    def reject_command(*args: object, **kwargs: object) -> None:
+        pytest.fail("invalid Python target reached compiler execution")
+
+    monkeypatch.setattr(cli_commands, "_run_completed_command", reject_command)
+    assert cli.main() == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "extension-build"
+    assert payload["status"] == "error"
+    assert payload["errors"] == [diagnostic]
+    assert not out_dir.exists()
 
 
 def test_default_molt_c_api_version_requires_header_authority(tmp_path: Path) -> None:
@@ -2020,6 +2101,7 @@ def test_extension_build_emits_public_exports_in_manifest(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    _select_native_extension_fixture_compiler(tmp_path, monkeypatch)
     project_root = tmp_path / "extproj"
     project_root.mkdir()
     _write_extension_project(
@@ -2119,6 +2201,7 @@ def test_extension_build_infers_module_attr_callable_exports_from_pymethoddef(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    _select_native_extension_fixture_compiler(tmp_path, monkeypatch)
     project_root = tmp_path / "extproj"
     project_root.mkdir()
     _write_extension_project(
@@ -2221,13 +2304,26 @@ def test_extension_build_compiles_iterator_mapping_surface_without_subprocess_mo
     _write_extension_iterator_mapping_project(project_root)
 
     out_dir = project_root / "dist"
-    rc = cli_commands.extension_build(
-        project=str(project_root),
-        out_dir=str(out_dir),
-        deterministic=False,
-        json_output=False,
-        verbose=False,
+    monkeypatch.chdir(project_root)
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    monkeypatch.setenv("MOLT_HASH_SEED", "0")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "molt",
+            "extension",
+            "build",
+            "--project",
+            str(project_root),
+            "--out-dir",
+            str(out_dir),
+            "--no-deterministic",
+            "--python-version",
+            "3.12",
+        ],
     )
+    rc = cli.main()
 
     assert rc == 0
     wheels = sorted(out_dir.glob("*.whl"))
@@ -2236,12 +2332,31 @@ def test_extension_build_compiles_iterator_mapping_surface_without_subprocess_mo
         (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["module"] == "demoext_iter"
+    assert manifest["target_python"] == "py312"
     assert manifest["capabilities"] == ["fs.read"]
     with zipfile.ZipFile(wheels[0]) as zf:
         names = set(zf.namelist())
         assert "extension_manifest.json" in names
         assert manifest["extension"] in names
-        assert zf.read(manifest["extension"])
+        archive = zf.read(manifest["extension"])
+    # Inspect the actual archive wire headers independently of the tool selector.
+    # rcsD must normalize timestamps and owner IDs even with --no-deterministic.
+    assert archive.startswith(b"!<arch>\n")
+    offset = 8
+    members = 0
+    while offset < len(archive):
+        header = archive[offset : offset + 60]
+        assert len(header) == 60 and header[58:60] == b"`\n"
+        assert int(header[16:28].strip() or b"0") == 0
+        assert int(header[28:34].strip() or b"0") == 0
+        assert int(header[34:40].strip() or b"0") == 0
+        size = int(header[48:58])
+        assert size >= 0
+        offset += 60 + size + (size & 1)
+        assert offset <= len(archive)
+        members += 1
+    assert offset == len(archive)
+    assert members > 0
 
 
 def test_extension_build_cross_target_uses_target_compiler_and_manifest(
@@ -2329,6 +2444,7 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _select_native_extension_fixture_compiler(tmp_path, monkeypatch)
     project_root = tmp_path / "meson_extproj"
     project_root.mkdir()
     intro_path = _write_meson_source_plan_project(project_root)
@@ -2625,6 +2741,7 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _select_native_extension_fixture_compiler(tmp_path, monkeypatch)
     project_root = tmp_path / "cython_extproj"
     project_root.mkdir()
     pkg = project_root / "pkg"
@@ -2815,6 +2932,7 @@ def test_extension_build_derives_module_attr_support_source_closure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _select_native_extension_fixture_compiler(tmp_path, monkeypatch)
     project_root = tmp_path / "meson_extproj"
     project_root.mkdir()
     _write_meson_source_plan_project(project_root)
@@ -2934,6 +3052,7 @@ def test_extension_build_follows_linked_static_library_source_closure(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    _select_native_extension_fixture_compiler(tmp_path, monkeypatch)
     project_root = tmp_path / "meson_extproj"
     project_root.mkdir()
     _write_meson_source_plan_project(
@@ -3033,6 +3152,7 @@ def test_extension_build_excludes_linked_static_library(
     (resolved against the primary at final link) instead of compiling a second
     colliding copy into this extension's closure.
     """
+    _select_native_extension_fixture_compiler(tmp_path, monkeypatch)
     project_root = tmp_path / "meson_extproj"
     project_root.mkdir()
     _write_meson_source_plan_project(
@@ -3115,6 +3235,7 @@ def test_extension_build_follows_meson_aggregate_static_library_members(
     nested_linker: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _select_native_extension_fixture_compiler(tmp_path, monkeypatch)
     project_root = tmp_path / "meson_extproj"
     project_root.mkdir()
     _write_meson_source_plan_project(
@@ -4542,6 +4663,8 @@ def test_extension_numpy_build_uses_compiled_link_closure_matrix(
     monkeypatch,
     target: str | None,
 ) -> None:
+    if target is None:
+        _select_native_extension_fixture_compiler(tmp_path, monkeypatch)
     project_root = tmp_path / "numpy_extproj"
     project_root.mkdir()
     _write_extension_numpy_project(project_root)

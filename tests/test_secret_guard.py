@@ -183,6 +183,72 @@ def test_public_symbol_projection_keeps_provider_patterns(path: str) -> None:
     assert "GitHub token" in {item.reason for item in findings}
 
 
+@pytest.mark.parametrize(
+    "path",
+    ["runtime/native_callable_abi.toml", "config/public_contract_v1.surface.json"],
+)
+@pytest.mark.parametrize("value", ["molt.object_callargs_v1", "molt.pyinit_module_v1"])
+def test_public_abi_identifiers_preserve_credential_detection(
+    path: str, value: str
+) -> None:
+    def assignment(key: str, data: str) -> str:
+        if path.endswith(".toml"):
+            return key + " = " + json.dumps(data)
+        return json.dumps({key: data}, separators=(",", ":"))
+
+    public = assignment("token", value)
+    assert secret_guard.scan_diff_text(_added(path, public)) == []
+    assert secret_guard.scan_diff_text(_added("settings.json", public))
+    for key in ("password", "api_token", "TOKEN"):
+        assert secret_guard.scan_diff_text(_added(path, assignment(key, value)))
+    for data in (
+        _credential(),
+        value + _credential(),
+        _credential() + value,
+        "molt.unreviewed_long_identifier_v1",
+    ):
+        assert secret_guard.scan_diff_text(_added(path, assignment("token", data)))
+    # A recognized field cannot hide another credential on the same minified line.
+    combined = (
+        public + " # password = " + json.dumps(_credential())
+        if path.endswith(".toml")
+        else json.dumps(
+            {"token": value, "password": _credential()}, separators=(",", ":")
+        )
+    )
+    assert secret_guard.scan_diff_text(_added(path, combined))
+    continued = public.rstrip("}") + " + " + json.dumps(_credential())
+    assert secret_guard.scan_diff_text(_added(path, continued))
+    for suffix, reason in (
+        (" ghp_" + _credential(), "GitHub token"),
+        (" Bearer " + _credential(), "Bearer token"),
+        (" -----BEGIN " + "PRIVATE KEY-----", "Private key material"),
+    ):
+        findings = secret_guard.scan_diff_text(_added(path, public + suffix))
+        assert reason in {item.reason for item in findings}
+
+
+def test_current_public_abi_sources_are_scanned_without_executing_them() -> None:
+    from pathlib import Path
+    import tomllib
+
+    root = Path(__file__).resolve().parents[1]
+    for path in (
+        "runtime/native_callable_abi.toml",
+        "config/public_contract_v1.surface.json",
+    ):
+        source = (root / path).read_text(encoding="utf-8")
+        assert secret_guard.scan_diff_text(_added(path, *source.splitlines())) == []
+    with (root / "runtime/native_callable_abi.toml").open("rb") as source:
+        declared = {row["token"] for row in tomllib.load(source)["abi"]}
+    assert secret_guard.PUBLIC_ABI_IDENTIFIER_VALUES <= declared
+    # New declarations do not enroll themselves in security policy.
+    new_value = "molt.unreviewed_long_identifier_v1"
+    assert secret_guard.scan_diff_text(
+        _added("runtime/native_callable_abi.toml", "token = " + json.dumps(new_value))
+    )
+
+
 @pytest.mark.parametrize("path", ["settings.rs", ".env", "settings.yaml"])
 @pytest.mark.parametrize("quoted", [False, True])
 def test_punctuation_remains_credential_data_by_carrier(

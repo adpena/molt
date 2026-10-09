@@ -2706,6 +2706,159 @@ def test_binary_runner_exit_zero_does_not_bless_missing_accounting(
     assert receipt["diagnosis"]["kind"] == "libtest-accounting-error"
 
 
+@pytest.mark.parametrize(
+    "required,output,child_code,expected_code",
+    [
+        (
+            [],
+            "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s\n",
+            0,
+            0,
+        ),
+        (
+            ["wanted"],
+            "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s\n",
+            0,
+            2,
+        ),
+        (["wanted"], _libtest_output("wanted", "ignored"), 0, 2),
+        (["wanted"], _libtest_output("other"), 0, 2),
+        (["wanted"], _libtest_output("wanted_suffix"), 0, 2),
+        (["wanted"], _libtest_output("wanted"), 0, 0),
+        (["wanted", "second"], _libtest_output("wanted"), 0, 2),
+        (
+            ["wanted", "second"],
+            "running 2 tests\ntest wanted ... ok\ntest second ... ok\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n",
+            0,
+            0,
+        ),
+        (["wanted"], _libtest_output("wanted", "FAILED"), 101, 1),
+        (["wanted"], "test wanted ... ok\n", 0, 2),
+        ([], _libtest_output("wanted", "ignored"), 0, 0),
+    ],
+)
+def test_binary_runner_required_witness_uses_complete_exact_pass_results(
+    tmp_path, monkeypatch, required, output, child_code, expected_code
+):
+    binary_runner = _load_tool(
+        "cargo_test_binary_runner_required_witness", "cargo_test_binary_runner.py"
+    )
+    calls = []
+
+    def execute(argv, _timeout):
+        calls.append(tuple(argv))
+        return binary_runner.BinaryExecution(
+            tuple(argv), child_code, output, "", 0.01, False, None, None
+        )
+
+    monkeypatch.setattr(binary_runner, "execute_binary", execute)
+    monkeypatch.setattr(
+        binary_runner,
+        "diagnose_abnormal_exit",
+        lambda *a, **k: pytest.fail(
+            "witness admission must not rediscover or replay tests"
+        ),
+    )
+    options = [
+        value for identity in required for value in ("--require-passed-test", identity)
+    ]
+    command = ["fixture", "selected::", "--test-threads=1"]
+    assert (
+        binary_runner.main(
+            [
+                "--timeout-seconds",
+                "30",
+                "--receipt-dir",
+                str(tmp_path),
+                *options,
+                "--",
+                *command,
+            ]
+        )
+        == expected_code
+    )
+    assert calls == [tuple(command)]
+    [path] = list(tmp_path.glob("*.json"))
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    assert receipt["required_passed_tests"] == required
+    assert receipt["returncode"] == expected_code
+    assert receipt["status"] == ("success" if expected_code == 0 else "failed")
+    if expected_code == 2 and receipt["result_accounting"]["complete"]:
+        assert receipt["diagnosis"]["kind"] == "required-test-not-passed"
+        assert receipt["diagnosis"]["identities"]
+    elif expected_code == 2:
+        assert receipt["diagnosis"]["kind"] == "libtest-accounting-error"
+
+
+@pytest.mark.parametrize(
+    "identity,expected_code", [("required::witness", 0), ("other::witness", 2)]
+)
+def test_binary_runner_cli_enforces_required_witness_on_actual_child_capture(
+    tmp_path: Path, identity: str, expected_code: int
+) -> None:
+    receipt_dir = tmp_path / "receipts"
+    package_root = ROOT / "runtime/molt-runtime"
+    completed = run_guarded_test_process(
+        [
+            sys.executable,
+            os.path.relpath(ROOT / "tools/cargo_test_binary_runner.py", package_root),
+            "--timeout-seconds",
+            "30",
+            "--receipt-dir",
+            str(receipt_dir),
+            "--require-passed-test",
+            "required::witness",
+            "--",
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.write(sys.argv[1])",
+            _libtest_output(identity),
+        ],
+        cwd=package_root,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == expected_code, completed.stdout + completed.stderr
+    [path] = list(receipt_dir.glob("*.json"))
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    assert receipt["returncode"] == expected_code
+    assert receipt["result_accounting"]["complete"]
+    assert receipt["test_results"] == [{"identity": identity, "status": "pass"}]
+    assert receipt["required_passed_tests"] == ["required::witness"]
+
+
+def test_binary_runner_rejects_blank_required_witness_before_execution(
+    tmp_path, monkeypatch
+):
+    binary_runner = _load_tool(
+        "cargo_test_binary_runner_blank_witness", "cargo_test_binary_runner.py"
+    )
+    monkeypatch.setattr(
+        binary_runner,
+        "execute_binary",
+        lambda *a, **k: pytest.fail(
+            "blank required identity must not execute a binary"
+        ),
+    )
+    assert (
+        binary_runner.main(
+            [
+                "--timeout-seconds",
+                "30",
+                "--receipt-dir",
+                str(tmp_path),
+                "--require-passed-test",
+                " ",
+                "--",
+                "fixture",
+            ]
+        )
+        == 2
+    )
+    assert not list(tmp_path.iterdir())
+
+
 def test_resource_exit_zero_without_exact_result_is_structural(monkeypatch):
     binary_runner = _load_tool(
         "cargo_test_binary_runner_resource_accounting", "cargo_test_binary_runner.py"

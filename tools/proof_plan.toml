@@ -981,8 +981,9 @@ admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main"]
 required = true
 # Full parallel runtime plus seven fresh-process shipping witnesses are mandatory.
-# The full resource-serialized DAG is bounded by this complete job envelope.
-timeout_minutes = 240
+# The full resource-serialized DAG, including the focused extension witness,
+# is bounded by this complete job envelope.
+timeout_minutes = 250
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -1939,7 +1940,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
+dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/hello.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/hello/hello.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
@@ -1953,7 +1954,7 @@ resource_class = "wasm-runtime"
 timeout_seconds = 300
 timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "none"
-dependencies = ["wasm.compile.hello"]
+dependencies = ["wasm.compile.hello", "wasm.build.host"]
 env = { MOLT_WASM_HOST_DEBUG = "1" }
 argv = ["python3", "tools/venv_exec.py", "python3", "tools/run_wasm_host.py", "--cargo-profile", "dev-fast", "--", "/tmp/molt-wasm-ci/hello/manifest.json"]
 toolchains = ["python"]
@@ -1967,7 +1968,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
+dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/comprehension_fail.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/comprehension/comprehension.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
@@ -1981,7 +1982,7 @@ resource_class = "wasm-runtime"
 timeout_seconds = 300
 timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "none"
-dependencies = ["wasm.compile.comprehension"]
+dependencies = ["wasm.compile.comprehension", "wasm.build.host"]
 argv = ["python3", "tools/venv_exec.py", "python3", "tools/run_wasm_host.py", "--cargo-profile", "dev-fast", "--", "/tmp/molt-wasm-ci/comprehension/manifest.json"]
 toolchains = ["python"]
 
@@ -2022,7 +2023,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
+dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/sieve_bench.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/sieve/sieve.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
@@ -2036,7 +2037,7 @@ resource_class = "wasm-runtime"
 timeout_seconds = 300
 timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "none"
-dependencies = ["wasm.compile.sieve"]
+dependencies = ["wasm.compile.sieve", "wasm.build.host"]
 argv = ["python3", "tools/venv_exec.py", "python3", "tools/run_wasm_host.py", "--cargo-profile", "dev-fast", "--", "/tmp/molt-wasm-ci/sieve/manifest.json"]
 toolchains = ["python"]
 
@@ -2103,7 +2104,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "integration"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
-dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
+dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_freestanding.py::test_freestanding_produces_no_wasi_imports", "tests/test_wasm_freestanding.py::test_freestanding_binary_is_valid_wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
@@ -2424,6 +2425,25 @@ dependencies = []
 # fresh-process lifecycle/GIL witnesses. Four performance probes remain explicit
 # unrun entries; no missing child or incomplete result accounting can pass.
 argv = ["uv", "run", "--frozen", "python3", "tools/run_runtime_test_gate.py", "--profile", "release-output", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120", "--parallel-threads", "8"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "rust.test.runtime-extension-admission"
+cargo_native_c_units = ["target"]
+evidence_outputs = ["proof-receipts/evidence/runtime-extension-admission"]
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "integration"
+cache_domain = "cargo-workspace"
+dependencies = []
+# Preserve default runtime features and enable the native dynamic-loader branch.
+# Cargo invokes this runner from runtime/molt-runtime; both paths below are
+# relative to that selected package and retain the normal libtest cwd.
+# Require the public resolver regression to pass, not merely a nonempty filter;
+# the existing binary runner owns accounting, bounded execution and receipts.
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--target", "x86_64-unknown-linux-gnu", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--config", "target.x86_64-unknown-linux-gnu.runner=[\"uv\",\"run\",\"--frozen\",\"python3\",\"../../tools/cargo_test_binary_runner.py\",\"--timeout-seconds\",\"300\",\"--receipt-dir\",\"../../proof-receipts/evidence/runtime-extension-admission\",\"--require-passed-test\",\"builtins::platform::tests::resolver_admission_tests::public_import_resolver_miss_and_error_do_not_load_extension_candidates\",\"--\"]", "-p", "molt-runtime", "--lib", "--features", "cext_loader", "--", "builtins::platform::tests::", "--nocapture", "--test-threads=1"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]

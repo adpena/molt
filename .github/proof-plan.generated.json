@@ -338,7 +338,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "a9c4774242f29c6ff914f2ce80e2aca327167539d69accdbbf37cf3c1b51fd70",
+  "authority_sha256": "0da18a88d87e6073a0faec977bd747bb29e26745f92a332414c028f4fc238008",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -574,7 +574,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 240,
+      "timeout_minutes": 250,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -2570,7 +2570,6 @@
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
-        "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
       "env": {
@@ -2613,7 +2612,8 @@
       "cache_domain": "none",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
-        "wasm.compile.hello"
+        "wasm.compile.hello",
+        "wasm.build.host"
       ],
       "env": {
         "MOLT_WASM_HOST_DEBUG": "1"
@@ -2653,7 +2653,6 @@
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
-        "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
       "env": {
@@ -2696,7 +2695,8 @@
       "cache_domain": "none",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
-        "wasm.compile.comprehension"
+        "wasm.compile.comprehension",
+        "wasm.build.host"
       ],
       "family": "wasm",
       "id": "wasm.run.comprehension",
@@ -2821,7 +2821,6 @@
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
-        "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
       "env": {
@@ -2864,7 +2863,8 @@
       "cache_domain": "none",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
-        "wasm.compile.sieve"
+        "wasm.compile.sieve",
+        "wasm.build.host"
       ],
       "family": "wasm",
       "id": "wasm.run.sieve",
@@ -3062,7 +3062,6 @@
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
-        "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
       "family": "wasm",
@@ -4099,6 +4098,56 @@
     {
       "argv": [
         "cargo",
+        "test",
+        "--locked",
+        "--timings",
+        "--profile",
+        "dev-fast",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--config",
+        "profile.dev-fast.package.molt-runtime.opt-level=0",
+        "--config",
+        "target.x86_64-unknown-linux-gnu.runner=[\"uv\",\"run\",\"--frozen\",\"python3\",\"../../tools/cargo_test_binary_runner.py\",\"--timeout-seconds\",\"300\",\"--receipt-dir\",\"../../proof-receipts/evidence/runtime-extension-admission\",\"--require-passed-test\",\"builtins::platform::tests::resolver_admission_tests::public_import_resolver_miss_and_error_do_not_load_extension_candidates\",\"--\"]",
+        "-p",
+        "molt-runtime",
+        "--lib",
+        "--features",
+        "cext_loader",
+        "--",
+        "builtins::platform::tests::",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_native_c_units": [
+        "target"
+      ],
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [],
+      "evidence_outputs": [
+        "proof-receipts/evidence/runtime-extension-admission"
+      ],
+      "family": "rust",
+      "id": "rust.test.runtime-extension-admission",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "integration",
+      "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
         "clippy",
         "--locked",
         "--workspace",
@@ -4858,12 +4907,12 @@
         }
       },
       "rust": {
-        "budget_seconds": 14400,
+        "budget_seconds": 15000,
         "critical_path_seconds": 9000,
         "headroom_seconds": 0,
-        "projected_makespan_seconds": 14400,
+        "projected_makespan_seconds": 15000,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 14400
+          "compiler-build-resource": 15000
         }
       },
       "rust_security": {

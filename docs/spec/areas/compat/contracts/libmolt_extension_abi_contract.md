@@ -195,6 +195,19 @@ Source-extension admission must match that declared version; successful scalar
 layout checks do not establish CPython 3.13/3.14 binary compatibility, package
 support, or execution on an unverified target.
 
+Both header transports leave `Py_GIL_DISABLED` undefined. CPython tests this
+selector by presence, so even a caller definition of `0` selects a different
+object layout and is rejected before declaring shared object structs. The native
+Molt `free-threaded` Cargo feature selects atomic reference-count storage; it
+does not select a CPython free-threaded C ABI or remove the runtime's global GIL.
+True no-GIL execution and CPython `cp313t`/`cp314t` binary compatibility remain
+unsupported and require their own complete admission and execution proofs.
+The declared CPython 3.12 release ABI also excludes `Py_TRACE_REFS`: its presence
+prepends two object-list pointers in that version, so both transports reject
+caller definitions, including `0`. CPython 3.13/3.14 tracing uses a different
+representation; this refusal is grounded in the selected 3.12 ABI. `Py_DEBUG`
+and `Py_REF_DEBUG` are distinct selectors and are not treated as layout aliases.
+
 ---
 
 ## 3. Explicit Exclusions
