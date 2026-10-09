@@ -12,6 +12,7 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 _PROBE = f"""
 import importlib.util
 import sys
+import _collections as _host_collections
 from tests.stdlib_intrinsic_registry import install_registry
 
 
@@ -60,6 +61,8 @@ def _delitem(handle, key):
 
 
 install_registry({{
+    # CPython's helper is the reference implementation of this intrinsic.
+    "molt_dict_count_elements": _host_collections._count_elements,
     "molt_ordereddict_new": _new,
     "molt_ordereddict_from_pairs": _from_pairs,
     "molt_ordereddict_setitem": _setitem,

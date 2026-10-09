@@ -714,3 +714,5 @@ _xoptions: dict[str, object] = {}
 # Finalize shaped metadata before the initializer returns. Attribute reads
 # never rerun producers or resurrect a deleted public key.
 _init_metadata_views()
+
+globals().pop("_require_intrinsic", None)

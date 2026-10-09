@@ -238,3 +238,5 @@ def unescape(s: str) -> str:
     HTML 5 named character references defined in html.entities.html5.
     """
     return _molt_html_unescape(s)
+
+globals().pop("_require_intrinsic", None)
