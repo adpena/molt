@@ -497,7 +497,21 @@ fn wasi_c_abi_wire_admits_native_paths_and_rejects_member_drift() {
     // A declared hash is structurally checked here, not authenticated by Rust.
     let admitted =
         wasi_c_abi::WasiCAbiPlan::decode(&encode(&fields)).expect("independent legal wire");
-    assert_eq!(admitted.libc(), native_lib.join("libc"));
+    assert_eq!(
+        admitted.members,
+        vec![
+            ("libc".to_owned(), native_lib.join("libc")),
+            ("long_double".to_owned(), native_lib.join("long_double")),
+            (
+                "compiler_rt".to_owned(),
+                compiler_rt_lib.join("compiler_rt")
+            ),
+            ("crt_command".to_owned(), native_lib.join("crt_command")),
+            ("crt_reactor".to_owned(), native_lib.join("crt_reactor")),
+        ]
+    );
+    // An otherwise valid generation must not admit a truncated final byte.
+    assert!(wasi_c_abi::WasiCAbiPlan::decode(&format!("{}0", encode(&fields))).is_err());
     assert_eq!(admitted.driver, driver);
     // Independent literal order: the four sysroot members share one directory,
     // while compiler-rt owns a second. The projection preserves first occurrence.

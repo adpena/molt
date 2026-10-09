@@ -182,16 +182,24 @@ fn emit_wasm_long_double_link_policy(target_arch: &str) {
         panic!("unsupported wasm C-runtime target OS: {target_os}");
     }
     let plan = wasi_sysroot::WasiCAbiPlan::from_environment();
+    let member = |role: &str| {
+        plan.members
+            .iter()
+            .find(|(name, _)| name == role)
+            .expect("canonical WASI member role")
+            .1
+            .as_path()
+    };
     // SDK filenames already follow the target's lib<name>.a grammar.
     // Keep the original admitted bytes in place; no OUT_DIR copies or aliases.
     for (source, library) in [
-        (plan.long_double(), "c-printscan-long-double"),
-        (plan.libc(), "c"),
-        (plan.compiler_rt(), "clang_rt.builtins"),
+        (member("long_double"), "c-printscan-long-double"),
+        (member("libc"), "c"),
+        (member("compiler_rt"), "clang_rt.builtins"),
     ] {
         // Target flags already own the SDK search context, including for
         // dependencies and proof capture before this build script executes.
-        let whole = if source == plan.long_double() {
+        let whole = if source == member("long_double") {
             ",+whole-archive"
         } else {
             ""

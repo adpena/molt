@@ -16,7 +16,6 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from molt import llvm_toolchain
 from molt._wasm_runtime_exports import wasm_split_runtime_export_rename_map
 from molt.cli import wasm_link_inputs
 from molt.wasi_sysroot import normalize_wasi_sysroot
@@ -650,18 +649,9 @@ def validation_specs(
     target = tmp_path / "target with spaces"
     state_root = tmp_path / "state with spaces"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
-    # Hermetic WASI sysroot: plans must not depend on the host's SDK install.
-    sysroot = runtime_fixture_root.path / "wasi-sysroot"
-    (sysroot / "include" / "wasm32-wasip1").mkdir(parents=True, exist_ok=True)
-    (sysroot / "include" / "wasm32-wasip1" / "errno.h").write_text(
-        "#define EDOM 18\n", encoding="utf-8"
-    )
-    monkeypatch.setenv("MOLT_WASI_SYSROOT", str(sysroot))
+    # runtime_cargo_plan owns the fixture's provisioned SDK generation.
+    monkeypatch.delenv("MOLT_WASI_SYSROOT", raising=False)
     monkeypatch.delenv("WASI_SYSROOT", raising=False)
-    # Hermetic: plan tests never select the host's provisioned WASI SDK.
-    monkeypatch.setattr(
-        llvm_toolchain, "selected_wasi_sdk_installation", lambda *_a, **_k: None
-    )
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SPEC,
         "resolve_runtime_cargo_plan",
@@ -984,7 +974,10 @@ def test_shared_allowlist_is_response_content_not_compile_rustflags(
 
 @pytest.mark.parametrize("explicit", [None, "0", "1"])
 def test_runtime_wasm_incremental_policy_survives_plan_resolution(
-    validation_specs, monkeypatch: pytest.MonkeyPatch, explicit: str | None
+    validation_specs,
+    runtime_fixture_root: RuntimeFixtureRoot,
+    monkeypatch: pytest.MonkeyPatch,
+    explicit: str | None,
 ) -> None:
     monkeypatch.delenv("RUSTC_WRAPPER", raising=False)
     monkeypatch.setenv("MOLT_USE_SCCACHE", "0")
@@ -992,13 +985,14 @@ def test_runtime_wasm_incremental_policy_survives_plan_resolution(
         monkeypatch.delenv("CARGO_INCREMENTAL", raising=False)
     else:
         monkeypatch.setenv("CARGO_INCREMENTAL", explicit)
-    _root, _target, _state, shared, _reloc = validation_specs()
-    assert shared.cargo_plan.environment["CARGO_INCREMENTAL"] == (explicit or "0")
+    _root, _target, _state, shared, reloc = validation_specs()
     # cc-rs reads WASI_SYSROOT and Molt build scripts read MOLT_WASI_SYSROOT;
     # both must name the one resolved sysroot.
-    sysroot = str(Path(os.environ["MOLT_WASI_SYSROOT"]).resolve())
-    assert shared.cargo_plan.environment["MOLT_WASI_SYSROOT"] == sysroot
-    assert shared.cargo_plan.environment["WASI_SYSROOT"] == sysroot
+    sysroot = str(runtime_wasi_c_abi_plan(runtime_fixture_root).sysroot)
+    for spec in (shared, reloc):
+        assert spec.cargo_plan.environment["CARGO_INCREMENTAL"] == (explicit or "0")
+        assert spec.cargo_plan.environment["MOLT_WASI_SYSROOT"] == sysroot
+        assert spec.cargo_plan.environment["WASI_SYSROOT"] == sysroot
 
 
 def test_runtime_fingerprint_recomputes_when_rustflags_change() -> None:

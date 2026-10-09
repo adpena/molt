@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from dataclasses import replace
 import hashlib
 import json
 import os
@@ -162,6 +161,50 @@ def _write_fake_compiler_depfile(cmd: list[str], *dependencies: Path) -> None:
     )
 
 
+def _select_native_extension_fixture_compiler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> Path:
+    """Fake tool discovery only; preserve real compiler dialect/target admission."""
+    msvc = target.endswith("-windows-msvc")
+    compiler = RuntimeFixtureRoot(tmp_path).native_executable(
+        "native-family/clang-cl" if msvc else "native-family/clang"
+    )
+    cxx = (
+        compiler
+        if msvc
+        else RuntimeFixtureRoot(tmp_path).native_executable("native-family/clang++")
+    )
+    for key, selected in (
+        ("CC", compiler),
+        ("MOLT_CROSS_CC", compiler),
+        ("CXX", cxx),
+        ("MOLT_CROSS_CXX", cxx),
+    ):
+        monkeypatch.setenv(key, '"' + str(selected) + '"')
+
+    def resolve_family(
+        *, target_family, explicit_commands, sibling_directories, environment
+    ):
+        assert target_family == "native"
+        assert Path(explicit_commands["cc"][0]) == compiler
+        assert Path(explicit_commands["cxx"][0]) == cxx
+        assert sibling_directories == (compiler.parent,)
+        return cli_llvm_wasi_tools.LlvmWasiToolFamily(
+            cc=_resolved_llvm_tool("cc", explicit_commands["cc"]),
+            cxx=_resolved_llvm_tool("cxx", explicit_commands["cxx"]),
+            ar=_resolved_llvm_tool("ar", (str(compiler.parent / "llvm-ar"),)),
+            nm=_resolved_llvm_tool("nm", (str(compiler.parent / "llvm-nm"),)),
+            wasm_ld=None,
+            ranlib=None,
+            strip=None,
+        )
+
+    monkeypatch.setattr(
+        cli_source_extension_toolchain, "resolve_llvm_wasi_tool_family", resolve_family
+    )
+    return compiler
+
+
 def _materialize_fake_extension_command(cmd: list[str]) -> Path:
     cl_output = next((arg[3:] for arg in cmd if arg.startswith("/Fo")), None)
     if cl_output is not None:
@@ -219,52 +262,34 @@ def test_resolve_wasm_linker_never_searches_path_and_names_provisioning(
 def test_resolve_wasm_linker_rejects_wasi_sdk_release_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    sysroot = tmp_path / "wasi-sysroot-33.0+m"
-    sysroot.mkdir()
-    (sysroot / "VERSION").write_text("llvm-version: 22.1.0\n", encoding="utf-8")
-    linker = tmp_path / "wasm-ld.exe"
-    linker.write_bytes(b"linker")
+    plan = _select_test_wasi_sdk(tmp_path, monkeypatch)
+    linker = RuntimeFixtureRoot(tmp_path).native_executable("external/wasm-ld")
     monkeypatch.setenv("MOLT_WASM_LD", str(linker))
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "resolve_wasi_c_abi_plan",
-        lambda **_kwargs: replace(
-            runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path)), llvm_version="22.1.0"
-        ),
-    )
     monkeypatch.setattr(
         cli_wasm_toolchain, "_wasm_linker_version", lambda _path, **_kwargs: "21.1.8"
     )
 
-    with pytest.raises(
-        cli_wasm_toolchain.WasmLinkerContractError,
-        match="requires LLVM 22.1.0",
-    ):
+    with pytest.raises(cli_wasm_toolchain.WasmLinkerContractError) as raised:
         cli_wasm_toolchain.resolve_wasm_linker()
+    assert f"requires LLVM {plan.llvm_version}" in str(raised.value)
+    assert "21.1.8" in str(raised.value)
 
 
 def test_resolve_wasm_linker_preserves_debian_role_alias(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    directory = tmp_path / "usr" / "lib" / "llvm-22" / "bin"
-    directory.mkdir(parents=True)
-    driver = directory / "lld"
-    driver.write_bytes(b"shared lld driver")
-    alias = directory / "wasm-ld"
+    plan = _select_test_wasi_sdk(tmp_path, monkeypatch)
+    driver = RuntimeFixtureRoot(tmp_path).native_executable("usr/lib/llvm/bin/lld")
+    alias = driver.with_name("wasm-ld" + driver.suffix)
     try:
         alias.symlink_to(driver.name)
     except OSError:
         os.link(driver, alias)
     monkeypatch.setenv("MOLT_WASM_LD", str(alias))
     monkeypatch.setattr(
-        wasm_link_inputs,
-        "resolve_wasi_c_abi_plan",
-        lambda **_kwargs: replace(
-            runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path)), llvm_version="22.1.8"
-        ),
-    )
-    monkeypatch.setattr(
-        cli_wasm_toolchain, "_wasm_linker_version", lambda _path, **_kwargs: "22.1.8"
+        cli_wasm_toolchain,
+        "_wasm_linker_version",
+        lambda _path, **_kwargs: plan.llvm_version,
     )
 
     identity = cli_wasm_toolchain.resolve_wasm_linker()
@@ -272,22 +297,15 @@ def test_resolve_wasm_linker_preserves_debian_role_alias(
     assert identity is not None
     assert identity.path == alias.absolute()
     assert identity.path != driver.absolute()
-    assert identity.sha256 == hashlib.sha256(b"shared lld driver").hexdigest()
+    assert identity.sha256 == hashlib.sha256(driver.read_bytes()).hexdigest()
 
 
 def test_resolve_wasm_linker_rejects_generic_lld_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    driver = tmp_path / "lld"
-    driver.write_bytes(b"generic lld")
+    _select_test_wasi_sdk(tmp_path, monkeypatch)
+    driver = RuntimeFixtureRoot(tmp_path).native_executable("external/lld")
     monkeypatch.setenv("MOLT_WASM_LD", str(driver))
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "resolve_wasi_c_abi_plan",
-        lambda **_kwargs: replace(
-            runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path)), llvm_version="22.1.8"
-        ),
-    )
 
     with pytest.raises(
         cli_wasm_toolchain.WasmLinkerContractError,
@@ -1793,18 +1811,21 @@ def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
     assert "PyOS_snprintf(" in shim
     assert "PyOS_snprintf" in variadic_exports
     assert "vsnprintf(str, size, format, ap)" in shim
-    assert "int molt_capi_write_string(const char *text, FILE *stream)" in shim
+    assert (
+        "int molt_capi_write_bytes(const unsigned char *text, size_t length, FILE *stream)"
+        in shim
+    )
     assert "fwrite(text, 1, length, stream) == length ? 0 : EOF" in shim
     assert (
-        "fn molt_capi_write_string(text: *const c_char, stream: *mut CFile)" in platform
+        "fn molt_capi_write_bytes(text: *const u8, length: usize, stream: *mut CFile)"
+        in platform
     )
-    assert "molt_capi_write_string(text, stream)" in platform
+    assert "molt_capi_write_bytes(text, length, stream)" in platform
     for operation in ("malloc", "calloc", "realloc", "free"):
         assert f"molt_capi_{operation}" in shim
         assert f"molt_capi_{operation}" in platform
     assert "freestanding_alloc" not in platform
     assert "std::alloc::" not in platform
-    assert 'freestanding_libc_dir = Some(provider.lib_dir("wasm32-wasip1"))' in build_rs
     assert 'println!("cargo:rustc-link-lib=static=c")' in build_rs
     assert "fputs(" not in shim
     assert "let _ = (text, stream)" not in platform
@@ -1814,7 +1835,7 @@ def test_cpython_abi_pyarg_format_parity_masks() -> None:
     shim = (ROOT / "runtime/molt-cpython-abi/shims/pyarg_variadic.c").read_text(
         encoding="utf-8"
     )
-    parser = (ROOT / "runtime/molt-cpython-abi/src/api/errors.rs").read_text(
+    parser = (ROOT / "runtime/molt-cpython-abi/src/api/errors/arguments.rs").read_text(
         encoding="utf-8"
     )
 
@@ -3318,7 +3339,7 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
             role=role,
             command=command,
             path=Path(command[0]),
-            version="22.1.0",
+            version=admitted.llvm_version,
             sha256="a" * 64,
         )
 
@@ -3376,7 +3397,7 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
         "implementation": "cpython",
         "version": "3.12",
     }
-    assert payload["data"]["schema_version"] == 4
+    assert payload["data"]["schema_version"] == 5
     assert payload["data"]["build_toolchain"]["commands"] == {
         role: list(command) for role, command in host.commands.items()
     }
@@ -3389,7 +3410,7 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
         "command": [str(bindir / ("llvm-nm" + suffix))],
         "path": str(bindir / ("llvm-nm" + suffix)),
         "sha256": "a" * 64,
-        "version": "22.1.0",
+        "version": admitted.llvm_version,
     }
     assert payload["data"]["toolchain"]["commands"]["c"] == [
         str(admitted.driver),
@@ -3407,6 +3428,14 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
         "-target",
         "wasm32-wasip1",
     ]
+    assert payload["data"]["toolchain"]["link_probe_archives"] == {
+        "compiler_rt": {
+            "path": str(admitted.path("compiler_rt").resolve()),
+            "sha256": hashlib.sha256(
+                admitted.path("compiler_rt").read_bytes()
+            ).hexdigest(),
+        }
+    }
     assert payload["data"]["paths"]["python_pc"] == str(
         out_dir / "pkgconfig" / "python3.pc"
     )
@@ -3922,27 +3951,25 @@ def test_freestanding_metadata_commands_drive_compile_and_relocatable_link(
     assert manifest["build"]["wasi_sysroot"] is None
 
 
-def test_source_extension_toolchain_rejects_sdk_probe_missing_headers(
+def test_source_extension_sdk_verification_rejects_missing_headers_without_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plan = _select_test_wasi_sdk(tmp_path, monkeypatch)
-    monkeypatch.setenv("MOLT_WASM_CC", '"' + str(plan.driver) + '"')
-    calls = []
-
-    def run(command, **kwargs):
-        calls.append(command)
-        return subprocess.CompletedProcess(
-            command, 1, "", "fatal error: 'errno.h' file not found\n"
-        )
-
-    monkeypatch.setattr(cli_source_extension_toolchain.subprocess, "run", run)
-    resolved = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain(
-        _source_extension_target_plan("wasm")
+    (plan.sysroot / "include" / "wasm32-wasip1" / "errno.h").unlink()
+    monkeypatch.setattr(
+        cli_source_extension_toolchain.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("SDK verification must not run a compiler"),
     )
-    assert not resolved.ok
-    assert "errno.h" in resolved.detail
-    assert len(calls) == 1
-    assert calls[0][0] == str(plan.driver)
+    # Ordinary managed selection trusts the provisioner's append-only receipt.
+    # Explicit installation verification owns byte/tree drift detection.
+    with pytest.raises(
+        llvm_toolchain.LlvmToolchainConfigError,
+        match="filesystem tree differs from its provisioned identity",
+    ):
+        llvm_toolchain.load_wasi_sdk_installation(
+            ROOT, plan.sdk.parent, verify_tree=True
+        )
 
 
 def test_source_extension_toolchain_rejects_foreign_compiler_before_probe(
@@ -3966,24 +3993,32 @@ def test_source_extension_toolchain_accepts_selected_sdk_target_layout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plan = _select_test_wasi_sdk(tmp_path, monkeypatch)
-    calls = []
-
-    def run(command, **kwargs):
-        calls.append(command)
-        assert kwargs["env"]["WASI_SDK_PATH"] == str(plan.sdk)
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr(cli_source_extension_toolchain.subprocess, "run", run)
+    monkeypatch.setattr(
+        cli_source_extension_toolchain.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("admitted SDK needs no compiler probe"),
+    )
+    target = _source_extension_target_plan("wasm")
     resolved = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain(
-        _source_extension_target_plan("wasm")
+        target
     )
     assert resolved.ok, resolved.detail
     assert resolved.wasi_sysroot == plan.sysroot
-    assert len(calls) == 1
-    assert calls[0][0] == str(plan.driver)
-    assert calls[0].count("--no-default-config") == 1
-    assert calls[0][calls[0].index("--sysroot") + 1] == str(plan.sysroot)
-    assert calls[0][calls[0].index("-target") + 1] == "wasm32-wasip1"
+    assert resolved.wasi_c_abi == plan
+    commands = cli_source_extension_toolchain._source_extension_c_commands(
+        toolchain=resolved, target_plan=target
+    )
+    assert resolved.tools.cc is not None
+    assert resolved.tools.cc.path == plan.driver
+    assert commands["c"] == (
+        str(plan.driver),
+        "--sysroot",
+        str(plan.sysroot),
+        "--no-default-config",
+        "-target",
+        "wasm32-wasip1",
+    )
+    assert commands["ld"] == (str(plan.sdk / "bin" / ("wasm-ld" + plan.driver.suffix)),)
 
 
 def test_wasm_cxx_runtime_archives_resolve_matching_exception_variant(
@@ -7741,6 +7776,9 @@ def test_extension_build_keeps_primary_and_folded_members_not_reachable_from_ini
     root_kind: str,
     external_operand: str | None,
 ) -> None:
+    compiler = _select_native_extension_fixture_compiler(
+        tmp_path, monkeypatch, "x86_64-pc-windows-msvc"
+    )
     project_root = tmp_path / "meson_rooted"
     project_root.mkdir()
     intro_path = _adversarial_rooted_meson_plan(project_root, root_kind)
@@ -7793,6 +7831,12 @@ def test_extension_build_keeps_primary_and_folded_members_not_reachable_from_ini
             and export["symbol"] == "array__unique_hash"
             for export in manifest["callable_exports"]
         )
+    compile_commands = [command for command in commands if "/c" in command]
+    assert len(compile_commands) == 3
+    assert all(command[0] == str(compiler) for command in compile_commands)
+    assert all(
+        "--target=x86_64-pc-windows-msvc" in command for command in compile_commands
+    )
     archive_cmd = next(cmd for cmd in commands if "rcsD" in cmd)
     assert any("2_unique.o" in part for part in archive_cmd)
 
@@ -7812,6 +7856,7 @@ def test_extension_build_rejects_lazy_fold_with_typed_external_provider_before_c
     external_operand: str,
     target: str,
 ) -> None:
+    _select_native_extension_fixture_compiler(tmp_path, monkeypatch, target)
     project_root = tmp_path / "meson_lazy_external"
     project_root.mkdir()
     intro_path = _adversarial_rooted_meson_plan(project_root, "lazy")
@@ -7823,7 +7868,7 @@ def test_extension_build_rejects_lazy_fold_with_typed_external_provider_before_c
     ) -> subprocess.CompletedProcess[str]:
         del kwargs
         commands.append(cmd)
-        if "-c" in cmd:
+        if "-c" in cmd or "/c" in cmd:
             raise AssertionError(
                 "opaque-provider custody must be rejected before compilation"
             )
