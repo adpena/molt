@@ -15,7 +15,10 @@ import subprocess
 
 # The gate tests patch subprocess and resolve default guard limits, so they
 # run outside hosted custody (which asks git for the checkout) and CI caps.
-pytestmark = pytest.mark.usefixtures("developer_host_context", "no_ambient_guard_caps")
+# Cargo checks here run fakes; build capacity is not under test.
+pytestmark = pytest.mark.usefixtures(
+    "developer_host_context", "no_ambient_guard_caps", "admitted_build_capacity"
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_GATE = REPO_ROOT / "tools" / "ci_gate.py"

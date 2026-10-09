@@ -16,6 +16,9 @@ import pytest
 from tests import runtime_descendant_test_support as descendants
 from tests.process_guard_common import install_module_view, run_guarded_test_process
 
+# Cargo runs in this file are fakes; build capacity is not under test.
+pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "tools" / "check_cargo_test_truth.py"
 SPEC = importlib.util.spec_from_file_location("check_cargo_test_truth", MODULE_PATH)

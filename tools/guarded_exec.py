@@ -19,6 +19,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.llvm_toolchain import (  # noqa: E402
     LlvmToolchainConfigError,
     mlir_toolchain_environment,
@@ -149,6 +150,11 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         print(preflight_error, file=sys.stderr)
+        return 2
+    try:
+        admit_cargo_build(command, cwd=args.cwd, env=env)
+    except ValueError as exc:  # DiskCapacityError, or an inconsistent target
+        print(f"guarded_exec preflight: {exc}", file=sys.stderr)
         return 2
 
     context = harness_memory_guard.HarnessExecutionContext.from_env(

@@ -278,3 +278,65 @@ def test_cargo_admission_measures_the_roots_the_cargo_build_writes(
             ),
         )
     assert set(measured) == {tmp_path}  # the nearest existing parent of each root
+
+
+# Modules whose literal Cargo argv starts no build without admission, and why.
+_CARGO_ADMISSION_EXCEPTIONS = {
+    "src/molt/cli/compiler_identity.py": "its plan runs through _run_cargo_attempt",
+    "src/molt/cli/runtime_native_build.py": "its plan runs through _run_cargo_attempt",
+    "src/molt/cli/runtime_wasm_build_spec.py": "its plan runs through _run_cargo_attempt",
+    "src/molt/cli/installation_diagnostics.py": "tool names, not an argv",
+    "tools/perf_calibration.py": "process names, not an argv",
+    "tools/perf_scoreboard.py": "process names, not an argv",
+    "tools/proof_queue_pkg/cargo_output_layout.py": "tool names, not an argv",
+    "tools/release/verify_consumer.py": "tool names, not an argv",
+}
+
+
+def _literal_cargo_compiles(path: Path) -> list[int]:
+    import ast
+
+    from molt.cargo_execution_policy import cargo_compiles
+
+    lines: list[int] = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(node, (ast.List, ast.Tuple)):
+            continue
+        prefix: list[str] = []
+        for element in node.elts:
+            if isinstance(element, ast.Constant) and isinstance(element.value, str):
+                prefix.append(element.value)
+            elif isinstance(element, ast.JoinedStr) and prefix:
+                prefix.append("+toolchain")  # e.g. f"+{RUST_NIGHTLY}"
+            else:
+                break
+        if prefix[:1] == ["cargo"] and cargo_compiles(prefix):
+            lines.append(node.lineno)
+    return lines
+
+
+def test_every_tool_that_spells_a_cargo_compile_admits_build_capacity() -> None:
+    # HF-101: tools/rust_ir_verifier.py compiled molt-ir below the build floor.
+    # Every module that spells a compiling Cargo argv must admit capacity
+    # before Cargo starts, or name why its argv never starts unadmitted.
+    root = Path(__file__).resolve().parents[1]
+    admission = ("admit_cargo_build(", "require_cargo_build_capacity(")
+    missing: dict[str, list[int]] = {}
+    spelled: set[str] = set()
+    for base in ("tools", "src/molt"):
+        for path in sorted((root / base).rglob("*.py")):
+            relative = path.relative_to(root).as_posix()
+            lines = _literal_cargo_compiles(path)
+            if not lines:
+                continue
+            spelled.add(relative)
+            source = path.read_text(encoding="utf-8")
+            admits = any(call in source for call in admission) or (
+                "require_build_capacity(" in source  # proof-queue Cargo owners
+            )
+            if not admits and relative not in _CARGO_ADMISSION_EXCEPTIONS:
+                missing[relative] = lines
+    assert missing == {}
+    # An exception for a module that no longer spells a Cargo compile is stale.
+    assert set(_CARGO_ADMISSION_EXCEPTIONS) <= spelled
+    assert "tools/rust_ir_verifier.py" in spelled

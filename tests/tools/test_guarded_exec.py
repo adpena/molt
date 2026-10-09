@@ -4,6 +4,10 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
+# Cargo runs here are fakes; the admission test patches the probe itself.
+pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARDED_EXEC = REPO_ROOT / "tools" / "guarded_exec.py"
@@ -377,3 +381,33 @@ def test_guarded_exec_forwards_sticky_cancel_and_worker_custody(tmp_path, monkey
     assert callback() is True
     assert guard._load_internal_command(captured["run_env"]) is None
     assert guard._load_internal_command(captured["running_summary_environ"]) == command
+
+
+def test_guarded_exec_refuses_a_cargo_compile_below_the_capacity_floor(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from molt import disk_capacity
+
+    module = _load_guarded_exec()
+    captured = _install_fake_context(module, monkeypatch)
+    measured: list[Path] = []
+
+    def measure(path):
+        measured.append(path)
+        return disk_capacity.DEFAULT_MINIMUM_HEADROOM_BYTES - 1
+
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", measure)
+    monkeypatch.delenv(disk_capacity.DISK_GUARD_HIGH_WATER_ENV, raising=False)
+    target = tmp_path / "proof-target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+
+    rc = module.main(["--", "cargo", "test", "--locked", "-p", "molt-ir", "--lib"])
+
+    assert rc == 2
+    assert "command" not in captured  # no Cargo process started
+    assert "build capacity admission rejected" in capsys.readouterr().err
+    assert tmp_path in measured
+
+    # A Cargo command that does not compile needs no build capacity.
+    assert module.main(["--", "cargo", "metadata", "--no-deps"]) == 0
+    assert captured["command"] == ["cargo", "metadata", "--no-deps"]
