@@ -1421,13 +1421,11 @@ fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool
         if let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
             unsafe {
                 if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    let Some(order) = (unsafe {
-                        crate::object::ops_dict::dict_snapshot(
-                            _py,
-                            dict_ptr,
-                            crate::object::ops_dict::DictSnapshotKind::Entries,
-                        )
-                    }) else {
+                    let Some(order) = crate::object::ops_dict::dict_snapshot(
+                        _py,
+                        dict_ptr,
+                        crate::object::ops_dict::DictSnapshotKind::Entries,
+                    ) else {
                         release_owned_lru_key_parts(_py, &parts);
                         return MoltObject::none().bits();
                     };
@@ -1458,13 +1456,11 @@ fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool
         {
             unsafe {
                 if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    let Some(order) = (unsafe {
-                        crate::object::ops_dict::dict_snapshot(
-                            _py,
-                            dict_ptr,
-                            crate::object::ops_dict::DictSnapshotKind::Entries,
-                        )
-                    }) else {
+                    let Some(order) = crate::object::ops_dict::dict_snapshot(
+                        _py,
+                        dict_ptr,
+                        crate::object::ops_dict::DictSnapshotKind::Entries,
+                    ) else {
                         release_owned_lru_key_parts(_py, &parts);
                         return MoltObject::none().bits();
                     };

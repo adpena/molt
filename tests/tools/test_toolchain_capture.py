@@ -208,7 +208,9 @@ def test_toolchain_capture_frozen_manifest_rehash_detects_mutation(
         reference, workers=2, cas_root=tmp_path / "cas"
     )
     assert verification["stable"] is False
-    assert verification["mismatches"][0]["path"] == str(owned)  # type: ignore[index]
+    assert verification["mismatches"][0][
+        "path"
+    ] == process_image_capture._image_path_key(owned)  # type: ignore[index]
 
 
 def test_toolchain_capture_deduplicates_references_and_rejects_conflicts(
@@ -245,7 +247,7 @@ def test_python_relative_node_inventory_keeps_full_file_custody_in_cas(
     assert "file_custody" not in summaries["python"]
     assert "node_custody" not in summaries["python"]
     loaded = toolchain_capture.load_capture(reference, cas_root=tmp_path / "cas")
-    assert loaded["files"][0]["path"] == str(owned)
+    assert loaded["files"][0]["path"] == process_image_capture._image_path_key(owned)
     assert loaded["toolchains"]["python"]["file_custody"] == python["file_custody"]
     assert loaded["toolchains"]["python"]["node_custody"] == python["node_custody"]
     owned.write_bytes(b"after!")
@@ -253,7 +255,9 @@ def test_python_relative_node_inventory_keeps_full_file_custody_in_cas(
         reference, workers=1, cas_root=tmp_path / "cas"
     )
     assert verification["stable"] is False
-    assert verification["mismatches"][0]["path"] == str(owned)
+    assert verification["mismatches"][0][
+        "path"
+    ] == process_image_capture._image_path_key(owned)
 
 
 @pytest.mark.parametrize(
@@ -1043,7 +1047,7 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
         {
             "schema": process_image_capture.PROCESS_IMAGE_SCHEMA,
             "role": "rust-linker",
-            "path": str(linker.resolve()),
+            "path": process_image_capture._image_path_key(linker.resolve()),
             "sha256": hashlib.sha256(linker.read_bytes()).hexdigest(),
             "size_bytes": linker.stat().st_size,
         }
@@ -1427,8 +1431,8 @@ def test_rust_link_capture_resolves_sysroot_override_and_host_consumer(
         command_argv=argv,
     )
     assert {row["path"] for row in images} == {
-        str(linker.resolve()),
-        *([str(native.resolve())] if cargo_mode else []),
+        toolchain_capture._image_path_key(linker.resolve()),
+        *([toolchain_capture._image_path_key(native.resolve())] if cargo_mode else []),
     }
     assert len(calls) == (2 if cargo_mode else 1)
     assert telemetry["producer_command"] == argv
@@ -1629,9 +1633,15 @@ def test_rust_driver_alias_preserves_invocation_and_revalidates_selection(
         target=None,
     )
     assert len(dry_runs) == 1
-    assert {row["path"] for row in images} == {str(alias), str(driver), str(helper)}
+    assert {row["path"] for row in images} == {
+        toolchain_capture._image_path_key(path) for path in (alias, driver, helper)
+    }
     assert (
-        next(row for row in images if row["path"] == str(alias))["path_kind"]
+        next(
+            row
+            for row in images
+            if row["path"] == toolchain_capture._image_path_key(alias)
+        )["path_kind"]
         == "selection"
     )
     alias.unlink()
@@ -1862,7 +1872,7 @@ def test_process_image_capture_revalidates_exact_identity(tmp_path: Path) -> Non
     assert image == {
         "schema": process_image_capture.PROCESS_IMAGE_SCHEMA,
         "role": "fixture-tool",
-        "path": str(executable.resolve()),
+        "path": process_image_capture._image_path_key(executable.resolve()),
         "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
         "size_bytes": executable.stat().st_size,
     }
@@ -1916,7 +1926,7 @@ def test_platform_auxiliary_images_capture_exact_windows_console_broker() -> Non
         {
             "schema": process_image_capture.PROCESS_IMAGE_SCHEMA,
             "role": "windows-console-broker",
-            "path": str(conhost),
+            "path": process_image_capture._image_path_key(conhost),
             "sha256": hashlib.sha256(conhost.read_bytes()).hexdigest(),
             "size_bytes": conhost.stat().st_size,
             "root_exit_disposition": "terminate",
@@ -2016,6 +2026,8 @@ def test_rust_link_capture_declares_exact_msvc_build_tool_family(
         row.get("root_exit_disposition", "require-exit") == "require-exit"
         for row in images
     )
+    # Literal files need no selection alias, including uppercase Windows roots.
+    assert all("path_kind" not in row for row in images)
     assert all(unit["declared_build_tool_count"] == 2 for unit in telemetry["units"])
     assert all(unit["selected_build_tool_count"] == 2 for unit in telemetry["units"])
 
@@ -2052,7 +2064,7 @@ def test_wasi_sdk_closure_binds_helpers_and_complete_resources(tmp_path, mutatio
     ]
     images = toolchain_capture.capture_wasi_sdk_images(selection)
     identity = {
-        "path": str(plan.driver),
+        "path": process_image_capture._image_path_key(plan.driver),
         "wasi_sdk": selection,
         "process_images": images,
     }
@@ -2360,9 +2372,10 @@ def test_rust_image_membership_rejects_non_equivalent_custody(
         assert detail["role"] == "rust-linker"
         assert detail["selected_path"] == str(original)
         assert detail["content_path"] == str(foreign)
-        assert {"role": "rust-linker", "path": str(original)} in detail[
-            "captured_images"
-        ]
+        assert {
+            "role": "rust-linker",
+            "path": process_image_capture._image_path_key(original),
+        } in detail["captured_images"]
         assert "sha256" not in detail and "environment" not in detail
 
 
@@ -2383,7 +2396,8 @@ def test_native_c_capture_uses_actual_helpers_and_independent_archiver(
         "assembler-with-cpp",
     ]
     assert {
-        str(tools[name]) for name in ("selected-gcc", "selected-ar", "cc1", "as")
+        process_image_capture._image_path_key(tools[name])
+        for name in ("selected-gcc", "selected-ar", "cc1", "as")
     } <= {row.path for row in toolchain_capture.frozen_files(identity)}
     assert sum("-###" in command for command in calls) == 2
     before = len(calls)
@@ -2532,9 +2546,11 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
     tools["git"].write_bytes(b"fixture git executable")
     tools["git"].chmod(0o755)
     version_calls = []
+    # Rust version probes use the resolved component; Git uses its selected
+    # custody entrypoint. Product/native-C configuration coordinates stay raw.
     versions = {
-        str(tools["cargo"]): "cargo 1.99.0\n",
-        str(tools["git"]): "git version 2.49.0\n",
+        str(tools["cargo"].resolve(strict=True)): "cargo 1.99.0\n",
+        process_image_capture._image_path_key(tools["git"]): "git version 2.49.0\n",
     }
 
     def tool_version(argv, **kwargs):
@@ -2553,11 +2569,11 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
                 plan, name, envelope, command, cwd=tmp_path, env=env
             )
     assert version_calls == [
-        [str(tools["cargo"]), "--version"],
-        [str(tools["git"]), "--version"],
+        [str(tools["cargo"].resolve(strict=True)), "--version"],
+        [process_image_capture._image_path_key(tools["git"]), "--version"],
     ]
     assert set(located) == {"rustc", "cargo", "git"}
-    assert located["git"]["path"] == str(tools["git"])
+    assert located["git"]["path"] == process_image_capture._image_path_key(tools["git"])
     assert located["git"]["version"] == "git version 2.49.0"
     # Git's canonical selector currently has no configuration-file inputs;
     # exercise that authority instead of fabricating configuration custody.
@@ -2595,11 +2611,17 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
     assert directory_calls == [tmp_path / "include"]
     assert identity["link_selection"]["native_c"][0]["resources"] is None
     files = {row.path for row in toolchain_capture.frozen_files(captured)}
-    assert str(tools["git"]) in files
+    assert process_image_capture._image_path_key(tools["git"]) in files
     for tool in located.values():
-        assert {row["path"] for row in tool["configuration_files"]} <= files
+        assert {
+            process_image_capture._image_path_key(Path(row["path"]))
+            for row in tool["configuration_files"]
+        } <= files
     if mutation == "new-member":
-        assert str(tmp_path / "include" / "added.h") in files
+        assert (
+            process_image_capture._image_path_key(tmp_path / "include" / "added.h")
+            in files
+        )
     for path in [
         *(
             tools[name]
@@ -2676,7 +2698,9 @@ def test_native_c_resource_receivers_reject_resealed_substitutions(
     if mutation == "parent-escape":
         # Forge the complete transport independently: the production projector
         # now refuses this coordinate before the receiver could observe it.
-        header = str((tmp_path / "include" / "header.h").resolve())
+        header = process_image_capture._image_path_key(
+            tmp_path / "include" / "header.h"
+        )
         original = [row for row in raw["files"] if row["path"] == header]
         assert len(original) == 1
         forced = (tmp_path / "forced.h").read_bytes()
@@ -2689,7 +2713,8 @@ def test_native_c_resource_receivers_reject_resealed_substitutions(
         assert not any(row["path"] == replacement["path"] for row in raw["files"])
         retained = [row for row in raw["files"] if row["path"] != header]
         assert any(
-            row["path"] == str((tmp_path / "forced.h").resolve()) for row in retained
+            row["path"] == process_image_capture._image_path_key(tmp_path / "forced.h")
+            for row in retained
         )
         raw["files"] = sorted([*retained, replacement], key=lambda row: row["path"])
     else:
@@ -2869,8 +2894,8 @@ def test_cargo_capture_preserves_explicit_library_artifacts_and_host(
     }
     assert target_unit["selected_process_count"] == int(links)
     assert {row["path"] for row in images} == {
-        str(tools["host-linker"]),
-        *([str(tools["target-linker"])] if links else []),
+        toolchain_capture._image_path_key(tools["host-linker"]),
+        *([toolchain_capture._image_path_key(tools["target-linker"])] if links else []),
     }
     identity = {"process_images": images, "link_selection": selection}
     toolchain_capture.validate_rust_link_selection(identity, full_capture=True)

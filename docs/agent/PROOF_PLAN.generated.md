@@ -53,7 +53,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 180 min | 10800 s per cell | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 110 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 180 min | 10800 s per cell | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 113 |
 
 ## Scheduled families
 
@@ -68,6 +68,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `nightly_shard_profile_feedback` | `shard-profile-feedback` | 600 s | 300 s | 300 s | `scheduled-suite` | 1 |
 | `nightly_determinism` | `determinism-sweep` | 3600 s | 3300 s | 300 s | `scheduled-suite` | 3 |
 | `nightly_verification_t3` | `verification-gate-t3` | 5400 s | 4800 s | 600 s | `scheduled-suite` | 6 |
+| `runtime_candidate_costs` | `candidate-runtime-costs` | 10800 s | 9000 s | 1800 s | `compiler-build-resource` | 1 |
 
 ## Matrix cells
 
@@ -96,6 +97,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `macos-arm64-py312-queue-portability` | `macos-14` | `macos` | `aarch64` | `3.12` | `proof-queue` | `host` | `portability` |
 | `macos-arm64-py312-rust-native-dev` | `macos-14` | `macos` | `aarch64` | `3.12` | `rust` | `aarch64-apple-darwin` | `dev` |
 | `windows-x86_64-py312-queue-portability` | `windows-2022` | `windows` | `x86_64` | `3.12` | `proof-queue` | `host` | `portability` |
+| `linux-x86_64-rust-native-release` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `release` |
 
 ## Toolchain contracts
 
@@ -254,9 +256,10 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `formal.lean.sorry-baseline` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 300 s | `formal-tools` | 1 |
 | `formal.quint.models` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 1200 s | `formal-tools` | 0 |
 | `formal.correspondence` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 300 s | `formal-tools` | 0 |
-| `portability.cargo-custody.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
-| `portability.cargo-custody.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
-| `portability.cargo-custody.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
+| `portability.cargo-custody.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
+| `portability.cargo-custody.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
+| `portability.cargo-custody.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
+| `runtime.cost.candidate` | `runtime_candidate_costs` | `linux-x86_64-rust-native-release` | `shipping` | 9000 s | `compiler-build-resource` | 0 |
 
 ## Local integration families
 

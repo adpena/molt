@@ -159,8 +159,7 @@ pub extern "C" fn molt_tk_commondialog_show(
                 return raise_unsupported_commondialog_command(_py, handle, command.as_str());
             }
 
-            match dispatch_commondialog_via_tk_call(_py, handle, &_master_path, &command, &options)
-            {
+            match dispatch_commondialog_via_tk_call(_py, handle, &_master_path, &command, options) {
                 Ok(bits) => bits,
                 Err(bits) => bits,
             }
@@ -203,7 +202,7 @@ pub extern "C" fn molt_tk_messagebox_show(
                 handle,
                 &master_path,
                 "tk_messageBox",
-                &options,
+                options,
             ) {
                 Ok(bits) => bits,
                 Err(bits) => bits,
@@ -250,7 +249,7 @@ pub extern "C" fn molt_tk_filedialog_show(
             return raise_unsupported_filedialog_command(_py, handle, command.as_str());
         }
         match with_commondialog_options(_py, handle, options_bits, |options| {
-            match dispatch_commondialog_via_tk_call(_py, handle, &master_path, &command, &options) {
+            match dispatch_commondialog_via_tk_call(_py, handle, &master_path, &command, options) {
                 Ok(bits) => bits,
                 Err(bits) => bits,
             }

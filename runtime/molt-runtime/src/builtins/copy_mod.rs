@@ -152,7 +152,7 @@ fn shallow_copy_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
         TYPE_ID_DICT => {
             // Shallow copy: new dict with same key/value refs.
             // Dict order vec stores [k1, v1, k2, v2, ...].
-            unsafe {
+            {
                 let Some(order) = (unsafe {
                     crate::object::ops_dict::dict_snapshot(
                         _py,
@@ -171,7 +171,7 @@ fn shallow_copy_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
         }
         TYPE_ID_SET => {
             // Shallow copy: new set with same element refs
-            unsafe {
+            {
                 let Some(order) = (unsafe { crate::object::ops_set::set_snapshot(_py, ptr) })
                 else {
                     return MoltObject::none().bits();
@@ -359,7 +359,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
         }
         TYPE_ID_SET => {
             // Deep copy set
-            unsafe {
+            {
                 let Some(order) = (unsafe { crate::object::ops_set::set_snapshot(_py, ptr) })
                 else {
                     return MoltObject::none().bits();
@@ -384,7 +384,7 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
         TYPE_ID_FROZENSET => {
             // Frozensets: deep copy elements, but since frozenset is immutable,
             // if all elements are identical return self.
-            unsafe {
+            {
                 let Some(order) = (unsafe { crate::object::ops_set::set_snapshot(_py, ptr) })
                 else {
                     return MoltObject::none().bits();

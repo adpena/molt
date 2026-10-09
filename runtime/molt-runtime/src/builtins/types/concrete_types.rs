@@ -1184,13 +1184,11 @@ pub extern "C" fn molt_types_simplenamespace_init(
                     dec_ref_bits(_py, dict_bits);
                     return MoltObject::none().bits();
                 }
-                let Some(order) = (unsafe {
-                    crate::object::ops_dict::dict_snapshot(
-                        _py,
-                        dict_ptr,
-                        crate::object::ops_dict::DictSnapshotKind::Entries,
-                    )
-                }) else {
+                let Some(order) = crate::object::ops_dict::dict_snapshot(
+                    _py,
+                    dict_ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                ) else {
                     dec_ref_bits(_py, dict_bits);
                     return MoltObject::none().bits();
                 };
@@ -1234,13 +1232,11 @@ pub extern "C" fn molt_types_simplenamespace_repr(self_bits: u64) -> u64 {
             if let Some(dict_ptr) = dict_ptr {
                 unsafe {
                     if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                        let Some(order) = (unsafe {
-                            crate::object::ops_dict::dict_snapshot(
-                                _py,
-                                dict_ptr,
-                                crate::object::ops_dict::DictSnapshotKind::Entries,
-                            )
-                        }) else {
+                        let Some(order) = crate::object::ops_dict::dict_snapshot(
+                            _py,
+                            dict_ptr,
+                            crate::object::ops_dict::DictSnapshotKind::Entries,
+                        ) else {
                             return MoltObject::none().bits();
                         };
                         let mut idx = 0;

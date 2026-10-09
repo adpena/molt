@@ -215,7 +215,7 @@ def _classes(*paths: str) -> dict[str, bool]:
 def test_manifest_is_complete_and_single_authority() -> None:
     assert PLAN.path.name == "proof_plan.toml"
     assert len(PLAN.families) == 11
-    assert len(PLAN.scheduled_families) == 7
+    assert len(PLAN.scheduled_families) == 8
     assert len(PLAN.commands) >= 84
     assert len(PLAN.matrix_cells) >= 17
     assert len(PLAN.toolchain_policies) >= 15
@@ -1258,6 +1258,7 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
         "python_unit",
         "rust",
         "rust_security",
+        "runtime_candidate_costs",
         "wasm",
     }
     for command in rust_commands:
@@ -1838,6 +1839,7 @@ def _receipt_for(
         "cargo": "cargo {}",
         "lune": "lune {}",
         "clang": "clang version {}",
+        "ld.lld": "LLD {}",
         "llvm-config": "{}",
         "mlir-opt": "LLVM version {}",
         "lean": "Lean (version {})",
@@ -2965,7 +2967,11 @@ def test_terminal_command_execution_closes_transitive_dependencies() -> None:
 
 
 def test_nightly_workflow_is_a_typed_scheduled_family_consumer() -> None:
-    scheduled = {family.name: family for family in PLAN.scheduled_families}
+    scheduled = {
+        family.name: family
+        for family in PLAN.scheduled_families
+        if family.data["workflow"] == ".github/workflows/nightly.yml"
+    }
     assert set(scheduled) == {
         "nightly_conformance",
         "nightly_determinism",
@@ -4236,6 +4242,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
         "portability.rust.linux-aarch64.clippy-workspace",
         "portability.rust.macos.clippy-workspace",
         "rust.test.default-truth",
+        "runtime.cost.candidate",
     }
     for name in ("wasm.build.shared-runtime", "wasm.build.split-runtime-release"):
         row = next(row for row in plan.commands if row.id == name)

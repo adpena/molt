@@ -111,7 +111,9 @@ def _tool_image_specs(
         # Capture its resolved bytes as well without replacing argv[0].
         specs.append((f"source-extension:{role}", path, digest, True))
         content = executable_content_path(path, label=f"source-extension {role}")
-        if os.path.normcase(str(content)) != os.path.normcase(str(path)):
+        if process_image_capture._image_path_key(
+            content
+        ) != process_image_capture._image_path_key(path):
             specs.append((f"source-extension:{role}:content", content, digest, False))
     if not specs:
         raise ValueError("source-extension compiler family has no process images")
@@ -179,7 +181,7 @@ def family_process_images(identity: Mapping[str, object]) -> list[dict[str, obje
     if not isinstance(tools, Mapping) or not isinstance(raw_images, list):
         raise ValueError("source-extension process image family is malformed")
     expected = {
-        (role, str(path), digest, selection)
+        (role, process_image_capture._image_path_key(path), digest, selection)
         for role, path, digest, selection in _tool_image_specs(tools, target=target)
     }
     images = process_image_capture.canonical_images(raw_images)

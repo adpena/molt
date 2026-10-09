@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import math
+import struct
 import sys
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -21,6 +24,30 @@ SPEC.loader.exec_module(runner)
 
 SHA = "a" * 64
 NONCE = "b" * 32
+
+
+def test_candidate_entrypoint_selects_its_own_benchmark_modules(monkeypatch):
+    from tools.import_file import load_module_from_path
+
+    for name in (
+        "run_l7_numeric_attestation",
+        "run_list_delta_attestation",
+        "tools._candidate_import_probe",
+    ):
+        foreign = ModuleType(name)
+        foreign.__file__ = f"/foreign-checkout/{name}.py"
+        monkeypatch.setitem(sys.modules, name, foreign)
+    candidate = load_module_from_path(
+        "tools._candidate_import_probe", ROOT / "tools/run_candidate_runtime_costs.py"
+    )
+    assert Path(candidate.l7.__file__).resolve() == RUNNER_PATH.resolve()
+    assert (
+        Path(candidate.lists.__file__).resolve()
+        == (ROOT / "tools/bench/run_list_delta_attestation.py").resolve()
+    )
+    assert candidate.lists.l7 is candidate.l7
+    assert sys.modules["run_l7_numeric_attestation"] is candidate.l7
+    assert sys.modules["run_list_delta_attestation"] is candidate.lists
 
 
 def _reported(values: list[float]) -> dict[str, float]:
@@ -292,8 +319,69 @@ def test_affinity_requires_one_logical_cpu(value: str) -> None:
         runner._normalize_affinity_mask(value)
 
 
-def test_affinity_is_normalized_for_provenance() -> None:
+@pytest.mark.parametrize("logical_count", [1, 3, 4, None])
+def test_affinity_is_normalized_for_provenance(monkeypatch, logical_count) -> None:
+    monkeypatch.setattr(runner, "os", SimpleNamespace(cpu_count=lambda: logical_count))
     assert runner._normalize_affinity_mask("16") == "0x10"
+
+
+def test_affinity_normalization_matches_unsigned_native_mask_width() -> None:
+    pointer_bits = struct.calcsize("P") * 8
+    highest_bit = 1 << (pointer_bits - 1)
+    assert runner._normalize_affinity_mask(str(highest_bit)) == hex(highest_bit)
+    with pytest.raises(ValueError, match="native pointer width"):
+        runner._normalize_affinity_mask(str(1 << pointer_bits))
+
+
+@pytest.mark.parametrize(
+    "allowed,expected",
+    [({4, 17, 31}, "0x80000000"), ({4, 17}, "0x20000"), ({17}, "0x20000")],
+)
+def test_auto_affinity_selects_sparse_cpu_ids(monkeypatch, allowed, expected) -> None:
+    # Exercise the native provider-to-selection boundary; a small reported
+    # count cannot renumber the actual allowed logical IDs.
+    monkeypatch.setattr(
+        runner, "sys", SimpleNamespace(platform="linux", maxsize=sys.maxsize)
+    )
+    monkeypatch.setattr(
+        runner,
+        "os",
+        SimpleNamespace(sched_getaffinity=lambda pid: allowed, cpu_count=lambda: 1),
+    )
+    result = runner._resolve_execution_control("auto")
+    assert result["affinity_mask"] == expected
+    assert result["allowed_affinity_mask"] == hex(sum(1 << cpu for cpu in allowed))
+
+
+def test_explicit_affinity_preserves_highest_allowed_native_cpu(monkeypatch) -> None:
+    pointer_bits = struct.calcsize("P") * 8
+    selected = 1 << (pointer_bits - 1)
+    monkeypatch.setattr(runner, "_allowed_affinity_mask", lambda: selected)
+    monkeypatch.setattr(runner, "os", SimpleNamespace(cpu_count=lambda: 1))
+    assert (
+        runner._resolve_execution_control(hex(selected))["logical_cpu"]
+        == pointer_bits - 1
+    )
+    with pytest.raises(ValueError, match="unavailable to this process"):
+        runner._resolve_execution_control("0x1")
+
+
+def test_allowed_affinity_excludes_unrepresentable_cpu_ids(monkeypatch) -> None:
+    pointer_bits = struct.calcsize("P") * 8
+    monkeypatch.setattr(
+        runner, "sys", SimpleNamespace(platform="linux", maxsize=sys.maxsize)
+    )
+    monkeypatch.setattr(
+        runner,
+        "os",
+        SimpleNamespace(sched_getaffinity=lambda pid: {pointer_bits - 1, pointer_bits}),
+    )
+    assert runner._allowed_affinity_mask() == 1 << (pointer_bits - 1)
+    monkeypatch.setattr(
+        runner, "os", SimpleNamespace(sched_getaffinity=lambda pid: {pointer_bits})
+    )
+    with pytest.raises(ValueError, match="no native-pointer-width logical CPU"):
+        runner._allowed_affinity_mask()
 
 
 def test_auto_affinity_avoids_primary_housekeeping_logicals(monkeypatch) -> None:
@@ -322,6 +410,7 @@ def test_explicit_affinity_must_be_available_to_process(monkeypatch) -> None:
 
 
 def test_explicit_affinity_records_allowed_topology(monkeypatch) -> None:
+    monkeypatch.setattr(runner, "os", SimpleNamespace(cpu_count=lambda: 1))
     monkeypatch.setattr(runner, "_allowed_affinity_mask", lambda: 0b1_0101)
     assert runner._resolve_execution_control("0x10") == {
         "affinity_mask": "0x10",
@@ -621,3 +710,182 @@ def test_aggregate_rejects_cached_integer_substitution_in_origin_case() -> None:
                 case["input"]["value"] = 42
     _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
     assert any("ordered case manifest drift" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing-test",
+        "ignored-test",
+        "missing-record",
+        "duplicate-record",
+        "source-drift",
+        "affinity-drift",
+        "unknown-schema",
+        "empty-cases",
+    ],
+)
+def test_candidate_storage_capture_requires_actual_exact_completion(mutation):
+    from tools import run_candidate_runtime_costs as candidate
+
+    name = "shared_hash_storage_performance_attestation"
+    source = {"run_nonce": "independent-source"}
+    payload = {
+        "schema_version": 1,
+        "kind": "shared_hash_storage_performance_attestation",
+        "profile": "release",
+        "source": source,
+        "affinity_mask": "0x1",
+        "cases": [{"name": "owned storage workload"}],
+    }
+    record = "SHARED_HASH_STORAGE_ATTESTATION=" + json.dumps(payload) + "\n"
+    prefix = f"running 1 test\ntest {name} ... "
+    suffix = "ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n"
+    argv = ["image", name, "--exact", "--ignored", "--nocapture", "--test-threads=1"]
+    assert (
+        candidate.storage_payload(prefix + record + suffix, argv, source, "0x1")
+        == payload
+    )
+    if mutation == "missing-test":
+        prefix = prefix.replace(name, "another_test")
+    elif mutation == "ignored-test":
+        suffix = (
+            suffix.replace("ok\n", "ignored\n", 1)
+            .replace("1 passed", "0 passed")
+            .replace("0 ignored", "1 ignored")
+        )
+    elif mutation == "missing-record":
+        record = ""
+    elif mutation == "duplicate-record":
+        record += record
+    elif mutation == "source-drift":
+        source = {"run_nonce": "different-source"}
+    elif mutation == "affinity-drift":
+        payload["affinity_mask"] = "0x2"
+        record = "SHARED_HASH_STORAGE_ATTESTATION=" + json.dumps(payload) + "\n"
+    elif mutation == "unknown-schema":
+        payload["schema_version"] = 2
+        record = "SHARED_HASH_STORAGE_ATTESTATION=" + json.dumps(payload) + "\n"
+    else:
+        payload["cases"] = []
+        record = "SHARED_HASH_STORAGE_ATTESTATION=" + json.dumps(payload) + "\n"
+    with pytest.raises(RuntimeError):
+        candidate.storage_payload(prefix + record + suffix, argv, source, "0x1")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "stream-drift",
+        "foreign-run",
+        "wrong-argv",
+        "wrong-image",
+        "duplicate-receipt",
+        "failed-execution",
+        "timed-out",
+        "termination-drift",
+        "guard-failure",
+        "saved-row-drift",
+    ],
+)
+def test_candidate_storage_reads_complete_bound_capture(tmp_path, mutation):
+    import hashlib
+    from tools import run_candidate_runtime_costs as candidate
+    from tools.libtest_results import ACCOUNTING_SCHEMA, BINARY_RECEIPT_SCHEMA
+
+    image = (tmp_path / "image").resolve()
+    image.write_bytes(b"independent image")
+    identity = {"schema": "molt.git-source.v1", "tree": "independent"}
+    directory = tmp_path / "binaries"
+    evidence = directory / "evidence" / "invocation"
+    evidence.mkdir(parents=True)
+    stream = evidence / "baseline.stdout.log"
+    # This deliberately exceeds the wrapper's diagnostic tail. The actual
+    # complete capture, not a console mirror, must supply the accepted bytes.
+    content = "retained beginning\n" + "x" * 100_000 + "\nretained end\n"
+    stream.write_text(content, encoding="utf-8")
+    argv = [
+        str(image),
+        "shared_hash_storage_performance_attestation",
+        "--exact",
+        "--ignored",
+    ]
+    receipt = {
+        "schema": BINARY_RECEIPT_SCHEMA,
+        "invocation_id": "invocation",
+        "run_id": "run",
+        "source_identity": identity,
+        "executable_resolved": str(image),
+        "executable_size": image.stat().st_size,
+        "executable_sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
+        "status": "success",
+        "returncode": 0,
+        "test_results": [{"identity": argv[1], "status": "pass"}],
+        "result_accounting": {
+            "schema": ACCOUNTING_SCHEMA,
+            "complete": True,
+            "issues": [],
+            "observed_results": 1,
+            "declared_results": 1,
+        },
+        "executions": [
+            {
+                "argv": argv,
+                "returncode": 0,
+                "timed_out": False,
+                "termination": {"kind": "exit", "returncode": 0},
+                "infrastructure_failure": None,
+                "stdout_evidence": str(stream),
+                "stdout_bytes": stream.stat().st_size,
+                "stdout_sha256": hashlib.sha256(stream.read_bytes()).hexdigest(),
+            }
+        ],
+    }
+    path = directory / "receipt.json"
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert candidate.storage_capture(directory, "run", identity, argv) == content
+    if mutation == "stream-drift":
+        stream.write_text(content + "changed", encoding="utf-8")
+    elif mutation == "foreign-run":
+        receipt["run_id"] = "foreign"
+    elif mutation == "wrong-argv":
+        receipt["executions"][0]["argv"] = [str(image), "another_test"]
+    elif mutation == "wrong-image":
+        other = tmp_path / "other-image"
+        other.write_bytes(image.read_bytes())
+        receipt["executable_resolved"] = str(other)
+    elif mutation == "failed-execution":
+        receipt["executions"][0]["returncode"] = 1
+    elif mutation == "timed-out":
+        receipt["executions"][0]["timed_out"] = True
+    elif mutation == "termination-drift":
+        receipt["executions"][0]["termination"] = {"kind": "signal", "returncode": -15}
+    elif mutation == "saved-row-drift":
+        receipt["test_results"] = [{"identity": "unrelated_test", "status": "pass"}]
+    elif mutation == "guard-failure":
+        receipt["executions"][0]["infrastructure_failure"] = {
+            "phase": "rss_trip_evidence",
+            "details": ["independent observer loss"],
+        }
+    else:
+        (directory / "duplicate.json").write_text(json.dumps(receipt), encoding="utf-8")
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        candidate.storage_capture(directory, "run", identity, argv)
+
+
+@pytest.mark.parametrize("exit_code", [0, 2])
+def test_candidate_list_exit_status_is_retained(tmp_path, monkeypatch, exit_code):
+    from tools import run_candidate_runtime_costs as candidate
+
+    monkeypatch.setattr(candidate, "OUTPUT", tmp_path)
+    monkeypatch.setattr(candidate.lists, "main", lambda argv: exit_code)
+    if exit_code:
+        with pytest.raises(RuntimeError, match="candidate list attestation failed: 2"):
+            candidate.run_operation("list")
+    else:
+        candidate.run_operation("list")
+    result = json.loads((tmp_path / "list/result.json").read_text(encoding="utf-8"))
+    assert result["status"] == ("failed" if exit_code else "evidence_only")
+    assert result["performance_claim"] is False
+    assert result["release_acceptance"] is False

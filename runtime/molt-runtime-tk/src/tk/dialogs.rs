@@ -8,7 +8,7 @@ use super::state::alloc_string_bits;
 use super::state::{TkAppState, app_mut_from_registry, app_tcl_error_locked, tk_registry};
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use super::tcl::TclObj;
-use crate::bridge::{dec_ref_bits, decode_value_list, dict_snapshot, object_type_id, seq_snapshot};
+use crate::bridge::{dec_ref_bits, dict_snapshot, object_type_id, seq_snapshot};
 use molt_runtime_core::prelude::{MoltObject, PyToken, obj_from_bits};
 use molt_runtime_core::type_ids::TYPE_ID_DICT;
 

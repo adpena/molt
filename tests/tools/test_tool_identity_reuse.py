@@ -298,9 +298,13 @@ def test_cargo_capture_reuse_and_rust_link_probe_share_bound_payload(
         reuse_root=tmp_path / "reuse",
         reuse_telemetry=telemetry,
     )
-    assert first == second and first["path"] == str(expected)
+    # The selected launcher is a custody coordinate, while the Rust version
+    # probe names the OS-resolved physical component.
+    assert first == second and first["path"] == process_image_capture._image_path_key(
+        expected
+    )
     assert [row["state"] for row in telemetry] == ["miss", "hit"]
-    assert versions == [[str(expected), "--version"]]
+    assert versions == [[str(expected.resolve(strict=True)), "--version"]]
     # The Rust link capture must use that same executable for metadata/build
     # probes, even though CARGO and PATH conflict with an explicit payload.
     probes = []
@@ -368,7 +372,7 @@ def test_python_declaring_cargo_uses_path_independently_of_explicit_hook(
         cwd=tmp_path,
         env={"CARGO": str(decoy), "PATH": str(selected.parent)},
     )
-    assert identity == {"path": str(selected)}
+    assert identity == {"path": process_image_capture._image_path_key(selected)}
 
 
 def test_wasi_compiler_identity_selects_sdk_before_outer_command_or_path(
@@ -409,7 +413,7 @@ def test_wasi_compiler_identity_selects_sdk_before_outer_command_or_path(
         cwd=tmp_path,
         env={},
     )
-    assert result["path"] == str(compiler)
+    assert result["path"] == process_image_capture._image_path_key(compiler)
     assert selected == ["clang"]
 
 
@@ -455,7 +459,10 @@ def test_sdk_identity_roundtrip_reuses_only_complete_current_closure(
         # The fixture contains real image bytes but is not an executing SDK.
         # Only the version process is substituted; selection/capture/cache/receiver are real.
         probes.append(tuple(argv))
-        assert tuple(argv) == (str(abi.driver), "--version")
+        assert tuple(argv) == (
+            str(process_image_capture.custody_path(abi.driver)),
+            "--version",
+        )
         return subprocess.CompletedProcess(argv, 0, "clang version 23.1.0\n", "")
 
     monkeypatch.setattr(command_identity, "_run_captured", version)
@@ -665,12 +672,12 @@ def test_rust_reuse_resolves_current_component_before_cache_without_phase_reprob
     resolutions, versions = [], []
 
     def which(argv, **kwargs):
-        assert argv == [str(rustup), "which", role]
+        assert argv == [process_image_capture._image_path_key(rustup), "which", role]
         resolutions.append(list(argv))
         return subprocess.CompletedProcess(argv, 0, str(selected[0]) + "\n", "")
 
     def version(argv, **kwargs):
-        assert argv[0] == str(selected[0])
+        assert argv[0] == str(selected[0].resolve(strict=True))
         versions.append(list(argv))
         return subprocess.CompletedProcess(
             argv, 0, f"{role} 1.99.0\nhost: x86_64-unknown-linux-gnu\n", ""
@@ -729,7 +736,7 @@ def test_rust_reuse_resolves_current_component_before_cache_without_phase_reprob
         and changed[0]["key_sha256"] != miss[0]["key_sha256"]
     )
     assert first["launcher_sha256"] == third["launcher_sha256"]
-    assert third["content_path"] == str(replacement)
+    assert third["content_path"] == str(replacement.resolve(strict=True))
     assert first["executable_sha256"] != third["executable_sha256"]
     assert len(resolutions) == 3 and len(versions) == 2
     # Explicit physical tools do not invoke rustup, including a warm capture.
@@ -775,7 +782,9 @@ def test_cargo_rustc_environment_selector_precedence(tmp_path, monkeypatch, prim
         cwd=tmp_path,
         env=env,
     )
-    assert result["content_path"] == str(higher if primary else lower)
+    assert result["content_path"] == str(
+        (higher if primary else lower).resolve(strict=True)
+    )
 
 
 def test_generator_rustfmt_capture_uses_path_independently_of_cargo_hook(
@@ -802,7 +811,7 @@ def test_generator_rustfmt_capture_uses_path_independently_of_cargo_hook(
         cwd=tmp_path,
         env={"RUSTFMT": str(decoy), "PATH": str(selected.parent)},
     )
-    assert value == {"path": str(selected)}
+    assert value == {"path": str(selected.resolve(strict=True))}
 
 
 @pytest.mark.parametrize("role", ["cargo", "rustc", "rustfmt", "git", "node"])
@@ -837,7 +846,7 @@ def test_registered_tool_identity_uses_bound_payload_before_dependency_selectors
     )
     assert command_identity._tool_identity(
         proof_plan.ProofPlan.load(), role, envelope, exact, cwd=proof_plan.ROOT, env=env
-    ) == {"path": str(executable)}
+    ) == {"path": process_image_capture._image_path_key(executable)}
 
 
 @pytest.mark.parametrize("owner", ["python", "cargo", "delegated-cargo"])
@@ -869,7 +878,7 @@ def test_python_rustc_metadata_dependency_has_independent_reuse_identity(
     versions = []
 
     def version(command, **kwargs):
-        assert command[0] == str(primary)
+        assert command[0] == str(primary.resolve(strict=True))
         versions.append(command)
         return subprocess.CompletedProcess(
             command, 0, "rustc 1.99.0\nhost: x86_64-unknown-linux-gnu\n", ""
@@ -917,7 +926,8 @@ def test_python_rustc_metadata_dependency_has_independent_reuse_identity(
             reuse_root=tmp_path / "reuse",
             reuse_telemetry=telemetry,
         )
-        assert identity["path"] == identity["content_path"] == str(primary)
+        assert identity["path"] == process_image_capture._image_path_key(primary)
+        assert identity["content_path"] == str(primary.resolve(strict=True))
         assert identity["version"] == "rustc 1.99.0\nhost: x86_64-unknown-linux-gnu"
         return identity, telemetry[0]
 
@@ -933,7 +943,12 @@ def test_python_rustc_metadata_dependency_has_independent_reuse_identity(
         if row["role"] == "rustc-path-metadata"
     }
     assert dependency_paths == (
-        {str(proxy), str(first)} if owner == "python" else set()
+        {
+            process_image_capture._image_path_key(proxy),
+            process_image_capture._image_path_key(first),
+        }
+        if owner == "python"
+        else set()
     )
     selected[0] = second
     changed, event = capture()
@@ -945,7 +960,10 @@ def test_python_rustc_metadata_dependency_has_independent_reuse_identity(
             row["path"]
             for row in changed["process_images"]
             if row["role"] == "rustc-path-metadata"
-        } == {str(proxy), str(second)}
+        } == {
+            process_image_capture._image_path_key(proxy),
+            process_image_capture._image_path_key(second),
+        }
 
 
 def test_rust_reuse_binds_archive_claim_to_actual_producer_command(

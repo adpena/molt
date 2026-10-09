@@ -55,7 +55,11 @@ def capture_image(
             f"{root_exit_disposition!r}"
         )
     selected = custody_path(path)
-    resolved = selected if preserve_path else selected.resolve(strict=True)
+    # Resolution can restore OS drive spelling; serialized image coordinates
+    # still belong to the same lexical authority as canonical_images.
+    resolved = (
+        selected if preserve_path else custody_path(selected.resolve(strict=True))
+    )
     if not resolved.is_file():
         raise ValueError(f"process image is not a file: {resolved}")
     file_stat = resolved.stat()
@@ -116,7 +120,9 @@ def revalidate_images(
         current = {
             "schema": PROCESS_IMAGE_SCHEMA,
             "role": role,
-            "path": str(actual_path),
+            # Reuse the exact lexical key already checked above, including
+            # after resolution. Do not compare an OS spelling to a custody key.
+            "path": key,
             "sha256": captured["sha256"],
             "size_bytes": captured["size_bytes"],
         }
@@ -125,8 +131,12 @@ def revalidate_images(
         if path_kind == "selection":
             current["path_kind"] = path_kind
         if current != dict(raw):
+            changed = [name for name in current if current[name] != raw.get(name)]
+            if raw.keys() - current.keys():
+                changed.append("unexpected fields")
             raise ValueError(
-                f"process image changed while live custody armed: {raw_path}"
+                f"process image changed while live custody armed: {raw_path} "
+                f"(differing fields: {', '.join(changed)})"
             )
         current_rows.append(current)
     return current_rows

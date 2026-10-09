@@ -1698,6 +1698,10 @@ pub(crate) fn classinfo_match_available() -> bool {
 // result is never reinterpreted as absence or retried through another owner.
 impl RuntimeHooks {
     #[inline]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Forwards the fixed C-function producer ABI with its receiver"
+    )]
     pub unsafe fn register_c_function(
         &self,
         meth_addr: u64,

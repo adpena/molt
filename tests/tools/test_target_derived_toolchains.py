@@ -210,7 +210,7 @@ def test_capture_records_family_and_frozen_inputs(tmp_path, monkeypatch, target)
     assert images == identity["process_images"]
     files = {row.path: row for row in toolchain_capture.frozen_files(identity)}
     assert all(
-        str(tool.path) in files
+        process_image_capture._image_path_key(tool.path) in files
         for tool in (
             resolved.tools.cc,
             resolved.tools.cxx,
@@ -223,12 +223,136 @@ def test_capture_records_family_and_frozen_inputs(tmp_path, monkeypatch, target)
     )
     if resolved.wasi_sysroot is not None:
         header = resolved.wasi_sysroot / "include" / "wasm32-wasip1" / "errno.h"
-        assert str(header) not in files
+        assert process_image_capture._image_path_key(header) not in files
         full = toolchain_capture.capture_wasi_sdk_resources(identity["wasi_sdk"])
         captured = {row.path: row for row in toolchain_capture.frozen_files(full)}
-        assert captured[str(header)].size == header.stat().st_size
+        assert (
+            captured[process_image_capture._image_path_key(header)].size
+            == header.stat().st_size
+        )
         archive = resolved.link_inputs.compiler_rt
-        assert files[str(archive)].sha256 == resolved.link_inputs.sha256
+        assert (
+            files[process_image_capture._image_path_key(archive)].sha256
+            == resolved.link_inputs.sha256
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows process coordinate join")
+@pytest.mark.parametrize("target", ["native", "wasm", "wasm-freestanding"])
+def test_windows_target_family_joins_product_paths_to_image_coordinates(
+    tmp_path, monkeypatch, target
+):
+    physical = tmp_path.resolve(strict=True)
+    if len(physical.drive) != 2 or physical.drive[1] != ":":
+        pytest.skip("fixture requires a DOS drive")
+    root = Path(physical.drive.upper() + str(physical)[len(physical.drive) :])
+    resolved = _resolved(root, target)
+    identity = _capture(monkeypatch, resolved)
+    assert identity["tools"]["cc"]["path"] == str(resolved.tools.cc.path)
+    images = provider.family_process_images(identity)
+    assert images == identity["process_images"]
+    selected = next(row for row in images if row["role"] == "source-extension:cc")
+    raw = str(resolved.tools.cc.path)
+    assert selected["path"] == raw[0].lower() + raw[1:]
+    assert (
+        selected["sha256"]
+        == hashlib.sha256(resolved.tools.cc.path.read_bytes()).hexdigest()
+    )
+    assert process_image_capture.revalidate_images(images) == images
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["none", "launcher-hardlink", "helper-hardlink", "helper-digest", "helper-size"],
+)
+def test_wasi_process_projection_joins_sdk_receipt_without_alias_relaxation(
+    tmp_path, monkeypatch, mutation
+):
+    from tools.proof_queue_pkg import command_identity
+
+    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    sdk = installation.sdk
+    plan = proof_plan.ProofPlan.load()
+    env = {"WASI_SDK_PATH": str(sdk)}
+    probes = []
+
+    def version(argv, **kwargs):
+        probes.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, "clang version 23.1.0", "")
+
+    monkeypatch.setattr(command_identity, "_run_captured", version)
+    identity = command_identity._tool_identity(
+        plan, "wasi-clang", {}, ["clang", "input.c"], cwd=tmp_path, env=env
+    )
+    command_identity._validate_toolchain_identity(plan, "wasi-clang", identity)
+    closure = identity["wasi_sdk"]
+    fact = closure["generation"]["facts"]["tools"]["clang"]
+    raw = str(Path(closure["sdk"]) / fact["path"])
+    expected_path = raw[0].lower() + raw[1:] if os.name == "nt" else raw
+    assert identity["path"] == expected_path
+    assert probes == [(expected_path, "--version")]
+    assert closure["sdk"] == str(sdk)  # The managed SDK receipt is not rewritten.
+    assert (
+        process_image_capture.revalidate_images(identity["process_images"])
+        == identity["process_images"]
+    )
+    if mutation == "none":
+        return
+    if mutation == "launcher-hardlink":
+        alias = tmp_path / "other-clang.exe"
+        os.link(identity["path"], alias)
+        assert alias.samefile(identity["path"])
+        identity["path"] = str(alias)
+        expected = "compiler selection differs from its role"
+    else:
+        image = identity["process_images"][0]
+        if mutation == "helper-hardlink":
+            alias = tmp_path / "other-helper.exe"
+            os.link(image["path"], alias)
+            assert alias.samefile(image["path"])
+            image["path"] = str(alias)
+            expected = "process helper closure is incomplete"
+        elif mutation == "helper-digest":
+            image["sha256"] = "0" * 64
+            expected = "process helper content differs from receipt"
+        else:
+            image["size_bytes"] += 1
+            expected = "process helper content differs from receipt"
+    with pytest.raises(ValueError, match=expected):
+        toolchain_capture.validate_wasi_sdk_closure(
+            identity, full_capture=False, selected_role="clang"
+        )
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="native Windows case-sensitive alias capability"
+)
+def test_case_distinct_target_alias_retains_resolved_content_role(
+    tmp_path, monkeypatch
+):
+    resolved = _resolved(tmp_path)
+    alias = resolved.tools.cc.path
+    payload = alias.read_bytes()
+    alias.unlink()
+    content = alias.with_name(alias.name.upper())
+    content.write_bytes(payload)
+    try:
+        alias.symlink_to(content)
+    except OSError as exc:
+        pytest.skip(f"case-distinct symlink capability unavailable: {exc}")
+    assert {p.name for p in alias.parent.iterdir()} >= {alias.name, content.name}
+    assert alias.samefile(content)
+    identity = _capture(monkeypatch, resolved)
+    rows = {row["role"]: row for row in provider.family_process_images(identity)}
+    assert (
+        rows["source-extension:cc"]["path"]
+        != rows["source-extension:cc:content"]["path"]
+    )
+    assert rows["source-extension:cc:content"]["path"].endswith(content.name)
+    assert (
+        rows["source-extension:cc"]["sha256"]
+        == rows["source-extension:cc:content"]["sha256"]
+    )
 
 
 def test_wasi_metadata_consumes_selected_archive_without_discovery(
@@ -438,7 +562,9 @@ def test_changed_executable_rejected_even_with_resealed_outer_digest(
         ValueError, match="process image changed while live custody armed"
     ) as caught:
         provider.validate_identity(_policy(), identity)
-    assert str(resolved.tools.cc.path) in str(caught.value)
+    assert process_image_capture._image_path_key(resolved.tools.cc.path) in str(
+        caught.value
+    )
 
 
 @pytest.mark.parametrize("target", ["native", "wasm-freestanding"])
@@ -543,9 +669,14 @@ def test_linker_alias_preserves_invoked_role_and_captures_resolved_bytes(
     assert identity["commands"]["ld"] == [str(alias)]
     images = process_image_capture.toolchain_images("source-extension", identity)
     assert any(
-        row["path"] == str(alias) and row["path_kind"] == "selection" for row in images
+        row["path"] == process_image_capture._image_path_key(alias)
+        and row["path_kind"] == "selection"
+        for row in images
     )
-    assert any(row["path"] == str(content.path) for row in images)
+    assert any(
+        row["path"] == process_image_capture._image_path_key(content.path)
+        for row in images
+    )
     provider.validate_identity(_policy(), identity)
 
 
@@ -944,7 +1075,7 @@ def test_shared_sdk_armed_capture_and_cas_preserve_exact_family(tmp_path, monkey
     (abi.include / "errno.h").write_bytes(b"changed under proof custody")
     checked = toolchain_capture.verify_capture(reference, workers=1, cas_root=cas)
     assert not checked["stable"]
-    assert str(abi.include / "errno.h") in {
+    assert process_image_capture._image_path_key(abi.include / "errno.h") in {
         row["path"] for row in checked["mismatches"]
     }
 

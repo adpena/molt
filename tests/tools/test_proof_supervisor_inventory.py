@@ -170,9 +170,9 @@ def test_process_image_inventory_captures_distinct_runtime_and_projects_once(
 
     assert telemetry["schema"] == "molt.proof-process-image-inventory.v1"
     assert telemetry["observed_image_count"] == 2
-    assert {Path(str(image["path"])).resolve() for image in images} == {
-        supervisor.resolve(),
-        runtime.resolve(),
+    assert {image["path"] for image in images} == {
+        process_image_capture._image_path_key(supervisor.resolve()),
+        process_image_capture._image_path_key(runtime.resolve()),
     }
     launcher = next(image for image in images if image["role"] == "fixture-launcher")
     identity = {
@@ -340,6 +340,155 @@ def test_process_image_authority_rejects_mutation_and_conflicting_identity(
         process_image_capture.revalidate_images([captured])
 
 
+@pytest.mark.skipif(os.name != "nt", reason="native Windows resolved image spelling")
+@pytest.mark.parametrize("preserve_path", [False, True])
+@pytest.mark.parametrize("disposition", ["require-exit", "terminate"])
+def test_windows_process_image_roundtrip_keeps_canonical_coordinate(
+    tmp_path, preserve_path, disposition
+):
+    executable = tmp_path / "ExactCompiler.EXE"
+    payload = b"unchanged process image"
+    executable.write_bytes(payload)
+    physical = executable.resolve(strict=True)
+    if len(physical.drive) != 2 or physical.drive[1] != ":":
+        pytest.skip("fixture requires a DOS drive spelling")
+    # Independent expected wire spelling: lower-case drive, actual entry names.
+    expected_path = physical.drive.lower() + str(physical)[len(physical.drive) :]
+    request = Path(physical.drive.upper() + str(physical)[len(physical.drive) :])
+    expected = {
+        "schema": "molt.proof-process-image-capture.v1",
+        "role": "cargo-launcher",
+        "path": expected_path,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "size_bytes": len(payload),
+    }
+    if preserve_path:
+        expected["path_kind"] = "selection"
+    if disposition == "terminate":
+        expected["root_exit_disposition"] = "terminate"
+    captured = process_image_capture.capture_image(
+        "cargo-launcher", request, disposition, preserve_path=preserve_path
+    )
+    assert captured == expected
+    assert (
+        process_image_capture.capture_image(
+            "cargo-launcher",
+            Path("\\\\?\\" + str(request)),
+            disposition,
+            preserve_path=preserve_path,
+        )
+        == expected
+    )
+    assert process_image_capture.canonical_images([captured]) == [expected]
+    assert process_image_capture.revalidate_images([captured]) == [expected]
+    assert process_image_capture.revalidate_images(
+        process_image_capture.canonical_images([captured])
+    ) == [expected]
+
+
+@pytest.mark.parametrize("preserve_path", [False, True])
+@pytest.mark.parametrize("mutation", ["content", "digest", "size", "extra-field"])
+def test_process_image_coordinate_roundtrip_does_not_relax_identity(
+    tmp_path, preserve_path, mutation
+):
+    executable = tmp_path / "tool.exe"
+    executable.write_bytes(b"before")
+    row = process_image_capture.canonical_images(
+        [
+            process_image_capture.capture_image(
+                "tool", executable, preserve_path=preserve_path
+            )
+        ]
+    )[0]
+    if mutation == "content":
+        executable.write_bytes(b"AFTER!")  # Same length: size alone is insufficient.
+    elif mutation == "digest":
+        row["sha256"] = "0" * 64
+    elif mutation == "size":
+        row["size_bytes"] += 1
+    else:
+        row["unexpected"] = True
+    expected_field = {
+        "content": "sha256",
+        "digest": "sha256",
+        "size": "size_bytes",
+        "extra-field": "unexpected fields",
+    }[mutation]
+    with pytest.raises(ValueError, match="changed while live custody armed") as failure:
+        process_image_capture.revalidate_images([row])
+    assert f"(differing fields: {expected_field})" in str(failure.value)
+
+
+def test_process_image_revalidation_reads_shared_role_content_once(
+    tmp_path, monkeypatch
+):
+    executable = tmp_path / "tool.exe"
+    executable.write_bytes(b"one shared image")
+    captured = process_image_capture.capture_image("cargo-launcher", executable)
+    rows = [captured, {**captured, "role": "rust-build-helper"}]
+    actual_digest = hashlib.file_digest
+    reads = []
+
+    def counted_digest(stream, algorithm):
+        reads.append((Path(stream.name), algorithm))
+        return actual_digest(stream, algorithm)
+
+    monkeypatch.setattr(process_image_capture.hashlib, "file_digest", counted_digest)
+    assert process_image_capture.revalidate_images(rows) == rows
+    assert len(reads) == 1
+    assert reads[0][0].samefile(executable)
+    assert reads[0][1] == "sha256"
+
+
+def test_process_image_coordinate_keeps_samefile_selection_aliases_distinct(tmp_path):
+    selected, alias = tmp_path / "selected.exe", tmp_path / "alias.exe"
+    selected.write_bytes(b"same inode and bytes")
+    os.link(selected, alias)
+    assert selected.samefile(alias)
+    rows = [
+        process_image_capture.capture_image("cargo-launcher", path, preserve_path=True)
+        for path in (selected, alias)
+    ]
+    assert rows[0]["path"] != rows[1]["path"]
+    assert len(process_image_capture.canonical_images(rows)) == 2
+    assert process_image_capture.revalidate_images(rows) == rows
+    # Even same-inode, same-hash content cannot admit another launcher entry.
+    identity = {
+        "path": rows[0]["path"],
+        "content_path": rows[0]["path"],
+        "launcher_sha256": rows[0]["sha256"],
+        "executable_sha256": rows[0]["sha256"],
+        "process_images": [rows[1]],
+    }
+    with pytest.raises(
+        ValueError, match="launcher image is outside its process closure"
+    ):
+        process_image_capture.toolchain_images("cargo", identity)
+
+
+def test_resolved_image_cannot_borrow_selection_alias_identity(tmp_path):
+    target, alias = tmp_path / "target.exe", tmp_path / "alias.exe"
+    target.write_bytes(b"same content")
+    try:
+        alias.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink capability unavailable: {exc}")
+    selection = process_image_capture.capture_image("tool", alias, preserve_path=True)
+    resolved = process_image_capture.capture_image("tool", alias)
+    assert selection["path"] != resolved["path"]
+    assert selection["sha256"] == resolved["sha256"]
+    assert process_image_capture.revalidate_images([selection, resolved]) == [
+        selection,
+        resolved,
+    ]
+    forged = dict(selection)
+    del forged["path_kind"]
+    with pytest.raises(ValueError, match="changed while live custody armed"):
+        process_image_capture.revalidate_images(
+            process_image_capture.canonical_images([forged])
+        )
+
+
 @pytest.mark.skipif(
     sys.platform not in {"win32", "linux"} or shutil.which("git") is None,
     reason="real Git inventory requires a lossless native backend and Git",
@@ -357,7 +506,9 @@ def test_real_git_launcher_runtime_closure_is_kernel_observed(tmp_path: Path) ->
     )
 
     assert telemetry["observed_image_count"] == len(images)
-    assert any(Path(str(image["path"])).samefile(git) for image in images)
+    assert process_image_capture._image_path_key(git) in {
+        image["path"] for image in images
+    }
     assert process_image_capture.revalidate_images(images) == images
 
 
