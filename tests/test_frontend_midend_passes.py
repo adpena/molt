@@ -4,6 +4,7 @@ import random
 import __future__ as future_module
 import ast
 import os
+import time
 import types
 from contextlib import contextmanager
 from pathlib import Path
@@ -18,6 +19,8 @@ from molt.frontend._types import (
     _SCCP_OVERDEFINED,
 )
 from molt.frontend import cfg_analysis
+from molt.frontend.lowering import midend_pipeline
+from tests.process_guard_common import install_module_view
 from molt.frontend.cfg_analysis import BasicBlock, CFGEdgeKind, CFGGraph, build_cfg
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
@@ -5719,9 +5722,10 @@ def test_midend_policy_budget_ms_does_not_gate_on_wall_clock(
         return tick["value"]
 
     # The midend wall-clock reads live in
-    # molt.frontend.lowering.midend_pipeline, which calls the stdlib
-    # ``time.perf_counter`` directly — patch it at its one authority.
-    monkeypatch.setattr("time.perf_counter", fake_perf_counter)
+    # molt.frontend.lowering.midend_pipeline; only its view of ``time`` moves.
+    install_module_view(
+        monkeypatch, "time", time, midend_pipeline, perf_counter=fake_perf_counter
+    )
 
     out = gen.map_ops_to_json(ops, function_name="slow_func")
 

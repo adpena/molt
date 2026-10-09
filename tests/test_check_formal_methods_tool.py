@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import tools.check_formal_methods as check_formal_methods
+import shutil
+from tests.process_guard_common import install_module_view
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -63,7 +65,9 @@ def test_known_bad_quint_uses_main_module_and_requires_violation(
             stderr="",
         )
 
-    monkeypatch.setattr(check_formal_methods.shutil, "which", lambda _name: "quint")
+    install_module_view(
+        monkeypatch, "shutil", shutil, check_formal_methods, which=lambda _name: "quint"
+    )
     monkeypatch.setattr(
         check_formal_methods.harness_memory_guard,
         "guarded_completed_process",
@@ -91,7 +95,9 @@ def test_known_bad_quint_rejects_infrastructure_failure(monkeypatch) -> None:
             stderr="TypeError: fetch failed\nNode.js v24.16.0\n",
         )
 
-    monkeypatch.setattr(check_formal_methods.shutil, "which", lambda _name: "quint")
+    install_module_view(
+        monkeypatch, "shutil", shutil, check_formal_methods, which=lambda _name: "quint"
+    )
     monkeypatch.setattr(
         check_formal_methods.harness_memory_guard,
         "guarded_completed_process",

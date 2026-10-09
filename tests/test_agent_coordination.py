@@ -8,6 +8,8 @@ import sys
 import pytest
 
 from tools import agent_coordination
+import time
+from tests.process_guard_common import install_module_view
 
 
 def _identity_fixture_git(repo: Path, *arguments: str) -> str:
@@ -1003,10 +1005,12 @@ def test_codex_stall_telemetry_records_first_output_and_idle_spans(
     monkeypatch,
 ) -> None:
     monotonic_values = iter([1.25, 1.60])
-    monkeypatch.setattr(
-        agent_coordination.time,
-        "monotonic",
-        lambda: next(monotonic_values),
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        agent_coordination,
+        monotonic=lambda: next(monotonic_values),
     )
     telemetry = agent_coordination.CodexStallTelemetry(
         idle_threshold_sec=0.1,

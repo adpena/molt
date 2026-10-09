@@ -7,6 +7,8 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+import shutil
+from tests.process_guard_common import install_module_view
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -122,7 +124,9 @@ def test_wasm_strip_unused_copy_fallback_publishes_atomically(
     wasm_path = tmp_path / "input.wasm"
     output_path = tmp_path / "output.wasm"
     wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00copy")
-    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/wasm-tools")
+    install_module_view(
+        monkeypatch, "shutil", shutil, mod, which=lambda _name: "/usr/bin/wasm-tools"
+    )
     original_publish = mod.artifact_publication.publish_validated_outputs
     published_sources: list[Path] = []
 
@@ -164,7 +168,9 @@ def test_wasm_strip_unused_strip_writes_temp_before_final_publish(
     wasm_path = tmp_path / "input.wasm"
     output_path = tmp_path / "output.wasm"
     wasm_path.write_bytes(b"\x00asm\x01\x00\x00\x00input")
-    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/wasm-tools")
+    install_module_view(
+        monkeypatch, "shutil", shutil, mod, which=lambda _name: "/usr/bin/wasm-tools"
+    )
     monkeypatch.setattr(
         mod.harness_memory_guard, "limits_from_env", lambda _prefix: None
     )

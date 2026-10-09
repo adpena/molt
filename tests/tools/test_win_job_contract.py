@@ -9,6 +9,8 @@ import pytest
 
 from tools import win_job
 from tools.memory_guard_core import payloads
+import time
+from tests.process_guard_common import install_module_view
 
 
 @pytest.fixture(autouse=True)
@@ -135,7 +137,7 @@ def cleanup_model(monkeypatch):
         assert job == 777
         model.calls.append(("terminate", job))
 
-    monkeypatch.setattr(win_job.time, "monotonic", lambda: model.now)
+    install_module_view(monkeypatch, "time", time, win_job, monotonic=lambda: model.now)
     monkeypatch.setattr(win_job, "job_accounting", accounting)
     monkeypatch.setattr(win_job, "system_resources", lambda: resources)
     monkeypatch.setattr(win_job, "process_ids", members)
