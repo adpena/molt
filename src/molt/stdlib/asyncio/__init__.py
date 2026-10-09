@@ -187,157 +187,157 @@ if _EXPOSE_WINDOWS_POLICIES:
 
 if TYPE_CHECKING:
 
-    def molt_async_sleep(_delay: float = 0.0, _result: Any | None = None) -> Any: ...
+    def _molt_async_sleep(_delay: float = 0.0, _result: Any | None = None) -> Any: ...
 
-    def molt_block_on(awaitable: Any) -> Any: ...
-
-
-    def molt_cancel_token_set_current(_token_id: int) -> int: ...
-
-    def molt_promise_new() -> Any: ...
-
-    def molt_promise_set_exception(_promise: Any, _exc: Any) -> None: ...
-
-    def molt_promise_set_result(_promise: Any, _value: Any) -> None: ...
-
-    def molt_cancel_token_get_current() -> int: ...
-
-    def molt_task_register_token_owned(_task: Any, _token_id: int) -> None: ...
-
-    def molt_future_cancel(_future: Any) -> None: ...
+    def _molt_block_on(awaitable: Any) -> Any: ...
 
 
+    def _molt_cancel_token_set_current(_token_id: int) -> int: ...
 
+    def _molt_promise_new() -> Any: ...
 
-    def molt_asyncio_cancel_pending(_tasks: Any) -> int: ...
+    def _molt_promise_set_exception(_promise: Any, _exc: Any) -> None: ...
+
+    def _molt_promise_set_result(_promise: Any, _value: Any) -> None: ...
+
+    def _molt_cancel_token_get_current() -> int: ...
+
+    def _molt_task_register_token_owned(_task: Any, _token_id: int) -> None: ...
+
+    def _molt_future_cancel(_future: Any) -> None: ...
 
 
 
-    def molt_asyncio_waiters_notify(
+
+    def _molt_asyncio_cancel_pending(_tasks: Any) -> int: ...
+
+
+
+    def _molt_asyncio_waiters_notify(
         _waiters: Any, _count: int = 1, _result: Any = True
     ) -> int: ...
 
-    def molt_asyncio_waiters_notify_exception(
+    def _molt_asyncio_waiters_notify_exception(
         _waiters: Any, _count: int = 1, _exc: Any = None
     ) -> int: ...
 
-    def molt_asyncio_waiters_remove(_waiters: Any, _waiter: Any) -> bool: ...
+    def _molt_asyncio_waiters_remove(_waiters: Any, _waiter: Any) -> bool: ...
 
-    def molt_asyncio_barrier_release(_waiters: Any) -> int: ...
+    def _molt_asyncio_barrier_release(_waiters: Any) -> int: ...
 
-    def molt_asyncio_condition_wait_for_step(
+    def _molt_asyncio_condition_wait_for_step(
         _condition: Any, _predicate: Any
     ) -> tuple[bool, Any]: ...
 
-    def molt_asyncio_future_transfer(_source: Any, _target: Any) -> bool: ...
+    def _molt_asyncio_future_transfer(_source: Any, _target: Any) -> bool: ...
 
-    def molt_asyncio_event_waiters_cleanup(_waiters: Any) -> int: ...
+    def _molt_asyncio_event_waiters_cleanup(_waiters: Any) -> int: ...
 
-    def molt_asyncio_task_registry_set(_token_id: int, _task: Any | None) -> None: ...
+    def _molt_asyncio_task_registry_set(_token_id: int, _task: Any | None) -> None: ...
 
-    def molt_asyncio_task_registry_get(_token_id: int) -> Any | None: ...
+    def _molt_asyncio_task_registry_get(_token_id: int) -> Any | None: ...
 
-    def molt_asyncio_task_registry_contains(_token_id: int) -> bool: ...
+    def _molt_asyncio_task_registry_contains(_token_id: int) -> bool: ...
 
-    def molt_asyncio_task_registry_current() -> Any | None: ...
+    def _molt_asyncio_task_registry_current() -> Any | None: ...
 
-    def molt_asyncio_task_registry_current_for_loop(
+    def _molt_asyncio_task_registry_current_for_loop(
         _loop: Any | None = None,
     ) -> Any | None: ...
 
-    def molt_asyncio_task_registry_pop(_token_id: int) -> Any | None: ...
+    def _molt_asyncio_task_registry_pop(_token_id: int) -> Any | None: ...
 
-    def molt_asyncio_task_registry_move(
+    def _molt_asyncio_task_registry_move(
         _old_token_id: int, _new_token_id: int
     ) -> bool: ...
 
-    def molt_asyncio_task_registry_values() -> Any: ...
+    def _molt_asyncio_task_registry_values() -> Any: ...
 
-    def molt_asyncio_task_registry_live(_loop: Any | None = None) -> Any: ...
+    def _molt_asyncio_task_registry_live(_loop: Any | None = None) -> Any: ...
 
-    def molt_asyncio_task_registry_live_set(_loop: Any | None = None) -> Any: ...
+    def _molt_asyncio_task_registry_live_set(_loop: Any | None = None) -> Any: ...
 
-    def molt_asyncio_event_waiters_register(_token_id: int, _waiter: Any) -> None: ...
+    def _molt_asyncio_event_waiters_register(_token_id: int, _waiter: Any) -> None: ...
 
-    def molt_asyncio_event_waiters_unregister(_token_id: int, _waiter: Any) -> bool: ...
+    def _molt_asyncio_event_waiters_unregister(_token_id: int, _waiter: Any) -> bool: ...
 
-    def molt_asyncio_event_waiters_cleanup_token(_token_id: int) -> int: ...
+    def _molt_asyncio_event_waiters_cleanup_token(_token_id: int) -> int: ...
 
-    def molt_asyncio_child_watcher_add(
+    def _molt_asyncio_child_watcher_add(
         _callbacks: Any, _pid: int, _callback: Any, _args: tuple[Any, ...]
     ) -> None: ...
 
-    def molt_asyncio_child_watcher_remove(_callbacks: Any, _pid: int) -> bool: ...
+    def _molt_asyncio_child_watcher_remove(_callbacks: Any, _pid: int) -> bool: ...
 
-    def molt_asyncio_child_watcher_clear(_callbacks: Any) -> None: ...
+    def _molt_asyncio_child_watcher_clear(_callbacks: Any) -> None: ...
 
-    def molt_asyncio_child_watcher_pop(
+    def _molt_asyncio_child_watcher_pop(
         _callbacks: Any, _pid: int
     ) -> tuple[Any, tuple[Any, ...]] | None: ...
 
-    def molt_asyncio_require_ssl_transport_support() -> None: ...
+    def _molt_asyncio_require_ssl_transport_support() -> None: ...
 
-    def molt_asyncio_ssl_transport_orchestrate(
+    def _molt_asyncio_ssl_transport_orchestrate(
         _operation: str,
         _ssl: Any,
         _server_hostname: str | None = None,
         _server_side: bool = False,
     ) -> bool: ...
 
-    def molt_asyncio_tls_client_connect_new(
+    def _molt_asyncio_tls_client_connect_new(
         _host: str, _port: int, _server_hostname: str | None = None
     ) -> Any: ...
 
-    def molt_asyncio_tls_client_from_fd_new(
+    def _molt_asyncio_tls_client_from_fd_new(
         _fd: int, _server_hostname: str | None = None
     ) -> Any: ...
 
-    def molt_asyncio_tls_server_payload(_ssl: Any) -> tuple[str, str]: ...
+    def _molt_asyncio_tls_server_payload(_ssl: Any) -> tuple[str, str]: ...
 
-    def molt_asyncio_tls_server_from_fd_new(
+    def _molt_asyncio_tls_server_from_fd_new(
         _fd: int, _certfile: str, _keyfile: str
     ) -> Any: ...
 
-    def molt_asyncio_require_unix_socket_support() -> None: ...
+    def _molt_asyncio_require_unix_socket_support() -> None: ...
 
-    def molt_asyncio_require_child_watcher_support() -> None: ...
+    def _molt_asyncio_require_child_watcher_support() -> None: ...
 
-    def molt_asyncio_running_loop_get() -> Any: ...
+    def _molt_asyncio_running_loop_get() -> Any: ...
 
-    def molt_asyncio_running_loop_set(_loop: Any) -> None: ...
+    def _molt_asyncio_running_loop_set(_loop: Any) -> None: ...
 
-    def molt_asyncio_event_loop_get() -> Any: ...
+    def _molt_asyncio_event_loop_get() -> Any: ...
 
-    def molt_asyncio_event_loop_get_current() -> Any: ...
+    def _molt_asyncio_event_loop_get_current() -> Any: ...
 
-    def molt_asyncio_event_loop_set(_loop: Any) -> None: ...
+    def _molt_asyncio_event_loop_set(_loop: Any) -> None: ...
 
-    def molt_asyncio_event_loop_policy_get() -> Any: ...
+    def _molt_asyncio_event_loop_policy_get() -> Any: ...
 
-    def molt_asyncio_event_loop_policy_set(_policy: Any) -> None: ...
+    def _molt_asyncio_event_loop_policy_set(_policy: Any) -> None: ...
 
 
 
-    def molt_asyncio_tasks_add_done_callback(_tasks: Any, _callback: Any) -> int: ...
+    def _molt_asyncio_tasks_add_done_callback(_tasks: Any, _callback: Any) -> int: ...
 
-    def molt_asyncio_task_cancel_apply(
+    def _molt_asyncio_task_cancel_apply(
         _future: Any, _msg: Any | None = None
     ) -> bool: ...
 
-    def molt_asyncio_task_uncancel_apply(_future: Any) -> None: ...
+    def _molt_asyncio_task_uncancel_apply(_future: Any) -> None: ...
 
 
-    def molt_asyncio_event_set_waiters(_waiters: Any, _result: Any = True) -> int: ...
+    def _molt_asyncio_event_set_waiters(_waiters: Any, _result: Any = True) -> int: ...
 
 
 
 
 
-    def molt_asyncio_fd_watcher_new(
+    def _molt_asyncio_fd_watcher_new(
         _registry: Any, _fileno: Any, _callback: Any, _args: Any, _events: Any
     ) -> Any: ...
 
-    def molt_asyncio_fd_watcher_register(
+    def _molt_asyncio_fd_watcher_register(
         _loop: Any,
         _registry: Any,
         _fileno: Any,
@@ -346,35 +346,35 @@ if TYPE_CHECKING:
         _events: Any,
     ) -> None: ...
 
-    def molt_asyncio_fd_watcher_unregister(_registry: Any, _fileno: Any) -> bool: ...
+    def _molt_asyncio_fd_watcher_unregister(_registry: Any, _fileno: Any) -> bool: ...
 
-    def molt_event_loop_connect_read_pipe(
+    def _molt_event_loop_connect_read_pipe(
         _loop_handle: Any, _fd: Any, _callback: Any
     ) -> Any: ...
 
-    def molt_event_loop_connect_write_pipe(
+    def _molt_event_loop_connect_write_pipe(
         _loop_handle: Any, _fd: Any, _callback: Any
     ) -> Any: ...
 
-    def molt_pipe_transport_new(_fd: Any, _is_read: Any) -> Any: ...
+    def _molt_pipe_transport_new(_fd: Any, _is_read: Any) -> Any: ...
 
-    def molt_pipe_transport_get_fd(_handle: Any) -> int: ...
+    def _molt_pipe_transport_get_fd(_handle: Any) -> int: ...
 
-    def molt_pipe_transport_is_closing(_handle: Any) -> bool: ...
+    def _molt_pipe_transport_is_closing(_handle: Any) -> bool: ...
 
-    def molt_pipe_transport_close(_handle: Any) -> None: ...
+    def _molt_pipe_transport_close(_handle: Any) -> None: ...
 
-    def molt_pipe_transport_pause_reading(_handle: Any) -> None: ...
+    def _molt_pipe_transport_pause_reading(_handle: Any) -> None: ...
 
-    def molt_pipe_transport_resume_reading(_handle: Any) -> None: ...
+    def _molt_pipe_transport_resume_reading(_handle: Any) -> None: ...
 
-    def molt_pipe_transport_write(_handle: Any, _data: Any) -> None: ...
+    def _molt_pipe_transport_write(_handle: Any, _data: Any) -> None: ...
 
-    def molt_pipe_transport_get_write_buffer_size(_handle: Any) -> int: ...
+    def _molt_pipe_transport_get_write_buffer_size(_handle: Any) -> int: ...
 
-    def molt_pipe_transport_drop(_handle: Any) -> None: ...
+    def _molt_pipe_transport_drop(_handle: Any) -> None: ...
 
-    def molt_asyncio_subprocess_stdio_normalize(
+    def _molt_asyncio_subprocess_stdio_normalize(
         _value: Any,
         _allow_stdout: bool,
         _pipe_const: Any,
@@ -388,7 +388,7 @@ if TYPE_CHECKING:
         _fd_max: int,
     ) -> int: ...
 
-    def molt_asyncio_server_accept_loop_new(
+    def _molt_asyncio_server_accept_loop_new(
         _sock: Any,
         _callback: Any,
         _loop: Any,
@@ -398,194 +398,194 @@ if TYPE_CHECKING:
     ) -> Any: ...
 
 
-    def molt_asyncio_stream_reader_read_new(_reader: Any, _n: int = -1) -> Any: ...
+    def _molt_asyncio_stream_reader_read_new(_reader: Any, _n: int = -1) -> Any: ...
 
-    def molt_asyncio_stream_reader_readline_new(_reader: Any) -> Any: ...
+    def _molt_asyncio_stream_reader_readline_new(_reader: Any) -> Any: ...
 
-    def molt_asyncio_stream_send_all_new(_stream: Any, _data: Any) -> Any: ...
+    def _molt_asyncio_stream_send_all_new(_stream: Any, _data: Any) -> Any: ...
 
-    def molt_asyncio_stream_buffer_snapshot(_buffer: Any) -> Any: ...
+    def _molt_asyncio_stream_buffer_snapshot(_buffer: Any) -> Any: ...
 
-    def molt_asyncio_stream_buffer_consume(_buffer: Any, _count: int) -> int: ...
+    def _molt_asyncio_stream_buffer_consume(_buffer: Any, _count: int) -> int: ...
 
-    def molt_asyncio_socket_reader_read_new(
+    def _molt_asyncio_socket_reader_read_new(
         _reader: Any, _n: int = -1, _fd: int = -1
     ) -> Any: ...
 
-    def molt_asyncio_socket_reader_readline_new(_reader: Any, _fd: int = -1) -> Any: ...
+    def _molt_asyncio_socket_reader_readline_new(_reader: Any, _fd: int = -1) -> Any: ...
 
-    def molt_asyncio_sock_recv_new(_sock: Any, _size: int, _fd: int) -> Any: ...
+    def _molt_asyncio_sock_recv_new(_sock: Any, _size: int, _fd: int) -> Any: ...
 
-    def molt_asyncio_sock_connect_new(_sock: Any, _address: Any, _fd: int) -> Any: ...
+    def _molt_asyncio_sock_connect_new(_sock: Any, _address: Any, _fd: int) -> Any: ...
 
-    def molt_asyncio_sock_accept_new(_sock: Any, _fd: int) -> Any: ...
+    def _molt_asyncio_sock_accept_new(_sock: Any, _fd: int) -> Any: ...
 
-    def molt_asyncio_sock_recv_into_new(
+    def _molt_asyncio_sock_recv_into_new(
         _sock: Any, _buf: Any, _nbytes: int, _fd: int
     ) -> Any: ...
 
-    def molt_asyncio_sock_sendall_new(_sock: Any, _data: Any, _fd: int) -> Any: ...
+    def _molt_asyncio_sock_sendall_new(_sock: Any, _data: Any, _fd: int) -> Any: ...
 
-    def molt_asyncio_sock_recvfrom_new(_sock: Any, _size: int, _fd: int) -> Any: ...
+    def _molt_asyncio_sock_recvfrom_new(_sock: Any, _size: int, _fd: int) -> Any: ...
 
-    def molt_asyncio_sock_recvfrom_into_new(
+    def _molt_asyncio_sock_recvfrom_into_new(
         _sock: Any, _buf: Any, _nbytes: int, _fd: int
     ) -> Any: ...
 
-    def molt_asyncio_sock_sendto_new(
+    def _molt_asyncio_sock_sendto_new(
         _sock: Any, _data: Any, _addr: Any, _fd: int
     ) -> Any: ...
 
-    def molt_thread_submit(_func: Any, _args: Any, _kwargs: Any) -> Any: ...
+    def _molt_thread_submit(_func: Any, _args: Any, _kwargs: Any) -> Any: ...
 
     def molt_inspect_iscoroutine(_obj: Any) -> bool: ...
 
     def molt_inspect_iscoroutinefunction(_obj: Any) -> bool: ...
 
     # Handle-based state machine intrinsics -- Future
-    def molt_asyncio_future_new() -> int: ...
+    def _molt_asyncio_future_new() -> int: ...
 
-    def molt_asyncio_future_result(_handle: int) -> Any: ...
+    def _molt_asyncio_future_result(_handle: int) -> Any: ...
 
-    def molt_asyncio_future_exception(_handle: int) -> Any: ...
+    def _molt_asyncio_future_exception(_handle: int) -> Any: ...
 
-    def molt_asyncio_future_set_result_fast(_handle: int, _result: Any) -> None: ...
+    def _molt_asyncio_future_set_result_fast(_handle: int, _result: Any) -> None: ...
 
-    def molt_asyncio_future_set_exception_fast(_handle: int, _exc: Any) -> None: ...
+    def _molt_asyncio_future_set_exception_fast(_handle: int, _exc: Any) -> None: ...
 
-    def molt_asyncio_future_cancel_fast(_handle: int, _msg: Any) -> bool: ...
+    def _molt_asyncio_future_cancel_fast(_handle: int, _msg: Any) -> bool: ...
 
-    def molt_asyncio_future_done(_handle: int) -> bool: ...
+    def _molt_asyncio_future_done(_handle: int) -> bool: ...
 
-    def molt_asyncio_future_cancelled(_handle: int) -> bool: ...
+    def _molt_asyncio_future_cancelled(_handle: int) -> bool: ...
 
 
-    def molt_asyncio_future_drop(_handle: int) -> None: ...
+    def _molt_asyncio_future_drop(_handle: int) -> None: ...
 
     # Handle-based state machine intrinsics -- Event
-    def molt_asyncio_event_new() -> int: ...
+    def _molt_asyncio_event_new() -> int: ...
 
-    def molt_asyncio_event_is_set(_handle: int) -> bool: ...
+    def _molt_asyncio_event_is_set(_handle: int) -> bool: ...
 
-    def molt_asyncio_event_set_fast(_handle: int) -> int: ...
+    def _molt_asyncio_event_set_fast(_handle: int) -> int: ...
 
-    def molt_asyncio_event_clear_handle(_handle: int) -> None: ...
+    def _molt_asyncio_event_clear_handle(_handle: int) -> None: ...
 
-    def molt_asyncio_event_drop(_handle: int) -> None: ...
+    def _molt_asyncio_event_drop(_handle: int) -> None: ...
 
     # Handle-based state machine intrinsics -- Lock
-    def molt_asyncio_lock_new() -> int: ...
+    def _molt_asyncio_lock_new() -> int: ...
 
-    def molt_asyncio_lock_locked(_handle: int) -> bool: ...
+    def _molt_asyncio_lock_locked(_handle: int) -> bool: ...
 
-    def molt_asyncio_lock_acquire_fast(_handle: int) -> bool: ...
+    def _molt_asyncio_lock_acquire_fast(_handle: int) -> bool: ...
 
-    def molt_asyncio_lock_release_fast(_handle: int) -> int: ...
+    def _molt_asyncio_lock_release_fast(_handle: int) -> int: ...
 
-    def molt_asyncio_lock_drop(_handle: int) -> None: ...
+    def _molt_asyncio_lock_drop(_handle: int) -> None: ...
 
     # Handle-based state machine intrinsics -- Semaphore
-    def molt_asyncio_semaphore_new(_value: int) -> int: ...
+    def _molt_asyncio_semaphore_new(_value: int) -> int: ...
 
-    def molt_asyncio_semaphore_acquire_fast(_handle: int) -> bool: ...
+    def _molt_asyncio_semaphore_acquire_fast(_handle: int) -> bool: ...
 
-    def molt_asyncio_semaphore_release_fast(_handle: int, _max_value: int) -> int: ...
+    def _molt_asyncio_semaphore_release_fast(_handle: int, _max_value: int) -> int: ...
 
-    def molt_asyncio_semaphore_value(_handle: int) -> int: ...
+    def _molt_asyncio_semaphore_value(_handle: int) -> int: ...
 
-    def molt_asyncio_semaphore_drop(_handle: int) -> None: ...
+    def _molt_asyncio_semaphore_drop(_handle: int) -> None: ...
 
     # Handle-based state machine intrinsics -- Queue
-    def molt_asyncio_queue_new(_maxsize: int, _queue_type: int) -> int: ...
+    def _molt_asyncio_queue_new(_maxsize: int, _queue_type: int) -> int: ...
 
-    def molt_asyncio_queue_put_nowait(_handle: int, _item: Any) -> None: ...
+    def _molt_asyncio_queue_put_nowait(_handle: int, _item: Any) -> None: ...
 
-    def molt_asyncio_queue_get_nowait(_handle: int) -> Any: ...
+    def _molt_asyncio_queue_get_nowait(_handle: int) -> Any: ...
 
-    def molt_asyncio_queue_qsize(_handle: int) -> int: ...
+    def _molt_asyncio_queue_qsize(_handle: int) -> int: ...
 
-    def molt_asyncio_queue_maxsize(_handle: int) -> int: ...
+    def _molt_asyncio_queue_maxsize(_handle: int) -> int: ...
 
-    def molt_asyncio_queue_empty(_handle: int) -> bool: ...
+    def _molt_asyncio_queue_empty(_handle: int) -> bool: ...
 
-    def molt_asyncio_queue_full(_handle: int) -> bool: ...
+    def _molt_asyncio_queue_full(_handle: int) -> bool: ...
 
-    def molt_asyncio_queue_task_done(_handle: int) -> None: ...
+    def _molt_asyncio_queue_task_done(_handle: int) -> None: ...
 
-    def molt_asyncio_queue_unfinished_tasks(_handle: int) -> int: ...
+    def _molt_asyncio_queue_unfinished_tasks(_handle: int) -> int: ...
 
-    def molt_asyncio_queue_shutdown(_handle: int, _immediate: bool) -> None: ...
+    def _molt_asyncio_queue_shutdown(_handle: int, _immediate: bool) -> None: ...
 
-    def molt_asyncio_queue_is_shutdown(_handle: int) -> bool: ...
+    def _molt_asyncio_queue_is_shutdown(_handle: int) -> bool: ...
 
-    def molt_asyncio_queue_drop(_handle: int) -> None: ...
+    def _molt_asyncio_queue_drop(_handle: int) -> None: ...
 
     # Handle-based event loop intrinsics (RT2 core)
-    def molt_event_loop_spawn(_loop_handle: Any, _runner: Any) -> None: ...
+    def _molt_event_loop_spawn(_loop_handle: Any, _runner: Any) -> None: ...
 
-    def molt_event_loop_new() -> Any: ...
+    def _molt_event_loop_new() -> Any: ...
 
-    def molt_event_loop_call_soon(_loop_handle: Any, _callback: Any) -> None: ...
+    def _molt_event_loop_call_soon(_loop_handle: Any, _callback: Any) -> None: ...
 
-    def molt_event_loop_call_later(
+    def _molt_event_loop_call_later(
         _loop_handle: Any, _delay: Any, _callback: Any
     ) -> Any: ...
 
-    def molt_event_loop_call_at(
+    def _molt_event_loop_call_at(
         _loop_handle: Any, _when: Any, _callback: Any
     ) -> Any: ...
 
-    def molt_event_loop_cancel_timer(_loop_handle: Any, _timer_id: Any) -> None: ...
+    def _molt_event_loop_cancel_timer(_loop_handle: Any, _timer_id: Any) -> None: ...
 
-    def molt_event_loop_add_reader(
+    def _molt_event_loop_add_reader(
         _loop_handle: Any, _fd: Any, _callback: Any
     ) -> None: ...
 
-    def molt_event_loop_remove_reader(_loop_handle: Any, _fd: Any) -> bool: ...
+    def _molt_event_loop_remove_reader(_loop_handle: Any, _fd: Any) -> bool: ...
 
-    def molt_event_loop_add_writer(
+    def _molt_event_loop_add_writer(
         _loop_handle: Any, _fd: Any, _callback: Any
     ) -> None: ...
 
-    def molt_event_loop_remove_writer(_loop_handle: Any, _fd: Any) -> bool: ...
+    def _molt_event_loop_remove_writer(_loop_handle: Any, _fd: Any) -> bool: ...
 
-    def molt_event_loop_run_once(_loop_handle: Any) -> int: ...
+    def _molt_event_loop_run_once(_loop_handle: Any) -> int: ...
 
-    def molt_event_loop_time(_loop_handle: Any) -> float: ...
+    def _molt_event_loop_time(_loop_handle: Any) -> float: ...
 
-    def molt_event_loop_wait(_loop_handle: Any) -> None: ...
+    def _molt_event_loop_wait(_loop_handle: Any) -> None: ...
 
-    def molt_event_loop_wake(_loop_handle: Any) -> None: ...
+    def _molt_event_loop_wake(_loop_handle: Any) -> None: ...
 
-    def molt_event_loop_start(_loop_handle: Any) -> None: ...
+    def _molt_event_loop_start(_loop_handle: Any) -> None: ...
 
-    def molt_event_loop_stop(_loop_handle: Any) -> None: ...
+    def _molt_event_loop_stop(_loop_handle: Any) -> None: ...
 
-    def molt_event_loop_is_running(_loop_handle: Any) -> bool: ...
+    def _molt_event_loop_is_running(_loop_handle: Any) -> bool: ...
 
-    def molt_event_loop_is_closed(_loop_handle: Any) -> bool: ...
+    def _molt_event_loop_is_closed(_loop_handle: Any) -> bool: ...
 
-    def molt_event_loop_close(_loop_handle: Any) -> None: ...
+    def _molt_event_loop_close(_loop_handle: Any) -> None: ...
 
-    def molt_event_loop_drop(_loop_handle: Any) -> None: ...
+    def _molt_event_loop_drop(_loop_handle: Any) -> None: ...
 
-    def molt_event_loop_set_debug(_loop_handle: Any, _enabled: Any) -> None: ...
+    def _molt_event_loop_set_debug(_loop_handle: Any, _enabled: Any) -> None: ...
 
-    def molt_event_loop_get_debug(_loop_handle: Any) -> bool: ...
+    def _molt_event_loop_get_debug(_loop_handle: Any) -> bool: ...
 
-    def molt_event_loop_set_exception_handler(
+    def _molt_event_loop_set_exception_handler(
         _loop_handle: Any, _handler: Any
     ) -> None: ...
 
-    def molt_event_loop_get_exception_handler(_loop_handle: Any) -> Any: ...
+    def _molt_event_loop_get_exception_handler(_loop_handle: Any) -> Any: ...
 
-    def molt_event_loop_set_task_factory(_loop_handle: Any, _factory: Any) -> None: ...
+    def _molt_event_loop_set_task_factory(_loop_handle: Any, _factory: Any) -> None: ...
 
-    def molt_event_loop_get_task_factory(_loop_handle: Any) -> Any: ...
+    def _molt_event_loop_get_task_factory(_loop_handle: Any) -> Any: ...
 
-    def molt_event_loop_notify_reader_ready(_loop_handle: Any, _fd: Any) -> None: ...
+    def _molt_event_loop_notify_reader_ready(_loop_handle: Any, _fd: Any) -> None: ...
 
-    def molt_event_loop_notify_writer_ready(_loop_handle: Any, _fd: Any) -> None: ...
+    def _molt_event_loop_notify_writer_ready(_loop_handle: Any, _fd: Any) -> None: ...
 
 def _mark_builtin(fn: Any) -> None:
     func = _require_asyncio_intrinsic(
@@ -646,7 +646,7 @@ def _require_ssl_transport_support(
     server_side: bool = False,
 ) -> bool:
     outcome = _require_asyncio_intrinsic(
-        molt_asyncio_ssl_transport_orchestrate,
+        _molt_asyncio_ssl_transport_orchestrate,
         "asyncio_ssl_transport_orchestrate",
     )(operation, ssl, server_hostname, server_side)
     if not isinstance(outcome, bool):
@@ -681,19 +681,19 @@ def _tls_client_connect(
     host: str, port: int, server_hostname: str | None = None
 ) -> Any:
     return _require_asyncio_intrinsic(
-        molt_asyncio_tls_client_connect_new,
+        _molt_asyncio_tls_client_connect_new,
         "asyncio_tls_client_connect_new",
     )(host, port, server_hostname)
 
 def _tls_client_from_fd(fd: int, server_hostname: str | None = None) -> Any:
     return _require_asyncio_intrinsic(
-        molt_asyncio_tls_client_from_fd_new,
+        _molt_asyncio_tls_client_from_fd_new,
         "asyncio_tls_client_from_fd_new",
     )(fd, server_hostname)
 
 def _tls_server_payload(ssl: Any) -> tuple[str, str]:
     payload = _require_asyncio_intrinsic(
-        molt_asyncio_tls_server_payload, "asyncio_tls_server_payload"
+        _molt_asyncio_tls_server_payload, "asyncio_tls_server_payload"
     )(ssl)
     if (
         isinstance(payload, tuple)
@@ -706,54 +706,54 @@ def _tls_server_payload(ssl: Any) -> tuple[str, str]:
 
 def _tls_server_from_fd(fd: int, certfile: str, keyfile: str) -> Any:
     return _require_asyncio_intrinsic(
-        molt_asyncio_tls_server_from_fd_new,
+        _molt_asyncio_tls_server_from_fd_new,
         "asyncio_tls_server_from_fd_new",
     )(fd, certfile, keyfile)
 
 def _require_unix_socket_support() -> None:
     _require_asyncio_intrinsic(
-        molt_asyncio_require_unix_socket_support,
+        _molt_asyncio_require_unix_socket_support,
         "asyncio_require_unix_socket_support",
     )()
 
 def _require_child_watcher_support() -> None:
     _require_asyncio_intrinsic(
-        molt_asyncio_require_child_watcher_support,
+        _molt_asyncio_require_child_watcher_support,
         "asyncio_require_child_watcher_support",
     )()
 
 def _asyncio_cancel_pending_tasks(tasks: Any) -> int:
     return int(
         _require_asyncio_intrinsic(
-            molt_asyncio_cancel_pending, "asyncio_cancel_pending"
+            _molt_asyncio_cancel_pending, "asyncio_cancel_pending"
         )(tasks)
     )
 
 def _asyncio_waiters_notify(waiters: Any, count: int, result: Any) -> int:
     return int(
         _require_asyncio_intrinsic(
-            molt_asyncio_waiters_notify, "asyncio_waiters_notify"
+            _molt_asyncio_waiters_notify, "asyncio_waiters_notify"
         )(waiters, count, result)
     )
 
 def _asyncio_waiters_notify_exception(waiters: Any, count: int, exc: Any) -> int:
     return int(
         _require_asyncio_intrinsic(
-            molt_asyncio_waiters_notify_exception, "asyncio_waiters_notify_exception"
+            _molt_asyncio_waiters_notify_exception, "asyncio_waiters_notify_exception"
         )(waiters, count, exc)
     )
 
 def _asyncio_waiters_remove(waiters: Any, waiter: Any) -> bool:
     return bool(
         _require_asyncio_intrinsic(
-            molt_asyncio_waiters_remove, "asyncio_waiters_remove"
+            _molt_asyncio_waiters_remove, "asyncio_waiters_remove"
         )(waiters, waiter)
     )
 
 def _asyncio_barrier_release(waiters: Any) -> int:
     return int(
         _require_asyncio_intrinsic(
-            molt_asyncio_barrier_release, "asyncio_barrier_release"
+            _molt_asyncio_barrier_release, "asyncio_barrier_release"
         )(waiters)
     )
 
@@ -761,85 +761,85 @@ def _asyncio_condition_wait_for_step(
     condition: Any, predicate: Callable[[], Any]
 ) -> tuple[bool, Any]:
     done, payload = _require_asyncio_intrinsic(
-        molt_asyncio_condition_wait_for_step, "asyncio_condition_wait_for_step"
+        _molt_asyncio_condition_wait_for_step, "asyncio_condition_wait_for_step"
     )(condition, predicate)
     return bool(done), payload
 
 def _asyncio_future_transfer(source: Any, target: Any) -> bool:
     return bool(
         _require_asyncio_intrinsic(
-            molt_asyncio_future_transfer, "asyncio_future_transfer"
+            _molt_asyncio_future_transfer, "asyncio_future_transfer"
         )(source, target)
     )
 
 def _asyncio_event_waiters_cleanup(waiters: Any) -> int:
     return int(
         _require_asyncio_intrinsic(
-            molt_asyncio_event_waiters_cleanup, "asyncio_event_waiters_cleanup"
+            _molt_asyncio_event_waiters_cleanup, "asyncio_event_waiters_cleanup"
         )(waiters)
     )
 
 def _task_registry_set(token_id: int, task: Any | None) -> None:
     _require_asyncio_intrinsic(
-        molt_asyncio_task_registry_set, "asyncio_task_registry_set"
+        _molt_asyncio_task_registry_set, "asyncio_task_registry_set"
     )(token_id, task)
 
 def _task_registry_get(token_id: int) -> Any | None:
     return _require_asyncio_intrinsic(
-        molt_asyncio_task_registry_get, "asyncio_task_registry_get"
+        _molt_asyncio_task_registry_get, "asyncio_task_registry_get"
     )(token_id)
 
 def _task_registry_contains(token_id: int) -> bool:
     return bool(
         _require_asyncio_intrinsic(
-            molt_asyncio_task_registry_contains, "asyncio_task_registry_contains"
+            _molt_asyncio_task_registry_contains, "asyncio_task_registry_contains"
         )(token_id)
     )
 
 def _task_registry_current() -> Any | None:
     return _require_asyncio_intrinsic(
-        molt_asyncio_task_registry_current, "asyncio_task_registry_current"
+        _molt_asyncio_task_registry_current, "asyncio_task_registry_current"
     )()
 
 def _task_registry_current_for_loop(loop: Any | None = None) -> Any | None:
     return _require_asyncio_intrinsic(
-        molt_asyncio_task_registry_current_for_loop,
+        _molt_asyncio_task_registry_current_for_loop,
         "asyncio_task_registry_current_for_loop",
     )(loop)
 
 def _task_registry_pop(token_id: int) -> Any | None:
     return _require_asyncio_intrinsic(
-        molt_asyncio_task_registry_pop, "asyncio_task_registry_pop"
+        _molt_asyncio_task_registry_pop, "asyncio_task_registry_pop"
     )(token_id)
 
 def _task_registry_move(old_token_id: int, new_token_id: int) -> bool:
     return bool(
         _require_asyncio_intrinsic(
-            molt_asyncio_task_registry_move, "asyncio_task_registry_move"
+            _molt_asyncio_task_registry_move, "asyncio_task_registry_move"
         )(old_token_id, new_token_id)
     )
 
 def _task_registry_values() -> Any:
     return _require_asyncio_intrinsic(
-        molt_asyncio_task_registry_values, "asyncio_task_registry_values"
+        _molt_asyncio_task_registry_values, "asyncio_task_registry_values"
     )()
 
 def _event_waiters_register(token_id: int, waiter: Any) -> None:
     _require_asyncio_intrinsic(
-        molt_asyncio_event_waiters_register, "asyncio_event_waiters_register"
+        _molt_asyncio_event_waiters_register, "asyncio_event_waiters_register"
     )(token_id, waiter)
 
 def _event_waiters_unregister(token_id: int, waiter: Any) -> bool:
     return bool(
         _require_asyncio_intrinsic(
-            molt_asyncio_event_waiters_unregister, "asyncio_event_waiters_unregister"
+            _molt_asyncio_event_waiters_unregister, "asyncio_event_waiters_unregister"
         )(token_id, waiter)
     )
 
 def _event_waiters_cleanup_token(token_id: int) -> int:
     return int(
         _require_asyncio_intrinsic(
-            molt_asyncio_event_waiters_cleanup_token,
+            _molt_asyncio_event_waiters_cleanup_token,
             "asyncio_event_waiters_cleanup_token",
         )(token_id)
     )
@@ -848,12 +848,12 @@ def _event_waiters_cleanup_token(token_id: int) -> int:
 def _asyncio_tasks_add_done_callback(tasks: Any, callback: Callable[[Any], Any]) -> int:
     return int(
         _require_asyncio_intrinsic(
-            molt_asyncio_tasks_add_done_callback, "asyncio_tasks_add_done_callback"
+            _molt_asyncio_tasks_add_done_callback, "asyncio_tasks_add_done_callback"
         )(tasks, callback)
     )
 
 async def _async_yield_once() -> None:
-    fut = molt_async_sleep(0.0, None)
+    fut = _molt_async_sleep(0.0, None)
     await fut
 
 async def _io_wait(fd: int, events: int, timeout: float | None = None) -> Any:
@@ -861,295 +861,295 @@ async def _io_wait(fd: int, events: int, timeout: float | None = None) -> Any:
     return await _require_asyncio_intrinsic(io_wait, "io_wait_new")(fd, events, timeout)
 
 _molt_io_wait_new = _intrinsic_require("molt_io_wait_new", globals())
-molt_pending = _intrinsic_require("molt_pending", globals())
-molt_async_sleep = _intrinsic_require("molt_async_sleep", globals())
-molt_block_on = _intrinsic_require("molt_block_on", globals())
-molt_spawn = _intrinsic_require("molt_spawn", globals())
-molt_cancel_token_new = _intrinsic_require("molt_cancel_token_new", globals())
-molt_cancel_token_clone = _intrinsic_require("molt_cancel_token_clone", globals())
-molt_cancel_token_drop = _intrinsic_require("molt_cancel_token_drop", globals())
-molt_cancel_token_cancel = _intrinsic_require("molt_cancel_token_cancel", globals())
-molt_cancel_token_is_cancelled = _intrinsic_require(
+_molt_pending = _intrinsic_require("molt_pending", globals())
+_molt_async_sleep = _intrinsic_require("molt_async_sleep", globals())
+_molt_block_on = _intrinsic_require("molt_block_on", globals())
+_molt_spawn = _intrinsic_require("molt_spawn", globals())
+_molt_cancel_token_new = _intrinsic_require("molt_cancel_token_new", globals())
+_molt_cancel_token_clone = _intrinsic_require("molt_cancel_token_clone", globals())
+_molt_cancel_token_drop = _intrinsic_require("molt_cancel_token_drop", globals())
+_molt_cancel_token_cancel = _intrinsic_require("molt_cancel_token_cancel", globals())
+_molt_cancel_token_is_cancelled = _intrinsic_require(
     "molt_cancel_token_is_cancelled", globals()
 )
-molt_cancel_token_set_current = _intrinsic_require(
+_molt_cancel_token_set_current = _intrinsic_require(
     "molt_cancel_token_set_current", globals()
 )
-molt_cancel_token_get_current = _intrinsic_require(
+_molt_cancel_token_get_current = _intrinsic_require(
     "molt_cancel_token_get_current", globals()
 )
-molt_promise_new = _intrinsic_require("molt_promise_new", globals())
-molt_promise_set_exception = _intrinsic_require("molt_promise_set_exception", globals())
-molt_promise_set_result = _intrinsic_require("molt_promise_set_result", globals())
-molt_task_register_token_owned = _intrinsic_require(
+_molt_promise_new = _intrinsic_require("molt_promise_new", globals())
+_molt_promise_set_exception = _intrinsic_require("molt_promise_set_exception", globals())
+_molt_promise_set_result = _intrinsic_require("molt_promise_set_result", globals())
+_molt_task_register_token_owned = _intrinsic_require(
     "molt_task_register_token_owned", globals()
 )
-molt_future_cancel = _intrinsic_require("molt_future_cancel", globals())
-molt_asyncio_cancel_pending = _intrinsic_require(
+_molt_future_cancel = _intrinsic_require("molt_future_cancel", globals())
+_molt_asyncio_cancel_pending = _intrinsic_require(
     "molt_asyncio_cancel_pending", globals()
 )
-molt_asyncio_waiters_notify = _intrinsic_require(
+_molt_asyncio_waiters_notify = _intrinsic_require(
     "molt_asyncio_waiters_notify", globals()
 )
-molt_asyncio_waiters_notify_exception = _intrinsic_require(
+_molt_asyncio_waiters_notify_exception = _intrinsic_require(
     "molt_asyncio_waiters_notify_exception", globals()
 )
-molt_asyncio_waiters_remove = _intrinsic_require(
+_molt_asyncio_waiters_remove = _intrinsic_require(
     "molt_asyncio_waiters_remove", globals()
 )
-molt_asyncio_barrier_release = _intrinsic_require(
+_molt_asyncio_barrier_release = _intrinsic_require(
     "molt_asyncio_barrier_release", globals()
 )
-molt_asyncio_condition_wait_for_step = _intrinsic_require(
+_molt_asyncio_condition_wait_for_step = _intrinsic_require(
     "molt_asyncio_condition_wait_for_step", globals()
 )
-molt_asyncio_future_transfer = _intrinsic_require(
+_molt_asyncio_future_transfer = _intrinsic_require(
     "molt_asyncio_future_transfer", globals()
 )
-molt_asyncio_event_waiters_cleanup = _intrinsic_require(
+_molt_asyncio_event_waiters_cleanup = _intrinsic_require(
     "molt_asyncio_event_waiters_cleanup", globals()
 )
-molt_asyncio_task_registry_set = _intrinsic_require(
+_molt_asyncio_task_registry_set = _intrinsic_require(
     "molt_asyncio_task_registry_set", globals()
 )
-molt_asyncio_task_registry_get = _intrinsic_require(
+_molt_asyncio_task_registry_get = _intrinsic_require(
     "molt_asyncio_task_registry_get", globals()
 )
-molt_asyncio_task_registry_contains = _intrinsic_require(
+_molt_asyncio_task_registry_contains = _intrinsic_require(
     "molt_asyncio_task_registry_contains", globals()
 )
-molt_asyncio_task_registry_current = _intrinsic_require(
+_molt_asyncio_task_registry_current = _intrinsic_require(
     "molt_asyncio_task_registry_current", globals()
 )
-molt_asyncio_task_registry_current_for_loop = _intrinsic_require(
+_molt_asyncio_task_registry_current_for_loop = _intrinsic_require(
     "molt_asyncio_task_registry_current_for_loop", globals()
 )
-molt_asyncio_task_registry_pop = _intrinsic_require(
+_molt_asyncio_task_registry_pop = _intrinsic_require(
     "molt_asyncio_task_registry_pop", globals()
 )
-molt_asyncio_task_last_exception_clear = _intrinsic_require(
+_molt_asyncio_task_last_exception_clear = _intrinsic_require(
     "molt_asyncio_task_last_exception_clear", globals()
 )
-molt_asyncio_task_registry_move = _intrinsic_require(
+_molt_asyncio_task_registry_move = _intrinsic_require(
     "molt_asyncio_task_registry_move", globals()
 )
-molt_asyncio_task_registry_values = _intrinsic_require(
+_molt_asyncio_task_registry_values = _intrinsic_require(
     "molt_asyncio_task_registry_values", globals()
 )
-molt_asyncio_task_registry_live = _intrinsic_require(
+_molt_asyncio_task_registry_live = _intrinsic_require(
     "molt_asyncio_task_registry_live", globals()
 )
-molt_asyncio_task_registry_live_set = _intrinsic_require(
+_molt_asyncio_task_registry_live_set = _intrinsic_require(
     "molt_asyncio_task_registry_live_set", globals()
 )
-molt_asyncio_event_waiters_register = _intrinsic_require(
+_molt_asyncio_event_waiters_register = _intrinsic_require(
     "molt_asyncio_event_waiters_register", globals()
 )
-molt_asyncio_event_waiters_unregister = _intrinsic_require(
+_molt_asyncio_event_waiters_unregister = _intrinsic_require(
     "molt_asyncio_event_waiters_unregister", globals()
 )
-molt_asyncio_event_waiters_cleanup_token = _intrinsic_require(
+_molt_asyncio_event_waiters_cleanup_token = _intrinsic_require(
     "molt_asyncio_event_waiters_cleanup_token", globals()
 )
-molt_asyncio_child_watcher_add = _intrinsic_require(
+_molt_asyncio_child_watcher_add = _intrinsic_require(
     "molt_asyncio_child_watcher_add", globals()
 )
-molt_asyncio_child_watcher_remove = _intrinsic_require(
+_molt_asyncio_child_watcher_remove = _intrinsic_require(
     "molt_asyncio_child_watcher_remove", globals()
 )
-molt_asyncio_child_watcher_clear = _intrinsic_require(
+_molt_asyncio_child_watcher_clear = _intrinsic_require(
     "molt_asyncio_child_watcher_clear", globals()
 )
-molt_asyncio_child_watcher_pop = _intrinsic_require(
+_molt_asyncio_child_watcher_pop = _intrinsic_require(
     "molt_asyncio_child_watcher_pop", globals()
 )
-molt_asyncio_require_ssl_transport_support = _intrinsic_require(
+_molt_asyncio_require_ssl_transport_support = _intrinsic_require(
     "molt_asyncio_require_ssl_transport_support", globals()
 )
-molt_asyncio_ssl_transport_orchestrate = _intrinsic_require(
+_molt_asyncio_ssl_transport_orchestrate = _intrinsic_require(
     "molt_asyncio_ssl_transport_orchestrate", globals()
 )
-molt_asyncio_tls_client_connect_new = _intrinsic_require(
+_molt_asyncio_tls_client_connect_new = _intrinsic_require(
     "molt_asyncio_tls_client_connect_new", globals()
 )
-molt_asyncio_tls_client_from_fd_new = _intrinsic_require(
+_molt_asyncio_tls_client_from_fd_new = _intrinsic_require(
     "molt_asyncio_tls_client_from_fd_new", globals()
 )
-molt_asyncio_tls_server_payload = _intrinsic_require(
+_molt_asyncio_tls_server_payload = _intrinsic_require(
     "molt_asyncio_tls_server_payload", globals()
 )
-molt_asyncio_tls_server_from_fd_new = _intrinsic_require(
+_molt_asyncio_tls_server_from_fd_new = _intrinsic_require(
     "molt_asyncio_tls_server_from_fd_new", globals()
 )
-molt_asyncio_require_unix_socket_support = _intrinsic_require(
+_molt_asyncio_require_unix_socket_support = _intrinsic_require(
     "molt_asyncio_require_unix_socket_support", globals()
 )
-molt_asyncio_require_child_watcher_support = _intrinsic_require(
+_molt_asyncio_require_child_watcher_support = _intrinsic_require(
     "molt_asyncio_require_child_watcher_support", globals()
 )
-molt_asyncio_running_loop_get = _intrinsic_require(
+_molt_asyncio_running_loop_get = _intrinsic_require(
     "molt_asyncio_running_loop_get", globals()
 )
-molt_asyncio_running_loop_set = _intrinsic_require(
+_molt_asyncio_running_loop_set = _intrinsic_require(
     "molt_asyncio_running_loop_set", globals()
 )
-molt_asyncio_event_loop_get = _intrinsic_require(
+_molt_asyncio_event_loop_get = _intrinsic_require(
     "molt_asyncio_event_loop_get", globals()
 )
-molt_asyncio_event_loop_get_current = _intrinsic_require(
+_molt_asyncio_event_loop_get_current = _intrinsic_require(
     "molt_asyncio_event_loop_get_current", globals()
 )
-molt_asyncio_event_loop_set = _intrinsic_require(
+_molt_asyncio_event_loop_set = _intrinsic_require(
     "molt_asyncio_event_loop_set", globals()
 )
-molt_asyncio_event_loop_policy_get = _intrinsic_require(
+_molt_asyncio_event_loop_policy_get = _intrinsic_require(
     "molt_asyncio_event_loop_policy_get", globals()
 )
-molt_asyncio_event_loop_policy_set = _intrinsic_require(
+_molt_asyncio_event_loop_policy_set = _intrinsic_require(
     "molt_asyncio_event_loop_policy_set", globals()
 )
-molt_asyncio_tasks_add_done_callback = _intrinsic_require(
+_molt_asyncio_tasks_add_done_callback = _intrinsic_require(
     "molt_asyncio_tasks_add_done_callback", globals()
 )
-molt_asyncio_task_cancel_apply = _intrinsic_require(
+_molt_asyncio_task_cancel_apply = _intrinsic_require(
     "molt_asyncio_task_cancel_apply", globals()
 )
-molt_asyncio_task_uncancel_apply = _intrinsic_require(
+_molt_asyncio_task_uncancel_apply = _intrinsic_require(
     "molt_asyncio_task_uncancel_apply", globals()
 )
-molt_asyncio_event_set_waiters = _intrinsic_require(
+_molt_asyncio_event_set_waiters = _intrinsic_require(
     "molt_asyncio_event_set_waiters", globals()
 )
-molt_asyncio_fd_watcher_new = _intrinsic_require(
+_molt_asyncio_fd_watcher_new = _intrinsic_require(
     "molt_asyncio_fd_watcher_new", globals()
 )
-molt_asyncio_fd_watcher_register = _intrinsic_require(
+_molt_asyncio_fd_watcher_register = _intrinsic_require(
     "molt_asyncio_fd_watcher_register", globals()
 )
-molt_asyncio_fd_watcher_unregister = _intrinsic_require(
+_molt_asyncio_fd_watcher_unregister = _intrinsic_require(
     "molt_asyncio_fd_watcher_unregister", globals()
 )
-molt_event_loop_connect_read_pipe = _intrinsic_require(
+_molt_event_loop_connect_read_pipe = _intrinsic_require(
     "molt_event_loop_connect_read_pipe", globals()
 )
-molt_event_loop_connect_write_pipe = _intrinsic_require(
+_molt_event_loop_connect_write_pipe = _intrinsic_require(
     "molt_event_loop_connect_write_pipe", globals()
 )
 # --- Event loop Rust handle intrinsics (RT2 core, 28 total) ---
-molt_event_loop_spawn = _intrinsic_require("molt_event_loop_spawn", globals())
-molt_event_loop_new = _intrinsic_require("molt_event_loop_new", globals())
-molt_event_loop_call_soon = _intrinsic_require("molt_event_loop_call_soon", globals())
-molt_event_loop_call_later = _intrinsic_require("molt_event_loop_call_later", globals())
-molt_event_loop_call_at = _intrinsic_require("molt_event_loop_call_at", globals())
-molt_event_loop_cancel_timer = _intrinsic_require(
+_molt_event_loop_spawn = _intrinsic_require("molt_event_loop_spawn", globals())
+_molt_event_loop_new = _intrinsic_require("molt_event_loop_new", globals())
+_molt_event_loop_call_soon = _intrinsic_require("molt_event_loop_call_soon", globals())
+_molt_event_loop_call_later = _intrinsic_require("molt_event_loop_call_later", globals())
+_molt_event_loop_call_at = _intrinsic_require("molt_event_loop_call_at", globals())
+_molt_event_loop_cancel_timer = _intrinsic_require(
     "molt_event_loop_cancel_timer", globals()
 )
-molt_event_loop_add_reader = _intrinsic_require("molt_event_loop_add_reader", globals())
-molt_event_loop_remove_reader = _intrinsic_require(
+_molt_event_loop_add_reader = _intrinsic_require("molt_event_loop_add_reader", globals())
+_molt_event_loop_remove_reader = _intrinsic_require(
     "molt_event_loop_remove_reader", globals()
 )
-molt_event_loop_add_writer = _intrinsic_require("molt_event_loop_add_writer", globals())
-molt_event_loop_remove_writer = _intrinsic_require(
+_molt_event_loop_add_writer = _intrinsic_require("molt_event_loop_add_writer", globals())
+_molt_event_loop_remove_writer = _intrinsic_require(
     "molt_event_loop_remove_writer", globals()
 )
-molt_event_loop_run_once = _intrinsic_require("molt_event_loop_run_once", globals())
-molt_event_loop_time = _intrinsic_require("molt_event_loop_time", globals())
-molt_event_loop_wait = _intrinsic_require("molt_event_loop_wait", globals())
-molt_event_loop_wake = _intrinsic_require("molt_event_loop_wake", globals())
-molt_event_loop_start = _intrinsic_require("molt_event_loop_start", globals())
-molt_event_loop_stop = _intrinsic_require("molt_event_loop_stop", globals())
-molt_event_loop_is_running = _intrinsic_require("molt_event_loop_is_running", globals())
-molt_event_loop_is_closed = _intrinsic_require("molt_event_loop_is_closed", globals())
-molt_event_loop_close = _intrinsic_require("molt_event_loop_close", globals())
-molt_event_loop_drop = _intrinsic_require("molt_event_loop_drop", globals())
-molt_event_loop_set_debug = _intrinsic_require("molt_event_loop_set_debug", globals())
-molt_event_loop_get_debug = _intrinsic_require("molt_event_loop_get_debug", globals())
-molt_event_loop_set_exception_handler = _intrinsic_require(
+_molt_event_loop_run_once = _intrinsic_require("molt_event_loop_run_once", globals())
+_molt_event_loop_time = _intrinsic_require("molt_event_loop_time", globals())
+_molt_event_loop_wait = _intrinsic_require("molt_event_loop_wait", globals())
+_molt_event_loop_wake = _intrinsic_require("molt_event_loop_wake", globals())
+_molt_event_loop_start = _intrinsic_require("molt_event_loop_start", globals())
+_molt_event_loop_stop = _intrinsic_require("molt_event_loop_stop", globals())
+_molt_event_loop_is_running = _intrinsic_require("molt_event_loop_is_running", globals())
+_molt_event_loop_is_closed = _intrinsic_require("molt_event_loop_is_closed", globals())
+_molt_event_loop_close = _intrinsic_require("molt_event_loop_close", globals())
+_molt_event_loop_drop = _intrinsic_require("molt_event_loop_drop", globals())
+_molt_event_loop_set_debug = _intrinsic_require("molt_event_loop_set_debug", globals())
+_molt_event_loop_get_debug = _intrinsic_require("molt_event_loop_get_debug", globals())
+_molt_event_loop_set_exception_handler = _intrinsic_require(
     "molt_event_loop_set_exception_handler", globals()
 )
-molt_event_loop_get_exception_handler = _intrinsic_require(
+_molt_event_loop_get_exception_handler = _intrinsic_require(
     "molt_event_loop_get_exception_handler", globals()
 )
-molt_event_loop_set_task_factory = _intrinsic_require(
+_molt_event_loop_set_task_factory = _intrinsic_require(
     "molt_event_loop_set_task_factory", globals()
 )
-molt_event_loop_get_task_factory = _intrinsic_require(
+_molt_event_loop_get_task_factory = _intrinsic_require(
     "molt_event_loop_get_task_factory", globals()
 )
-molt_event_loop_notify_reader_ready = _intrinsic_require(
+_molt_event_loop_notify_reader_ready = _intrinsic_require(
     "molt_event_loop_notify_reader_ready", globals()
 )
-molt_event_loop_notify_writer_ready = _intrinsic_require(
+_molt_event_loop_notify_writer_ready = _intrinsic_require(
     "molt_event_loop_notify_writer_ready", globals()
 )
-molt_pipe_transport_new = _intrinsic_require("molt_pipe_transport_new", globals())
-molt_pipe_transport_get_fd = _intrinsic_require("molt_pipe_transport_get_fd", globals())
-molt_pipe_transport_is_closing = _intrinsic_require(
+_molt_pipe_transport_new = _intrinsic_require("molt_pipe_transport_new", globals())
+_molt_pipe_transport_get_fd = _intrinsic_require("molt_pipe_transport_get_fd", globals())
+_molt_pipe_transport_is_closing = _intrinsic_require(
     "molt_pipe_transport_is_closing", globals()
 )
-molt_pipe_transport_close = _intrinsic_require("molt_pipe_transport_close", globals())
-molt_pipe_transport_pause_reading = _intrinsic_require(
+_molt_pipe_transport_close = _intrinsic_require("molt_pipe_transport_close", globals())
+_molt_pipe_transport_pause_reading = _intrinsic_require(
     "molt_pipe_transport_pause_reading", globals()
 )
-molt_pipe_transport_resume_reading = _intrinsic_require(
+_molt_pipe_transport_resume_reading = _intrinsic_require(
     "molt_pipe_transport_resume_reading", globals()
 )
-molt_pipe_transport_write = _intrinsic_require("molt_pipe_transport_write", globals())
-molt_pipe_transport_get_write_buffer_size = _intrinsic_require(
+_molt_pipe_transport_write = _intrinsic_require("molt_pipe_transport_write", globals())
+_molt_pipe_transport_get_write_buffer_size = _intrinsic_require(
     "molt_pipe_transport_get_write_buffer_size", globals()
 )
-molt_pipe_transport_drop = _intrinsic_require("molt_pipe_transport_drop", globals())
-molt_asyncio_subprocess_stdio_normalize = _intrinsic_require(
+_molt_pipe_transport_drop = _intrinsic_require("molt_pipe_transport_drop", globals())
+_molt_asyncio_subprocess_stdio_normalize = _intrinsic_require(
     "molt_asyncio_subprocess_stdio_normalize", globals()
 )
-molt_asyncio_server_accept_loop_new = _intrinsic_require(
+_molt_asyncio_server_accept_loop_new = _intrinsic_require(
     "molt_asyncio_server_accept_loop_new", globals()
 )
-molt_asyncio_stream_reader_read_new = _intrinsic_require(
+_molt_asyncio_stream_reader_read_new = _intrinsic_require(
     "molt_asyncio_stream_reader_read_new", globals()
 )
-molt_asyncio_stream_reader_readline_new = _intrinsic_require(
+_molt_asyncio_stream_reader_readline_new = _intrinsic_require(
     "molt_asyncio_stream_reader_readline_new", globals()
 )
-molt_asyncio_stream_send_all_new = _intrinsic_require(
+_molt_asyncio_stream_send_all_new = _intrinsic_require(
     "molt_asyncio_stream_send_all_new", globals()
 )
-molt_asyncio_stream_buffer_snapshot = _intrinsic_require(
+_molt_asyncio_stream_buffer_snapshot = _intrinsic_require(
     "molt_asyncio_stream_buffer_snapshot", globals()
 )
-molt_asyncio_stream_buffer_consume = _intrinsic_require(
+_molt_asyncio_stream_buffer_consume = _intrinsic_require(
     "molt_asyncio_stream_buffer_consume", globals()
 )
-molt_asyncio_socket_reader_read_new = _intrinsic_require(
+_molt_asyncio_socket_reader_read_new = _intrinsic_require(
     "molt_asyncio_socket_reader_read_new", globals()
 )
-molt_asyncio_socket_reader_readline_new = _intrinsic_require(
+_molt_asyncio_socket_reader_readline_new = _intrinsic_require(
     "molt_asyncio_socket_reader_readline_new", globals()
 )
-molt_asyncio_sock_recv_new = _intrinsic_require("molt_asyncio_sock_recv_new", globals())
-molt_asyncio_sock_connect_new = _intrinsic_require(
+_molt_asyncio_sock_recv_new = _intrinsic_require("molt_asyncio_sock_recv_new", globals())
+_molt_asyncio_sock_connect_new = _intrinsic_require(
     "molt_asyncio_sock_connect_new", globals()
 )
-molt_asyncio_sock_accept_new = _intrinsic_require(
+_molt_asyncio_sock_accept_new = _intrinsic_require(
     "molt_asyncio_sock_accept_new", globals()
 )
-molt_asyncio_sock_recv_into_new = _intrinsic_require(
+_molt_asyncio_sock_recv_into_new = _intrinsic_require(
     "molt_asyncio_sock_recv_into_new", globals()
 )
-molt_asyncio_sock_sendall_new = _intrinsic_require(
+_molt_asyncio_sock_sendall_new = _intrinsic_require(
     "molt_asyncio_sock_sendall_new", globals()
 )
-molt_asyncio_sock_recvfrom_new = _intrinsic_require(
+_molt_asyncio_sock_recvfrom_new = _intrinsic_require(
     "molt_asyncio_sock_recvfrom_new", globals()
 )
-molt_asyncio_sock_recvfrom_into_new = _intrinsic_require(
+_molt_asyncio_sock_recvfrom_into_new = _intrinsic_require(
     "molt_asyncio_sock_recvfrom_into_new", globals()
 )
-molt_asyncio_sock_sendto_new = _intrinsic_require(
+_molt_asyncio_sock_sendto_new = _intrinsic_require(
     "molt_asyncio_sock_sendto_new", globals()
 )
-molt_generic_alias_new = _intrinsic_require("molt_generic_alias_new", globals())
-molt_thread_submit = _intrinsic_require("molt_thread_submit", globals())
+_molt_generic_alias_new = _intrinsic_require("molt_generic_alias_new", globals())
+_molt_thread_submit = _intrinsic_require("molt_thread_submit", globals())
 
 _molt_module_new = _intrinsic_require("molt_module_new", globals())
 _molt_function_set_builtin = _intrinsic_require("molt_function_set_builtin", globals())
@@ -1191,95 +1191,95 @@ _molt_inspect_iscoroutinefunction = _intrinsic_require(
 )
 
 # Handle-based state machine intrinsics -- Future
-molt_asyncio_future_new = _intrinsic_require("molt_asyncio_future_new", globals())
-molt_asyncio_future_result = _intrinsic_require("molt_asyncio_future_result", globals())
-molt_asyncio_future_exception = _intrinsic_require(
+_molt_asyncio_future_new = _intrinsic_require("molt_asyncio_future_new", globals())
+_molt_asyncio_future_result = _intrinsic_require("molt_asyncio_future_result", globals())
+_molt_asyncio_future_exception = _intrinsic_require(
     "molt_asyncio_future_exception", globals()
 )
-molt_asyncio_future_set_result_fast = _intrinsic_require(
+_molt_asyncio_future_set_result_fast = _intrinsic_require(
     "molt_asyncio_future_set_result_fast", globals()
 )
-molt_asyncio_future_set_exception_fast = _intrinsic_require(
+_molt_asyncio_future_set_exception_fast = _intrinsic_require(
     "molt_asyncio_future_set_exception_fast", globals()
 )
-molt_asyncio_future_cancel_fast = _intrinsic_require(
+_molt_asyncio_future_cancel_fast = _intrinsic_require(
     "molt_asyncio_future_cancel_fast", globals()
 )
-molt_asyncio_future_done = _intrinsic_require("molt_asyncio_future_done", globals())
-molt_asyncio_future_cancelled = _intrinsic_require(
+_molt_asyncio_future_done = _intrinsic_require("molt_asyncio_future_done", globals())
+_molt_asyncio_future_cancelled = _intrinsic_require(
     "molt_asyncio_future_cancelled", globals()
 )
-molt_asyncio_future_drop = _intrinsic_require("molt_asyncio_future_drop", globals())
+_molt_asyncio_future_drop = _intrinsic_require("molt_asyncio_future_drop", globals())
 
 # Handle-based state machine intrinsics -- Event
-molt_asyncio_event_new = _intrinsic_require("molt_asyncio_event_new", globals())
-molt_asyncio_event_is_set = _intrinsic_require("molt_asyncio_event_is_set", globals())
-molt_asyncio_event_set_fast = _intrinsic_require(
+_molt_asyncio_event_new = _intrinsic_require("molt_asyncio_event_new", globals())
+_molt_asyncio_event_is_set = _intrinsic_require("molt_asyncio_event_is_set", globals())
+_molt_asyncio_event_set_fast = _intrinsic_require(
     "molt_asyncio_event_set_fast", globals()
 )
-molt_asyncio_event_clear_handle = _intrinsic_require(
+_molt_asyncio_event_clear_handle = _intrinsic_require(
     "molt_asyncio_event_clear", globals()
 )
-molt_asyncio_event_drop = _intrinsic_require("molt_asyncio_event_drop", globals())
+_molt_asyncio_event_drop = _intrinsic_require("molt_asyncio_event_drop", globals())
 
 # Handle-based state machine intrinsics -- Lock
-molt_asyncio_lock_new = _intrinsic_require("molt_asyncio_lock_new", globals())
-molt_asyncio_lock_locked = _intrinsic_require("molt_asyncio_lock_locked", globals())
-molt_asyncio_lock_acquire_fast = _intrinsic_require(
+_molt_asyncio_lock_new = _intrinsic_require("molt_asyncio_lock_new", globals())
+_molt_asyncio_lock_locked = _intrinsic_require("molt_asyncio_lock_locked", globals())
+_molt_asyncio_lock_acquire_fast = _intrinsic_require(
     "molt_asyncio_lock_acquire_fast", globals()
 )
-molt_asyncio_lock_release_fast = _intrinsic_require(
+_molt_asyncio_lock_release_fast = _intrinsic_require(
     "molt_asyncio_lock_release_fast", globals()
 )
-molt_asyncio_lock_drop = _intrinsic_require("molt_asyncio_lock_drop", globals())
+_molt_asyncio_lock_drop = _intrinsic_require("molt_asyncio_lock_drop", globals())
 
 # Handle-based state machine intrinsics -- Semaphore
-molt_asyncio_semaphore_new = _intrinsic_require("molt_asyncio_semaphore_new", globals())
-molt_asyncio_semaphore_acquire_fast = _intrinsic_require(
+_molt_asyncio_semaphore_new = _intrinsic_require("molt_asyncio_semaphore_new", globals())
+_molt_asyncio_semaphore_acquire_fast = _intrinsic_require(
     "molt_asyncio_semaphore_acquire_fast", globals()
 )
-molt_asyncio_semaphore_release_fast = _intrinsic_require(
+_molt_asyncio_semaphore_release_fast = _intrinsic_require(
     "molt_asyncio_semaphore_release_fast", globals()
 )
-molt_asyncio_semaphore_value = _intrinsic_require(
+_molt_asyncio_semaphore_value = _intrinsic_require(
     "molt_asyncio_semaphore_value", globals()
 )
-molt_asyncio_semaphore_drop = _intrinsic_require(
+_molt_asyncio_semaphore_drop = _intrinsic_require(
     "molt_asyncio_semaphore_drop", globals()
 )
 
 # Handle-based state machine intrinsics -- Queue
-molt_asyncio_queue_new = _intrinsic_require("molt_asyncio_queue_new", globals())
-molt_asyncio_queue_put_nowait = _intrinsic_require(
+_molt_asyncio_queue_new = _intrinsic_require("molt_asyncio_queue_new", globals())
+_molt_asyncio_queue_put_nowait = _intrinsic_require(
     "molt_asyncio_queue_put_nowait", globals()
 )
-molt_asyncio_queue_get_nowait = _intrinsic_require(
+_molt_asyncio_queue_get_nowait = _intrinsic_require(
     "molt_asyncio_queue_get_nowait", globals()
 )
-molt_asyncio_queue_qsize = _intrinsic_require("molt_asyncio_queue_qsize", globals())
-molt_asyncio_queue_maxsize = _intrinsic_require("molt_asyncio_queue_maxsize", globals())
-molt_asyncio_queue_empty = _intrinsic_require("molt_asyncio_queue_empty", globals())
-molt_asyncio_queue_full = _intrinsic_require("molt_asyncio_queue_full", globals())
-molt_asyncio_queue_task_done = _intrinsic_require(
+_molt_asyncio_queue_qsize = _intrinsic_require("molt_asyncio_queue_qsize", globals())
+_molt_asyncio_queue_maxsize = _intrinsic_require("molt_asyncio_queue_maxsize", globals())
+_molt_asyncio_queue_empty = _intrinsic_require("molt_asyncio_queue_empty", globals())
+_molt_asyncio_queue_full = _intrinsic_require("molt_asyncio_queue_full", globals())
+_molt_asyncio_queue_task_done = _intrinsic_require(
     "molt_asyncio_queue_task_done", globals()
 )
-molt_asyncio_queue_unfinished_tasks = _intrinsic_require(
+_molt_asyncio_queue_unfinished_tasks = _intrinsic_require(
     "molt_asyncio_queue_unfinished_tasks", globals()
 )
-molt_asyncio_queue_shutdown = _intrinsic_require(
+_molt_asyncio_queue_shutdown = _intrinsic_require(
     "molt_asyncio_queue_shutdown", globals()
 )
-molt_asyncio_queue_is_shutdown = _intrinsic_require(
+_molt_asyncio_queue_is_shutdown = _intrinsic_require(
     "molt_asyncio_queue_is_shutdown", globals()
 )
-molt_asyncio_queue_drop = _intrinsic_require("molt_asyncio_queue_drop", globals())
+_molt_asyncio_queue_drop = _intrinsic_require("molt_asyncio_queue_drop", globals())
 
 _PENDING_SENTINEL: Any | None = None
 
 def _pending_sentinel() -> Any:
     global _PENDING_SENTINEL
     if _PENDING_SENTINEL is None:
-        _PENDING_SENTINEL = molt_pending()
+        _PENDING_SENTINEL = _molt_pending()
     return _PENDING_SENTINEL
 
 def _is_pending(value: Any) -> bool:
@@ -1327,7 +1327,7 @@ def _encode_proc_fd(fd: int) -> int:
 def _normalize_proc_stdio(value: Any, *, allow_stdout: bool) -> int:
     return int(
         _require_asyncio_intrinsic(
-            molt_asyncio_subprocess_stdio_normalize,
+            _molt_asyncio_subprocess_stdio_normalize,
             "asyncio_subprocess_stdio_normalize",
         )(
             value,
