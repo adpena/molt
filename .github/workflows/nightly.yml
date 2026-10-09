@@ -108,13 +108,13 @@ jobs:
           path: .
 
       - name: Verify and hydrate the shared runtime
-        run: uv run python tools/nightly_runtime_bundle.py verify-extract --archive proof-results/nightly/prepare/runtime-bundle.tar
+        run: uv run python -m molt dx run -- python tools/nightly_runtime_bundle.py verify-extract --archive proof-results/nightly/prepare/runtime-bundle.tar
 
       - name: Run exact conformance shard
         run: |
           SHARD=$(printf '%02d' '${{ matrix.shard }}')
           mkdir -p proof-results/nightly/conformance
-          python3 tools/nightly_sharding.py run-shard \
+          uv run python -m molt dx run -- python tools/nightly_sharding.py run-shard \
             --plan proof-results/nightly/prepare/shard-plan.json \
             --program conformance --shard '${{ matrix.shard }}' \
             --raw-out "proof-results/nightly/conformance/shard-${SHARD}.raw.json" \
@@ -164,7 +164,7 @@ jobs:
           path: .
 
       - name: Verify and hydrate the shared runtime
-        run: uv run python tools/nightly_runtime_bundle.py verify-extract --archive proof-results/nightly/prepare/runtime-bundle.tar
+        run: uv run python -m molt dx run -- python tools/nightly_runtime_bundle.py verify-extract --archive proof-results/nightly/prepare/runtime-bundle.tar
 
       - name: Run exact differential shard
         env:
@@ -172,7 +172,7 @@ jobs:
         run: |
           SHARD=$(printf '%02d' '${{ matrix.shard }}')
           mkdir -p proof-results/nightly/differential
-          python3 tools/nightly_sharding.py run-shard \
+          uv run python -m molt dx run -- python tools/nightly_sharding.py run-shard \
             --plan proof-results/nightly/prepare/shard-plan.json \
             --program differential --shard '${{ matrix.shard }}' \
             --raw-out "proof-results/nightly/differential/shard-${SHARD}.raw.json" \
@@ -221,13 +221,13 @@ jobs:
           path: .
 
       - name: Verify and hydrate the shared runtime
-        run: uv run python tools/nightly_runtime_bundle.py verify-extract --archive proof-results/nightly/prepare/runtime-bundle.tar
+        run: uv run python -m molt dx run -- python tools/nightly_runtime_bundle.py verify-extract --archive proof-results/nightly/prepare/runtime-bundle.tar
 
       - name: Run exact regrtest shard without duplicate differential work
         run: |
           SHARD=$(printf '%02d' '${{ matrix.shard }}')
           mkdir -p proof-results/nightly/regrtest "proof-results/nightly/regrtest-artifacts/shard-${SHARD}"
-          python3 tools/nightly_sharding.py run-shard \
+          uv run python -m molt dx run -- python tools/nightly_sharding.py run-shard \
             --plan proof-results/nightly/prepare/shard-plan.json \
             --program regrtest --shard '${{ matrix.shard }}' \
             --raw-out "proof-results/nightly/regrtest/shard-${SHARD}.raw.json" \
