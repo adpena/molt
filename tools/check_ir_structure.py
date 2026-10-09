@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from molt.disk_capacity import DiskCapacityError  # noqa: E402
 from molt.frontend.module_publication import (  # noqa: E402
     project_frontend_tir_to_executable,
 )
@@ -123,6 +124,8 @@ def verify_tir(
             request_id=request_id,
             timeout_seconds=timeout_seconds,
         )
+    except DiskCapacityError:
+        raise  # the verifier could not be built; the IR was never checked
     except (TypeError, ValueError) as exc:
         return _invalid_format_result(str(exc))
     return _verification_result(report)
@@ -189,6 +192,9 @@ def main(argv: list[str] | None = None) -> int:
             result = verify_tir(tir)
         except (RuntimeError, TimeoutError) as exc:
             print(f"error: Rust IR verifier transport failed: {exc}", file=sys.stderr)
+            return 2
+        except DiskCapacityError as exc:
+            print(f"error: Rust IR verifier was not built: {exc}", file=sys.stderr)
             return 2
     finally:
         close_process_local_verifier()
