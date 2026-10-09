@@ -12,7 +12,7 @@ struct NativeMro {
 
 #[test]
 fn exact_native_tuple_predicate_terminates_with_a_materialized_tuple_mro() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+    let _abi_test = support::enter_abi_test(support::stub_runtime_hooks());
     unsafe {
         let tuple_type = &raw mut PyTuple_Type;
         let object_type = &raw mut PyBaseObject_Type;

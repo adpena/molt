@@ -893,7 +893,7 @@ fn pickle_dump_default_instance(
             if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
                 return Err(pickle_raise(_py, "pickle.dumps: kwargs must be dict"));
             }
-            if unsafe { crate::dict_order(dict_ptr).is_empty() } {
+            if unsafe { crate::dict_len(dict_ptr) == 0 } {
                 kwargs_effective = None;
             }
         }
@@ -1103,7 +1103,14 @@ pub(crate) fn pickle_dump_obj_binary(
         if type_id == TYPE_ID_DICT {
             state.push(PICKLE_OP_EMPTY_DICT);
             let _ = pickle_memo_store_if_absent(state, obj_bits);
-            let pairs = unsafe { crate::dict_order(ptr).to_vec() };
+            let pairs = unsafe {
+                crate::object::ops_dict::dict_snapshot(
+                    _py,
+                    ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                )
+            }
+            .ok_or_else(|| MoltObject::none().bits())?;
             if !pairs.is_empty() {
                 state.push(PICKLE_OP_MARK);
                 let mut idx = 0usize;
@@ -1120,10 +1127,11 @@ pub(crate) fn pickle_dump_obj_binary(
             if state.protocol >= PICKLE_PROTO_4 {
                 state.push(PICKLE_OP_EMPTY_SET);
                 let _ = pickle_memo_store_if_absent(state, obj_bits);
-                let values = unsafe { crate::set_order(ptr).to_vec() };
+                let values = unsafe { crate::object::ops_set::set_snapshot(_py, ptr) }
+                    .ok_or_else(|| MoltObject::none().bits())?;
                 if !values.is_empty() {
                     state.push(PICKLE_OP_MARK);
-                    for entry in values {
+                    for &entry in values.iter() {
                         pickle_dump_obj_binary(_py, state, entry, true)?;
                     }
                     state.push(PICKLE_OP_ADDITEMS);
@@ -1132,11 +1140,12 @@ pub(crate) fn pickle_dump_obj_binary(
             }
             pickle_emit_global_opcode(state, "builtins", "set");
             state.push(PICKLE_OP_EMPTY_LIST);
-            let values = unsafe { crate::set_order(ptr).to_vec() };
+            let values = unsafe { crate::object::ops_set::set_snapshot(_py, ptr) }
+                .ok_or_else(|| MoltObject::none().bits())?;
             let _ = pickle_memo_store_if_absent(state, obj_bits);
             if !values.is_empty() {
                 state.push(PICKLE_OP_MARK);
-                for entry in values {
+                for &entry in values.iter() {
                     pickle_dump_obj_binary(_py, state, entry, true)?;
                 }
                 state.push(PICKLE_OP_APPENDS);
@@ -1148,8 +1157,9 @@ pub(crate) fn pickle_dump_obj_binary(
         if type_id == crate::TYPE_ID_FROZENSET {
             if state.protocol >= PICKLE_PROTO_4 {
                 state.push(PICKLE_OP_MARK);
-                let values = unsafe { crate::set_order(ptr).to_vec() };
-                for entry in values {
+                let values = unsafe { crate::object::ops_set::set_snapshot(_py, ptr) }
+                    .ok_or_else(|| MoltObject::none().bits())?;
+                for &entry in values.iter() {
                     pickle_dump_obj_binary(_py, state, entry, true)?;
                 }
                 state.push(PICKLE_OP_FROZENSET);
@@ -1158,10 +1168,11 @@ pub(crate) fn pickle_dump_obj_binary(
             }
             pickle_emit_global_opcode(state, "builtins", "frozenset");
             state.push(PICKLE_OP_EMPTY_LIST);
-            let values = unsafe { crate::set_order(ptr).to_vec() };
+            let values = unsafe { crate::object::ops_set::set_snapshot(_py, ptr) }
+                .ok_or_else(|| MoltObject::none().bits())?;
             if !values.is_empty() {
                 state.push(PICKLE_OP_MARK);
-                for entry in values {
+                for &entry in values.iter() {
                     pickle_dump_obj_binary(_py, state, entry, true)?;
                 }
                 state.push(PICKLE_OP_APPENDS);

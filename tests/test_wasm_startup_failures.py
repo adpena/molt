@@ -1226,12 +1226,10 @@ def test_status_abi_is_validated_before_application_execution(
 ) -> None:
     source = (ROOT / f"wasm/{host}.js").read_text(encoding="utf-8")
     start = source.index("const runtimeLifetimes =")
-    delimiter = (
-        "let activeRuntimeCallableLayout ="
-        if host == "run_wasm"
-        else "let browserVfsModulePromise"
-    )
-    end = source.index(delimiter, start)
+    # Capture the lifetime owner through its execution entrypoint. Unrelated
+    # callable-table or browser-VFS declarations do not delimit this contract.
+    entrypoint = source.index("const withRuntimeExecution =", start)
+    end = source.index(";", entrypoint) + 1
     boundary = source[start:end]
     _run_node(
         "const boundary = "
@@ -1898,6 +1896,17 @@ def test_generated_split_worker_finishes_after_lease_and_preserves_errors(
         shared_table_initial=16,
         shared_table_base=None,
     )
+    assert_split_worker_runtime_lifecycle(
+        source, ROOT / "wasm/runtime_lifecycle.js", tmp_path
+    )
+
+
+def assert_split_worker_runtime_lifecycle(
+    source: str, lifecycle_path: Path, tmp_path: Path
+) -> None:
+    """Execute the emitted worker transaction with its actual lifecycle companion."""
+    assert 'import "./runtime_lifecycle.js";' in source
+    assert lifecycle_path.is_file(), f"Missing lifecycle companion: {lifecycle_path}"
     start = source.index("    let rtInstance = null;")
     end = source.index('    const output = stdoutChunks.join("");', start)
     transaction = source[start:end]
@@ -1906,7 +1915,7 @@ def test_generated_split_worker_finishes_after_lease_and_preserves_errors(
         + json.dumps(transaction)
         + ";\n"
         + "const lifetimePath = "
-        + json.dumps(str(ROOT / "wasm/runtime_lifecycle.js"))
+        + json.dumps(str(lifecycle_path))
         + ";\n"
         + r"""
 const vm = require('node:vm');

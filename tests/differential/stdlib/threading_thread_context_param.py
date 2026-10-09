@@ -23,3 +23,16 @@ else:
         t.start()
         t.join(timeout=1.0)
         print(results)
+
+
+# Version-selected thread inheritance captures at start, not construction.
+import sys
+if sys.version_info >= (3, 14):
+    observed = []
+    var.set("constructed")
+    later = threading.Thread(target=lambda: observed.append(var.get()))
+    var.set("started")
+    later.start()
+    later.join()
+    print("inherit-at-start", observed == ["started" if sys.flags.thread_inherit_context else "missing"])
+    print("caller-preserved", var.get() == "started")

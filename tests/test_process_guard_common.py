@@ -353,3 +353,70 @@ def test_current_thread_only_leaves_other_threads_on_the_original():
     assert dispatch("owner") == "double"
     assert seen == ["original"]
     assert sorted(calls) == [("double", "owner"), ("original", "worker")]
+
+
+def test_isolated_python_probe_excludes_concurrent_parent_allocations(tmp_path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    import os
+    import threading
+
+    ready = tmp_path / "trace-started"
+    polluted = tmp_path / "parent-allocation-held"
+    stop = threading.Event()
+
+    def pollute_parent() -> int:
+        while not stop.wait(0.01):
+            if ready.is_file():
+                allocation = bytearray(8 * 1024 * 1024)
+                polluted.write_text("held", encoding="utf-8")
+                stop.wait()
+                return len(allocation)
+        return 0
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pollution = pool.submit(pollute_parent)
+        try:
+            observed = process_guard_common.run_isolated_python_probe(
+                """
+                import gc
+                import json
+                import os
+                from pathlib import Path
+                import sys
+                import threading
+                import time
+                import tracemalloc
+                from molt import exact_json
+
+                payload = json.load(sys.stdin)
+                ready, polluted = map(Path, sys.argv[1:])
+                if tracemalloc.is_tracing():
+                    raise RuntimeError("probe requires exclusive allocation tracing")
+                gc.collect()
+                tracemalloc.start()
+                try:
+                    ready.write_text("tracing", encoding="utf-8")
+                    while not polluted.is_file():
+                        time.sleep(0.01)
+                    decoded = exact_json.loads_exact('{"value":7}')
+                    _, peak = tracemalloc.get_traced_memory()
+                finally:
+                    tracemalloc.stop()
+                print(json.dumps({
+                    "pid": os.getpid(), "peak": peak, "decoded": decoded,
+                    "payload": payload, "threads": threading.active_count(),
+                    "pytest_imported": "pytest" in sys.modules,
+                }))
+                """,
+                args=[ready, polluted],
+                payload={"transport": "owned"},
+            )
+        finally:
+            stop.set()
+        assert pollution.result() == 8 * 1024 * 1024
+    assert observed["pid"] != os.getpid()
+    assert observed["threads"] == 1
+    assert observed["pytest_imported"] is False
+    assert observed["decoded"] == {"value": 7}
+    assert observed["payload"] == {"transport": "owned"}
+    assert observed["peak"] < 256 * 1024

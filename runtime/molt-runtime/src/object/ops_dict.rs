@@ -9,8 +9,8 @@ use molt_obj_model::MoltObject;
 
 use super::ops::{
     dict_clear_in_place, dict_del_in_place, dict_find_entry, dict_get_in_place,
-    dict_increment_exact_statement, dict_like_bits_from_ptr, dict_rebuild, dict_set_in_place,
-    dict_set_inline_int_in_place, dict_setdefault_in_place, dict_table_capacity, ensure_hashable,
+    dict_increment_exact_statement, dict_like_bits_from_ptr, dict_set_in_place,
+    dict_set_inline_int_in_place, dict_setdefault_in_place, ensure_hashable,
 };
 
 #[derive(Clone, Copy)]
@@ -32,9 +32,35 @@ pub(crate) unsafe fn dict_snapshot<'a, 'py>(
     kind: DictSnapshotKind,
 ) -> Option<super::seq_access::PinnedSequenceSnapshot<'a, 'py>> {
     unsafe {
-        let length = dict_order(dict).len();
-        let count = length / 2;
+        // Tuple allocation can run collection and finalizers. Retain the entire
+        // observation before materializing any items, so a callback cannot
+        // invalidate a selected edge or grow the walk beyond its reservation.
+        if matches!(kind, DictSnapshotKind::Items) {
+            let entries = dict_snapshot(py, dict, DictSnapshotKind::Entries)?;
+            let Some(storage) =
+                super::backing::tracked_vec_box_with_capacity::<u64>(entries.len() / 2)
+            else {
+                record_memory_error_without_allocation(py);
+                return None;
+            };
+            let mut values = super::backing::tracked_vec_box_from_raw(storage);
+            for pair in entries.as_chunks::<2>().0 {
+                let tuple = alloc_tuple(py, pair);
+                if tuple.is_null() {
+                    let _partial =
+                        super::seq_access::PinnedSequenceSnapshot::from_owned_values(py, values);
+                    return None;
+                }
+                values.push(MoltObject::from_ptr(tuple).bits());
+            }
+            return Some(super::seq_access::PinnedSequenceSnapshot::from_owned_values(py, values));
+        }
+        let count = dict_len(dict);
         let capacity = if matches!(kind, DictSnapshotKind::Entries) {
+            let Some(length) = count.checked_mul(2) else {
+                record_memory_error_without_allocation(py);
+                return None;
+            };
             length
         } else {
             count
@@ -44,11 +70,9 @@ pub(crate) unsafe fn dict_snapshot<'a, 'py>(
             return None;
         };
         let mut values = super::backing::tracked_vec_box_from_raw(storage);
-        for index in 0..count {
-            let (key, value) = {
-                let entries = dict_order(dict);
-                (entries[2 * index], entries[2 * index + 1])
-            };
+        let mut cursor = 0;
+        while let Some(row) = dict_next_entry(dict, &mut cursor) {
+            let (key, value) = (row.key, row.value);
             let item = match kind {
                 DictSnapshotKind::Entries => {
                     inc_ref_bits(py, key);
@@ -65,16 +89,7 @@ pub(crate) unsafe fn dict_snapshot<'a, 'py>(
                     inc_ref_bits(py, value);
                     value
                 }
-                DictSnapshotKind::Items => {
-                    let pair = alloc_tuple(py, &[key, value]);
-                    if pair.is_null() {
-                        let _partial = super::seq_access::PinnedSequenceSnapshot::from_owned_values(
-                            py, values,
-                        );
-                        return None;
-                    }
-                    MoltObject::from_ptr(pair).bits()
-                }
+                DictSnapshotKind::Items => unreachable!("items materialized from retained entries"),
             };
             values.push(item);
         }
@@ -400,32 +415,14 @@ pub extern "C" fn molt_dict_pop(
             if object_type_id(dict_ptr) != TYPE_ID_DICT {
                 return raise_exception::<_>(_py, "TypeError", "dict.pop expects dict");
             }
-            let found = dict_find_entry(_py, dict_ptr, key_bits);
-            let order = dict_order(dict_ptr);
-            let hashes = dict_hashes(dict_ptr);
-            let table = dict_table(dict_ptr);
+            let removed = super::ops::dict_del_deferred(_py, dict_ptr, key_bits);
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            if let Some(entry_idx) = found {
-                let key_idx = entry_idx * 2;
-                let val_idx = key_idx + 1;
-                let key_val = order[key_idx];
-                let val_val = order[val_idx];
-                inc_ref_bits(_py, val_val);
-                order.drain(key_idx..=val_idx);
-                hashes.remove(entry_idx);
-                let entries = order.len() / 2;
-                let capacity = dict_table_capacity(entries.max(1));
-                dict_rebuild(_py, order, hashes, table, capacity);
-                if order.is_empty() {
-                    (*header_from_obj_ptr(dict_ptr))
-                        .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
-                }
-                crate::object::ops::dict_commit_structure(dict_ptr);
-                dec_ref_bits(_py, key_val);
-                dec_ref_bits(_py, val_val);
-                return val_val;
+            if let Some(removed) = removed {
+                let [key, value] = removed.into_owned_storage();
+                dec_ref_bits(_py, key);
+                return value;
             }
             if has_default {
                 inc_ref_bits(_py, default_bits);
@@ -588,30 +585,19 @@ pub extern "C" fn molt_dict_popitem(dict_bits: u64) -> u64 {
             if object_type_id(dict_ptr) != TYPE_ID_DICT {
                 return raise_exception::<_>(_py, "TypeError", "dict.popitem expects dict");
             }
-            let order = dict_order(dict_ptr);
-            if order.len() < 2 {
+            let Some(row) = dict_entries(dict_ptr)
+                .iter()
+                .rev()
+                .find(|row| row.hash.is_some())
+                .copied()
+            else {
                 return raise_exception::<_>(_py, "KeyError", "popitem(): dictionary is empty");
-            }
-            let key_bits = order[order.len() - 2];
-            let val_bits = order[order.len() - 1];
-            let item_ptr = alloc_tuple(_py, &[key_bits, val_bits]);
+            };
+            let item_ptr = alloc_tuple(_py, &[row.key, row.value]);
             if item_ptr.is_null() {
                 return MoltObject::none().bits();
             }
-            order.truncate(order.len() - 2);
-            let hashes = dict_hashes(dict_ptr);
-            hashes.truncate(hashes.len().saturating_sub(1));
-            let entries = order.len() / 2;
-            let table = dict_table(dict_ptr);
-            let capacity = dict_table_capacity(entries.max(1));
-            dict_rebuild(_py, order, hashes, table, capacity);
-            if order.is_empty() {
-                (*header_from_obj_ptr(dict_ptr))
-                    .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
-            }
-            crate::object::ops::dict_commit_structure(dict_ptr);
-            dec_ref_bits(_py, key_bits);
-            dec_ref_bits(_py, val_bits);
+            drop(super::ops::dict_remove_last(_py, dict_ptr));
             MoltObject::from_ptr(item_ptr).bits()
         }
     })
@@ -904,7 +890,7 @@ pub extern "C" fn molt_dict_count_elements(mapping: u64, iterable: u64) -> u64 {
                 }
                 let next = if let Some(index) = found {
                     let old =
-                        CountElementOwned::borrow(py, unsafe { dict_order(dict)[index * 2 + 1] });
+                        CountElementOwned::borrow(py, unsafe { dict_entries(dict)[index].value });
                     custody.new_value = Some(CountElementOwned::adopt(py, molt_add(old.bits, one)));
                     drop(old);
                     custody.new_value.as_ref().unwrap().bits

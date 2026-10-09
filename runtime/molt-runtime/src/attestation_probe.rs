@@ -9,6 +9,8 @@ use std::alloc::{GlobalAlloc, Layout};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 static TRACK: AtomicBool = AtomicBool::new(false);
+static DENY_ALLOCATIONS: AtomicBool = AtomicBool::new(false);
+static DENIED_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
 static LIVE_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -64,8 +66,13 @@ fn record_deallocation(size: usize) {
 
 unsafe impl GlobalAlloc for CountingMiMalloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let track = TRACK.load(Ordering::Relaxed);
+        if track && DENY_ALLOCATIONS.load(Ordering::Relaxed) {
+            DENIED_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            return std::ptr::null_mut();
+        }
         let ptr = unsafe { mimalloc::MiMalloc.alloc(layout) };
-        if !ptr.is_null() && TRACK.load(Ordering::Relaxed) {
+        if !ptr.is_null() && track {
             record_allocation(layout.size());
         }
         ptr
@@ -79,16 +86,26 @@ unsafe impl GlobalAlloc for CountingMiMalloc {
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let track = TRACK.load(Ordering::Relaxed);
+        if track && DENY_ALLOCATIONS.load(Ordering::Relaxed) {
+            DENIED_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            return std::ptr::null_mut();
+        }
         let ptr = unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) };
-        if !ptr.is_null() && TRACK.load(Ordering::Relaxed) {
+        if !ptr.is_null() && track {
             record_allocation(layout.size());
         }
         ptr
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let track = TRACK.load(Ordering::Relaxed);
+        if track && DENY_ALLOCATIONS.load(Ordering::Relaxed) {
+            DENIED_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            return std::ptr::null_mut();
+        }
         let next = unsafe { mimalloc::MiMalloc.realloc(ptr, layout, new_size) };
-        if !next.is_null() && TRACK.load(Ordering::Relaxed) {
+        if !next.is_null() && track {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
             ALLOCATED_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
             if new_size >= layout.size() {
@@ -137,4 +154,39 @@ pub(crate) fn record_numeric_hook() {
     if TRACK.load(Ordering::Relaxed) {
         NUMERIC_HOOK_CALLS.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// Scoped allocation denial for prepared, untimed native controls. Uses the
+/// existing feature-only allocator; normal guests never compile this authority.
+/// As with tracking, the harness must own the process and run a single test.
+pub struct AllocationDenial;
+
+pub fn deny_allocations() -> AllocationDenial {
+    assert!(
+        !TRACK.load(Ordering::Relaxed),
+        "allocation probe already active"
+    );
+    assert!(
+        !DENY_ALLOCATIONS.load(Ordering::Relaxed),
+        "allocation denial already active"
+    );
+    DENIED_ALLOCATIONS.store(0, Ordering::Relaxed);
+    DENY_ALLOCATIONS.store(true, Ordering::Relaxed);
+    TRACK.store(true, Ordering::Relaxed);
+    AllocationDenial
+}
+
+impl Drop for AllocationDenial {
+    fn drop(&mut self) {
+        TRACK.store(false, Ordering::Relaxed);
+        DENY_ALLOCATIONS.store(false, Ordering::Relaxed);
+    }
+}
+
+pub fn denied_allocations() -> u64 {
+    assert!(
+        !TRACK.load(Ordering::Relaxed),
+        "denial result while probe is active"
+    );
+    DENIED_ALLOCATIONS.load(Ordering::Relaxed)
 }

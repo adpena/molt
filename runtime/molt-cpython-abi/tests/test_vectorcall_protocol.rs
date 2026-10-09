@@ -86,15 +86,16 @@ struct VcInstance {
     vectorcall: Option<PyVectorcallFunc>,
 }
 
-fn setup() {
+fn setup() -> support::AbiTestThreadStateTransaction {
     // A str-materializing hook so `PyUnicode_FromString` (kwnames keys) works;
     // inline ints (`PyLong_FromLong`) and ABI-layout tuples need no hooks.
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.alloc_str = fake_alloc_str;
+    hooks.alloc_str = Some(fake_alloc_str);
     hooks.str_data = fake_str_data;
-    support::prepare_abi_test_thread(hooks);
+    let transaction = support::enter_abi_test(hooks);
     *REC.lock().unwrap() = REC_EMPTY;
     *TPREC.lock().unwrap() = TPREC_EMPTY;
+    transaction
 }
 
 // Minimal leaked-bytes str arena (mirrors frontier_repro.rs).
@@ -235,7 +236,7 @@ fn read_long(op: *mut PyObject) -> std::os::raw::c_long {
 #[test]
 fn empty_vectorcall_dict_preserves_offset_scratch_address() {
     let _g = TEST_LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
     unsafe extern "C" fn scratch(
         callable: *mut PyObject,
         args: *mut *mut PyObject,
@@ -272,7 +273,7 @@ fn empty_vectorcall_dict_preserves_offset_scratch_address() {
 #[test]
 fn vectorcall_reads_slot_and_forwards_kwnames() {
     let _g = TEST_LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     // tp_call = None: any degrade-to-tuple-then-tp_call path would find no slot
@@ -339,7 +340,7 @@ fn vectorcall_reads_slot_and_forwards_kwnames() {
 #[test]
 fn vectorcall_uses_slot_not_tp_call() {
     let _g = TEST_LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
 
     // Both a real slot AND a tp_call recorder: a correct impl runs the slot
     // (SENTINEL_VC, TPREC.calls == 0); the pre-fix impl runs tp_call (SENTINEL_TP).
@@ -373,7 +374,7 @@ fn vectorcall_uses_slot_not_tp_call() {
 #[test]
 fn tp_call_is_pyvectorcall_call_terminates() {
     let _g = TEST_LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
 
     // A real positional args tuple, as PyObject_Call requires.
     let args = unsafe { PyTuple_New(2) };
@@ -440,7 +441,7 @@ fn tp_call_is_pyvectorcall_call_terminates() {
 #[test]
 fn pyvectorcall_call_without_slot_raises_typeerror() {
     let _g = TEST_LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     // No HAVE_VECTORCALL flag, offset 0, but tp_call set — PyVectorcall_Call must
@@ -472,7 +473,7 @@ fn pyvectorcall_call_without_slot_raises_typeerror() {
 #[test]
 fn pyvectorcall_function_reads_slot() {
     let _g = TEST_LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
 
     let inst = make_vc_instance(true, Some(rec_vectorcall), None);
     let got = unsafe { PyVectorcall_Function(inst) };
@@ -505,7 +506,7 @@ fn pyvectorcall_function_reads_slot() {
 #[test]
 fn vectorcall_forwards_arguments_offset_bit() {
     let _g = TEST_LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
 
     let inst = make_vc_instance(true, Some(rec_vectorcall), None);
     let a0 = unsafe { PyLong_FromLong(5) };
@@ -535,7 +536,7 @@ fn vectorcall_forwards_arguments_offset_bit() {
 #[test]
 fn vectorcall_dict_masks_nargs() {
     let _g = TEST_LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     // Non-vectorcall object with a tp_call recorder → VectorcallDict takes the
@@ -572,7 +573,7 @@ fn vectorcall_dict_masks_nargs() {
 #[test]
 fn vectorcall_falls_back_to_tp_call_without_slot() {
     let _g = TEST_LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
 
     let ty = make_type(Py_TPFLAGS_READY | Py_TPFLAGS_DEFAULT, 0, Some(rec_tpcall));
     let inst = Box::leak(Box::new(PyObject {

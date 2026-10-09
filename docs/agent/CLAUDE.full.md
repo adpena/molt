@@ -698,11 +698,11 @@ flag, environment variable, or developer wrapper.
 
 Use the DX resolver (`molt dx env`, `molt dx run`, `tools/dev.py`, or
 `tools/run_context_env.py --prefer-external-artifacts`) before build/test/bench
-work. On Windows checkouts on `C:`, maintainer/agent wrappers must opt into the
-hard gate with `MOLT_REQUIRE_EXTERNAL_ARTIFACTS=1` unless an emergency override
-is active; `prefer_external_artifacts` and `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`
-select a healthy external root when one is available but are not public compile
-location bans. macOS/Linux use the configured external candidates. The resolver
+work. Explicit `MOLT_REQUIRE_EXTERNAL_ARTIFACTS=1` requires healthy output
+roots outside the checkout; it does not guarantee another physical device.
+`prefer_external_artifacts` and `MOLT_PREFER_EXTERNAL_ARTIFACTS=1` select a
+healthy configured root when available. Drive letters and directory names do
+not establish custody. The resolver
 owns `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`,
 `MOLT_TARGET_ROOT`, `MOLT_CACHE`, diff/tmp roots, `UV_CACHE_DIR`,
 `UV_PROJECT_ENVIRONMENT`, `PIP_CACHE_DIR`, `PYTHONPYCACHEPREFIX`, `TMPDIR`,
@@ -710,15 +710,10 @@ owns `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`,
 persistent `$MOLT_EXT_ROOT/target`; caller-pinned `MOLT_SESSION_ID` or
 `--session-id` opts into `$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID` for
 deliberate isolation. Explicit `CARGO_TARGET_DIR` remains an operator-owned
-override. On this Windows workstation the selected
-root is `C:\Molt`, and the managed toolchain root is
-`C:\Molt\target-root`. Stale inherited `D:\Molt`, `E:\Molt`,
-`D:\molt-target`, and `E:\molt-target` roots are legacy evidence/fallbacks, not
-active discovery authority; preserve them only with
-`MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS=1`, and preserve an intentional
-off-default toolchain root only with `MOLT_PRESERVE_TARGET_ROOT=1`. RunContext
-emits `UV_LINK_MODE=copy` for exFAT fallback roots unless an explicit operator
-value is present.
+override. Defaults use the checkout-family custody root on every OS.
+Explicit `MOLT_TARGET_ROOT` remains authoritative; otherwise toolchains use
+checkout custody independently of artifact placement. RunContext selects
+`UV_LINK_MODE=copy` from actual exFAT capability unless explicitly configured.
 
 In a fresh checkout/worktree, import RunContext with an already-installed host
 Python 3.12+ before the first `uv` command so `UV_LINK_MODE=copy` is present

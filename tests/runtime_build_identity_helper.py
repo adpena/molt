@@ -41,8 +41,7 @@ from molt.cli.runtime_wasm_build_spec import (
     _resolve_runtime_wasm_cargo_specs,
 )
 from molt.cli.compiler_metadata import _compiler_root
-from molt.cli.runtime_wasm_build_support import RuntimeWasmLinkInputs
-from molt.toolchain_identity import stable_regular_file_identity
+from molt.wasi_sdk_identity import WasiCAbiProjection
 
 
 @dataclass(frozen=True)
@@ -232,7 +231,31 @@ def runtime_toolchain_content_manifest(
                 "selected_target": target,
                 "content": _tree_identity(f"rust:{seed}"),
             },
-            "sysroots": {"wasi": _tree_identity(f"wasi:{seed}")} if wasm else {},
+            "sysroots": {
+                "wasi": {
+                    "schema": "molt.wasi-c-abi-identity.v1",
+                    "target": "wasm32-wasip1",
+                    "variant": "single",
+                    "sdk_version": "34.0",
+                    "llvm_version": "23.1.0",
+                    "tree_sha256": canonical_json_sha256(f"wasi:{seed}"),
+                    "members": {
+                        role: {
+                            "size": len(seed),
+                            "sha256": canonical_json_sha256(f"{role}:{seed}"),
+                        }
+                        for role in (
+                            "libc",
+                            "long_double",
+                            "compiler_rt",
+                            "crt_command",
+                            "crt_reactor",
+                        )
+                    },
+                }
+            }
+            if wasm
+            else {},
             "archives": [
                 {
                     "logical_name": name,
@@ -242,7 +265,6 @@ def runtime_toolchain_content_manifest(
                 for name in (
                     (
                         "wasi-libc",
-                        "rust-compiler-builtins",
                         "wasi-long-double",
                         "clang-rt-builtins",
                     )
@@ -267,7 +289,7 @@ def _identity(
 ) -> tuple[RuntimeBuildIdentity, ...]:
     wasm = target.startswith("wasm32-")
     build_script = {
-        "schema": "molt.runtime-build-script-environment.v2",
+        "schema": "molt.runtime-build-script-environment.v3",
         "build_python": {
             "selected_by": "platform-default",
             "selectors": {"MOLT_BUILD_PYTHON": "unset", "PYTHON": "unset"},
@@ -276,12 +298,36 @@ def _identity(
         "python_import_policy": "isolated-no-site-v1",
         "MOLT_WASM_CPYTHON_ABI_EXPORTS": [] if wasm else "ignored-for-target",
         "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS": [] if wasm else "ignored-for-target",
-        "MOLT_WASM_LONGDOUBLE_ARCHIVE": {
-            "state": "unset" if wasm else "ignored-for-target"
-        },
-        "MOLT_WASM_BUILTINS_ARCHIVE": {
-            "state": "unset" if wasm else "ignored-for-target"
-        },
+        "MOLT_WASI_C_ABI_PLAN": (
+            {
+                "state": "selected",
+                "content": {
+                    "schema": "molt.wasi-c-abi-identity.v1",
+                    "target": "wasm32-wasip1",
+                    "variant": "single",
+                    "sdk_version": "34.0",
+                    "llvm_version": "23.0.0",
+                    "tree_sha256": "a" * 64,
+                    "members": {
+                        name: {
+                            "size": 8,
+                            "sha256": hashlib.sha256(
+                                (name + compile_seed).encode()
+                            ).hexdigest(),
+                        }
+                        for name in (
+                            "libc",
+                            "long_double",
+                            "compiler_rt",
+                            "crt_command",
+                            "crt_reactor",
+                        )
+                    },
+                },
+            }
+            if target in {"wasm32-wasip1", "wasm32-unknown-unknown"}
+            else {"state": "ignored-for-target"}
+        ),
     }
     return _resolve_runtime_build_family_identities(
         sources=_tree_identity(compile_seed),
@@ -365,34 +411,84 @@ def fingerprint_for_identity(
     return runtime_build_fingerprint(identity, scope=scope)
 
 
-def runtime_wasm_link_inputs(
-    fixture_root: RuntimeFixtureRoot, *, env: Mapping[str, str] | None = None
-) -> RuntimeWasmLinkInputs:
-    """File-backed custody only; the native-image linker fixture is never run."""
-    directory = _fixture_path(fixture_root) / "runtime-link-inputs"
-    directory.mkdir(parents=True, exist_ok=True)
-    identities = []
-    for name in (
-        "wasm-ld",
-        "libc.a",
-        "rust-builtins.a",
-        "long-double.a",
-        "clang-builtins.a",
-    ):
-        path = directory / name
-        if not path.exists():
-            if name.endswith(".a"):
-                path.write_bytes(b"!<arch>\n")
-            else:
-                fixture_root.native_executable(f"runtime-link-inputs/{name}")
-        identities.append(
-            stable_regular_file_identity(path, label=f"test runtime link {name}")
-        )
-    return RuntimeWasmLinkInputs(
-        directory,
-        CargoExecutableCustody.capture("runtime WASM linker", identities[0].path),
-        *identities[1:],
+def provisioned_wasi_sdk_fixture(fixture_root: RuntimeFixtureRoot):
+    """Create a complete synthetic install using real, never-executed tool images.
+
+    Its manifest/receipt are real production admission inputs; this fixture does
+    not claim the copied host images implement Clang or the archives implement C.
+    """
+    from dataclasses import asdict
+    from molt import llvm_toolchain
+    from molt.wasi_sdk_identity import (
+        executable_filename,
+        render_wasi_sdk_install_receipt,
+        wasi_sdk_tree_identity,
     )
+
+    root = _fixture_path(fixture_root)
+    asset = llvm_toolchain.wasi_sdk_host_asset(_compiler_root())
+    prefix = llvm_toolchain.wasi_sdk_install_prefix(root / "toolchains", asset)
+    sdk = prefix / "sdk"
+    receipt = prefix / ".molt-wasi-sdk.json"
+    if not receipt.exists():
+        for name in (
+            "clang",
+            "clang++",
+            "llvm-ar",
+            "llvm-ranlib",
+            "llvm-nm",
+            "wasm-ld",
+            "llvm-strip",
+        ):
+            relative = str(
+                (sdk / "bin" / executable_filename(name, asset.id)).relative_to(root)
+            )
+            fixture_root.native_executable(relative)
+        (sdk / "VERSION").write_text(
+            f"{asset.sdk_version}\nwasi-libc: fixture\nllvm-version: {asset.llvm_version}\n",
+            encoding="utf-8",
+        )
+        for relative, content in (
+            (
+                "share/wasi-sysroot/include/wasm32-wasip1/errno.h",
+                b"#define EINVAL 28\n",
+            ),
+            (
+                "share/wasi-sysroot/include/wasm32-wasip1/stddef.h",
+                b"typedef int size_t;\n",
+            ),
+            *(
+                ("share/wasi-sysroot/lib/wasm32-wasip1/" + name, b"!<arch>\n")
+                for name in (
+                    "libc.a",
+                    "libc-printscan-long-double.a",
+                    "crt1-command.o",
+                    "crt1-reactor.o",
+                )
+            ),
+            (
+                f"lib/clang/{asset.llvm_version.split('.')[0]}/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a",
+                b"!<arch>\n",
+            ),
+        ):
+            path = sdk / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        receipt.write_text(
+            render_wasi_sdk_install_receipt(asdict(asset), wasi_sdk_tree_identity(sdk)),
+            encoding="utf-8",
+            newline="",
+        )
+    return llvm_toolchain.load_wasi_sdk_installation(
+        _compiler_root(), prefix, verify_tree=False
+    )
+
+
+def runtime_wasi_c_abi_plan(fixture_root: RuntimeFixtureRoot) -> WasiCAbiProjection:
+    """Admit the finite projection from the fixture's real provision receipt."""
+    from molt.llvm_toolchain import wasi_c_abi_plan
+
+    return wasi_c_abi_plan(provisioned_wasi_sdk_fixture(fixture_root))
 
 
 def bind_runtime_wasm_specs(
@@ -442,7 +538,6 @@ def runtime_cargo_plan(
     cargo_command: Sequence[str],
     requested_target: str | None = None,
     rustflags_transform=None,
-    capture_inputs=None,
     **_kwargs: object,
 ) -> RuntimeCargoPlan:
     """Live plan with immutable source input and pytest-owned generated tools."""
@@ -470,11 +565,6 @@ def runtime_cargo_plan(
     )
     if rustflags_transform is not None:
         flags = rustflags_transform(flags)
-    flag_plan = _resolve_rust_flag_resources(
-        flags, cargo_command, root=root, env=environment
-    )
-    flags = flag_plan.flags
-    environment["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flags)
     environment["RUSTC"] = str(executable)
     wrappers = {}
     for name in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
@@ -485,7 +575,50 @@ def runtime_cargo_plan(
             environment[name] = str(path)
         else:
             environment[name] = ""
+    wasi = None
+    installation = None
     tool_paths = {"cargo": executable, "rustc": executable}
+    if requested_target in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
+        from molt.llvm_toolchain import (
+            selected_wasi_sdk_installation,
+            wasi_c_abi_plan,
+            project_wasm_toolchain_environment,
+        )
+
+        installation = (
+            selected_wasi_sdk_installation(_compiler_root(), environ=environment)
+            if "WASI_SDK_PATH" in environment or "WASI_SDK_PREFIX" in environment
+            else provisioned_wasi_sdk_fixture(fixture_root)
+        )
+        assert installation is not None
+        wasi = wasi_c_abi_plan(installation)
+        environment.update(
+            project_wasm_toolchain_environment(
+                installation, environ={}, rust_target=requested_target
+            )
+        )
+        for role, name in (
+            ("cc", "clang"),
+            ("cxx", "clang++"),
+            ("ar", "llvm-ar"),
+            ("ranlib", "llvm-ranlib"),
+        ):
+            path = installation.sdk / installation.tool_fact(name)["path"]
+            tool_paths[role] = path
+            environment[f"{role.upper()}_{requested_target}"] = str(path)
+        tool_paths["linker"] = wasi.linker
+        environment[
+            "CARGO_TARGET_" + requested_target.upper().replace("-", "_") + "_LINKER"
+        ] = str(wasi.linker)
+    flag_plan = _resolve_rust_flag_resources(
+        flags,
+        cargo_command,
+        root=root,
+        env=environment,
+        wasi_plan=wasi,
+    )
+    flags = flag_plan.flags
+    environment["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flags)
     if flag_plan.dependency_linker is not None:
         tool_paths["linker"] = flag_plan.dependency_linker
     if flag_plan.final_linker is not None:
@@ -501,6 +634,8 @@ def runtime_cargo_plan(
         *(
             CargoExecutableCustody.capture("tool/" + role, path)
             for role, path in tool_paths.items()
+            if installation is None
+            or role not in {"cc", "cxx", "ar", "ranlib", "linker", "final_linker"}
         ),
         *(
             CargoExecutableCustody.capture("wrapper/" + role, path)
@@ -513,7 +648,7 @@ def runtime_cargo_plan(
     )
     target_libdir = fixtures / "test-rustlib" / (requested_target or host) / "lib"
     target_libdir.mkdir(parents=True, exist_ok=True)
-    builtins = target_libdir / "libcompiler_builtins.fixture.rlib"
+    builtins = target_libdir / "libcompiler_builtins-fixture.rlib"
     if not builtins.exists():
         builtins.write_bytes(b"!<arch>\n")
     libc = target_libdir / "self-contained" / "libc.a"
@@ -521,8 +656,6 @@ def runtime_cargo_plan(
     if not libc.exists():
         libc.write_bytes(b"!<arch>\n")
     rust_roots = (CargoResourceRoot("rust/target-libdir/0", target_libdir),)
-    if capture_inputs is not None:
-        capture_inputs(MappingProxyType(environment), tools, rust_roots)
     c_resources = _resolve_c_build_resources(
         environment, target=requested_target or host, host_target=host
     )
@@ -548,4 +681,5 @@ def runtime_cargo_plan(
         CargoResourceCustody.capture(flag_plan.link_roots),
         (),
         c_resources.environment,
+        installation,
     )

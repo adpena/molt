@@ -89,29 +89,6 @@ const createWorkerWebGpuDispatcher = (options = {}) => {
       type: 'module',
     });
     worker = activeWorker;
-    activeWorker.addEventListener('message', (event) => {
-      const payload = event && event.data ? event.data : null;
-      if (!payload || typeof payload.id !== 'number') {
-        return;
-      }
-      const entry = pending.get(payload.id);
-      if (!entry) {
-        return;
-      }
-      pending.delete(payload.id);
-      entry.error = payload.error || null;
-      entry.outputs = Array.isArray(payload.outputs)
-        ? payload.outputs.map((binding) => ({
-            binding: binding.binding,
-            bytes:
-              binding.bytes instanceof Uint8Array
-                ? binding.bytes
-                : new Uint8Array(binding.bytes || []),
-          }))
-        : [];
-      Atomics.store(entry.waiter, 0, 1);
-      Atomics.notify(entry.waiter, 0, 1);
-    });
     activeWorker.addEventListener('error', (event) => {
       const detail =
         event && event.message ? `browser webgpu worker error: ${event.message}` : 'browser webgpu worker failed';
@@ -126,40 +103,49 @@ const createWorkerWebGpuDispatcher = (options = {}) => {
       const activeWorker = ensureWorker();
       const id = nextId;
       nextId += 1;
-      const waiter = new Int32Array(new SharedArrayBuffer(4));
-      const entry = { waiter, error: null, outputs: [] };
+      // The worker, not this blocked event loop, completes the synchronous import.
+      // Shared readbacks are private staging; no late worker can mutate WASM
+      // memory after timeout or a failed dispatch.
+      const waiter = new Int32Array(new SharedArrayBuffer(8));
+      const errorBytes = new Uint8Array(new SharedArrayBuffer(4096));
+      const bindings = request.bindings.map((binding) => {
+        const bytes = new Uint8Array(new SharedArrayBuffer(binding.bytes.byteLength));
+        bytes.set(binding.bytes);
+        return { ...binding, bytes };
+      });
+      const entry = { waiter, error: null };
       pending.set(id, entry);
       activeWorker.postMessage({
         type: 'dispatch',
         id,
+        waiter,
+        errorBytes,
         request: {
           source: request.source,
           entry: request.entry,
           grid: request.grid,
           workgroupSize: request.workgroupSize,
-          bindings: request.bindings.map((binding) => ({
-            binding: binding.binding,
-            name: binding.name,
-            kind: binding.kind,
-            access: binding.access,
-            bytes: binding.bytes.slice(),
-          })),
+          bindings,
         },
       });
       const res = Atomics.wait(waiter, 0, 0, dispatchTimeoutMs);
       if (res === 'timed-out') {
         pending.delete(id);
+        closeWorker(activeWorker);
         throw new Error('browser webgpu dispatch timed out');
       }
-      if (entry.error) {
-        throw new Error(entry.error);
+      pending.delete(id);
+      if (entry.error) throw new Error(entry.error);
+      if (Atomics.load(waiter, 0) !== 1) {
+        const length = Atomics.load(waiter, 1);
+        throw new Error(UTF8_DECODER.decode(errorBytes.subarray(0, length)) || 'browser webgpu worker failed');
       }
-      for (const output of entry.outputs) {
-        const binding = request.bindings.find((candidate) => candidate.binding === output.binding);
-        if (!binding) {
-          continue;
+      // Every physical output, including store-occurrence flags, has the
+      // original fixed extent. Publish only after the complete dispatch succeeds.
+      for (let index = 0; index < bindings.length; index += 1) {
+        if (bindings[index].access === 'read_write') {
+          request.bindings[index].bytes.set(bindings[index].bytes);
         }
-        binding.bytes.set(output.bytes.subarray(0, binding.bytes.length));
       }
     },
     dispose() {

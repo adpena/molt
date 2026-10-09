@@ -212,14 +212,16 @@ unsafe fn take_c_error(expected: *mut PyTypeObject) -> String {
                 .then(|| CStr::from_ptr((*observed.cast::<PyTypeObject>()).tp_name))
         );
         let raised = errors::PyErr_GetRaisedException();
+        let raised_owner = refcount::OwnedPyObject::from_owned(raised);
         assert!(!raised.is_null());
         let text = typeobj::PyObject_Str(raised);
+        let text_owner = refcount::OwnedPyObject::from_owned(text);
         assert!(!text.is_null());
         let utf8 = strings::PyUnicode_AsUTF8(text);
         assert!(!utf8.is_null());
         let rendered = CStr::from_ptr(utf8).to_string_lossy().into_owned();
-        refcount::Py_DECREF(text);
-        refcount::Py_DECREF(raised);
+        drop(text_owner);
+        drop(raised_owner);
         rendered
     }
 }

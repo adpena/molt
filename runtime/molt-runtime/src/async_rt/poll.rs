@@ -399,6 +399,10 @@ pub(crate) unsafe fn call_scheduled_poll_fn(
     poll_fn_addr: u64,
     task_ptr: *mut u8,
 ) -> i64 {
+    let Some(_context) = crate::builtins::contextvars::ExecutionContextLease::enter(py, task_ptr)
+    else {
+        return MoltObject::none().bits() as i64;
+    };
     let _resume = crate::async_rt::awaitable::PythonResumeScope::scheduled(py);
     unsafe { call_poll_fn(py, poll_fn_addr, task_ptr) }
 }
@@ -430,7 +434,6 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
         else {
             return MoltObject::none().bits() as i64;
         };
-        let addr = task_ptr.expose_provenance() as u64;
         let result = {
             #[cfg(target_arch = "wasm32")]
             {
@@ -451,7 +454,8 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
                         "invalid wasm poll function",
                     );
                 }
-                let res = crate::molt_call_indirect1(normalized_poll_fn_addr, addr);
+                let argument = poll_argument(normalized_poll_fn_addr, task_ptr);
+                let res = crate::molt_call_indirect1(normalized_poll_fn_addr, argument);
                 if matches!(
                     std::env::var("MOLT_TRACE_POLL_RETURN").ok().as_deref(),
                     Some("1")
@@ -560,7 +564,7 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
                     target
                 };
                 let poll_fn: extern "C" fn(u64) -> i64 = std::mem::transmute(poll_target);
-                poll_fn(addr)
+                poll_fn(poll_argument(poll_fn_addr, task_ptr))
             }
         };
         // Only errors escaping a Python coroutine body cross this boundary.
@@ -579,6 +583,15 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
                 as i64;
         }
         result
+    }
+}
+
+#[inline]
+fn poll_argument(poll_fn: u64, task_ptr: *mut u8) -> u64 {
+    if crate::builtins::functions::runtime_poll_uses_object_argument(poll_fn) {
+        MoltObject::from_ptr(task_ptr).bits()
+    } else {
+        crate::provenance::abi::expose_address(task_ptr)
     }
 }
 
@@ -667,6 +680,120 @@ pub(crate) unsafe fn poll_future_with_task_stack(
 #[cfg(test)]
 mod tests {
     use super::async_sleep_poll_fn_addr;
+
+    #[test]
+    fn runtime_poll_argument_domain_excludes_the_table_sentinel() {
+        use crate::builtins::functions::runtime_poll_uses_object_argument;
+        assert!(runtime_poll_uses_object_argument(async_sleep_poll_fn_addr()));
+        assert!(runtime_poll_uses_object_argument(
+            super::promise_poll_fn_addr()
+        ));
+        // Sleep is manifest slot one, so its predecessor is the table sentinel.
+        assert!(!runtime_poll_uses_object_argument(
+            async_sleep_poll_fn_addr() - 1
+        ));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    static COMPILED_SELF: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    extern "C" fn raw_self_probe_poll(raw: u64) -> i64 {
+        COMPILED_SELF.store(raw, std::sync::atomic::Ordering::Relaxed);
+        crate::MoltObject::from_int(73).bits() as i64
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn runtime_poll_objects_and_compiled_raw_self_have_distinct_release_safe_domains() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            use crate::{MoltObject, dec_ref_bits, ptr_from_bits};
+            let value = MoltObject::from_ptr(crate::alloc_list(py, &[])).bits();
+            let value_ptr = ptr_from_bits(value);
+            assert!(!value_ptr.is_null());
+            let owners =
+                || unsafe { (*crate::header_from_obj_ptr(value_ptr)).ref_count_snapshot() };
+            assert_eq!(owners(), 1);
+            {
+                let poll = super::promise_poll_fn_addr();
+                let promise = crate::molt_future_new(poll, std::mem::size_of::<u64>() as u64);
+                let ptr = ptr_from_bits(promise);
+                assert!(!ptr.is_null());
+                assert_eq!(
+                    crate::object::object_poll_fn(ptr),
+                    super::promise_poll_fn_addr()
+                );
+                assert_eq!(
+                    crate::object::object_shape_id(ptr),
+                    crate::object::ObjectShapeId::Promise
+                );
+                unsafe { crate::molt_promise_set_result(promise, value) };
+                assert!(!crate::exception_pending(py));
+                let first = crate::molt_future_poll(promise) as u64;
+                let cached = crate::molt_future_poll(promise) as u64;
+                assert_eq!(
+                    first, value,
+                    "runtime poll must receive a decodable object word in release"
+                );
+                assert_eq!(cached, value);
+                dec_ref_bits(py, first);
+                dec_ref_bits(py, cached);
+                dec_ref_bits(py, promise);
+                assert_eq!(
+                    owners(),
+                    1,
+                    "canonical promise identity must retain its lifecycle shape"
+                );
+            }
+            dec_ref_bits(py, value);
+
+            {
+                let poll = async_sleep_poll_fn_addr();
+                let future = crate::molt_future_new(poll, (2 * std::mem::size_of::<u64>()) as u64);
+                let ptr = ptr_from_bits(future);
+                assert!(!ptr.is_null());
+                unsafe {
+                    crate::object::payload_refs::store_borrowed(
+                        py,
+                        ptr,
+                        0,
+                        MoltObject::from_float(0.0).bits(),
+                    );
+                    crate::object::payload_refs::store_borrowed(
+                        py,
+                        ptr,
+                        std::mem::size_of::<u64>(),
+                        MoltObject::from_int(41).bits(),
+                    );
+                }
+                assert_eq!(crate::molt_future_poll(future), crate::pending_bits_i64());
+                assert_eq!(
+                    crate::molt_future_poll(future) as u64,
+                    MoltObject::from_int(41).bits()
+                );
+                dec_ref_bits(py, future);
+            }
+
+            let compiled =
+                crate::provenance::abi::expose_function_address(raw_self_probe_poll as *const ());
+            let future = crate::molt_future_new(compiled, 0);
+            let ptr = ptr_from_bits(future);
+            assert!(!ptr.is_null());
+            assert_eq!(crate::object::object_poll_fn(ptr), compiled);
+            COMPILED_SELF.store(0, std::sync::atomic::Ordering::Relaxed);
+            assert_eq!(
+                crate::molt_future_poll(future) as u64,
+                MoltObject::from_int(73).bits()
+            );
+            assert_eq!(
+                COMPILED_SELF.load(std::sync::atomic::Ordering::Relaxed),
+                crate::provenance::abi::expose_address(ptr)
+            );
+            dec_ref_bits(py, future);
+            assert!(!crate::exception_pending(py));
+        });
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     extern "C" fn namespace_probe_poll(task_address: u64) -> i64 {

@@ -660,15 +660,12 @@ pub extern "C" fn molt_path_expandvars_env(path_bits: u64, env_bits: u64) -> u64
             return raise_exception::<_>(_py, "TypeError", "env must be dict[str, str]");
         }
         let mut env_map: HashMap<String, String> = HashMap::new();
-        let pairs = unsafe { dict_order(env_ptr) };
-        for chunk in pairs.chunks(2) {
-            if chunk.len() < 2 {
-                continue;
-            }
-            let Some(key) = string_obj_to_owned(obj_from_bits(chunk[0])) else {
+        let mut cursor = 0;
+        while let Some(row) = unsafe { crate::dict_next_entry(env_ptr, &mut cursor) } {
+            let Some(key) = string_obj_to_owned(obj_from_bits(row.key)) else {
                 return raise_exception::<_>(_py, "TypeError", "env keys must be str");
             };
-            let Some(value) = string_obj_to_owned(obj_from_bits(chunk[1])) else {
+            let Some(value) = string_obj_to_owned(obj_from_bits(row.value)) else {
                 return raise_exception::<_>(_py, "TypeError", "env values must be str");
             };
             env_map.insert(key, value);

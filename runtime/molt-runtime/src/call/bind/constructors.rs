@@ -85,7 +85,7 @@ pub(super) unsafe fn is_default_type_call(_py: &PyToken<'_>, call_bits: u64) -> 
 }
 
 /// Class construction lends the call's argument vector to `__new__` and
-/// `__init__`, as `type.__call__` does: each phase retains its own vector.
+/// `__init__`, as `type.__call__` does: phases borrow until synchronous return.
 /// A class never inlines a frame, so the call instruction releases the
 /// construction arguments once construction ends, in its own order.
 pub(super) unsafe fn call_type_with_arguments(
@@ -96,13 +96,31 @@ pub(super) unsafe fn call_type_with_arguments(
     unsafe {
         let class_bits = MoltObject::from_ptr(call_ptr).bits();
         let builtins = builtin_classes(_py);
-        let args = match arguments.unpacked_view() {
-            Ok(args) => args,
-            Err(err) => return err,
-        };
-        let pos_args = args.pos;
-        let kw_names = args.kw_names;
-        let kw_values = args.kw_values;
+        if let Err(error) = arguments.prepare_constructor_mapping() {
+            return error;
+        }
+        let builtin_fast = is_builtin_class_bits(_py, class_bits)
+            && crate::object::class_is_immutable(_py, call_ptr)
+            && class_bits != builtins.module
+            && !crate::builtins::types::native_constructors::owns_constructor_descriptors(
+                _py, class_bits,
+            );
+        let metaclass_call =
+            arguments.positional().len() == 3 && issubclass_bits(class_bits, builtins.type_obj);
+        // Ordinary class forwarding needs the original mapping, not a keyword
+        // observation. Only builtin constructor inspection allocates one below.
+        if class_bits != builtins.type_obj && !metaclass_call && !builtin_fast {
+            return if issubclass_bits(class_bits, builtins.base_exception) {
+                crate::call::class_init::construct_exception_from_args(
+                    _py,
+                    call_ptr,
+                    &mut arguments,
+                )
+            } else {
+                crate::call::class_init::construct_regular_class(_py, call_ptr, &arguments)
+            };
+        }
+        let pos_args = arguments.positional();
         if class_bits == builtins.type_obj && pos_args.len() == 3 {
             return build_class_from_args(
                 _py,
@@ -110,8 +128,7 @@ pub(super) unsafe fn call_type_with_arguments(
                 pos_args[0],
                 pos_args[1],
                 pos_args[2],
-                kw_names,
-                kw_values,
+                &arguments,
             );
         }
         // Custom metaclass (subclass of type) with 3 args:
@@ -120,21 +137,9 @@ pub(super) unsafe fn call_type_with_arguments(
         // `Meta.__init__(cls, name, bases, namespace, **kwds)`.  Honor user
         // overrides of either method.
         if pos_args.len() == 3 && issubclass_bits(class_bits, builtins.type_obj) {
-            // Build the kwargs dict once; reused for the fast path
-            // (`molt_type_new`) and to dec-ref at exit.
-            let kwargs_bits = if kw_names.is_empty() {
-                MoltObject::none().bits()
-            } else {
-                let mut pairs = Vec::with_capacity(kw_names.len() * 2);
-                for (k, v) in kw_names.iter().zip(kw_values.iter()) {
-                    pairs.push(*k);
-                    pairs.push(*v);
-                }
-                let ptr = alloc_dict_with_pairs(_py, &pairs);
-                if ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                MoltObject::from_ptr(ptr).bits()
+            let kwargs_bits = match arguments.keyword_mapping() {
+                Ok(mapping) => mapping,
+                Err(error) => return error,
             };
 
             // Look up `__new__` on the metaclass.  If the user did not
@@ -170,23 +175,18 @@ pub(super) unsafe fn call_type_with_arguments(
             } else {
                 let new_bits = new_lookup.expect("non-default __new__ must resolve");
                 // `type.__call__` lends its arguments to each constructor
-                // phase; the phase retains its own argument vector.
-                match CallArguments::retained(_py, Some(class_bits), pos_args, kw_names, kw_values)
-                {
+                // phase; only receiver insertion promotes its positional span.
+                match arguments.constructor_child(Some(class_bits), pos_args) {
                     Ok(new_arguments) => call_bind_with_arguments(_py, new_bits, new_arguments),
                     Err(err) => {
-                        if !kw_names.is_empty() {
-                            dec_ref_bits(_py, kwargs_bits);
-                        }
+                        dec_ref_bits(_py, kwargs_bits);
                         return err;
                     }
                 }
             };
 
             if exception_pending(_py) {
-                if !kw_names.is_empty() {
-                    dec_ref_bits(_py, kwargs_bits);
-                }
+                dec_ref_bits(_py, kwargs_bits);
                 return MoltObject::none().bits();
             }
 
@@ -208,59 +208,126 @@ pub(super) unsafe fn call_type_with_arguments(
                 let init_name_bits =
                     intern_static_name(_py, &runtime_state(_py).interned.init_name, b"__init__");
                 if let Some(init_bits) = class_attr_lookup_raw_mro(_py, call_ptr, init_name_bits) {
-                    let init_result = match CallArguments::retained(
-                        _py,
-                        Some(new_class_bits),
-                        pos_args,
-                        kw_names,
-                        kw_values,
-                    ) {
-                        Ok(init_arguments) => {
-                            call_bind_with_arguments(_py, init_bits, init_arguments)
-                        }
-                        Err(err) => err,
-                    };
+                    let init_result =
+                        match arguments.constructor_child(Some(new_class_bits), pos_args) {
+                            Ok(init_arguments) => {
+                                call_bind_with_arguments(_py, init_bits, init_arguments)
+                            }
+                            Err(err) => err,
+                        };
                     // A failed allocation or `__init__` leaves the error pending;
                     // consuming the result reports both the same way.
                     if !crate::call::class_init::consume_init_result(_py, init_result) {
                         dec_ref_bits(_py, new_class_bits);
-                        if !kw_names.is_empty() {
-                            dec_ref_bits(_py, kwargs_bits);
-                        }
+                        dec_ref_bits(_py, kwargs_bits);
                         return MoltObject::none().bits();
                     }
                 }
             }
 
-            if !kw_names.is_empty() {
-                dec_ref_bits(_py, kwargs_bits);
-            }
+            dec_ref_bits(_py, kwargs_bits);
             return new_class_bits;
         }
-        if class_bits == builtins.type_obj && pos_args.len() == 1 && kw_names.is_empty() {
+        if class_bits == builtins.type_obj && pos_args.len() == 1 && arguments.keyword_count() == 0
+        {
             let bits = type_of_bits(_py, pos_args[0]);
             inc_ref_bits(_py, bits);
             return bits;
         }
-        if is_builtin_class_bits(_py, class_bits)
-            && crate::object::class_is_immutable(_py, call_ptr)
-            && class_bits != builtins.module
-            && !crate::builtins::types::native_constructors::owns_constructor_descriptors(
-                _py, class_bits,
-            )
-        {
-            if let Some(result) = crate::builtins::types::wrappers::try_construct_exact_wrapper(
-                _py, class_bits, pos_args, kw_names, kw_values,
-            ) {
-                return result;
-            }
-
+        if builtin_fast {
             if class_bits == builtins.super_type {
                 return crate::builtins::types::descriptor_objects::super_call(
                     _py,
                     pos_args,
-                    !kw_names.is_empty(),
+                    arguments.keyword_count() != 0,
                 );
+            }
+
+            if class_bits == builtins.bool {
+                if arguments.keyword_count() != 0 {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "bool() takes no keyword arguments",
+                    );
+                }
+                if pos_args.len() > 1 {
+                    let msg = format!("bool expected at most 1 argument, got {}", pos_args.len());
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                if pos_args.is_empty() {
+                    return MoltObject::from_bool(false).bits();
+                }
+                let result = is_truthy(_py, obj_from_bits(pos_args[0]));
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                return MoltObject::from_bool(result).bits();
+            }
+
+            if class_bits == builtins.reversed {
+                if arguments.keyword_count() != 0 {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "reversed() takes no keyword arguments",
+                    );
+                }
+                if pos_args.len() != 1 {
+                    let msg = format!("reversed expected 1 argument, got {}", pos_args.len());
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                return crate::object::ops::reversed_new_impl(_py, pos_args[0]);
+            }
+
+            if class_bits == builtins.map {
+                if arguments.keyword_count() != 0 {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "map() takes no keyword arguments",
+                    );
+                }
+                if pos_args.len() < 2 {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "map() must have at least two arguments",
+                    );
+                }
+                return crate::object::ops::map_new_impl(_py, pos_args[0], &pos_args[1..]);
+            }
+
+            if class_bits == builtins.filter {
+                if arguments.keyword_count() != 0 {
+                    return raise_exception::<_>(
+                        _py,
+                        "TypeError",
+                        "filter() takes no keyword arguments",
+                    );
+                }
+                if pos_args.len() != 2 {
+                    let msg = format!("filter expected 2 arguments, got {}", pos_args.len());
+                    return raise_exception::<_>(_py, "TypeError", &msg);
+                }
+                return crate::object::ops::filter_new_impl(_py, pos_args[0], pos_args[1]);
+            }
+
+            if let Err(error) = arguments.observe_constructor_keywords() {
+                return error;
+            }
+            let args = arguments.constructor_view();
+            let pos_args = args.pos;
+            let kw_names = args.kw_names;
+            let kw_values = args.kw_values;
+            if let Some(result) = crate::builtins::types::wrappers::try_construct_exact_wrapper(
+                _py,
+                class_bits,
+                pos_args,
+                kw_names,
+                arguments.constructor_mapping(),
+            ) {
+                return result;
             }
 
             if class_bits == builtins.enumerate {
@@ -302,76 +369,6 @@ pub(super) unsafe fn call_type_with_arguments(
                     start_opt = Some(val_bits);
                 }
                 return crate::object::ops::enumerate_new_impl(_py, iterable_bits, start_opt);
-            }
-
-            if class_bits == builtins.bool {
-                if !kw_names.is_empty() {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "bool() takes no keyword arguments",
-                    );
-                }
-                if pos_args.len() > 1 {
-                    let msg = format!("bool expected at most 1 argument, got {}", pos_args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-                if pos_args.is_empty() {
-                    return MoltObject::from_bool(false).bits();
-                }
-                let result = is_truthy(_py, obj_from_bits(pos_args[0]));
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                return MoltObject::from_bool(result).bits();
-            }
-
-            if class_bits == builtins.reversed {
-                if !kw_names.is_empty() {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "reversed() takes no keyword arguments",
-                    );
-                }
-                if pos_args.len() != 1 {
-                    let msg = format!("reversed expected 1 argument, got {}", pos_args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-                return crate::object::ops::reversed_new_impl(_py, pos_args[0]);
-            }
-
-            if class_bits == builtins.map {
-                if !kw_names.is_empty() {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "map() takes no keyword arguments",
-                    );
-                }
-                if pos_args.len() < 2 {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "map() must have at least two arguments",
-                    );
-                }
-                return crate::object::ops::map_new_impl(_py, pos_args[0], &pos_args[1..]);
-            }
-
-            if class_bits == builtins.filter {
-                if !kw_names.is_empty() {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "filter() takes no keyword arguments",
-                    );
-                }
-                if pos_args.len() != 2 {
-                    let msg = format!("filter expected 2 arguments, got {}", pos_args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-                return crate::object::ops::filter_new_impl(_py, pos_args[0], pos_args[1]);
             }
 
             if class_bits == builtins.zip {
@@ -422,12 +419,12 @@ pub(super) unsafe fn call_type_with_arguments(
         }
         if is_exc_subclass {
             return crate::call::class_init::construct_exception_from_args(
-                _py, call_ptr, pos_args, kw_names, kw_values,
+                _py,
+                call_ptr,
+                &mut arguments,
             );
         }
-        crate::call::class_init::construct_regular_class(
-            _py, call_ptr, pos_args, kw_names, kw_values,
-        )
+        crate::call::class_init::construct_regular_class(_py, call_ptr, &arguments)
     }
 }
 
@@ -437,8 +434,7 @@ unsafe fn build_class_from_args(
     name_bits: u64,
     bases_bits: u64,
     namespace_bits: u64,
-    kw_names: &[u64],
-    kw_values: &[u64],
+    arguments: &CallArguments<'_, '_>,
 ) -> u64 {
     unsafe {
         let name_obj = obj_from_bits(name_bits);
@@ -522,15 +518,11 @@ unsafe fn build_class_from_args(
         }
 
         if winner_bits != metaclass_bits {
-            // The winning metaclass receives its own retained argument vector;
+            // The winning metaclass borrows the replacement positional span;
             // this adapter keeps its borrowed operands.
-            let class_bits = match CallArguments::retained(
-                _py,
-                None,
-                &[name_bits, bases_tuple_bits, namespace_bits],
-                kw_names,
-                kw_values,
-            ) {
+            let class_bits = match arguments
+                .constructor_child(None, &[name_bits, bases_tuple_bits, namespace_bits])
+            {
                 Ok(arguments) => call_bind_with_arguments(_py, winner_bits, arguments),
                 Err(err) => err,
             };
@@ -543,22 +535,14 @@ unsafe fn build_class_from_args(
         // Metaclass selection is the adapter's only construction policy.
         // The canonical type constructor owns namespace copying, metadata cells,
         // unpublished-class cleanup, slots, and the ordered callback phases.
-        let kwargs_bits = if kw_names.is_empty() {
-            MoltObject::none().bits()
-        } else {
-            let pairs: Vec<u64> = kw_names
-                .iter()
-                .zip(kw_values.iter())
-                .flat_map(|(&name, &value)| [name, value])
-                .collect();
-            let kwargs = alloc_dict_with_pairs(_py, &pairs);
-            if kwargs.is_null() {
+        let kwargs_bits = match arguments.keyword_mapping() {
+            Ok(mapping) => mapping,
+            Err(error) => {
                 if bases_owned {
                     dec_ref_bits(_py, bases_tuple_bits);
                 }
-                return MoltObject::none().bits();
+                return error;
             }
-            MoltObject::from_ptr(kwargs).bits()
         };
         let result = molt_type_new(
             metaclass_bits,
@@ -567,9 +551,7 @@ unsafe fn build_class_from_args(
             namespace_bits,
             kwargs_bits,
         );
-        if !kw_names.is_empty() {
-            dec_ref_bits(_py, kwargs_bits);
-        }
+        dec_ref_bits(_py, kwargs_bits);
         if bases_owned {
             dec_ref_bits(_py, bases_tuple_bits);
         }

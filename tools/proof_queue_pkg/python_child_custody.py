@@ -51,13 +51,12 @@ def _request_child_decision(
     global _child_sequence
     if _child_channel is None or _child_channel_reader is None:
         raise RuntimeError("proof child custody decision channel is unavailable")
-    path_value = None
-    if isinstance(child_env, Mapping):
-        path_value = _environment_value(child_env, "PATH")
-        if isinstance(path_value, bytes):
-            path_value = os.fsdecode(path_value)
-    if not isinstance(path_value, str):
-        path_value = os.environ.get("PATH", "")
+    # Match the actual CPython child launch: an explicit environment without
+    # PATH uses os.defpath, while None inherits and an empty PATH names cwd.
+    # The stdlib also owns bytes-environment and POSIX key-case semantics.
+    path_value = os.pathsep.join(
+        os.get_exec_path(child_env if isinstance(child_env, Mapping) else None)
+    )
     path_ext = None
     if isinstance(child_env, Mapping):
         path_ext = _environment_value(child_env, "PATHEXT")

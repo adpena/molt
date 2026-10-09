@@ -121,13 +121,13 @@ class BackendResult:
     infrastructure_failure: GuardInfrastructureFailure | None = None
     rss_limit_exceeded: bool = False
     guard_signal: int | None = None
-    diagnostic_stderr: str | None = None
+    child_stderr: str | None = None
 
     def __post_init__(self) -> None:
-        # Freeze the diagnostic source before adapters append build stdout,
+        # Preserve the child stream before adapters append build stdout,
         # deadline prose, cleanup messages or reproduction instructions.
-        if self.diagnostic_stderr is None:
-            object.__setattr__(self, "diagnostic_stderr", self.stderr)
+        if self.child_stderr is None:
+            object.__setattr__(self, "child_stderr", self.stderr)
 
     @property
     def resource_failure(
@@ -143,7 +143,7 @@ class BackendResult:
             or self.returncode in (0, 124)
         ):
             return None
-        lines = (self.diagnostic_stderr or "").splitlines()
+        lines = (self.child_stderr or "").splitlines()
         # An ownership/header abort must remain visible even if cleanup also
         # reports an allocation exception. Measured RSS remains authoritative.
         if any(line.startswith("molt fatal:") for line in lines):
@@ -168,26 +168,29 @@ class BackendResult:
 
     @classmethod
     def from_process(
-        cls, proc: subprocess.CompletedProcess[str] | BackendResult
+        cls,
+        proc: subprocess.CompletedProcess[str]
+        | subprocess.CompletedProcess[bytes]
+        | BackendResult,
     ) -> BackendResult:
         if isinstance(proc, cls):
             return proc
         return cls(
-            proc.stdout,
-            proc.stderr,
+            None if proc.stdout is None else cls._text(proc.stdout),
+            cls._text(proc.stderr),
             proc.returncode,
             timed_out=bool(getattr(proc, "timed_out", False)),
             child_returncode=getattr(proc, "child_returncode", None),
             infrastructure_failure=getattr(proc, "infrastructure_failure", None),
             rss_limit_exceeded=getattr(proc, "violation", None) is not None,
             guard_signal=getattr(proc, "guard_signal", None),
-            diagnostic_stderr=cls._text(getattr(proc, "child_stderr", proc.stderr)),
+            child_stderr=cls._text(getattr(proc, "child_stderr", proc.stderr)),
         )
 
     @staticmethod
     def _text(value: str | bytes | None) -> str:
         return (
-            value.decode("utf-8", errors="replace")
+            value.decode("utf-8", errors="surrogateescape")
             if isinstance(value, bytes)
             else value or ""
         )
@@ -203,6 +206,7 @@ class BackendResult:
     ) -> BackendResult:
         out_text = cls._text(stdout)
         err_text = cls._text(stderr)
+        child_stderr = err_text
         deadline = f"timeout after {timeout}s"
         err_text = "\n".join(part for part in (err_text, deadline) if part)
         return cls(
@@ -215,17 +219,7 @@ class BackendResult:
             returncode=124,
             build_failed=build_failed,
             timed_out=True,
-        )
-
-    @classmethod
-    def from_timeout(
-        cls, exc: subprocess.TimeoutExpired, *, build_failed: bool = False
-    ) -> BackendResult:
-        return cls.from_deadline(
-            timeout=exc.timeout,
-            stdout=exc.stdout,
-            stderr=exc.stderr,
-            build_failed=build_failed,
+            child_stderr=child_stderr,
         )
 
     def as_build_failure(self, *, detail: str, fallback: str) -> BackendResult:
@@ -415,7 +409,7 @@ def suite_trip_outcome(
         else harness_outcomes.memory_guard.GUARD_RETURN_CODE,
         infrastructure_failure=evidence.infrastructure_failure,
         rss_limit_exceeded=bool(evidence.trips),
-        diagnostic_stderr="",
+        child_stderr="",
     )
 
 
@@ -483,27 +477,18 @@ def _guarded_run(
     timeout = harness_memory_guard.timeout_from_env(
         prefix, env, default=timeout_default
     )
-    try:
-        proc = harness_memory_guard.guarded_completed_process(
-            cmd,
-            prefix=prefix,
-            cwd=cwd,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        return BackendResult.from_timeout(exc)
-    result = merge_suite_trip_result(
+    proc = harness_memory_guard.guarded_completed_process(
+        cmd,
+        prefix=prefix,
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=False,
+        timeout=timeout,
+    )
+    return merge_suite_trip_result(
         BackendResult.from_process(proc), proc, harness_outcomes.read_suite_trip(env)
     )
-    if result.timed_out:
-        deadline = BackendResult.from_deadline(
-            timeout=timeout, stdout=proc.stdout, stderr=proc.stderr
-        )
-        return replace(result, returncode=deadline.returncode, stderr=deadline.stderr)
-    return result
 
 
 def _cross_build_env(context: BackendExecutionContext) -> dict[str, str]:
@@ -718,31 +703,13 @@ class WasmAdapter:
             )
         run_env = dict(env)
         manifest = wasm_runtime_manifest_path(linked)
-        result = _guarded_run(
+        return _guarded_run(
             [shutil.which("node") or "node", str(_RUN_WASM_JS), str(manifest)],
             prefix="MOLT_COMPAT_WASM_RUN",
             env=run_env,
             timeout_default=60.0,
             cwd=str(_REPO_ROOT),
         )
-        return replace(result, stderr=_strip_node_noise(result.stderr))
-
-
-def _wasm_stderr_is_noise(line: str) -> bool:
-    """Node emits an unconditional WASI ExperimentalWarning that is not a program
-    diagnostic; strip it so stderr comparison is fair (lifted from wasm_diff.py)."""
-    s = line.strip()
-    if not s:
-        return True
-    return (
-        "ExperimentalWarning" in s
-        or "Use `node --trace-warnings" in s
-        or s.startswith("(node:")
-    )
-
-
-def _strip_node_noise(err: str) -> str:
-    return "\n".join(ln for ln in err.splitlines() if not _wasm_stderr_is_noise(ln))
 
 
 # ---------------------------------------------------------------------------

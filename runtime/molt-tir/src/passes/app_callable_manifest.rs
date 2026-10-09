@@ -14,6 +14,9 @@ pub struct AppCallableRequirements {
     /// unlike actual global lookups, these are not mandatory profile roots.
     pub builtin_namespace_trampolines: BTreeMap<String, usize>,
     pub intrinsic_names: BTreeSet<String>,
+    /// Exact compiled Python bodies admitted by compiler-owned GPU metadata.
+    /// These are application functions, never runtime/staticlib imports.
+    pub compiled_body_symbols: BTreeSet<String>,
 }
 
 fn builtin_callable_family() -> impl Iterator<Item = (String, usize)> {
@@ -42,6 +45,47 @@ impl AppCallableRequirements {
     }
 }
 
+/// Compiler metadata creates executable identity edges without allocating a
+/// second Python callable. Only the internal publisher consumes this JSON;
+/// merely spelling one of these symbols in guest data creates no edge.
+pub(crate) fn gpu_descriptor_body_symbols(function: &FunctionIR) -> BTreeSet<String> {
+    let mut symbols = BTreeSet::new();
+    let constants: BTreeMap<&str, &str> = function
+        .ops
+        .iter()
+        .filter_map(|op| {
+            (op.kind == "const_str").then_some(())?;
+            Some((op.out.as_deref()?, op.s_value.as_deref()?))
+        })
+        .collect();
+    for op in &function.ops {
+        if op.kind != "call" || op.s_value.as_deref() != Some("molt_gpu_kernel_descriptor_set") {
+            continue;
+        }
+        let payload = op
+            .args
+            .as_ref()
+            .and_then(|args| args.get(1))
+            .and_then(|name| constants.get(name.as_str()))
+            .unwrap_or_else(|| panic!("GPU metadata publisher lost its constant descriptor"));
+        let descriptor: serde_json::Value = serde_json::from_str(payload)
+            .unwrap_or_else(|error| panic!("invalid compiler GPU descriptor: {error}"));
+        if let Some(bodies) = descriptor
+            .get("python_bodies")
+            .and_then(serde_json::Value::as_object)
+        {
+            for body in bodies.values() {
+                let symbol = body
+                    .get("symbol")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_else(|| panic!("GPU body identity lacks its executable symbol"));
+                symbols.insert(symbol.to_owned());
+            }
+        }
+    }
+    symbols
+}
+
 /// One collector for native app resolvers and WASM imports/table/resolvers.
 /// Literal intrinsic names can flow through aliases, wrapper arguments, or
 /// object fields (e.g. sys._LazyIntrinsic); a direct-call-pattern scan is unsound.
@@ -50,6 +94,13 @@ pub fn collect_app_callable_requirements(functions: &[FunctionIR]) -> AppCallabl
     let defined_functions: BTreeSet<&str> = functions.iter().map(|f| f.name.as_str()).collect();
     let mut requirements = AppCallableRequirements::default();
     for function in functions {
+        for symbol in gpu_descriptor_body_symbols(function) {
+            assert!(
+                defined_functions.contains(symbol.as_str()),
+                "GPU body identity names an absent application function: {symbol}"
+            );
+            requirements.compiled_body_symbols.insert(symbol);
+        }
         // SimpleIR is mutable transport, not SSA. A whole-function constant
         // needs exactly one definition, including parameters and store targets.
         let mut definitions = BTreeMap::<&str, usize>::new();
@@ -143,11 +194,14 @@ pub fn collect_app_callable_requirements(functions: &[FunctionIR]) -> AppCallabl
 /// Empty requirements keep backend probes independent of a staged symbol file;
 /// nonempty requirements are collected once and then admitted once.
 pub fn compute_app_callable_manifest_checked(functions: &[FunctionIR]) -> BTreeSet<String> {
-    let mut names = collect_app_callable_requirements(functions).into_names();
+    let mut requirements = collect_app_callable_requirements(functions);
+    let compiled = std::mem::take(&mut requirements.compiled_body_symbols);
+    let mut names = requirements.into_names();
     if !names.is_empty() {
         let symbols = crate::runtime_callable_symbols::runtime_callable_symbols_required();
         names.retain(|name| symbols.contains(name));
     }
+    names.extend(compiled);
     names
 }
 
@@ -155,7 +209,10 @@ pub fn compute_app_callable_manifest(
     functions: &[FunctionIR],
     runtime_callable_symbols: &BTreeSet<String>,
 ) -> BTreeSet<String> {
-    let mut names = collect_app_callable_requirements(functions).into_names();
+    let mut requirements = collect_app_callable_requirements(functions);
+    let compiled = std::mem::take(&mut requirements.compiled_body_symbols);
+    let mut names = requirements.into_names();
     names.retain(|name| runtime_callable_symbols.contains(name));
+    names.extend(compiled);
     names
 }

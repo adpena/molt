@@ -200,32 +200,50 @@ ABI_CASES = (
         ),
     )
 )
-RUNTIME_CASES = tuple(
-    (
-        f"runtime.decimal.{digits}",
-        "runtime_bigint",
-        {
-            "digits": digits,
-            "base": 10,
-            "value_class": "power_of_two" if digits == 4096 else "dense_nines",
-            "real_runtime_hook": "int_from_digits",
-        },
+RUNTIME_CASES = (
+    tuple(
+        (
+            f"runtime.decimal.{digits}",
+            "runtime_bigint",
+            {
+                "digits": digits,
+                "base": 10,
+                "value_class": "power_of_two" if digits == 4096 else "dense_nines",
+                "real_runtime_hook": "int_from_digits",
+            },
+        )
+        for digits in (25, 37, 256, 4096, 4300)
     )
-    for digits in (25, 37, 256, 4096, 4300)
-) + tuple(
-    (
-        f"runtime.bytes.{width}",
-        "runtime_bigint",
-        {
-            "bytes": width,
-            "little_endian": True,
-            "signed": False,
-            "operations": ["int_from_bytes", "int_to_bytes", "int_num_bits"],
-            "real_runtime_hooks": True,
-        },
+    + tuple(
+        (
+            f"runtime.bytes.{width}",
+            "runtime_bigint",
+            {
+                "bytes": width,
+                "little_endian": True,
+                "signed": False,
+                "operations": ["int_from_bytes", "int_to_bytes", "int_num_bits"],
+                "real_runtime_hooks": True,
+            },
+        )
+        for width in (1, 2, 4, 8, 17, 256, 4096)
     )
-    for width in (1, 2, 4, 8, 17, 256, 4096)
+    + tuple(
+        (
+            f"runtime.scalar.{scalar}.{operation}",
+            "runtime_scalar_bridge",
+            {
+                "scalar": scalar,
+                "value": value,
+                "operation": operation,
+                "real_runtime_hooks": True,
+            },
+        )
+        for scalar, value in (("int", 1000), ("float", 1.25))
+        for operation in ("construct_extract_release", "runtime_hold_roundtrip")
+    )
 )
+
 
 COMPONENTS = {
     "abi_boundary": {
@@ -347,14 +365,11 @@ def _normalize_affinity_mask(value: str) -> str:
         ) from exc
     if mask <= 0 or mask & (mask - 1):
         raise ValueError("affinity mask must select exactly one logical CPU")
-    if mask > sys.maxsize:
+    # The child uses usize / a native unsigned affinity mask. CPU availability
+    # is owned by _allowed_affinity_mask, not the count (or override) returned
+    # by os.cpu_count: a count is not a bound on sparse logical CPU IDs.
+    if mask.bit_length() > sys.maxsize.bit_length() + 1:
         raise ValueError("affinity mask exceeds the native pointer width")
-    logical_cpus = os.cpu_count()
-    if logical_cpus is not None and mask.bit_length() > logical_cpus:
-        raise ValueError(
-            f"affinity mask selects CPU {mask.bit_length() - 1}, but only "
-            f"{logical_cpus} logical CPUs are visible"
-        )
     return f"0x{mask:x}"
 
 
@@ -815,6 +830,14 @@ def _parse_attestation(
     return result
 
 
+class _MeasurementPolicyError(str):
+    """In-memory classification; serialized diagnostics remain ordinary strings."""
+
+
+class EvidenceRejected(RuntimeError):
+    """Known measurement rejection with no outstanding child custody."""
+
+
 def _quiescence_ok(value: dict[str, Any]) -> bool:
     return value.get("certified") is True and value.get("competing_builds") == 0
 
@@ -901,11 +924,7 @@ def _run_component(
             after = asdict(perf_calibration.measure_quiescence())
             capsule.update(
                 {
-                    "status": (
-                        "completed"
-                        if measured.returncode == 0 and not measured.timed_out
-                        else "failed"
-                    ),
+                    "status": ("completed" if measured.evidence_eligible else "failed"),
                     "completed_at_utc": _utc_now(),
                     "returncode": measured.returncode,
                     "timed_out": measured.timed_out,
@@ -929,7 +948,7 @@ def _run_component(
         archived_capsule.parent.mkdir(parents=True, exist_ok=True)
         active_capsule.replace(archived_capsule)
 
-        if measured.returncode != 0 or measured.timed_out:
+        if not measured.evidence_eligible:
             sys.stderr.write(measured.stdout)
             sys.stderr.write(measured.stderr)
             raise RuntimeError(
@@ -1049,9 +1068,15 @@ def _validate_dispersion(
     robust_cv = float(summary["robust_cv"])
     raw_cv = float(summary["cv"])
     if robust_cv > max_robust_cv:
-        errors.append(f"{context}: robust CV {robust_cv:.4f}>{max_robust_cv:.4f}")
+        errors.append(
+            _MeasurementPolicyError(
+                f"{context}: robust CV {robust_cv:.4f}>{max_robust_cv:.4f}"
+            )
+        )
     if raw_cv > max_raw_cv:
-        errors.append(f"{context}: raw CV {raw_cv:.4f}>{max_raw_cv:.4f}")
+        errors.append(
+            _MeasurementPolicyError(f"{context}: raw CV {raw_cv:.4f}>{max_raw_cv:.4f}")
+        )
 
 
 def _recompute_case(
@@ -1231,9 +1256,17 @@ def _aggregate_bundle(
             if process_run["run"] != run_index:
                 errors.append(f"{context}: run index drift")
             if not _quiescence_ok(process_run["quiescence_before"]):
-                errors.append(f"{context}: pre-run quiescence not certified")
+                errors.append(
+                    _MeasurementPolicyError(
+                        f"{context}: pre-run quiescence not certified"
+                    )
+                )
             if not _quiescence_ok(process_run["quiescence_after"]):
-                errors.append(f"{context}: post-run quiescence not certified")
+                errors.append(
+                    _MeasurementPolicyError(
+                        f"{context}: post-run quiescence not certified"
+                    )
+                )
             elapsed_value = _number(
                 process_run["elapsed_ms"],
                 context=f"{context}.elapsed_ms",
@@ -1642,7 +1675,9 @@ def run_attestation(
     return result
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None, *, raise_measurement_rejection: bool = False
+) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs", type=int, default=7, choices=range(7, 10))
     parser.add_argument("--timeout", type=float, default=300.0)
@@ -1714,6 +1749,15 @@ def main(argv: list[str] | None = None) -> int:
     output = args.output if args.output.is_absolute() else REPO_ROOT / args.output
     _write_json_atomic(output, result)
     print(output)
+    errors = result["validation"]["errors"]
+    if (
+        raise_measurement_rejection
+        and result["comparison"]["status"] == "invalid"
+        and result["comparison"]["performance_claim"] is False
+        and errors
+        and all(isinstance(error, _MeasurementPolicyError) for error in errors)
+    ):
+        raise EvidenceRejected(f"candidate L7 measurement rejected; retained {output}")
     return 2 if result["comparison"]["status"] in {"fail", "invalid"} else 0
 
 

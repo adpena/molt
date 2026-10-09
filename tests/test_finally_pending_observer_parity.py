@@ -105,12 +105,9 @@ def _run_cpython_oracle(artifact_root: Path, env: dict[str, str]) -> Outputs:
 
 def _test_env(artifact_root: Path) -> dict[str, str]:
     base = dict(os.environ)
-    base.pop("MOLT_SESSION_ID", None)
-    base.pop("MOLT_SESSION_ID_GENERATED", None)
-    # Extension discovery and global build custody are separate authorities.
-    # Keeping MOLT_EXT_ROOT at the canonical DX root prevents nested extension
-    # paths from becoming Cargo/runtime staging roots on Windows.
-    base.pop("MOLT_EXT_ROOT", None)
+    # Preserve the caller's admitted compiler/runtime and proof-custody roots.
+    # Only module discovery points at this test's extension directory; the DX
+    # owner already resolves generated session IDs and defaults when absent.
     env = development_artifact_env(
         ROOT,
         base,

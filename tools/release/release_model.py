@@ -12,6 +12,7 @@ import tomllib
 from typing import Any, Iterable
 import zipfile
 
+from molt.exact_json import loads_exact
 from molt.release_matrix import RELEASE_TARGETS
 from molt.portable_paths import portable_relative_path
 from molt.toolchain_identity import stable_regular_file_identity
@@ -25,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config" / "release_supply_chain.toml"
 CONFIG_SCHEMA = "molt.release-supply-chain.v1"
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
-MANIFEST_SCHEMA = "molt.release-manifest.v4"
+MANIFEST_SCHEMA = "molt.release-manifest.v5"
 SPDX_VERSION = "2.3"
 SPDX_PREDICATE_TYPE = f"https://spdx.dev/Document/v{SPDX_VERSION}"
 RELEASE_EXIT_ARCHIVE_KIND = "release-exit-evidence"
@@ -203,6 +204,18 @@ def validate_artifact_record(
             != ("wheel", "gnu" if platform == "linux" else None)
         ):
             raise ValueError("release platform wheel metadata is invalid")
+    elif name == "molt-consumer-evidence":
+        target = next(
+            (t for t in release_targets() if (t.platform, t.arch) == (platform, arch)),
+            None,
+        )
+        if (
+            target is None
+            or record["kind"] != name
+            or record["filename"] != f"{name}-{version}-{platform}-{arch}.zip"
+            or record["libc"] is not None
+        ):
+            raise ValueError("release consumer evidence metadata is invalid")
     else:
         target = next(
             (t for t in release_targets() if (t.platform, t.arch) == (platform, arch)),
@@ -280,7 +293,7 @@ def validate_release_manifest(value: object) -> dict[str, Any]:
     expected = {("molt-wheel", "any", "any")} | {
         (name, target.platform, target.arch)
         for target in release_targets()
-        for name in ("molt", "molt-worker", "molt-wheel")
+        for name in ("molt", "molt-worker", "molt-wheel", "molt-consumer-evidence")
     }
     if not isinstance(artifacts, list) or len(artifacts) != len(expected):
         raise ValueError("release manifest artifact matrix is incomplete")
@@ -332,6 +345,66 @@ def _wheel_requirements(wheel: Path) -> tuple[str, tuple[str, ...]]:
     return version, requirements
 
 
+def _llvm_spdx_packages(
+    llvm_inputs: dict[str, dict[str, Any]],
+) -> list[dict[str, object]]:
+    from .native_build import validate_llvm_inputs
+
+    expected = {target.id for target in release_targets()}
+    if set(llvm_inputs) != expected:
+        raise ValueError("LLVM SBOM inputs must cover every release target")
+    packages = []
+    for target in sorted(expected):
+        inputs = validate_llvm_inputs(llvm_inputs[target])
+        release = inputs["upstream_release"]
+        packages.append(
+            {
+                "SPDXID": _spdx_id("LLVM-SDK-" + target),
+                "name": "LLVM static SDK (" + target + ")",
+                "versionInfo": inputs["version"],
+                "downloadLocation": release["url"],
+                "filesAnalyzed": False,
+                "licenseConcluded": "Apache-2.0 WITH LLVM-exception",
+                "licenseDeclared": "Apache-2.0 WITH LLVM-exception",
+                # This checksum identifies the upstream source archive. sourceInfo
+                # retains the distinct admitted SDK bytes actually used by this host.
+                "checksums": [
+                    {"algorithm": "SHA256", "checksumValue": release["source_sha256"]}
+                ],
+                "sourceInfo": json.dumps(inputs, sort_keys=True, separators=(",", ":")),
+                "comment": "Statically linked LLVM; native-build v3 input custody. System C/C++ linkage remains subject to platform binary compatibility admission.",
+            }
+        )
+    return packages
+
+
+def validate_spdx_llvm_inputs(document: dict[str, Any]) -> None:
+    """Reapply the native input authority to the signed SPDX projection."""
+    packages = document.get("packages")
+    if not isinstance(packages, list):
+        raise ValueError("release SBOM omits package inventory")
+    expected = {
+        _spdx_id("LLVM-SDK-" + target.id): target.id for target in release_targets()
+    }
+    actual = [
+        item
+        for item in packages
+        if isinstance(item, dict) and item.get("SPDXID") in expected
+    ]
+    if len(actual) != len(expected) or len({item["SPDXID"] for item in actual}) != len(
+        expected
+    ):
+        raise ValueError("release SBOM LLVM SDK inventory is incomplete or duplicated")
+    inputs = {}
+    for item in actual:
+        try:
+            inputs[expected[item["SPDXID"]]] = loads_exact(item["sourceInfo"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("release SBOM LLVM input record is invalid") from exc
+    if sorted(actual, key=lambda item: item["SPDXID"]) != _llvm_spdx_packages(inputs):
+        raise ValueError("release SBOM LLVM projection differs from input custody")
+
+
 def spdx_document(
     *,
     version: str,
@@ -339,6 +412,7 @@ def spdx_document(
     source_date_epoch: int,
     subjects: Iterable[dict[str, object]],
     wheel: Path,
+    llvm_inputs: dict[str, dict[str, Any]],
 ) -> dict[str, object]:
     config = load_config()
     owner = str(config["repository"]["owner"])
@@ -416,6 +490,17 @@ def spdx_document(
                 "relatedSpdxElement": package_id,
             }
         )
+
+    llvm_packages = _llvm_spdx_packages(llvm_inputs)
+    packages.extend(llvm_packages)
+    relationships.extend(
+        {
+            "spdxElementId": "SPDXRef-Package-Molt",
+            "relationshipType": "DEPENDS_ON",
+            "relatedSpdxElement": package["SPDXID"],
+        }
+        for package in llvm_packages
+    )
 
     files: list[dict[str, object]] = []
     for subject in sorted(subjects, key=lambda item: str(item["filename"])):

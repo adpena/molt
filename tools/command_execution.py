@@ -98,6 +98,9 @@ def _is_bounded_metadata_probe(command: Sequence[str]) -> bool:
     return any(flag in _VERSION_FLAGS for flag in command[1:])
 
 
+GUARD_CANCELLATION_OBSERVATION_SECONDS = 5.0
+
+
 @dataclass(slots=True)
 class GuardedCommand:
     """Launch handle and admitted guard identity, with cancellation custody.
@@ -155,6 +158,18 @@ class GuardedCommand:
         except FileExistsError:
             pass
 
+    def cancel_and_wait(
+        self, *, timeout: float = GUARD_CANCELLATION_OBSERVATION_SECONDS
+    ) -> int:
+        """Observe requested closure finitely; expiry never retires the owner."""
+        try:
+            self.request_cancel()
+            return self.wait(timeout=timeout)
+        except Exception as exc:
+            exc.guard_command = self
+            exc.add_note(f"guard custody retained at {self.evidence_path}")
+            raise
+
     def wait(self, timeout: float | None = None) -> int:
         self.terminal = False
         result = int(self.process.wait(timeout=timeout))
@@ -177,6 +192,9 @@ class GuardedCommand:
             and startup["child_process"]["pid"] > 0
             and isinstance(startup["child_process"].get("started_at"), str)
         )
+        if valid_startup:
+            self.guard_pid = startup["guard_pid"]
+            self.child_identity = startup["child_process"]
         self.terminal = bool(
             valid_startup
             and isinstance(payload, dict)
@@ -333,7 +351,7 @@ class CommandExecutor:
         process: subprocess.Popen[Any] | GuardedCommand,
         *,
         timeout: float,
-        terminate_timeout: float = 5.0,
+        terminate_timeout: float = GUARD_CANCELLATION_OBSERVATION_SECONDS,
     ) -> int:
         """Wait finitely and clean only the exact process this caller owns."""
 
@@ -344,8 +362,7 @@ class CommandExecutor:
         except subprocess.TimeoutExpired as timeout_error:
             if isinstance(process, GuardedCommand):
                 try:
-                    process.request_cancel()
-                    process.wait(timeout=terminate_timeout)
+                    process.cancel_and_wait(timeout=terminate_timeout)
                 except (
                     subprocess.SubprocessError,
                     OSError,
@@ -382,30 +399,41 @@ class CommandExecutor:
         bufsize: int = -1,
         timeout: float | None = None,
         summary_json: str | Path | None = None,
+        harness: bool = False,
     ) -> GuardedCommand:
         """Start an interactive command with admitted actual-worker custody."""
 
+        if timeout is not None and timeout <= 0:
+            raise ValueError("timeout must be positive")
         if isinstance(args, (str, bytes)):
             raise TypeError("command must be typed argv, not shell text")
         command = [str(part) for part in args]
         if not command:
             raise ValueError("command argv must not be empty")
         harness_memory_guard = _harness_memory_guard()
+        if harness:
+            command = harness_memory_guard.memory_guard._resolve_relative_executable(
+                command, parent_cwd=self.repo_root
+            )
         env, _cargo_policies = harness_memory_guard.cargo_subprocess_environment(
             command,
             env,
         )
-        context = harness_memory_guard.HarnessExecutionContext.from_env(
-            self.prefix,
-            env,
-            repo_root=self.repo_root,
-        )
-        limits = context.limits
+        if harness:
+            launch_environment = harness_memory_guard.canonical_harness_env(
+                env, repo_root=self.repo_root
+            )
+        else:
+            context = harness_memory_guard.HarnessExecutionContext.from_env(
+                self.prefix, env, repo_root=self.repo_root
+            )
+            launch_environment = context.env
+            limits = context.limits
         from molt.memory_guard_paths import memory_guard_state_root
 
         launch_id = uuid.uuid4().hex
         custody = (
-            memory_guard_state_root(self.repo_root, context.env)
+            memory_guard_state_root(self.repo_root, launch_environment)
             / "commands"
             / launch_id
         )
@@ -449,41 +477,60 @@ class CommandExecutor:
         evidence_path.write_text(
             json.dumps(evidence, sort_keys=True) + "\n", encoding="utf-8"
         )
-        guarded_argv = [
-            sys.executable,
-            str(self.repo_root / "tools" / "memory_guard.py"),
-            "--max-rss-gb",
-            str(limits.max_process_rss_gb),
-            "--max-total-rss-gb",
-            str(limits.max_total_rss_gb),
-            "--max-global-rss-gb",
-            str(limits.max_global_rss_gb),
-            "--poll-interval",
-            str(limits.poll_interval),
-            "--child-rlimit-gb",
-            str(0 if limits.child_rlimit_gb is None else limits.child_rlimit_gb),
-        ]
-        if timeout is not None:
-            if timeout <= 0:
-                raise ValueError("timeout must be positive")
-            guarded_argv.extend(("--timeout", str(timeout)))
-        guarded_argv.extend(
-            (
-                "--summary-json",
+        if harness:
+            # The harness worker runs the same memory_guard owner in this process;
+            # preserve its preflight, profiling and sentinel without a second guard.
+            guarded_argv = [
+                sys.executable,
+                str(self.repo_root / "tools" / "guarded_exec.py"),
+                "--prefix",
+                self.prefix,
+                "--cwd",
+                str(Path.cwd() if cwd is None else Path(cwd).resolve()),
+                "--metrics-json",
                 str(summary_path),
                 "--cancel-file",
                 str(cancellation_path),
+            ]
+            if timeout is not None:
+                guarded_argv.extend(("--timeout", str(timeout)))
+        else:
+            guarded_argv = [
+                sys.executable,
+                str(self.repo_root / "tools" / "memory_guard.py"),
+                "--max-rss-gb",
+                str(limits.max_process_rss_gb),
+                "--max-total-rss-gb",
+                str(limits.max_total_rss_gb),
+                "--max-global-rss-gb",
+                str(limits.max_global_rss_gb),
+                "--poll-interval",
+                str(limits.poll_interval),
+                "--child-rlimit-gb",
+                str(0 if limits.child_rlimit_gb is None else limits.child_rlimit_gb),
+            ]
+            if timeout is not None:
+                guarded_argv.extend(("--timeout", str(timeout)))
+            guarded_argv.extend(
+                (
+                    "--summary-json",
+                    str(summary_path),
+                    "--cancel-file",
+                    str(cancellation_path),
+                )
             )
-        )
         # Use the existing hidden-command worker contract directly. On Windows
         # memory_guard's command-line facade otherwise adds a detached wrapper
         # whose Popen is not the worker that owns the Job or active marker.
         worker_environment = harness_memory_guard.memory_guard._worker_env(
-            context.env, command, launch_id=launch_id, startup_json=str(startup_path)
+            launch_environment,
+            command,
+            launch_id=launch_id,
+            startup_json=str(startup_path),
         )
         process = self.start_owned(
             guarded_argv,
-            cwd=cwd,
+            cwd=self.repo_root if harness else cwd,
             env=worker_environment,
             stdin=stdin,
             stdout=stdout,
@@ -513,7 +560,8 @@ class CommandExecutor:
                 owned.request_cancel()
                 self.wait_owned(owned, timeout=5.0)
             except (OSError, RuntimeError, subprocess.SubprocessError) as cleanup_error:
-                exc.add_note(f"guard cancellation failed: {cleanup_error}")
+                exc.cleanup_error = cleanup_error
+                exc.add_note(f"guard cancellation unresolved: {cleanup_error}")
             exc.add_note(f"guard custody retained at {evidence_path}")
             raise
         return owned

@@ -12,6 +12,7 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 _PROBE = f"""
 import base64 as _host_base64
 import bisect as _host_bisect
+import _contextvars as _context_oracle
 import importlib.util
 import sys
 import types
@@ -105,7 +106,7 @@ install_registry({{
     "molt_base64_decodebytes": lambda b: _host_base64.decodebytes(b),
     "molt_bisect_left": lambda *args, **kwargs: 0,
     "molt_stdlib_probe": lambda: None,
-    "molt_cancel_token_get_current": lambda: 1,
+    "molt_contextvars_types": lambda module: (_context_oracle.Context, _context_oracle.ContextVar, _context_oracle.Token, _context_oracle.copy_context),
     "molt_statistics_mean": lambda data: sum(data) / len(data),
     "molt_statistics_fmean": lambda data: float(sum(data) / len(data)),
     "molt_statistics_stdev": lambda data, xbar=None: 1.0,
@@ -146,6 +147,7 @@ install_registry({{
 
 base64_mod = _load_module("molt_test_base64", {str(STDLIB_ROOT / "base64.py")!r})
 bisect_mod = _load_module("molt_test_bisect", {str(STDLIB_ROOT / "bisect.py")!r})
+_load_module("_contextvars", {str(STDLIB_ROOT / "_contextvars.py")!r})
 contextvars_mod = _load_module("molt_test_contextvars", {str(STDLIB_ROOT / "contextvars.py")!r})
 statistics_mod = _load_module("molt_test_statistics", {str(STDLIB_ROOT / "statistics.py")!r})
 heapq_mod = _load_module("molt_test_heapq", {str(STDLIB_ROOT / "heapq.py")!r})
@@ -173,7 +175,7 @@ checks = {{
         and (cv.reset(token) is None)
         and cv.get() == 1
         and "molt_stdlib_probe" not in contextvars_mod.__dict__
-        and "molt_cancel_token_get_current" not in contextvars_mod.__dict__
+        and "molt_contextvars_types" not in contextvars_mod.__dict__
     ),
     "statistics": (
         statistics_mod.mean([1, 2, 3]) == 2

@@ -42,7 +42,11 @@ from molt.native_artifact_header import (
     native_artifact_from_file,
 )
 from molt.native_target_shape import native_artifact_shape
-from molt.toolchain_identity import StableRegularFileHandle, open_stable_regular_file
+from molt.toolchain_identity import (
+    StableRegularFileHandle,
+    open_stable_regular_file,
+    iter_stable_regular_file_chunks,
+)
 
 
 class BackendArtifactKind(str, Enum):
@@ -235,7 +239,9 @@ class BackendArtifactContract:
             with open_stable_regular_file(
                 path, label="backend textual output"
             ) as opened:
-                while block := opened.stream.read(64 * 1024):
+                for block in iter_stable_regular_file_chunks(
+                    opened, chunk_bytes=64 * 1024
+                ):
                     text = decoder.decode(block)
                     if "\0" in text:
                         raise ValueError("textual output contains a NUL character")

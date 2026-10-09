@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import tomllib
 from pathlib import Path
 from typing import Any, Sequence
@@ -35,14 +34,13 @@ def _read_cargo_document(path: Path) -> dict[str, Any]:
     projection. Neither path metadata nor an old graph permits skipping a read.
     """
     from molt.cli.cache_fingerprints import _SOURCE_TREE_FINGERPRINT_TRANSACTION
-    from molt.toolchain_identity import open_stable_regular_file
+    from molt.toolchain_identity import capture_stable_regular_file
 
-    with open_stable_regular_file(path, label="Cargo source document") as opened:
-        if opened.stat.st_size > 16 * 1024 * 1024:
-            raise ValueError(f"Cargo source input exceeds size policy: {path}")
-        raw = opened.stream.read()
+    identity, raw = capture_stable_regular_file(
+        path, label="Cargo source input", max_bytes=16 * 1024 * 1024
+    )
     transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
-    digest = hashlib.sha256(raw).hexdigest()
+    digest = identity.sha256
     if transaction is not None:
         cached = transaction.cargo_documents.get(digest)
         if isinstance(cached, dict):

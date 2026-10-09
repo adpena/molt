@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import asdict
 import copy
 import hashlib
 import json
@@ -25,6 +26,55 @@ def native_image(platform="linux", arch="x86_64"):
     if platform == "macos":
         return bytes(macho_header(cpu=0x01000007 if arch == "x86_64" else 0x0100000C))
     return bytes(elf_header(machine=62 if arch == "x86_64" else 183))
+
+
+def _policy_files():
+    root = Path(__file__).resolve().parents[2]
+    return {
+        "rust-toolchain.toml": b'[toolchain]\nchannel="1.96.1"\n',
+        **{
+            name: (root / name).read_bytes()
+            for name in (
+                "config/llvm_toolchain_arches.toml",
+                "config/llvm_toolchain_releases.toml",
+                "runtime/molt-backend-native/Cargo.toml",
+                "runtime/molt-backend/Cargo.toml",
+            )
+        },
+    }
+
+
+def llvm_input_fixture(snapshot, *, arch):
+    """Independent transport facts; this is not an executable LLVM build proof."""
+    from molt.llvm_toolchain import llvm_release
+
+    release = llvm_release("22.1.8", Path(__file__).resolve().parents[2])
+    assert release is not None
+    return {
+        "linkage": "force-static",
+        "version": "22.1.8",
+        "upstream_release": asdict(release),
+        "policy_sha256": native_build.llvm_policy_sha256(
+            item.as_record() for item in snapshot.files
+        ),
+        "targets": ["AArch64", "WebAssembly"]
+        if arch in {"aarch64", "arm64"}
+        else ["WebAssembly", "X86"],
+        "link_closure": ["lib/libLLVMCore.a"],
+        "llvm_config": {
+            "sha256": hashlib.sha256(b"configuration").hexdigest(),
+            "size": 13,
+        },
+        "resources": {
+            "digest": hashlib.sha256(
+                b"independent SDK transport inventory"
+            ).hexdigest(),
+            "file_count": 2,
+            "total_size": 23,
+            "roots": ["compiler/llvm-config", "compiler/llvm-sdk/lib/libLLVMCore.a"],
+            "missing": [],
+        },
+    }
 
 
 def native_build_fixture(
@@ -66,7 +116,7 @@ def native_build_fixture(
         "source_date_epoch": epoch,
         "target": {"platform": platform, "arch": arch, "rust_target": triple},
         "policy": {
-            "revision": 1,
+            "revision": 2,
             "rust_channel": "1.96.1",
             "platform_versions": {
                 "msvc": "14.44",
@@ -85,6 +135,7 @@ def native_build_fixture(
         },
         "tools": tools,
         "build_python": python,
+        "llvm": llvm_input_fixture(snapshot, arch=arch),
         "artifacts": {},
     }
     for role, plan in plans.items():
@@ -103,16 +154,18 @@ def native_build_fixture(
 
 @pytest.fixture
 def snapshot():
-    data = b'[toolchain]\nchannel="1.96.1"\n'
-    entry = GitSourceFile(
-        PurePosixPath("rust-toolchain.toml"),
-        0o100644,
-        "b" * 40,
-        len(data),
-        hashlib.sha256(data).hexdigest(),
+    entries = tuple(
+        GitSourceFile(
+            PurePosixPath(name),
+            0o100644,
+            "b" * 40,
+            len(data),
+            hashlib.sha256(data).hexdigest(),
+        )
+        for name, data in sorted(_policy_files().items())
     )
     return GitSourceSnapshot(
-        "a" * 40, "c" * 40, "sha1", ("rust-toolchain.toml",), (entry,)
+        "a" * 40, "c" * 40, "sha1", tuple(_policy_files()), entries
     )
 
 
@@ -360,7 +413,7 @@ def test_dependency_tools_fail_by_name_before_build(
         native_build._tool_paths(tmp_path, {}, platform=platform, arch=arch)
 
 
-@pytest.mark.parametrize("failure", [None, "source", "tool", "cargo", "python"])
+@pytest.mark.parametrize("failure", [None, "source", "tool", "cargo", "python", "llvm"])
 def test_producer_publishes_only_complete_verified_generation(
     tmp_path, snapshot, monkeypatch, failure
 ):
@@ -377,7 +430,10 @@ def test_producer_publishes_only_complete_verified_generation(
 
     def materialize(_snapshot, output, **_kwargs):
         output.mkdir()
-        (output / "rust-toolchain.toml").write_bytes(b'[toolchain]\nchannel="1.96.1"\n')
+        for name, data in _policy_files().items():
+            path = output / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
         return output
 
     monkeypatch.setattr(native_build, "materialize_git_source_snapshot", materialize)
@@ -386,6 +442,50 @@ def test_producer_publishes_only_complete_verified_generation(
         "_tool_paths",
         lambda *_args, **_kwargs: {role: tmp_path / role for role in template["tools"]},
     )
+    from molt import llvm_toolchain
+
+    # Fake only the SDK's external verifier. Retained file custody, projection,
+    # native receipt admission and failure-atomic publication remain real.
+    sdk = tmp_path / "sdk"
+    config = sdk / "bin" / "llvm-config"
+    archive = sdk / "lib" / "libLLVMCore.a"
+    config.parent.mkdir(parents=True)
+    archive.parent.mkdir(parents=True)
+    config.write_bytes(b"configuration")
+    archive.write_bytes(b"LLVMarchive")
+    verification = SimpleNamespace(
+        prefix=sdk,
+        llvm_config=config,
+        version="22.1.8",
+        targets=("WebAssembly", "X86"),
+        release=llvm_toolchain.llvm_release(
+            "22.1.8", Path(__file__).resolve().parents[2]
+        ),
+        link_closure=("lib/libLLVMCore.a",),
+        content_facts=(),
+        library_facts=(
+            llvm_toolchain.LlvmLibraryFact(
+                "lib/libLLVMCore.a", 11, archive.stat().st_mtime_ns
+            ),
+        ),
+        tool_versions=(
+            llvm_toolchain.LlvmToolVersionFact(
+                "llvm-config",
+                "bin/llvm-config",
+                "22.1.8",
+                13,
+                hashlib.sha256(b"configuration").hexdigest(),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "verify_available_llvm_toolchain",
+        lambda *_args, **_kwargs: verification,
+    )
+    # This producer control models Linux. Darwin SDK selection has its own
+    # actual selected-platform authority and source-level projection controls.
+    monkeypatch.setattr(llvm_toolchain, "sys", SimpleNamespace(platform="linux"))
     observations = []
 
     def identities(*_args):
@@ -417,6 +517,20 @@ def test_producer_publishes_only_complete_verified_generation(
         )
         if failure == "cargo":
             raise RuntimeError("build failed")
+        if argv[argv.index("--bin") + 1] == "molt-backend":
+            assert env["LLVM_SYS_221_PREFIX"] == str(sdk)
+            assert env["LLVM_CONFIG_PATH"] == str(config)
+            assert set(argv[argv.index("--features") + 1].split(",")) == {
+                "llvm",
+                "luau-backend",
+                "native-backend",
+                "rust-backend",
+                "wasm-backend",
+            }
+            if failure == "llvm":
+                archive.write_bytes(b"substituted")
+        else:
+            assert "LLVM_SYS_221_PREFIX" not in env
         profile = argv[argv.index("--profile") + 1]
         binary = argv[argv.index("--bin") + 1]
         output = cwd / "target" / "x86_64-unknown-linux-gnu" / profile / binary
@@ -512,3 +626,61 @@ def test_candidate_requires_independent_equal_receipts_and_bytes(
             output=tmp_path / "candidate",
         )
     assert not (tmp_path / "candidate").exists()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "absent",
+        "shared",
+        "version",
+        "source",
+        "archive",
+        "system",
+        "config",
+        "host",
+        "boolean",
+    ],
+)
+def test_native_receipt_requires_complete_static_llvm_inputs(
+    tmp_path, snapshot, mutation
+):
+    receipt = native_build_fixture(tmp_path, snapshot)
+    inputs = receipt["llvm"]
+    if mutation == "absent":
+        del receipt["llvm"]
+    elif mutation == "shared":
+        inputs["linkage"] = "prefer-static"
+    elif mutation == "version":
+        inputs["version"] = "23.1.0"
+    elif mutation == "source":
+        inputs["upstream_release"]["source_sha256"] = "f" * 64
+    elif mutation == "archive":
+        inputs["link_closure"] = ["lib/libLLVM.so"]
+    elif mutation == "system":
+        inputs["link_closure"].append("system:${compiler/llvm-system/1}")
+    elif mutation == "config":
+        inputs["resources"]["roots"].remove("compiler/llvm-config")
+    elif mutation == "host":
+        inputs["targets"] = ["WebAssembly"]
+    else:
+        inputs["llvm_config"]["size"] = True
+    with pytest.raises(ValueError):
+        native_build.validate_receipt(receipt)
+
+
+def test_native_receipt_binds_sdk_policy_to_original_source_inventory(
+    tmp_path, snapshot
+):
+    receipt = native_build_fixture(tmp_path, snapshot)
+    receipt["llvm"]["policy_sha256"] = "f" * 64
+    write_exact(tmp_path / native_build.RECEIPT_NAME, receipt)
+    with pytest.raises(ValueError, match="LLVM policy differs"):
+        native_build.read_native_build(
+            tmp_path,
+            snapshot=snapshot,
+            expected_rust_channel="1.96.1",
+            source_date_epoch=1_700_000_000,
+            platform="linux",
+            arch="x86_64",
+        )

@@ -13,12 +13,13 @@ use std::sync::Mutex;
 
 static LOCK: Mutex<()> = Mutex::new(());
 
-fn setup() {
+fn setup() -> support::AbiTestThreadStateTransaction {
     let mut hooks = support::stub_runtime_hooks();
     support::fake_runtime::wire(&mut hooks);
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    let transaction = support::enter_runtime_class_abi_test(hooks);
     unsafe { errors::PyErr_Clear() };
     *REC.lock().unwrap() = Record::default();
+    transaction
 }
 
 #[derive(Default, Debug)]
@@ -178,9 +179,9 @@ fn definition(flags: i32, function: *const ()) -> PyMethodDef {
 }
 
 #[test]
-fn cfunction_convention_matrix_uses_identical_vectorcall_and_tpcall_carriers() {
+fn cfunction_convention_matrix_preserves_public_call_contracts() {
     let _lock = LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
     let cases = [
         (METH_NOARGS, noargs as *const (), false),
         (METH_O, one as *const (), false),
@@ -229,7 +230,11 @@ fn cfunction_convention_matrix_uses_identical_vectorcall_and_tpcall_carriers() {
                 object::PyCMethod_New(&raw mut def, &raw mut Py_None, ptr::null_mut(), class);
             assert!(!function.is_null());
             assert_eq!(object::PyCFunction_Check(function), 1);
-            assert!(object::PyVectorcall_Function(function).is_some());
+            assert_eq!(
+                object::PyVectorcall_Function(function).is_some(),
+                flags & METH_VARARGS == 0,
+                "CPython tuple-based C functions deliberately have no vectorcall slot"
+            );
             assert_eq!(object::PyCFunction_GetFlags(function), flags);
             let pos: &[*mut PyObject] = if flags == METH_NOARGS { &[] } else { &[first] };
             let positional = tuple(pos);
@@ -318,7 +323,7 @@ fn cfunction_convention_matrix_uses_identical_vectorcall_and_tpcall_carriers() {
 #[test]
 fn cfunction_constructor_admits_only_complete_conventions_and_class_pairings() {
     let _lock = LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
     unsafe {
         for flags in [
             0,
@@ -391,7 +396,7 @@ unsafe extern "C" fn result_with_error(_self: *mut PyObject, _arg: *mut PyObject
 #[test]
 fn cfunction_result_validation_and_bad_carriers_do_not_invoke_target() {
     let _lock = LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
     unsafe {
         for target in [
             null_without_error as *const (),
@@ -464,7 +469,7 @@ fn cfunction_result_validation_and_bad_carriers_do_not_invoke_target() {
 #[test]
 fn cmethod_deallocation_releases_defining_class_and_receiver_exactly_once() {
     let _lock = LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
     unsafe {
         // Stack-owned foreign objects keep a sentinel owner, so reaching zero
         // would be observable instead of allowing a leaked class to pass.
@@ -535,7 +540,7 @@ unsafe extern "C" fn reentrant_keywords(
 #[test]
 fn cfunction_keyword_snapshot_retains_values_across_dict_mutation_and_reentry() {
     let _lock = LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
     unsafe {
         let mut inner_def = definition(METH_NOARGS, noargs as *const ());
         let inner = object::PyCFunction_New(&raw mut inner_def, ptr::null_mut());
@@ -600,7 +605,7 @@ unsafe extern "C" fn fails_after_releasing_external_owner(
 #[test]
 fn cfunction_temporary_cleanup_preserves_exact_callee_exception_during_reentry() {
     let _lock = LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
     unsafe {
         let mut typ: PyTypeObject = std::mem::zeroed();
         typ.tp_dealloc = Some(destructive_argument_drop);
@@ -613,11 +618,13 @@ fn cfunction_temporary_cleanup_preserves_exact_callee_exception_during_reentry()
             fails_after_releasing_external_owner as *const (),
             ptr::null_mut(),
             ptr::null_mut(),
-            molt_cpython_abi::api::cfunction::VectorcallArguments {
-                values: &[argument],
-                positional_count: 1,
-                kwnames: ptr::null_mut(),
-            },
+            molt_cpython_abi::api::cfunction::CFunctionArguments::Vector(
+                molt_cpython_abi::api::cfunction::VectorcallArguments {
+                    values: &[argument],
+                    positional_count: 1,
+                    kwnames: ptr::null_mut(),
+                },
+            ),
             || "cleanup_probe".to_owned(),
         );
         assert!(result.is_null());
@@ -634,7 +641,7 @@ fn cfunction_temporary_cleanup_preserves_exact_callee_exception_during_reentry()
 #[test]
 fn cfunction_static_modifier_masks_receiver_without_losing_owned_storage() {
     let _lock = LOCK.lock().unwrap();
-    setup();
+    let _abi_test = setup();
     unsafe {
         let mut receiver = PyObject {
             ob_refcnt: 1,
@@ -651,5 +658,82 @@ fn cfunction_static_modifier_masks_receiver_without_losing_owned_storage() {
         refcount::Py_DECREF(result);
         refcount::Py_DECREF(function);
         assert_eq!(receiver.ob_refcnt, 1);
+    }
+}
+
+thread_local! {
+    static CALL_CONTAINERS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+}
+
+unsafe extern "C" fn observe_dictionary_carrier(
+    _self: *mut PyObject,
+    args: *mut PyObject,
+    kwargs: *mut PyObject,
+) -> *mut PyObject {
+    CALL_CONTAINERS.set((args as usize, kwargs as usize));
+    unsafe { object::Py_NewRef(&raw mut Py_None) }
+}
+
+#[test]
+fn dictionary_calls_preserve_containers_and_vector_calls_construct_them() {
+    let _lock = LOCK.lock().unwrap();
+    let _abi_test = setup();
+    unsafe {
+        let mut def = definition(
+            METH_VARARGS | METH_KEYWORDS,
+            observe_dictionary_carrier as *const (),
+        );
+        let function = object::PyCFunction_NewEx(&raw mut def, ptr::null_mut(), ptr::null_mut());
+        assert!(!function.is_null());
+        assert!(object::PyVectorcall_Function(function).is_none());
+        let positional = tuple(&[]);
+        let mapping = mapping::PyDict_New();
+        let key = strings::PyUnicode_FromString(c"key".as_ptr());
+        let value = numbers::PyLong_FromLong(23);
+        let names = tuple(&[key]);
+        for populated in [false, true] {
+            if populated {
+                assert_eq!(mapping::PyDict_SetItem(mapping, key, value), 0);
+            }
+            for direct_slot in [false, true] {
+                let result = if direct_slot {
+                    object::molt_cfunction_call(function, positional, mapping)
+                } else {
+                    object::PyObject_Call(function, positional, mapping)
+                };
+                assert!(!result.is_null());
+                assert_eq!(
+                    CALL_CONTAINERS.get(),
+                    (positional as usize, mapping as usize)
+                );
+                refcount::Py_DECREF(result);
+            }
+        }
+        let mut values = [value];
+        let result = object::PyObject_Vectorcall(function, values.as_mut_ptr(), 0, names);
+        assert!(!result.is_null());
+        assert_ne!(
+            CALL_CONTAINERS.get().1,
+            mapping as usize,
+            "vector ingress constructs kwargs"
+        );
+        assert_ne!(CALL_CONTAINERS.get().1, 0);
+        refcount::Py_DECREF(result);
+        // Dictionary-call C targets own keyword validation; no unpack step may
+        // reject a key they are expressly allowed to inspect themselves.
+        assert_eq!(mapping::PyDict_SetItem(mapping, value, value), 0);
+        let result = object::PyObject_Call(function, positional, mapping);
+        assert!(!result.is_null());
+        assert_eq!(CALL_CONTAINERS.get().1, mapping as usize);
+        refcount::Py_DECREF(result);
+        assert!(object::PyVectorcall_Call(function, positional, mapping).is_null());
+        assert!(
+            !errors::PyErr_Occurred().is_null(),
+            "no vectorcall slot is a real public contract"
+        );
+        errors::PyErr_Clear();
+        for object in [names, key, value, mapping, positional, function] {
+            refcount::Py_DECREF(object);
+        }
     }
 }

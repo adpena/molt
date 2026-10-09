@@ -19,6 +19,7 @@ from molt.exact_json import canonical_json_sha256, string_keyed_mapping
 if TYPE_CHECKING:
     from molt.cli.runtime_cargo_plan import CargoResourceCustody, RuntimeCargoPlan
     from molt.compiler_distribution import InstalledCompiler
+    from molt.llvm_toolchain import LlvmPrefixVerification
     from molt.toolchain_identity import StableRegularFileVersion
 
 
@@ -97,6 +98,78 @@ def installed_compiler_admission(
 
 
 @dataclass(frozen=True)
+class LlvmCompilerInputs:
+    """The one retained LLVM input admission used by source and release builds."""
+
+    root: Path
+    verification: LlvmPrefixVerification
+    resources: CargoResourceCustody
+
+    def environment(self, env: Mapping[str, str]) -> dict[str, str]:
+        from molt.llvm_toolchain import project_llvm_toolchain_environment
+
+        return project_llvm_toolchain_environment(
+            self.root, self.verification, environ=dict(env)
+        )
+
+    def verify(self) -> None:
+        self.resources.verify()
+
+
+def admit_llvm_compiler_inputs(
+    root: Path, env: Mapping[str, str]
+) -> LlvmCompilerInputs:
+    from molt.cli.runtime_cargo_plan import CargoResourceCustody, CargoResourceRoot
+    from molt.llvm_toolchain import sdk_content_paths, verify_available_llvm_toolchain
+
+    verification = verify_available_llvm_toolchain(root, environ=dict(env))
+    if verification is None:
+        raise CompilerIdentityError(
+            "Selected LLVM backend has no admitted LLVM toolchain"
+        )
+    # llvm-sys consumes llvm-config, headers and its complete static archive set.
+    # Keep the verifier's broader SDK content family; do not scan unrelated tools.
+    resources = CargoResourceCustody.capture(
+        (
+            *(
+                CargoResourceRoot(
+                    "compiler/llvm-sdk/"
+                    + path.relative_to(verification.prefix).as_posix(),
+                    path,
+                )
+                for path in sdk_content_paths(verification)
+            ),
+            CargoResourceRoot("compiler/llvm-config", verification.llvm_config),
+            *(
+                CargoResourceRoot(f"compiler/llvm-system/{index}", Path(token[7:]))
+                for index, token in enumerate(verification.link_closure)
+                if token.startswith("system:") and Path(token[7:]).is_absolute()
+            ),
+        )
+    )
+    config = resources.file_identity(verification.llvm_config)
+    facts = [fact for fact in verification.tool_versions if fact.role == "llvm-config"]
+    if len(facts) != 1 or (facts[0].sha256, facts[0].size) != (
+        config.sha256,
+        config.size,
+    ):
+        raise CompilerIdentityError("llvm-config changed after SDK verification")
+    for fact in verification.content_facts:
+        identity = resources.file_identity(verification.prefix / fact.path)
+        if (
+            identity.size != fact.size
+            or identity._stat_identity[4] != fact.mtime_ns
+            or (
+                fact.change_ns is not None
+                and identity._content_change_time_ns != fact.change_ns
+            )
+            or (fact.sha256 and identity.sha256 != fact.sha256)
+        ):
+            raise CompilerIdentityError("LLVM SDK content changed after verification")
+    return LlvmCompilerInputs(root, verification, resources)
+
+
+@dataclass(frozen=True)
 class BackendBuildAdmission:
     plan: RuntimeCargoPlan
     resources: CargoResourceCustody
@@ -125,16 +198,10 @@ def backend_build_admission(
     )
     from molt.cli.runtime_cargo_plan import (
         CargoResourceCustody,
-        CargoResourceRoot,
         resolve_runtime_cargo_plan,
     )
     from molt.cli.runtime_paths import _cargo_target_root_cached
-    from molt.llvm_toolchain import (
-        LlvmToolchainConfigError,
-        project_llvm_toolchain_environment,
-        sdk_content_paths,
-        verify_available_llvm_toolchain,
-    )
+    from molt.llvm_toolchain import LlvmToolchainConfigError
 
     transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
     # The complete caller environment keys operation-local reuse; semantic output
@@ -157,37 +224,16 @@ def backend_build_admission(
                 prepared.get("MOLT_SESSION_ID", ""),
             )
         )
-        llvm_roots = ()
+        llvm_inputs: LlvmCompilerInputs | None = None
 
         def compiler_environment(environment: Mapping[str, str]) -> Mapping[str, str]:
-            nonlocal llvm_roots
+            nonlocal llvm_inputs
             effective = dict(environment)
             _maybe_enable_native_cpu(effective)
             if "llvm" not in features:
                 return effective
-            verification = verify_available_llvm_toolchain(root, environ=effective)
-            if verification is None:
-                raise CompilerIdentityError(
-                    "Selected LLVM backend has no admitted LLVM toolchain"
-                )
-            effective = project_llvm_toolchain_environment(
-                root, verification, environ=effective
-            )
-            # llvm-sys reads llvm-config's answers, the headers behind --cflags,
-            # and the libraries --libnames/--system-libs name in --libdir: the
-            # verified toolchain's consumed content set, not the whole prefix.
-            llvm_roots = (
-                *(
-                    CargoResourceRoot(
-                        "compiler/llvm-sdk/"
-                        + path.relative_to(verification.prefix).as_posix(),
-                        path,
-                    )
-                    for path in sdk_content_paths(verification)
-                ),
-                CargoResourceRoot("compiler/llvm-config", verification.llvm_config),
-            )
-            return effective
+            llvm_inputs = admit_llvm_compiler_inputs(root, effective)
+            return llvm_inputs.environment(effective)
 
         command = [
             "cargo",
@@ -211,7 +257,11 @@ def backend_build_admission(
         )
         # llvm-sys consumes both selectors and prefix contents. Its build script
         # can link archives, query llvm-config and consume headers under this root.
-        resources = CargoResourceCustody.capture(llvm_roots)
+        resources = (
+            CargoResourceCustody.capture(())
+            if llvm_inputs is None
+            else llvm_inputs.resources
+        )
         environment = _runtime_build_environment_identity(
             plan, cargo_profile=cargo_profile
         )
@@ -259,6 +309,7 @@ def backend_build_admission(
             }
         )
         result = BackendBuildAdmission(plan, resources, fingerprint)
+        result.verify()
         if transaction is not None:
             transaction.compiler_plans[key] = result
         return result

@@ -8,7 +8,7 @@ use crate::builtins::attr::clear_attr_tls_caches;
 use crate::builtins::attributes::attributes_clear_runtime_state;
 use crate::builtins::codecs_ext::codecs_clear_error_handlers;
 use crate::builtins::concurrent::concurrent_clear_runtime_state;
-use crate::builtins::contextvars::contextvars_clear_state;
+use crate::builtins::contextvars::clear_thread_context;
 use crate::builtins::copy_mod::copy_memo_clear_state;
 use crate::builtins::exceptions::{
     canonical_exception_class_roots, drain_dynamic_exception_type_cache,
@@ -206,6 +206,11 @@ fn shutdown_started_runtime_workers(_py: &PyToken<'_>, state: &RuntimeState) {
         }
         trace_shutdown("workers_shutdown_done");
     }
+    // Worker-local entries have been returned to the injector. The GIL has
+    // been reacquired; no queue mutex is held while queued owners are released.
+    if scheduler_started {
+        state.scheduler().clear_stopped_queue();
+    }
 }
 
 fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: RuntimeTeardownMode) {
@@ -393,7 +398,7 @@ fn clear_runtime_callback_roots(
     let mut changed = concurrent_clear_runtime_state(py, state);
     changed |= clear_task_state(py, state);
     changed |= signal_clear_state(py, state);
-    changed |= contextvars_clear_state(py, state);
+    changed |= clear_thread_context(py);
     changed |= copy_memo_clear_state(py, state);
     changed |= sys_ext_clear_state(py, state);
     changed |= c_api_module_clear_state(py, state);
@@ -519,7 +524,8 @@ fn clear_thread_local_state(_py: &PyToken<'_>) -> bool {
 fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     crate::gil_assert();
     let exception = take_thread_exception_for_teardown(_py);
-    let mut changed = exception.is_some() | clear_thread_asyncgen_hooks(_py);
+    let mut changed =
+        exception.is_some() | clear_thread_asyncgen_hooks(_py) | clear_thread_context(_py);
     let _ = CURRENT_EXCEPTION_PENDING.try_with(|pending| pending.set(false));
     let contexts = CONTEXT_STACK
         .try_with(|stack| std::mem::take(&mut *stack.borrow_mut()))
@@ -680,10 +686,17 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
             .collect::<Vec<_>>()
     };
     changed |= !cancel_bits.is_empty();
-    changed |= {
+    let execution_attachments = {
         let mut guard = state.task_tokens.lock().unwrap();
-        !std::mem::take(&mut *guard).is_empty()
+        std::mem::take(&mut *guard)
     };
+    changed |= !execution_attachments.is_empty();
+    // Spawn references belong to scheduler execution, not to the task's GC
+    // graph. Detach their flags before callback-bearing retirement releases.
+    let spawned_roots = execution_attachments
+        .keys()
+        .filter_map(|slot| crate::async_rt::cancellation::take_task_spawn_root(slot.0))
+        .collect::<Vec<_>>();
     changed |= {
         let mut guard = state.task_tokens_by_id.lock().unwrap();
         !std::mem::take(&mut *guard).is_empty()
@@ -799,6 +812,14 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     }
     for ptr in pointers {
         dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+    }
+    for attachment in execution_attachments.into_values() {
+        if let crate::async_rt::cancellation::TaskContextBinding::Owned(bits) = attachment.context {
+            dec_ref_bits(_py, bits);
+        }
+    }
+    for bits in spawned_roots {
+        dec_ref_bits(_py, bits);
     }
     for bits in result_bits {
         dec_ref_bits(_py, bits);
@@ -1056,7 +1077,7 @@ mod tests {
     static REENTRANT_CONTEXT_RELEASES: std::sync::atomic::AtomicUsize =
         std::sync::atomic::AtomicUsize::new(0);
 
-    fn publish_context_default(py: &crate::PyToken<'_>, class: u64) {
+    fn publish_context_binding(py: &crate::PyToken<'_>, class: u64) {
         let class_ptr = crate::obj_from_bits(class)
             .as_ptr()
             .expect("context default class");
@@ -1065,23 +1086,25 @@ mod tests {
         let name_ptr = crate::alloc_string(py, b"shutdown-reentrant-default");
         assert!(!name_ptr.is_null());
         let name = MoltObject::from_ptr(name_ptr).bits();
-        let handle = crate::builtins::contextvars::molt_contextvars_new_var(name, value);
-        assert!(crate::obj_from_bits(handle).as_int().is_some());
+        let variable = crate::builtins::contextvars::new_variable(py, name, None).unwrap();
+        let token = crate::builtins::contextvars::set_variable(py, variable, value).unwrap();
+        crate::dec_ref_bits(py, token);
+        crate::dec_ref_bits(py, variable);
         crate::dec_ref_bits(py, name);
         crate::dec_ref_bits(py, value);
     }
 
-    extern "C" fn repopulate_context_default(_self: u64) -> u64 {
+    extern "C" fn repopulate_context_binding(_self: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
             if REENTRANT_CONTEXT_RELEASES.fetch_add(1, Ordering::SeqCst) == 0 {
-                publish_context_default(py, REENTRANT_CONTEXT_CLASS.load(Ordering::SeqCst));
+                publish_context_binding(py, REENTRANT_CONTEXT_CLASS.load(Ordering::SeqCst));
             }
             MoltObject::none().bits()
         })
     }
 
     #[test]
-    fn callback_root_drain_revisits_context_defaults_repopulated_by_real_finalizers() {
+    fn callback_root_drain_revisits_context_bindings_repopulated_by_real_finalizers() {
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             crate::with_gil_entry_nopanic!(py, {
                 let name =
@@ -1094,8 +1117,8 @@ mod tests {
                 let method = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
                     crate::builtins::functions::runtime_fn_addr(
-                        "repopulate_context_default",
-                        repopulate_context_default as *const (),
+                        "repopulate_context_binding",
+                        repopulate_context_binding as *const (),
                     ),
                     1,
                 );
@@ -1108,7 +1131,7 @@ mod tests {
                 assert!(!crate::exception_pending(py));
                 REENTRANT_CONTEXT_CLASS.store(class, Ordering::SeqCst);
                 REENTRANT_CONTEXT_RELEASES.store(0, Ordering::SeqCst);
-                publish_context_default(py, class);
+                publish_context_binding(py, class);
                 let state = runtime_state(py);
                 let mut passes = 0;
                 let mut modules = super::ModuleRetirement::new(py);
@@ -1126,7 +1149,7 @@ mod tests {
                     "runtime-only reentry requires another drain pass"
                 );
                 assert_eq!(REENTRANT_CONTEXT_RELEASES.load(Ordering::SeqCst), 2);
-                assert!(state.contextvars.lock().unwrap().var_defaults.is_empty());
+                assert!(!crate::builtins::contextvars::clear_thread_context(py));
                 assert!(!crate::exception_pending(py));
                 crate::dec_ref_bits(py, class);
                 REENTRANT_CONTEXT_CLASS.store(0, Ordering::SeqCst);

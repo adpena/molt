@@ -51,7 +51,7 @@ use crate::{
 };
 mod compile_codeop;
 mod function_abi;
-pub(crate) use function_abi::bound_method_new;
+pub(crate) use function_abi::explicit_bound_method_new;
 pub(crate) mod native_callable;
 mod opcode_payload;
 mod tokenize;

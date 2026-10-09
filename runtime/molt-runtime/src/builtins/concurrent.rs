@@ -1181,12 +1181,24 @@ mod tests {
                         }
                     );
                     clear_exception(py);
-                    assert_eq!(
-                        owner_count(pending),
-                        1,
-                        "only the test's returned exception owner remains"
-                    );
+                    let bridge = &molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+                    let is_unique = || {
+                        bridge
+                            .managed_handle_is_uniquely_referenced(pending)
+                            .unwrap_or_else(|| unsafe {
+                                (*header_from_obj_ptr(pending_ptr)).is_uniquely_owned()
+                            })
+                    };
+                    assert!(is_unique(), "only the returned semantic owner remains");
+                    inc_ref_bits(py, pending);
+                    assert!(!is_unique(), "an extra runtime owner must be observable");
                     dec_ref_bits(py, pending);
+                    dec_ref_bits(py, pending);
+                    assert_eq!(
+                        bridge.managed_handle_is_uniquely_referenced(pending),
+                        None,
+                        "last semantic release must retire any canonical C view"
+                    );
                     assert_eq!(future.lock().unwrap().is_done(), cancelled);
                 }
             }

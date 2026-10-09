@@ -72,6 +72,8 @@ def _refuse_rust(monkeypatch) -> None:
         pytest.fail("installed readiness consulted the Rust toolchain contract")
 
     monkeypatch.setattr(setup_readiness.shutil, "which", which)
+    monkeypatch.setattr(setup_readiness, "_detect_llvm_backend_toolchain", refuse)
+    monkeypatch.setattr(setup_readiness, "_required_llvm_backend_pin", refuse)
     monkeypatch.setattr(wasm_toolchain, "rust_toolchain_contract", refuse)
     monkeypatch.setattr(wasm_toolchain, "rust_target_readiness_error", refuse)
 
@@ -87,7 +89,8 @@ def test_installed_doctor_reports_shipped_cells_without_rust(bundle, monkeypatch
     )
     runtime = next(check for check in report.checks if check["name"] == "molt-runtime")
     assert runtime["ok"], runtime
-    assert report.backends["llvm"] is False
+    assert report.backends["llvm"] == report.backends["native"]
+    assert "llvm-backend-toolchain" not in names
     # The fixture ships one dev-profile native cell and no WASM cells.
     assert report.profiles == {"dev": True, "release": False}
     assert report.backends["wasm"] is False

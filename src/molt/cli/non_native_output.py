@@ -35,8 +35,8 @@ from molt.cli.app_export_contract import load_app_export_contract
 from molt.browser_asset_closure import (
     BROWSER_WASM_ENTRY_ASSETS,
     browser_asset_manifest_keys,
-    canonical_wasm_loader_asset_bytes,
     wasm_loader_asset_closure,
+    wasm_loader_asset_payloads,
 )
 from molt.cli import link_fingerprints
 from molt.cli.wasm_final_link_cache import (
@@ -943,31 +943,24 @@ def _prepare_non_native_build_result_in_generation(
                     needs_wasm_libcxx_link = _staged_artifacts_need_wasm_libcxx_link(
                         staged_external_native_artifacts
                     )
+                    c_abi_plan = (
+                        wasm_link_inputs.resolve_wasi_c_abi_plan()
+                        if needs_wasm_libc_link
+                        or needs_wasm_compiler_rt_link
+                        or needs_wasm_libcxx_link
+                        else None
+                    )
                     if needs_wasm_libc_link:
-                        libc_provider = wasm_link_inputs.wasm_wasi_libc_archive()
-                        if libc_provider is None:
-                            raise ValueError(
-                                "wasm_libc_link_import symbols require Rust "
-                                "wasm32-wasip1 self-contained libc.a"
-                            )
-                        libc_provider = libc_provider.resolve(strict=False)
+                        assert c_abi_plan is not None
+                        libc_provider = c_abi_plan.path("libc")
                         provider_inputs.append(libc_provider)
                         external_native_fingerprint_inputs = (
                             *external_native_fingerprint_inputs,
                             libc_provider,
                         )
                     if needs_wasm_compiler_rt_link:
-                        compiler_rt_provider = (
-                            wasm_link_inputs.wasm_compiler_builtins_archive()
-                        )
-                        if compiler_rt_provider is None:
-                            raise ValueError(
-                                "wasm_compiler_rt_link_import symbols require Rust "
-                                "wasm32-wasip1 libcompiler_builtins provider"
-                            )
-                        compiler_rt_provider = compiler_rt_provider.resolve(
-                            strict=False
-                        )
+                        assert c_abi_plan is not None
+                        compiler_rt_provider = c_abi_plan.path("compiler_rt")
                         provider_inputs.append(compiler_rt_provider)
                         external_native_fingerprint_inputs = (
                             *external_native_fingerprint_inputs,
@@ -975,14 +968,8 @@ def _prepare_non_native_build_result_in_generation(
                         )
                     if needs_wasm_libcxx_link:
                         cxx_runtime_providers = (
-                            wasm_link_inputs.wasm_cxx_runtime_archives()
+                            wasm_link_inputs.wasm_cxx_runtime_archives(plan=c_abi_plan)
                         )
-                        if cxx_runtime_providers is None:
-                            raise ValueError(
-                                "wasm_libcxx_link_import symbols require matching "
-                                "WASI SDK eh/libc++.a, eh/libc++abi.a, and "
-                                "eh/libunwind.a archives"
-                            )
                         resolved_cxx_runtime_providers = tuple(
                             provider.resolve(strict=False)
                             for provider in cxx_runtime_providers
@@ -1378,6 +1365,14 @@ def _prepare_non_native_build_result_in_generation(
                 native_link_plan_path: Path | None = None
                 link_timings_path: Path | None = None
                 link_run_cmd = [*link_cmd, *runtime_admission_args]
+                # Rejected bytes outlive both linker scratch and the private
+                # deployment generation, even when final publication fails.
+                link_run_cmd.extend(
+                    [
+                        "--failure-evidence-dir",
+                        str(deployment_plan.root / "wasm-link-evidence"),
+                    ]
+                )
                 # The link is its own top-level build phase: without this
                 # marker its whole wall time (wasm-ld, post-link passes,
                 # wasm-opt, split-runtime processing) was charged to the last
@@ -1686,17 +1681,12 @@ def _prepare_non_native_build_result_in_generation(
                 wasm_asset_root / TARGET_FEATURE_MANIFEST_ASSET_NAME
             )
             try:
-                browser_asset_names = wasm_loader_asset_closure(
+                browser_asset_payloads = wasm_loader_asset_payloads(
                     wasm_asset_root,
                     BROWSER_WASM_ENTRY_ASSETS,
                 )
+                browser_asset_names = tuple(browser_asset_payloads)
                 browser_asset_keys = browser_asset_manifest_keys(browser_asset_names)
-                browser_asset_payloads = {
-                    name: canonical_wasm_loader_asset_bytes(
-                        wasm_asset_root.joinpath(*Path(name).parts)
-                    )
-                    for name in browser_asset_names
-                }
                 browser_assets = {
                     browser_asset_keys[name]: _bytes_asset(payload, name)
                     for name, payload in browser_asset_payloads.items()

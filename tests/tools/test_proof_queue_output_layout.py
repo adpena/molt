@@ -322,12 +322,83 @@ def test_placement_is_independent_of_retention_and_preserves_historical_default(
     [
         ["cargo", "--version"],
         ["cargo", "check", "--target-dir", "elsewhere"],
+        ["cargo", "check", "--target-dir=elsewhere"],
         ["cargo", "test", "--artifact-dir", "elsewhere"],
+        ["cargo", "test", "--artifact-dir=elsewhere"],
     ],
 )
-def test_cargo_query_and_secondary_output_options_cannot_select_root(tmp_path, command):
+@pytest.mark.parametrize("delegated", [False, True])
+def test_cargo_query_and_secondary_output_options_cannot_select_root(
+    tmp_path, command, delegated
+):
+    if delegated:
+        command = [
+            "uv",
+            "run",
+            "--no-sync",
+            "python",
+            "tools/guarded_exec.py",
+            "--",
+            *command,
+        ]
     with pytest.raises(ValueError):
         admission.envelope_for_command(command, cargo_output_root=str(_root(tmp_path)))
+
+
+@pytest.mark.parametrize(
+    "command_id",
+    [
+        "wasm.build.shared-runtime",
+        "wasm.build.split-runtime-release",
+        "rust.test.default-truth",
+    ],
+)
+def test_registered_python_cargo_driver_places_retained_outputs(tmp_path, command_id):
+    command = list(
+        next(
+            row.argv
+            for row in admission.proof_plan.ProofPlan.load().commands
+            if row.id == command_id
+        )
+    )
+    original = admission.envelope_for_command(command)
+    assert "cargo" in original["toolchains"]
+    assert admission.cargo_invocation_for_envelope(original) is None
+    root = _root(tmp_path)
+    envelope = admission.envelope_for_command(command, cargo_output_root=str(root))
+    assert envelope == {**original, "cargo_output_root": layout.declare_root(str(root))}
+    assert list(root.iterdir()) == []
+    admission.validate_envelope(envelope, command)
+    assert admission.validated_cargo_output_lifetime(envelope) == "retain"
+
+    outputs = cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope)
+    assert outputs.external_placement and outputs.documentation
+    target = root / "leased-target"
+    target.mkdir()
+    bound = outputs.bind({"CARGO_BUILD_TARGET": "wasm32-wasip1"}, target=target)
+    assert bound["CARGO_BUILD_TARGET"] == "wasm32-wasip1"
+    assert set(bound) == {
+        "CARGO_BUILD_TARGET",
+        "CARGO_TARGET_DIR",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "PYTHONPYCACHEPREFIX",
+    }
+    assert all(bound[name] == str(target) for name in outputs.names)
+    outputs.validate(bound, target=target)
+    with pytest.raises(ValueError, match="differs"):
+        outputs.validate({**bound, "CARGO_TARGET_DIR": str(root)}, target=target)
+    with pytest.raises(ValueError, match="explicit Cargo"):
+        admission.envelope_for_command(
+            command,
+            cargo_output_root=str(root),
+            cargo_output_lifetime="terminal-success",
+        )
+    with pytest.raises(ValueError, match="explicit Cargo"):
+        admission.validate_envelope(
+            {**envelope, "cargo_output_lifetime": "terminal-success"}, command
+        )
 
 
 def test_typed_python_root_places_supervisor_without_granting_cargo_permissions(
@@ -584,7 +655,10 @@ def test_secondary_environment_output_escape_is_refused(tmp_path, name):
     )
     with pytest.raises(ValueError, match="bypasses declared"):
         execution_environment._require_cargo_build_tool_environment_context(
-            ["cargo", "check"], outputs=outputs, cwd=tmp_path, env={name: "elsewhere"}
+            admission.envelope_for_command(["cargo", "check"]),
+            outputs=outputs,
+            cwd=tmp_path,
+            env={name: "elsewhere"},
         )
 
 
@@ -599,7 +673,7 @@ def test_config_output_escape_is_refused(tmp_path, monkeypatch, field):
     )
     with pytest.raises(ValueError, match="redirects output"):
         execution_environment._require_cargo_build_tool_environment_context(
-            ["cargo", "check"],
+            admission.envelope_for_command(["cargo", "check"]),
             outputs=cargo_output_environment.CargoOutputEnvironment(
                 False, external_placement=True
             ),

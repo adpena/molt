@@ -1,6 +1,6 @@
 use molt_runtime_core::prelude::*;
 
-use crate::bridge::{decode_value_list_bits, dict_order, object_type_id};
+use crate::bridge::{decode_value_list_bits, dict_snapshot, object_type_id};
 
 use super::common::{
     alloc_list_bits, alloc_str_bits, bits_as_f64, bits_as_i64, bits_is_none, bits_to_string,
@@ -64,7 +64,10 @@ pub extern "C" fn molt_tk_cnfmerge(cnf_bits: u64, kw_bits: u64) -> u64 {
         {
             let type_id = object_type_id(ptr);
             if type_id == TYPE_ID_DICT {
-                let order_snapshot = dict_order(ptr);
+                let Some(order_snapshot) = dict_snapshot(ptr) else {
+                    cleanup_list(&out);
+                    return MoltObject::none().bits();
+                };
                 let mut i = 0;
                 while i + 1 < order_snapshot.len() {
                     let key_bits = order_snapshot[i];
@@ -86,7 +89,10 @@ pub extern "C" fn molt_tk_cnfmerge(cnf_bits: u64, kw_bits: u64) -> u64 {
         {
             let type_id = object_type_id(ptr);
             if type_id == TYPE_ID_DICT {
-                let order_snapshot = dict_order(ptr);
+                let Some(order_snapshot) = dict_snapshot(ptr) else {
+                    cleanup_list(&out);
+                    return MoltObject::none().bits();
+                };
                 let mut i = 0;
                 while i + 1 < order_snapshot.len() {
                     let key_bits = order_snapshot[i];

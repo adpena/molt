@@ -928,3 +928,113 @@ fn gpu_squared_relu_gate_interleaved_contiguous_f32_roundtrip() {
         assert_eq!(values, vec![10.0, 0.0, 270.0, 640.0]);
     });
 }
+
+#[test]
+fn gpu_descriptor_follows_code_owner_and_ignores_public_attribute() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let function = crate::alloc_function_obj(py, 0xF00D, 0);
+            assert!(!function.is_null());
+            let _function_owner = crate::PtrDropGuard::preserving(function);
+            let callable = MoltObject::from_ptr(function).bits();
+            let code = obj_from_bits(crate::ensure_function_code_bits(py, function))
+                .as_ptr()
+                .expect("code");
+            crate::object::layout::code_set_frame_slot_id(code, 7);
+            let descriptor = alloc_string(py, b"compiler-owned descriptor");
+            let replacement = alloc_string(py, b"forged mutable descriptor");
+            assert!(!descriptor.is_null() && !replacement.is_null());
+            let _descriptor_owner = crate::PtrDropGuard::preserving(descriptor);
+            let _replacement_owner = crate::PtrDropGuard::preserving(replacement);
+            let descriptor_bits = MoltObject::from_ptr(descriptor).bits();
+            let replacement_bits = MoltObject::from_ptr(replacement).bits();
+            assert_eq!(crate::object::layout::code_gpu_descriptor_bits(code), 0);
+            let setter_name = alloc_string(py, b"molt_gpu_kernel_descriptor_set");
+            assert!(!setter_name.is_null());
+            let _setter_name_owner = crate::PtrDropGuard::preserving(setter_name);
+            let exposed = crate::intrinsics::registry::molt_load_intrinsic_runtime(
+                MoltObject::from_ptr(setter_name).bits(),
+                MoltObject::none().bits(),
+            );
+            assert!(obj_from_bits(exposed).is_none());
+            assert!(!crate::exception_pending(py));
+            assert_eq!(crate::object::layout::code_gpu_descriptor_bits(code), 0);
+            crate::gpu_bridge::molt_gpu_kernel_descriptor_set(callable, descriptor_bits);
+            assert!(!crate::exception_pending(py));
+            assert_eq!(
+                crate::gpu_bridge::__molt_gpu_descriptor_is_current(callable, descriptor_bits, 7),
+                1
+            );
+            assert_eq!(
+                crate::gpu_bridge::__molt_gpu_descriptor_is_current(callable, descriptor_bits, 8),
+                0
+            );
+
+            let name = attr_name_bits_from_bytes(py, b"__molt_gpu_descriptor__").expect("name");
+            let _name_owner =
+                crate::PtrDropGuard::preserving(obj_from_bits(name).as_ptr().expect("name object"));
+            crate::builtins::attributes::object_setattr_raw(
+                py,
+                function,
+                name,
+                "__molt_gpu_descriptor__",
+                replacement_bits,
+            );
+            assert!(!crate::exception_pending(py));
+            let selected = crate::gpu_bridge::__molt_gpu_kernel_descriptor(callable);
+            let _selected_owner = crate::PtrDropGuard::preserving(
+                obj_from_bits(selected).as_ptr().expect("descriptor"),
+            );
+            assert_eq!(selected, descriptor_bits);
+            crate::gpu_bridge::molt_gpu_kernel_descriptor_set(callable, replacement_bits);
+            assert!(crate::exception_pending(py));
+            crate::clear_exception(py);
+            assert_eq!(
+                crate::object::layout::code_gpu_descriptor_bits(code),
+                descriptor_bits
+            );
+            crate::bump_function_mutation_version(function);
+            assert_eq!(
+                crate::gpu_bridge::__molt_gpu_descriptor_is_current(callable, descriptor_bits, 7),
+                0
+            );
+        }
+    });
+}
+
+#[test]
+fn gpu_query_identity_reuses_exact_registry_materialization() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let query = crate::builtins::methods::alloc_builtin_function(
+            py,
+            molt_gpu_runtime::molt_gpu_thread_id as *const () as u64,
+            0,
+        );
+        let ptr = obj_from_bits(query).as_ptr().expect("query");
+        let _owner = crate::PtrDropGuard::preserving(ptr);
+        assert!(
+            crate::intrinsics::registry::is_named_runtime_materialization(
+                py,
+                query,
+                "molt_gpu_thread_id"
+            )
+        );
+        assert!(
+            !crate::intrinsics::registry::is_named_runtime_materialization(
+                py,
+                query,
+                "molt_gpu_block_id"
+            )
+        );
+        unsafe { crate::bump_function_mutation_version(ptr) };
+        assert!(
+            !crate::intrinsics::registry::is_named_runtime_materialization(
+                py,
+                query,
+                "molt_gpu_thread_id"
+            )
+        );
+    });
+}

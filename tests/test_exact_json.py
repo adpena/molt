@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.process_guard_common import run_isolated_python_probe
+
 from molt import exact_json, file_deletion, file_publication
 
 
@@ -49,6 +51,46 @@ def test_exact_file_read_admits_byte_limit_and_rejects_before_decode(
         exact_json.ExactJsonError, match="test receipt exceeds size limit"
     ):
         exact_json.read_exact(path, max_bytes=10, label="test receipt")
+
+
+@pytest.mark.parametrize("reader", [exact_json.read_exact, exact_json.capture_exact])
+def test_small_json_allocation_is_independent_of_admitted_budget(tmp_path, reader):
+    path = tmp_path / "small.json"
+    path.write_bytes(b'{"value":1}')
+    measurements = run_isolated_python_probe(
+        """
+        import gc
+        import json
+        from pathlib import Path
+        import sys
+        import tracemalloc
+        from molt import exact_json
+
+        path = Path(sys.argv[1])
+        reader = getattr(exact_json, sys.argv[2])
+        measurements = []
+        if tracemalloc.is_tracing():
+            raise RuntimeError("probe requires exclusive allocation tracing")
+        for budget in (1024 * 1024, 8 * 1024 * 1024):
+            gc.collect()
+            tracemalloc.start()
+            try:
+                result = reader(path, max_bytes=budget, label="small receipt")
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            decoded = result[1] if reader is exact_json.capture_exact else result
+            measurements.append({"decoded": decoded, "peak": peak})
+        print(json.dumps(measurements))
+        """,
+        args=[path, reader.__name__],
+    )
+    assert [row["decoded"] for row in measurements] == [{"value": 1}] * 2
+    peaks = [row["peak"] for row in measurements]
+    # Policy headroom is not requested storage. This tolerates interpreter and
+    # filesystem bookkeeping while detecting allocation proportional to 7 MiB
+    # of unused admission allowance.
+    assert peaks[1] - peaks[0] < 256 * 1024
 
 
 @pytest.mark.parametrize("raw", (b'{"v":1,"v":2}', b'{"v":NaN}', b'"\xff"'))
@@ -329,6 +371,32 @@ def test_retirement_reclaims_readonly_payload(tmp_path: Path, kind: str) -> None
     payload.chmod(0o444)
     file_publication.durable_remove_path(source, retirement_scope="owned")
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_retirement_reclaims_hardlink_without_mutating_external_source(
+    tmp_path: Path, readonly_file_source, kind: str
+) -> None:
+    source, attributes = readonly_file_source
+    before = attributes()
+    owned = tmp_path / "retire"
+    if kind == "directory":
+        owned.mkdir()
+        link = owned / "borrowed.exe"
+    else:
+        link = owned
+    link.hardlink_to(source)
+
+    def forbidden_chmod(*_args, **_kwargs):
+        pytest.fail("retirement must not mutate another hardlink's attributes")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Path, "chmod", forbidden_chmod)
+        file_publication.durable_remove_path(owned, retirement_scope="hardlink")
+    assert not owned.exists()
+    assert not list(tmp_path.glob(".molt-retired-v1-*"))
+    assert attributes() == before
+    assert source.read_bytes() == b"external source must survive cleanup"
 
 
 def test_retirement_barrier_failure_retains_intact_payload_and_new_live_name(

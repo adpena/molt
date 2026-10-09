@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Protocol, Sequence, TypeVar
 
 from molt.frontend._mixin_base import GeneratorMixinBase
+from molt.frontend.lowering.gpu_kernel_descriptor import project_kernel_ops
 from molt.frontend._types import (
     BUILTIN_FUNC_SPECS,
     GEN_CONTROL_SIZE,
@@ -489,12 +490,15 @@ class FunctionMetadataMixin(GeneratorMixinBase):
     ) -> str:
         func_info = self.funcs_map[func_symbol]
         payload = {
-            "schema_version": 1,
+            "schema_version": 3,
             "kind": "molt_gpu_kernel",
             "symbol": func_symbol,
             "name": func_name,
             "params": list(func_info["params"]),
-            "ops": self.map_ops_to_json(func_info["ops"], function_name=func_name),
+            **project_kernel_ops(
+                list(func_info["params"]),
+                self.map_ops_to_json(func_info["ops"], function_name=func_name),
+            ),
         }
         return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 

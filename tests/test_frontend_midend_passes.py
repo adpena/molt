@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import random
 import __future__ as future_module
 import ast
 import os
+import random
 import time
 import types
+from collections.abc import Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -18,10 +19,15 @@ from molt.frontend._types import (
     CodeSlotDeclaration,
     _SCCP_OVERDEFINED,
 )
-from molt.frontend import cfg_analysis
 from molt.frontend.lowering import midend_pipeline
 from tests.process_guard_common import install_module_view
-from molt.frontend.cfg_analysis import BasicBlock, CFGEdgeKind, CFGGraph, build_cfg
+from molt.frontend.cfg_analysis import (
+    BasicBlock,
+    CFGEdgeKind,
+    CFGGraph,
+    DominatorTree,
+    build_cfg,
+)
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
     SIMPLEIR_RUNTIME_REQUIREMENT_IMPORT_PROTOCOL,
@@ -324,30 +330,43 @@ def test_exact_container_provenance_rejects_malformed_shapes(
     assert gen._op_effect_class(op) == "writes_heap"
 
 
-def test_sccp_guard_tag_establishes_no_type_fact() -> None:
-    # A runtime guard returns its source unchanged even on a mismatch; it
-    # neither proves the source's tag nor traps the block, so SCCP must not
-    # fold a later TYPE_OF or comparison from it.
+@pytest.mark.parametrize("callback_result", ["unused", "none"])
+@pytest.mark.parametrize("callback_is_primitive", [False, True])
+def test_sccp_callback_kills_cached_type_fact_but_keeps_exact_scalar_observations(
+    callback_result: str, callback_is_primitive: bool
+) -> None:
     gen = SimpleTIRGenerator()
-    obj, expected = MoltValue("obj"), MoltValue("expected")
+    obj, callback = MoltValue("obj"), MoltValue("callback")
+    expected = MoltValue("expected")
+    old, current = MoltValue("old"), MoltValue("current")
     ops = [
-        MoltOp(kind="MISSING", args=[], result=obj),
-        MoltOp(kind="CONST", args=[1], result=expected),
-        MoltOp(kind="GUARD_TAG", args=[obj, expected], result=MoltValue("none")),
-        MoltOp(kind="TYPE_OF", args=[obj], result=MoltValue("observed")),
+        MoltOp(kind="CONST", args=[7], result=obj),
         MoltOp(
-            kind="EQ",
-            args=[MoltValue("observed"), expected],
-            result=MoltValue("matches"),
+            kind="CONST" if callback_is_primitive else "MISSING",
+            args=[7] if callback_is_primitive else [],
+            result=callback,
         ),
+        MoltOp(kind="CONST", args=[1], result=expected),
+        MoltOp(kind="TYPE_OF", args=[obj], result=old),
+        MoltOp(kind="NEG", args=[callback], result=MoltValue(callback_result)),
+        MoltOp(kind="EQ", args=[old, expected], result=MoltValue("old_matches")),
+        MoltOp(kind="TYPE_OF", args=[obj], result=current),
+        MoltOp(kind="EQ", args=[current, expected], result=MoltValue("now_matches")),
     ]
     gen._op_by_result = {op.result.name: op for op in ops if op.result.name != "none"}
     cfg = build_cfg(ops)
     sccp = gen._compute_sccp(ops, cfg)
     state = sccp.out_values[cfg.index_to_block[len(ops) - 1]]
-    assert "__tag__:obj" not in state
-    assert state["observed"] is _SCCP_OVERDEFINED
-    assert state["matches"] is _SCCP_OVERDEFINED
+    assert state["old"] == 1
+    assert state["old_matches"] is True
+    # A literal proves exactness; profiling guards cannot establish this fact.
+    # The callback invalidates cached heap relations, not immutable scalar values.
+    assert state["current"] == 1
+    assert state["now_matches"] is True
+    if callback_is_primitive:
+        assert state["__tag__:obj"] == 1
+    else:
+        assert "__tag__:obj" not in state
 
 
 def test_sccp_heap_facts_must_survive_every_join_predecessor() -> None:
@@ -1224,6 +1243,7 @@ def test_source_line_serializes_and_survives_split_field_rewrites() -> None:
 
     const_op = next(op for op in lowered if op.get("kind") == "const")
     ret_op = next(op for op in lowered if op.get("kind") == "ret")
+    assert ret_op["args"] == [const_op["out"]]
     assert const_op["source_line"] == 17
     assert ret_op["source_line"] == 17
 
@@ -1384,9 +1404,9 @@ def _eval_simple_ops(ops: list[MoltOp]) -> int | None:
             assert target in label_to_pc
             pc = label_to_pc[target] + 1
             continue
+        if op.kind == "ret_void":
+            return None
         if op.kind == "ret":
-            if not op.args:
-                return None
             ret = op.args[0]
             if isinstance(ret, MoltValue):
                 return int(env[ret.name])
@@ -1825,7 +1845,7 @@ def test_sccp_retains_declared_handler_edges_without_textual_try_inference(
         MoltOp("TRY_END", [99], MoltValue("none")),
         MoltOp("ret", [MoltValue("sum")], MoltValue("none")),
         MoltOp("LABEL", [99], MoltValue("none")),
-        MoltOp("ret", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
     ]
     cfg = build_cfg(ops)
     result = SimpleTIRGenerator()._compute_sccp(ops, cfg)
@@ -2203,6 +2223,146 @@ def test_loop_bound_solver_extracts_monotonic_tuple_and_proof() -> None:
     assert gen._prove_monotonic_loop_compare(fact) is False
 
 
+def _reachable_without_node(
+    successors: Sequence[Sequence[int]], entry: int, excluded: int | None
+) -> set[int]:
+    """Independent dominance oracle: remove a node and search remaining paths."""
+    reached: set[int] = set()
+    pending = [entry]
+    while pending:
+        node = pending.pop()
+        if node == excluded or node in reached:
+            continue
+        reached.add(node)
+        pending.extend(successors[node])
+    return reached
+
+
+def _assert_dominance_matches_path_removal(
+    successors: Sequence[Sequence[int]], entry: int, dominance: DominatorTree
+) -> None:
+    reached = _reachable_without_node(successors, entry, None)
+    without = [
+        _reachable_without_node(successors, entry, node)
+        for node in range(len(successors))
+    ]
+    for usage in range(len(successors)):
+        assert dominance.is_reachable(usage) == (usage in reached)
+        proper_dominators = []
+        for definition in range(len(successors)):
+            expected = usage in reached and usage not in without[definition]
+            assert dominance.dominates(definition, usage) == expected, (
+                successors,
+                entry,
+                definition,
+                usage,
+            )
+            if expected and definition != usage:
+                proper_dominators.append(definition)
+        # The closest proper dominator is itself dominated by every other one.
+        closest = [
+            node
+            for node in proper_dominators
+            if all(node not in without[other] for other in proper_dominators)
+        ]
+        assert len(closest) <= 1
+        assert dominance.immediate_dominator(usage) == (closest[0] if closest else None)
+
+
+@pytest.mark.parametrize("kind", ["ret", "ret_void"])
+def test_frontend_return_terminators_close_reachability(kind: str) -> None:
+    value = MoltValue("result")
+    ops = [
+        MoltOp("CONST", [7], value),
+        MoltOp(kind, [value] if kind == "ret" else [], MoltValue("none")),
+        MoltOp("CONST", [99], MoltValue("unreachable")),
+    ]
+    cfg = build_cfg(ops)
+    assert cfg.index_to_block[2] not in cfg.reachable
+    assert not cfg.successors[cfg.index_to_block[1]]
+    lowered = _lower_ops(ops)
+    assert lowered[-1]["kind"] == kind
+    assert all(op.get("value") != 99 for op in lowered)
+
+
+def test_cfg_dominance_matches_exhaustive_path_removal() -> None:
+    # All directed four-node graphs without self edges: diamonds, backedges,
+    # irreducible loops, crossed DFS siblings and unreachable predecessors.
+    edges = [
+        (source, dest) for source in range(4) for dest in range(4) if source != dest
+    ]
+    for mask in range(1 << len(edges)):
+        successors: list[list[int]] = [[] for _ in range(4)]
+        for bit, (source, dest) in enumerate(edges):
+            if mask & (1 << bit):
+                successors[source].append(dest)
+        _assert_dominance_matches_path_removal(
+            successors, 0, DominatorTree.compute(successors)
+        )
+
+
+def test_cfg_dominance_nonzero_entry_self_edges_and_absent_nodes() -> None:
+    successors = [[0, 1, 1], [1], [0, 3], [1, 3], [2]]
+    dominance = DominatorTree.compute(successors, entry=2)
+    _assert_dominance_matches_path_removal(successors, 2, dominance)
+    for node in (-1, 4, 5):
+        assert not dominance.is_reachable(node)
+        assert not dominance.dominates(node, node)
+        assert not dominance.dominates(2, node)
+        assert not dominance.dominates(node, 2)
+        assert dominance.immediate_dominator(node) is None
+    empty = build_cfg([])
+    assert empty.reachable == set()
+    assert not empty.dominance.dominates(0, 0)
+    assert empty.dominance.immediate_dominator(0) is None
+    for entry in (-1, len(successors)):
+        absent = DominatorTree.compute(successors, entry=entry)
+        for node in range(len(successors)):
+            assert not absent.is_reachable(node)
+            assert not absent.dominates(node, node)
+            assert absent.immediate_dominator(node) is None
+
+
+def test_cfg_dominance_handles_deep_chain_without_recursive_traversal() -> None:
+    # Exercise the real CFG producer with depth well above Python's call stack.
+    ops = [MoltOp("LABEL", [index], MoltValue("none")) for index in range(8192)]
+    ops.append(MoltOp("ret_void", [], MoltValue("none")))
+    cfg = build_cfg(ops)
+    last = cfg.index_to_block[len(ops) - 1]
+    assert cfg.reachable == set(range(len(cfg.blocks)))
+    assert cfg.dominance.immediate_dominator(0) is None
+    for block in range(1, len(cfg.blocks)):
+        assert cfg.dominance.immediate_dominator(block) == block - 1
+        assert cfg.dominance.dominates(0, block)
+        assert cfg.dominance.dominates(block, last)
+        assert not cfg.dominance.dominates(block, block - 1)
+
+
+def test_cfg_dominance_respects_resume_bypass() -> None:
+    ops = [
+        MoltOp("STATE_SWITCH", [], MoltValue("none")),
+        MoltOp("CONST", [1], MoltValue("before_yield")),
+        MoltOp("STATE_YIELD", [], MoltValue("none")),
+        MoltOp("ret", [MoltValue("before_yield")], MoltValue("none")),
+    ]
+    cfg = build_cfg(ops)
+    switch = cfg.index_to_block[0]
+    definition = cfg.index_to_block[1]
+    yielding = cfg.index_to_block[2]
+    resume = cfg.index_to_block[3]
+    assert cfg.edge_kinds[switch, resume] & CFGEdgeKind.RESUME
+    assert cfg.successors[yielding] == ()
+    assert cfg.dominance.dominates(switch, resume)
+    assert not cfg.dominance.dominates(definition, resume)
+    _assert_dominance_matches_path_removal(
+        [cfg.successors[block.id] for block in cfg.blocks], 0, cfg.dominance
+    )
+    failures = SimpleTIRGenerator()._verify_definite_assignment_in_ops(
+        ops, predefined_value_names=set()
+    )
+    assert (3, "ret", "before_yield") in failures
+
+
 def test_cfg_models_check_exception_target_edge() -> None:
     ops = [
         MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
@@ -2216,6 +2376,15 @@ def test_cfg_models_check_exception_target_edge() -> None:
     check_block = cfg.index_to_block[1]
     label_block = cfg.label_to_block["7"]
     assert label_block in cfg.successors.get(check_block, [])
+    assert cfg.edge_kinds[check_block, label_block] & CFGEdgeKind.EXCEPTION
+    assert not cfg.dominance.dominates(cfg.index_to_block[2], label_block)
+    _assert_dominance_matches_path_removal(
+        [cfg.successors[block.id] for block in cfg.blocks], 0, cfg.dominance
+    )
+    failures = SimpleTIRGenerator()._verify_definite_assignment_in_ops(
+        ops, predefined_value_names=set()
+    )
+    assert (5, "ret", "x") in failures
 
 
 def test_cfg_tracks_path_local_try_closes_without_changing_if_structure() -> None:
@@ -2223,12 +2392,12 @@ def test_cfg_tracks_path_local_try_closes_without_changing_if_structure() -> Non
         MoltOp("TRY_START", [11], MoltValue("none")),
         MoltOp("IF", [MoltValue("cond")], MoltValue("none")),
         MoltOp("TRY_END", [11], MoltValue("none")),
-        MoltOp("ret", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
         MoltOp("END_IF", [], MoltValue("none")),
         MoltOp("TRY_END", [11], MoltValue("none")),
-        MoltOp("ret", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
         MoltOp("LABEL", [11], MoltValue("none")),
-        MoltOp("ret", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
     ]
     cfg = build_cfg(ops)
     assert cfg.control.if_to_end == {1: 4}
@@ -2248,7 +2417,7 @@ def test_structural_validator_preserves_alternative_region_closes_verbatim() -> 
         MoltOp("LOOP_END", [], MoltValue("none")),
         MoltOp("TRY_END", [11], MoltValue("none")),
         MoltOp("LABEL", [11], MoltValue("none")),
-        MoltOp("ret", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
     ]
     rewritten, repairs = SimpleTIRGenerator()._ensure_structural_cfg_validity(
         ops, stage="path_local_close"
@@ -2265,11 +2434,11 @@ def test_label_threading_preserves_region_handler_identity(
         MoltOp("TRY_START", [10], MoltValue("none")),
         MoltOp("CHECK_EXCEPTION", [10], MoltValue("none")),
         MoltOp("TRY_END", [10], MoltValue("none")),
-        MoltOp("ret", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
         MoltOp("LABEL", [10], MoltValue("none")),
         MoltOp("JUMP", [20], MoltValue("none")),
         MoltOp("LABEL", [20], MoltValue("none")),
-        MoltOp("ret", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
     ]
     gen = SimpleTIRGenerator()
     cfg = build_cfg(ops)
@@ -2371,7 +2540,7 @@ def test_structural_cfg_validator_rejects_missing_control_target(kind: str) -> N
         MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
         MoltOp(kind=kind, args=[404], result=MoltValue("none")),
         MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
-        MoltOp(kind="ret", args=[], result=MoltValue("none")),
+        MoltOp(kind="ret_void", args=[], result=MoltValue("none")),
     ]
 
     with pytest.raises(RuntimeError, match="unknown label"):
@@ -3265,7 +3434,7 @@ def test_module_metadata_follows_builtin_capture_and_owns_attempt_cleanup(
         end = next(
             index
             for index in range(start + 1, len(ops))
-            if ops[index].kind in {"RET", "RET_VOID", "ret", "ret_void"}
+            if ops[index].kind in {"ret", "ret_void"}
         )
         handler = kinds[start:end]
         assert handler.count("MODULE_CACHE_DEL") == 1
@@ -3656,10 +3825,19 @@ def test_runtime_callable_capability_is_preserved_at_every_frontend_acquisition(
         # callable through actual SSA copies/local slots to its invocation.
         acquired: set[str] = set()
         slots: set[str] = set()
+        home_slots: set[int] = set()
         target_calls: list[int] = []
         for index, op in enumerate(function_ops):
             args = op.get("args", [])
             if op in acquisitions:
+                acquired.add(op["out"])
+            elif op["kind"] == "frame_home_store":
+                if args and args[0] in acquired:
+                    home_slots.add(op["value"])
+                    acquired.add(op["out"])
+                else:
+                    home_slots.discard(op["value"])
+            elif op["kind"] == "frame_home_load" and op["value"] in home_slots:
                 acquired.add(op["out"])
             elif op["kind"] == "store_var":
                 if args and args[0] in acquired:
@@ -3669,11 +3847,8 @@ def test_runtime_callable_capability_is_preserved_at_every_frontend_acquisition(
             elif op["kind"] == "load_var" and op.get("var") in slots:
                 acquired.add(op["out"])
             elif (
-                op["kind"] in {"copy", "frame_home_store"}
-                and args
-                and args[0] in acquired
+                op["kind"] in {"copy", "binding_alias"} and args and args[0] in acquired
             ):
-                # A frame-home store yields the value it stored.
                 acquired.add(op["out"])
             elif op["kind"] in {"call_bind", "call_indirect", "call_func"}:
                 if args and args[0] in acquired:
@@ -4694,14 +4869,24 @@ def f(callback):
     callback()
     return value
 """
-    slot = _cpython_code_slots(source, "f").index("value")
+    slots = _cpython_code_slots(source, "f")
     ops = _lowered_function(source, "__f", target_python=target_python)["ops"]
     loads = _home_slots(ops, "frame_home_load")
     if target_python >= (3, 13):
-        # A PEP 667 frame proxy may have rebound it during the callback. Any
-        # dynamic call can do that, so `callback` itself reloads after the
-        # unproven `object()` call as well.
-        assert slot in loads
+        # The global object callable may rebind callback through a PEP 667 frame
+        # proxy; that callback may then rebind value. Each later read needs its home.
+        assert loads == {slots.index("callback"), slots.index("value")}
+        object_call, callback_call = [
+            i for i, op in enumerate(ops) if op["kind"] == "call_func"
+        ]
+        callback_load, value_load = [
+            (i, op["value"])
+            for i, op in enumerate(ops)
+            if op["kind"] == "frame_home_load"
+        ]
+        assert object_call < callback_load[0] < callback_call < value_load[0]
+        assert callback_load[1] == slots.index("callback")
+        assert value_load[1] == slots.index("value")
     else:
         assert loads == set()
 
@@ -4880,8 +5065,11 @@ value = Point(3)
     assert all(op.get("effect_proof") is None for op in reads)
 
 
+@pytest.mark.parametrize("target_python", [(3, 12), (3, 13), (3, 14)])
 @pytest.mark.parametrize("loop", ["while i < 3:", "for i in range(3):"])
-def test_function_loop_class_lookup_stays_on_executed_path(loop: str) -> None:
+def test_function_loop_class_lookup_stays_on_executed_path(
+    loop: str, target_python: tuple[int, int]
+) -> None:
     source = """
 class Point:
     def __init__(self, x):
@@ -4893,7 +5081,7 @@ def main():
         point = Point(i)
         i += 1
 """
-    gen = SimpleTIRGenerator(module_name="__main__")
+    gen = SimpleTIRGenerator(module_name="__main__", target_python=target_python)
     gen.visit(ast.parse(source.replace("LOOP", loop)))
     ir = gen.to_json()
     func_ops = next(
@@ -4908,27 +5096,28 @@ def main():
     ]
     assert not cache_vars
     assert not _module_attr_reads_named(func_ops, "Point")
-    reads = _module_global_reads_named(func_ops, "Point")
-    assert reads
-    # Loop versioning may clone the body; every clone reads the class inside
-    # its own loop and calls it there, never before the loop runs.
-    for callee in reads:
-        position = func_ops.index(callee)
-        starts = [
-            i
-            for i, op in enumerate(func_ops[:position])
-            if op.get("kind") == "loop_start"
-        ]
-        assert starts, f"class read before any loop: {callee}"
-        end = next(
-            i
-            for i, op in enumerate(func_ops)
-            if i > position and op.get("kind") == "loop_end"
-        )
-        assert any(
-            op["kind"] == "call_func" and op.get("args", [None])[0] == callee["out"]
-            for op in func_ops[starts[-1] + 1 : end]
-        )
+    callees = _module_global_reads_named(func_ops, "Point")
+    assert callees
+    # Loop specialization may clone the body. Every lookup and its invocation
+    # must remain inside its own loop, after the condition's exit check.
+    loop_exits: list[bool] = []
+    checked_callees: set[str] = set()
+    called_callees: set[str] = set()
+    for op in func_ops:
+        kind = op["kind"]
+        if kind == "loop_start":
+            loop_exits.append(False)
+        elif kind == "loop_end":
+            loop_exits.pop()
+        elif kind in {"loop_break_if_false", "loop_break_if_true"}:
+            loop_exits[-1] = True
+        elif op in callees:
+            assert loop_exits and loop_exits[-1]
+            checked_callees.add(op["out"])
+        elif kind == "call_func" and op.get("args", [None])[0] in checked_callees:
+            assert loop_exits and loop_exits[-1]
+            called_callees.add(op["args"][0])
+    assert called_callees == {op["out"] for op in callees}
 
 
 def test_dynamic_getattr_generic_obj_cannot_be_reused_without_callback_proof() -> None:
@@ -6214,18 +6403,30 @@ def test_runtime_guard_mismatch_continues_sccp_and_preserves_source_type(
     assert any(op.get("kind") == kind.lower() for op in lowered)
 
 
-def _reachable_without(
-    successors: dict[int, list[int]], removed: int | None
-) -> set[int]:
-    if removed == 0:
-        return set()
-    seen, stack = {0}, [0]
-    while stack:
-        for successor in successors.get(stack.pop(), ()):
-            if successor != removed and successor not in seen:
-                seen.add(successor)
-                stack.append(successor)
-    return seen
+def test_sccp_guard_tag_establishes_no_type_fact() -> None:
+    # A runtime guard returns its source unchanged even on a mismatch; it
+    # neither proves the source's tag nor traps the block, so SCCP must not
+    # fold a later TYPE_OF or comparison from it.
+    gen = SimpleTIRGenerator()
+    obj, expected = MoltValue("obj"), MoltValue("expected")
+    ops = [
+        MoltOp(kind="MISSING", args=[], result=obj),
+        MoltOp(kind="CONST", args=[1], result=expected),
+        MoltOp(kind="GUARD_TAG", args=[obj, expected], result=MoltValue("none")),
+        MoltOp(kind="TYPE_OF", args=[obj], result=MoltValue("observed")),
+        MoltOp(
+            kind="EQ",
+            args=[MoltValue("observed"), expected],
+            result=MoltValue("matches"),
+        ),
+    ]
+    gen._op_by_result = {op.result.name: op for op in ops if op.result.name != "none"}
+    cfg = build_cfg(ops)
+    sccp = gen._compute_sccp(ops, cfg)
+    state = sccp.out_values[cfg.index_to_block[len(ops) - 1]]
+    assert "__tag__:obj" not in state
+    assert state["observed"] is _SCCP_OVERDEFINED
+    assert state["matches"] is _SCCP_OVERDEFINED
 
 
 def _jump_label_ops(target: int, label: int, constant: int) -> list[MoltOp]:
@@ -6272,41 +6473,73 @@ def test_shared_cfg_cannot_be_mutated() -> None:
 
 @pytest.mark.parametrize("seed", range(300))
 def test_cfg_dominance_matches_the_path_definition(seed: int) -> None:
-    # Oracle: a dominates a reachable b exactly when removing a cuts every
-    # entry path to b; an unreachable block is dominated only by itself.
+    # Extend the exhaustive four-node oracle to larger, seeded cyclic graphs.
+    # Unreachable nodes cannot establish a value-availability proof.
     rng = random.Random(seed)
     count = rng.randint(1, 24)
-    successors = {
-        block: sorted(rng.sample(range(count), rng.randint(0, min(3, count))))
-        for block in range(count)
-    }
-    predecessors: dict[int, list[int]] = {block: [] for block in range(count)}
-    for block, targets in successors.items():
-        for target in targets:
-            predecessors[target].append(block)
-    reachable = _reachable_without(successors, None)
-    idom = cfg_analysis._compute_immediate_dominators(
-        successors=successors, predecessors=predecessors
+    successors = [
+        sorted(rng.sample(range(count), rng.randint(0, min(3, count))))
+        for _ in range(count)
+    ]
+    _assert_dominance_matches_path_removal(
+        successors, 0, DominatorTree.compute(successors)
     )
-    assert set(idom) == reachable  # one entry per reachable block, never a set
-    cfg = cfg_analysis.CFGGraph(
-        blocks=[],
-        index_to_block={},
-        label_to_block={},
-        block_entry_label={},
-        control=build_cfg([]).control,
-        successors=successors,
-        edge_kinds={},
-        predecessors=predecessors,
-        reachable=reachable,
-    )
-    assert cfg.idom == idom  # derived on first use from the same graph
-    for block in range(count):
-        for candidate in range(count):
-            if block not in reachable:
-                expected = candidate == block
-            else:
-                expected = candidate == block or block not in _reachable_without(
-                    successors, candidate
-                )
-            assert cfg.dominates(candidate, block) is expected, (candidate, block)
+
+
+def test_shared_cfg_computes_dominance_only_on_demand(tmp_path: Path) -> None:
+    label = str(tmp_path / "lazy_dominance")
+
+    def ops(constant: int) -> list[MoltOp]:
+        return [
+            MoltOp("CONST", [constant], MoltValue("value")),
+            MoltOp("JUMP", [label], MoltValue("none")),
+            MoltOp("LABEL", [label], MoltValue("none")),
+            MoltOp("ret_void", [], MoltValue("none")),
+        ]
+
+    first = build_cfg(ops(1))
+    assert "dominance" not in first.__dict__
+    dominance = first.dominance
+    second = build_cfg(ops(2))
+    assert second is first
+    assert second.dominance is dominance
+    assert dominance.dominates(0, first.index_to_block[3])
+
+
+def test_shared_cfg_keeps_exception_handler_identity() -> None:
+    def ops(handler: str) -> list[MoltOp]:
+        return [
+            MoltOp("TRY_START", [handler], MoltValue("none")),
+            MoltOp("ret_void", [], MoltValue("none")),
+            MoltOp("LABEL", ["first"], MoltValue("none")),
+            MoltOp("ret_void", [], MoltValue("none")),
+            MoltOp("LABEL", ["second"], MoltValue("none")),
+            MoltOp("ret_void", [], MoltValue("none")),
+        ]
+
+    first, second = build_cfg(ops("first")), build_cfg(ops("second"))
+    assert first is not second
+    start = first.index_to_block[0]
+    first_handler, second_handler = first.index_to_block[2], first.index_to_block[4]
+    assert first.edge_kinds[start, first_handler] == CFGEdgeKind.EXCEPTION
+    assert (start, second_handler) not in first.edge_kinds
+    assert second.edge_kinds[start, second_handler] == CFGEdgeKind.EXCEPTION
+    assert (start, first_handler) not in second.edge_kinds
+
+
+def test_shared_cfg_keeps_resume_edge_kind() -> None:
+    def ops(terminator: str) -> list[MoltOp]:
+        return [
+            MoltOp("STATE_SWITCH", [], MoltValue("none")),
+            MoltOp(terminator, [], MoltValue("none")),
+            MoltOp("CONST", [1], MoltValue("resumed")),
+            MoltOp("ret_void", [], MoltValue("none")),
+        ]
+
+    suspending, returning = build_cfg(ops("STATE_YIELD")), build_cfg(ops("ret_void"))
+    assert suspending is not returning
+    target = suspending.index_to_block[2]
+    assert suspending.edge_kinds[0, target] == CFGEdgeKind.RESUME
+    assert target in suspending.reachable
+    assert target not in returning.reachable
+    assert (0, returning.index_to_block[2]) not in returning.edge_kinds

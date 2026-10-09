@@ -1,12 +1,6 @@
 schema_version = 1
 
 [[harm]]
-id = "forbidden-checkout-mutation"
-harm = "A cwd reset or explicit path mutates/builds the retired OneDrive checkout."
-guard = "tools.forbidden_checkout_guard"
-canary = "forbidden_checkout_guard.synthetic-onedrive-mutation-refused"
-
-[[harm]]
 id = "agent-process-termination"
 harm = "A guard, gate, or hook gains capability to terminate an agent process."
 guard = "tools.apparatus_agent_safety"

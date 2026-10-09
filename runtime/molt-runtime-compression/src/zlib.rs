@@ -55,6 +55,7 @@ fn return_bytes(_py: &PyToken, data: &[u8]) -> u64 {
 }
 
 // ── Existing raw deflate/inflate ─────────────────────────────────────────────
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_deflate_raw(data_bits: u64, level_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let obj = obj_from_bits(data_bits);
@@ -107,6 +108,7 @@ pub extern "C" fn molt_deflate_raw(data_bits: u64, level_bits: u64) -> u64 {
         }
     })
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn molt_inflate_raw(data_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let obj = obj_from_bits(data_bits);

@@ -114,11 +114,11 @@ unsafe fn raw_fixture(bytes: &[u8]) -> *mut PyObject {
 fn text_ingress_and_publication_preserve_allocation_failures() {
     let mut hooks = support::stub_runtime_hooks();
     support::fake_strings::wire(&mut hooks);
-    hooks.alloc_str = text_alloc;
-    hooks.classify_heap = text_classify;
-    hooks.runtime_class_borrowed = text_runtime_class;
+    hooks.alloc_str = Some(text_alloc);
+    hooks.classify_heap = Some(text_classify);
+    hooks.runtime_class_borrowed = Some(text_runtime_class);
     hooks.dec_ref = text_release;
-    support::prepare_abi_test_thread(hooks);
+    let _abi_test = support::enter_abi_test(hooks);
     unsafe {
         for (index, class) in [&raw mut PyType_Type, &raw mut PyUnicode_Type]
             .into_iter()
@@ -188,8 +188,9 @@ fn text_ingress_and_publication_preserve_allocation_failures() {
             (&raw mut PyExc_MemoryError).cast()
         );
         let allocation_failure = errors::PyErr_GetRaisedException();
+        let allocation_failure_owner = refcount::OwnedPyObject::from_owned(allocation_failure);
         assert!(!allocation_failure.is_null());
-        refcount::Py_DECREF(allocation_failure);
+        drop(allocation_failure_owner);
 
         // These faults occur before the class constructor is entered. Both
         // must enter the same bounded scope as SetObject/Restore/Normalize.
@@ -209,22 +210,24 @@ fn text_ingress_and_publication_preserve_allocation_failures() {
                 (&raw mut PyExc_RecursionError).cast()
             );
             let raised = errors::PyErr_GetRaisedException();
+            let raised_owner = refcount::OwnedPyObject::from_owned(raised);
             assert!(
                 !raised.is_null(),
                 "recovery uses the canonical native constructor"
             );
             assert_eq!((*raised).ob_type, &raw mut PyExc_RecursionError);
-            refcount::Py_DECREF(raised);
+            drop(raised_owner);
             assert!(errors::PyErr_Occurred().is_null());
 
             errors::PyErr_SetString((&raw mut PyExc_IndexError).cast(), c"recovered".as_ptr());
             assert_eq!(errors::PyErr_Occurred(), (&raw mut PyExc_IndexError).cast());
             let recovered = errors::PyErr_GetRaisedException();
+            let recovered_owner = refcount::OwnedPyObject::from_owned(recovered);
             assert!(
                 !recovered.is_null(),
                 "a later normalization must still succeed"
             );
-            refcount::Py_DECREF(recovered);
+            drop(recovered_owner);
         }
 
         // Physical Unicode storage cannot stand in for semantic admission of
@@ -240,28 +243,39 @@ fn text_ingress_and_publication_preserve_allocation_failures() {
             (&raw mut PyExc_SystemError).cast()
         );
         let rejected = errors::PyErr_GetRaisedException();
+        let rejected_owner = refcount::OwnedPyObject::from_owned(rejected);
         assert!(
             !rejected.is_null(),
             "producer violation uses native exception construction"
         );
-        refcount::Py_DECREF(rejected);
+        drop(rejected_owner);
 
         // Preserve an allocator's exact selected exception for both failure
         // and an owned output returned alongside that exception.
         errors::PyErr_SetNone((&raw mut PyExc_TypeError).cast());
         let original = errors::PyErr_GetRaisedException();
+        let original_owner = refcount::OwnedPyObject::from_owned(original);
         assert!(!original.is_null());
+        struct ResetCallbackErrorSlots;
+        impl Drop for ResetCallbackErrorSlots {
+            fn drop(&mut self) {
+                CALLBACK_ERROR.store(0, Ordering::SeqCst);
+                CLASS_CALLBACK_ERROR.store(0, Ordering::SeqCst);
+            }
+        }
+        let callback_slots = ResetCallbackErrorSlots;
         CALLBACK_ERROR.store(original.addr(), Ordering::SeqCst);
         for returns_text in [false, true] {
             RETURN_TEXT_WITH_ERROR.store(returns_text, Ordering::SeqCst);
             OWNED_ERROR_TEXT_RELEASES.store(0, Ordering::SeqCst);
             errors::PyErr_SetString((&raw mut PyExc_ValueError).cast(), c"callback".as_ptr());
             let selected = errors::PyErr_GetRaisedException();
+            let selected_owner = refcount::OwnedPyObject::from_owned(selected);
             assert_eq!(
                 selected, original,
                 "diagnostics cannot replace the callback's exception"
             );
-            refcount::Py_DECREF(selected);
+            drop(selected_owner);
             assert_eq!(
                 OWNED_ERROR_TEXT_RELEASES.load(Ordering::SeqCst),
                 usize::from(returns_text)
@@ -275,12 +289,14 @@ fn text_ingress_and_publication_preserve_allocation_failures() {
         );
         CLASS_CALLBACK_ERROR.store(0, Ordering::SeqCst);
         let selected = errors::PyErr_GetRaisedException();
+        let selected_owner = refcount::OwnedPyObject::from_owned(selected);
         assert_eq!(
             selected, original,
             "class admission must preserve its callback's exact error"
         );
-        refcount::Py_DECREF(selected);
-        refcount::Py_DECREF(original);
+        drop(selected_owner);
+        drop(callback_slots);
+        drop(original_owner);
 
         refcount::Py_DECREF(high);
         refcount::Py_DECREF(low);

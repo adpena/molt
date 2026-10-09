@@ -46,7 +46,9 @@ pub use mutation::{
     molt_del_attr_generic, molt_del_attr_name, molt_del_attr_object, molt_del_attr_ptr,
     molt_set_attr_generic, molt_set_attr_name, molt_set_attr_object, molt_set_attr_ptr,
 };
-pub(crate) use scalar_attrs::{is_numeric_scalar_attr_receiver, resolve_scalar_attr};
+pub(crate) use scalar_attrs::{
+    is_numeric_scalar_attr_receiver, numeric_publish_members, resolve_scalar_attr,
+};
 use state::{
     ATTR_LOOKUP_TRACE_LINES, AttrLookupTraceGuard, attr_site_name_cache, trace_attr_lookup_enabled,
 };
@@ -376,24 +378,43 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
         }
         if type_id == TYPE_ID_BOUND_METHOD {
             let func_bits = bound_method_func_bits(obj_ptr);
-            if let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() {
-                if let Some(kind) = NativeCallableKind::from_class(_py, object_class_bits(obj_ptr))
-                {
-                    return native_callable_attr(_py, obj_ptr, func_ptr, kind, attr_bits);
+            if let Some(func_ptr) = obj_from_bits(func_bits).as_ptr()
+                && let Some(kind) = NativeCallableKind::from_class(_py, object_class_bits(obj_ptr))
+            {
+                return native_callable_attr(_py, obj_ptr, func_ptr, kind, attr_bits);
+            }
+            // Method type descriptors precede function attributes (CPython
+            // method_getattro). __doc__ alone delegates to the function.
+            let name = string_obj_to_owned(obj_from_bits(attr_bits))?;
+            match name.as_str() {
+                "__func__" => {
+                    inc_ref_bits(_py, func_bits);
+                    return Some(func_bits);
                 }
-                match string_obj_to_owned(obj_from_bits(attr_bits)).as_deref() {
-                    Some("__func__") => {
-                        inc_ref_bits(_py, func_bits);
-                        return Some(func_bits);
-                    }
-                    Some("__self__") => {
-                        let value = bound_method_self_bits(obj_ptr);
-                        inc_ref_bits(_py, value);
-                        return Some(value);
-                    }
-                    _ => return attr_lookup_ptr(_py, func_ptr, attr_bits),
+                "__self__" => {
+                    let value = bound_method_self_bits(obj_ptr);
+                    inc_ref_bits(_py, value);
+                    return Some(value);
+                }
+                _ => {}
+            }
+            if name != "__doc__" {
+                let class_bits = type_of_bits(_py, obj_bits);
+                if let Some(class) = obj_from_bits(class_bits).as_ptr()
+                    && let Some(descriptor) = class_attr_lookup_raw_mro(_py, class, attr_bits)
+                {
+                    return descriptor_bind(_py, descriptor, Some(class_bits), Some(obj_bits));
+                }
+                if exception_pending(_py) {
+                    return None;
                 }
             }
+            // C PyMethod_New accepts a noncallable inline function value too.
+            return if let Some(func_ptr) = obj_from_bits(func_bits).as_ptr() {
+                attr_lookup_ptr(_py, func_ptr, attr_bits)
+            } else {
+                resolve_scalar_attr(_py, func_bits, &name)
+            };
         }
         if type_id == TYPE_ID_EXCEPTION {
             return crate::builtins::attr::object_attr_lookup_with_policy(
@@ -834,24 +855,15 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
         }
         if type_id == TYPE_ID_COMPLEX
             && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
+            && let Some(func_bits) = complex_method_bits(_py, name.as_str())
         {
-            if name == "real" {
-                let value = *complex_ref(obj_ptr);
-                return Some(MoltObject::from_float(value.re).bits());
-            }
-            if name == "imag" {
-                let value = *complex_ref(obj_ptr);
-                return Some(MoltObject::from_float(value.im).bits());
-            }
-            if let Some(func_bits) = complex_method_bits(_py, name.as_str()) {
-                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return descriptor_bind(
-                    _py,
-                    func_bits,
-                    Some(type_of_bits(_py, self_bits)),
-                    Some(self_bits),
-                );
-            }
+            let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+            return descriptor_bind(
+                _py,
+                func_bits,
+                Some(type_of_bits(_py, self_bits)),
+                Some(self_bits),
+            );
         }
         if type_id == TYPE_ID_TYPE {
             return type_attr_lookup_ptr_default(_py, obj_ptr, attr_bits);

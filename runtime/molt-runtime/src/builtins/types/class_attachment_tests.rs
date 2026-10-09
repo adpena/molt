@@ -1,5 +1,6 @@
 use super::*;
 use crate::builtins::attributes::molt_set_attr_name;
+use crate::header_from_obj_ptr;
 use crate::object::accessors::{molt_object_field_get, molt_object_field_set};
 use crate::object::builders::{molt_alloc_class, molt_object_publish_initialized};
 
@@ -128,10 +129,34 @@ fn class_assignment_respects_data_descriptor_in_public_and_explicit_setters() {
         let property_ptr = alloc_property_obj(_py, none, none, none);
         assert!(!property_ptr.is_null());
         let property = MoltObject::from_ptr(property_ptr).bits();
-        assert_eq!(molt_set_attr_name(first, class_name, property), none);
-        assert!(!exception_pending(_py));
-
         let first_ptr = obj_from_bits(first).as_ptr().expect("first class");
+        let namespace = unsafe { crate::object::layout::class_dict_bits(first_ptr) };
+        let namespace_ptr = obj_from_bits(namespace).as_ptr().expect("class namespace");
+        let metaclass = type_of_bits(_py, first);
+        assert_eq!(molt_set_attr_name(first, class_name, property), none);
+        assert!(exception_pending(_py));
+        let error = crate::molt_exception_last_pending();
+        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            _py,
+            error,
+            "TypeError"
+        ));
+        crate::molt_exception_clear();
+        assert_eq!(type_of_bits(_py, first), metaclass);
+        assert_eq!(
+            unsafe { dict_get_in_place(_py, namespace_ptr, class_name) },
+            None
+        );
+        dec_ref_bits(_py, error);
+
+        // A class-body assignment writes the namespace before sealing. It
+        // does not assign the class object's own metaclass descriptor.
+        unsafe { dict_set_in_place(_py, namespace_ptr, class_name, property) };
+        assert!(!exception_pending(_py));
+        assert_eq!(
+            unsafe { dict_get_in_place(_py, namespace_ptr, class_name) },
+            Some(property)
+        );
         unsafe { crate::object::class_finish_definition(_py, first_ptr) }
             .expect("seal first class");
         let size = unsafe { crate::object::layout::class_cached_layout_size(first_ptr) }
@@ -140,15 +165,41 @@ fn class_assignment_respects_data_descriptor_in_public_and_explicit_setters() {
         let object_ptr = obj_from_bits(object).as_ptr().expect("instance");
         assert_eq!(molt_object_publish_initialized(object), object);
 
-        assert_eq!(molt_set_attr_name(object, class_name, second), none);
-        assert!(exception_pending(_py));
-        assert_eq!(unsafe { object_class_bits(object_ptr) }, first);
-        crate::molt_exception_clear();
-
-        assert_eq!(crate::molt_object_setattr(object, class_name, second), none);
-        assert!(exception_pending(_py));
-        assert_eq!(unsafe { object_class_bits(object_ptr) }, first);
-        crate::molt_exception_clear();
+        let first_owners = unsafe { (*header_from_obj_ptr(first_ptr)).ref_count_snapshot() };
+        let second_ptr = obj_from_bits(second).as_ptr().expect("second class");
+        let second_owners = unsafe { (*header_from_obj_ptr(second_ptr)).ref_count_snapshot() };
+        for explicit in [false, true] {
+            let result = if explicit {
+                crate::molt_object_setattr(object, class_name, second)
+            } else {
+                molt_set_attr_name(object, class_name, second)
+            };
+            assert_eq!(result, none);
+            assert!(exception_pending(_py));
+            let error = crate::molt_exception_last_pending();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                _py,
+                error,
+                "AttributeError"
+            ));
+            // Normal dictionary lookup admits hashing only without a raised
+            // exception. Keep our error owner while checking the rejected write.
+            crate::molt_exception_clear();
+            assert_eq!(unsafe { object_class_bits(object_ptr) }, first);
+            assert_eq!(
+                unsafe { dict_get_in_place(_py, namespace_ptr, class_name) },
+                Some(property)
+            );
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(first_ptr)).ref_count_snapshot() },
+                first_owners
+            );
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(second_ptr)).ref_count_snapshot() },
+                second_owners
+            );
+            dec_ref_bits(_py, error);
+        }
 
         dec_ref_bits(_py, object);
         dec_ref_bits(_py, property);

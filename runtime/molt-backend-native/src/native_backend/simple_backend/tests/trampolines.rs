@@ -34,6 +34,7 @@ impl TaskPayloadCase {
 fn task_trampoline_clif(
     task_kind: TrampolineTaskKind,
     payload: TaskPayloadCase,
+    poll_symbol: &str,
 ) -> CompiledFunctionClif {
     let mut backend = SimpleBackend::new();
     let SimpleBackend {
@@ -43,7 +44,7 @@ fn task_trampoline_clif(
     let function = SimpleBackend::task_trampoline_clif_for_test(
         module,
         import_ids,
-        "allocation_probe",
+        poll_symbol,
         TrampolineSpec {
             arity: payload.arity(),
             has_closure: payload.has_closure(),
@@ -164,8 +165,46 @@ fn native_task_trampolines_guard_allocation_before_every_payload_and_completion_
             TaskPayloadCase::Positional,
             TaskPayloadCase::Closure,
         ] {
-            let clif = task_trampoline_clif(task_kind, payload);
+            let clif = task_trampoline_clif(task_kind, payload, "allocation_probe");
             assert_task_allocation_guard(&clif, task_kind, payload);
+        }
+    }
+}
+
+#[test]
+fn task_trampolines_emit_runtime_keys_and_compiled_code_addresses() {
+    for task_kind in [
+        TrampolineTaskKind::Generator,
+        TrampolineTaskKind::Coroutine,
+        TrampolineTaskKind::AsyncGen,
+    ] {
+        for (symbol, expected_key) in [
+            ("molt_async_sleep_poll", Some(0xFFFF_FF00_0000_0101_u64)),
+            ("molt_promise_poll", Some(0xFFFF_FF00_0000_0104_u64)),
+            ("ordinary_poll", None),
+        ] {
+            let compiled = task_trampoline_clif(task_kind, TaskPayloadCase::None, symbol);
+            let function = &compiled.function;
+            let calls = call_sites_for_import(
+                function,
+                compiled.import_ids[crate::runtime_import_abi::MOLT_TASK_NEW.name],
+            );
+            assert_eq!(calls.len(), 1);
+            let poll = function.dfg.inst_args(calls[0].1)[0];
+            assert_eq!(
+                constant(function, poll).map(|key| key as u64),
+                expected_key,
+                "{task_kind:?}/{symbol}: {}",
+                function.display()
+            );
+            if expected_key.is_none() {
+                assert_eq!(
+                    function.dfg.insts[definition(function, poll).unwrap()].opcode(),
+                    Opcode::FuncAddr,
+                    "{}",
+                    function.display()
+                );
+            }
         }
     }
 }

@@ -302,6 +302,38 @@ crate::builtins::methods::native_method_table!(
     dict_keys_method_bits, publish_dict_keys_methods, py, name, [],
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::DictKeys,
     {}, {
+        "__or__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_keys, "__or__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_or_slot), 2)),
+        "__ror__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_keys, "__ror__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_ror_slot), 2)),
+        "__and__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_keys, "__and__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_and_slot), 2)),
+        "__rand__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_keys, "__rand__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_rand_slot), 2)),
+        "__sub__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_keys, "__sub__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_sub_slot), 2)),
+        "__rsub__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_keys, "__rsub__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_rsub_slot), 2)),
+        "__xor__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_keys, "__xor__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_xor_slot), 2)),
+        "__rxor__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_keys, "__rxor__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_rxor_slot), 2)),
         "__len__" => dict_view_length_descriptor!(py, dict_keys, TYPE_ID_DICT_KEYS_VIEW),
         "__contains__" => {
             extern "C" fn contains(view: u64, item: u64) -> u64 {
@@ -323,6 +355,38 @@ crate::builtins::methods::native_method_table!(
     dict_items_method_bits, publish_dict_items_methods, py, name, [],
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::DictItems,
     {}, {
+        "__or__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_items, "__or__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_or_slot), 2)),
+        "__ror__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_items, "__ror__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_ror_slot), 2)),
+        "__and__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_items, "__and__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_and_slot), 2)),
+        "__rand__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_items, "__rand__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_rand_slot), 2)),
+        "__sub__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_items, "__sub__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_sub_slot), 2)),
+        "__rsub__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_items, "__rsub__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_rsub_slot), 2)),
+        "__xor__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_items, "__xor__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_xor_slot), 2)),
+        "__rxor__" => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(py).dict_items, "__rxor__"),
+            fn_addr!(crate::object::ops_arith::native_slots::view_rxor_slot), 2)),
         "__len__" => dict_view_length_descriptor!(py, dict_items, TYPE_ID_DICT_ITEMS_VIEW),
         "__contains__" => {
             extern "C" fn contains(view: u64, item: u64) -> u64 {
@@ -339,3 +403,48 @@ crate::builtins::methods::native_method_table!(
         },
     }
 );
+
+// Each public iterator class publishes its actual descriptor owner through the
+// existing declaration macro. The method body shares the iterator state owner.
+crate::builtins::methods::native_method_table!(dict_keyiterator_method_bits, publish_dict_keyiterator_methods, py, name, [], {
+}, {
+    "__length_hint__" => Some(builtin_func_bits(py,
+        NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).dict_keyiterator, "__length_hint__"),
+        fn_addr!(crate::object::ops_iter::hash_iterator_length_hint), 1)),
+});
+crate::builtins::methods::native_method_table!(dict_valueiterator_method_bits, publish_dict_valueiterator_methods, py, name, [], {
+}, {
+    "__length_hint__" => Some(builtin_func_bits(py,
+        NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).dict_valueiterator, "__length_hint__"),
+        fn_addr!(crate::object::ops_iter::hash_iterator_length_hint), 1)),
+});
+crate::builtins::methods::native_method_table!(dict_itemiterator_method_bits, publish_dict_itemiterator_methods, py, name, [], {
+}, {
+    "__length_hint__" => Some(builtin_func_bits(py,
+        NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).dict_itemiterator, "__length_hint__"),
+        fn_addr!(crate::object::ops_iter::hash_iterator_length_hint), 1)),
+});
+crate::builtins::methods::native_method_table!(dict_reversekeyiterator_method_bits, publish_dict_reversekeyiterator_methods, py, name, [], {
+}, {
+    "__length_hint__" => Some(builtin_func_bits(py,
+        NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).dict_reversekeyiterator, "__length_hint__"),
+        fn_addr!(crate::object::ops_iter::hash_iterator_length_hint), 1)),
+});
+crate::builtins::methods::native_method_table!(dict_reversevalueiterator_method_bits, publish_dict_reversevalueiterator_methods, py, name, [], {
+}, {
+    "__length_hint__" => Some(builtin_func_bits(py,
+        NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).dict_reversevalueiterator, "__length_hint__"),
+        fn_addr!(crate::object::ops_iter::hash_iterator_length_hint), 1)),
+});
+crate::builtins::methods::native_method_table!(dict_reverseitemiterator_method_bits, publish_dict_reverseitemiterator_methods, py, name, [], {
+}, {
+    "__length_hint__" => Some(builtin_func_bits(py,
+        NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).dict_reverseitemiterator, "__length_hint__"),
+        fn_addr!(crate::object::ops_iter::hash_iterator_length_hint), 1)),
+});
+crate::builtins::methods::native_method_table!(set_iterator_method_bits, publish_set_iterator_methods, py, name, [], {
+}, {
+    "__length_hint__" => Some(builtin_func_bits(py,
+        NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).set_iterator, "__length_hint__"),
+        fn_addr!(crate::object::ops_iter::hash_iterator_length_hint), 1)),
+});

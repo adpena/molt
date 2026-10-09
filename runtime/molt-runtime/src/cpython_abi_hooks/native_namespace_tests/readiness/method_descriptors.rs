@@ -334,11 +334,12 @@ fn defining_class_keywords_and_original_errors_survive_bound_and_unbound_calls()
                     if fail {
                         assert!(result.is_null());
                         let raised = errors::PyErr_GetRaisedException();
+                        let raised_owner = refcount::OwnedPyObject::from_owned(raised);
                         assert_eq!(
                             raised, failure,
                             "callback exception identity survives packing and cleanup"
                         );
-                        refcount::Py_DECREF(raised);
+                        drop(raised_owner);
                     } else {
                         assert_eq!(result, self_);
                         refcount::Py_DECREF(result);

@@ -16,20 +16,22 @@ use crate::builtins::attr::{
     attr_name_bits_from_bytes, clear_attribute_error_if_pending, module_attr_lookup,
 };
 use crate::builtins::classes::builtin_classes;
-use crate::builtins::exceptions::molt_exception_last_pending;
+use crate::builtins::exceptions::{
+    ExceptionValue, molt_exception_last_pending, raise_import_error,
+};
 use crate::builtins::io::{molt_sys_stderr, molt_sys_stdin, molt_sys_stdout};
 use crate::{
     HashContext, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_SET, TYPE_ID_STRING,
     alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string, alloc_tuple, call_callable0,
     call_callable1, call_callable2, class_mro_vec, clear_exception, dec_ref_bits,
-    dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place, exception_pending,
-    format_obj_str, frame_stack_active_globals_bits, has_capability, inc_ref_bits,
-    init_atomic_bits, intern_static_name, is_missing_bits, is_truthy, missing_bits,
-    module_dict_bits, module_name_bits, molt_call_bind, molt_callargs_expand_kwstar,
-    molt_callargs_expand_star, molt_callargs_new, molt_callargs_push_pos, molt_exception_kind,
-    molt_exception_last, molt_getattr_builtin, molt_int_from_obj, molt_is_callable, obj_from_bits,
-    object_type_id, ptr_from_bits, raise_exception, runtime_state, set_add_in_place, string_bytes,
-    string_len, string_obj_to_owned, to_i64, type_name, type_of_bits,
+    dict_del_in_place, dict_get_in_place, dict_set_in_place, exception_pending, format_obj_str,
+    frame_stack_active_globals_bits, has_capability, inc_ref_bits, init_atomic_bits,
+    intern_static_name, is_missing_bits, is_truthy, missing_bits, module_dict_bits,
+    module_name_bits, molt_call_bind, molt_callargs_expand_kwstar, molt_callargs_expand_star,
+    molt_callargs_new, molt_callargs_push_pos, molt_exception_kind, molt_exception_last,
+    molt_getattr_builtin, molt_int_from_obj, molt_is_callable, obj_from_bits, object_type_id,
+    ptr_from_bits, raise_exception, runtime_state, set_add_in_place, string_bytes, string_len,
+    string_obj_to_owned, to_i64, type_name, type_of_bits,
 };
 
 mod execution;
@@ -2490,10 +2492,10 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                 .unwrap_or_else(|| "<attr>".to_string());
             if debug_attr {
                 let mut present = false;
-                let order = dict_order(_dict_ptr);
-                let entries = order.len() / 2;
-                for pair in order.as_chunks::<2>().0 {
-                    if let Some(key_name) = string_obj_to_owned(obj_from_bits(pair[0]))
+                let order = crate::dict_live_entries(_dict_ptr);
+                let entries = crate::dict_len(_dict_ptr);
+                for row in order {
+                    if let Some(key_name) = string_obj_to_owned(obj_from_bits(row.key))
                         && key_name == attr_name
                     {
                         present = true;
@@ -2512,53 +2514,212 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
     })
 }
 
-/// Look up `name` in `sys.modules`, returning a fresh (inc-ref'd) reference to
-/// the cached module on hit. Used by [`molt_module_import_from`] for CPython's
-/// circular-import recovery path. Returns `None` on a clean miss; if building
-/// the lookup key fails it leaves a `MemoryError` pending (the caller observes
-/// it via `exception_pending`).
-unsafe fn import_from_sys_modules_lookup(_py: &PyToken<'_>, name: &str) -> Option<u64> {
+/// Circular-import recovery consumes the public cache exactly, including a
+/// cached None. Unlike IMPORT_NAME, IMPORT_FROM does not reject that value.
+unsafe fn import_from_sys_modules_lookup(
+    py: &PyToken<'_>,
+    module_name: u64,
+    attr: u64,
+) -> Option<u64> {
     unsafe {
-        let sys_bits = interpreter_sys_module(_py)?;
-        let modules_bits = sys_modules_dict_bits(_py, sys_bits)?;
+        let sys_bits = interpreter_sys_module(py)?;
+        let modules_bits = sys_modules_dict_bits(py, sys_bits)?;
         let modules_ptr = ptr_from_bits(modules_bits);
         let _modules_owner = crate::PtrDropGuard::new(modules_ptr);
-
-        let key_ptr = alloc_string(_py, name.as_bytes());
+        let name_ptr = obj_from_bits(module_name).as_ptr()?;
+        let attr_ptr = obj_from_bits(attr).as_ptr()?;
+        let mut name =
+            std::slice::from_raw_parts(string_bytes(name_ptr), string_len(name_ptr)).to_vec();
+        name.push(b'.');
+        name.extend_from_slice(std::slice::from_raw_parts(
+            string_bytes(attr_ptr),
+            string_len(attr_ptr),
+        ));
+        let key_ptr = alloc_string(py, &name);
         if key_ptr.is_null() {
-            raise_exception::<u64>(_py, "MemoryError", "out of memory");
+            raise_exception::<u64>(py, "MemoryError", "out of memory");
             return None;
         }
-        let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        let found = dict_get_in_place(_py, modules_ptr, key_bits);
-        dec_ref_bits(_py, key_bits);
-        if exception_pending(_py) {
+        let key = ExceptionValue::adopt(py, MoltObject::from_ptr(key_ptr).bits());
+        let found = dict_get_in_place(py, modules_ptr, key.bits());
+        if exception_pending(py) {
             return None;
         }
         let bits = found?;
-        if obj_from_bits(bits).is_none() {
-            return None;
-        }
-        inc_ref_bits(_py, bits);
+        inc_ref_bits(py, bits);
         Some(bits)
     }
 }
 
-/// Best-effort module file origin for an `ImportError` message, mirroring the
-/// `(origin)` suffix CPython's `import_from` derives from a module's file
-/// origin. Returns `None` — rendered as `"unknown location"` — for modules with
-/// no file origin (builtins, frozen, synthetic).
-unsafe fn module_file_origin(_py: &PyToken<'_>, module_ptr: *mut u8) -> Option<String> {
+/// PyModule_GetFilenameObject reads the physical module dictionary, bypassing
+/// descriptors and __getattr__. A missing/non-string filename is no origin.
+unsafe fn module_file_origin(py: &PyToken<'_>, module_bits: u64) -> Option<u64> {
     unsafe {
-        let dict_bits = module_dict_bits(module_ptr);
-        let dict_ptr = obj_from_bits(dict_bits).as_ptr()?;
-        if object_type_id(dict_ptr) != TYPE_ID_DICT {
+        let module_ptr = obj_from_bits(module_bits).as_ptr()?;
+        if object_type_id(module_ptr) != TYPE_ID_MODULE {
             return None;
         }
-        let file_key = intern_static_name(_py, &modules_state(_py).module_file_name, b"__file__");
-        let file_bits = dict_get_in_place(_py, dict_ptr, file_key)?;
-        string_obj_to_owned(obj_from_bits(file_bits))
+        let dict_ptr = obj_from_bits(module_dict_bits(module_ptr)).as_ptr()?;
+        let key = intern_static_name(py, &modules_state(py).module_file_name, b"__file__");
+        let bits = dict_get_in_place(py, dict_ptr, key)?;
+        if !import_from_is_string(bits) {
+            return None;
+        }
+        inc_ref_bits(py, bits);
+        Some(bits)
     }
+}
+
+fn import_from_is_string(bits: u64) -> bool {
+    obj_from_bits(bits)
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
+}
+
+/// The existing importlib optional-attribute owner preserves descriptor and
+/// PEP 562 failures; only AttributeError means absence. Keep owned results
+/// across subsequent metadata callbacks and error-preserving cleanup.
+fn import_from_attr<'a, 'py>(
+    py: &'a PyToken<'py>,
+    object: u64,
+    name: &[u8],
+) -> Result<Option<ExceptionValue<'a, 'py>>, u64> {
+    let key = attr_name_bits_from_bytes(py, name)
+        .map(|bits| ExceptionValue::adopt(py, bits))
+        .ok_or_else(|| MoltObject::none().bits())?;
+    crate::builtins::platform::getattr_optional_bits(py, object, key.bits())
+        .map(|value| value.map(|bits| ExceptionValue::adopt(py, bits)))
+}
+
+fn import_from_initializing(py: &PyToken<'_>, spec: u64) -> Result<bool, u64> {
+    let Some(value) = import_from_attr(py, spec, b"_initializing")? else {
+        return Ok(false);
+    };
+    let result = is_truthy(py, obj_from_bits(value.bits()));
+    if exception_pending(py) {
+        Err(MoltObject::none().bits())
+    } else {
+        Ok(result)
+    }
+}
+
+fn import_from_error(py: &PyToken<'_>, module: u64, attr: u64, name: Option<u64>) -> u64 {
+    let modern = crate::object::ops_sys::runtime_target_at_least(py, 3, 13);
+    let none = MoltObject::none().bits();
+    let mut origin = None;
+    let mut initializing = false;
+    if modern {
+        let spec = match import_from_attr(py, module, b"__spec__") {
+            Ok(value) => value,
+            Err(result) => return result,
+        };
+        // An absent spec differs from a present None: only a present spec
+        // takes the file fallback and circular-initialization path in 3.13+.
+        if let Some(spec) = spec {
+            let has_location = match import_from_attr(py, spec.bits(), b"has_location") {
+                Ok(value) => value,
+                Err(result) => return result,
+            };
+            let located = has_location
+                .as_ref()
+                .is_some_and(|value| is_truthy(py, obj_from_bits(value.bits())));
+            if exception_pending(py) {
+                return none;
+            }
+            if located {
+                origin = match import_from_attr(py, spec.bits(), b"origin") {
+                    Ok(value) => value.filter(|value| import_from_is_string(value.bits())),
+                    Err(result) => return result,
+                };
+            }
+            if origin.is_none() {
+                origin = unsafe { module_file_origin(py, module) }
+                    .map(|bits| ExceptionValue::adopt(py, bits));
+                if exception_pending(py) {
+                    return none;
+                }
+            }
+            initializing = match import_from_initializing(py, spec.bits()) {
+                Ok(value) => value,
+                Err(result) => return result,
+            };
+        }
+    } else {
+        origin =
+            unsafe { module_file_origin(py, module) }.map(|bits| ExceptionValue::adopt(py, bits));
+        if origin.is_none() {
+            // 3.12 clears PyModule_GetFilenameObject failures and does not
+            // consult __spec__ when the filename is absent.
+            clear_exception(py);
+        } else {
+            initializing = import_from_attr(py, module, b"__spec__")
+                .and_then(|spec| match spec {
+                    Some(spec) => import_from_initializing(py, spec.bits()),
+                    None => Ok(false),
+                })
+                .unwrap_or_else(|_| {
+                    // 3.12 _PyModuleSpec_IsInitializing explicitly clears
+                    // callback failures; 3.13+ propagates them.
+                    clear_exception(py);
+                    false
+                });
+        }
+    }
+    let attr_repr = ExceptionValue::adopt(py, crate::molt_repr_from_obj(attr));
+    if exception_pending(py) {
+        return none;
+    }
+    let name_repr = name.map(|bits| ExceptionValue::adopt(py, crate::molt_repr_from_obj(bits)));
+    if exception_pending(py) {
+        return none;
+    }
+    // Keep Python's lossless string storage, including surrogate characters.
+    let mut message = b"cannot import name ".to_vec();
+    unsafe {
+        let ptr = ptr_from_bits(attr_repr.bits());
+        message.extend_from_slice(std::slice::from_raw_parts(
+            string_bytes(ptr),
+            string_len(ptr),
+        ));
+    };
+    if initializing {
+        message.extend_from_slice(b" from partially initialized module ");
+    } else {
+        message.extend_from_slice(b" from ");
+    }
+    if let Some(name_repr) = name_repr {
+        unsafe {
+            let ptr = ptr_from_bits(name_repr.bits());
+            message.extend_from_slice(std::slice::from_raw_parts(
+                string_bytes(ptr),
+                string_len(ptr),
+            ));
+        };
+    } else {
+        message.extend_from_slice(b"'<unknown module name>'");
+    }
+    if initializing {
+        message.extend_from_slice(b" (most likely due to a circular import)");
+    }
+    if let Some(origin) = origin.as_ref() {
+        let rendered =
+            crate::object::ops_format::format_obj_str_bytes(py, obj_from_bits(origin.bits()));
+        if exception_pending(py) {
+            return none;
+        }
+        message.extend_from_slice(b" (");
+        message.extend_from_slice(&rendered);
+        message.push(b')');
+    } else if !initializing {
+        message.extend_from_slice(b" (unknown location)");
+    }
+    raise_import_error(
+        py,
+        &message,
+        name.unwrap_or(none),
+        origin.as_ref().map_or(none, ExceptionValue::bits),
+        attr,
+    )
 }
 
 /// Publish a freshly loaded child through Python's attribute protocol once.
@@ -2682,79 +2843,59 @@ pub(crate) fn prepare_from_import_child(
 /// raising `ValueError`) propagates unchanged, exactly as CPython does.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_import_from(module_bits: u64, attr_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let module_obj = obj_from_bits(module_bits);
-        let Some(module_ptr) = module_obj.as_ptr() else {
-            // Mirror molt_module_get_attr: a None/pending module operand on an
-            // exception-handler continuation path propagates the pending state
-            // rather than overwriting it.
-            if module_obj.is_none() || exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
-                .unwrap_or_else(|| "<attr>".to_string());
-            let msg = format!(
-                "module attribute access expects module, got non-pointer (bits=0x{:x}) for attr '{}'",
-                module_bits, attr_name
-            );
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        };
-        unsafe {
-            if object_type_id(module_ptr) != TYPE_ID_MODULE {
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
-                    .unwrap_or_else(|| "<attr>".to_string());
-                let type_id = object_type_id(module_ptr);
-                let msg = format!(
-                    "module attribute access expects module, got type_id={} (bits=0x{:x}) for attr '{}'",
-                    type_id, module_bits, attr_name
-                );
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
-            // Step 1: module-aware attribute lookup (resolves PEP 562
-            // module-level `__getattr__` identically to molt_module_get_attr).
-            if let Some(val) =
-                crate::builtins::attributes::attr_lookup_ptr(_py, module_ptr, attr_bits)
-            {
-                return val;
-            }
-            // Attribute lookup returned None: a clean miss, or the lookup
-            // raised. CPython's IMPORT_FROM converts an `AttributeError` into
-            // the submodule-fallback + `ImportError`, but lets any other
-            // exception propagate. `clear_attribute_error_if_pending` clears a
-            // pending AttributeError (cases: clean miss / AttributeError →
-            // nothing left pending → fall through); a still-pending exception
-            // afterward is a non-AttributeError that must propagate.
-            clear_attribute_error_if_pending(_py);
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            let module_name = string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr)))
-                .unwrap_or_default();
-            let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
-                .unwrap_or_else(|| "<attr>".to_string());
-            // Step 2: circular-import recovery via sys.modules["{module}.{name}"].
-            let full_name = format!("{module_name}.{attr_name}");
-            if let Some(submodule_bits) = import_from_sys_modules_lookup(_py, &full_name) {
-                return submodule_bits;
-            }
-            if exception_pending(_py) {
-                // Building the sys.modules lookup key failed — propagate.
-                return MoltObject::none().bits();
-            }
-            // Step 3: raise ImportError with CPython's origin suffix.
-            let msg = match module_file_origin(_py, module_ptr) {
-                Some(path) => {
-                    format!("cannot import name '{attr_name}' from '{module_name}' ({path})")
-                }
-                None => format!(
-                    "cannot import name '{attr_name}' from '{module_name}' (unknown location)"
-                ),
-            };
-            raise_exception::<_>(_py, "ImportError", &msg)
+    crate::with_gil_entry_nopanic!(py, {
+        if exception_pending(py) {
+            return MoltObject::none().bits();
         }
+        let _module = ExceptionValue::pin(py, module_bits);
+        let _attr = ExceptionValue::pin(py, attr_bits);
+        // IMPORT_FROM also accepts a non-module result from an overridden
+        // __import__; the ordinary attribute protocol owns that lookup.
+        if let Some(ptr) = obj_from_bits(module_bits).as_ptr() {
+            // Retain the existing pointer lookup fast path: a clean missing
+            // attribute does not allocate a throwaway AttributeError.
+            if let Some(value) =
+                unsafe { crate::builtins::attributes::attr_lookup_ptr(py, ptr, attr_bits) }
+            {
+                return value;
+            }
+            clear_attribute_error_if_pending(py);
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+        } else {
+            match crate::builtins::platform::getattr_optional_bits(py, module_bits, attr_bits) {
+                Ok(Some(value)) => return value,
+                Ok(None) => {}
+                Err(result) => return result,
+            }
+        }
+        let name = match import_from_attr(py, module_bits, b"__name__") {
+            Ok(value) => value.filter(|value| import_from_is_string(value.bits())),
+            Err(result) => {
+                if crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
+                    return result;
+                }
+                clear_exception(py);
+                None
+            }
+        };
+        if let Some(name) = name.as_ref() {
+            if let Some(value) =
+                unsafe { import_from_sys_modules_lookup(py, name.bits(), attr_bits) }
+            {
+                return value;
+            }
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+        }
+        import_from_error(
+            py,
+            module_bits,
+            attr_bits,
+            name.as_ref().map(ExceptionValue::bits),
+        )
     })
 }
 
@@ -2819,14 +2960,14 @@ pub extern "C" fn molt_namespace_del(namespace_bits: u64, name_bits: u64) -> u64
 fn global_name_suggestion(py: &PyToken<'_>, dictionary: u64, name: &str) -> Option<String> {
     let ptr = crate::builtins::frames::globals_namespace_storage_ptr(py, dictionary)?;
     unsafe {
-        let order = crate::builtins::containers::dict_order(ptr);
+        let length = crate::dict_len(ptr);
         use crate::builtins::diagnostic_suggestions::{MAX_CANDIDATE_ITEMS, calculate_suggestion};
-        if order.len() / 2 >= MAX_CANDIDATE_ITEMS {
+        if length >= MAX_CANDIDATE_ITEMS {
             return None;
         }
-        let mut candidates = Vec::with_capacity(order.len() / 2);
-        for pair in order.as_chunks::<2>().0 {
-            let key = obj_from_bits(pair[0]).as_ptr()?;
+        let mut candidates = Vec::with_capacity(length);
+        for row in crate::dict_live_entries(ptr) {
+            let key = obj_from_bits(row.key).as_ptr()?;
             if object_type_id(key) != TYPE_ID_STRING {
                 return None;
             }
@@ -3402,6 +3543,155 @@ mod tests {
     }
 
     #[test]
+    fn import_from_publishes_owned_metadata_and_versioned_origin() {
+        let transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let string = |value: &[u8]| {
+                let ptr = alloc_string(py, value);
+                assert!(!ptr.is_null());
+                ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits())
+            };
+            let name = string(b"owned_import_receiver");
+            let module_ptr = alloc_module_obj(py, name.bits());
+            assert!(!module_ptr.is_null());
+            let module = ExceptionValue::adopt(py, MoltObject::from_ptr(module_ptr).bits());
+            let spec_ptr = alloc_module_obj(py, name.bits());
+            assert!(!spec_ptr.is_null());
+            let spec = ExceptionValue::adopt(py, MoltObject::from_ptr(spec_ptr).bits());
+            let file = string(b"/import-receiver/file.py");
+            let origin = string(b"/import-receiver/spec.py");
+            let set = |receiver: *mut u8, key: &[u8], value: u64| unsafe {
+                let key = string(key);
+                let dict = ptr_from_bits(module_dict_bits(receiver));
+                dict_set_in_place(py, dict, key.bits(), value);
+                assert!(!exception_pending(py));
+            };
+            set(module_ptr, b"__file__", file.bits());
+            set(module_ptr, b"__spec__", spec.bits());
+            set(spec_ptr, b"origin", origin.bits());
+            set(
+                spec_ptr,
+                b"has_location",
+                MoltObject::from_bool(true).bits(),
+            );
+            set(
+                spec_ptr,
+                b"_initializing",
+                MoltObject::from_bool(false).bits(),
+            );
+            for minor in [12, 13, 14] {
+                transaction.with_target_python_minor(py, minor, || {
+                    for (member, expected_message) in [
+                        (
+                            b"first".as_slice(),
+                            "cannot import name 'first' from 'owned_import_receiver'",
+                        ),
+                        (
+                            b"second".as_slice(),
+                            "cannot import name 'second' from 'owned_import_receiver'",
+                        ),
+                    ] {
+                        let attr = string(member);
+                        let result = molt_module_import_from(module.bits(), attr.bits());
+                        assert!(obj_from_bits(result).is_none());
+                        assert!(exception_pending(py));
+                        let exception = ExceptionValue::adopt(py, molt_exception_last_pending());
+                        clear_exception(py);
+                        let expected_path = if minor == 12 {
+                            file.bits()
+                        } else {
+                            origin.bits()
+                        };
+                        for (field, expected) in [
+                            (b"name".as_slice(), name.bits()),
+                            (b"path".as_slice(), expected_path),
+                            (b"name_from".as_slice(), attr.bits()),
+                        ] {
+                            let field = string(field);
+                            let actual = ExceptionValue::adopt(
+                                py,
+                                molt_getattr_builtin(
+                                    exception.bits(),
+                                    field.bits(),
+                                    missing_bits(py),
+                                ),
+                            );
+                            assert_eq!(
+                                actual.bits(),
+                                expected,
+                                "typed import metadata keeps identity"
+                            );
+                            assert!(!exception_pending(py));
+                        }
+                        let expected = format!(
+                            "{expected_message} ({})",
+                            if minor == 12 {
+                                "/import-receiver/file.py"
+                            } else {
+                                "/import-receiver/spec.py"
+                            }
+                        );
+                        assert_eq!(
+                            format_obj_str(py, obj_from_bits(exception.bits())),
+                            expected
+                        );
+                        assert!(!exception_pending(py));
+                    }
+                });
+            }
+            // Existing attribute success bypasses all failure metadata work.
+            set(module_ptr, b"first", MoltObject::from_int(73).bits());
+            let first = string(b"first");
+            assert_eq!(
+                molt_module_import_from(module.bits(), first.bits()),
+                MoltObject::from_int(73).bits()
+            );
+            assert!(!exception_pending(py));
+        });
+    }
+
+    #[test]
+    fn import_error_allocation_denial_never_publishes_partial_fields() {
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        struct RestoreBudget;
+        impl Drop for RestoreBudget {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let none = MoltObject::none().bits();
+            // Warm the selected exception class, then deny the real allocator.
+            let _ = raise_import_error(py, b"warm", none, none, none);
+            clear_exception(py);
+            let budget = RestoreBudget;
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(0),
+                ..Default::default()
+            })));
+            assert_eq!(raise_import_error(py, b"denied", none, none, none), none);
+            drop(budget);
+            assert!(exception_pending(py));
+            let error = ExceptionValue::adopt(py, molt_exception_last_pending());
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                error.bits(),
+                "MemoryError"
+            ));
+            clear_exception(py);
+            let _ = raise_import_error(py, b"recovered", none, none, none);
+            let recovered = ExceptionValue::adopt(py, molt_exception_last_pending());
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                recovered.bits(),
+                "ImportError"
+            ));
+            clear_exception(py);
+        });
+    }
+
+    #[test]
     fn raw_module_allocation_seeds_public_name_metadata() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
@@ -3932,38 +4222,41 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let state = runtime_state(py);
-            let previous = crate::object::ops_sys::runtime_target_python_info(state);
-            let mut target = previous.clone();
-            target.minor = 13;
-            *state.sys_version_info.lock().unwrap() = Some(target);
-            let sys_name = attr_name_bits_from_bytes(py, b"sys").unwrap();
-            let _sys_restore = ModuleCacheRestore::new(py, sys_name);
-            let sys = molt_module_new(sys_name);
-            crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
-            let modules_bits = sys_modules_dict_bits(py, sys).unwrap();
-            let modules = obj_from_bits(modules_bits).as_ptr().unwrap();
-            let _modules_owner = crate::PtrDropGuard::new(modules);
-            let name = attr_name_bits_from_bytes(py, b"msilib.schema").unwrap();
-            assert!(matches!(module_import_attempt(name),
-                Ok(ModuleImportOutcome::Missing { diagnostic_name }) if diagnostic_name == "msilib"));
-            assert!(!exception_pending(py));
-            let replacement = MoltObject::from_int(42).bits();
-            unsafe { dict_set_in_place(py, modules, name, replacement) };
-            assert!(matches!(module_import_attempt(name),
-                Ok(ModuleImportOutcome::Imported(bits)) if bits == replacement));
-            assert!(unsafe { dict_del_in_place(py, modules, name) });
-            #[cfg(not(target_os = "windows"))]
-            {
-                let dependency =
-                    attr_name_bits_from_bytes(py, b"multiprocessing.popen_spawn_win32").unwrap();
-                assert!(module_import_attempt(dependency).is_err());
-                assert_pending_exception_class(py, "ModuleNotFoundError");
-                dec_ref_bits(py, dependency);
-            }
-            dec_ref_bits(py, name);
-            dec_ref_bits(py, sys);
-            *state.sys_version_info.lock().unwrap() = Some(previous);
-            assert!(!exception_pending(py));
+            let original = state.sys_version_info.lock().unwrap().clone();
+            _guard.with_target_python(py, original, || {
+                let previous = crate::object::ops_sys::runtime_target_python_info(state);
+                let mut target = previous.clone();
+                target.minor = 13;
+                _guard.with_target_python(py, Some(target), || {
+                    let sys_name = attr_name_bits_from_bytes(py, b"sys").unwrap();
+                    let _sys_restore = ModuleCacheRestore::new(py, sys_name);
+                    let sys = molt_module_new(sys_name);
+                    crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
+                    let modules_bits = sys_modules_dict_bits(py, sys).unwrap();
+                    let modules = obj_from_bits(modules_bits).as_ptr().unwrap();
+                    let _modules_owner = crate::PtrDropGuard::new(modules);
+                    let name = attr_name_bits_from_bytes(py, b"msilib.schema").unwrap();
+                    assert!(matches!(module_import_attempt(name),
+                        Ok(ModuleImportOutcome::Missing { diagnostic_name }) if diagnostic_name == "msilib"));
+                    assert!(!exception_pending(py));
+                    let replacement = MoltObject::from_int(42).bits();
+                    unsafe { dict_set_in_place(py, modules, name, replacement) };
+                    assert!(matches!(module_import_attempt(name),
+                        Ok(ModuleImportOutcome::Imported(bits)) if bits == replacement));
+                    assert!(unsafe { dict_del_in_place(py, modules, name) });
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        let dependency =
+                            attr_name_bits_from_bytes(py, b"multiprocessing.popen_spawn_win32").unwrap();
+                        assert!(module_import_attempt(dependency).is_err());
+                        assert_pending_exception_class(py, "ModuleNotFoundError");
+                        dec_ref_bits(py, dependency);
+                    }
+                    dec_ref_bits(py, name);
+                    dec_ref_bits(py, sys);
+                    assert!(!exception_pending(py));
+                });
+            });
         });
     }
 

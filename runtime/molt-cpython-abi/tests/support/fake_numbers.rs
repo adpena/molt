@@ -4,15 +4,11 @@ use molt_lang_obj_model::MoltObject;
 use std::os::raw::c_int;
 
 pub fn real(bits: u64) -> Option<f64> {
-    let value = MoltObject::from_bits(bits);
-    value
-        .as_float()
-        .or_else(|| integer(bits).map(|integer| integer as f64))
+    super::fake_runtime::float_value(bits).or_else(|| integer(bits).map(|integer| integer as f64))
 }
 
 fn integer(bits: u64) -> Option<i64> {
-    let value = MoltObject::from_bits(bits);
-    value.as_int().or_else(|| value.as_bool().map(i64::from))
+    super::fake_runtime::integer_value(bits).and_then(|value| i64::try_from(value).ok())
 }
 
 pub unsafe extern "C" fn unary(operation: u32, bits: u64) -> OwnedHandleResult {

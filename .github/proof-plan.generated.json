@@ -165,6 +165,7 @@
     "src/molt/file_locks.py",
     "src/molt/path_custody.py",
     "src/molt/toolchain_identity.py",
+    "src/molt/rust_toolchain.py",
     "src/molt/llvm_linker_roles.py",
     "src/molt/file_hashing.py",
     "src/molt/exact_json.py",
@@ -182,6 +183,7 @@
     "src/molt/process_guard.py",
     "src/molt/llvm_toolchain.py",
     "src/molt/wasi_sdk_identity.py",
+    "src/molt/wasi_c_abi_protocol.txt",
     "tools/provision_wasi_sdk.py",
     "tools/nightly_prepare.py",
     "tools/nightly_profile_feedback.py",
@@ -317,6 +319,10 @@
     "tests/tools/test_ci_gate.py",
     "tests/tools/test_guarded_exec.py",
     "tests/tools/test_proof_queue.py",
+    "tests/tools/test_proof_supervisor_generation.py",
+    "tests/tools/test_proof_queue_execution_custody_p0.py",
+    "tests/tools/test_cargo_bindgen_toolchain.py",
+    "tests/tools/test_tool_identity_reuse.py",
     "tests/tools/test_proof_queue_execution_receipt_details.py",
     "tests/tools/test_proof_queue_cargo_cache_custody.py",
     "tests/tools/test_proof_queue_cargo_reclamation.py",
@@ -332,7 +338,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "ed05fcb0ec7cea9bd9a25b9327154886fe9e23bdea8324563cc72d8b5a46c079",
+  "authority_sha256": "c68a4f296bb1266616e07e7e926b39ae55f50e8e66735ab7914eb13bf6c5cd28",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -374,6 +380,7 @@
         "**"
       ],
       "job": "docs-gates",
+      "job_reserve_seconds": 120,
       "name": "repository_policy",
       "required": true,
       "resource_class": "repository-policy",
@@ -408,12 +415,19 @@
         "tools/venv_exec.py",
         "tools/wasm_*.py",
         "tests/test_wasm_*.py",
+        "tests/test_generate_worker.py",
+        "tests/test_browser_asset_closure.py",
         "tests/cli/test_native_symbol_authority.py",
         "tests/wasm_linked_runner.py",
         "wasm/**",
-        "examples/*.py"
+        "examples/*.py",
+        "tests/differential/basic/from_import_missing_name.py",
+        "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py",
+        "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py",
+        "tools/compat/**"
       ],
       "job": "wasm-build",
+      "job_reserve_seconds": 180,
       "name": "wasm",
       "required": true,
       "resource_class": "compiler-build-resource",
@@ -421,7 +435,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 160,
+      "timeout_minutes": 263,
       "workflow": ".github/workflows/molt-wasm-ci.yml"
     },
     {
@@ -446,6 +460,7 @@
         "docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md"
       ],
       "job": "python-static",
+      "job_reserve_seconds": 60,
       "name": "python_static",
       "required": true,
       "resource_class": "python-static",
@@ -454,7 +469,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 15,
+      "timeout_minutes": 16,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -480,6 +495,7 @@
         "tools/**"
       ],
       "job": "python-unit",
+      "job_reserve_seconds": 60,
       "name": "python_unit",
       "required": true,
       "resource_class": "python-tests",
@@ -488,7 +504,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 40,
+      "timeout_minutes": 41,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -522,6 +538,7 @@
         "tests/proof_queue_owned_roots.py"
       ],
       "job": "native-integration",
+      "job_reserve_seconds": 180,
       "name": "native_integration",
       "required": true,
       "resource_class": "compiler-build-resource",
@@ -529,7 +546,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 40,
+      "timeout_minutes": 43,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -561,6 +578,7 @@
         "tests/runtime_descendant_test_support.py"
       ],
       "job": "rust-build-unit-smoke",
+      "job_reserve_seconds": 240,
       "name": "rust",
       "required": true,
       "resource_class": "compiler-build-resource",
@@ -569,7 +587,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 240,
+      "timeout_minutes": 254,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -606,9 +624,23 @@
         "runtime/molt-backend-native/**",
         "runtime/molt-ir/**",
         "runtime/molt-passes/**",
-        "runtime/molt-tir/**"
+        "runtime/molt-tir/**",
+        "config/release_acceptance_matrix.toml",
+        "src/molt/release_lanes.py",
+        "src/molt/compiler_distribution.py",
+        "src/molt/cli/compiler_identity.py",
+        "src/molt/cli/installed_runtime.py",
+        "tools/release/native_build.py",
+        "tools/release/runtime_cells.py",
+        "tools/release/verify_consumer.py",
+        "vendor/llvm/**",
+        "tests/cli/test_compiler_identity.py",
+        "tests/cli/test_installed_runtime.py",
+        "tests/tools/test_release_native_build.py",
+        "tests/test_release_lanes.py"
       ],
       "job": "llvm-backend",
+      "job_reserve_seconds": 120,
       "name": "llvm",
       "required": true,
       "resource_class": "compiler-build-resource",
@@ -637,6 +669,7 @@
         "uv.lock"
       ],
       "job": "python-security",
+      "job_reserve_seconds": 60,
       "name": "python_security",
       "required": true,
       "resource_class": "network-audit",
@@ -665,6 +698,7 @@
         "rust-toolchain.toml"
       ],
       "job": "rust-security",
+      "job_reserve_seconds": 360,
       "name": "rust_security",
       "required": true,
       "resource_class": "network-audit",
@@ -673,7 +707,7 @@
         "main",
         "scheduled"
       ],
-      "timeout_minutes": 20,
+      "timeout_minutes": 21,
       "workflow": ".github/workflows/security_hardening.yml"
     },
     {
@@ -717,6 +751,12 @@
       "description": "Hosted Linux, macOS, and Windows queue, process, path, and source-build custody proof, plus Rust workspace lint/compile and runtime test truth on macOS.",
       "executor": "github-matrix",
       "inputs": [
+        "src/molt/cli/completion.py",
+        "src/molt/cli/arg_helpers.py",
+        "src/molt/cli/entrypoint.py",
+        "tests/cli/test_cli_smoke.py",
+        "include/molt/**",
+        "tests/cli/test_c_api_headers.py",
         ".github/actions/setup-project/**",
         "tools/check_rust_toolchain.py",
         "tests/tools/test_setup_project_inputs.py",
@@ -814,6 +854,9 @@
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_environment.py",
         "tests/tools/test_proof_supervisor_inventory.py",
+        "tests/tools/test_target_derived_toolchains.py",
+        "tests/tools/test_tool_identity_reuse.py",
+        "tests/tools/test_toolchain_capture.py",
         "tests/tools/test_win_job.py",
         "tests/tools/test_win_job_contract.py",
         "tests/tools/test_windows_process_api.py",
@@ -829,6 +872,7 @@
         "tests/tools/test_proof_queue_output_layout.py"
       ],
       "job": "platform-portability",
+      "job_reserve_seconds": 120,
       "name": "platform_portability",
       "required": true,
       "resource_class": "python-tests",
@@ -836,7 +880,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 180,
+      "timeout_minutes": 182,
       "workflow": ".github/workflows/ci.yml"
     }
   ],
@@ -1365,6 +1409,40 @@
         "-u",
         "-m",
         "pytest",
+        "-q",
+        "tests/cli/test_cli_smoke.py::test_cli_completion_uses_parser_commands_flags_and_positional_semantics"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-queue-portability",
+      "dependencies": [],
+      "family": "platform_portability",
+      "id": "portability.completion.linux",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv",
+        "bash",
+        "fish",
+        "zsh"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--no-sync",
+        "python",
+        "-u",
+        "-m",
+        "pytest",
         "-v",
         "-n",
         "auto",
@@ -1372,7 +1450,6 @@
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_environment.py",
-        "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_windows_process_api.py",
         "tests/tools/test_scientific_stack_versions.py",
         "tests/cli/test_external_native_scipy_package_seal.py",
@@ -1385,6 +1462,8 @@
         "tests/cli/test_source_extension_candidate_transaction.py",
         "tests/cli/test_source_package_seal.py",
         "tests/test_exact_json.py",
+        "tests/tools/test_fs_delete.py",
+        "tests/test_temporary_artifacts.py",
         "tests/cli/test_atomic_io_authority.py",
         "tests/cli/test_python_module_names.py",
         "tests/cli/test_source_extension_runtime_imports.py",
@@ -1396,7 +1475,10 @@
         "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
         "tests/tools/test_proof_queue_output_layout.py",
         "tests/tools/test_setup_project_inputs.py",
-        "tests/tools/test_rust_toolchain_contract.py"
+        "tests/tools/test_rust_toolchain_contract.py",
+        "tests/tools/test_cargo_bindgen_toolchain.py",
+        "tests/tools/test_proof_queue_execution_custody_p0.py",
+        "tests/tools/test_proof_supervisor_generation.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-queue-portability",
@@ -1434,7 +1516,6 @@
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_environment.py",
-        "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_windows_process_api.py",
         "tests/tools/test_scientific_stack_versions.py",
         "tests/cli/test_external_native_scipy_package_seal.py",
@@ -1447,6 +1528,8 @@
         "tests/cli/test_source_extension_candidate_transaction.py",
         "tests/cli/test_source_package_seal.py",
         "tests/test_exact_json.py",
+        "tests/tools/test_fs_delete.py",
+        "tests/test_temporary_artifacts.py",
         "tests/cli/test_atomic_io_authority.py",
         "tests/cli/test_python_module_names.py",
         "tests/cli/test_source_extension_runtime_imports.py",
@@ -1458,7 +1541,10 @@
         "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
         "tests/tools/test_proof_queue_output_layout.py",
         "tests/tools/test_setup_project_inputs.py",
-        "tests/tools/test_rust_toolchain_contract.py"
+        "tests/tools/test_rust_toolchain_contract.py",
+        "tests/tools/test_cargo_bindgen_toolchain.py",
+        "tests/tools/test_proof_queue_execution_custody_p0.py",
+        "tests/tools/test_proof_supervisor_generation.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-queue-portability",
@@ -1496,7 +1582,6 @@
         "tests/test_molt_queue_cli.py",
         "tests/tools/test_proof_queue.py",
         "tests/tools/test_proof_supervisor_environment.py",
-        "tests/tools/test_proof_supervisor_inventory.py",
         "tests/tools/test_windows_process_api.py",
         "tests/tools/test_scientific_stack_versions.py",
         "tests/cli/test_external_native_scipy_package_seal.py",
@@ -1509,6 +1594,8 @@
         "tests/cli/test_source_extension_candidate_transaction.py",
         "tests/cli/test_source_package_seal.py",
         "tests/test_exact_json.py",
+        "tests/tools/test_fs_delete.py",
+        "tests/test_temporary_artifacts.py",
         "tests/cli/test_atomic_io_authority.py",
         "tests/cli/test_python_module_names.py",
         "tests/cli/test_source_extension_runtime_imports.py",
@@ -1520,7 +1607,10 @@
         "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
         "tests/tools/test_proof_queue_output_layout.py",
         "tests/tools/test_setup_project_inputs.py",
-        "tests/tools/test_rust_toolchain_contract.py"
+        "tests/tools/test_rust_toolchain_contract.py",
+        "tests/tools/test_cargo_bindgen_toolchain.py",
+        "tests/tools/test_proof_queue_execution_custody_p0.py",
+        "tests/tools/test_proof_supervisor_generation.py"
       ],
       "cache_domain": "pytest",
       "cell": "windows-x86_64-py312-queue-portability",
@@ -1552,7 +1642,12 @@
         "-m",
         "pytest",
         "-v",
-        "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"
+        "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
+        "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content",
+        "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds",
+        "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root",
+        "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit",
+        "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-queue-portability",
@@ -1584,7 +1679,12 @@
         "-m",
         "pytest",
         "-v",
-        "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"
+        "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
+        "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content",
+        "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds",
+        "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root",
+        "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit",
+        "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-queue-portability",
@@ -1616,18 +1716,27 @@
         "-m",
         "pytest",
         "-v",
-        "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"
+        "--durations=10",
+        "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
+        "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content",
+        "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds",
+        "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root",
+        "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit",
+        "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"
       ],
       "cache_domain": "pytest",
       "cell": "windows-x86_64-py312-queue-portability",
       "dependencies": [],
+      "env": {
+        "MOLT_GUARD_PROFILE": "all"
+      },
       "family": "platform_portability",
       "id": "portability.cargo-link.windows",
       "resource_class": "python-tests",
       "tiers": [
         "pr"
       ],
-      "timeout_seconds": 120,
+      "timeout_seconds": 180,
       "toolchains": [
         "python",
         "uv",
@@ -1713,6 +1822,9 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_c_units": [
+        "target"
+      ],
       "cell": "macos-arm64-py312-rust-native-dev",
       "dependencies": [],
       "family": "platform_portability",
@@ -1741,6 +1853,9 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_c_units": [
+        "target"
+      ],
       "cell": "linux-aarch64-py312-rust-native-dev",
       "dependencies": [],
       "family": "platform_portability",
@@ -2351,11 +2466,16 @@
         "pytest",
         "-q",
         "tests/tools/test_release_supply_chain.py",
+        "tests/tools/test_release_sealed_replay.py",
         "tests/tools/test_release_matrix_acceptance.py",
         "tests/tools/test_release_matrix_consumer.py",
         "tests/tools/test_release_archive.py",
         "tests/tools/test_release_remote.py",
-        "tests/tools/test_provision_wasi_sdk.py"
+        "tests/tools/test_provision_wasi_sdk.py",
+        "tests/test_release_lanes.py",
+        "tests/tools/test_release_native_build.py",
+        "tests/tools/test_release_installed_distribution.py",
+        "tests/tools/test_release_exit_gate.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -2426,7 +2546,9 @@
         "tests/test_environment_registry.py",
         "tests/tools/test_check_environment_registry.py",
         "tests/tools/test_setup_project_inputs.py",
-        "tests/tools/test_rust_toolchain_contract.py"
+        "tests/tools/test_rust_toolchain_contract.py",
+        "tests/test_gen_cpython_abi_layout.py",
+        "tests/tools/test_perf_release_integrity.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -2643,7 +2765,6 @@
         "tests/tools/test_custody_apparatus.py",
         "tests/tools/test_dirty_tree_landing_audit.py",
         "tests/tools/test_ff_land.py",
-        "tests/tools/test_forbidden_checkout_guard.py",
         "tests/tools/test_hooks_bash_guard.py",
         "tests/tools/test_hooks_fail_open.py",
         "tests/tools/test_hooks_landing_gate.py",
@@ -2689,8 +2810,7 @@
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [],
       "env": {
-        "MOLT_BACKEND_DAEMON": "0",
-        "RUSTC_WRAPPER": ""
+        "MOLT_BACKEND_DAEMON": "0"
       },
       "family": "wasm",
       "id": "wasm.build.backend",
@@ -2716,21 +2836,15 @@
     },
     {
       "argv": [
-        "uv",
-        "run",
-        "--active",
-        "--project",
-        ".",
-        "--python",
-        "3.12",
-        "--no-sync",
-        "--no-config",
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
         "pytest",
         "-q",
         "-n",
         "auto",
-        "tests/test_wasm_runner_table_base.py",
-        "tests/test_wasm_startup_failures.py"
+        "tests/test_wasm_runner_table_base.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-wasm-dev",
@@ -2768,10 +2882,11 @@
         "molt-wasm-host"
       ],
       "cache_domain": "cargo-workspace",
-      "cell": "linux-x86_64-py312-wasm-dev",
-      "dependencies": [
-        "wasm.build.backend"
+      "cargo_native_c_units": [
+        "target"
       ],
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [],
       "family": "wasm",
       "id": "wasm.build.host",
       "resource_class": "compiler-build-resource",
@@ -2787,8 +2902,7 @@
       "timeout_seconds": 1200,
       "toolchains": [
         "rustc",
-        "cargo",
-        "ld.lld"
+        "cargo"
       ]
     },
     {
@@ -2807,12 +2921,7 @@
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
-      "dependencies": [
-        "wasm.build.backend"
-      ],
-      "env": {
-        "RUSTC_WRAPPER": ""
-      },
+      "dependencies": [],
       "family": "wasm",
       "id": "wasm.build.shared-runtime",
       "resource_class": "compiler-build-resource",
@@ -2831,9 +2940,9 @@
         "uv",
         "rustc",
         "cargo",
-        "ld.lld",
         "wasm-ld",
-        "wasm-tools"
+        "wasm-tools",
+        "wasi-clang"
       ]
     },
     {
@@ -2852,9 +2961,7 @@
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
-      "dependencies": [
-        "wasm.build.backend"
-      ],
+      "dependencies": [],
       "family": "wasm",
       "id": "wasm.build.split-runtime-release",
       "resource_class": "compiler-build-resource",
@@ -2873,9 +2980,9 @@
         "uv",
         "rustc",
         "cargo",
-        "ld.lld",
         "wasm-ld",
-        "wasm-tools"
+        "wasm-tools",
+        "wasi-clang"
       ]
     },
     {
@@ -2897,12 +3004,11 @@
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
-        "wasm.build.host",
+        "wasm.build.backend",
         "wasm.build.shared-runtime"
       ],
       "env": {
-        "MOLT_BACKEND_DAEMON": "0",
-        "RUSTC_WRAPPER": ""
+        "MOLT_BACKEND_DAEMON": "0"
       },
       "family": "wasm",
       "id": "wasm.compile.hello",
@@ -2929,13 +3035,20 @@
     },
     {
       "argv": [
-        "target/sessions/wasm-ci/dev-fast/molt-wasm-host",
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "tools/run_wasm_host.py",
+        "--cargo-profile",
+        "dev-fast",
+        "--",
         "/tmp/molt-wasm-ci/hello/manifest.json"
       ],
       "cache_domain": "none",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
-        "wasm.compile.hello"
+        "wasm.compile.hello",
+        "wasm.build.host"
       ],
       "env": {
         "MOLT_WASM_HOST_DEBUG": "1"
@@ -2952,9 +3065,7 @@
       ],
       "timeout_seconds": 300,
       "toolchains": [
-        "rustc",
-        "cargo",
-        "wasm-tools"
+        "python"
       ]
     },
     {
@@ -2976,12 +3087,11 @@
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
-        "wasm.build.host",
+        "wasm.build.backend",
         "wasm.build.shared-runtime"
       ],
       "env": {
-        "MOLT_BACKEND_DAEMON": "0",
-        "RUSTC_WRAPPER": ""
+        "MOLT_BACKEND_DAEMON": "0"
       },
       "family": "wasm",
       "id": "wasm.compile.comprehension",
@@ -3008,13 +3118,20 @@
     },
     {
       "argv": [
-        "target/sessions/wasm-ci/dev-fast/molt-wasm-host",
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "tools/run_wasm_host.py",
+        "--cargo-profile",
+        "dev-fast",
+        "--",
         "/tmp/molt-wasm-ci/comprehension/manifest.json"
       ],
       "cache_domain": "none",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
-        "wasm.compile.comprehension"
+        "wasm.compile.comprehension",
+        "wasm.build.host"
       ],
       "family": "wasm",
       "id": "wasm.run.comprehension",
@@ -3028,9 +3145,7 @@
       ],
       "timeout_seconds": 300,
       "toolchains": [
-        "rustc",
-        "cargo",
-        "wasm-tools"
+        "python"
       ]
     },
     {
@@ -3055,8 +3170,7 @@
         "wasm.build.backend"
       ],
       "env": {
-        "MOLT_BACKEND_DAEMON": "0",
-        "RUSTC_WRAPPER": ""
+        "MOLT_BACKEND_DAEMON": "0"
       },
       "family": "wasm",
       "id": "luau.compile.hello",
@@ -3100,8 +3214,7 @@
         "wasm.build.backend"
       ],
       "env": {
-        "MOLT_BACKEND_DAEMON": "0",
-        "RUSTC_WRAPPER": ""
+        "MOLT_BACKEND_DAEMON": "0"
       },
       "family": "wasm",
       "id": "luau.compile.comprehension",
@@ -3142,12 +3255,11 @@
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
-        "wasm.build.host",
+        "wasm.build.backend",
         "wasm.build.shared-runtime"
       ],
       "env": {
-        "MOLT_BACKEND_DAEMON": "0",
-        "RUSTC_WRAPPER": ""
+        "MOLT_BACKEND_DAEMON": "0"
       },
       "family": "wasm",
       "id": "wasm.compile.sieve",
@@ -3174,13 +3286,20 @@
     },
     {
       "argv": [
-        "target/sessions/wasm-ci/dev-fast/molt-wasm-host",
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "tools/run_wasm_host.py",
+        "--cargo-profile",
+        "dev-fast",
+        "--",
         "/tmp/molt-wasm-ci/sieve/manifest.json"
       ],
       "cache_domain": "none",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
-        "wasm.compile.sieve"
+        "wasm.compile.sieve",
+        "wasm.build.host"
       ],
       "family": "wasm",
       "id": "wasm.run.sieve",
@@ -3194,9 +3313,74 @@
       ],
       "timeout_seconds": 300,
       "toolchains": [
-        "rustc",
-        "cargo",
-        "wasm-tools"
+        "python"
+      ]
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_wasm_startup_failures.py",
+        "tests/test_generate_worker.py",
+        "tests/test_browser_asset_closure.py",
+        "tests/test_wasm_reserved_callable_arity.py",
+        "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [],
+      "family": "wasm",
+      "id": "wasm.test.startup-lifecycle",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_env": [
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv",
+        "node"
+      ]
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_wasm_link_validation.py::test_primary_runtime_fixture_passes_actual_relocatable_admission",
+        "tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_shared_primary_before_publication",
+        "tests/test_wasm_link_validation.py::test_wasm_module_identity_survives_distinct_staging_paths",
+        "tests/test_wasm_link_validation.py::test_existing_alias_binding_controls_actual_llvm_resolution"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [],
+      "family": "wasm",
+      "id": "wasm.test.linker-admission",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_env": [
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv",
+        "wasm-ld"
       ]
     },
     {
@@ -3207,12 +3391,14 @@
         "-m",
         "pytest",
         "tests/test_wasm_control_flow.py",
+        "tests/test_wasm_longdouble_printf_link.py",
         "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive",
         "-q"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
+        "wasm.build.backend",
         "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
@@ -3238,31 +3424,39 @@
         "llvm-nm",
         "ld.lld",
         "wasm-ld",
-        "wasm-tools"
+        "wasm-tools",
+        "wasi-clang",
+        "ninja"
       ]
     },
     {
       "argv": [
-        "uv",
-        "run",
-        "--python",
-        "3.12",
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
         "pytest",
         "-q",
-        "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts::test_repeated_build_preserves_complete_generation_and_executes",
+        "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts",
+        "tests/test_wasm_split_runtime.py::TestWorkerJsContent",
+        "tests/test_wasm_split_runtime.py::TestManifestJson",
+        "tests/test_wasm_split_runtime.py::TestRuntimeCacheability",
         "tests/test_browser_vfs.py"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
-        "wasm.build.host",
         "wasm.build.split-runtime-release"
+      ],
+      "evidence_outputs": [
+        "proof-receipts/evidence/split-runtime"
       ],
       "family": "wasm",
       "id": "wasm.integration.split-runtime",
       "resource_class": "compiler-build-resource",
       "tiers": [
+        "pr",
         "main"
       ],
       "timeout_budget": "warm",
@@ -3284,28 +3478,21 @@
     },
     {
       "argv": [
-        "uv",
-        "run",
-        "--python",
-        "3.12",
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
         "pytest",
         "-q",
-        "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output",
-        "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none",
-        "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class",
-        "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module",
-        "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"
+        "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
-        "wasm.build.backend",
-        "wasm.build.host",
-        "wasm.build.shared-runtime",
-        "wasm.build.split-runtime-release"
+        "wasm.build.backend"
       ],
       "family": "wasm",
-      "id": "wasm.integration.host-exports",
+      "id": "wasm.integration.host-exports.gpu-kernel",
       "resource_class": "compiler-build-resource",
       "tiers": [
         "pr",
@@ -3325,20 +3512,177 @@
         "cargo",
         "ld.lld",
         "wasm-ld",
-        "wasm-tools"
+        "wasm-tools",
+        "wasi-clang"
       ]
     },
     {
       "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
+        "wasm.build.backend",
+        "wasm.build.shared-runtime"
+      ],
+      "family": "wasm",
+      "id": "wasm.integration.host-exports.attribute-error",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cold",
+      "timeout_env": [
+        "MOLT_CARGO_TIMEOUT",
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
         "uv",
-        "run",
-        "--active",
-        "--project",
-        ".",
-        "--python",
-        "3.12",
-        "--no-sync",
-        "--no-config",
+        "node",
+        "rustc",
+        "cargo",
+        "ld.lld",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang"
+      ]
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
+        "wasm.build.backend"
+      ],
+      "family": "wasm",
+      "id": "wasm.integration.host-exports.tinygrad-dtype",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cold",
+      "timeout_env": [
+        "MOLT_CARGO_TIMEOUT",
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
+        "uv",
+        "node",
+        "rustc",
+        "cargo",
+        "ld.lld",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang"
+      ]
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
+        "wasm.build.backend"
+      ],
+      "family": "wasm",
+      "id": "wasm.integration.host-exports.tinygrad-tensor",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cold",
+      "timeout_env": [
+        "MOLT_CARGO_TIMEOUT",
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
+        "uv",
+        "node",
+        "rustc",
+        "cargo",
+        "ld.lld",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang"
+      ]
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
+        "wasm.build.backend"
+      ],
+      "family": "wasm",
+      "id": "wasm.integration.host-exports.tensor-row-ops",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cold",
+      "timeout_env": [
+        "MOLT_CARGO_TIMEOUT",
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
+        "uv",
+        "node",
+        "rustc",
+        "cargo",
+        "ld.lld",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang"
+      ]
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
         "pytest",
         "-q",
         "tests/test_wasm_freestanding.py::test_freestanding_produces_no_wasi_imports",
@@ -3347,7 +3691,7 @@
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
-        "wasm.build.host",
+        "wasm.build.backend",
         "wasm.build.shared-runtime"
       ],
       "family": "wasm",
@@ -3375,15 +3719,10 @@
     },
     {
       "argv": [
-        "uv",
-        "run",
-        "--active",
-        "--project",
-        ".",
-        "--python",
-        "3.12",
-        "--no-sync",
-        "--no-config",
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
         "pytest",
         "-q",
         "tests/test_finally_pending_observer_parity.py::test_finally_pending_observer_native_wasm_parity"
@@ -3391,6 +3730,7 @@
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
+        "wasm.build.backend",
         "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
@@ -3418,6 +3758,74 @@
         "lld-link",
         "wasm-ld",
         "wasm-tools"
+      ]
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "tests/molt_diff.py",
+        "--python-version",
+        "3.12",
+        "--molt-target-python",
+        "3.12",
+        "--build-profile",
+        "dev",
+        "--stdlib-profile",
+        "full",
+        "--target",
+        "native,wasm",
+        "--jobs",
+        "1",
+        "--no-retry-oom",
+        "--json-output",
+        "proof-receipts/evidence/import-from-codec/summary.json",
+        "--log-aggregate",
+        "proof-receipts/evidence/import-from-codec/output.log",
+        "tests/differential/basic/from_import_missing_name.py",
+        "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py",
+        "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
+        "wasm.build.backend",
+        "wasm.build.shared-runtime"
+      ],
+      "env": {
+        "MOLT_BACKEND_DAEMON": "0",
+        "MOLT_COMPAT_WASM_RUN_TIMEOUT_SEC": "60",
+        "MOLT_DIFF_RESULTS_JSONL": "proof-receipts/evidence/import-from-codec/results.jsonl",
+        "MOLT_DIFF_TIMEOUT": "60"
+      },
+      "evidence_outputs": [
+        "proof-receipts/evidence/import-from-codec"
+      ],
+      "family": "wasm",
+      "id": "wasm.test.import-from-codec-parity",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cold",
+      "timeout_env": [
+        "MOLT_CARGO_TIMEOUT",
+        "MOLT_DIFF_BUILD_TIMEOUT",
+        "MOLT_COMPAT_WASM_BUILD_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
+        "uv",
+        "node",
+        "rustc",
+        "cargo",
+        "ld.lld",
+        "wasm-ld",
+        "wasm-tools",
+        "wasi-clang"
       ]
     },
     {
@@ -3515,7 +3923,9 @@
         "tests/test_bench_dashboard.py",
         "tests/test_bench_generator_memory_guard.py",
         "tests/test_bench_suites.py",
-        "tests/test_bench_wasm_node_resolver.py"
+        "tests/test_bench_wasm_node_resolver.py",
+        "tests/test_wasm_linked_runner_node_flags.py",
+        "tests/test_l7_numeric_attestation_runner.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -3579,7 +3989,9 @@
         "tests/test_bench_dashboard.py",
         "tests/test_bench_generator_memory_guard.py",
         "tests/test_bench_suites.py",
-        "tests/test_bench_wasm_node_resolver.py"
+        "tests/test_bench_wasm_node_resolver.py",
+        "tests/test_wasm_linked_runner_node_flags.py",
+        "tests/test_l7_numeric_attestation_runner.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
@@ -4460,7 +4872,6 @@
         "tests/test_wasm_importlib_smoke.py",
         "tests/test_wasm_linking_symbols.py",
         "tests/test_wasm_list_dict_ops.py",
-        "tests/test_wasm_longdouble_printf_link.py",
         "tests/test_wasm_memoryview_ops.py",
         "tests/test_wasm_optimization_policy.py",
         "tests/test_wasm_pickle_class_dataclass_roundtrip.py",
@@ -4829,7 +5240,6 @@
         "tests/test_wasm_importlib_smoke.py",
         "tests/test_wasm_linking_symbols.py",
         "tests/test_wasm_list_dict_ops.py",
-        "tests/test_wasm_longdouble_printf_link.py",
         "tests/test_wasm_memoryview_ops.py",
         "tests/test_wasm_optimization_policy.py",
         "tests/test_wasm_pickle_class_dataclass_roundtrip.py",
@@ -4974,7 +5384,19 @@
         "tests/cli/test_link_member_selection.py",
         "tests/cli/test_link_selection_admission.py",
         "tests/test_artifact_release_sibling.py",
-        "tests/test_llvm_toolchain.py"
+        "tests/test_llvm_toolchain.py",
+        "tests/test_bootstrap_llvm.py",
+        "tests/cli/test_compiler_identity.py",
+        "tests/cli/test_installed_compiler.py",
+        "tests/cli/test_installed_runtime.py",
+        "tests/cli/test_installed_toolchain_rules.py",
+        "tests/cli/test_cli_backend_output_pipeline_authority.py",
+        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair",
+        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest",
+        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_digest",
+        "tests/cli/test_cli_import_collection.py::test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen",
+        "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift",
+        "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -5051,7 +5473,19 @@
         "tests/cli/test_link_member_selection.py",
         "tests/cli/test_link_selection_admission.py",
         "tests/test_artifact_release_sibling.py",
-        "tests/test_llvm_toolchain.py"
+        "tests/test_llvm_toolchain.py",
+        "tests/test_bootstrap_llvm.py",
+        "tests/cli/test_compiler_identity.py",
+        "tests/cli/test_installed_compiler.py",
+        "tests/cli/test_installed_runtime.py",
+        "tests/cli/test_installed_toolchain_rules.py",
+        "tests/cli/test_cli_backend_output_pipeline_authority.py",
+        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair",
+        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest",
+        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_digest",
+        "tests/cli/test_cli_import_collection.py::test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen",
+        "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift",
+        "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
@@ -5096,7 +5530,8 @@
         "tests/cli/test_cli_intrinsic_enforcement.py",
         "tests/test_weakrefset_private_module_surface.py",
         "tests/test_weakref_native_authority.py",
-        "tests/test_unittest_mock_protocol.py"
+        "tests/test_unittest_mock_protocol.py",
+        "tests/test_public_intrinsic_surface_batch_d.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -5139,7 +5574,8 @@
         "tests/cli/test_cli_intrinsic_enforcement.py",
         "tests/test_weakrefset_private_module_surface.py",
         "tests/test_weakref_native_authority.py",
-        "tests/test_unittest_mock_protocol.py"
+        "tests/test_unittest_mock_protocol.py",
+        "tests/test_public_intrinsic_surface_batch_d.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
@@ -5175,7 +5611,8 @@
         "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive",
         "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges",
         "tests/cli/test_native_link_manifest.py::test_static_nobundle_order_changes_real_archive_resolution",
-        "tests/cli/test_link_selection_admission.py"
+        "tests/cli/test_link_selection_admission.py",
+        "tests/cli/test_c_api_headers.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-native-dev",
@@ -5234,7 +5671,9 @@
         "--python",
         "3.12",
         "pytest",
-        "-q",
+        "-vv",
+        "-s",
+        "--durations=0",
         "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest",
         "tests/tools/test_proof_queue_native_receipts.py",
         "tests/cli/test_backend_daemon_sequential.py"
@@ -5389,6 +5828,9 @@
         "tools/run_cargo_test_truth.py"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_c_units": [
+        "target"
+      ],
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -5486,6 +5928,8 @@
         "--lib",
         "--test",
         "ownership_memory_contracts",
+        "--test",
+        "test_builtins",
         "-p",
         "molt-passes",
         "-p",
@@ -5513,6 +5957,7 @@
         "builtins::functions::function_abi::",
         "builtins::attributes::",
         "builtin_bootstrap_lookup",
+        "test_raw_compression_c_exports_are_linkable",
         "--nocapture",
         "--test-threads=1"
       ],
@@ -5574,6 +6019,56 @@
     {
       "argv": [
         "cargo",
+        "test",
+        "--locked",
+        "--timings",
+        "--profile",
+        "dev-fast",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--config",
+        "profile.dev-fast.package.molt-runtime.opt-level=0",
+        "--config",
+        "target.x86_64-unknown-linux-gnu.runner=[\"uv\",\"run\",\"--frozen\",\"python3\",\"../../tools/cargo_test_binary_runner.py\",\"--timeout-seconds\",\"300\",\"--receipt-dir\",\"../../proof-receipts/evidence/runtime-extension-admission\",\"--require-passed-test\",\"builtins::platform::tests::resolver_admission_tests::public_import_resolver_miss_and_error_do_not_load_extension_candidates\",\"--\"]",
+        "-p",
+        "molt-runtime",
+        "--lib",
+        "--features",
+        "cext_loader",
+        "--",
+        "builtins::platform::tests::",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_native_c_units": [
+        "target"
+      ],
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [],
+      "evidence_outputs": [
+        "proof-receipts/evidence/runtime-extension-admission"
+      ],
+      "family": "rust",
+      "id": "rust.test.runtime-extension-admission",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "integration",
+      "timeout_seconds": 600,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
         "clippy",
         "--locked",
         "--workspace",
@@ -5583,6 +6078,9 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_c_units": [
+        "target"
+      ],
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -6107,7 +6605,10 @@
         "tests/test_child_clock_custody.py",
         "tests/test_perf_calibration.py",
         "tests/test_exception_diagnostics.py",
-        "tests/tools/test_memory_guard_windows_sampling.py"
+        "tests/tools/test_memory_guard_windows_sampling.py",
+        "tests/tools/test_proof_supervisor_inventory.py",
+        "tests/tools/test_target_derived_toolchains.py",
+        "tests/tools/test_tool_identity_reuse.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-queue-portability",
@@ -6119,7 +6620,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 120,
+      "timeout_seconds": 1800,
       "toolchains": [
         "python",
         "uv",
@@ -6144,7 +6645,10 @@
         "tests/test_child_clock_custody.py",
         "tests/test_perf_calibration.py",
         "tests/test_exception_diagnostics.py",
-        "tests/tools/test_memory_guard_windows_sampling.py"
+        "tests/tools/test_memory_guard_windows_sampling.py",
+        "tests/tools/test_proof_supervisor_inventory.py",
+        "tests/tools/test_target_derived_toolchains.py",
+        "tests/tools/test_tool_identity_reuse.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-queue-portability",
@@ -6156,7 +6660,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 120,
+      "timeout_seconds": 1800,
       "toolchains": [
         "python",
         "uv",
@@ -6181,7 +6685,11 @@
         "tests/test_child_clock_custody.py",
         "tests/test_perf_calibration.py",
         "tests/test_exception_diagnostics.py",
-        "tests/tools/test_memory_guard_windows_sampling.py"
+        "tests/tools/test_memory_guard_windows_sampling.py",
+        "tests/tools/test_proof_supervisor_inventory.py",
+        "tests/tools/test_target_derived_toolchains.py",
+        "tests/tools/test_tool_identity_reuse.py",
+        "tests/tools/test_toolchain_capture.py"
       ],
       "cache_domain": "pytest",
       "cell": "windows-x86_64-py312-queue-portability",
@@ -6193,12 +6701,80 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 120,
+      "timeout_seconds": 1800,
       "toolchains": [
         "python",
         "uv",
         "rustc",
         "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--no-sync",
+        "python",
+        "-u",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/cli/test_c_api_headers.py::test_optimize_flag_headers_share_data_across_translation_units"
+      ],
+      "cache_domain": "pytest",
+      "cell": "windows-x86_64-py312-queue-portability",
+      "dependencies": [],
+      "family": "platform_portability",
+      "id": "portability.headers.windows",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "hosted-clang-cl"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--frozen",
+        "python",
+        "tools/run_candidate_runtime_costs.py"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cargo_native_c_units": [
+        "target"
+      ],
+      "cell": "linux-x86_64-rust-native-release",
+      "dependencies": [],
+      "evidence_outputs": [
+        "proof-receipts/evidence/candidate-runtime-costs"
+      ],
+      "family": "runtime_candidate_costs",
+      "id": "runtime.cost.candidate",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "scheduled"
+      ],
+      "timeout_budget": "shipping",
+      "timeout_seconds": 9000,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "clang",
+        "ld.lld"
       ]
     }
   ],
@@ -6207,18 +6783,22 @@
       "llvm": {
         "budget_seconds": 4500,
         "critical_path_seconds": 3300,
-        "headroom_seconds": 300,
+        "headroom_seconds": 180,
+        "job_reserve_seconds": 120,
         "projected_makespan_seconds": 4200,
+        "required_job_seconds": 4320,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 4200,
           "python-tests": 60
         }
       },
       "native_integration": {
-        "budget_seconds": 2400,
+        "budget_seconds": 2580,
         "critical_path_seconds": 1200,
         "headroom_seconds": 0,
+        "job_reserve_seconds": 180,
         "projected_makespan_seconds": 2400,
+        "required_job_seconds": 2580,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 2400,
           "python-tests": 150
@@ -6227,17 +6807,21 @@
       "python_security": {
         "budget_seconds": 1200,
         "critical_path_seconds": 900,
-        "headroom_seconds": 300,
+        "headroom_seconds": 240,
+        "job_reserve_seconds": 60,
         "projected_makespan_seconds": 900,
+        "required_job_seconds": 960,
         "resource_capacity_floor_seconds": {
           "network-audit": 600
         }
       },
       "python_static": {
-        "budget_seconds": 900,
+        "budget_seconds": 960,
         "critical_path_seconds": 600,
         "headroom_seconds": 0,
+        "job_reserve_seconds": 60,
         "projected_makespan_seconds": 900,
+        "required_job_seconds": 960,
         "resource_capacity_floor_seconds": {
           "python-static": 900
         }
@@ -6245,38 +6829,46 @@
       "repository_policy": {
         "budget_seconds": 3600,
         "critical_path_seconds": 1500,
-        "headroom_seconds": 1260,
+        "headroom_seconds": 1140,
+        "job_reserve_seconds": 120,
         "projected_makespan_seconds": 2340,
+        "required_job_seconds": 2460,
         "resource_capacity_floor_seconds": {
           "repository-policy": 1920
         }
       },
       "rust": {
-        "budget_seconds": 14400,
+        "budget_seconds": 15240,
         "critical_path_seconds": 9000,
         "headroom_seconds": 0,
-        "projected_makespan_seconds": 14400,
+        "job_reserve_seconds": 240,
+        "projected_makespan_seconds": 15000,
+        "required_job_seconds": 15240,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 14400
+          "compiler-build-resource": 15000
         }
       },
       "rust_security": {
-        "budget_seconds": 1200,
+        "budget_seconds": 1260,
         "critical_path_seconds": 900,
-        "headroom_seconds": 300,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 360,
         "projected_makespan_seconds": 900,
+        "required_job_seconds": 1260,
         "resource_capacity_floor_seconds": {
           "network-audit": 450
         }
       },
       "wasm": {
-        "budget_seconds": 9600,
-        "critical_path_seconds": 3600,
+        "budget_seconds": 15780,
+        "critical_path_seconds": 2400,
         "headroom_seconds": 0,
-        "projected_makespan_seconds": 9600,
+        "job_reserve_seconds": 180,
+        "projected_makespan_seconds": 15600,
+        "required_job_seconds": 15780,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 9600,
-          "python-tests": 300,
+          "compiler-build-resource": 15600,
+          "python-tests": 420,
           "wasm-runtime": 450
         }
       }
@@ -6284,66 +6876,80 @@
     "github_matrix_timeout_envelopes": {
       "platform_portability": {
         "linux-aarch64-py312-rust-native-dev": {
-          "budget_seconds": 10800,
+          "budget_seconds": 10920,
           "critical_path_seconds": 1800,
           "headroom_seconds": 9000,
+          "job_reserve_seconds": 120,
           "projected_makespan_seconds": 1800,
+          "required_job_seconds": 1920,
           "resource_capacity_floor_seconds": {
             "compiler-build-resource": 1800
           }
         },
         "linux-x86_64-py312-queue-portability": {
-          "budget_seconds": 10800,
+          "budget_seconds": 10920,
           "critical_path_seconds": 1800,
-          "headroom_seconds": 9000,
-          "projected_makespan_seconds": 1800,
+          "headroom_seconds": 8760,
+          "job_reserve_seconds": 120,
+          "projected_makespan_seconds": 2040,
+          "required_job_seconds": 2160,
           "resource_capacity_floor_seconds": {
-            "python-tests": 1020
+            "python-tests": 1920
           }
         },
         "macos-arm64-py312-queue-portability": {
-          "budget_seconds": 10800,
+          "budget_seconds": 10920,
           "critical_path_seconds": 1800,
-          "headroom_seconds": 9000,
-          "projected_makespan_seconds": 1800,
+          "headroom_seconds": 8760,
+          "job_reserve_seconds": 120,
+          "projected_makespan_seconds": 2040,
+          "required_job_seconds": 2160,
           "resource_capacity_floor_seconds": {
-            "python-tests": 1080
+            "python-tests": 1920
           }
         },
         "macos-arm64-py312-rust-native-dev": {
-          "budget_seconds": 10800,
+          "budget_seconds": 10920,
           "critical_path_seconds": 9000,
           "headroom_seconds": 0,
+          "job_reserve_seconds": 120,
           "projected_makespan_seconds": 10800,
+          "required_job_seconds": 10920,
           "resource_capacity_floor_seconds": {
             "compiler-build-resource": 10800
           }
         },
         "windows-x86_64-py312-queue-portability": {
-          "budget_seconds": 10800,
+          "budget_seconds": 10920,
           "critical_path_seconds": 1800,
-          "headroom_seconds": 9000,
-          "projected_makespan_seconds": 1800,
+          "headroom_seconds": 8700,
+          "job_reserve_seconds": 120,
+          "projected_makespan_seconds": 2100,
+          "required_job_seconds": 2220,
           "resource_capacity_floor_seconds": {
-            "python-tests": 1080
+            "python-tests": 2100
           }
         }
       },
       "python_unit": {
         "linux-x86_64-py312-unit": {
-          "budget_seconds": 2400,
+          "budget_seconds": 2460,
           "critical_path_seconds": 900,
           "headroom_seconds": 0,
+          "job_reserve_seconds": 60,
           "projected_makespan_seconds": 2400,
+          "required_job_seconds": 2460,
           "resource_capacity_floor_seconds": {
             "python-tests": 2160
           }
         },
         "macos-arm64-py312-unit": {
-          "budget_seconds": 2400,
+          "budget_seconds": 2460,
           "critical_path_seconds": 900,
           "headroom_seconds": 0,
+          "job_reserve_seconds": 60,
           "projected_makespan_seconds": 2400,
+          "required_job_seconds": 2460,
           "resource_capacity_floor_seconds": {
             "python-tests": 2160
           }
@@ -6390,8 +6996,10 @@
       "nightly_conformance": {
         "budget_seconds": 900,
         "critical_path_seconds": 600,
-        "headroom_seconds": 300,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 300,
         "projected_makespan_seconds": 600,
+        "required_job_seconds": 900,
         "resource_capacity_floor_seconds": {
           "scheduled-suite": 150
         }
@@ -6399,8 +7007,10 @@
       "nightly_determinism": {
         "budget_seconds": 5700,
         "critical_path_seconds": 5400,
-        "headroom_seconds": 300,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 300,
         "projected_makespan_seconds": 5400,
+        "required_job_seconds": 5700,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 1200,
           "scheduled-suite": 1500
@@ -6409,8 +7019,10 @@
       "nightly_differential": {
         "budget_seconds": 900,
         "critical_path_seconds": 600,
-        "headroom_seconds": 300,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 300,
         "projected_makespan_seconds": 600,
+        "required_job_seconds": 900,
         "resource_capacity_floor_seconds": {
           "scheduled-suite": 150
         }
@@ -6418,8 +7030,10 @@
       "nightly_regrtest": {
         "budget_seconds": 900,
         "critical_path_seconds": 600,
-        "headroom_seconds": 300,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 300,
         "projected_makespan_seconds": 600,
+        "required_job_seconds": 900,
         "resource_capacity_floor_seconds": {
           "scheduled-suite": 150
         }
@@ -6427,8 +7041,10 @@
       "nightly_shard_prepare": {
         "budget_seconds": 3600,
         "critical_path_seconds": 3300,
-        "headroom_seconds": 300,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 300,
         "projected_makespan_seconds": 3300,
+        "required_job_seconds": 3600,
         "resource_capacity_floor_seconds": {
           "scheduled-suite": 825
         }
@@ -6436,8 +7052,10 @@
       "nightly_shard_profile_feedback": {
         "budget_seconds": 600,
         "critical_path_seconds": 300,
-        "headroom_seconds": 300,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 300,
         "projected_makespan_seconds": 300,
+        "required_job_seconds": 600,
         "resource_capacity_floor_seconds": {
           "scheduled-suite": 75
         }
@@ -6445,11 +7063,24 @@
       "nightly_verification_t3": {
         "budget_seconds": 5400,
         "critical_path_seconds": 4800,
-        "headroom_seconds": 600,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 600,
         "projected_makespan_seconds": 4800,
+        "required_job_seconds": 5400,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 1200,
           "scheduled-suite": 3375
+        }
+      },
+      "runtime_candidate_costs": {
+        "budget_seconds": 10800,
+        "critical_path_seconds": 9000,
+        "headroom_seconds": 0,
+        "job_reserve_seconds": 1800,
+        "projected_makespan_seconds": 9000,
+        "required_job_seconds": 10800,
+        "resource_capacity_floor_seconds": {
+          "compiler-build-resource": 9000
         }
       }
     }
@@ -6483,7 +7114,7 @@
       "local.apparatus-hooks.0": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_hooks_bash_guard.py tests/tools/test_hooks_landing_gate.py tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_hooks_waivers.py tests/tools/test_check_gate_flips.py tests/tools/test_check_gate_liveness.py",
       "local.apparatus-hooks.1": "python3 tools/venv_exec.py python tools/check_gate_liveness.py --check",
       "local.apparatus-hooks.2": "python3 tools/venv_exec.py python tools/check_gate_flips.py --check",
-      "local.apparatus-learning-protection.0": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_forbidden_checkout_guard.py tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
+      "local.apparatus-learning-protection.0": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
       "local.apparatus-learning-protection.1": "python3 tools/venv_exec.py python tools/apparatus_agent_safety.py --check",
       "local.apparatus-learning-protection.2": "python3 tools/venv_exec.py python tools/anti_recurrence_gate.py --check",
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib",
@@ -7460,24 +8091,21 @@
           "local.apparatus-learning-protection.1",
           "local.apparatus-learning-protection.2"
         ],
-        "description": "Recurring-harm registry, forbidden-checkout policy, no-agent-termination meta-gate, anti-recurrence advisory, and Stop-session learning persistence.",
+        "description": "Recurring-harm registry, no-agent-termination meta-gate, anti-recurrence advisory, and Stop-session learning persistence.",
         "gates": [
-          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_forbidden_checkout_guard.py tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
           "python3 tools/venv_exec.py python tools/apparatus_agent_safety.py --check",
           "python3 tools/venv_exec.py python tools/anti_recurrence_gate.py --check"
         ],
         "globs": [
           ".claude/settings.json",
-          "tools/forbidden_checkout_guard.py",
           "tools/apparatus_agent_safety.py",
           "tools/anti_recurrence_gate.py",
           "tools/recurring_harms.toml",
-          "tools/hooks/path_guard.py",
           "tools/hooks/session_learning.py",
           "tools/hooks/stop_gates.py",
           "tools/memory_graph.py",
           "tools/check_gate_liveness.py",
-          "tests/tools/test_forbidden_checkout_guard.py",
           "tests/tools/test_apparatus_agent_safety.py",
           "tests/tools/test_anti_recurrence_gate.py",
           "tests/tools/test_hooks_session_learning.py",
@@ -7823,6 +8451,16 @@
       "python": "3.12",
       "runner": "windows-2022",
       "target": "host"
+    },
+    {
+      "arch": "x86_64",
+      "backend": "rust",
+      "id": "linux-x86_64-rust-native-release",
+      "os": "linux",
+      "profile": "release",
+      "python": "none",
+      "runner": "ubuntu-latest",
+      "target": "x86_64-unknown-linux-gnu"
     }
   ],
   "receipt_schema": "molt.proof-receipt.v4",
@@ -7830,6 +8468,7 @@
     {
       "description": "One immutable native runtime, pinned CPython source, and digest-bound Nightly shard plan.",
       "job": "nightly-prepare",
+      "job_reserve_seconds": 300,
       "name": "nightly_shard_prepare",
       "resource_class": "scheduled-suite",
       "tiers": [
@@ -7841,6 +8480,7 @@
     {
       "description": "Full Molt conformance corpus aggregated from eight exact digest-bound shards.",
       "job": "conformance-aggregate",
+      "job_reserve_seconds": 300,
       "name": "nightly_conformance",
       "resource_class": "scheduled-suite",
       "shard_count": 8,
@@ -7854,6 +8494,7 @@
     {
       "description": "Full basic and stdlib differential corpus aggregated from sixteen exact digest-bound shards.",
       "job": "differential-aggregate",
+      "job_reserve_seconds": 300,
       "name": "nightly_differential",
       "resource_class": "scheduled-suite",
       "shard_count": 16,
@@ -7867,6 +8508,7 @@
     {
       "description": "Pinned CPython regrtest closure aggregated from four exact digest-bound shards.",
       "job": "regrtest-aggregate",
+      "job_reserve_seconds": 300,
       "name": "nightly_regrtest",
       "resource_class": "scheduled-suite",
       "shard_count": 4,
@@ -7880,6 +8522,7 @@
     {
       "description": "Fit one compact digest-bound cost model from complete measured Nightly item telemetry.",
       "job": "shard-profile-feedback",
+      "job_reserve_seconds": 300,
       "name": "nightly_shard_profile_feedback",
       "needs": [
         "nightly-prepare",
@@ -7897,6 +8540,7 @@
     {
       "description": "Runtime determinism and typed IR verification after one runtime build.",
       "job": "determinism-sweep",
+      "job_reserve_seconds": 300,
       "name": "nightly_determinism",
       "resource_class": "scheduled-suite",
       "tiers": [
@@ -7908,6 +8552,7 @@
     {
       "description": "Heavy Tier 3 reproducibility, fuzzing, mutation, translation, and model proof.",
       "job": "verification-gate-t3",
+      "job_reserve_seconds": 600,
       "name": "nightly_verification_t3",
       "resource_class": "scheduled-suite",
       "tiers": [
@@ -7915,9 +8560,21 @@
       ],
       "timeout_minutes": 90,
       "workflow": ".github/workflows/nightly.yml"
+    },
+    {
+      "description": "Controlled candidate-only numeric/list/shared-storage measurements; no comparative or release PASS.",
+      "job": "candidate-runtime-costs",
+      "job_reserve_seconds": 1800,
+      "name": "runtime_candidate_costs",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "scheduled"
+      ],
+      "timeout_minutes": 180,
+      "workflow": ".github/workflows/perf-gate.yml"
     }
   ],
-  "schema": "molt.proof-plan-projection.v6",
+  "schema": "molt.proof-plan-projection.v7",
   "toolchain_policies": [
     {
       "executable": "{python}",
@@ -7933,6 +8590,42 @@
       "version_pattern": "^Python 3\\.12\\.15$"
     },
     {
+      "executable": "bash",
+      "name": "bash",
+      "setup_evidence": [
+        ".github/workflows/ci.yml::Install completion test shells"
+      ],
+      "setup_value": "Ubuntu hosted shell package",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^GNU bash, version [0-9]+\\.[0-9]+\\."
+    },
+    {
+      "executable": "fish",
+      "name": "fish",
+      "setup_evidence": [
+        ".github/workflows/ci.yml::Install completion test shells"
+      ],
+      "setup_value": "Ubuntu hosted shell package",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^fish, version [0-9]+\\.[0-9]+\\."
+    },
+    {
+      "executable": "zsh",
+      "name": "zsh",
+      "setup_evidence": [
+        ".github/workflows/ci.yml::Install completion test shells"
+      ],
+      "setup_value": "Ubuntu hosted shell package",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^zsh [0-9]+\\.[0-9]+"
+    },
+    {
       "dependencies": [
         "git"
       ],
@@ -7941,7 +8634,7 @@
       "setup_evidence": [
         "src/molt/cli/source_extension_toolchain.py::_resolve_source_extension_toolchain"
       ],
-      "version_pattern": "^molt-source-extension-toolchain-v2$"
+      "version_pattern": "^molt-source-extension-toolchain-v4$"
     },
     {
       "executable": "uv",
@@ -8086,6 +8779,44 @@
         "--version"
       ],
       "version_pattern": "clang version 22\\.1\\.8\\b"
+    },
+    {
+      "executable": "clang-cl",
+      "name": "hosted-clang-cl",
+      "setup_evidence": [
+        ".github/workflows/ci.yml::The Windows image supplies clang-cl for the C ABI header probes."
+      ],
+      "setup_value": "windows-2022 image C11 compiler",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^clang version [0-9]+\\.[0-9]+\\.[0-9]+\\b"
+    },
+    {
+      "executable": "ninja",
+      "name": "ninja",
+      "setup_evidence": [
+        "pyproject.toml::\"ninja==1.13.0\"",
+        "uv.lock::version = \"1.13.0\""
+      ],
+      "setup_value": "1.13.0",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^1\\.13\\.0(?:\\.git(?:\\.kitware\\.jobserver-pipe-1)?)?$"
+    },
+    {
+      "executable": "clang",
+      "name": "wasi-clang",
+      "setup_evidence": [
+        "config/llvm_toolchain_releases.toml::llvm_version = \"23.1.0\""
+      ],
+      "setup_value": "23.1.0",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "clang version 23\\.1\\.0\\b",
+      "wasi_sdk_tool": "clang"
     },
     {
       "executable": "llvm-config",

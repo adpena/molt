@@ -143,6 +143,11 @@ mod tests {
             AbiReturnKind::Status,
             include_str!("seq_snapshot_bridge.rs"),
         ),
+        (
+            "molt_dict_snapshot",
+            AbiReturnKind::Status,
+            include_str!("seq_snapshot_bridge.rs"),
+        ),
     ];
 
     fn function_body<'a>(source: &'a str, symbol: &str) -> &'a str {
@@ -275,9 +280,8 @@ mod tests {
         assert!(module_find.contains("fail::<crate::abi_return::NullHandle>"));
         let no_memory = function_body(include_str!("c_api/cpython_compat.rs"), "PyErr_NoMemory");
         assert!(no_memory.contains("fail_memory::<crate::abi_return::NullHandle>"));
-        let snapshot = function_body(include_str!("seq_snapshot_bridge.rs"), "molt_seq_snapshot");
-        assert!(snapshot.contains("export(py, ptr, out_ptr, out_len)"));
-        let snapshot_export = function_body(include_str!("seq_snapshot_bridge.rs"), "export");
-        assert!(snapshot_export.contains("fail_memory::<crate::abi_return::FailureStatus>"));
+        // The owning seq_snapshot_bridge suite exercises both status exports
+        // through allocation failure, output clearing, and reference retirement.
+        // Helper placement is not part of either public ABI contract.
     }
 }

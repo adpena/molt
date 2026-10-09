@@ -13,8 +13,8 @@ use molt_lang_obj_model::MoltObject;
 use std::ptr;
 
 /// Ensure bridge + static types are initialised.
-fn init() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+fn init() -> support::AbiTestThreadStateTransaction {
+    support::enter_abi_test(support::stub_runtime_hooks())
 }
 
 // ---------------------------------------------------------------------------
@@ -23,7 +23,7 @@ fn init() {
 
 #[test]
 fn test_incref_increments_refcount() {
-    init();
+    let _abi_test = init();
     let bits = MoltObject::from_int(1042).bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(!py.is_null());
@@ -42,7 +42,7 @@ fn test_incref_increments_refcount() {
 
 #[test]
 fn test_decref_decrements_refcount() {
-    init();
+    let _abi_test = init();
     let bits = MoltObject::from_int(1099).bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(!py.is_null());
@@ -60,7 +60,7 @@ fn test_decref_decrements_refcount() {
 
 #[test]
 fn test_decref_to_zero_releases_bridge_entry() {
-    init();
+    let _abi_test = init();
     let bits = MoltObject::from_int(7777).bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     assert!(!py.is_null());
@@ -81,26 +81,26 @@ fn test_decref_to_zero_releases_bridge_entry() {
 
 #[test]
 fn test_incref_null_is_noop() {
-    init();
+    let _abi_test = init();
     // Must not crash
     unsafe { molt_cpython_abi::api::refcount::Py_INCREF(ptr::null_mut()) };
 }
 
 #[test]
 fn test_decref_null_is_noop() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(ptr::null_mut()) };
 }
 
 #[test]
 fn test_xincref_null_is_noop() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::refcount::Py_XINCREF(ptr::null_mut()) };
 }
 
 #[test]
 fn test_xdecref_null_is_noop() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::refcount::Py_XDECREF(ptr::null_mut()) };
 }
 
@@ -110,7 +110,7 @@ fn test_xdecref_null_is_noop() {
 
 #[test]
 fn test_xincref_on_valid_object() {
-    init();
+    let _abi_test = init();
     let bits = MoltObject::from_int(1123).bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     let rc_before = unsafe { (*py).ob_refcnt };
@@ -131,7 +131,7 @@ fn test_xincref_on_valid_object() {
 
 #[test]
 fn test_incref_on_none_singleton_is_immortal() {
-    init();
+    let _abi_test = init();
     let none_ptr = &raw mut Py_None;
     let rc_before = unsafe { (*none_ptr).ob_refcnt };
     assert!(rc_before >= (1 << 29), "None should be immortal");
@@ -144,7 +144,7 @@ fn test_incref_on_none_singleton_is_immortal() {
 
 #[test]
 fn test_decref_on_true_singleton_is_immortal() {
-    init();
+    let _abi_test = init();
     let true_ptr = (&raw mut Py_True).cast::<PyObject>();
     let rc_before = unsafe { (*true_ptr).ob_refcnt };
     assert!(rc_before >= (1 << 29), "True should be immortal");
@@ -156,7 +156,7 @@ fn test_decref_on_true_singleton_is_immortal() {
 
 #[test]
 fn test_decref_on_false_singleton_is_immortal() {
-    init();
+    let _abi_test = init();
     let false_ptr = (&raw mut Py_False).cast::<PyObject>();
     let rc_before = unsafe { (*false_ptr).ob_refcnt };
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(false_ptr) };
@@ -170,7 +170,7 @@ fn test_decref_on_false_singleton_is_immortal() {
 
 #[test]
 fn test_clear_sets_pointer_to_null() {
-    init();
+    let _abi_test = init();
     let bits = MoltObject::from_int(555).bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
     let mut slot: *mut PyObject = py;
@@ -181,13 +181,13 @@ fn test_clear_sets_pointer_to_null() {
 
 #[test]
 fn test_clear_null_pointer_is_noop() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::refcount::Py_CLEAR(ptr::null_mut()) };
 }
 
 #[test]
 fn test_clear_already_null_slot() {
-    init();
+    let _abi_test = init();
     let mut slot: *mut PyObject = ptr::null_mut();
     unsafe { molt_cpython_abi::api::refcount::Py_CLEAR(&mut slot) };
     assert!(slot.is_null());
@@ -199,7 +199,7 @@ fn test_clear_already_null_slot() {
 
 #[test]
 fn test_multiple_incref_decref_cycle() {
-    init();
+    let _abi_test = init();
     let bits = MoltObject::from_int(9999).bits();
     let py = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
 

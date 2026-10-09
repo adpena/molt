@@ -8,7 +8,7 @@ use super::state::alloc_string_bits;
 use super::state::{TkAppState, app_mut_from_registry, app_tcl_error_locked, tk_registry};
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use super::tcl::TclObj;
-use crate::bridge::{dec_ref_bits, decode_value_list, dict_order, object_type_id};
+use crate::bridge::{dec_ref_bits, dict_snapshot, object_type_id, seq_snapshot};
 use molt_runtime_core::prelude::{MoltObject, PyToken, obj_from_bits};
 use molt_runtime_core::type_ids::TYPE_ID_DICT;
 
@@ -20,20 +20,21 @@ pub(super) fn normalize_commondialog_option_name(name: &str) -> String {
     }
 }
 
-pub(super) fn parse_commondialog_options(
+pub(super) fn with_commondialog_options(
     py: &PyToken,
     handle: i64,
     options_bits: u64,
-) -> Result<Vec<(String, u64)>, u64> {
+    consume: impl FnOnce(&[(String, u64)]) -> u64,
+) -> Result<u64, u64> {
     let options_obj = obj_from_bits(options_bits);
     if options_obj.is_none() {
-        return Ok(Vec::new());
+        return Ok(consume(&[]));
     }
 
     if let Some(dict_ptr) = options_obj.as_ptr()
         && object_type_id(dict_ptr) == TYPE_ID_DICT
     {
-        let entries = dict_order(dict_ptr);
+        let entries = dict_snapshot(dict_ptr).ok_or_else(|| MoltObject::none().bits())?;
         let mut options = Vec::with_capacity(entries.len() / 2);
         for pair in entries.chunks(2) {
             if pair.len() != 2 {
@@ -46,16 +47,23 @@ pub(super) fn parse_commondialog_options(
             }
             options.push((normalize_commondialog_option_name(&name), value_bits));
         }
-        return Ok(options);
+        return Ok(consume(&options));
     }
 
-    let Some(raw_items) = decode_value_list(options_obj) else {
+    let raw_ptr = options_obj.as_ptr().filter(|&ptr| {
+        matches!(
+            object_type_id(ptr),
+            molt_runtime_core::type_ids::TYPE_ID_LIST | molt_runtime_core::type_ids::TYPE_ID_TUPLE
+        )
+    });
+    let Some(raw_ptr) = raw_ptr else {
         return Err(raise_tcl_for_handle(
             py,
             handle,
             "commondialog options must be a dict or list/tuple",
         ));
     };
+    let raw_items = unsafe { seq_snapshot(raw_ptr) }.ok_or_else(|| MoltObject::none().bits())?;
     if !raw_items.len().is_multiple_of(2) {
         return Err(raise_tcl_for_handle(
             py,
@@ -73,7 +81,7 @@ pub(super) fn parse_commondialog_options(
         }
         options.push((normalize_commondialog_option_name(&name), value_bits));
     }
-    Ok(options)
+    Ok(consume(&options))
 }
 
 pub(super) fn commondialog_option_value_bits(options: &[(String, u64)], key: &str) -> Option<u64> {

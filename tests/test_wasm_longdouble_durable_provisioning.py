@@ -1,310 +1,131 @@
-"""Durability + fail-loud gate for the wasm reloc-runtime long-double archives.
-
-Companion to ``test_wasm_longdouble_printf_link.py`` (which proves the *link*
-overrides the stub end-to-end). This module is hermetic — it needs no clang /
-wasm-ld / nm — and locks in the two structural repairs that stopped a
-graceful-degrade from silently reintroducing the long-double ``unreachable``
-trap (witness RUN 20260710T164604):
-
-Part A (durable provisioning): both link archives
-(``libc-printscan-long-double.a`` + ``libclang_rt.builtins-wasm32.a``) resolve on
-a machine with NO usable WASI sysroot, from the committed ``vendor/wasm-builtins``
-copy, so a fresh/wiped/CI/other-machine session cannot silently miss them.
-
-Part B (fail loud): every runtime family requires its complete captured archive
-closure. Missing or mutated archives fail before the linker executes; package
-names do not select a weaker identity policy.
-
-Also: missing mandatory archives reject runtime identity capture; changed archive
-bytes invalidate both members of the exact runtime family. Vendored copies match
-their pinned provenance.
-"""
+"""One coherent SDK C-runtime input family, with fail-before-link custody."""
 
 from __future__ import annotations
 
-import hashlib
 import subprocess
-import tomllib
+import hashlib
 from pathlib import Path
 
 import pytest
 
 from tests.runtime_build_identity_helper import RuntimeFixtureRoot
-
 from molt.cli import wasm_link_inputs
 from molt.cli import runtime_wasm_build_support as rb
-from molt.cli import runtime_wasm_build_timings as timings
-from molt.cli import wasm_toolchain
-from molt.llvm_toolchain import load_llvm_releases
-from molt.source_root import compiler_source_root
-
-_PROVENANCE = tomllib.loads(
-    (wasm_link_inputs.wasm_builtins_vendor_dir() / "provenance.toml").read_text(
-        encoding="utf-8"
-    )
-)
+from molt.llvm_toolchain import LlvmToolchainConfigError
 
 
-def _clear_sysroot_env(monkeypatch: pytest.MonkeyPatch, empty_root: Path) -> None:
+def test_missing_sdk_refuses_c_runtime_instead_of_using_an_isolated_archive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     for key in (
         "MOLT_WASI_SYSROOT",
         "WASI_SYSROOT",
         "WASI_SDK_PATH",
         "WASI_SDK_PREFIX",
+        "MOLT_WASI_C_ABI_PLAN",
     ):
         monkeypatch.delenv(key, raising=False)
-    # Point the target root at an empty dir so no sysroot resolves from it, and
-    # bust the lru_cache that memoised any earlier resolution.
-    monkeypatch.setenv("MOLT_TARGET_ROOT", str(empty_root))
-    wasm_link_inputs._resolve_wasi_sysroot_cached.cache_clear()
-
-
-def test_vendored_archives_match_pinned_provenance() -> None:
-    vendor_dir = wasm_link_inputs.wasm_builtins_vendor_dir()
-    archives = _PROVENANCE["archives"]
-    assert set(archives) == set(wasm_link_inputs.WASI_SDK_VENDORED_ARCHIVE_SOURCES)
-    for name, record in archives.items():
-        archive = vendor_dir / name
-        assert archive.exists(), f"vendored {name} missing from {vendor_dir}"
-        blob = archive.read_bytes()
-        assert len(blob) == record["size"], f"{name} size drift"
-        assert hashlib.sha256(blob).hexdigest() == record["sha256"], f"{name} drift"
-
-
-def test_vendored_archives_come_from_the_pinned_wasi_sdk() -> None:
-    # Moving the WASI SDK pin without re-vendoring fails here; the one move is
-    # `tools/pin_freshness.py --update wasi-sdk`.
-    wasi = load_llvm_releases(compiler_source_root()).wasi_sdk
-    assert _PROVENANCE["wasi_sdk_archive_version"] == wasi.archive_version
-    assert _PROVENANCE["wasi_sdk_version"] == wasi.sdk_version
-    assert _PROVENANCE["llvm_version"] == wasi.llvm_version
-    llvm_major = wasi.llvm_version.split(".", 1)[0]
-    for name, record in _PROVENANCE["archives"].items():
-        assert record["sdk_path"] == wasm_link_inputs.WASI_SDK_VENDORED_ARCHIVE_SOURCES[
-            name
-        ].format(llvm_major=llvm_major)
-
-
-def test_archives_resolve_in_fresh_session_without_sysroot(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Part A: a fresh session with no resolvable sysroot still gets both archives."""
-    _clear_sysroot_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path))
     assert wasm_link_inputs.resolve_wasi_sysroot() is None
-    longdouble = wasm_link_inputs.wasm_wasi_printscan_long_double_archive()
-    builtins = wasm_link_inputs.wasm_clang_rt_builtins_archive()
-    assert longdouble is not None, "long-double archive did not resolve (no sysroot)"
-    assert builtins is not None, "builtins archive did not resolve (no sysroot)"
-    # Both came from the committed vendored copy.
-    vendor_dir = wasm_link_inputs.wasm_builtins_vendor_dir()
-    assert longdouble.parent == vendor_dir
-    assert builtins.parent == vendor_dir
+    with pytest.raises(LlvmToolchainConfigError, match="pinned WASI SDK is missing"):
+        wasm_link_inputs.resolve_long_double_link_policy()
 
 
 @pytest.fixture
-def frozen_inputs(
-    runtime_fixture_root: RuntimeFixtureRoot, monkeypatch: pytest.MonkeyPatch
-):
-    from tests.runtime_build_identity_helper import runtime_wasm_link_inputs
-
-    inputs = runtime_wasm_link_inputs(runtime_fixture_root)
-    monkeypatch.setattr(
-        wasm_toolchain,
-        "resolve_wasm_linker",
-        lambda **_kwargs: wasm_toolchain.WasmLinkerIdentity(
-            inputs.linker.entrypoint, "22.1.8", None, inputs.linker.identity.sha256
-        ),
-    )
-    monkeypatch.setattr(
-        wasm_link_inputs, "wasm_wasi_libc_archive", lambda **_kwargs: inputs.libc.path
-    )
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "wasm_compiler_builtins_archive",
-        lambda **_kwargs: inputs.rust_builtins.path,
-    )
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "wasm_wasi_printscan_long_double_archive",
-        lambda **_kwargs: inputs.long_double.path,
-    )
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "wasm_clang_rt_builtins_archive",
-        lambda **_kwargs: inputs.clang_builtins.path,
-    )
-    return inputs
-
-
-@pytest.mark.parametrize(
-    "missing",
-    ("wasm_wasi_printscan_long_double_archive", "wasm_clang_rt_builtins_archive"),
-)
-def test_every_runtime_family_requires_complete_archive_custody(
-    frozen_inputs,
-    monkeypatch: pytest.MonkeyPatch,
-    missing: str,
-) -> None:
-    monkeypatch.setattr(wasm_link_inputs, missing, lambda **_kwargs: None)
-    timings._reset_runtime_wasm_build_timings()
-    with pytest.raises(ValueError, match="long_double_not_supported") as caught:
-        rb.resolve_runtime_wasm_link_inputs(
-            env={"WASI_SYSROOT": str(frozen_inputs.wasi_sysroot)},
-            target_libdir=frozen_inputs.wasi_sysroot,
-            project_root=frozen_inputs.wasi_sysroot,
-        )
-    message = str(caught.value)
-    assert "libc-printscan-long-double.a" in message
-    assert "libclang_rt.builtins-wasm32.a" in message
-    assert "vendor/wasm-builtins" in message
-    assert (
-        timings._runtime_wasm_build_timings_snapshot()["longdouble_archives"]
-        == "MISSING"
-    )
-
-
-def test_runtime_link_inputs_capture_complete_archive_set(frozen_inputs) -> None:
-    assert (
-        rb.resolve_runtime_wasm_link_inputs(
-            env={"WASI_SYSROOT": str(frozen_inputs.wasi_sysroot)},
-            target_libdir=frozen_inputs.wasi_sysroot,
-            project_root=frozen_inputs.wasi_sysroot,
-        )
-        == frozen_inputs
-    )
-
-
-def test_runtime_link_capture_uses_effective_environment_and_selected_rust_root(
-    runtime_fixture_root: RuntimeFixtureRoot,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from tests.runtime_build_identity_helper import runtime_wasm_link_inputs
-
-    inputs = runtime_wasm_link_inputs(runtime_fixture_root)
-    selected = tmp_path / "selected-rust-root"
-    (selected / "self-contained").mkdir(parents=True)
-    libc = selected / "self-contained" / "libc.a"
-    libc.write_bytes(b"!<arch>\nselected-libc")
-    builtins = selected / "libcompiler_builtins-selected.rlib"
-    builtins.write_bytes(b"!<arch>\nselected-builtins")
-    environment = {
-        "MOLT_WASI_SYSROOT": str(inputs.wasi_sysroot),
-        "MOLT_WASM_LONGDOUBLE_ARCHIVE": str(inputs.long_double.path),
-        "MOLT_WASM_BUILTINS_ARCHIVE": str(inputs.clang_builtins.path),
-    }
-
-    def linker(*, env, cwd):
-        assert env == environment
-        assert cwd == tmp_path
-        return wasm_toolchain.WasmLinkerIdentity(
-            inputs.linker.entrypoint, "22.1.8", None, inputs.linker.identity.sha256
-        )
-
-    monkeypatch.setattr(wasm_toolchain, "resolve_wasm_linker", linker)
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "rust_target_libdir",
-        lambda *_a, **_k: pytest.fail("captured target must not query ambient rustc"),
-    )
-    monkeypatch.setenv("MOLT_WASM_LONGDOUBLE_ARCHIVE", str(tmp_path / "ambient-poison"))
-    result = rb.resolve_runtime_wasm_link_inputs(
-        env=environment, target_libdir=selected, project_root=tmp_path
-    )
-    assert result.libc.path == libc
-    assert result.rust_builtins.path == builtins
-    assert result.long_double == inputs.long_double
-    result.verify()
-
-
-def test_runtime_link_custody_preserves_symlink_entrypoint(
-    runtime_fixture_root: RuntimeFixtureRoot,
-    tmp_path: Path,
-) -> None:
-    from dataclasses import replace
-    from molt.cli.runtime_cargo_plan import CargoExecutableCustody
-    from tests.runtime_build_identity_helper import runtime_wasm_link_inputs
-
-    inputs = runtime_wasm_link_inputs(runtime_fixture_root)
-    alias = tmp_path / "wasm-ld"
-    try:
-        alias.symlink_to(inputs.linker.entrypoint)
-    except OSError:
-        pytest.skip("host cannot create executable symlinks")
-    result = replace(
-        inputs, linker=CargoExecutableCustody.capture("runtime WASM linker", alias)
-    )
-    result.verify()
-    assert result.linker.entrypoint == alias
-    assert result.linker.identity.path == inputs.linker.identity.path
-    alias.unlink()
-    alias.write_bytes(b"different-entrypoint")
-    with pytest.raises(ValueError, match="changed"):
-        result.verify()
-
-
-def test_link_hard_errors_before_invoking_wasm_ld(
-    runtime_fixture_root: RuntimeFixtureRoot,
-    frozen_inputs,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
+def captured_cargo(runtime_fixture_root: RuntimeFixtureRoot, tmp_path: Path):
     from tests.runtime_build_identity_helper import runtime_cargo_plan
 
-    frozen_inputs.long_double.path.unlink()
-    staticlib = tmp_path / "libmolt_runtime.a"
-    staticlib.write_bytes(b"!<arch>\n")
+    return runtime_cargo_plan(
+        tmp_path,
+        fixture_root=runtime_fixture_root,
+        env={},
+        cargo_command=("cargo",),
+        requested_target="wasm32-wasip1",
+    )
 
-    def forbidden(*_a, **_k):
-        raise AssertionError("wasm-ld must not run after archive custody is lost")
 
-    monkeypatch.setattr(rb, "_run_completed_command", forbidden)
-    with pytest.raises(ValueError, match="unavailable|changed"):
-        rb._link_runtime_staticlib_to_reloc_wasm(
-            staticlib_path=staticlib,
-            output_path=tmp_path / "runtime.wasm",
-            json_output=True,
-            link_timeout=1.0,
-            link_inputs=frozen_inputs,
-            cargo_plan=runtime_cargo_plan(
-                tmp_path,
-                fixture_root=runtime_fixture_root,
-                env={},
-                cargo_command=("cargo",),
-            ),
+@pytest.fixture
+def selected_c_abi(captured_cargo, monkeypatch):
+    plan = captured_cargo.wasi_c_abi
+    monkeypatch.setenv("WASI_SDK_PATH", str(plan.sdk))
+    monkeypatch.setenv("MOLT_WASI_SYSROOT", str(plan.sysroot))
+    monkeypatch.setenv("WASI_SYSROOT", str(plan.sysroot))
+    return plan
+
+
+@pytest.mark.parametrize("missing", ("long_double", "compiler_rt", "libc"))
+def test_explicit_sdk_verification_rejects_missing_archive(
+    captured_cargo, missing: str
+) -> None:
+    from molt.llvm_toolchain import load_wasi_sdk_installation
+    from molt.cli.compiler_metadata import _compiler_root
+
+    captured_cargo.wasi_c_abi.path(missing).unlink()
+    # Ordinary compilation trusts the append-only managed generation. Explicit
+    # verification owns diagnosis of unsupported modifications to that generation.
+    with pytest.raises((OSError, ValueError, LlvmToolchainConfigError)):
+        load_wasi_sdk_installation(
+            _compiler_root(), captured_cargo.wasi_sdk.prefix, verify_tree=True
         )
 
 
-def test_runtime_archive_capture_rejects_missing_mandatory_content(
-    tmp_path: Path,
-) -> None:
-    from molt.cli.runtime_build_identity import _archive_identity
+def test_runtime_plan_keeps_sdk_out_of_mutable_resource_capture(
+    captured_cargo, monkeypatch
+):
+    sdk = captured_cargo.wasi_sdk.sdk
+    assert not any(
+        item.entrypoint.is_relative_to(sdk)
+        for item in captured_cargo.rust_resources.files
+    )
+    assert not any(
+        item.entrypoint.is_relative_to(sdk)
+        for item in captured_cargo.executable_custody
+    )
+    with monkeypatch.context() as projection:
+        projection.setattr(
+            type(captured_cargo),
+            "verify",
+            lambda *_: pytest.fail("projection performed verification"),
+        )
+        projection.setattr(
+            Path, "open", lambda *_a, **_k: pytest.fail("projection read a file")
+        )
+        captured_cargo.configuration_identity()
+        captured_cargo.toolchain_identity()
 
-    archive = tmp_path / "libc-printscan-long-double.a"
-    archive.write_bytes(b"!<arch>\n")
-    assert _archive_identity("wasi-long-double", archive)["sha256"]
-    archive.unlink()
-    with pytest.raises((ValueError, OSError)):
-        _archive_identity("wasi-long-double", archive)
-    with pytest.raises(ValueError, match="unresolved"):
-        _archive_identity("wasi-long-double", None)
+
+def test_runtime_relink_requires_admitted_c_abi_before_effects(
+    runtime_fixture_root, tmp_path, monkeypatch
+):
+    from tests.runtime_build_identity_helper import runtime_cargo_plan
+
+    plan = runtime_cargo_plan(
+        tmp_path, fixture_root=runtime_fixture_root, env={}, cargo_command=("cargo",)
+    )
+    monkeypatch.setattr(
+        rb,
+        "_run_completed_command",
+        lambda *_a, **_k: pytest.fail("link ran without SDK"),
+    )
+    with pytest.raises(ValueError, match="admitted SDK"):
+        rb._link_runtime_staticlib_to_reloc_wasm(
+            staticlib_path=tmp_path / "input.a",
+            output_path=tmp_path / "out.wasm",
+            json_output=True,
+            link_timeout=1.0,
+            cargo_plan=plan,
+        )
 
 
 @pytest.mark.parametrize(
     "resource",
     (
-        "linker",
-        "libc",
-        "rust_builtins",
-        "long_double",
-        "clang_builtins",
         "staticlib",
         "response",
     ),
 )
 def test_reloc_link_rejects_changed_inputs_without_replacing_output(
     runtime_fixture_root: RuntimeFixtureRoot,
-    frozen_inputs,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     resource: str,
@@ -323,12 +144,6 @@ def test_reloc_link_rejects_changed_inputs_without_replacing_output(
             selected = Path(next(arg[1:] for arg in command if arg.startswith("@")))
         elif resource == "staticlib":
             selected = staticlib
-        else:
-            selected = (
-                frozen_inputs.linker.entrypoint
-                if resource == "linker"
-                else getattr(frozen_inputs, resource).path
-            )
         selected.write_bytes(selected.read_bytes() + b"changed")
         return subprocess.CompletedProcess(command, 0, "link-stdout", "link-stderr")
 
@@ -339,12 +154,12 @@ def test_reloc_link_rejects_changed_inputs_without_replacing_output(
             output_path=output,
             json_output=True,
             link_timeout=1.0,
-            link_inputs=frozen_inputs,
             cargo_plan=runtime_cargo_plan(
                 tmp_path,
                 fixture_root=runtime_fixture_root,
                 env={"CAPTURED_LINK_ENV": "original"},
                 cargo_command=("cargo",),
+                requested_target="wasm32-wasip1",
             ),
             export_link_args="-C link-arg=--export=entry",
         )
@@ -357,7 +172,6 @@ def test_reloc_link_rejects_changed_inputs_without_replacing_output(
 @pytest.mark.parametrize("timeout", (False, True))
 def test_reloc_link_failure_retains_child_evidence(
     runtime_fixture_root: RuntimeFixtureRoot,
-    frozen_inputs,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     timeout: bool,
@@ -384,22 +198,26 @@ def test_reloc_link_failure_retains_child_evidence(
             output_path=output,
             json_output=True,
             link_timeout=1.0,
-            link_inputs=frozen_inputs,
             cargo_plan=runtime_cargo_plan(
                 tmp_path,
                 fixture_root=runtime_fixture_root,
                 env={},
                 cargo_command=("cargo",),
+                requested_target="wasm32-wasip1",
             ),
         )
-    assert caught.value.command[0] == str(frozen_inputs.linker.entrypoint)
+    from tests.runtime_build_identity_helper import runtime_wasi_c_abi_plan
+
+    assert caught.value.command[0] == str(
+        runtime_wasi_c_abi_plan(runtime_fixture_root).linker
+    )
     assert caught.value.stdout == "partial stdout"
     assert caught.value.stderr == "precise cause"
     assert caught.value.timed_out is timeout
     assert not output.exists()
 
 
-# --- Split app.wasm link: numpy (no reloc runtime here) needs its own formatters ---
+# Split app owns its formatter; the combined link already has the reloc one.
 import wasm_link_native_inputs  # noqa: E402
 from molt.cli.source_extension_link_requirements import (  # noqa: E402
     SourceExtensionLinkRequirements,
@@ -407,150 +225,80 @@ from molt.cli.source_extension_link_requirements import (  # noqa: E402
 )
 
 
-def _split_native_requirements(
-    tmp_path: Path, *names: str
-) -> SourceExtensionLinkRequirements:
-    inputs = []
-    for name in names:
-        path = tmp_path / name
-        path.write_bytes(b"!<arch>\n" if path.suffix == ".a" else b"\0asm\x01\0\0\0")
-        inputs.append(source_extension_link_file(path))
-    return SourceExtensionLinkRequirements("wasm32-wasip1", tuple(inputs))
-
-
-def test_split_app_wholearchives_longdouble_when_libc_present(tmp_path: Path) -> None:
-    args = wasm_link_native_inputs._split_app_native_link_args(
-        _split_native_requirements(tmp_path, "numpy_multiarray.o", "libc.a")
+def _split_native_requirements(*paths: Path) -> SourceExtensionLinkRequirements:
+    return SourceExtensionLinkRequirements(
+        "wasm32-wasip1", tuple(source_extension_link_file(path) for path in paths)
     )
-    assert args[0] == "--whole-archive"
-    assert args[1].endswith("libc-printscan-long-double.a")
-    assert args[2] == "--no-whole-archive"
-    assert any(a.endswith("libc.a") for a in args)
-    assert any(a.endswith("libclang_rt.builtins-wasm32.a") for a in args)
 
 
-def test_split_app_plain_passthrough_without_libc(tmp_path: Path) -> None:
-    requirements = _split_native_requirements(tmp_path, "extmod.o", "data_alias.o")
-    assert wasm_link_native_inputs._split_app_native_link_args(requirements) == [
-        item.path for item in requirements.inputs
+def test_split_app_wholearchives_longdouble_when_libc_present(selected_c_abi) -> None:
+    requirements = _split_native_requirements(
+        selected_c_abi.path("libc"),
+        selected_c_abi.path("long_double"),
+        selected_c_abi.path("compiler_rt"),
+    )
+    args = wasm_link_native_inputs._split_app_native_link_args(
+        requirements, provider_paths={"long_double": selected_c_abi.path("long_double")}
+    )
+    assert args == [
+        "--whole-archive",
+        str(selected_c_abi.path("long_double")),
+        "--no-whole-archive",
+        str(selected_c_abi.path("libc")),
+        str(selected_c_abi.path("compiler_rt")),
     ]
 
 
-def test_split_app_fails_loud_when_longdouble_absent(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+def test_split_app_plain_passthrough_without_libc(tmp_path: Path) -> None:
+    obj = tmp_path / "extmod.o"
+    obj.write_bytes(b"\0asm\x01\0\0\0")
+    requirements = _split_native_requirements(obj)
+    assert wasm_link_native_inputs._split_app_native_link_args(
+        requirements, provider_paths={}
+    ) == [str(obj)]
+
+
+def test_split_app_fails_before_link_when_longdouble_not_captured(
+    selected_c_abi,
 ) -> None:
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "wasm_wasi_printscan_long_double_archive",
-        lambda **_kwargs: None,
-    )
-    with pytest.raises(ValueError, match="long-double|unreachable"):
+    with pytest.raises(ValueError, match="captured exactly once"):
         wasm_link_native_inputs._split_app_native_link_args(
-            _split_native_requirements(tmp_path, "numpy.o", "libc.a")
+            _split_native_requirements(selected_c_abi.path("libc")),
+            provider_paths={"long_double": selected_c_abi.path("long_double")},
         )
 
 
-# --- Single authority: every wasm link path routes through ONE policy --------
-#
-# The wasi-libc `long_double_not_supported` stub lives in `libc.a` and must be
-# overridden in EVERY wasm module that links it. These lock in that the reloc
-# runtime (wasm-ld), split app.wasm (wasm-ld), and deploy cdylib (rustc via
-# build.rs env) all resolve the same archives + ordering through the ONE
-# `wasm_link_inputs` policy — so a future 4th link path can't reintroduce the trap
-# by re-implementing resolution.
-
-
-def _fake_archives(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> tuple[Path, Path]:
-    ld = tmp_path / "libc-printscan-long-double.a"
-    ld.write_bytes(b"!<arch>\n")
-    bi = tmp_path / "libclang_rt.builtins-wasm32.a"
-    bi.write_bytes(b"!<arch>\n")
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "wasm_wasi_printscan_long_double_archive",
-        lambda **_kwargs: ld,
-    )
-    monkeypatch.setattr(
-        wasm_link_inputs, "wasm_clang_rt_builtins_archive", lambda **_kwargs: bi
-    )
-    return ld, bi
-
-
-def test_all_three_link_paths_share_the_one_authority(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_same_named_foreign_libc_cannot_join_the_selected_sdk(
+    selected_c_abi, tmp_path: Path
 ) -> None:
-    ld, bi = _fake_archives(monkeypatch, tmp_path)
+    foreign = tmp_path / "libc.a"
+    foreign.write_bytes(selected_c_abi.path("libc").read_bytes())
+    with pytest.raises(ValueError, match="differs from selected WASI SDK"):
+        wasm_link_inputs.admit_wasi_provider_inputs((foreign,))
 
-    # (1) reloc arm — resolver delegates to the authority.
-    reloc = wasm_link_inputs.resolve_long_double_link_policy(required=True)
-    assert reloc.printscan == ld
-    assert reloc.builtins == bi
-    assert reloc.error is None
 
-    # (2) split app.wasm arm — argv whole-archives printscan ahead of libc.a.
-    args = wasm_link_native_inputs._split_app_native_link_args(
-        _split_native_requirements(tmp_path, "numpy.o", "libc.a")
+def test_reloc_and_split_share_the_selected_complete_family(selected_c_abi) -> None:
+    policy = wasm_link_inputs.resolve_long_double_link_policy()
+    assert (policy.printscan, policy.builtins) == (
+        selected_c_abi.path("long_double"),
+        selected_c_abi.path("compiler_rt"),
     )
-    ld_in_args = [a for a in args if Path(a).name == ld.name]
-    bi_in_args = [a for a in args if Path(a).name == bi.name]
-    assert ld_in_args and Path(ld_in_args[0]).parent == tmp_path.resolve()
-    assert bi_in_args and Path(bi_in_args[0]).parent == tmp_path.resolve()
-    assert args.index("--whole-archive") < args.index(ld_in_args[0])
-    assert args.index(ld_in_args[0]) < args.index("--no-whole-archive")
-
-    # (3) deploy cdylib arm — archives threaded to build.rs by env.
-    env: dict[str, str] = {}
-    rb._configure_wasm_long_double_env(env)
-    assert Path(env["MOLT_WASM_LONGDOUBLE_ARCHIVE"]).parent == tmp_path.resolve()
-    assert Path(env["MOLT_WASM_LONGDOUBLE_ARCHIVE"]).name == ld.name
-    assert Path(env["MOLT_WASM_BUILTINS_ARCHIVE"]).name == bi.name
-
-
-def test_shared_argv_order_matches_reloc_policy(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """The shared argv builder emits printscan in the whole-archive group ahead
-    of the (lazy) libc, with builtins trailing — the proven override order."""
-    ld, bi = _fake_archives(monkeypatch, tmp_path)
-    policy = wasm_link_inputs.resolve_long_double_link_policy(required=True)
     argv = wasm_link_inputs.long_double_whole_archive_link_argv(
-        policy, whole_archive=["staticlib.a"], trailing=["libc.a"]
+        policy,
+        whole_archive=["staticlib.a"],
+        trailing=[str(selected_c_abi.path("libc"))],
     )
     assert argv == [
         "--whole-archive",
         "staticlib.a",
-        str(ld.resolve(strict=False)),
+        str(selected_c_abi.path("long_double")),
         "--no-whole-archive",
-        "libc.a",
-        str(bi.resolve(strict=False)),
+        str(selected_c_abi.path("libc")),
+        str(selected_c_abi.path("compiler_rt")),
     ]
 
 
-def test_deploy_cdylib_env_absent_when_archive_unresolved(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No archive -> no env keys: build.rs emits nothing and the artifact poison
-    gate (plus the reloc/split-app numpy-tier fail-loud) is the effect backstop.
-    """
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "wasm_wasi_printscan_long_double_archive",
-        lambda **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        wasm_link_inputs, "wasm_clang_rt_builtins_archive", lambda **_kwargs: None
-    )
-    env: dict[str, str] = {}
-    rb._configure_wasm_long_double_env(env)
-    assert "MOLT_WASM_LONGDOUBLE_ARCHIVE" not in env
-    assert "MOLT_WASM_BUILTINS_ARCHIVE" not in env
-
-
 def test_shared_and_reloc_families_attest_exact_archive_content(tmp_path: Path) -> None:
-    from molt.cli.runtime_build_identity import _archive_identity
     from molt.cli.runtime_identity_schema import (
         RuntimeBuildIdentity,
         _digest,
@@ -564,7 +312,12 @@ def test_shared_and_reloc_families_attest_exact_archive_content(tmp_path: Path) 
     def with_archive(value):
         family = value["payload"]["family"]
         archives = family["compile"]["toolchain"]["archives"]
-        archives[2] = _archive_identity("wasi-long-double", archive)
+        raw = archive.read_bytes()
+        archives[1] = {
+            "logical_name": "wasi-long-double",
+            "size": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
         compile_digest = _digest(family["compile"])
         family["compile_digest"] = compile_digest
         return tuple(
@@ -586,3 +339,471 @@ def test_shared_and_reloc_families_attest_exact_archive_content(tmp_path: Path) 
         old.compile_digest != new.compile_digest and old.digest != new.digest
         for old, new in zip(first, second, strict=True)
     )
+
+
+def test_python_projection_is_consumed_by_actual_rust_decoder(
+    runtime_fixture_root, tmp_path
+):
+    import os
+    import shutil
+    from tests.runtime_build_identity_helper import runtime_wasi_c_abi_plan
+    from tests.process_guard_common import run_guarded_test_process
+    from molt.source_root import compiler_source_root
+    from molt.cli.wasm_link_args import wasi_external_libc_rustflags
+
+    rustc = shutil.which("rustc")
+    assert rustc is not None, "Rust decoder proof requires admitted rustc"
+    plan = runtime_wasi_c_abi_plan(runtime_fixture_root)
+    source = tmp_path / "decoder.rs"
+    decoder = compiler_source_root() / "runtime/build_support/wasi_sysroot.rs"
+    source.write_text(
+        "#[path = " + __import__("json").dumps(str(decoder)) + "] mod wasi;\n"
+        "fn main() { let a: Vec<String> = std::env::args().collect();\n"
+        ' let plan = wasi::WasiCAbiPlan::decode(&a[1]).expect("decode");\n'
+        ' plan.validate_cargo_mode(&a[4], &a[2], &a[3]).expect("Cargo mode"); }\n',
+        encoding="utf-8",
+    )
+    executable = tmp_path / ("decoder.exe" if os.name == "nt" else "decoder")
+    run_guarded_test_process(
+        [rustc, "--edition=2024", str(source), "-o", str(executable)],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    # The Rust decoder accepting our spelling is insufficient: the selected
+    # stable compiler must accept the production producer's complete mode.
+    produced = wasi_external_libc_rustflags((), plan=plan)
+    assert produced == (
+        "-L",
+        "native=" + str(plan.path("libc").parent),
+        "-L",
+        "native=" + str(plan.path("compiler_rt").parent),
+        "-C",
+        "link-self-contained=no",
+        "-C",
+        "linker-flavor=wasm-ld",
+    )
+    flags = "\x1f".join(produced)
+    environment = {
+        key: value for key, value in os.environ.items() if key != "RUSTC_BOOTSTRAP"
+    }
+    for target in ("wasm32-wasip1", "wasm32-unknown-unknown"):
+        cfg = run_guarded_test_process(
+            [rustc, "--print", "cfg", "--target", target, *produced],
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        assert 'target_arch="wasm32"' in cfg.stdout.splitlines()
+        valid = [str(executable), plan.encode(), str(plan.linker), flags, target]
+        run_guarded_test_process(
+            valid, capture_output=True, text=True, check=True, timeout=10
+        )
+    # The receiver sees raw effective Cargo flags, not necessarily our Python
+    # canonical spelling. Exercise both aliases and each conflicting mode there.
+    for spelling in ("-C", "-Cjoined", "--codegen", "--codegen="):
+
+        def option(value):
+            return (
+                (spelling, value)
+                if spelling in {"-C", "--codegen"}
+                else (("-C" if spelling == "-Cjoined" else spelling) + value,)
+            )
+
+        modes = (*option("link-self-contained=no"), *option("linker-flavor=wasm-ld"))
+        raw = (*produced[:4], *modes)
+        run_guarded_test_process(
+            [
+                str(executable),
+                plan.encode(),
+                str(plan.linker),
+                "\x1f".join(raw),
+                "wasm32-wasip1",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        for conflicting in (
+            "link-self-contained=yes",
+            "linker-flavor=wasm-lld-cc",
+            "linker=foreign-linker",
+        ):
+            result = run_guarded_test_process(
+                [
+                    str(executable),
+                    plan.encode(),
+                    str(plan.linker),
+                    "\x1f".join((*raw, *option(conflicting))),
+                    "wasm32-wasip1",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert result.returncode != 0
+    for switch in ("--sysroot", "-L", "-o", "--out-dir", "--remap-path-prefix"):
+        for opaque in ("-Clinker=foreign", "--codegen=linker=foreign"):
+            run_guarded_test_process(
+                [
+                    str(executable),
+                    plan.encode(),
+                    str(plan.linker),
+                    "\x1f".join((*produced, switch, opaque)),
+                    "wasm32-wasip1",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=10,
+            )
+    for output in ("-C", "-Lnative=unselected", "--codegen"):
+        run_guarded_test_process(
+            [
+                str(executable),
+                plan.encode(),
+                str(plan.linker),
+                "\x1f".join(("-o", output, *produced)),
+                "wasm32-wasip1",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+    clustered = (
+        *produced[:4],
+        "-gClink_self_contained=no",
+        "-vC",
+        "linker_flavor=wasm-ld",
+    )
+    run_guarded_test_process(
+        [
+            str(executable),
+            plan.encode(),
+            str(plan.linker),
+            "\x1f".join(clustered),
+            "wasm32-wasip1",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    for feature, expected in (("+simd128", True), ("-simd128", False)):
+        cfg = run_guarded_test_process(
+            [
+                rustc,
+                "--print",
+                "cfg",
+                "--target",
+                "wasm32-wasip1",
+                *clustered,
+                "-gCtarget_feature=" + feature,
+            ],
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        assert ('target_feature="simd128"' in cfg.stdout.splitlines()) is expected
+    for conflict in (
+        "-gClink_self_contained=yes",
+        "-OClinker_flavor=wasm-lld-cc",
+        "-gClinker=foreign",
+    ):
+        result = run_guarded_test_process(
+            [
+                str(executable),
+                plan.encode(),
+                str(plan.linker),
+                "\x1f".join((*clustered, conflict)),
+                "wasm32-wasip1",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode != 0
+    for search in (
+        ("-L", "unknown=archive"),
+        ("-gLunknown=archive",),
+        ("-L", "-Clinker=tools/root"),
+    ):
+        preceding = run_guarded_test_process(
+            [
+                str(executable),
+                plan.encode(),
+                str(plan.linker),
+                "\x1f".join((*search, *produced)),
+                "wasm32-wasip1",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert (
+            preceding.returncode != 0
+            and "selected SDK directories first" in preceding.stderr
+        )
+        run_guarded_test_process(
+            [
+                str(executable),
+                plan.encode(),
+                str(plan.linker),
+                "\x1f".join((*produced, *search)),
+                "wasm32-wasip1",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+    for malformed in (("-C",), ("--codegen",), ("--codegen=",), ("-C=opt-level=2",)):
+        result = run_guarded_test_process(
+            [
+                str(executable),
+                plan.encode(),
+                str(plan.linker),
+                "\x1f".join((*produced, *malformed)),
+                "wasm32-wasip1",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode != 0
+
+    # Cargo global flags supersede target flags. The direct environment writer
+    # preserves that native caller input, and the real Rust decoder refuses the
+    # now-incomplete WASI effective lane rather than silently supplementing it.
+    from molt.llvm_toolchain import project_wasm_toolchain_environment
+    from tests.runtime_build_identity_helper import provisioned_wasi_sdk_fixture
+
+    installation = provisioned_wasi_sdk_fixture(runtime_fixture_root)
+    for name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"):
+        incomplete = produced[4:]
+        value = (
+            "\x1f".join(incomplete)
+            if name == "CARGO_ENCODED_RUSTFLAGS"
+            else __import__("shlex").join(incomplete)
+        )
+        projected = project_wasm_toolchain_environment(
+            installation, environ={name: value}
+        )
+        assert projected[name] == value  # the writer never rewrites global flags
+        assert __import__("shlex").split(
+            projected["CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS"]
+        ) == list(produced)
+        result = run_guarded_test_process(
+            [
+                str(executable),
+                plan.encode(),
+                str(plan.linker),
+                "\x1f".join(incomplete),
+                "wasm32-wasip1",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert (
+            result.returncode != 0 and "selected SDK directories first" in result.stderr
+        )
+
+    old = bytes.fromhex(plan.encode()).decode().split("\0")
+    old[0] = "molt.wasi-c-abi.v1"
+    del old[10]
+    for wire, linker, mode in (
+        ("\0".join(old).encode().hex(), str(plan.linker), flags),
+        (plan.encode(), str(plan.driver), flags),
+        (plan.encode(), str(plan.linker), flags.replace("wasm-ld", "wasm-lld")),
+        (plan.encode(), str(plan.linker), flags.replace("wasm-ld", "wasm-lld-cc")),
+        (
+            plan.encode(),
+            str(plan.linker),
+            flags.replace("contained=no", "contained=yes"),
+        ),
+        (plan.encode(), str(plan.linker), "\x1f".join(produced[4:])),
+        (
+            plan.encode(),
+            str(plan.linker),
+            "\x1f".join((*produced[2:4], *produced[:2], *produced[4:])),
+        ),
+    ):
+        for target in ("wasm32-wasip1", "wasm32-unknown-unknown"):
+            result = run_guarded_test_process(
+                [str(executable), wire, linker, mode, target],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            assert result.returncode != 0
+
+
+def test_split_renderer_uses_captured_role_paths_without_live_sdk(
+    selected_c_abi, tmp_path, monkeypatch
+):
+    import shutil
+
+    captured = {}
+    for role, source in (
+        ("libc", selected_c_abi.path("libc")),
+        ("long_double", selected_c_abi.path("long_double")),
+        ("compiler_rt", selected_c_abi.path("compiler_rt")),
+    ):
+        destination = tmp_path / ("snapshot-" + role + ".a")
+        shutil.copyfile(source, destination)
+        captured[role] = destination
+    monkeypatch.setattr(
+        wasm_link_inputs,
+        "resolve_wasi_c_abi_plan",
+        lambda **kwargs: pytest.fail("renderer selected live SDK"),
+    )
+    arguments = wasm_link_native_inputs._split_app_native_link_args(
+        _split_native_requirements(*captured.values()),
+        provider_paths=captured,
+    )
+    assert arguments == [
+        "--whole-archive",
+        str(captured["long_double"]),
+        "--no-whole-archive",
+        str(captured["libc"]),
+        str(captured["compiler_rt"]),
+    ]
+
+
+@pytest.mark.parametrize("spelling", ["-C", "-Cjoined", "--codegen", "--codegen="])
+def test_wasi_codegen_aliases_share_mode_and_raw_argument_admission(
+    selected_c_abi, spelling
+):
+    import shlex
+    from molt.cli.wasm_link_args import (
+        wasi_external_libc_rustflags,
+        wasm_link_args_from_rustflags,
+    )
+
+    def option(value):
+        return (
+            (spelling, value)
+            if spelling in {"-C", "--codegen"}
+            else (("-C" if spelling == "-Cjoined" else spelling) + value,)
+        )
+
+    original = (
+        *option("link-self-contained=no"),
+        *option("linker-flavor=wasm-ld"),
+        *option("link-arg=--export-if-defined=molt_entry_point"),
+    )
+    normalized = wasi_external_libc_rustflags(original, plan=selected_c_abi)
+    assert normalized[4:] == (
+        "-C",
+        "link-self-contained=no",
+        "-C",
+        "linker-flavor=wasm-ld",
+        "-C",
+        "link-arg=--export-if-defined=molt_entry_point",
+    )
+    assert wasi_external_libc_rustflags(normalized, plan=selected_c_abi) == normalized
+    assert wasm_link_args_from_rustflags(shlex.join(original)) == [
+        "--export-if-defined=molt_entry_point"
+    ]
+    assert wasm_link_args_from_rustflags(
+        shlex.join((*original, "--", *option("link-arg=positional")))
+    ) == ["--export-if-defined=molt_entry_point"]
+    for conflict in ("link-self-contained=yes", "linker-flavor=wasm-lld-cc"):
+        with pytest.raises(ValueError, match="external-libc mode conflicts"):
+            wasi_external_libc_rustflags(option(conflict), plan=selected_c_abi)
+    with pytest.raises(ValueError, match="unsupported|resource custody"):
+        wasi_external_libc_rustflags(
+            option("link-arg=--sysroot=foreign"), plan=selected_c_abi
+        )
+    with pytest.raises(ValueError, match="individually admitted"):
+        wasi_external_libc_rustflags(
+            option("link-args=--export=one --export=two"), plan=selected_c_abi
+        )
+
+
+@pytest.mark.parametrize(
+    "switch", ["--sysroot", "-o", "--out-dir", "--remap-path-prefix"]
+)
+def test_wasi_projection_preserves_opaque_codegen_looking_operand(
+    selected_c_abi, switch
+):
+    from molt.cli.wasm_link_args import wasi_external_libc_rustflags
+
+    flags = (switch, "--codegen=linker-flavor=wasm-lld-cc")
+    normalized = wasi_external_libc_rustflags(flags, plan=selected_c_abi)
+    assert normalized[4:6] == flags
+    assert normalized[6:] == (
+        "-C",
+        "link-self-contained=no",
+        "-C",
+        "linker-flavor=wasm-ld",
+    )
+    assert wasi_external_libc_rustflags(normalized, plan=selected_c_abi) == normalized
+
+
+@pytest.mark.parametrize("output", ["-C", "-Lnative=unselected", "--codegen"])
+def test_wasi_search_projection_does_not_rescan_output_operand(selected_c_abi, output):
+    from molt.cli.wasm_link_args import wasi_external_libc_rustflags
+
+    flags = ("-o", output, "--codegen=panic=abort")
+    normalized = wasi_external_libc_rustflags(flags, plan=selected_c_abi)
+    assert normalized[4:8] == ("-o", output, "-C", "panic=abort")
+    assert wasi_external_libc_rustflags(normalized, plan=selected_c_abi) == normalized
+
+
+@pytest.mark.parametrize(
+    "conflict", ["-gClink_self_contained=yes", "-vClinker_flavor=wasm-lld-cc"]
+)
+def test_wasi_clustered_key_aliases_cannot_bypass_required_mode(
+    selected_c_abi, conflict
+):
+    from molt.cli.wasm_link_args import wasi_external_libc_rustflags
+
+    with pytest.raises(ValueError, match="external-libc mode conflicts"):
+        wasi_external_libc_rustflags((conflict,), plan=selected_c_abi)
+
+
+def test_wasi_clustered_projection_preserves_prefix_and_key_value_boundary(
+    selected_c_abi,
+):
+    import shlex
+    from molt.cli.wasm_link_args import (
+        wasi_external_libc_rustflags,
+        wasm_link_args_from_rustflags,
+    )
+
+    flags = (
+        "-gClink_self_contained=no",
+        "-vC",
+        "linker_flavor=wasm-ld",
+        "--codegen=link_arg=--export=under_score",
+    )
+    normalized = wasi_external_libc_rustflags(flags, plan=selected_c_abi)
+    assert normalized[4:] == (
+        "-g",
+        "-C",
+        "link-self-contained=no",
+        "-v",
+        "-C",
+        "linker-flavor=wasm-ld",
+        "-C",
+        "link-arg=--export=under_score",
+    )
+    assert wasi_external_libc_rustflags(normalized, plan=selected_c_abi) == normalized
+    assert wasm_link_args_from_rustflags(shlex.join(flags)) == ["--export=under_score"]
+    with pytest.raises(ValueError, match="individually admitted"):
+        wasi_external_libc_rustflags(
+            ("-gClink_args=--export=one --export=two",), plan=selected_c_abi
+        )
+    with pytest.raises(ValueError, match="external-libc mode conflicts"):
+        wasi_external_libc_rustflags(
+            (*flags, "-C", "link-self-contained=no"), plan=selected_c_abi
+        )

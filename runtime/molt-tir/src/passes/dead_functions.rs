@@ -38,7 +38,7 @@ pub fn eliminate_dead_functions_with_roots(ir: &mut SimpleIR, extra_roots: &BTre
     let mut references: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     for func in &ir.functions {
-        let mut refs: BTreeSet<String> = BTreeSet::new();
+        let mut refs = super::app_callable_manifest::gpu_descriptor_body_symbols(func);
         for op in &func.ops {
             if simpleir_kind_references_defined_function(&op.kind)
                 && let Some(name) = op.s_value.as_ref()

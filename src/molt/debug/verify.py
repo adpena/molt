@@ -16,9 +16,10 @@ _IR_SPEC = "docs/spec/areas/compiler/0100_MOLT_IR.md"
 # Writable differential evidence retains its existing output authority.
 _DEFAULT_DIFF_ROOT = Path(__file__).resolve().parents[3]
 
-# Spec op names whose frontend kind is not the upper-snake spelling of the
-# name. The inventory check rejects an entry that names no spec op, names an
-# unregistered kind, or repeats the default spelling.
+# Semantic spec names that differ from their registered wire operations.
+# Frontend spelling changes are projected from the op-kind registry instead.
+# The inventory check rejects absent spec ops, unregistered kinds and aliases
+# that repeat the registered default.
 SPEC_OP_KIND_ALIASES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "Branch": ("IF", "ELSE", "END_IF"),
@@ -316,7 +317,12 @@ def _scan_backend_kinds(backend_text: str) -> set[str]:
 
 
 def _candidate_kinds(spec_op: str) -> tuple[str, ...]:
-    return SPEC_OP_KIND_ALIASES.get(spec_op, (_camel_to_upper_snake(spec_op),))
+    from molt.frontend.lowering.op_kinds_generated import (
+        FRONTEND_LOWERING_KINDS_BY_WIRE,
+    )
+
+    spelling = _camel_to_upper_snake(spec_op)
+    return FRONTEND_LOWERING_KINDS_BY_WIRE.get(spelling.lower(), (spelling,))
 
 
 def check_ir_inventory(
@@ -328,7 +334,7 @@ def check_ir_inventory(
     for spec_op, kinds in SPEC_OP_KIND_ALIASES.items():
         if spec_op not in spec_ops:
             failures.append(f"alias names no spec op: {spec_op}")
-        if _camel_to_upper_snake(spec_op) in registered_kinds:
+        if all(kind in registered_kinds for kind in _candidate_kinds(spec_op)):
             failures.append(
                 f"alias for {spec_op} repeats its registered default spelling"
             )
@@ -340,11 +346,11 @@ def check_ir_inventory(
     for spec_op in spec_ops:
         if spec_op in SPEC_OP_KIND_ALIASES:
             continue
-        kind = _camel_to_upper_snake(spec_op)
-        if kind not in registered_kinds:
-            failures.append(
-                f"IR op has no registered frontend kind: {spec_op} ({kind})"
-            )
+        failures.extend(
+            f"IR op has no registered frontend kind: {spec_op} ({kind})"
+            for kind in _candidate_kinds(spec_op)
+            if kind not in registered_kinds
+        )
     return failures
 
 

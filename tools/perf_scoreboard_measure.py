@@ -19,7 +19,6 @@ import harness_memory_guard  # noqa: E402
 from perf_schema import RED_THRESHOLD, output_parity_evidence  # noqa: E402
 from perf_scoreboard_model import (  # noqa: E402
     PERFSCORE_SESSION_ID,
-    PROFILE_BUILD_FLAG,
     REPO_ROOT,
     RUN_BLOCKED_BACKENDS,
     BackendSpec,
@@ -117,7 +116,9 @@ def measure_cell(
         *spec.build_args(),
         *bench_suites.molt_args_for_benchmark(script_path),
     ]
-    build_flag = PROFILE_BUILD_FLAG[profile]
+    from perf_scoreboard_build_profiles import profile_selection
+
+    build_flag = profile_selection(spec, profile).guest_profile
 
     # --- Build the molt binary via the canonical daemon batch build ---------
     binary = None
@@ -175,7 +176,7 @@ def measure_cell(
     from perf_scoreboard_build_profiles import profile_binding_problems
 
     binding_problems = profile_binding_problems(
-        binary.build_observation, build_target=spec.build_target, profile=profile
+        binary.build_observation, backend=spec.backend, profile=profile
     )
     if binding_problems:
         cell.note = "Unbound build profile: " + "; ".join(binding_problems)

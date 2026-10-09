@@ -6,6 +6,7 @@ import os
 import platform
 import re
 import shutil
+import shlex
 import socketserver
 import subprocess
 import sys
@@ -1715,10 +1716,10 @@ def test_cli_completion_includes_build_flags() -> None:
     payload = json.loads(res.stdout)
     script = payload["data"]["script"]
     assert "extension" in script
-    assert "build audit" in script
+    assert "audit" in script
     assert "factgraph" in script
     assert "dx" in script
-    assert "env run check" in script
+    assert all(name in script for name in ("env", "run", "check"))
     assert "parity-run" in script
     assert "--emit" in script
     assert "--rebuild" in script
@@ -1732,6 +1733,694 @@ def test_cli_completion_includes_build_flags() -> None:
     assert "--require-checksum" in script
     assert "--extension-metadata" in script
     assert "--require-extension-capabilities" in script
+
+
+def _shell_completion_candidates(
+    shell: str,
+    tmp_path: Path,
+    script: str,
+    cases: list[tuple[list[str], str]],
+    *,
+    bash_lines: list[str] | None = None,
+    bash_wordbreaks: str | None = None,
+    bash_points: list[int | str] | None = None,
+    bash_prefixes: list[str] | None = None,
+    bash_trailing_words: list[list[str]] | None = None,
+) -> list[set[str]]:
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip(f"{shell} is unavailable; shell completion execution is unverified")
+    source = tmp_path / f"completion.{shell}"
+    source.write_text(script, encoding="utf-8")
+    body = []
+    if shell == "zsh":
+        body.append("autoload -Uz compinit; compinit -D")
+    body.append(f"source {shlex.quote(str(source))}")
+    if bash_wordbreaks is not None:
+        assert shell == "bash"
+        body.append(f"COMP_WORDBREAKS={shlex.quote(bash_wordbreaks)}")
+    for index, (completed, current) in enumerate(cases):
+        body.append(f"printf '%s\\n' __MOLT_COMPLETION_CASE_{index}__")
+        if shell == "bash":
+            line = (
+                bash_lines[index]
+                if bash_lines is not None
+                else shlex.join(["molt", *completed]) + " " + current
+            )
+            trailing = bash_trailing_words[index] if bash_trailing_words else []
+            prefix = bash_prefixes[index] if bash_prefixes is not None else current
+            previous = completed[-1] if completed else "molt"
+            point = bash_points[index] if bash_points is not None else line
+            if isinstance(point, str):
+                # An explicit line prefix marks the cursor independently of the
+                # full token. Modern Bash counts in its active locale; legacy
+                # Bash reports UTF-8 bytes from the script written above.
+                point_assignment = (
+                    f"completion_cursor_line={shlex.quote(point)}; "
+                    "if (( BASH_VERSINFO[0] < 4 || "
+                    "(BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) )); then "
+                    f"COMP_POINT={len(point.encode('utf-8'))}; "
+                    "else COMP_POINT=${#completion_cursor_line}; fi"
+                )
+            else:
+                point_assignment = f"COMP_POINT={point}"
+            body.extend(
+                [
+                    f"COMP_WORDS=({shlex.join(['molt', *completed, current, *trailing])})",
+                    f"COMP_LINE={shlex.quote(line)}",
+                    point_assignment,
+                    f"COMP_CWORD={len(completed) + 1}",
+                    "saved_wordbreaks=$COMP_WORDBREAKS",
+                    "_molt_complete " + shlex.join(["molt", prefix, previous]),
+                    '[[ "$saved_wordbreaks" == "$COMP_WORDBREAKS" ]] || exit 41',
+                    'if ((${#COMPREPLY[@]})); then printf "%s\\n" "${COMPREPLY[@]}"; fi',
+                ]
+            )
+        elif shell == "zsh":
+            # Run the emitted producer in real Zsh. ZLE insertion and compadd
+            # matching remain distinct from this command-selection oracle.
+            body.extend(
+                [
+                    "_molt_candidates " + shlex.join(completed),
+                    f"cur={shlex.quote(current)}",
+                    'for candidate in "${_molt_matches[@]}"; do '
+                    '[[ "$candidate" == "$cur"* ]] && print -r -- "$candidate"; done',
+                ]
+            )
+        else:
+            line = shlex.join(["molt", *completed]) + " "
+            if current:
+                line += shlex.quote(current)
+            body.append("complete -C " + shlex.quote(line))
+    body.append("true")
+    arguments = (["-f"] if shell == "zsh" else []) + ["-c", "\n".join(body)]
+    result = run_cli_test_process(
+        [executable, *arguments],
+        cwd=ROOT,
+        env=_base_env(),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    results: list[set[str]] = []
+    for line in result.stdout.splitlines():
+        if line == f"__MOLT_COMPLETION_CASE_{len(results)}__":
+            results.append(set())
+        elif line:
+            assert results, line
+            results[-1].add(line.split("\t", 1)[0])
+    assert len(results) == len(cases), result.stdout
+    return results
+
+
+@pytest.mark.parametrize("shell", ["bash", "zsh", "fish"])
+def test_cli_completion_uses_parser_commands_flags_and_positional_semantics(
+    shell: str, tmp_path: Path
+) -> None:
+    if shutil.which(shell) is None:
+        pytest.skip(f"{shell} is unavailable; shell completion execution is unverified")
+    result = _run_cli(["completion", "--shell", shell, "--json"])
+    assert result.returncode == 0, result.stderr
+    script = json.loads(result.stdout)["data"]["script"]
+    cases = [
+        (
+            [],
+            "",
+            {
+                "setup",
+                "update",
+                "validate",
+                "debug",
+                "queue",
+                "install",
+                "deploy",
+                "harness",
+                "--version",
+            },
+            {
+                "internal-backend-build",
+                "internal-runtime-wasm-build",
+                "internal-batch-build-server",
+            },
+        ),
+        (["dx"], "", {"env", "run", "check"}, {"--env", "--run", "--check"}),
+        (["dx", "env"], "--", {"--format", "--create-dirs", "--json"}, {"--backend"}),
+        (["debug"], "", {"ir", "trace", "repro", "reduce", "verify"}, {"--ir"}),
+        (["debug", "reduce"], "--", {"--eval-command", "--oracle-file"}, {"--stage"}),
+        (["install"], "", {"add", "-r", "--requirements"}, {"--add", "--r"}),
+        (["install", "--json"], "", {"add", "--sync"}, {"--add"}),
+        (["install", "add"], "", {"--sync"}, {"add"}),
+        (["deploy"], "", {"cloudflare", "roblox"}, {"--cloudflare"}),
+        (["harness"], "", {"quick", "standard", "deep"}, {"--quick"}),
+        (["harness", "quick"], "", {"--json"}, {"quick", "standard", "deep"}),
+        (["build"], "-q", {"-q"}, {"--q"}),
+        (["build", "--codec"], "", {"msgpack", "cbor", "json"}, {"--output"}),
+        (["run", "app.py"], "--", {"--json", "--profile"}, set()),
+        (["run", "app.py", "--profile"], "", {"dev", "release"}, {"--json"}),
+        (["compare"], "--", {"--python", "--profile"}, set()),
+        (["compare", "--python", "/python"], "--", {"--profile"}, set()),
+        (["parity-run"], "--", {"--python", "--json"}, set()),
+        (["test"], "--", {"--suite", "--json"}, set()),
+        (["build", "--output", "extension"], "", {"--release"}, {"audit", "seal"}),
+        (
+            ["extension", "build"],
+            "--",
+            {"--python-version", "--source-plan-exclude-linked-static-library"},
+            {"--profile"},
+        ),
+        (["extension", "metadata"], "--", {"--python-version"}, {"--profile"}),
+        (["extension", "produce-set"], "--", {"--python-version"}, {"--profile"}),
+        (
+            ["extension", "attest-set-candidate"],
+            "--",
+            {"--python-version"},
+            {"--profile"},
+        ),
+        (
+            ["extension", "publish-set-candidate"],
+            "--",
+            {"--candidate", "--expected-incumbent-seal-sha256"},
+            {"--python-version"},
+        ),
+    ]
+    empty_cases = [
+        (["build", "--output"], ""),
+        (["run", "app.py", "--"], ""),
+        (["dx", "run", "python"], ""),
+        (["queue", "run"], ""),
+        (["compare", "app.py"], ""),
+        (["compare", "app.py", "--profile"], ""),
+        (["parity-run", "app.py"], ""),
+        (["parity-run", "app.py", "--json"], ""),
+        (["test", "test_file.py"], ""),
+        (["test", "test_file.py", "--suite"], ""),
+    ]
+    results = _shell_completion_candidates(
+        shell,
+        tmp_path,
+        script,
+        [(completed, current) for completed, current, _, _ in cases] + empty_cases,
+    )
+    for (completed, current, required, forbidden), candidates in zip(cases, results):
+        assert required <= candidates, (completed, current, candidates)
+        assert not forbidden & candidates, (completed, current, candidates)
+    assert results[len(cases) :] == [set() for _ in empty_cases]
+
+
+@pytest.mark.parametrize(
+    ("joiners", "split_completed"),
+    [
+        pytest.param("=:", False, id="bash32-completed-words"),
+        pytest.param("=:", True, id="readline-equals-colon"),
+        pytest.param("=", True, id="readline-equals"),
+        pytest.param(":", True, id="readline-colon"),
+        pytest.param("", True, id="readline-no-data-separators"),
+    ],
+)
+def test_cli_bash_completion_rejoins_only_adjacent_wordbreak_fragments(
+    joiners: str, split_completed: bool, tmp_path: Path
+) -> None:
+    if shutil.which("bash") is None:
+        pytest.skip("bash is unavailable; word-break completion is unverified")
+    result = _run_cli(["completion", "--shell", "bash", "--json"])
+    assert result.returncode == 0, result.stderr
+    script = json.loads(result.stdout)["data"]["script"]
+    marker = tmp_path / "completion-must-not-evaluate-input"
+    quoted = '"' + "$(touch " + shlex.quote(str(marker)) + ")" + '"'
+    # Independent shell-boundary fixtures, not reassembler-produced tokens.
+    # Bash 3.2's actual Readline capture keeps previous inline words whole;
+    # GNU Bash 5.2/5.3 pcomplete.c splits them using COMP_WORDBREAKS.
+    records = [
+        (
+            "molt compare --python=/python ",
+            ["compare", "--python=/python"],
+            {"--profile"},
+        ),
+        (
+            "molt compare --python = /python ",
+            ["compare", "--python", "=", "/python"],
+            set(),
+        ),
+        ("molt compare --python= /python ", ["compare", "--python=", "/python"], set()),
+        (
+            "molt compare --python =/python ",
+            ["compare", "--python", "=/python"],
+            {"--profile"},
+        ),
+        (
+            'molt compare --python="/opt/py 3:bin=x" ',
+            ["compare", '--python="/opt/py 3:bin=x"'],
+            {"--profile"},
+        ),
+        (
+            'molt compare --python "/opt/py 3:bin=x" ',
+            ["compare", "--python", '"/opt/py 3:bin=x"'],
+            {"--profile"},
+        ),
+        ("molt compare --python='' ", ["compare", "--python=''"], {"--profile"}),
+        (
+            "molt compare --python=C:/py==3/bin ",
+            ["compare", "--python=C:/py==3/bin"],
+            {"--profile"},
+        ),
+        (
+            "molt compare --python=/python app.py ",
+            ["compare", "--python=/python", "app.py"],
+            set(),
+        ),
+        (
+            "molt run --python-version=3.14 app.py --profile ",
+            ["run", "--python-version=3.14", "app.py", "--profile"],
+            {"dev", "release"},
+        ),
+        (
+            "molt compare --python=" + quoted + " ",
+            ["compare", "--python=" + quoted],
+            {"--profile"},
+        ),
+        (
+            "molt compare --python=/python --python=/python ",
+            ["compare", "--python=/python", "--python=/python"],
+            {"--profile"},
+        ),
+        (
+            'molt compare --python="--python=/python" --python=/python ',
+            ["compare", '--python="--python=/python"', "--python=/python"],
+            {"--profile"},
+        ),
+        (
+            "molt compare --python='/opt/py 3:bin=x' ",
+            ["compare", "--python='/opt/py 3:bin=x'"],
+            {"--profile"},
+        ),
+    ]
+    # Supply explicit split alternatives for the two documented data separators.
+    # Quoted interiors stay whole, as the shell's tokenizer specifies.
+    split_records = {
+        "=:": [
+            ["compare", "--python", "=", "/python"],
+            ["compare", "--python", "=", "/python"],
+            ["compare", "--python", "=", "/python"],
+            ["compare", "--python", "=", "/python"],
+            ["compare", "--python", "=", '"/opt/py 3:bin=x"'],
+            ["compare", "--python", '"/opt/py 3:bin=x"'],
+            ["compare", "--python", "=", "''"],
+            ["compare", "--python", "=", "C", ":", "/py", "==", "3/bin"],
+            ["compare", "--python", "=", "/python", "app.py"],
+            ["run", "--python-version", "=", "3.14", "app.py", "--profile"],
+            ["compare", "--python", "=", quoted],
+            ["compare", "--python", "=", "/python", "--python", "=", "/python"],
+            [
+                "compare",
+                "--python",
+                "=",
+                '"--python=/python"',
+                "--python",
+                "=",
+                "/python",
+            ],
+            ["compare", "--python", "=", "'/opt/py 3:bin=x'"],
+        ],
+        "=": [
+            ["compare", "--python", "=", "/python"],
+            ["compare", "--python", "=", "/python"],
+            ["compare", "--python", "=", "/python"],
+            ["compare", "--python", "=", "/python"],
+            ["compare", "--python", "=", '"/opt/py 3:bin=x"'],
+            ["compare", "--python", '"/opt/py 3:bin=x"'],
+            ["compare", "--python", "=", "''"],
+            ["compare", "--python", "=", "C:/py", "==", "3/bin"],
+            ["compare", "--python", "=", "/python", "app.py"],
+            ["run", "--python-version", "=", "3.14", "app.py", "--profile"],
+            ["compare", "--python", "=", quoted],
+            ["compare", "--python", "=", "/python", "--python", "=", "/python"],
+            [
+                "compare",
+                "--python",
+                "=",
+                '"--python=/python"',
+                "--python",
+                "=",
+                "/python",
+            ],
+            ["compare", "--python", "=", "'/opt/py 3:bin=x'"],
+        ],
+    }
+    if not split_completed:
+        fragments = [words for _, words, _ in records]
+    elif joiners in split_records:
+        fragments = split_records[joiners]
+    elif joiners == ":":
+        fragments = [words for _, words, _ in records]
+        fragments[7] = ["compare", "--python=C", ":", "/py==3/bin"]
+    else:
+        fragments = [words for _, words, _ in records]
+    actual = _shell_completion_candidates(
+        "bash",
+        tmp_path,
+        script,
+        [(words, "") for words in fragments],
+        bash_lines=[line for line, _, _ in records],
+        bash_wordbreaks=" \t\n\"'><;|&(" + joiners,
+    )
+    for (line, _, expected), candidates in zip(records, actual, strict=True):
+        if expected:
+            assert expected <= candidates, (line, candidates)
+        else:
+            assert candidates == set(), (line, candidates)
+    assert not marker.exists(), "completion evaluated the command substitution"
+
+
+@pytest.mark.parametrize("split_completed", [False, True], ids=["bash32", "readline"])
+@pytest.mark.parametrize("extra_breaks", ["", ",[]^+"])
+def test_cli_bash_completion_preserves_data_breaks_and_current_argument(
+    split_completed: bool, extra_breaks: str, tmp_path: Path
+) -> None:
+    if shutil.which("bash") is None:
+        pytest.skip("bash is unavailable; word-break completion is unverified")
+    result = _run_cli(["completion", "--shell", "bash", "--json"])
+    assert result.returncode == 0, result.stderr
+    script = json.loads(result.stdout)["data"]["script"]
+    # Each record supplies the raw command line and both versioned shell
+    # contexts. Current-word fragments are not completed argv elements.
+    records = [
+        (
+            "molt compare --python=/opt/user@host/python ",
+            (["compare", "--python=/opt/user@host/python"], ""),
+            (["compare", "--python", "=", "/opt/user", "@", "host/python"], ""),
+            {"--profile"},
+        ),
+        (
+            "molt compare --python /opt/user@host/python ",
+            (["compare", "--python", "/opt/user@host/python"], ""),
+            (["compare", "--python", "/opt/user", "@", "host/python"], ""),
+            {"--profile"},
+        ),
+        (
+            "molt compare --python /opt/user @ host/python ",
+            (["compare", "--python", "/opt/user", "@", "host/python"], ""),
+            (["compare", "--python", "/opt/user", "@", "host/python"], ""),
+            set(),
+        ),
+        (
+            "molt compare --python='/opt/user@host/python' ",
+            (["compare", "--python='/opt/user@host/python'"], ""),
+            (["compare", "--python", "=", "'/opt/user@host/python'"], ""),
+            {"--profile"},
+        ),
+        (
+            'molt compare --python "/opt/user@host/python" ',
+            (["compare", "--python", '"/opt/user@host/python"'], ""),
+            (["compare", "--python", '"/opt/user@host/python"'], ""),
+            {"--profile"},
+        ),
+        (
+            "molt compare --python=/opt/user@host/python app.py ",
+            (["compare", "--python=/opt/user@host/python", "app.py"], ""),
+            (
+                ["compare", "--python", "=", "/opt/user", "@", "host/python", "app.py"],
+                "",
+            ),
+            set(),
+        ),
+        (
+            "molt compare --python=/opt/user@host/python --pr",
+            (["compare", "--python=/opt/user@host/python"], "--pr"),
+            (["compare", "--python", "=", "/opt/user", "@", "host/python"], "--pr"),
+            {"--profile"},
+        ),
+        (
+            "molt compare --python=--pr",
+            (["compare"], "--python=--pr"),
+            (["compare", "--python", "="], "--pr"),
+            set(),
+        ),
+        (
+            "molt compare --python /opt/user@--pr",
+            (["compare", "--python"], "/opt/user@--pr"),
+            (["compare", "--python", "/opt/user", "@"], "--pr"),
+            set(),
+        ),
+        (
+            "molt compare --python=/opt/user@--profile app.py",
+            (["compare"], "--python=/opt/user@--profile"),
+            (["compare", "--python", "=", "/opt/user", "@"], "--profile"),
+            set(),
+        ),
+        (
+            "molt compare --python=/opt/user@host/python --profile app.py",
+            (["compare", "--python=/opt/user@host/python"], "--profile"),
+            (
+                ["compare", "--python", "=", "/opt/user", "@", "host/python"],
+                "--profile",
+            ),
+            {"--profile"},
+        ),
+        (
+            "molt compare --python='--profile' app.py",
+            (["compare"], "--python='--profile'"),
+            (["compare", "--python", "="], "'--profile'"),
+            set(),
+        ),
+    ]
+    if extra_breaks:
+        records.extend(
+            [
+                (
+                    "molt compare --python=/opt/user[,^+]host/python ",
+                    (["compare", "--python=/opt/user[,^+]host/python"], ""),
+                    (
+                        [
+                            "compare",
+                            "--python",
+                            "=",
+                            "/opt/user",
+                            "[,^+]",
+                            "host/python",
+                        ],
+                        "",
+                    ),
+                    {"--profile"},
+                ),
+                (
+                    "molt compare --python=/opt/user[,^+]host/python app[,^+]file.py ",
+                    (
+                        [
+                            "compare",
+                            "--python=/opt/user[,^+]host/python",
+                            "app[,^+]file.py",
+                        ],
+                        "",
+                    ),
+                    (
+                        [
+                            "compare",
+                            "--python",
+                            "=",
+                            "/opt/user",
+                            "[,^+]",
+                            "host/python",
+                            "app",
+                            "[,^+]",
+                            "file.py",
+                        ],
+                        "",
+                    ),
+                    set(),
+                ),
+            ]
+        )
+    points = [len(line) for line, *_ in records]
+    prefixes = ["" for _ in records]
+    for index in range(6, 12):
+        # Readline's callback prefix uses data breaks even when Bash 3.2's
+        # COMP_WORDS supplies a whole token; none includes text past the cursor.
+        prefixes[index] = "--pr"
+    trailing: list[list[str]] = [[] for _ in records]
+    for index in (9, 10, 11):
+        points[index] = records[index][0].index("--profile") + len("--pr")
+        trailing[index] = ["app.py"]
+    actual = _shell_completion_candidates(
+        "bash",
+        tmp_path,
+        script,
+        [split if split_completed else whole for _, whole, split, _ in records],
+        bash_lines=[line for line, *_ in records],
+        bash_points=points,
+        bash_prefixes=prefixes,
+        bash_trailing_words=trailing,
+        bash_wordbreaks=" \t\n\"'@><=;|&(:" + extra_breaks,
+    )
+    for (line, _, _, expected), candidates in zip(records, actual, strict=True):
+        if expected:
+            assert expected <= candidates, (line, candidates)
+        else:
+            assert candidates == set(), (line, candidates)
+
+
+@pytest.mark.parametrize("split_completed", [False, True], ids=["bash32", "readline"])
+def test_cli_bash_completion_uses_callback_prefix_before_cursor(
+    split_completed: bool, tmp_path: Path
+) -> None:
+    if shutil.which("bash") is None:
+        pytest.skip("bash is unavailable; callback-prefix completion is unverified")
+    result = _run_cli(["completion", "--shell", "bash", "--json"])
+    assert result.returncode == 0, result.stderr
+    script = json.loads(result.stdout)["data"]["script"]
+    # The marker gives the independently specified cursor; ZZ is deliberately
+    # not an option suffix, so full-COMP_WORDS filtering cannot pass positives.
+    # Both shell contexts carry the complete token and words after the cursor.
+    records = [
+        (
+            "molt compare --pr|ZZ app.py",
+            (["compare"], "--prZZ"),
+            (["compare"], "--prZZ"),
+            "--pr",
+            {"--profile"},
+            [],
+        ),
+        (
+            "molt compare --|ZZ app.py",
+            (["compare"], "--ZZ"),
+            (["compare"], "--ZZ"),
+            "--",
+            {"--profile"},
+            [],
+        ),
+        (
+            "molt compare |ZZ app.py",
+            (["compare"], "ZZ"),
+            (["compare"], "ZZ"),
+            "",
+            {"--profile"},
+            [],
+        ),
+        (
+            "molt compare --python=--pr|ZZ app.py",
+            (["compare"], "--python=--prZZ"),
+            (["compare", "--python", "="], "--prZZ"),
+            "--pr",
+            set(),
+            [],
+        ),
+        (
+            "molt compare --profile=--pr|ZZ app.py",
+            (["compare"], "--profile=--prZZ"),
+            (["compare", "--profile", "="], "--prZZ"),
+            "--pr",
+            set(),
+            [],
+        ),
+        (
+            "molt compare --pr|ZZ=dev app.py",
+            (["compare"], "--prZZ=dev"),
+            (["compare"], "--prZZ"),
+            "--pr",
+            {"--profile"},
+            ["=", "dev"],
+        ),
+        (
+            "molt compare --pr|=dev app.py",
+            (["compare"], "--pr=dev"),
+            (["compare", "--pr"], "="),
+            "--pr",
+            {"--profile"},
+            ["dev"],
+        ),
+        (
+            "molt compare --profile=|ZZ app.py",
+            (["compare"], "--profile=ZZ"),
+            (["compare", "--profile", "="], "ZZ"),
+            "",
+            set(),
+            [],
+        ),
+        (
+            "molt compare --python=/é/蛇/python --pr|=dev app.py",
+            (["compare", "--python=/é/蛇/python"], "--pr=dev"),
+            (["compare", "--python", "=", "/é/蛇/python", "--pr"], "="),
+            "--pr",
+            {"--profile"},
+            ["dev"],
+        ),
+        (
+            "molt compare --python --pr|ZZ app.py",
+            (["compare", "--python"], "--prZZ"),
+            (["compare", "--python"], "--prZZ"),
+            "--pr",
+            set(),
+            [],
+        ),
+        (
+            "molt compare app.py --pr|ZZ app.py",
+            (["compare", "app.py"], "--prZZ"),
+            (["compare", "app.py"], "--prZZ"),
+            "--pr",
+            set(),
+            [],
+        ),
+        (
+            "molt compare -- --pr|ZZ app.py",
+            (["compare", "--"], "--prZZ"),
+            (["compare", "--"], "--prZZ"),
+            "--pr",
+            set(),
+            [],
+        ),
+        (
+            "molt run app.py --pr|ZZ app.py",
+            (["run", "app.py"], "--prZZ"),
+            (["run", "app.py"], "--prZZ"),
+            "--pr",
+            {"--profile"},
+            [],
+        ),
+        (
+            "molt compare --python=/é/蛇/python --pr|ZZ app.py",
+            (["compare", "--python=/é/蛇/python"], "--prZZ"),
+            (["compare", "--python", "=", "/é/蛇/python"], "--prZZ"),
+            "--pr",
+            {"--profile"},
+            [],
+        ),
+        (
+            "molt compare --python=/é/蛇/python --profile=--pr|ZZ app.py",
+            (["compare", "--python=/é/蛇/python"], "--profile=--prZZ"),
+            (["compare", "--python", "=", "/é/蛇/python", "--profile", "="], "--prZZ"),
+            "--pr",
+            set(),
+            [],
+        ),
+        (
+            "molt compare --python=/é/蛇/python --pr|ZZ=dev app.py",
+            (["compare", "--python=/é/蛇/python"], "--prZZ=dev"),
+            (["compare", "--python", "=", "/é/蛇/python"], "--prZZ"),
+            "--pr",
+            {"--profile"},
+            ["=", "dev"],
+        ),
+    ]
+    cursor_lines = [record[0].split("|", 1)[0] for record in records]
+    actual = _shell_completion_candidates(
+        "bash",
+        tmp_path,
+        script,
+        [split if split_completed else whole for _, whole, split, *_ in records],
+        bash_lines=[record[0].replace("|", "", 1) for record in records],
+        bash_points=cursor_lines,
+        bash_prefixes=[record[3] for record in records],
+        bash_trailing_words=[
+            [*(record[5] if split_completed else []), "app.py"] for record in records
+        ],
+        bash_wordbreaks=" \t\n\"'@><=;|&(:",
+    )
+    for record, candidates in zip(records, actual, strict=True):
+        expected = record[4]
+        if expected:
+            assert expected <= candidates, (record[0], candidates)
+        else:
+            assert candidates == set(), (record[0], candidates)
 
 
 def test_cli_extension_requires_subcommand() -> None:

@@ -119,6 +119,19 @@ def _parse_triggers(lines: list[str]) -> dict:
                     push[key] = scalar
                 idx += 1
             trigger_doc = push
+        elif trigger == "workflow_dispatch":
+            inputs: dict[str, dict] = {}
+            current: dict | None = None
+            while idx < end and _indent(lines[idx]) > 2:
+                child = lines[idx]
+                if child.strip() and _indent(child) == 6:
+                    name, _ = _split_key_value(child.strip())
+                    current = inputs.setdefault(name, {})
+                elif child.strip() and _indent(child) == 8 and current is not None:
+                    key, scalar = _split_key_value(child.strip())
+                    current[key] = scalar
+                idx += 1
+            trigger_doc = {"inputs": inputs} if inputs else {}
         else:
             while idx < end and _indent(lines[idx]) > 2:
                 idx += 1
@@ -285,6 +298,62 @@ def _scoreboard_steps(doc: object) -> list[tuple[str, int, dict, dict]]:
     return hits
 
 
+def _candidate_mode_problems(doc: dict) -> list[str]:
+    """Keep the optional candidate lane separate from canonical acceptance."""
+    jobs = doc.get("jobs", {})
+    dispatch = _triggers(doc).get("workflow_dispatch") or {}
+    inputs = dispatch.get("inputs", {}) if isinstance(dispatch, dict) else {}
+    if "candidate-runtime-costs" not in jobs and "mode" not in inputs:
+        return []
+    problems: list[str] = []
+    mode = inputs.get("mode", {})
+    if (
+        set(inputs) != {"mode"}
+        or mode.get("type") != "choice"
+        or mode.get("default") != "canonical"
+        or mode.get("options") != ["canonical", "candidate-runtime-costs"]
+    ):
+        problems.append(
+            "candidate cost dispatch requires only the fixed mode choice with canonical default"
+        )
+    candidate = jobs.get("candidate-runtime-costs", {})
+    if (
+        _expr(candidate.get("if"))
+        != "github.event_name == 'workflow_dispatch' && inputs.mode == 'candidate-runtime-costs'"
+    ):
+        problems.append(
+            "candidate costs must run only on explicit candidate-mode dispatch"
+        )
+    if _nonblocking_continue_on_error(candidate.get("continue-on-error")):
+        problems.append(
+            "candidate cost failures must remain blocking for that invocation"
+        )
+    captures = [
+        step
+        for step in candidate.get("steps", [])
+        if "--run-family runtime_candidate_costs --receipt" in str(step.get("run", ""))
+    ]
+    if len(captures) != 1:
+        problems.append("candidate mode must execute its one fixed proof family")
+    elif (
+        _nonblocking_continue_on_error(captures[0].get("continue-on-error"))
+        or captures[0].get("if") is not None
+        or "||" in str(captures[0].get("run", ""))
+    ):
+        problems.append(
+            "candidate proof execution must propagate failure without conditional skipping"
+        )
+    for _name, _index, job, _step in _scoreboard_steps(doc):
+        if (
+            _expr(job.get("if"))
+            != "github.event_name == 'schedule' || inputs.mode != 'candidate-runtime-costs'"
+        ):
+            problems.append(
+                "canonical scoreboard must retain schedule and default manual dispatch"
+            )
+    return problems
+
+
 def check() -> list[str]:
     """Return a list of wiring problems; empty list == correctly wired."""
     if not PERF_GATE.exists():
@@ -295,7 +364,7 @@ def check() -> list[str]:
     except Exception as exc:  # noqa: BLE001 - any parse failure is a wiring failure
         return [f"perf-gate.yml does not parse as YAML: {exc}"]
 
-    problems: list[str] = []
+    problems: list[str] = _candidate_mode_problems(doc)
     triggers = _triggers(doc)
 
     # (1) It must invoke the REAL scoreboard in an executable workflow step,

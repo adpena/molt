@@ -41,7 +41,7 @@ def execute_commands(
     _normalized_arch: Callable[[], str],
     _required_toolchains: Callable[[ProofCommand], tuple[str, ...]],
     _run_command: Callable[
-        [ProofPlan, ProofCommand, Path, threading.Event | None], dict[str, Any]
+        [ProofPlan, ProofCommand, threading.Event | None], dict[str, Any]
     ],
     _cache_disposition: Callable[[ProofCommand], str],
     _base_command_record: Callable[[ProofCommand], dict[str, Any]],
@@ -156,6 +156,7 @@ def execute_commands(
     active_by_resource = {name: 0 for name in resource_limits}
     active: dict[Future[dict[str, Any]], ProofCommand] = {}
     cancel_event = threading.Event()
+    custody_errors: list[Exception] = []
     failed = False
     global_stop = False
 
@@ -230,7 +231,15 @@ def execute_commands(
             if records_by_id.get(command.id, {}).get("status") == "success"
         ]
         execution["duration_seconds"] = round(time.monotonic() - scheduler_started, 6)
-        atomic_write_json(receipt_path, receipt, indent=2, sort_keys=True)
+        try:
+            atomic_write_json(receipt_path, receipt, indent=2, sort_keys=True)
+        except BaseException as publication_error:
+            if custody_errors:
+                publication_error.guard_errors = tuple(custody_errors)
+                publication_error.add_note(
+                    "receipt publication failed with retained guard custody"
+                )
+            raise
 
     with ThreadPoolExecutor(
         max_workers=plan.executor_max_workers,
@@ -260,11 +269,8 @@ def execute_commands(
                             continue
                         command = command_by_id[command_id]
                         pending_ids.remove(command.id)
-                        metrics_path = receipt_path.with_name(
-                            f".{receipt_path.name}.{command.id}.metrics.json"
-                        )
                         future = executor.submit(
-                            _run_command, plan, command, metrics_path, cancel_event
+                            _run_command, plan, command, cancel_event
                         )
                         active[future] = command
                         active_by_resource[resource] += 1
@@ -310,6 +316,9 @@ def execute_commands(
                             "failure_scope": "global",
                             "failure_reason": "executor lost a classified command outcome",
                         }
+                        if getattr(exc, "guard_command", None) is not None:
+                            custody_errors.append(exc)
+                            record = getattr(exc, "proof_record", record)
                     records_by_id[command.id] = record
                     active.pop(future)
                     resource = str(command.data["resource_class"])
@@ -347,7 +356,7 @@ def execute_commands(
                             )
                     receipt["status"] = "failure" if failed else "running"
                     refresh_receipt()
-        except BaseException:
+        except BaseException as interruption:
             # Set the guard-owned cancellation signal before ThreadPoolExecutor
             # joins active workers. An operator interrupt must not wait on an
             # unrelated command's full deadline or become an ordinary failure.
@@ -372,6 +381,9 @@ def execute_commands(
                         "failure_scope": "global",
                         "failure_reason": "executor interrupted before classified outcome",
                     }
+                    if getattr(exc, "guard_command", None) is not None:
+                        custody_errors.append(exc)
+                        record = getattr(exc, "proof_record", record)
                 records_by_id[command.id] = record
             for command in command_list:
                 if command.id in pending_ids:
@@ -386,6 +398,11 @@ def execute_commands(
                 record["status"] == "skipped" for record in records_by_id.values()
             )
             refresh_receipt()
+            if custody_errors:
+                interruption.guard_errors = tuple(custody_errors)
+                interruption.add_note(
+                    f"unresolved guard custody; inspect {receipt_path}"
+                )
             raise
 
     for command in command_list:
@@ -428,6 +445,11 @@ def execute_commands(
             f"proof-plan: family={receipt['family']} status=failure "
             f"failed={len(failures)}; receipt={receipt_path}",
             file=sys.stderr,
+        )
+    if custody_errors:
+        raise ExceptionGroup(
+            f"proof executor retained unresolved guard custody; inspect {receipt_path}",
+            custody_errors,
         )
     return returncode
 

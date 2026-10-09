@@ -654,6 +654,8 @@ class SerializationMixin(
                 # homes still own local bindings, but entry transfers none.
                 if "transferred" in custody:
                     func_entry["parameter_custody"] = custody
+            if "gpu_body_origin" in data:
+                func_entry["gpu_body_origin"] = dict(data["gpu_body_origin"])
             if "source_module_publication" in data:
                 func_entry["source_module_publication"] = data[
                     "source_module_publication"

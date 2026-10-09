@@ -48,36 +48,109 @@ fn new_unpublished_dataclass(_py: &PyToken<'_>, value_bits: u64, field_name: &[u
 fn dataclass_payload_stays_private_until_class_finalization_publishes_once() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let value_ptr = alloc_string(_py, b"owned value");
-        assert!(!value_ptr.is_null());
-        let value_bits = MoltObject::from_ptr(value_ptr).bits();
-        let value_owners = heap_refcount(value_bits);
-        let instance_bits = new_unpublished_dataclass(_py, value_bits, b"field");
-        let instance_ptr = obj_from_bits(instance_bits)
-            .as_ptr()
-            .expect("dataclass instance");
-        let header = unsafe { &*crate::object::header_from_obj_ptr(instance_ptr) };
-        assert!(!header.gc_is_published());
-        assert_eq!(unsafe { object_class_bits(instance_ptr) }, 0);
-        assert_eq!(heap_refcount(value_bits), value_owners + 1);
+        for sealed in [false, true] {
+            let value_ptr = alloc_string(_py, b"owned value");
+            assert!(!value_ptr.is_null());
+            let value_bits = MoltObject::from_ptr(value_ptr).bits();
+            let value_owners = heap_refcount(value_bits);
+            let instance_bits = new_unpublished_dataclass(_py, value_bits, b"field");
+            let instance_ptr = obj_from_bits(instance_bits)
+                .as_ptr()
+                .expect("dataclass instance");
+            let header = unsafe { &*crate::object::header_from_obj_ptr(instance_ptr) };
+            assert!(!header.gc_is_published());
+            assert_eq!(unsafe { object_class_bits(instance_ptr) }, 0);
+            assert_eq!(heap_refcount(value_bits), value_owners + 1);
 
-        let class_bits = unsafe { new_dataclass_class(_py, b"Record") };
-        let class_owners = heap_refcount(class_bits);
-        assert_eq!(
-            unsafe { dataclass_finish_construction_unpublished(_py, instance_ptr, class_bits) },
-            MoltObject::none().bits()
-        );
-        assert!(!exception_pending(_py));
-        assert!(header.gc_is_published());
-        assert_eq!(unsafe { object_class_bits(instance_ptr) }, class_bits);
-        assert_eq!(heap_refcount(class_bits), class_owners + 1);
+            let class_bits = unsafe { new_dataclass_class(_py, b"Record") };
+            let class_ptr = obj_from_bits(class_bits).as_ptr().expect("dataclass class");
+            let dict_name = attr_name_bits_from_bytes(_py, b"__dict__").expect("dictionary name");
+            let namespace = unsafe { crate::object::layout::class_dict_bits(class_ptr) };
+            let namespace_ptr = obj_from_bits(namespace).as_ptr().expect("class namespace");
+            assert_eq!(
+                unsafe { dict_get_in_place(_py, namespace_ptr, dict_name) },
+                None
+            );
+            if sealed {
+                unsafe { crate::object::class_finish_definition(_py, class_ptr) }
+                    .expect("seal class");
+            }
+            let before_descriptor = unsafe { dict_get_in_place(_py, namespace_ptr, dict_name) };
+            assert_eq!(before_descriptor.is_some(), sealed);
+            let class_owners = heap_refcount(class_bits);
+            assert_eq!(
+                unsafe { dataclass_finish_construction_unpublished(_py, instance_ptr, class_bits) },
+                MoltObject::none().bits()
+            );
+            assert!(!exception_pending(_py));
+            assert!(header.gc_is_published());
+            assert_eq!(unsafe { object_class_bits(instance_ptr) }, class_bits);
+            let descriptor = unsafe { dict_get_in_place(_py, namespace_ptr, dict_name) }
+                .expect("sealed instance dictionary descriptor");
+            let descriptor_ptr = obj_from_bits(descriptor)
+                .as_ptr()
+                .expect("native descriptor");
+            assert_eq!(
+                unsafe { crate::object::layout::native_descriptor_flavor(descriptor_ptr) },
+                Some(crate::object::layout::NativeDescriptorFlavor::InstanceDictionary)
+            );
+            assert_eq!(
+                unsafe { crate::object::layout::native_descriptor_owner_bits(descriptor_ptr) },
+                class_bits
+            );
+            if let Some(before) = before_descriptor {
+                assert_eq!(
+                    descriptor, before,
+                    "sealed finalization preserves descriptor identity"
+                );
+            }
+            let newly_declared_owner = u32::from(!sealed);
+            assert_eq!(
+                heap_refcount(class_bits),
+                class_owners + newly_declared_owner + 1
+            );
+            assert_eq!(
+                heap_refcount(descriptor),
+                1,
+                "namespace owns the descriptor"
+            );
+            inc_ref_bits(_py, descriptor);
+            assert_eq!(
+                heap_refcount(class_bits),
+                class_owners + newly_declared_owner + 1,
+                "pinning the descriptor does not create another descriptor-to-class edge"
+            );
 
-        dec_ref_bits(_py, instance_bits);
-        assert_eq!(heap_refcount(class_bits), class_owners);
-        assert_eq!(heap_refcount(value_bits), value_owners);
-        dec_ref_bits(_py, class_bits);
-        dec_ref_bits(_py, value_bits);
-        assert!(!exception_pending(_py));
+            dec_ref_bits(_py, instance_bits);
+            assert_eq!(
+                heap_refcount(class_bits),
+                class_owners + newly_declared_owner,
+                "instance retirement releases only its class edge"
+            );
+            assert_eq!(heap_refcount(value_bits), value_owners);
+            assert_eq!(heap_refcount(descriptor), 2);
+            unsafe { crate::object::gc::molt_clear(_py, class_ptr) };
+            assert_eq!(
+                heap_refcount(descriptor),
+                1,
+                "cycle clear releases the namespace edge"
+            );
+            assert_eq!(
+                heap_refcount(class_bits),
+                2,
+                "test and pinned descriptor retain the class"
+            );
+            dec_ref_bits(_py, descriptor);
+            assert_eq!(
+                heap_refcount(class_bits),
+                1,
+                "descriptor retirement releases its owner edge"
+            );
+            dec_ref_bits(_py, class_bits);
+            dec_ref_bits(_py, dict_name);
+            dec_ref_bits(_py, value_bits);
+            assert!(!exception_pending(_py));
+        }
     });
 }
 
@@ -576,7 +649,9 @@ fn dataclass_slot_state_follows_mro_then_declaration_order() {
                 .unwrap()
         };
         let keys = unsafe {
-            dict_order(obj_from_bits(slot_state).as_ptr().unwrap())
+            dict_live_entries(obj_from_bits(slot_state).as_ptr().unwrap())
+                .flat_map(|row| [row.key, row.value])
+                .collect::<Vec<_>>()
                 .as_chunks::<2>()
                 .0
                 .iter()
@@ -654,10 +729,11 @@ fn ordinary_slot_state_omits_shadowed_storage_but_reset_releases_both_owners() {
             )
             .unwrap()
         };
-        assert_eq!(
-            unsafe { dict_order(obj_from_bits(slot_state).as_ptr().unwrap()).as_slice() },
-            &[field, child_value]
-        );
+        assert!(unsafe {
+            dict_live_entries(obj_from_bits(slot_state).as_ptr().unwrap())
+                .flat_map(|row| [row.key, row.value])
+                .eq([field, child_value])
+        });
         dec_ref_bits(py, state);
         assert_eq!(heap_refcount(base_value), 2);
         assert_eq!(heap_refcount(child_value), 2);

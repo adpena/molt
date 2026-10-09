@@ -8,7 +8,7 @@ use std::ptr;
 
 #[test]
 fn thread_lock_and_tss_have_real_state() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+    let _abi_test = support::enter_abi_test(support::stub_runtime_hooks());
     unsafe {
         let lock = molt_cpython_abi::api::thread::PyThread_allocate_lock();
         assert!(!lock.is_null());
@@ -53,7 +53,7 @@ unsafe extern "C" fn method_stub(_self: *mut PyObject, _args: *mut PyObject) -> 
 
 #[test]
 fn pycmethod_new_requires_and_stores_defining_class() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+    let _abi_test = support::enter_abi_test(support::stub_runtime_hooks());
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     let mut definition = PyMethodDef {
         ml_name: c"method".as_ptr(),
@@ -87,7 +87,7 @@ unsafe extern "C" {
 
 #[test]
 fn size_t_entry_points_are_linked_and_execute() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+    let _abi_test = support::enter_abi_test(support::stub_runtime_hooks());
     let args = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(0) };
     assert!(!args.is_null());
     assert_eq!(unsafe { _PyArg_ParseTuple_SizeT(args, c"".as_ptr()) }, 1);
@@ -100,7 +100,7 @@ fn size_t_entry_points_are_linked_and_execute() {
 
 #[test]
 fn new_exception_rejects_unqualified_name() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+    let _abi_test = support::enter_abi_test(support::stub_runtime_hooks());
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     let bad = unsafe {
         molt_cpython_abi::api::errors::PyErr_NewException(

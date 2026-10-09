@@ -96,7 +96,7 @@ stdlib_server = [
     "stdlib_crypto", "stdlib_compression", "stdlib_net", "stdlib_asyncio",
     "stdlib_http", "stdlib_serial", "stdlib_email",
     "stdlib_concurrent", "stdlib_select",
-    "builtin_memoryview", "builtin_contextvars",
+    "builtin_memoryview",
 ]
 
 # Individual feature groups
@@ -156,7 +156,6 @@ sqlite = ["dep:molt-db", "molt-db/sqlite"]
 builtin_set = []
 builtin_complex = []
 builtin_memoryview = []
-builtin_contextvars = []
 builtin_fcntl = []
 
 molt_debug_gil = []

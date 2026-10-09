@@ -2037,28 +2037,83 @@ mod delivery_tests {
     #[cfg(unix)]
     #[test]
     fn wakeup_fd_rejects_blocking_or_truncated_descriptors_before_publication() {
-        let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(py, {
-            use std::os::fd::AsRawFd;
-            let (_reader, writer) = os_pipe::pipe().expect("pipe");
-            let previous = runtime_state(py).signal.wakeup_fd();
-            let _ = molt_signal_set_wakeup_fd(int_bits_from_i64(py, writer.as_raw_fd() as i64));
-            assert_eq!(take_pending_exception_kind(py), "ValueError");
-            assert_eq!(runtime_state(py).signal.wakeup_fd(), previous);
-            let _ = molt_signal_set_wakeup_fd(int_bits_from_i64(py, (i32::MAX as i64) + 1));
-            assert_eq!(take_pending_exception_kind(py), "ValueError");
-            assert_eq!(runtime_state(py).signal.wakeup_fd(), previous);
-            let flags = unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_GETFL) };
-            assert!(flags >= 0);
-            assert_eq!(
-                unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) },
-                0
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                use std::os::fd::AsRawFd;
+                assert!(crate::has_capability(py, "signal.set_wakeup_fd"));
+                assert!(async_work_owner(py));
+                let (_reader, writer) = os_pipe::pipe().expect("pipe");
+                let previous = runtime_state(py).signal.wakeup_fd();
+                struct RestoreWakeupFd<'a>(&'a SignalRuntimeState, i32);
+                impl Drop for RestoreWakeupFd<'_> {
+                    fn drop(&mut self) {
+                        self.0.swap_wakeup_fd(self.1);
+                        quiesce_admitted_notifications();
+                    }
+                }
+                // Restore and quiesce before the writer closes, including on panic.
+                let _restore = RestoreWakeupFd(&runtime_state(py).signal, previous);
+                let _ = molt_signal_set_wakeup_fd(int_bits_from_i64(py, writer.as_raw_fd() as i64));
+                assert_eq!(take_pending_exception_kind(py), "ValueError");
+                assert_eq!(runtime_state(py).signal.wakeup_fd(), previous);
+                let _ = molt_signal_set_wakeup_fd(int_bits_from_i64(py, (i32::MAX as i64) + 1));
+                assert_eq!(take_pending_exception_kind(py), "ValueError");
+                assert_eq!(runtime_state(py).signal.wakeup_fd(), previous);
+                let flags = unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_GETFL) };
+                assert!(flags >= 0);
+                assert_eq!(
+                    unsafe {
+                        libc::fcntl(writer.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK)
+                    },
+                    0
+                );
+                let old =
+                    molt_signal_set_wakeup_fd(int_bits_from_i64(py, writer.as_raw_fd() as i64));
+                assert_eq!(to_i64(obj_from_bits(old)), Some(previous as i64));
+                assert!(!exception_pending(py));
+                assert_eq!(runtime_state(py).signal.wakeup_fd(), writer.as_raw_fd());
+                let _ = molt_signal_set_wakeup_fd(int_bits_from_i64(py, previous as i64));
+                assert!(!exception_pending(py));
+                assert_eq!(runtime_state(py).signal.wakeup_fd(), previous);
+            });
+        });
+    }
+
+    #[test]
+    fn wakeup_fd_requires_capability_before_descriptor_validation() {
+        crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+            struct RestoreEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);
+            impl Drop for RestoreEnvironment {
+                fn drop(&mut self) {
+                    for (key, value) in &self.0 {
+                        unsafe {
+                            match value {
+                                Some(value) => std::env::set_var(key, value),
+                                None => std::env::remove_var(key),
+                            }
+                        }
+                    }
+                }
+            }
+            let _environment = RestoreEnvironment(
+                ["MOLT_CAPABILITY_TIER", "MOLT_CAPABILITIES"]
+                    .map(|key| (key, std::env::var_os(key)))
+                    .into(),
             );
-            let old = molt_signal_set_wakeup_fd(int_bits_from_i64(py, writer.as_raw_fd() as i64));
-            assert_eq!(to_i64(obj_from_bits(old)), Some(previous as i64));
-            assert!(!exception_pending(py));
-            let _ = molt_signal_set_wakeup_fd(int_bits_from_i64(py, previous as i64));
-            assert!(!exception_pending(py));
+            unsafe {
+                std::env::set_var("MOLT_CAPABILITY_TIER", "none");
+                std::env::set_var("MOLT_CAPABILITIES", "");
+            }
+            assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
+            crate::with_gil_entry_nopanic!(py, {
+                assert!(!crate::has_capability(py, "signal.set_wakeup_fd"));
+                assert!(async_work_owner(py));
+                let previous = runtime_state(py).signal.wakeup_fd();
+                let _ = molt_signal_set_wakeup_fd(int_bits_from_i64(py, -2));
+                assert_eq!(take_pending_exception_kind(py), "PermissionError");
+                assert_eq!(runtime_state(py).signal.wakeup_fd(), previous);
+                assert!(!exception_pending(py));
+            });
         });
     }
 

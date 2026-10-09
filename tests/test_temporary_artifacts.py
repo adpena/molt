@@ -140,6 +140,45 @@ def test_parent_allocation_binds_consumption_and_terminal_cleanup(tmp_path):
         scratch.guard_scratch(tmp_path, env)
 
 
+def test_guard_reclaims_readonly_hardlink_without_changing_external_source(
+    tmp_path, readonly_file_source
+):
+    source, attributes = readonly_file_source
+    before = attributes()
+    lease, env = _lease(tmp_path)
+    link = lease.target / "other-base_executable.exe"
+    link.hardlink_to(source)
+    assert scratch.guard_scratch(tmp_path, env) == lease.target
+
+    def forbidden_chmod(*_args, **_kwargs):
+        pytest.fail("guard cleanup must not mutate the borrowed source")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Path, "chmod", forbidden_chmod)
+        result = _finish(lease)
+    assert result["state"] == "reclaimed"
+    assert result["retention"]["errors"] == []
+    assert lease.lock is None
+    assert not lease.target.exists()
+    assert not (lease.generation / "payload").exists()
+    assert _read(lease.generation / "owner.json")["state"] == "reclaimed"
+    assert attributes() == before
+    assert source.read_bytes() == b"external source must survive cleanup"
+
+
+def test_owned_temporary_directory_reclaims_readonly_hardlink(
+    tmp_path, readonly_file_source
+):
+    source, attributes = readonly_file_source
+    before = attributes()
+    with scratch.OwnedTemporaryDirectory(dir=tmp_path) as owned:
+        path = Path(owned)
+        (path / "borrowed.exe").hardlink_to(source)
+    assert not path.exists()
+    assert attributes() == before
+    assert source.read_bytes() == b"external source must survive cleanup"
+
+
 @pytest.mark.parametrize(
     "field,invalid",
     [

@@ -726,7 +726,7 @@ extern "C" fn molt_unraisable_hook_args_new(
                     "UnraisableHookArgs() takes a dict as second arg, if any",
                 );
             }
-            if !unsafe { dict_order(fields_ptr) }.is_empty() {
+            if unsafe { crate::dict_len(fields_ptr) } != 0 {
                 return raise_exception::<_>(
                     _py,
                     "TypeError",

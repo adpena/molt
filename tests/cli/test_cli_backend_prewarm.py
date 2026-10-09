@@ -129,9 +129,11 @@ def _dispatch(
     def unexpected_build(*_args: object, **_kwargs: object) -> int:
         raise AssertionError("the prewarm must not build a program")
 
-    args = entrypoint_parser._build_entrypoint_parser().parse_args(argv)
+    parser = entrypoint_parser._build_entrypoint_parser()
+    args = parser.parse_args(argv)
     return entrypoint_dispatch._dispatch_entrypoint_command(
         args,
+        parser=parser,
         build_fn=build_fn or unexpected_build,
         # Same config-root authority as `molt.cli.entrypoint.main`.
         config_root=_find_project_root(Path.cwd()),

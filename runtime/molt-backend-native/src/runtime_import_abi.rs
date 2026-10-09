@@ -33,8 +33,8 @@ pub(crate) const MOLT_TASK_NEW: RuntimeImportSignature =
     runtime_sig("molt_task_new", 3, RuntimeReturnAbi::I64);
 pub(crate) const MOLT_CANCEL_TOKEN_GET_CURRENT: RuntimeImportSignature =
     runtime_sig("molt_cancel_token_get_current", 0, RuntimeReturnAbi::I64);
-pub(crate) const MOLT_TASK_REGISTER_TOKEN_OWNED: RuntimeImportSignature =
-    runtime_sig("molt_task_register_token_owned", 2, RuntimeReturnAbi::I64);
+pub(crate) const MOLT_TASK_REGISTER_EXECUTION: RuntimeImportSignature =
+    runtime_sig("molt_task_register_execution", 3, RuntimeReturnAbi::I64);
 pub(crate) const MOLT_ASYNCGEN_NEW: RuntimeImportSignature =
     runtime_sig("molt_asyncgen_new", 1, RuntimeReturnAbi::I64);
 
@@ -45,7 +45,7 @@ pub(crate) const NATIVE_RUNTIME_HELPER_IMPORTS: &[RuntimeImportSignature] = &[
     MOLT_INC_REF_OBJ,
     MOLT_TASK_NEW,
     MOLT_CANCEL_TOKEN_GET_CURRENT,
-    MOLT_TASK_REGISTER_TOKEN_OWNED,
+    MOLT_TASK_REGISTER_EXECUTION,
     MOLT_ASYNCGEN_NEW,
 ];
 
@@ -54,6 +54,6 @@ pub(crate) const TRAMPOLINE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     MOLT_INC_REF_OBJ,
     MOLT_TASK_NEW,
     MOLT_CANCEL_TOKEN_GET_CURRENT,
-    MOLT_TASK_REGISTER_TOKEN_OWNED,
+    MOLT_TASK_REGISTER_EXECUTION,
     MOLT_ASYNCGEN_NEW,
 ];

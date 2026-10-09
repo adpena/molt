@@ -21,6 +21,10 @@ from tools.memory_guard_core.windows_snapshot import (
 )
 
 
+# These are conservative host-protection signatures, never Molt ownership.
+# Agent home directories also contain ordinary project checkouts and data: only
+# their known helper locations belong here. Retained instance/ancestry custody
+# and the independent executable protections still decide cleanup eligibility.
 HOST_CONTROL_PLANE_TOKENS = (
     "/Applications/Codex.app/",
     "Codex.app/Contents/",
@@ -40,7 +44,10 @@ HOST_CONTROL_PLANE_TOKENS = (
     "codex-win32-sandbox",
     "codex.ps1",
     "codex_chronicle",
-    "/.codex/",
+    "/.codex/plugins/",
+    "/.codex/runtimes/",
+    "/.codex/vendor_imports/",
+    "/.codex/shell_snapshots/",
     "/appdata/local/codex/",
     "/appdata/local/openai/codex/",
     "/appdata/local/temp/codex/",
@@ -59,7 +66,9 @@ HOST_CONTROL_PLANE_TOKENS = (
     "\\claude-code.exe",
     "\\node_modules\\@anthropic-ai\\claude-code\\",
     "Claude.app/Contents/",
-    "/.claude/",
+    "/.claude/plugins/",
+    "/.claude/runtimes/",
+    "/.claude/shell-snapshots/",
     "/appdata/local/temp/claude/",
     "@anthropic-ai/claude-code",
     "CLAUDE_PLUGIN_DATA=",

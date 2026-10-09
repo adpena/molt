@@ -45,7 +45,6 @@ import wasm_link_native_inputs as _native_inputs  # noqa: E402
 from wasm_link_fact_provider import make_rust_wasm_facts_provider  # noqa: E402
 from wasm_link_format import WASM_MAGIC, WASM_VERSION  # noqa: E402
 from wasm_link_pipeline import (  # noqa: E402
-    RuntimeLinkInputRole,
     run_wasm_ld_with_custodied_inputs as _run_wasm_ld_with_custodied_inputs,
 )
 import wasm_link_runtime_data as _runtime_data  # noqa: E402
@@ -218,7 +217,6 @@ def _run_wasm_ld(
     output: Path,
     linked: Path,
     *,
-    runtime_role: RuntimeLinkInputRole,
     allowlist_override: Path | None = None,
     optimize: bool = False,
     optimize_level: str = "Oz",
@@ -230,6 +228,7 @@ def _run_wasm_ld(
     native_link_requirements: SourceExtensionLinkRequirements | None = None,
     preserve_debug_sections: bool = False,
     phase_timings_file: Path | None = None,
+    failure_evidence_dir: Path | None = None,
     wasm_facts_scanner: Path,
     app_export_contract_path: Path | None = None,
     runtime_identity: StableRegularFileIdentity | None = None,
@@ -244,6 +243,8 @@ def _run_wasm_ld(
     phase_timings_ms: dict[str, float] = {}
     expected = dict(expected_inputs or {})
     output_paths_admitted = False
+    if failure_evidence_dir is None:
+        failure_evidence_dir = linked.parent / "wasm-link-evidence"
 
     def expected_digest(path: Path) -> str | None:
         if not expected:
@@ -319,7 +320,7 @@ def _run_wasm_ld(
                 snapshot_root,
                 phase_timings_ms,
                 expected_sha256=expected_digest(wasm_facts_scanner),
-                evidence_root=linked.parent,
+                evidence_root=failure_evidence_dir,
             )
 
             def admit_runtime(path: Path) -> bool:
@@ -345,7 +346,7 @@ def _run_wasm_ld(
                 runtime_snapshot_root,
                 label="selected",
                 expected_identity=runtime_identity,
-                accept_path=admit_runtime if runtime_role == "reloc" else None,
+                accept_path=admit_runtime,
                 retry_delay_seconds=0.25,
             )
             runtime_snapshot = (
@@ -366,6 +367,10 @@ def _run_wasm_ld(
                     label="app-export-contract",
                     expected_sha256=expected_digest(app_export_contract_path),
                 )
+            # Admit lexical SDK ownership before private snapshots replace paths.
+            wasi_plan = _native_inputs.wasm_link_inputs.admit_wasi_provider_inputs(
+                tuple(Path(item.path) for item in native_link_requirements.inputs)
+            )
             native_snapshots: dict[Path, tuple[Path, str]] = {}
 
             def snapshot_native_input(
@@ -415,21 +420,26 @@ def _run_wasm_ld(
                 native_link_requirements,
                 snapshot_native_input,
             )
-            resolved_requirements = _native_inputs._resolve_native_link_requirements(
+            native_plan = _native_inputs._resolve_native_link_requirements(
                 snapshot_requirements,
+                wasi_plan=wasi_plan,
+                capture_input=snapshot_native_input,
                 facts_provider=facts_provider,
+                runtime_exports=(
+                    frozenset(
+                        facts_provider(
+                            runtime_snapshot.read_bytes()
+                        ).linking_symbols.defined_names
+                    )
+                    if snapshot_requirements.inputs
+                    else frozenset()
+                ),
                 source_paths={
                     snapshot: source
                     for source, (snapshot, _digest) in native_snapshots.items()
                 },
             )
-            admitted_inputs = set(snapshot_requirements.inputs)
-            snapshot_requirements = map_source_extension_link_inputs(
-                resolved_requirements,
-                lambda item: (
-                    item if item in admitted_inputs else snapshot_native_input(item)
-                ),
-            )
+            snapshot_requirements = native_plan.requirements
             deploy_runtime_snapshot = None
             if deploy_runtime is not None:
                 deploy_runtime_snapshot = _snapshot_link_input(
@@ -447,7 +457,7 @@ def _run_wasm_ld(
                 runtime_snapshot,
                 output_snapshot,
                 linked,
-                runtime_role=runtime_role,
+                failure_evidence_dir=failure_evidence_dir,
                 allowlist_override=allowlist_override,
                 optimize=optimize,
                 optimize_level=optimize_level,
@@ -457,6 +467,9 @@ def _run_wasm_ld(
                 deploy_runtime_override=deploy_runtime_snapshot,
                 deploy_runtime_imports=deploy_runtime_imports,
                 native_link_requirements=snapshot_requirements,
+                provider_paths=native_plan.provider_paths,
+                provider_symbols=native_plan.provider_symbols,
+                host_provider_symbols=native_plan.host_symbols,
                 preserve_debug_sections=preserve_debug_sections,
                 phase_timings_ms=phase_timings_ms,
                 wasm_facts_scanner=wasm_facts_scanner,
@@ -495,6 +508,11 @@ def main() -> int:
     parser.add_argument("--runtime-expected-identity", type=Path, required=True)
     parser.add_argument("--input", type=Path, default=_default_input_path())
     parser.add_argument("--output", type=Path, default=_default_output_path())
+    parser.add_argument(
+        "--failure-evidence-dir",
+        type=Path,
+        help="Keep rejected WASM bytes here (default: output parent/wasm-link-evidence)",
+    )
     parser.add_argument(
         "--freestanding",
         action="store_true",
@@ -662,7 +680,6 @@ def main() -> int:
             runtime,
             output,
             linked,
-            runtime_role="reloc",
             expected_inputs=expected_inputs,
             additional_inputs=additional_inputs,
             optimize=args.optimize,
@@ -675,6 +692,7 @@ def main() -> int:
             native_link_requirements=native_link_requirements,
             preserve_debug_sections=args.preserve_debug_sections,
             phase_timings_file=args.phase_timings_file,
+            failure_evidence_dir=args.failure_evidence_dir,
             wasm_facts_scanner=args.wasm_facts_scanner,
             app_export_contract_path=args.app_export_contract,
             runtime_identity=generation.reloc_member_identity,

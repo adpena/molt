@@ -442,6 +442,7 @@ def test_run_check_does_not_acquire_compile_slot_for_needs_cargo(monkeypatch):
             "metadata ok\n",
             "",
             elapsed_s=0.1,
+            child_stderr="",
         )
 
     monkeypatch.setattr(module.compile_governor, "compile_slot", fake_compile_slot)

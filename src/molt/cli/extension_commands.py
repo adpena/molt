@@ -85,6 +85,7 @@ from molt.cli.source_extension_compiler_inputs import (
     source_extension_compiler_environment,
 )
 from molt.cli.source_extension_toolchain import (
+    _admit_wasi_source_compiler,
     _materialize_source_extension_target_metadata,
     _normalize_source_extension_abi_tier,
     _normalize_source_extension_python_version,
@@ -106,8 +107,7 @@ from molt.cli.source_extension_object_closure import (
     source_extension_wasm_import_receipts,
 )
 from molt.cli.wasm_link_inputs import (
-    normalize_wasi_sysroot,
-    resolve_wasi_sysroot,
+    resolve_wasi_c_abi_plan,
     wasi_libcxx_include_dir,
 )
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
@@ -798,17 +798,50 @@ def extension_build(
             json_output,
             command="extension-build",
         )
-    if wasm_static_link:
-        explicit_sysroot = compiler_sysroot_arg_value([*cc_cmd, *compile_args])
-        if explicit_sysroot is not None:
-            wasi_sysroot = normalize_wasi_sysroot(explicit_sysroot)
-        if wasi_sysroot is None and target_plan.target_triple == "wasm32-wasip1":
-            wasi_sysroot = resolve_wasi_sysroot()
-        if target_plan.target_triple == "wasm32-wasip1" and wasi_sysroot is None:
+    if wasm_static_link and target_plan.target_triple == "wasm32-wasip1":
+        try:
+            admitted = (
+                resolve_wasi_c_abi_plan()
+                if tool_commands
+                else resolved_toolchain.wasi_c_abi
+            )
+            if admitted is None:
+                raise ValueError("WASI source toolchain has no selected C ABI plan")
+        except (OSError, ValueError) as exc:
             return _fail(
-                "WASM extension build requires a WASI sysroot containing "
-                "include/errno.h. Set MOLT_WASI_SYSROOT, WASI_SYSROOT, or "
-                "WASI_SDK_PATH.",
+                f"WASI C-runtime plan refused: {exc}",
+                json_output,
+                command="extension-build",
+            )
+        try:
+            effective_tool_commands = dict(effective_tool_commands)
+            for role in ("c", "cpp"):
+                if role in effective_tool_commands:
+                    effective_tool_commands[role] = _admit_wasi_source_compiler(
+                        tuple(effective_tool_commands[role]),
+                        role=role,
+                        plan=admitted,
+                        environment=os.environ,
+                    )
+            cc_cmd = list(effective_tool_commands["c"])
+        except (OSError, ValueError) as exc:
+            return _fail(
+                f"WASI compiler plan refused: {exc}",
+                json_output,
+                command="extension-build",
+            )
+        explicit_sysroot = compiler_sysroot_arg_value([*cc_cmd, *compile_args])
+        if explicit_sysroot is not None and explicit_sysroot != str(admitted.sysroot):
+            return _fail(
+                "extension sysroot differs from the selected SDK C ABI",
+                json_output,
+                command="extension-build",
+            )
+        if tool_commands:
+            wasi_sysroot = admitted.sysroot
+        if wasi_sysroot != admitted.sysroot:
+            return _fail(
+                "source-extension toolchain lost selected SDK custody",
                 json_output,
                 command="extension-build",
             )

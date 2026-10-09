@@ -12,12 +12,12 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 _PROBE = f"""
 import importlib.util
 import sys
+import _contextvars as _oracle
 from tests.stdlib_intrinsic_registry import install_registry
 
 
 install_registry({{
-    "molt_stdlib_probe": lambda: None,
-    "molt_cancel_token_get_current": lambda: 1,
+    "molt_contextvars_types": lambda module: (_oracle.Context, _oracle.ContextVar, _oracle.Token, _oracle.copy_context),
 }})
 
 
@@ -30,8 +30,8 @@ def _load_module(name, path_text):
     return module
 
 
-_load_module("contextvars", {str(STDLIB_ROOT / "contextvars.py")!r})
 _private = _load_module("_contextvars", {str(STDLIB_ROOT / "_contextvars.py")!r})
+_load_module("contextvars", {str(STDLIB_ROOT / "contextvars.py")!r})
 
 rows = [
     (name, type(value).__name__, bool(callable(value)))
@@ -45,7 +45,7 @@ var = _private.ContextVar("answer", default=41)
 token = var.set(42)
 ctx = _private.copy_context()
 checks = {{
-    "anchor_hidden": "molt_cancel_token_get_current" not in _private.__dict__,
+    "anchor_hidden": "molt_contextvars_types" not in _private.__dict__,
     "behavior": (
         var.get() == 42
         and ctx.get(var) == 42
@@ -85,7 +85,7 @@ def test__contextvars_public_surface_matches_expected_shape() -> None:
         ("Context", "type", "True"),
         ("ContextVar", "type", "True"),
         ("Token", "type", "True"),
-        ("copy_context", "function", "True"),
+        ("copy_context", "builtin_function_or_method", "True"),
     ]
     assert checks == {
         "anchor_hidden": "True",

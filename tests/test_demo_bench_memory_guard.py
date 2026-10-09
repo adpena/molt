@@ -69,6 +69,7 @@ def test_demo_bench_run_cmd_uses_memory_guard(monkeypatch: pytest.MonkeyPatch) -
             "k6 v0\n",
             "",
             elapsed_s=0.01,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -151,6 +152,7 @@ def test_demo_bench_run_k6_uses_live_tree_guard(
             "",
             "",
             elapsed_s=0.01,
+            child_stderr="",
         )
 
     monkeypatch.setattr(demo_bench, "extract_proc_matchers", lambda env: {})
@@ -307,7 +309,12 @@ def test_demo_k6_failure_retains_full_diagnostic(monkeypatch, tmp_path, capsys):
 
     def failed_k6(cmd, **kwargs):
         return demo_bench.harness_memory_guard.GuardedCompletedProcess(
-            cmd, 99, "threshold breached\n", "guard repro context\n", elapsed_s=0.1
+            cmd,
+            99,
+            "threshold breached\n",
+            "guard repro context\n",
+            elapsed_s=0.1,
+            child_stderr="",
         )
 
     monkeypatch.setattr(

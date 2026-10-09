@@ -463,3 +463,155 @@ def test_interactive_guard_cancels_actual_child_tree_and_closes_streams(tmp_path
             if owned.terminal:
                 owned.stdin.close()
                 owned.stdout.close()
+
+
+@pytest.mark.parametrize("pause", ["startup", "closure"])
+def test_harness_owner_survives_observation_expiry_and_admits_eventual_closure(
+    tmp_path, monkeypatch, pause
+):
+    """A real worker is held independently of its cancellation implementation."""
+    import json
+    import time
+
+    from tools import memory_guard
+
+    entered = tmp_path / "entered"
+    release = tmp_path / "release"
+    child_ready = tmp_path / "child-ready"
+    wrapper = tmp_path / "held_harness.py"
+    wrapper.write_text(
+        "import pathlib,sys,time\n"
+        f"sys.path.insert(0, {str(ROOT)!r})\n"
+        "from tools import guarded_exec\n"
+        f"entered=pathlib.Path({str(entered)!r})\n"
+        f"release=pathlib.Path({str(release)!r})\n"
+        "def hold():\n"
+        " entered.write_text('entered', encoding='utf-8')\n"
+        " deadline=time.monotonic()+20\n"
+        " while not release.exists() and time.monotonic()<deadline: time.sleep(.02)\n"
+        " if not release.exists(): raise RuntimeError('test release deadline')\n"
+        + (
+            "hold()\n"
+            if pause == "startup"
+            else "guard=guarded_exec.harness_memory_guard.memory_guard\n"
+            "original=guard._temporary_artifact_descendant_closure\n"
+            "def held(**kwargs):\n"
+            " hold()\n"
+            " return original(**kwargs)\n"
+            "guard._temporary_artifact_descendant_closure=held\n"
+        )
+        + "raise SystemExit(guarded_exec.main())\n",
+        encoding="utf-8",
+    )
+    start = command_execution.CommandExecutor.start_owned
+
+    def held_start(self, args, **kwargs):
+        assert Path(args[1]).name == "guarded_exec.py"
+        return start(self, [args[0], str(wrapper), *args[2:]], **kwargs)
+
+    monkeypatch.setattr(command_execution.CommandExecutor, "start_owned", held_start)
+    executor = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=ROOT)
+    owned = executor.start_guarded(
+        [
+            sys.executable,
+            "-c",
+            "import os,pathlib,time; "
+            f"pathlib.Path({str(child_ready)!r}).write_text(str(os.getpid()), encoding='utf-8'); "
+            "time.sleep(30)",
+        ],
+        cwd=ROOT,
+        env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "state")},
+        timeout=15,
+        harness=True,
+    )
+    try:
+        ready = entered if pause == "startup" else child_ready
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.exists(), str(owned.evidence_path)
+        if pause == "startup":
+            assert not owned.startup_path.exists()
+        before = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
+            owned.cancel_and_wait()
+        assert time.monotonic() - before >= 5
+        assert caught.value.guard_command is owned
+        assert owned.poll() is None
+        assert not owned.terminal
+        assert owned.cancellation_path.is_file()
+        assert owned.evidence_path.is_file()
+        if pause == "closure":
+            assert entered.is_file()  # Actual guard cleanup reached our barrier.
+        release.write_text("release", encoding="utf-8")
+        assert owned.wait(timeout=10) == 137
+        summary = json.loads(owned.summary_path.read_text(encoding="utf-8"))
+        startup = json.loads(owned.startup_path.read_text(encoding="utf-8"))
+        assert owned.terminal
+        assert summary["cancelled"] is True
+        assert summary["descendants_closed"] is True
+        assert summary["launch_id"] == startup["launch_id"] == owned.launch_id
+        assert (
+            summary["child_process"] == startup["child_process"] == owned.child_identity
+        )
+        assert owned.child_identity["pid"] not in memory_guard.sample_processes()
+    finally:
+        release.write_text("release", encoding="utf-8")
+        if not owned.terminal:
+            owned.cancel_and_wait(timeout=10)
+
+
+def test_cancel_publication_refusal_keeps_original_error_and_live_owner(tmp_path):
+    class Process:
+        pid = 42
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def wait(self, **_kwargs):
+            pytest.fail("failed request must not be reported as observed closure")
+
+        def terminate(self):
+            pytest.fail("request failure cannot transfer child custody to caller")
+
+        kill = terminate
+
+    owned, _startup, _terminal = _interactive_guard_fixture(tmp_path, Process())
+    owned.cancellation_path = tmp_path / "missing" / "cancel"
+    with pytest.raises(FileNotFoundError) as caught:
+        owned.cancel_and_wait()
+    assert caught.value.guard_command is owned
+    assert owned.poll() is None
+    assert not owned.terminal
+
+
+def test_harness_launch_binds_relative_executable_to_worker_root(tmp_path, monkeypatch):
+    from tools import memory_guard
+
+    root = tmp_path / "repository"
+    executable = root / "bin" / "guest"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"fixture")
+    unrelated = tmp_path / "caller"
+    unrelated.mkdir()
+    monkeypatch.chdir(unrelated)
+    captured = {}
+
+    def start(self, args, **kwargs):
+        captured.update(argv=args, **kwargs)
+        return SimpleNamespace(pid=42)
+
+    monkeypatch.setattr(command_execution.CommandExecutor, "start_owned", start)
+    executor = command_execution.CommandExecutor(prefix="MOLT_TEST", repo_root=root)
+    owned = executor.start_guarded(
+        ["bin/guest", "payload"],
+        cwd=root / "other",
+        harness=True,
+        env={"MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "state")},
+    )
+    assert captured["cwd"] == root
+    assert owned.command == (str(executable.resolve()), "payload")
+    assert memory_guard._load_internal_command(captured["env"]) == list(owned.command)
+    argv = captured["argv"]
+    assert argv[argv.index("--cwd") + 1] == str(root / "other")

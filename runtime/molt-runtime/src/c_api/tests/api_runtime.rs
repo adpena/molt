@@ -1792,24 +1792,26 @@ fn type_call_ic_invalidates_when_metaclass_call_policy_changes() {
         );
         // TYPE_CALL admits a fixed-arity initializer. object.__init__ has a
         // variadic public binding contract and correctly declines this cache.
-        let init_ptr = crate::builtins::functions::alloc_runtime_function_obj(
-            _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_metaclass_invalidation_init",
-                init as *const (),
-            ),
-            1,
-        );
-        assert!(!init_ptr.is_null());
-        let init_bits = MoltObject::from_ptr(init_ptr).bits();
-        let class_bits = create_test_type(
-            _py,
-            metaclass_bits,
-            b"InitiallyDefaultCall",
-            builtins.object,
-            &[(b"__init__", init_bits)],
-        );
-        dec_ref_bits(_py, init_bits);
+        let class_bits = {
+            let init_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                crate::builtins::functions::runtime_fn_addr(
+                    "c_api_test_metaclass_invalidation_init",
+                    init as *const (),
+                ),
+                1,
+            );
+            assert!(!init_ptr.is_null());
+            let _init_owner = crate::PtrDropGuard::new(init_ptr);
+            let init_bits = MoltObject::from_ptr(init_ptr).bits();
+            create_test_type(
+                _py,
+                metaclass_bits,
+                b"InitiallyDefaultCall",
+                builtins.object,
+                &[(b"__init__", init_bits)],
+            )
+        };
         let site_id = 131u64;
 
         let first_builder = crate::call::bind::molt_callargs_new(0, 0);
@@ -1853,8 +1855,9 @@ fn type_call_ic_invalidates_when_metaclass_call_policy_changes() {
         dec_ref_bits(_py, call_bits);
         dec_ref_bits(_py, class_bits);
         dec_ref_bits(_py, metaclass_bits);
-        dec_ref_bits(_py, init_bits);
         crate::call::bind::clear_call_bind_ic_cache(_py);
+        let collected = observe_weakref_gc_collect(_py, 2);
+        assert_weakref_gc_observation(&collected);
     });
 }
 

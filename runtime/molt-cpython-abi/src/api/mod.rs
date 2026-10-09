@@ -28,7 +28,10 @@ pub mod abstract_mapping;
 pub mod abstract_number;
 pub mod abstract_sequence;
 pub mod buffer;
-pub(crate) mod callback;
+// Internal Rust integration shared with the runtime's native callback boundary.
+// This module adds no exported C symbols.
+#[doc(hidden)]
+pub mod callback;
 pub mod capsule;
 pub mod cfunction;
 pub mod contextvars;

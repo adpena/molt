@@ -58,32 +58,6 @@ def _looks_like_version_selector(value: str) -> bool:
     return bool(raw) and all(part.isdigit() for part in raw.split("."))
 
 
-def _split_explicit_command(value: str) -> tuple[str, ...]:
-    if os.name != "nt":
-        return tuple(shlex.split(value))
-
-    # CommandLineToArgvW is the Windows command-line grammar used by native
-    # launchers. shlex's POSIX and non-POSIX modes both mis-handle valid quoted
-    # Windows paths in edge cases, so use the platform authority directly.
-    import ctypes
-
-    argc = ctypes.c_int()
-    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    command_line_to_argv = shell32.CommandLineToArgvW
-    command_line_to_argv.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
-    command_line_to_argv.restype = ctypes.POINTER(ctypes.c_wchar_p)
-    argv = command_line_to_argv(value, ctypes.byref(argc))
-    if not argv:
-        raise PythonInterpreterError(
-            f"invalid Windows Python command line (error {ctypes.get_last_error()})"
-        )
-    try:
-        return tuple(argv[index] for index in range(argc.value))
-    finally:
-        kernel32.LocalFree(argv)
-
-
 def explicit_python_command(value: str) -> tuple[str, ...]:
     """Parse an explicit interpreter path or command without changing its meaning."""
 
@@ -93,7 +67,14 @@ def explicit_python_command(value: str) -> tuple[str, ...]:
     expanded = Path(explicit).expanduser()
     if expanded.exists():
         return (str(expanded),)
-    command = _split_explicit_command(explicit)
+    # Share host quoting with configured compiler/linker commands. Import only
+    # when command parsing is needed, not for interpreter metadata readers.
+    from molt.toolchain_identity import split_native_command
+
+    try:
+        command = split_native_command(explicit)
+    except ValueError as exc:
+        raise PythonInterpreterError(f"invalid Python command line: {exc}") from exc
     if not command:
         raise PythonInterpreterError("Python interpreter command must not be empty")
     first = Path(command[0]).expanduser()

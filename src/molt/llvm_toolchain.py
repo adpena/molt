@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 import platform
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 import re
 import shlex
 import shutil
@@ -16,13 +16,13 @@ import sys
 import tempfile
 import tomllib
 from dataclasses import asdict, dataclass
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from typing import Any, Literal
 
 from molt.source_root import compiler_source_root, source_file_revision
 from molt.file_hashing import content_change_time_ns
 from molt.file_publication import staged_file_path
-from molt.exact_json import canonical_json_sha256
+from molt.exact_json import canonical_json_sha256, capture_exact
 from molt.llvm_linker_roles import (
     executable_entrypoint_name,
     executable_selects_linker_role,
@@ -33,22 +33,27 @@ from molt.llvm_linker_roles import (
 from molt.release_matrix import REQUIRED_WASI_SDK_HOST_IDS, wasi_sdk_host_id
 from molt.wasi_sdk_identity import (
     SDK_DIRNAME,
+    INSTALL_RECEIPT_FILENAME,
     SDK_CARGO_TARGETS,
     SDK_CARGO_TOOLS,
-    SDK_TOOL_NAMES,
+    WASI_C_ABI_PLAN_ENV,
+    WasiCAbiProjection,
     WasiSdkIdentityError,
     executable_filename,
     is_wasi_sdk_llvm_version,
     is_wasi_sdk_version,
     load_wasi_sdk_install_receipt,
-    read_wasi_sdk_version_identity,
+    validate_wasi_sdk_selection,
+    wasi_sdk_receipt_facts,
     wasi_sdk_tree_identity,
 )
-from molt.wasi_sysroot import normalize_wasi_sysroot
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     find_executable,
+    expand_user_path,
     stable_executable_probe,
+    stable_regular_file_identity,
+    verify_stable_regular_file_identity,
 )
 
 
@@ -200,6 +205,14 @@ class WasiSdkInstallation:
     sysroot: Path
     wasm_ld: Path
     llvm_nm: Path
+    facts: Mapping[str, Any]
+
+    def tool_fact(self, role: str) -> Mapping[str, Any]:
+        return self.facts["tools"][role]
+
+    def tool_content_identity(self, role: str) -> dict[str, object]:
+        fact = self.tool_fact(role)
+        return {"size": fact["size"], "sha256": fact["sha256"]}
 
 
 @dataclass(frozen=True)
@@ -213,10 +226,10 @@ class WasmCiToolchainVerification:
 
 
 @dataclass(frozen=True)
-class WasmLlvmNmVerification:
+class WasmLlvmNmVerification[Identity: StableRegularFileIdentity | WasiSdkInstallation]:
     path: Path
     fact: "LlvmToolVersionFact"
-    executable_identity: StableRegularFileIdentity
+    executable_identity: Identity
 
 
 @dataclass(frozen=True)
@@ -244,37 +257,8 @@ class LlvmContentFact:
     sha256: str
 
 
-LLVM_ATTESTATION_SCHEMA = "molt.llvm-toolchain.v6"
+LLVM_ATTESTATION_SCHEMA = "molt.llvm-toolchain.v7"
 LLVM_ATTESTATION_FILENAME = ".molt-llvm-toolchain.json"
-
-
-def reject_poison_toolchain_path(raw: str | Path, *, authority: str) -> None:
-    """Reject retired D: and OneDrive custody before host path normalization.
-
-    ``Path.resolve`` on a non-Windows review host turns ``D:\\...`` into a
-    relative POSIX path, so inspect the lexical Windows drive first.  This is a
-    repository-authority invariant, not a host-platform convenience rule.
-    """
-
-    rendered = str(raw).strip()
-    unquoted = (
-        rendered[1:-1]
-        if len(rendered) >= 2
-        and rendered[0] == rendered[-1]
-        and rendered[0] in {'"', "'"}
-        else rendered
-    )
-    windows_path = PureWindowsPath(unquoted)
-    drive = windows_path.drive.upper()
-    normalized = unquoted.replace("/", "\\").upper()
-    if drive == "D:" or re.match(r"^(?:\\\\[?.]\\|\\\?\?\\)D:\\", normalized):
-        raise LlvmToolchainConfigError(
-            f"{authority} cannot use retired D: canonical custody: {raw}"
-        )
-    if any("onedrive" in part.casefold() for part in windows_path.parts):
-        raise LlvmToolchainConfigError(
-            f"{authority} cannot use OneDrive custody; use C:\\Molt: {raw}"
-        )
 
 
 def llvm_architecture_contract_path(root: Path) -> Path:
@@ -771,12 +755,10 @@ def load_wasi_sdk_installation(
 ) -> WasiSdkInstallation:
     """Admit one provisioned SDK for this host's exact manifest asset.
 
-    The receipt, VERSION identity, and required tools are always checked.
-    ``verify_tree`` additionally rehashes every SDK path; setup verification
-    uses it, per-build lookups do not.
+    Ordinary readers trust the provisioner's append-only generation receipt.
+    Explicit verification captures the tree once and checks every finite fact.
     """
 
-    reject_poison_toolchain_path(prefix, authority="WASI SDK installation")
     expected = wasi_sdk_host_asset(root)
     lexical = prefix.expanduser().absolute()
     if lexical.name != wasi_sdk_install_prefix(lexical, expected).name:
@@ -795,24 +777,17 @@ def load_wasi_sdk_installation(
         raise LlvmToolchainConfigError(f"WASI SDK root is not a real directory: {sdk}")
     try:
         receipt = load_wasi_sdk_install_receipt(installed)
-        version = read_wasi_sdk_version_identity(sdk / "VERSION")
-        tree = wasi_sdk_tree_identity(sdk).as_record() if verify_tree else None
+        tree = wasi_sdk_tree_identity(sdk) if verify_tree else None
     except WasiSdkIdentityError as exc:
         raise LlvmToolchainConfigError(str(exc)) from exc
     if receipt["asset"] != asdict(expected):
         raise LlvmToolchainConfigError(
             f"WASI SDK provision receipt differs from the exact host asset: {installed}"
         )
-    if (
-        version.sdk_version != expected.sdk_version
-        or version.llvm_version != expected.llvm_version
+    if tree is not None and (
+        receipt["tree"] != tree.as_record()
+        or receipt["facts"] != wasi_sdk_receipt_facts(asdict(expected), tree)
     ):
-        raise LlvmToolchainConfigError(
-            "WASI SDK VERSION identity does not match the manifest authority: "
-            f"expected {expected.sdk_version} / LLVM {expected.llvm_version}, found "
-            f"{version.sdk_version} / LLVM {version.llvm_version} at {sdk / 'VERSION'}"
-        )
-    if tree is not None and receipt["tree"] != tree:
         raise LlvmToolchainConfigError(
             f"WASI SDK filesystem tree differs from its provisioned identity: {sdk}"
         )
@@ -820,25 +795,7 @@ def load_wasi_sdk_installation(
     wasm_ld = sdk / "bin" / wasm_ld_name
     llvm_nm = sdk / "bin" / executable_filename("llvm-nm", expected.id)
     sysroot_root = sdk / "share" / "wasi-sysroot"
-    required = (
-        *(
-            sdk / "bin" / executable_filename(name, expected.id)
-            for name in SDK_TOOL_NAMES
-        ),
-        sysroot_root / "include" / "wasm32-wasip1" / "errno.h",
-        sysroot_root / "lib" / "wasm32-wasip1" / "libc.a",
-    )
-    missing = tuple(path for path in required if not path.is_file())
-    sysroot = normalize_wasi_sysroot(sysroot_root)
-    if missing or sysroot is None:
-        raise LlvmToolchainConfigError(
-            "WASI SDK installation is incomplete; missing "
-            + ", ".join(str(path) for path in missing or (sysroot_root,))
-        )
-    if any(not path.resolve(strict=True).is_relative_to(sdk) for path in required):
-        raise LlvmToolchainConfigError(
-            f"WASI SDK required asset escapes its root: {sdk}"
-        )
+    sysroot = sysroot_root
     return WasiSdkInstallation(
         prefix=installed,
         sdk=sdk,
@@ -847,6 +804,7 @@ def load_wasi_sdk_installation(
         sysroot=sysroot,
         wasm_ld=wasm_ld,
         llvm_nm=llvm_nm,
+        facts=receipt["facts"],
     )
 
 
@@ -865,7 +823,7 @@ def selected_wasi_sdk_prefix(
     environment = os.environ if environ is None else environ
     sdk = environment.get("WASI_SDK_PATH") or environment.get("WASI_SDK_PREFIX")
     if sdk:
-        prefix = Path(sdk).expanduser().absolute()
+        prefix = expand_user_path(sdk, environment=environment).absolute()
         return prefix.parent if prefix.name == SDK_DIRNAME else prefix
     return provisioned_wasi_sdk_prefix(root, environ=environment)
 
@@ -883,45 +841,125 @@ def selected_wasi_sdk_installation(
     return load_wasi_sdk_installation(root, prefix, verify_tree=False)
 
 
+def capture_wasi_sdk_selection(
+    *, root: Path, env: Mapping[str, str]
+) -> dict[str, object]:
+    """Capture the selected finite generation for developer proof identities."""
+    installation = selected_wasi_sdk_installation(root, environ=env)
+    if installation is None:
+        raise ValueError("selected WASI SDK is unavailable")
+    receipt, generation = capture_exact(
+        installation.prefix / INSTALL_RECEIPT_FILENAME,
+        max_bytes=64 * 1024,
+        label="WASI SDK provision receipt",
+    )
+    result = {
+        "sdk": str(installation.sdk),
+        "receipt": {
+            "path": str(receipt.path),
+            "size_bytes": receipt.size,
+            "sha256": receipt.sha256,
+        },
+        "generation": generation,
+    }
+    validate_wasi_sdk_selection(result)
+    if (
+        generation["asset"] != asdict(installation.asset)
+        or generation["tree"]["sha256"] != installation.tree_sha256
+        or generation["facts"] != installation.facts
+    ):
+        raise ValueError("WASI SDK receipt changed during selection")
+    return result
+
+
 _WASI_SYSROOT_SELECTORS = ("MOLT_WASI_SYSROOT", "WASI_SYSROOT")
 
 
-def apply_provisioned_wasm_toolchain(
-    root: Path, env: dict[str, str]
-) -> tuple[str, ...]:
-    """Select WASM tools from the selected SDK into a build environment.
+def wasi_c_abi_plan(installation: WasiSdkInstallation) -> WasiCAbiProjection:
+    """Project finite provisioned member facts without reading SDK content."""
+    return WasiCAbiProjection.from_facts(
+        installation.sdk,
+        sdk_version=installation.asset.sdk_version,
+        llvm_version=installation.asset.llvm_version,
+        tree_sha256=installation.tree_sha256,
+        facts=installation.facts,
+    )
 
-    This is the one local entry point to `project_wasm_toolchain_environment`,
-    the projection CI also uses. A selector the caller already set wins, and a
-    selector that has two spellings (`CC_wasm32-wasip1` and
-    `CC_wasm32_wasip1`, or the two sysroot names) keeps both spellings equal.
-    C flags gain the SDK's `--no-default-config`. Returns the keys it manages,
-    or an empty tuple when no SDK is selected; consumers then fail with the
-    provisioning command instead of guessing a host tool.
+
+def selected_wasi_c_abi_plan(
+    root: Path, *, environ: Mapping[str, str]
+) -> WasiCAbiProjection:
+    """Project the manifest-selected managed generation.
+
+    Environment text is a projection, never the provisioned generation authority.
     """
+    installation = selected_wasi_sdk_installation(root, environ=environ)
+    if installation is None:
+        raise LlvmToolchainConfigError(
+            "the pinned WASI SDK is missing; run tools/provision_wasi_sdk.py "
+            "and project its WASM toolchain environment before building"
+        )
+    actual = wasi_c_abi_plan(installation)
+    if WASI_C_ABI_PLAN_ENV in environ:
+        supplied = WasiCAbiProjection.decode(environ[WASI_C_ABI_PLAN_ENV])
+        if supplied != actual:
+            raise LlvmToolchainConfigError(
+                "WASI C-runtime projection differs from the selected SDK"
+            )
+    for key in _WASI_SYSROOT_SELECTORS:
+        if key in environ and environ[key] != str(actual.sysroot):
+            raise LlvmToolchainConfigError(f"{key} differs from the selected WASI SDK")
+    return actual
 
-    installation = selected_wasi_sdk_installation(root, environ=env)
+
+def apply_provisioned_wasm_toolchain(
+    root: Path,
+    env: MutableMapping[str, str],
+    *,
+    installation: WasiSdkInstallation | None = None,
+    rust_target: str = "wasm32-wasip1",
+) -> tuple[str, ...]:
+    """Project one selected SDK; refuse conflicting C-runtime/tool selectors.
+
+    Missing installation is a readiness result. Execution callers must require
+    the complete C ABI plan before compiling or linking.
+    """
+    installation = installation or selected_wasi_sdk_installation(root, environ=env)
     if installation is None:
         return ()
-    projected = project_wasm_toolchain_environment(installation, environ=env)
-    groups: list[tuple[str, ...]] = [_WASI_SYSROOT_SELECTORS]
-    for target in SDK_CARGO_TARGETS:
-        spellings = (target, target.replace("-", "_"))
-        groups.extend(
-            tuple(f"{role}_{spelling}" for spelling in spellings)
-            for role, _name in SDK_CARGO_TOOLS
-        )
-        for flag in ("CFLAGS", "CXXFLAGS"):
-            for spelling in spellings:
-                env[f"{flag}_{spelling}"] = projected[f"{flag}_{spelling}"]
-    for keys in groups:
-        value = next((env[key] for key in keys if env.get(key)), projected[keys[0]])
-        for key in keys:
-            env[key] = value
-    for key in ("WASI_SDK_PATH", "MOLT_WASM_LD", "MOLT_LLVM_NM"):
-        if not env.get(key):
-            env[key] = projected[key]
-    return tuple(project_wasm_toolchain_environment(installation, environ={}))
+    projected = project_wasm_toolchain_environment(
+        installation, environ={}, rust_target=rust_target
+    )
+    updates: dict[str, str] = {}
+    for key, value in projected.items():
+        if key.startswith(("CFLAGS_", "CXXFLAGS_")):
+            prior = env.get(key, "").strip()
+            updates[key] = (
+                prior
+                if "--no-default-config" in shlex.split(prior)
+                else f"{prior} --no-default-config".lstrip()
+            )
+        elif (
+            key
+            in {
+                "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS",
+                "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS",
+            }
+            and key in env
+        ):
+            # Effective Cargo lanes are validated by runtime_cargo_plan. Keep
+            # unrelated user codegen settings for that single flag authority.
+            updates[key] = shlex.join(
+                wasi_c_abi_plan(installation).rustflags(shlex.split(env[key]))
+            )
+        else:
+            if key in env and env[key] != value:
+                raise LlvmToolchainConfigError(
+                    f"{key} differs from the selected WASI SDK"
+                )
+            updates[key] = value
+    env.update(updates)
+    return tuple(projected)
 
 
 def _read_toml(path: Path) -> dict[str, Any] | None:
@@ -1120,7 +1158,6 @@ def managed_llvm_prefix(root: Path, pin: LlvmBackendPin | None = None) -> Path:
         / "toolchains"
         / f"llvm-{resolved_pin.default_release}"
     )
-    reject_poison_toolchain_path(managed, authority="managed LLVM prefix")
     return managed
 
 
@@ -1141,7 +1178,6 @@ def managed_llvm_paths(
     from molt.dx import canonical_toolchain_root
 
     custody = canonical_toolchain_root(root, require_exists=False) / "toolchains"
-    reject_poison_toolchain_path(custody, authority="managed LLVM custody")
     return LlvmManagedPaths(
         root=custody,
         prefix=custody / f"llvm-{release}",
@@ -1201,7 +1237,6 @@ def _llvm_config_prefix(executable: Path) -> Path:
         raise LlvmToolchainConfigError(
             f"llvm-config returned an empty SDK prefix: {executable}"
         )
-    reject_poison_toolchain_path(rendered, authority=f"{executable} --prefix")
     return Path(rendered).expanduser().resolve(strict=False)
 
 
@@ -1277,13 +1312,6 @@ def discover_llvm_toolchain(
         mlir_sys_prefix_env_var(pin.major),
         tablegen_prefix_env_var(pin.major),
     )
-    for name in (*sdk_authority_names, pin.env_var):
-        if value := env.get(name, "").strip():
-            reject_poison_toolchain_path(value, authority=name)
-    if llvm_config_path := env.get("LLVM_CONFIG_PATH", "").strip():
-        reject_poison_toolchain_path(llvm_config_path, authority="LLVM_CONFIG_PATH")
-    if target_root := env.get("MOLT_TARGET_ROOT", "").strip():
-        reject_poison_toolchain_path(target_root, authority="MOLT_TARGET_ROOT")
 
     explicit = {
         _normalized_prefix(value)
@@ -1306,7 +1334,6 @@ def discover_llvm_toolchain(
     for candidate, source in _llvm_config_candidates(
         root, pin, env, explicit_prefix, llvm_sys_search_prefix
     ):
-        reject_poison_toolchain_path(candidate, authority=f"{source} llvm-config")
         if not candidate.is_file():
             continue
         try:
@@ -1435,37 +1462,41 @@ def _llvm_link_closure(
     prefix: Path,
     llvm_config: Path,
 ) -> tuple[tuple[str, ...], tuple[Path, ...]]:
-    local_output = _run_llvm_config(
-        llvm_config, "--link-static", "--libs", "core", "support"
-    )
-    system_output = _run_llvm_config(llvm_config, "--system-libs")
+    local_output = _run_llvm_config(llvm_config, "--libnames", "--link-static")
+    system_output = _run_llvm_config(llvm_config, "--system-libs", "--link-static")
     lib_dir = prefix / "lib"
+    # llvm-sys consumes these exact roots. A coincidental same-name archive or
+    # header in prefix/lib or prefix/include is not proof of that selection.
+    for option, expected in (
+        ("--libdir", lib_dir),
+        ("--includedir", prefix / "include"),
+    ):
+        selected = _run_llvm_config(llvm_config, option)
+        if (
+            not selected
+            or "\n" in selected
+            or "\r" in selected
+            or not Path(selected).is_absolute()
+            or Path(selected).resolve() != expected.resolve()
+        ):
+            raise LlvmToolchainConfigError(
+                f"llvm-config {option} escapes the admitted SDK layout: {selected!r}"
+            )
     resolved_local: list[Path] = []
     rendered: list[str] = []
     for token in _llvm_config_tokens(local_output):
-        if token.startswith("-l"):
-            stem = token[2:]
-            candidates = (
-                lib_dir / f"{stem}.lib",
-                lib_dir / f"lib{stem}.lib",
-                lib_dir / f"lib{stem}.a",
-                lib_dir / f"lib{stem}.so",
-                lib_dir / f"lib{stem}.dylib",
+        # Match llvm-sys's --libnames contract. Never fall back to a shared
+        # library when the force-static compiler feature requires an archive.
+        candidate = Path(token)
+        if token.startswith("-") or candidate.suffix.lower() not in {".a", ".lib"}:
+            raise LlvmToolchainConfigError(
+                f"llvm-config static closure names a non-archive input: {token}"
             )
-            path = next(
-                (candidate for candidate in candidates if candidate.is_file()), None
+        path = candidate if candidate.is_absolute() else lib_dir / candidate
+        if not path.is_file():
+            raise LlvmToolchainConfigError(
+                f"llvm-config link closure names missing library: {path}"
             )
-            if path is None:
-                raise LlvmToolchainConfigError(
-                    f"llvm-config link closure names missing library {token} in {lib_dir}"
-                )
-        else:
-            candidate = Path(token)
-            path = candidate if candidate.is_absolute() else lib_dir / candidate
-            if not path.is_file():
-                raise LlvmToolchainConfigError(
-                    f"llvm-config link closure names missing library: {path}"
-                )
         resolved = path.resolve()
         try:
             relative = resolved.relative_to(prefix)
@@ -1709,14 +1740,6 @@ def _tool_version_fact_and_identity(
             entrypoint,
             executable_identity,
         ):
-            reject_poison_toolchain_path(
-                entrypoint,
-                authority=f"captured LLVM tool {role} entrypoint",
-            )
-            reject_poison_toolchain_path(
-                executable_identity.path,
-                authority=f"captured LLVM tool {role} content",
-            )
             result = subprocess.run(
                 [str(entrypoint), "--version"],
                 check=False,
@@ -1825,7 +1848,6 @@ def verify_llvm_toolchain_prefix(
 ) -> LlvmPrefixVerification:
     """Verify the complete compiler/linker/MLIR prefix consumed by Molt."""
 
-    reject_poison_toolchain_path(prefix, authority="LLVM/MLIR prefix")
     resolved = prefix.expanduser().resolve()
     pin = required_llvm_backend_pin(root)
     if pin is None:
@@ -1842,6 +1864,9 @@ def verify_llvm_toolchain_prefix(
         raise LlvmToolchainConfigError(
             f"LLVM/MLIR prefix does not contain llvm-config: {llvm_config}"
         )
+    config_identity = stable_regular_file_identity(
+        llvm_config, label="LLVM configuration authority"
+    )
     actual_version = _run_llvm_config(llvm_config, "--version")
     expected_version = version or pin.default_release
     release = llvm_release(expected_version, root)
@@ -1924,7 +1949,9 @@ def verify_llvm_toolchain_prefix(
         library_family(name) for name in ("llvm", "mlir", "polly", "lld")
     )
     required_libraries = tuple(
-        sorted({path for family in library_families for path in family})
+        sorted(
+            {*link_libraries, *(path for family in library_families for path in family)}
+        )
     )
     library_facts = tuple(
         LlvmLibraryFact(
@@ -2065,6 +2092,15 @@ def verify_llvm_toolchain_prefix(
                 "managed LLVM/MLIR attestation omits projects "
                 f"{sorted(required_projects - attested_projects)}"
             )
+    verify_stable_regular_file_identity(
+        config_identity, label="LLVM configuration authority"
+    )
+    config_fact = next(fact for fact in tool_versions if fact.role == "llvm-config")
+    if (config_fact.sha256, config_fact.size) != (
+        config_identity.sha256,
+        config_identity.size,
+    ):
+        raise LlvmToolchainConfigError("llvm-config changed during SDK verification")
     return LlvmPrefixVerification(
         prefix=resolved,
         llvm_config=llvm_config,
@@ -2352,15 +2388,31 @@ def _explicit_wasm_tool(
 
 def resolve_wasi_sdk_tool(
     root: Path,
-    role: Literal["wasm-ld", "llvm-nm"],
+    role: Literal["wasm-ld", "llvm-nm", "clang", "clang++"],
     *,
     environ: dict[str, str] | None = None,
 ) -> Path:
     """Select an explicit role tool or a provisioned SDK; never install one.
 
-    Selection preserves the lexical driver name. Consumers remain responsible
-    for attesting version/content immediately before execution.
+    Selection preserves the lexical driver name. Managed generation facts come
+    from the provision receipt; external tools retain live execution custody.
     """
+    if role in {"clang", "clang++"}:
+        installation = selected_wasi_sdk_installation(root, environ=environ)
+        if installation is None:
+            raise LlvmToolchainConfigError(
+                "the pinned WASI SDK is missing; run tools/provision_wasi_sdk.py"
+            )
+        selected = (
+            installation.sdk / "bin" / executable_filename(role, installation.asset.id)
+        )
+        if not selected.is_file() or not selected.resolve(strict=True).is_relative_to(
+            installation.sdk
+        ):
+            raise LlvmToolchainConfigError(
+                f"selected SDK compiler entrypoint is unavailable: {selected}"
+            )
+        return selected
     selectors = {"wasm-ld": "MOLT_WASM_LD", "llvm-nm": "MOLT_LLVM_NM"}
     if role not in selectors:
         raise LlvmToolchainConfigError(f"unsupported WASI SDK role: {role}")
@@ -2368,7 +2420,6 @@ def resolve_wasi_sdk_tool(
     selector = selectors[role]
     configured = environment.get(selector, "").strip()
     if configured:
-        reject_poison_toolchain_path(configured, authority=selector)
         selected = _explicit_wasm_tool(
             configured, selector=selector, environment=environment
         )
@@ -2382,14 +2433,12 @@ def resolve_wasi_sdk_tool(
             )
         installation = load_wasi_sdk_installation(root, prefix, verify_tree=False)
         selected = installation.wasm_ld if role == "wasm-ld" else installation.llvm_nm
-    reject_poison_toolchain_path(selected, authority=f"selected {role} entrypoint")
     try:
-        content = selected.resolve(strict=True)
+        selected.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
         raise LlvmToolchainConfigError(
             f"selected {role} entrypoint cannot be resolved: {selected}: {exc}"
         ) from exc
-    reject_poison_toolchain_path(content, authority=f"selected {role} content")
     if role == "wasm-ld" and not executable_selects_linker_role(selected, "wasm-ld"):
         raise LlvmToolchainConfigError(
             f"{selector} does not select a wasm-ld entrypoint: {selected}"
@@ -2404,29 +2453,70 @@ def resolve_wasi_sdk_tool(
     return selected
 
 
+def managed_wasm_llvm_nm(
+    root: Path,
+    path: Path,
+    *,
+    environ: dict[str, str] | None = None,
+) -> WasmLlvmNmVerification[WasiSdkInstallation] | None:
+    """Project an already selected reader; external readers keep live custody."""
+    environment = dict(os.environ if environ is None else environ)
+    prefix = selected_wasi_sdk_prefix(root, environ=environment)
+    asset = wasi_sdk_host_asset(root)
+    canonical_entrypoint = path.parent.resolve(strict=True) / path.name
+    canonical_prefix = prefix.resolve(strict=False)
+    if (
+        canonical_entrypoint
+        != canonical_prefix
+        / SDK_DIRNAME
+        / "bin"
+        / executable_filename("llvm-nm", asset.id)
+    ):
+        return None
+    installation = load_wasi_sdk_installation(root, prefix, verify_tree=False)
+    fact = installation.tool_fact("llvm-nm")
+    return WasmLlvmNmVerification(
+        path=path,
+        fact=LlvmToolVersionFact(
+            "llvm-nm",
+            fact["path"],
+            installation.asset.llvm_version,
+            fact["size"],
+            fact["sha256"],
+        ),
+        executable_identity=installation,
+    )
+
+
 def verify_wasm_llvm_nm(
     root: Path,
     *,
     environ: dict[str, str] | None = None,
-) -> WasmLlvmNmVerification:
+) -> WasmLlvmNmVerification[StableRegularFileIdentity | WasiSdkInstallation]:
     """Verify the sole LLVM symbol reader admitted for WebAssembly artifacts.
 
     The manifest-owned wasi-sdk owns every WebAssembly tool, so the reader must
-    report exactly the SDK's LLVM producer release. ``MOLT_LLVM_NM`` selects it
+    identify exactly the SDK's LLVM producer release. Managed readers use the
+    selected receipt; external readers prove their actual version and bytes.
+    ``MOLT_LLVM_NM`` selects it
     explicitly; otherwise the SDK provisioned under checkout custody supplies it.
     Lookup never provisions.
     """
 
+    environment = dict(os.environ if environ is None else environ)
+    llvm_nm = resolve_wasi_sdk_tool(root, "llvm-nm", environ=environment)
+    if managed := managed_wasm_llvm_nm(root, llvm_nm, environ=environment):
+        return managed
     asset = wasi_sdk_host_asset(root)
-    llvm_nm = resolve_wasi_sdk_tool(root, "llvm-nm", environ=environ)
-    return _verified_wasm_llvm_nm(llvm_nm, expected_version=asset.llvm_version)
+    return verify_selected_wasm_llvm_nm(llvm_nm, expected_version=asset.llvm_version)
 
 
-def _verified_wasm_llvm_nm(
+def verify_selected_wasm_llvm_nm(
     llvm_nm: Path,
     *,
     expected_version: str,
-) -> WasmLlvmNmVerification:
+) -> WasmLlvmNmVerification[StableRegularFileIdentity]:
+    """Version and capture the exact llvm-nm selected by the role authority."""
     fact, executable_identity = _tool_version_fact_and_identity(
         llvm_nm.absolute().parent.parent,
         "llvm-nm",
@@ -2462,7 +2552,7 @@ def verify_wasm_ci_toolchain(
         expected_version=asset.llvm_version,
         exact_version=True,
     )
-    llvm_nm_verification = _verified_wasm_llvm_nm(
+    llvm_nm_verification = verify_selected_wasm_llvm_nm(
         installation.llvm_nm,
         expected_version=asset.llvm_version,
     )
@@ -2475,6 +2565,9 @@ def verify_wasm_ci_toolchain(
         sysroot_assets=(
             "include/wasm32-wasip1/errno.h",
             "lib/wasm32-wasip1/libc.a",
+            "lib/wasm32-wasip1/libc-printscan-long-double.a",
+            "lib/wasm32-wasip1/crt1-command.o",
+            "lib/wasm32-wasip1/crt1-reactor.o",
         ),
     )
 
@@ -2483,6 +2576,7 @@ def project_wasm_toolchain_environment(
     installation: WasiSdkInstallation,
     *,
     environ: Mapping[str, str] | None = None,
+    rust_target: str = "wasm32-wasip1",
 ) -> dict[str, str]:
     """Project one admitted SDK to every shared WASM resolver.
 
@@ -2492,6 +2586,10 @@ def project_wasm_toolchain_environment(
     policy remain intact.
     """
 
+    if rust_target not in SDK_CARGO_TARGETS:
+        raise LlvmToolchainConfigError(
+            "WASI C-runtime projection requires a supported explicit Rust target"
+        )
     result = dict(os.environ if environ is None else environ)
     sysroot = str(installation.sysroot)
     result["MOLT_WASI_SYSROOT"] = sysroot
@@ -2499,6 +2597,14 @@ def project_wasm_toolchain_environment(
     result["WASI_SDK_PATH"] = str(installation.sdk)
     result["MOLT_WASM_LD"] = str(installation.wasm_ld)
     result["MOLT_LLVM_NM"] = str(installation.llvm_nm)
+    plan = wasi_c_abi_plan(installation)
+    result[WASI_C_ABI_PLAN_ENV] = plan.encode()
+    # The Rust target defaults to a different bundled libc/CRT. Explicit
+    # external-libc mode keeps the raw linker on the selected SDK C runtime.
+    cargo_target = rust_target.upper().replace("-", "_")
+    result[f"CARGO_TARGET_{cargo_target}_LINKER"] = str(installation.wasm_ld)
+    key = f"CARGO_TARGET_{cargo_target}_RUSTFLAGS"
+    result[key] = shlex.join(plan.rustflags(shlex.split(result.get(key, ""))))
     for target in SDK_CARGO_TARGETS:
         for spelling in (target, target.replace("-", "_")):
             for role, name in SDK_CARGO_TOOLS:
@@ -2655,6 +2761,12 @@ def main(argv: list[str] | None = None) -> int:
             "tools/provision_wasi_sdk.py, verified by --verify-wasm."
         ),
     )
+    parser.add_argument(
+        "--wasi-rust-target",
+        choices=SDK_CARGO_TARGETS,
+        default="wasm32-wasip1",
+        help="Rust target receiving the verified SDK C-runtime environment; unknown explicitly selects its C provider.",
+    )
     args = parser.parse_args(argv)
 
     pin = required_llvm_backend_pin(args.root)
@@ -2707,9 +2819,12 @@ def main(argv: list[str] | None = None) -> int:
             projected = project_wasm_toolchain_environment(
                 wasm_verification.installation,
                 environ=dict(os.environ),
+                rust_target=args.wasi_rust_target,
             )
             keys = project_wasm_toolchain_environment(
-                wasm_verification.installation, environ={}
+                wasm_verification.installation,
+                environ={},
+                rust_target=args.wasi_rust_target,
             )
             with args.github_env.open("a", encoding="utf-8") as fh:
                 for key in keys:

@@ -43,13 +43,14 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 // `*const u8` the runtime hooks return stays valid for the whole test binary).
 static STRS: Mutex<Option<HashMap<u64, &'static [u8]>>> = Mutex::new(None);
 static BYTES: Mutex<Option<HashMap<u64, &'static [u8]>>> = Mutex::new(None);
-static NEXT_HANDLE: Mutex<u64> = Mutex::new(0xD000);
-
+fn retire_fixture_bytes(bits: u64) {
+    STRS.lock().unwrap().get_or_insert_default().remove(&bits);
+    BYTES.lock().unwrap().get_or_insert_default().remove(&bits);
+}
 fn fresh_handle() -> u64 {
-    let mut next = NEXT_HANDLE.lock().unwrap();
-    let addr = *next as usize;
-    *next += 0x100;
-    MoltObject::from_ptr(addr as *mut u8).bits()
+    let bits = support::fake_runtime::fresh_handle();
+    support::fake_runtime::observe_retirement(bits, retire_fixture_bytes);
+    bits
 }
 
 // ── fake str/bytes runtime ─────────────────────────────────────────────────
@@ -73,7 +74,7 @@ unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
     {
         return MoltTypeTag::Bytes as u8;
     }
-    MoltTypeTag::Other as u8
+    unsafe { support::fake_runtime::classify_heap(bits) }
 }
 
 fn fx_hash_bytes(bytes: &[u8]) -> i64 {
@@ -192,9 +193,10 @@ unsafe extern "C" fn fixture_builtin_compare(
     }
 }
 
-fn install() {
+fn install() -> support::AbiTestThreadStateTransaction {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.classify_heap = fx_classify_heap;
+    support::fake_runtime::wire_numeric(&mut hooks);
+    hooks.classify_heap = Some(fx_classify_heap);
     hooks.object_hash = fx_object_hash;
     hooks.object_richcompare_builtin = fixture_builtin_compare;
     hooks.object_richcompare = support::fake_runtime::richcompare;
@@ -202,7 +204,7 @@ fn install() {
     hooks.complex_parts = support::fake_complex::parts;
     hooks.str_data = fx_str_data;
     hooks.bytes_data = fx_bytes_data;
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 // ── minting molt-native operands ───────────────────────────────────────────
@@ -262,7 +264,7 @@ fn clear_err() {
 #[test]
 fn every_builtin_value_type_has_hash_and_richcompare_slots() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install();
+    let _abi_test = install();
     // The core zeroed-shell mask-proof: pre-fix these were NULL.
     for ty in [
         std::ptr::addr_of!(PyLong_Type),
@@ -280,7 +282,7 @@ fn every_builtin_value_type_has_hash_and_richcompare_slots() {
 #[test]
 fn numpy_dual_inherit_copy_off_float_type_gets_nonnull_slots() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install();
+    let _abi_test = install();
     // Simulate numpy `DUAL_INHERIT(Double, Float, Floating)`:
     //   PyDoubleArrType_Type.tp_hash        = PyFloat_Type.tp_hash;
     //   PyDoubleArrType_Type.tp_richcompare = PyFloat_Type.tp_richcompare;
@@ -309,7 +311,7 @@ fn numpy_dual_inherit_copy_off_float_type_gets_nonnull_slots() {
 #[test]
 fn hash_values_match_cpython_and_are_cross_type_consistent() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install();
+    let _abi_test = install();
     unsafe {
         // hash(2) == 2, hash(2.0) == 2 (integer-valued float), hash(2+0j) == 2.
         // The complex case is the sharp mask-proof: a NULL tp_hash made it raise
@@ -350,7 +352,7 @@ fn richcompare_slots_invoked_directly_compare_by_value() {
     // Exercises the slot fn pointer directly — the numpy-copy call path, which
     // bypasses do_richcompare's native fast lane.
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install();
+    let _abi_test = install();
     unsafe {
         // float slot: 1.5 == 1.5 (distinct objects) True; 1.5 < 2.5 True; vs str NI.
         // (molt-native floats are NaN-boxed values — the bridge returns one
@@ -438,7 +440,7 @@ fn richcompare_slots_invoked_directly_compare_by_value() {
 #[test]
 fn richcompare_via_public_api_over_distinct_objects() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install();
+    let _abi_test = install();
     unsafe {
         let real = mk_float(1.5);
         let text = mk_str("x");

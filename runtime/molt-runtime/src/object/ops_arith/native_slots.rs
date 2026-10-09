@@ -56,9 +56,34 @@ pub(crate) unsafe fn is_sequence_slot(raw: Option<u64>) -> bool {
         fn_key!(molt_str_add_method),
         fn_key!(molt_list_add_method),
         fn_key!(molt_list_mul_method),
+        fn_key!(crate::object::ops_list::list_iadd_slot),
+        fn_key!(crate::object::ops_list::molt_list_imul_method),
+        fn_key!(bytearray_iadd_slot),
+        fn_key!(bytearray_imul_slot),
     ]
     .into_iter()
     .any(|symbol| unsafe { crate::call::type_policy::callable_matches_runtime_symbol(raw, symbol) })
+}
+
+/// Match the existing heap-type table allocation and native protocol facts.
+/// This is table presence, not the broader Python sequence predicate.
+pub(crate) unsafe fn has_sequence_table(py: &PyToken<'_>, receiver: u64) -> bool {
+    unsafe {
+        let Some(class) = obj_from_bits(type_of_bits(py, receiver)).as_ptr() else {
+            return false;
+        };
+        crate::object::class_storage::class_is_heap_type(class)
+            || crate::builtins::type_ops::class_mro_view(py, class)
+                .iter()
+                .any(|&base| {
+                    obj_from_bits(base)
+                        .as_ptr()
+                        .and_then(|base| crate::object::class_storage::class_native_protocols(base))
+                        .is_some_and(|slots| {
+                            slots & molt_cpython_abi::hooks::NativeProtocolSlot::SEQUENCE_MASK != 0
+                        })
+                })
+    }
 }
 
 pub(crate) fn sequence_add(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
@@ -219,12 +244,293 @@ pub(crate) extern "C" fn bytearray_imul_slot(value: u64, count: u64) -> u64 {
     })
 }
 
+/// The declaring dict slot admits actual dict storage, never a mapping protocol.
+fn dict_binary(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
+    if ![left, right].into_iter().all(|value| {
+        obj_from_bits(value)
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_DICT })
+    }) {
+        return not_implemented_bits(py);
+    }
+    let result = molt_dict_copy(left);
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    molt_dict_update(result, right);
+    if exception_pending(py) {
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, result));
+        MoltObject::none().bits()
+    } else {
+        result
+    }
+}
+pub(crate) extern "C" fn dict_or_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { dict_binary(py, a, b) })
+}
+pub(crate) extern "C" fn dict_ror_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { dict_binary(py, b, a) })
+}
+pub(crate) extern "C" fn dict_ior_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        // Unlike normal union, dict_update_apply accepts mappings and pair
+        // iterables, including their partial update and original error behavior.
+        molt_dict_update(a, b);
+        if exception_pending(py) {
+            MoltObject::none().bits()
+        } else {
+            inc_ref_bits(py, a);
+            a
+        }
+    })
+}
+
 #[derive(Clone, Copy)]
 enum SetOp {
     Union,
     Intersection,
     Difference,
     Symdiff,
+}
+
+fn view_type(value: u64) -> Option<u32> {
+    obj_from_bits(value).as_ptr().and_then(|ptr| unsafe {
+        let kind = object_type_id(ptr);
+        is_set_view_type(kind).then_some(kind)
+    })
+}
+
+/// View intersection tests membership before adding an item to the result.
+/// Eager conversion of an items view incorrectly hashes cancelled/absent values.
+fn view_intersection(py: &PyToken<'_>, mut view: u64, mut other: u64) -> u64 {
+    use crate::builtins::exceptions::ExceptionValue;
+    use crate::object::ops_compare::builtin_families::BuiltinComparison;
+    unsafe {
+        if view_type(view).is_none() {
+            std::mem::swap(&mut view, &mut other);
+        }
+        let view_ptr = obj_from_bits(view).as_ptr().unwrap();
+        let length = dict_view_len(view_ptr);
+        if let Some(other_ptr) = obj_from_bits(other).as_ptr() {
+            if object_type_id(other_ptr) == TYPE_ID_SET
+                && builtin_operand(py, obj_from_bits(other))
+                && length <= crate::builtins::containers::set_len(other_ptr)
+            {
+                return crate::object::ops_set::set_intersection_bits(
+                    py,
+                    other_ptr,
+                    view,
+                    TYPE_ID_SET,
+                );
+            }
+            if view_type(other).is_some() && dict_view_len(other_ptr) > length {
+                std::mem::swap(&mut view, &mut other);
+            }
+        }
+        let result = ExceptionValue::adopt(py, molt_set_new(0));
+        let Some(result_ptr) = obj_from_bits(result.bits()).as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        let Some(mut iterator) = crate::object::iterable::OwnedIterator::new(py, other) else {
+            return MoltObject::none().bits();
+        };
+        let family = if view_type(view) == Some(TYPE_ID_DICT_KEYS_VIEW) {
+            BuiltinComparison::DictKeys
+        } else {
+            BuiltinComparison::DictItems
+        };
+        loop {
+            let item = match iterator.next() {
+                Ok(Some(item)) => ExceptionValue::adopt(py, item),
+                Ok(None) => break,
+                Err(_) => return MoltObject::none().bits(),
+            };
+            let contains = family.invoke_contains(py, view, item.bits());
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            if obj_from_bits(contains).as_bool() == Some(true) {
+                set_add_in_place(py, result_ptr, item.bits(), HashContext::SetElement);
+                if exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
+            }
+        }
+        result.into_bits()
+    }
+}
+
+/// Items xor cancels equal values before hashing any result tuple. The source
+/// entry's cached hash and both edges are captured together before callbacks.
+fn items_view_xor(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
+    use crate::builtins::exceptions::ExceptionValue;
+    use crate::object::ops::{dict_del_with_hash_deferred, dict_get_with_hash_in_place};
+    use crate::object::ops_compare::{CompareBoolOutcome, compare_object_eq_bool};
+    unsafe {
+        let left_dict = dict_view_dict_bits(obj_from_bits(left).as_ptr().unwrap());
+        let right_dict = ExceptionValue::pin(
+            py,
+            dict_view_dict_bits(obj_from_bits(right).as_ptr().unwrap()),
+        );
+        let temporary = ExceptionValue::adopt(py, molt_dict_copy(left_dict));
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        let temporary_ptr = obj_from_bits(temporary.bits()).as_ptr().unwrap();
+        let result = ExceptionValue::adopt(py, molt_set_new(0));
+        let Some(result_ptr) = obj_from_bits(result.bits()).as_ptr() else {
+            return MoltObject::none().bits();
+        };
+        let right_ptr = obj_from_bits(right_dict.bits()).as_ptr().unwrap();
+        let mut index = 0;
+        while let Some(row) = dict_next_entry(right_ptr, &mut index) {
+            let (key, value, hash) = (
+                row.key,
+                row.value,
+                row.hash.expect("live dictionary row").get(),
+            );
+            let key = ExceptionValue::pin(py, key);
+            let value = ExceptionValue::pin(py, value);
+
+            let old = dict_get_with_hash_in_place(py, temporary_ptr, key.bits(), hash)
+                .map(|bits| ExceptionValue::pin(py, bits));
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            let equal = if let Some(old) = &old {
+                match compare_object_eq_bool(
+                    py,
+                    obj_from_bits(old.bits()),
+                    obj_from_bits(value.bits()),
+                ) {
+                    CompareBoolOutcome::True => true,
+                    CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => false,
+                    CompareBoolOutcome::Error => return MoltObject::none().bits(),
+                }
+            } else {
+                false
+            };
+            if equal {
+                let removed = dict_del_with_hash_deferred(py, temporary_ptr, key.bits(), hash);
+                if removed.is_none() || exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
+                drop(removed);
+            } else {
+                let pair = alloc_tuple(py, &[key.bits(), value.bits()]);
+                if pair.is_null() {
+                    return MoltObject::none().bits();
+                }
+                let pair = ExceptionValue::adopt(py, MoltObject::from_ptr(pair).bits());
+                set_add_in_place(py, result_ptr, pair.bits(), HashContext::SetElement);
+            }
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+        }
+        let remaining = ExceptionValue::adopt(py, molt_dict_items(temporary.bits()));
+        if exception_pending(py)
+            || crate::object::ops_set::set_update_iterable(
+                py,
+                result_ptr,
+                remaining.bits(),
+                HashContext::SetElement,
+            )
+            .is_err()
+        {
+            return MoltObject::none().bits();
+        }
+        result.into_bits()
+    }
+}
+
+fn view_binary(py: &PyToken<'_>, left: u64, right: u64, op: SetOp) -> u64 {
+    use crate::builtins::exceptions::ExceptionValue;
+    if view_type(left).is_none() && view_type(right).is_none() {
+        return not_implemented_bits(py);
+    }
+    if matches!(op, SetOp::Intersection) {
+        return view_intersection(py, left, right);
+    }
+    if matches!(op, SetOp::Symdiff)
+        && view_type(left) == Some(TYPE_ID_DICT_ITEMS_VIEW)
+        && view_type(right) == Some(TYPE_ID_DICT_ITEMS_VIEW)
+    {
+        return items_view_xor(py, left, right);
+    }
+    let result = ExceptionValue::adopt(py, molt_set_new(0));
+    let Some(result_ptr) = obj_from_bits(result.bits()).as_ptr() else {
+        return MoltObject::none().bits();
+    };
+    unsafe {
+        // Exact dict keys may consume the dictionary's stored hashes, as
+        // CPython dictviews_to_set does. Other operands retain iterator order.
+        let source = if view_type(left) == Some(TYPE_ID_DICT_KEYS_VIEW) {
+            let dict = dict_view_dict_bits(obj_from_bits(left).as_ptr().unwrap());
+            if type_of_bits(py, dict) == builtin_classes(py).dict {
+                dict
+            } else {
+                left
+            }
+        } else {
+            left
+        };
+        if crate::object::ops_set::set_update_iterable(
+            py,
+            result_ptr,
+            source,
+            HashContext::SetElement,
+        )
+        .is_err()
+        {
+            return MoltObject::none().bits();
+        }
+        let updated = match op {
+            SetOp::Union => crate::object::ops_set::set_update_iterable(
+                py,
+                result_ptr,
+                right,
+                HashContext::SetElement,
+            ),
+            SetOp::Difference => {
+                crate::object::ops_set::set_difference_update_iterable(py, result_ptr, right)
+            }
+            SetOp::Symdiff => {
+                crate::object::ops_set::set_symdiff_update_iterable(py, result_ptr, right)
+            }
+            SetOp::Intersection => unreachable!(),
+        };
+        if updated.is_err() {
+            MoltObject::none().bits()
+        } else {
+            result.into_bits()
+        }
+    }
+}
+
+pub(crate) extern "C" fn view_or_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { view_binary(py, a, b, SetOp::Union) })
+}
+pub(crate) extern "C" fn view_ror_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { view_binary(py, b, a, SetOp::Union) })
+}
+pub(crate) extern "C" fn view_and_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { view_binary(py, a, b, SetOp::Intersection) })
+}
+pub(crate) extern "C" fn view_rand_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { view_binary(py, b, a, SetOp::Intersection) })
+}
+pub(crate) extern "C" fn view_sub_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { view_binary(py, a, b, SetOp::Difference) })
+}
+pub(crate) extern "C" fn view_rsub_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { view_binary(py, b, a, SetOp::Difference) })
+}
+pub(crate) extern "C" fn view_xor_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { view_binary(py, a, b, SetOp::Symdiff) })
+}
+pub(crate) extern "C" fn view_rxor_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { view_binary(py, b, a, SetOp::Symdiff) })
 }
 
 fn set_binary(py: &PyToken<'_>, left: u64, right: u64, op: SetOp) -> u64 {
@@ -350,19 +656,13 @@ pub(crate) extern "C" fn complex_rdiv_slot(a: u64, b: u64) -> u64 {
 }
 pub(crate) extern "C" fn complex_pow_slot(a: u64, b: u64, modulus: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        if !obj_from_bits(modulus).is_none() {
-            return raise_exception(py, "ValueError", "complex modulo");
-        }
-        complex_power_payload(py, obj_from_bits(a), obj_from_bits(b))
+        complex_power_payload(py, obj_from_bits(a), obj_from_bits(b), modulus)
             .unwrap_or_else(|| not_implemented_bits(py))
     })
 }
 pub(crate) extern "C" fn complex_rpow_slot(a: u64, b: u64, modulus: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        if !obj_from_bits(modulus).is_none() {
-            return raise_exception(py, "ValueError", "complex modulo");
-        }
-        complex_power_payload(py, obj_from_bits(b), obj_from_bits(a))
+        complex_power_payload(py, obj_from_bits(b), obj_from_bits(a), modulus)
             .unwrap_or_else(|| not_implemented_bits(py))
     })
 }
@@ -398,6 +698,268 @@ pub(crate) extern "C" fn complex_bool_slot(value: u64) -> u64 {
     })
 }
 
+/// Borrow the existing sealed integer carrier. These slots never invoke a
+/// conversion protocol or retain a subclass payload across a callback: both
+/// operands passed to the shared arithmetic kernel are exact builtin values.
+fn integer_carrier(bits: u64) -> Option<u64> {
+    let bits = crate::builtins::numbers::index_integral_payload_bits(bits)?;
+    Some(
+        obj_from_bits(bits)
+            .as_bool()
+            .map_or(bits, |value| MoltObject::from_int(i64::from(value)).bits()),
+    )
+}
+
+fn int_unary_slot(py: &PyToken<'_>, value: u64, operation: extern "C" fn(u64) -> u64) -> u64 {
+    let Some(value) = integer_carrier(value) else {
+        return raise_exception(py, "TypeError", "int arithmetic requires an int receiver");
+    };
+    operation(value)
+}
+pub(crate) extern "C" fn int_neg_slot(value: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_unary_slot(py, value, crate::molt_neg) })
+}
+pub(crate) extern "C" fn int_pos_slot(value: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_unary_slot(py, value, crate::molt_pos) })
+}
+pub(crate) extern "C" fn int_abs_slot(value: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_unary_slot(py, value, crate::molt_abs_builtin) })
+}
+pub(crate) extern "C" fn int_invert_slot(value: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_unary_slot(py, value, crate::molt_invert) })
+}
+pub(crate) extern "C" fn int_bool_slot(value: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(value) = integer_carrier(value) else {
+            return raise_exception(py, "TypeError", "int truth requires an int receiver");
+        };
+        MoltObject::from_bool(is_truthy(py, obj_from_bits(value))).bits()
+    })
+}
+pub(crate) extern "C" fn bool_and_slot(a: u64, b: u64) -> u64 {
+    if obj_from_bits(a).is_bool() && obj_from_bits(b).is_bool() {
+        crate::molt_bit_and(a, b)
+    } else {
+        int_and_slot(a, b)
+    }
+}
+pub(crate) extern "C" fn bool_or_slot(a: u64, b: u64) -> u64 {
+    if obj_from_bits(a).is_bool() && obj_from_bits(b).is_bool() {
+        crate::molt_bit_or(a, b)
+    } else {
+        int_or_slot(a, b)
+    }
+}
+pub(crate) extern "C" fn bool_xor_slot(a: u64, b: u64) -> u64 {
+    if obj_from_bits(a).is_bool() && obj_from_bits(b).is_bool() {
+        crate::molt_bit_xor(a, b)
+    } else {
+        int_xor_slot(a, b)
+    }
+}
+pub(crate) extern "C" fn bool_invert_slot(value: u64) -> u64 {
+    crate::molt_invert(value)
+}
+
+fn int_binary_slot(
+    py: &PyToken<'_>,
+    receiver: u64,
+    other: u64,
+    reflected: bool,
+    operation: extern "C" fn(u64, u64) -> u64,
+) -> u64 {
+    let Some(receiver) = integer_carrier(receiver) else {
+        return raise_exception(py, "TypeError", "int arithmetic requires an int receiver");
+    };
+    let Some(other) = integer_carrier(other) else {
+        return not_implemented_bits(py);
+    };
+    if reflected {
+        operation(other, receiver)
+    } else {
+        operation(receiver, other)
+    }
+}
+
+pub(crate) extern "C" fn int_add_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_add) })
+}
+
+pub(crate) extern "C" fn int_radd_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_add) })
+}
+
+pub(crate) extern "C" fn int_sub_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_sub) })
+}
+
+pub(crate) extern "C" fn int_rsub_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_sub) })
+}
+
+pub(crate) extern "C" fn int_mul_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_mul) })
+}
+
+pub(crate) extern "C" fn int_rmul_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_mul) })
+}
+
+pub(crate) extern "C" fn int_truediv_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_div) })
+}
+
+pub(crate) extern "C" fn int_rtruediv_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_div) })
+}
+
+pub(crate) extern "C" fn int_floordiv_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        int_binary_slot(py, a, b, false, crate::molt_floordiv)
+    })
+}
+
+pub(crate) extern "C" fn int_rfloordiv_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        int_binary_slot(py, a, b, true, crate::molt_floordiv)
+    })
+}
+
+pub(crate) extern "C" fn int_mod_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_mod) })
+}
+
+pub(crate) extern "C" fn int_rmod_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_mod) })
+}
+
+pub(crate) extern "C" fn int_divmod_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        int_binary_slot(py, a, b, false, crate::molt_divmod_builtin)
+    })
+}
+
+pub(crate) extern "C" fn int_rdivmod_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        int_binary_slot(py, a, b, true, crate::molt_divmod_builtin)
+    })
+}
+
+pub(crate) extern "C" fn int_lshift_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_lshift) })
+}
+
+pub(crate) extern "C" fn int_rlshift_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_lshift) })
+}
+
+pub(crate) extern "C" fn int_rshift_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_rshift) })
+}
+
+pub(crate) extern "C" fn int_rrshift_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_rshift) })
+}
+
+pub(crate) extern "C" fn int_and_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        int_binary_slot(py, a, b, false, crate::molt_bit_and)
+    })
+}
+
+pub(crate) extern "C" fn int_rand_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_bit_and) })
+}
+
+pub(crate) extern "C" fn int_or_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, false, crate::molt_bit_or) })
+}
+
+pub(crate) extern "C" fn int_ror_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_bit_or) })
+}
+
+pub(crate) extern "C" fn int_xor_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        int_binary_slot(py, a, b, false, crate::molt_bit_xor)
+    })
+}
+
+pub(crate) extern "C" fn int_rxor_slot(a: u64, b: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_binary_slot(py, a, b, true, crate::molt_bit_xor) })
+}
+
+fn int_power_slot(
+    py: &PyToken<'_>,
+    receiver: u64,
+    other: u64,
+    modulus: u64,
+    reflected: bool,
+) -> u64 {
+    let Some(receiver) = integer_carrier(receiver) else {
+        return not_implemented_bits(py);
+    };
+    let Some(other) = integer_carrier(other) else {
+        return not_implemented_bits(py);
+    };
+    let modulus = if obj_from_bits(modulus).is_none() {
+        modulus
+    } else {
+        let Some(modulus) = integer_carrier(modulus) else {
+            return not_implemented_bits(py);
+        };
+        modulus
+    };
+    if reflected {
+        crate::molt_pow_mod(other, receiver, modulus)
+    } else {
+        crate::molt_pow_mod(receiver, other, modulus)
+    }
+}
+
+pub(crate) extern "C" fn int_pow_slot(a: u64, b: u64, modulus: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_power_slot(py, a, b, modulus, false) })
+}
+pub(crate) extern "C" fn int_rpow_slot(a: u64, b: u64, modulus: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { int_power_slot(py, a, b, modulus, true) })
+}
+
+fn float_unary_slot(py: &PyToken<'_>, value: u64, operation: extern "C" fn(u64) -> u64) -> u64 {
+    let Some(value) = as_float_extended(obj_from_bits(value)) else {
+        return raise_exception(
+            py,
+            "TypeError",
+            "float arithmetic requires a float receiver",
+        );
+    };
+    let value = float_result_bits(py, value);
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    let result = operation(value);
+    molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, value));
+    result
+}
+pub(crate) extern "C" fn float_neg_slot(value: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { float_unary_slot(py, value, crate::molt_neg) })
+}
+pub(crate) extern "C" fn float_pos_slot(value: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { float_unary_slot(py, value, crate::molt_pos) })
+}
+pub(crate) extern "C" fn float_abs_slot(value: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { float_unary_slot(py, value, crate::molt_abs_builtin) })
+}
+extern "C" fn exact_float_int(value: u64) -> u64 {
+    crate::molt_int_from_obj(
+        value,
+        MoltObject::none().bits(),
+        MoltObject::from_bool(false).bits(),
+    )
+}
+pub(crate) extern "C" fn float_int_slot(value: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { float_unary_slot(py, value, exact_float_int) })
+}
+
 pub(crate) extern "C" fn float_bool_slot(value: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let value = as_float_extended(obj_from_bits(value));
@@ -426,13 +988,10 @@ fn float_binary_slot(
             "float arithmetic requires a float receiver",
         );
     };
-    let other_obj = obj_from_bits(other);
-    let other = if let Some(value) = as_float_extended(other_obj) {
-        float_result_bits(py, value)
-    } else if let Some(value) = crate::builtins::numbers::index_bigint_integral_bits(other) {
-        int_bits_from_bigint(py, value)
-    } else {
-        return not_implemented_bits(py);
+    let other = match float_operand(py, other) {
+        Ok(Some(value)) => float_result_bits(py, value),
+        Ok(None) => return not_implemented_bits(py),
+        Err(()) => return MoltObject::none().bits(),
     };
     if exception_pending(py) {
         dec_ref_bits(py, other);
@@ -518,28 +1077,65 @@ pub(crate) extern "C" fn float_rdivmod_slot(a: u64, b: u64) -> u64 {
     })
 }
 
-pub(crate) extern "C" fn float_pow_slot(a: u64, b: u64, modulus: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        if !obj_from_bits(modulus).is_none() {
-            return raise_exception(
-                py,
-                "TypeError",
-                "pow() 3rd argument not allowed unless all arguments are integers",
-            );
-        }
-        float_binary_slot(py, a, b, false, crate::molt_pow)
-    })
+/// Read only sealed integer/float storage; inherited conversion overrides are
+/// not part of a builtin arithmetic slot. The bigint conversion borrows its
+/// existing carrier instead of allocating a second integer.
+fn float_operand(py: &PyToken<'_>, value: u64) -> Result<Option<f64>, ()> {
+    if let Some(value) = as_float_extended(obj_from_bits(value)) {
+        return Ok(Some(value));
+    }
+    let Some(value) = integer_carrier(value) else {
+        return Ok(None);
+    };
+    if let Some(value) = obj_from_bits(value).as_int() {
+        return Ok(Some(value as f64));
+    }
+    let Some(pointer) = bigint_ptr_from_bits(value) else {
+        unreachable!("integer carrier");
+    };
+    crate::builtins::numbers::integer_as_double(py, unsafe { bigint_ref(pointer) })
+        .map(Some)
+        .ok_or(())
 }
 
+fn float_power_slot(py: &PyToken<'_>, a: u64, b: u64, modulus: u64) -> u64 {
+    // Unlike complex_pow, CPython float_pow rejects a modulus before operands.
+    if !obj_from_bits(modulus).is_none() {
+        return raise_exception(
+            py,
+            "TypeError",
+            "pow() 3rd argument not allowed unless all arguments are integers",
+        );
+    }
+    let left = match float_operand(py, a) {
+        Ok(Some(value)) => value,
+        Ok(None) => return not_implemented_bits(py),
+        Err(()) => return MoltObject::none().bits(),
+    };
+    let right = match float_operand(py, b) {
+        Ok(Some(value)) => value,
+        Ok(None) => return not_implemented_bits(py),
+        Err(()) => return MoltObject::none().bits(),
+    };
+    let left = float_result_bits(py, left);
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    let right = float_result_bits(py, right);
+    let result = if exception_pending(py) {
+        MoltObject::none().bits()
+    } else {
+        pow_impl(py, left, right, "**")
+    };
+    molt_cpython_abi::api::errors::with_preserved_error(|| {
+        dec_ref_bits(py, left);
+        dec_ref_bits(py, right);
+    });
+    result
+}
+pub(crate) extern "C" fn float_pow_slot(a: u64, b: u64, modulus: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, { float_power_slot(py, a, b, modulus) })
+}
 pub(crate) extern "C" fn float_rpow_slot(a: u64, b: u64, modulus: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        if !obj_from_bits(modulus).is_none() {
-            return raise_exception(
-                py,
-                "TypeError",
-                "pow() 3rd argument not allowed unless all arguments are integers",
-            );
-        }
-        float_binary_slot(py, a, b, true, crate::molt_pow)
-    })
+    crate::with_gil_entry_nopanic!(py, { float_power_slot(py, b, a, modulus) })
 }

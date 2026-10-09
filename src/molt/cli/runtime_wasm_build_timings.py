@@ -32,22 +32,15 @@ from typing import Any
 
 _LOCK = threading.Lock()
 _RUNTIME_WASM_BUILD_PHASES: list[dict[str, Any]] = []
-# Presence attestation for the reloc runtime's long-double link archives
-# (libc-printscan-long-double.a + libclang_rt.builtins-wasm32.a). One of
-# "present" / "MISSING" / "not_required"; surfaced under MOLT_BUILD_DIAGNOSTICS
-# as ``longdouble_archives`` so every run self-reports whether the runtime it
-# built/reused actually carries the %L formatters (effect attestation: a missing
-# archive silently relinks wasi-libc's long_double_not_supported abort() stub).
+# Input selection only. Final link/FILE-backed execution proves the effect;
+# this diagnostic does not assert that an output carries working formatters.
 _RUNTIME_WASM_LONGDOUBLE_ARCHIVES: str | None = None
 
 
 def _record_runtime_wasm_longdouble_archives(status: str) -> None:
-    """Record whether the reloc long-double link archives resolved this build.
-
-    ``status`` is one of ``present`` (both archives resolved), ``MISSING`` (at
-    least one did not), or ``not_required`` (a build that provably does not link
-    long double, e.g. micro / no numpy). Last write wins.
-    """
+    """Record selected SDK C-runtime member admission, not output behavior."""
+    if status != "selected-sdk-members":
+        raise ValueError("unknown WASI C-runtime input-selection status")
     global _RUNTIME_WASM_LONGDOUBLE_ARCHIVES
     with _LOCK:
         _RUNTIME_WASM_LONGDOUBLE_ARCHIVES = status

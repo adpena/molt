@@ -269,5 +269,5 @@ accel = [
 ]
 
 [tool.setuptools.package-data]
-"molt" = ["backend_environment.json", "stdlib/collections/LICENSE.cpython"]
+"molt" = ["backend_environment.json", "wasi_c_abi_protocol.txt", "stdlib/collections/LICENSE.cpython"]
 "molt_accel" = ["py.typed", "default_exports.json"]

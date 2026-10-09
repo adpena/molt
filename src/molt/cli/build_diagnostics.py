@@ -199,8 +199,8 @@ def _emit_build_diagnostics(
     if isinstance(compiler, dict) and isinstance(program, dict):
         print(
             f"- compiler: {compiler.get('cargo_profile')} | "
-            f"program: {program.get('profile')} ({program.get('target')}) | "
-            f"runtime: {program.get('runtime_cargo_profile')}",
+            f"program: {program.get('guest_profile')} ({program.get('backend')}/{program.get('target')}) | "
+            f"runtime: {program.get('runtime_profile')}",
             file=sys.stderr,
         )
     if isinstance(total_sec, (int, float)):

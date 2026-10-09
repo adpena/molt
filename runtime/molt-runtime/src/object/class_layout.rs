@@ -877,7 +877,8 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
         if let Some(offsets) = original_ptr {
             let extent = size_hint.map_or(usize::MAX, |size| size.saturating_sub(tail));
             super::validate_class_field_offsets(py, offsets, prefix, extent)?;
-            for pair in dict_order(offsets).as_chunks::<2>().0 {
+            for row in dict_live_entries(offsets) {
+                let pair = [row.key, row.value];
                 let field = ClassField {
                     name: pair[0],
                     offset: usize::try_from(obj_from_bits(pair[1]).as_int().unwrap()).unwrap(),

@@ -640,6 +640,32 @@ pub(crate) unsafe fn bytearray_data(ptr: *mut u8) -> *const u8 {
     unsafe { bytearray_vec_ref(ptr).as_ptr() }
 }
 
+/// Extra state exists only for the canonical dict/set iterator classes. The
+/// retained class edge, rather than the mutable target, admits this tail.
+#[repr(C)]
+pub(crate) struct HashIteratorState {
+    pub(crate) expected: usize,
+    pub(crate) remaining: isize,
+}
+pub(crate) const HASH_ITER_BASE: usize =
+    std::mem::size_of::<u64>() + std::mem::size_of::<usize>() + std::mem::size_of::<*mut u8>();
+pub(crate) const HASH_REVERSED_BASE: usize =
+    std::mem::size_of::<u64>() + std::mem::size_of::<usize>();
+pub(crate) unsafe fn hash_iterator_state(
+    ptr: *mut u8,
+    reverse: bool,
+) -> &'static mut HashIteratorState {
+    unsafe {
+        &mut *ptr
+            .add(if reverse {
+                HASH_REVERSED_BASE
+            } else {
+                HASH_ITER_BASE
+            })
+            .cast()
+    }
+}
+
 pub(crate) unsafe fn iter_target_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
 }
@@ -1768,6 +1794,46 @@ pub(crate) unsafe fn code_varkw_bits(ptr: *mut u8) -> u64 {
 
 pub(crate) unsafe fn code_freevars_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(19 * std::mem::size_of::<u64>()) as *const u64) }
+}
+
+/// Optional compiler-owned hardware body description. Public function attributes
+/// are not an authority for these bytes. Zero is unpublished and allocates no
+/// secondary owner; a published field is immutable for the code's lifetime.
+pub(crate) unsafe fn code_gpu_descriptor_bits(ptr: *mut u8) -> u64 {
+    unsafe { *ptr.cast::<u64>().add(22) }
+}
+
+pub(crate) unsafe fn code_publish_gpu_descriptor(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    bits: u64,
+) -> bool {
+    use crate::object::heap_kinds_generated::HeapAcyclicSlot;
+    unsafe {
+        if !crate::object::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeGpuDescriptor, bits) {
+            crate::raise_exception::<u64>(
+                py,
+                "TypeError",
+                "GPU code descriptor must be str or None",
+            );
+            return false;
+        }
+        let slot = ptr.cast::<u64>().add(22);
+        if *slot != 0 {
+            if *slot == bits {
+                return true;
+            }
+            crate::raise_exception::<u64>(
+                py,
+                "RuntimeError",
+                "GPU code descriptor is already published",
+            );
+            return false;
+        }
+        inc_ref_bits(py, bits);
+        *slot = bits;
+        true
+    }
 }
 
 pub(crate) unsafe fn code_cellvars_bits(ptr: *mut u8) -> u64 {

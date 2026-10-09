@@ -14,7 +14,7 @@ Index mode executes the captured staged generator with its staged manifest, poli
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 330 |
+| Hashed executable authority inputs | 1 | 336 |
 | Local path rules | 35 | 43 |
 | Unique local commands | 73 | 98 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -39,35 +39,36 @@ Installed Python custody uses 12 bounded hash workers over deterministic coarse 
 | `scheduled-suite` | 4 |
 | `wasm-runtime` | 2 |
 
-GitHub job budgets are validated against a deterministic worst-case DAG schedule in which every admitted command consumes its full declared timeout. The projection accounts for dependencies, the global worker ceiling, and per-resource capacity. A `github-matrix` job runs one cell, so its budget binds each cell's schedule separately.
+GitHub job budgets cover the deterministic command-deadline DAG projection plus each family's positive operational reserve. The projection accounts for dependencies, the global worker ceiling, and per-resource capacity. A `github-matrix` job runs one cell, so its budget binds each cell separately. Reserve covers setup, identity capture, guard finalization, and artifact transport outside command deadlines; headroom is what remains after this reserve. Observed minimum allowances and declared scheduled allowances are not hard upper bounds on provisioning or OS process cleanup.
 
-| Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Selection parents | Admission | Inputs |
-|---|---|---:|---|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2340 s | 1260 s | `repository-policy` | none | `docs-gates` needs none | 1 |
-| `wasm` | pr, main | yes | `github-job` | 160 min | 9600 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 17 |
-| `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 900 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
-| `python_unit` | pre-push, pr, main | yes | `github-matrix` | 40 min | 2400 s per cell | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
-| `native_integration` | pr, main | yes | `github-job` | 40 min | 2400 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 19 |
-| `rust` | pre-push, pr, main | yes | `github-job` | 240 min | 14400 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
-| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 25 |
-| `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
-| `rust_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
-| `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 180 min | 10800 s per cell | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 110 |
+| Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
+|---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2340 s | 120 s | 1140 s | `repository-policy` | none | `docs-gates` needs none | 1 |
+| `wasm` | pr, main | yes | `github-job` | 263 min | 15600 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 23 |
+| `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
+| `python_unit` | pre-push, pr, main | yes | `github-matrix` | 41 min | 2400 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
+| `native_integration` | pr, main | yes | `github-job` | 43 min | 2400 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 19 |
+| `rust` | pre-push, pr, main | yes | `github-job` | 254 min | 15000 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
+| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 38 |
+| `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
+| `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
+| `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 119 |
 
 ## Scheduled families
 
 Scheduled workflows consume the same typed command DAG and receipt executor without entering changed-path CI admission.
 
-| Family | Workflow job | Timeout | Projected | Headroom | Resource | Commands |
-|---|---|---:|---:|---:|---|---:|
-| `nightly_shard_prepare` | `nightly-prepare` | 3600 s | 3300 s | 300 s | `scheduled-suite` | 1 |
-| `nightly_conformance` | `conformance-aggregate` | 900 s | 600 s | 300 s | `scheduled-suite` | 1 |
-| `nightly_differential` | `differential-aggregate` | 900 s | 600 s | 300 s | `scheduled-suite` | 1 |
-| `nightly_regrtest` | `regrtest-aggregate` | 900 s | 600 s | 300 s | `scheduled-suite` | 1 |
-| `nightly_shard_profile_feedback` | `shard-profile-feedback` | 600 s | 300 s | 300 s | `scheduled-suite` | 1 |
-| `nightly_determinism` | `determinism-sweep` | 5700 s | 5400 s | 300 s | `scheduled-suite` | 4 |
-| `nightly_verification_t3` | `verification-gate-t3` | 5400 s | 4800 s | 600 s | `scheduled-suite` | 6 |
+| Family | Workflow job | Timeout | Commands | Reserve | Headroom | Resource | Partitions |
+|---|---|---:|---:|---:|---:|---|---:|
+| `nightly_shard_prepare` | `nightly-prepare` | 3600 s | 3300 s | 300 s | 0 s | `scheduled-suite` | 1 |
+| `nightly_conformance` | `conformance-aggregate` | 900 s | 600 s | 300 s | 0 s | `scheduled-suite` | 1 |
+| `nightly_differential` | `differential-aggregate` | 900 s | 600 s | 300 s | 0 s | `scheduled-suite` | 1 |
+| `nightly_regrtest` | `regrtest-aggregate` | 900 s | 600 s | 300 s | 0 s | `scheduled-suite` | 1 |
+| `nightly_shard_profile_feedback` | `shard-profile-feedback` | 600 s | 300 s | 300 s | 0 s | `scheduled-suite` | 1 |
+| `nightly_determinism` | `determinism-sweep` | 5700 s | 5400 s | 300 s | 0 s | `scheduled-suite` | 4 |
+| `nightly_verification_t3` | `verification-gate-t3` | 5400 s | 4800 s | 600 s | 0 s | `scheduled-suite` | 6 |
+| `runtime_candidate_costs` | `candidate-runtime-costs` | 10800 s | 9000 s | 1800 s | 0 s | `compiler-build-resource` | 1 |
 
 ## Matrix cells
 
@@ -96,6 +97,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `macos-arm64-py312-queue-portability` | `macos-14` | `macos` | `aarch64` | `3.12` | `proof-queue` | `host` | `portability` |
 | `macos-arm64-py312-rust-native-dev` | `macos-14` | `macos` | `aarch64` | `3.12` | `rust` | `aarch64-apple-darwin` | `dev` |
 | `windows-x86_64-py312-queue-portability` | `windows-2022` | `windows` | `x86_64` | `3.12` | `proof-queue` | `host` | `portability` |
+| `linux-x86_64-rust-native-release` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `release` |
 
 ## Toolchain contracts
 
@@ -104,7 +106,10 @@ Executable identities bind resolved path, version text, and the repository-relat
 | Toolchain | Identity kind | Provider | Required version | Probe cwd | Setup value | Setup evidence |
 |---|---|---|---|---|---|---:|
 | `python` | `executable` | — | `^Python 3\.12\.15$` | `.` | `3.12.15` | 2 |
-| `source-extension` | `target-derived` | `source-extension` | `^molt-source-extension-toolchain-v2$` | — | — | — |
+| `bash` | `executable` | — | `^GNU bash, version [0-9]+\.[0-9]+\.` | `.` | `Ubuntu hosted shell package` | 1 |
+| `fish` | `executable` | — | `^fish, version [0-9]+\.[0-9]+\.` | `.` | `Ubuntu hosted shell package` | 1 |
+| `zsh` | `executable` | — | `^zsh [0-9]+\.[0-9]+` | `.` | `Ubuntu hosted shell package` | 1 |
+| `source-extension` | `target-derived` | `source-extension` | `^molt-source-extension-toolchain-v4$` | — | — | — |
 | `uv` | `executable` | — | `^uv 0\.12\.23\b` | `.` | `0.12.23` | 1 |
 | `node` | `executable` | — | `^v26\.10\.0$` | `.` | `26.10.0` | 3 |
 | `rustc` | `executable` | — | `^rustc 1\.99\.0\b` | `.` | `1.99.0` | 3 |
@@ -113,6 +118,9 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `git` | `executable` | — | `^git version 2\.` | `.` | `2.x` | 1 |
 | `rustfmt` | `executable` | — | `^rustfmt 1\.10\.0-stable\b` | `.` | `1.10.0` | 3 |
 | `clang` | `executable` | — | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `hosted-clang-cl` | `executable` | — | `^clang version [0-9]+\.[0-9]+\.[0-9]+\b` | `.` | `windows-2022 image C11 compiler` | 1 |
+| `ninja` | `executable` | — | `^1\.13\.0(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$` | `.` | `1.13.0` | 2 |
+| `wasi-clang` | `executable` | — | `clang version 23\.1\.0\b` | `.` | `23.1.0` | 1 |
 | `llvm-config` | `executable` | — | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
 | `mlir-opt` | `executable` | — | `version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `ld.lld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
@@ -163,12 +171,13 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `nightly.verification-t3.mutation` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 3600 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.translation` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 3300 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.model-based` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 1 |
+| `portability.completion.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `portability.queue.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
 | `portability.queue.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
 | `portability.queue.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
 | `portability.cargo-link.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `portability.cargo-link.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
-| `portability.cargo-link.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
+| `portability.cargo-link.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 180 s | `python-tests` | 0 |
 | `portability.ir.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `portability.ir.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `portability.rust.macos.clippy-workspace` | `platform_portability` | `macos-arm64-py312-rust-native-dev` | `suite` | 1800 s | `compiler-build-resource` | 0 |
@@ -202,22 +211,29 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.agent-coordination` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 600 s | `repository-policy` | 0 |
 | `wasm.build.backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `wasm.host.runner-fixtures` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 600 s | `python-tests` | 1 |
-| `wasm.build.host` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
-| `wasm.build.shared-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
-| `wasm.build.split-runtime-release` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
+| `wasm.build.host` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `wasm.build.shared-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `wasm.build.split-runtime-release` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `wasm.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
-| `wasm.run.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 1 |
+| `wasm.run.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 2 |
 | `wasm.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
-| `wasm.run.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 1 |
+| `wasm.run.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 2 |
 | `luau.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
 | `luau.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
 | `wasm.compile.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
-| `wasm.run.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 1 |
-| `wasm.test.control-flow` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
-| `wasm.integration.split-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 3 |
-| `wasm.integration.host-exports` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 4 |
+| `wasm.run.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 2 |
+| `wasm.test.startup-lifecycle` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 120 s | `python-tests` | 0 |
+| `wasm.test.linker-admission` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 120 s | `python-tests` | 0 |
+| `wasm.test.control-flow` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 3 |
+| `wasm.integration.split-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
+| `wasm.integration.host-exports.gpu-kernel` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
+| `wasm.integration.host-exports.attribute-error` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 2 |
+| `wasm.integration.host-exports.tinygrad-dtype` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
+| `wasm.integration.host-exports.tinygrad-tensor` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
+| `wasm.integration.host-exports.tensor-row-ops` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
 | `wasm.test.freestanding-e2e` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
-| `wasm.test.finally-pending-observer-parity` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
+| `wasm.test.finally-pending-observer-parity` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 3 |
+| `wasm.test.import-from-codec-parity` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 2 |
 | `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | `explicit` | 300 s | `python-static` | 0 |
 | `python.static.stdlib-intrinsics` | `python_static` | `linux-x86_64-py312-static` | `explicit` | 600 s | `python-static` | 0 |
 | `python.unit.harness` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
@@ -247,6 +263,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `rust.test.compiler-authorities` | `rust` | `linux-x86_64-rust-native-dev` | `integration` | 600 s | `compiler-build-resource` | 0 |
 | `rust.test.ir-wasm-runtime-authorities` | `rust` | `linux-x86_64-rust-native-dev` | `integration` | 600 s | `compiler-build-resource` | 0 |
 | `rust.test.runtime-cold-lifecycle` | `rust` | `linux-x86_64-rust-native-release-output` | `shipping` | 9000 s | `compiler-build-resource` | 0 |
+| `rust.test.runtime-extension-admission` | `rust` | `linux-x86_64-rust-native-dev` | `integration` | 600 s | `compiler-build-resource` | 0 |
 | `rust.clippy.workspace-default` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
 | `rust.clippy.feature-surfaces` | `rust` | `linux-x86_64-rust-native-dev` | `cross-check` | 240 s | `compiler-build-resource` | 0 |
 | `llvm.build.backend` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `cold` | 1200 s | `compiler-build-resource` | 0 |
@@ -264,9 +281,11 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `formal.lean.sorry-baseline` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 300 s | `formal-tools` | 1 |
 | `formal.quint.models` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 1200 s | `formal-tools` | 0 |
 | `formal.correspondence` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 300 s | `formal-tools` | 0 |
-| `portability.cargo-custody.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
-| `portability.cargo-custody.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
-| `portability.cargo-custody.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
+| `portability.cargo-custody.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
+| `portability.cargo-custody.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
+| `portability.cargo-custody.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
+| `portability.headers.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 300 s | `python-tests` | 0 |
+| `runtime.cost.candidate` | `runtime_candidate_costs` | `linux-x86_64-rust-native-release` | `shipping` | 9000 s | `compiler-build-resource` | 0 |
 
 ## Local integration families
 
@@ -309,7 +328,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `memory-graph` | 5 | 2 | no |
 | `ci-wiring` | 56 | 2 | no |
 | `apparatus-hooks` | 11 | 3 | no |
-| `apparatus-learning-protection` | 15 | 3 | no |
+| `apparatus-learning-protection` | 12 | 3 | no |
 | `apparatus-a11` | 10 | 5 | no |
 | `apparatus-a8-a12-disk-reclaim` | 11 | 3 | no |
 | `import-symbol-gate` | 2 | 2 | no |

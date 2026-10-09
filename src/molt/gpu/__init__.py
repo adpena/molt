@@ -24,7 +24,8 @@ from __future__ import annotations
 import struct
 import array
 import operator
-import _intrinsics as _molt_intrinsics
+from _intrinsics import require_intrinsic as _require_intrinsic
+from _intrinsics import runtime_active as _runtime_active
 
 
 def _default_format_char(element_type: type) -> str:
@@ -35,32 +36,12 @@ def _format_itemsize(format_char: str) -> int:
     return struct.calcsize(format_char)
 
 
-def _load_optional_intrinsic(name: str):
-    loader = getattr(_molt_intrinsics, "load_intrinsic", None)
-    if callable(loader):
-        return loader(name)
-    require = getattr(_molt_intrinsics, "require_intrinsic", None)
-    if callable(require):
-        try:
-            return require(name)
-        except RuntimeError:
-            return None
-    return None
-
-
-def _resolve_optional_intrinsic(name: str, cache_name: str):
-    cached = globals().get(cache_name)
-    if callable(cached):
-        return cached
-
-    loader = getattr(_molt_intrinsics, "load_intrinsic", None)
-    if callable(loader):
-        value = loader(name)
-        if callable(value):
-            globals()[cache_name] = value
-            return value
-
-    return None
+def _launch_intrinsic():
+    cached = globals().get("_MOLT_GPU_KERNEL_LAUNCH")
+    if cached is None:
+        cached = _require_intrinsic("molt_gpu_kernel_launch_python")
+        globals()["_MOLT_GPU_KERNEL_LAUNCH"] = cached
+    return cached
 
 
 def _require_positive_launch_dim(value, field_name: str) -> int:
@@ -207,46 +188,61 @@ def alloc(size: int, dtype: type = float, *, format_char: str | None = None) -> 
     return Buffer(bytearray(size * elem_size), dtype, size, format_char=resolved_format)
 
 
-_MOLT_GPU_THREAD_ID = 0
-_MOLT_GPU_BLOCK_ID = 0
-_MOLT_GPU_BLOCK_DIM = 1
-_MOLT_GPU_GRID_DIM = 1
+# These are the five public query callables. A compiled runtime publishes its
+# actual native functions, so kernel calls and hardware binding admission share
+# the canonical intrinsic identity. Host reference functions exist only outside
+# an active Molt runtime.
+if _runtime_active():
+    thread_id = _require_intrinsic("molt_gpu_thread_id")
+    block_id = _require_intrinsic("molt_gpu_block_id")
+    block_dim = _require_intrinsic("molt_gpu_block_dim")
+    grid_dim = _require_intrinsic("molt_gpu_grid_dim")
+    barrier = _require_intrinsic("molt_gpu_barrier")
+else:
 
+    def _reference_geometry():
+        context = globals().get("_MOLT_GPU_REFERENCE_CONTEXT")
+        geometry = None if context is None else context.get()
+        return (0, 0, 1, 1) if geometry is None else geometry
 
-def thread_id() -> int:
-    """Get the current GPU thread ID.
+    def thread_id() -> int:
+        """Current logical thread in the development CPython reference lane."""
+        return _reference_geometry()[0]
 
-    This is the logical GPU thread ID primitive. When Molt has a real compiled
-    GPU-kernel lowering path active, it maps to:
-    - Metal: [[thread_position_in_grid]]
-    - WGSL: @builtin(global_invocation_id).x
-    - CUDA: blockIdx.x * blockDim.x + threadIdx.x
-    - HIP: hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x
+    def block_id() -> int:
+        """Current reference workgroup."""
+        return _reference_geometry()[1]
 
-    Until that lowering path is active, interpreted and compiled sequential
-    launcher fallback both read the same canonical launch geometry state.
-    """
-    return _MOLT_GPU_THREAD_ID
+    def block_dim() -> int:
+        """Current reference workgroup size."""
+        return _reference_geometry()[2]
 
+    def grid_dim() -> int:
+        """Current reference grid size."""
+        return _reference_geometry()[3]
 
-def block_id() -> int:
-    """Get the current GPU block/workgroup ID."""
-    return _MOLT_GPU_BLOCK_ID
+    def barrier():
+        """Reject a collective operation outside parallel hardware execution."""
+        raise RuntimeError(
+            "GPU barrier requires a parallel hardware kernel execution context"
+        )
 
+    def _reference_launch(func, grid: int, threads: int, args):
+        # No ContextVar import or object is needed until a host reference launch.
+        from contextvars import ContextVar
 
-def block_dim() -> int:
-    """Get the GPU block/workgroup size."""
-    return _MOLT_GPU_BLOCK_DIM
-
-
-def grid_dim() -> int:
-    """Get the GPU grid dimension."""
-    return _MOLT_GPU_GRID_DIM
-
-
-def barrier():
-    """GPU threadgroup synchronization barrier. Compile-time intrinsic."""
-    pass
+        context = globals().get("_MOLT_GPU_REFERENCE_CONTEXT")
+        if context is None:
+            context = globals().setdefault(
+                "_MOLT_GPU_REFERENCE_CONTEXT",
+                ContextVar("molt_gpu_geometry", default=None),
+            )
+        for tid in range(grid * threads):
+            token = context.set((tid, tid // threads, threads, grid))
+            try:
+                func(*args)
+            finally:
+                context.reset(token)
 
 
 class _KernelLauncher:
@@ -266,51 +262,19 @@ class _KernelLauncher:
     def __call__(self, *args):
         """Launch the kernel with the given arguments.
 
-        In interpreted mode, and in compiled lanes that have not yet routed the
-        kernel through a real GPU backend, this runs the kernel function
-        sequentially for each logical thread ID. Kernel bodies must encode their
-        own bounds guards; the launcher never swallows indexing failures. When a
-        real compiled GPU lowering path is active, the compiler/runtime may
-        replace this with backend dispatch via the GPU pipeline.
+        Molt uses its native executor and selected hardware backend. Development
+        CPython uses a scoped sequential reference context. Both preserve kernel
+        exceptions and require explicit bounds checks in the kernel body.
         """
-        grid = self._grid
-        threads = self._threads
-        backend_launch = _resolve_optional_intrinsic(
-            "molt_gpu_kernel_launch",
-            "_MOLT_GPU_KERNEL_LAUNCH",
-        )
-        if callable(backend_launch) and getattr(
-            self._func, "__molt_gpu_kernel__", False
-        ):
-            return backend_launch(self._func, grid, threads, args)
-
+        grid = _require_positive_launch_dim(self._grid, "grid")
+        threads = _require_positive_launch_dim(self._threads, "threads")
         total_threads = grid * threads
-
-        global _MOLT_GPU_THREAD_ID
-        global _MOLT_GPU_BLOCK_ID
-        global _MOLT_GPU_BLOCK_DIM
-        global _MOLT_GPU_GRID_DIM
-
-        original_launch_geometry = (
-            _MOLT_GPU_THREAD_ID,
-            _MOLT_GPU_BLOCK_ID,
-            _MOLT_GPU_BLOCK_DIM,
-            _MOLT_GPU_GRID_DIM,
-        )
-        try:
-            _MOLT_GPU_BLOCK_DIM = threads
-            _MOLT_GPU_GRID_DIM = grid
-            for tid in range(total_threads):
-                _MOLT_GPU_THREAD_ID = tid
-                _MOLT_GPU_BLOCK_ID = tid // threads
-                self._func(*args)
-        finally:
-            (
-                _MOLT_GPU_THREAD_ID,
-                _MOLT_GPU_BLOCK_ID,
-                _MOLT_GPU_BLOCK_DIM,
-                _MOLT_GPU_GRID_DIM,
-            ) = original_launch_geometry
+        # Geometry queries and the native launch ABI use signed 64-bit indices.
+        if total_threads > (1 << 63) - 1:
+            raise OverflowError("GPU launch geometry exceeds signed 64-bit indices")
+        if _runtime_active():
+            return _launch_intrinsic()(self._func, grid, threads, args)
+        return _reference_launch(self._func, grid, threads, args)
 
 
 def kernel(func):
@@ -323,13 +287,7 @@ def kernel(func):
             if tid < n:
                 b[tid] = a[tid] * 2.0
 
-    This marks the function as GPU-kernel-shaped. Interpreted execution runs
-    sequentially and preserves normal Python exceptions. Compiled execution must
-    preserve that sequential fallback until a real backend dispatch path is
-    active for the target/backend lane.
+    Development CPython execution is sequential. Molt execution uses the native
+    launch authority, which selects its admitted CPU or hardware backend.
     """
-    setattr(func, "__molt_gpu_kernel__", True)
     return _KernelLauncher(func)
-
-
-_MOLT_GPU_KERNEL_LAUNCH = _load_optional_intrinsic("molt_gpu_kernel_launch")

@@ -444,7 +444,7 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_promise_set_result` | 1 | Low | |
 | `molt_promise_set_exception` | 1 | Low | |
 | `molt_thread_submit` | 1 | Low | |
-| `molt_task_register_token_owned` | 3 | Low | |
+| `molt_task_register_execution` | 3 | Low | |
 | `molt_is_native_awaitable` | 1 | Low | |
 
 #### Generator/Coroutine (7 functions)

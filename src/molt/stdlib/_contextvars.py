@@ -1,14 +1,10 @@
-"""Intrinsic-backed `_contextvars` compatibility surface."""
-
+"""Native Context module projection."""
+import sys as _sys
 from _intrinsics import require_intrinsic as _require_intrinsic
-from contextvars import Context
-from contextvars import ContextVar
-from contextvars import Token
-from contextvars import copy_context
 
-_MOLT_CANCEL_TOKEN_GET_CURRENT = _require_intrinsic("molt_cancel_token_get_current")
-
+Context, ContextVar, Token, copy_context = _require_intrinsic("molt_contextvars_types")(
+    _sys.modules[__name__]
+)
 __all__ = ["Context", "ContextVar", "Token", "copy_context"]
-
-del _MOLT_CANCEL_TOKEN_GET_CURRENT
+del _sys
 globals().pop("_require_intrinsic", None)

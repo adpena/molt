@@ -21,16 +21,16 @@ unsafe extern "C" fn fake_sys_get_object_borrowed(
     }
 }
 
-fn init() {
+fn init() -> support::AbiTestThreadStateTransaction {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.sys_get_object_borrowed = fake_sys_get_object_borrowed;
-    support::prepare_abi_test_thread(hooks);
+    support::enter_abi_test(hooks)
 }
 
 #[test]
 fn test_pysys_getobject_hook_error_is_suppressed() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let flags = unsafe { molt_cpython_abi::api::sys::PySys_GetObject(c"flags".as_ptr()) };
     assert!(flags.is_null());
@@ -41,7 +41,7 @@ fn test_pysys_getobject_hook_error_is_suppressed() {
 
 #[test]
 fn test_pysys_getobject_unknown_returns_null_without_error() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let missing = unsafe { molt_cpython_abi::api::sys::PySys_GetObject(c"not_present".as_ptr()) };
     assert!(missing.is_null());
@@ -50,7 +50,7 @@ fn test_pysys_getobject_unknown_returns_null_without_error() {
 
 #[test]
 fn test_pysys_getobject_null_name_returns_null() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let missing = unsafe { molt_cpython_abi::api::sys::PySys_GetObject(ptr::null()) };
     assert!(missing.is_null());

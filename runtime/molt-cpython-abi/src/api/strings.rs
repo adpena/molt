@@ -165,7 +165,7 @@ impl<'a> PythonStringBytes<'a> {
 pub(crate) unsafe fn unicode_from_python_text(text: PythonStringBytes<'_>) -> *mut PyObject {
     let bytes = text.as_bytes();
     let h = hooks_or_stubs();
-    let bits = unsafe { (h.alloc_str)(bytes.as_ptr(), bytes.len()) };
+    let bits = unsafe { h.alloc_str(bytes.as_ptr(), bytes.len()) };
     if bits == 0 {
         return unsafe { str_alloc_failed() };
     }

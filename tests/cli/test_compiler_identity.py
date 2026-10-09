@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 from pathlib import Path
@@ -329,6 +330,7 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
             },
             config_digest=config_digest,
             toolchain_identity=lambda: {"config": config_digest},
+            verify=lambda: None,
         )
 
     monkeypatch.setattr(runtime_cargo_plan, "resolve_runtime_cargo_plan", resolve)
@@ -373,7 +375,10 @@ def test_lock_projection_is_mandatory_without_raw_lock_in_source_paths(tmp_path)
         cache_fingerprints._backend_source_identity_inputs(tmp_path, [])
 
 
-def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mutate_during_admission", [False, True])
+def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
+    tmp_path, monkeypatch, mutate_during_admission
+):
     from molt import llvm_toolchain
     from molt.cli import cargo_execution, runtime_cargo_plan
 
@@ -396,6 +401,17 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(tmp_path, monkey
         lambda root, **kw: SimpleNamespace(
             prefix=prefix,
             llvm_config=llvm_config,
+            link_closure=("lib/libLLVM.a",),
+            tool_versions=(
+                llvm_toolchain.LlvmToolVersionFact(
+                    "llvm-config",
+                    "bin/llvm-config",
+                    "22.1.8",
+                    len(b"llvm-config"),
+                    hashlib.sha256(b"llvm-config").hexdigest(),
+                ),
+            ),
+            content_facts=(),
             library_facts=(
                 llvm_toolchain.LlvmLibraryFact(
                     path="lib/libLLVM.a", size=8, mtime_ns=0
@@ -409,6 +425,15 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(tmp_path, monkey
         lambda root, verification, **kw: dict(kw["environ"]),
     )
     monkeypatch.setattr(cargo_execution, "_cargo_build_env", lambda env: dict(env))
+    # The fake Cargo plan has no mutable resource inputs of its own. LLVM
+    # resources below are captured and verified by the real admission owner.
+    cargo_custody = runtime_cargo_plan.CargoResourceCustody.capture(())
+
+    def project_tools():
+        if mutate_during_admission:
+            header.write_bytes(b"/* changed after resource capture */")
+        return {}
+
     monkeypatch.setattr(
         runtime_cargo_plan,
         "resolve_runtime_cargo_plan",
@@ -419,7 +444,8 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(tmp_path, monkey
             profile_environment=lambda profile: {},
             rustflags=(),
             c_environment={},
-            toolchain_identity=lambda: {},
+            toolchain_identity=project_tools,
+            verify=cargo_custody.verify,
             partition_command=lambda: (kw["cargo_command"], ()),
             link_resources=SimpleNamespace(content_identity=lambda: {}),
         ),
@@ -438,6 +464,16 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(tmp_path, monkey
         metadata = path.stat()
         path.write_bytes(content)
         os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+
+    if mutate_during_admission:
+        with cache_fingerprints._source_tree_fingerprint_transaction():
+            with pytest.raises(
+                compiler_identity.CompilerIdentityError, match="inputs changed"
+            ):
+                fingerprint()
+            transaction = cache_fingerprints._SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
+            assert transaction is not None and transaction.compiler_plans == {}
+        return
 
     before = fingerprint()
     rewrite(library, b"LLVM-two")
@@ -477,6 +513,7 @@ def test_compiler_cargo_projection_never_admits_runtime_build_python(
             c_environment={},
             partition_command=lambda: (kw["cargo_command"], ()),
             toolchain_identity=lambda: {"tools": {"rustc": "content"}},
+            verify=runtime_cargo_plan.CargoResourceCustody.capture(()).verify,
             link_resources=SimpleNamespace(content_identity=lambda: {}),
         ),
     )
@@ -493,7 +530,7 @@ def test_compiler_cargo_projection_never_admits_runtime_build_python(
 
 
 def test_runtime_augments_shared_cargo_projection_with_required_python(monkeypatch):
-    from molt.cli import runtime_build_identity
+    from molt.cli import runtime_build_identity, runtime_cargo_plan
 
     calls = []
 
@@ -505,13 +542,20 @@ def test_runtime_augments_shared_cargo_projection_with_required_python(monkeypat
         calls.append("cargo-custody")
         return {"tools": {"rustc": "content"}, "cargo_configuration": "config"}
 
+    cargo_custody = runtime_cargo_plan.CargoResourceCustody.capture(())
+
+    def verify():
+        calls.append("cargo-verify")
+        cargo_custody.verify()
+
     monkeypatch.setattr(runtime_build_identity, "_python_identity", python)
     result = runtime_build_identity._capture_plan_toolchain(
         SimpleNamespace(
             environment={"MOLT_BUILD_PYTHON": "runtime-python"},
             toolchain_identity=cargo,
+            verify=verify,
         )
     )
-    assert calls == ["python", "cargo-custody"]
+    assert calls == ["python", "cargo-verify", "cargo-custody"]
     assert result["tools"]["build_python"] == {"identity": "runtime-python"}
     assert result["tools"]["rustc"] == "content"

@@ -16,32 +16,36 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from molt.cli.atomic_io import _atomic_write_text
-from molt.cli.cargo_profiles import _resolve_cargo_profile_name
-from molt.cli.runtime_paths import (
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.cli.atomic_io import _atomic_write_text  # noqa: E402
+from molt.cli.cargo_profiles import _resolve_cargo_profile_name  # noqa: E402
+from molt.cli.runtime_paths import (  # noqa: E402
     _build_state_root,
     _runtime_wasm_artifact_path_from_env,
 )
-from molt.cli.runtime_wasm_build_spec import (
+from molt.cli.runtime_wasm_build_spec import (  # noqa: E402
     _compute_runtime_wasm_build_spec,
     _resolved_runtime_wasm_family_identities,
     _resolve_runtime_wasm_cargo_specs,
     _runtime_wasm_toolchain_manifest_path,
 )
-from molt.cli.runtime_wasm_generation import runtime_wasm_generation_path
-from molt.dx import CheckoutCustody, checkout_custody, development_artifact_env
-from molt.path_custody import (
-    CustodyPathRole,
+from molt.cli.runtime_wasm_generation import runtime_wasm_generation_path  # noqa: E402
+from molt.dx import checkout_custody, development_artifact_env  # noqa: E402
+from molt.path_custody import (  # noqa: E402
     PathCustodyError,
     canonical_host_path,
     host_path_is_within,
 )
-from tools.memory_guard_core.active_custody import read_marker_records
+from tools.memory_guard_core.active_custody import read_marker_records  # noqa: E402
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+from tools.command_execution import CommandExecutor  # noqa: E402
 
 
 SCHEMA = "molt.runtime-wasm-final-preflight.v2"
@@ -239,7 +243,6 @@ def _worktree_roots(
     project_root: Path,
     *,
     custody_root: Path,
-    source_role: CustodyPathRole,
 ) -> tuple[Path, ...]:
     roots: list[Path] = []
     for line in _git_bytes(
@@ -250,7 +253,6 @@ def _worktree_roots(
         rendered = line.removeprefix(b"worktree ").decode("utf-8", "surrogateescape")
         root = canonical_host_path(
             rendered,
-            source_role,
             authority="Molt worktree source root",
             require_exists=True,
         )
@@ -265,8 +267,6 @@ def _worktree_roots(
 def _marker_directories(
     project_root: Path,
     custody_root: Path,
-    *,
-    source_role: CustodyPathRole,
 ) -> tuple[Path, ...]:
     candidates = {
         project_root / "tmp/memory_guard/active",
@@ -277,7 +277,6 @@ def _marker_directories(
         for root in _worktree_roots(
             project_root,
             custody_root=custody_root,
-            source_role=source_role,
         )
     )
     return tuple(sorted(candidates, key=os.fspath))
@@ -422,14 +421,6 @@ def _revalidate_launch_custody(context: RuntimeWasmPreflightContext) -> None:
         )
 
 
-def _custody_roles(custody: CheckoutCustody) -> tuple[CustodyPathRole, CustodyPathRole]:
-    if custody.kind == "github-actions-ephemeral":
-        return CustodyPathRole.HOSTED_SOURCE, CustodyPathRole.HOSTED_EXECUTION
-    if custody.kind == "explicit-scratch":
-        return CustodyPathRole.EXPLICIT_SCRATCH, CustodyPathRole.EXPLICIT_SCRATCH
-    return CustodyPathRole.DURABLE_AUTHORITY, CustodyPathRole.DURABLE_AUTHORITY
-
-
 def _resolve_preflight_context(
     project_root: Path, env: Mapping[str, str]
 ) -> RuntimeWasmPreflightContext:
@@ -443,10 +434,8 @@ def _resolve_preflight_context(
         raise RuntimeWasmPreflightError("proof queue run id and database are required")
 
     custody = checkout_custody(project_root, env, require_exists=True)
-    source_role, execution_role = _custody_roles(custody)
     canonical_project = canonical_host_path(
         project_root,
-        source_role,
         authority="runtime-WASM source root",
         require_exists=True,
     )
@@ -464,30 +453,25 @@ def _resolve_preflight_context(
         )
     canonical_custody = canonical_host_path(
         custody.custody_root,
-        execution_role,
         authority="runtime-WASM custody root",
         require_exists=True,
     )
     target = canonical_host_path(
         build_env["CARGO_TARGET_DIR"],
-        execution_role,
         authority="runtime-WASM target root",
     )
     cache = canonical_host_path(
         build_env["MOLT_CACHE"],
-        execution_role,
         authority="runtime-WASM cache root",
     )
     runtime = canonical_host_path(
         _runtime_wasm_artifact_path_from_env(
             canonical_project, "molt_runtime.wasm", build_env
         ).parent,
-        execution_role,
         authority="runtime-WASM publication root",
     )
     proof_queue_db = canonical_host_path(
         db_raw,
-        execution_role,
         authority="runtime-WASM proof queue database",
         require_exists=True,
     )
@@ -511,7 +495,6 @@ def _resolve_preflight_context(
         marker_dirs=_marker_directories(
             canonical_project,
             canonical_custody,
-            source_role=source_role,
         ),
     )
     claim = _proof_queue_claim(proof_queue_db, run_id)
@@ -583,7 +566,7 @@ def _planned_pair(
     if state_override := build_env.get("MOLT_BUILD_STATE_DIR"):
         required_env["MOLT_BUILD_STATE_DIR"] = state_override
     with _exact_build_environment(build_env):
-        cargo_profile, error = _resolve_cargo_profile_name(build_profile)  # type: ignore[arg-type]
+        cargo_profile, error = _resolve_cargo_profile_name(build_profile, wasm=True)  # type: ignore[arg-type]
         if error is not None:
             raise ValueError(error)
         shared = runtime_dir / "molt_runtime.wasm"
@@ -628,7 +611,7 @@ def _planned_pair(
         raise ValueError("planned runtime identities do not form one pair")
     return {
         "required_env": required_env,
-        "cargo_profile": cargo_profile,
+        "cargo_profile": shared_spec.cargo_profile,
         "toolchain_manifest": os.fspath(manifest_path),
         "toolchain_digest": toolchain_manifest.digest,
         "family_digest": shared_identity.family_digest,

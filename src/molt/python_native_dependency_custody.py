@@ -234,25 +234,17 @@ def _elf_loaded_bytes(
     return b"".join(chunks)
 
 
-def _elf_dependencies(
-    data: bytes, *, architecture: str | None = None
-) -> tuple[NativeDependency, ...]:
+def _elf_program_rows(data: bytes, *, architecture: str | None = None):
+    """One checked program-header projection for loader and dynamic edges."""
     header = _dependency_header(data, "linux", architecture)
     metadata = header.metadata
     assert isinstance(metadata, ElfHeader)
-    elf_class = 2 if header.bits == 64 else 1
-    endian = header.endian
-    phoff = metadata.program_offset
-    phentsize = metadata.program_entry_size
-    phnum = metadata.program_count
-    ph_format = endian + ("IIQQQQQQ" if header.bits == 64 else "IIIIIIII")
-    dyn_format = endian + ("qQ" if header.bits == 64 else "iI")
-    program_headers: list[tuple[int, int, int, int]] = []
-    dynamic: tuple[int, int] | None = None
-    for index in range(phnum):
-        offset = phoff + index * phentsize
+    ph_format = header.endian + ("IIQQQQQQ" if header.bits == 64 else "IIIIIIII")
+    rows = []
+    for index in range(metadata.program_count):
+        offset = metadata.program_offset + index * metadata.program_entry_size
         values = struct.unpack_from(ph_format, data, offset)
-        if elf_class == 2:
+        if header.bits == 64:
             p_type, _flags, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, _align = (
                 values
             )
@@ -260,6 +252,49 @@ def _elf_dependencies(
             p_type, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, _flags, _align = (
                 values
             )
+        rows.append((p_type, p_offset, p_vaddr, p_filesz, p_memsz))
+    return header, rows
+
+
+def elf_interpreter(data: bytes, *, architecture: str | None = None) -> str | None:
+    """Return the exact PT_INTERP dependency without invoking a host loader."""
+    _header, rows = _elf_program_rows(data, architecture=architecture)
+    entries = [(offset, size) for kind, offset, _addr, size, _mem in rows if kind == 3]
+    if not entries:
+        return None
+    if len(entries) != 1:
+        raise PythonEnvironmentIdentityError("ELF image has multiple interpreters")
+    offset, size = entries[0]
+    if size < 2 or size > 4096 or offset + size > len(data):
+        raise PythonEnvironmentIdentityError("ELF interpreter extent is invalid")
+    raw = data[offset : offset + size]
+    if raw[-1:] != b"\0" or b"\0" in raw[:-1]:
+        raise PythonEnvironmentIdentityError(
+            "ELF interpreter is unterminated or aliased"
+        )
+    try:
+        name = raw[:-1].decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise PythonEnvironmentIdentityError("ELF interpreter is not UTF-8") from error
+    path = PurePosixPath(name)
+    if (
+        not path.is_absolute()
+        or str(path) != name
+        or ".." in path.parts
+        or "\\" in name
+    ):
+        raise PythonEnvironmentIdentityError("ELF interpreter path is not canonical")
+    return name
+
+
+def _elf_dependencies(
+    data: bytes, *, architecture: str | None = None
+) -> tuple[NativeDependency, ...]:
+    header, rows = _elf_program_rows(data, architecture=architecture)
+    dyn_format = header.endian + ("qQ" if header.bits == 64 else "iI")
+    program_headers: list[tuple[int, int, int, int]] = []
+    dynamic: tuple[int, int] | None = None
+    for p_type, p_offset, p_vaddr, p_filesz, p_memsz in rows:
         if p_type == 1:
             program_headers.append((p_vaddr, p_memsz, p_offset, p_filesz))
         elif p_type == 2:

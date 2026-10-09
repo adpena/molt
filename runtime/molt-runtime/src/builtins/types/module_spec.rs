@@ -632,8 +632,12 @@ mod tests {
             let builder = molt_callargs_new(1, 2);
             unsafe {
                 let _ = molt_callargs_push_pos(builder, name);
-                let _ = molt_callargs_push_kw(builder, origin_key, origin);
-                let _ = molt_callargs_push_kw(builder, package_key, MoltObject::from_int(1).bits());
+                let _ = crate::molt_callargs_push_kw(builder, origin_key, origin);
+                let _ = crate::molt_callargs_push_kw(
+                    builder,
+                    package_key,
+                    MoltObject::from_int(1).bits(),
+                );
             }
             let keyword = molt_call_bind(class_bits, builder);
             assert!(!exception_pending(py));

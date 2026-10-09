@@ -51,7 +51,10 @@ def _environment_name_class(name: str) -> str | None:
         return "denied-nondeterministic"
     if upper in command_identity._ENVIRONMENT_EXACT_NAMES:
         return "host-runtime"
-    if upper in command_identity._ENVIRONMENT_BUILD_NAMES:
+    if (
+        upper in command_identity._ENVIRONMENT_BUILD_NAMES
+        or command_identity._runtime_c_environment_name(upper)
+    ):
         return "build-toolchain"
     if any(
         upper.startswith(prefix) for prefix in command_identity._ENVIRONMENT_PREFIXES
@@ -246,6 +249,19 @@ def _bind_cargo_build_tool_environment(
     command = [str(value) for value in envelope["argv"]]
     command = admission._nested_command(command) or command
     invocation = admission.cargo_invocation_for_envelope(envelope)
+    if invocation is not None:
+        # Cargo forwards CARGO to build scripts and external subcommands. An
+        # explicit typed payload therefore owns this selector too, even when
+        # the inherited environment points to another installation.
+        cargo = command_identity._cargo_executable_path(
+            envelope, command, cwd=cwd, env=selected, token=command[0]
+        )
+        selected = {
+            name: value
+            for name, value in selected.items()
+            if (name.upper() if os.name == "nt" else name) != "CARGO"
+        }
+        selected["CARGO"] = str(cargo)
     if invocation is not None and invocation.toolchain_selector is not None:
         selected = {
             name: value
@@ -258,10 +274,11 @@ def _bind_cargo_build_tool_environment(
         selected["RUSTUP_TOOLCHAIN"] = invocation.toolchain_selector
     outputs = cargo_output_environment.CargoOutputEnvironment.for_envelope(envelope)
     _require_cargo_build_tool_environment_context(
-        command if invocation is not None else ["cargo"],
+        envelope,
         outputs=outputs,
         cwd=cwd,
         env=selected,
+        native_c_required=bool(envelope.get("cargo_native_c_units")),
     )
     updates, selection = toolchain_capture.select_cargo_build_tool_environment(
         cwd=cwd,
@@ -319,11 +336,12 @@ def _cargo_output_environment_contract(
 
 
 def _require_cargo_build_tool_environment_context(
-    command: Sequence[str],
+    envelope: Mapping[str, object],
     *,
     outputs: cargo_output_environment.CargoOutputEnvironment,
     cwd: Path,
     env: Mapping[str, str],
+    native_c_required: bool = False,
 ) -> None:
     """Reject unresolved Cargo-owned tool selection, not model its precedence.
 
@@ -339,6 +357,14 @@ def _require_cargo_build_tool_environment_context(
         raise ValueError(
             "Cargo secondary build-dir/target-dir environment bypasses declared output placement"
         )
+    invocation = admission.cargo_invocation_for_envelope(envelope)
+    delegated = envelope.get("delegated")
+    owner = delegated if isinstance(delegated, Mapping) else envelope
+    # Python drivers declare Cargo children, but their own argv is not Cargo
+    # configuration or target syntax. Preserve the admitted role before binding.
+    command = (
+        [str(value) for value in owner["argv"]] if invocation is not None else ["cargo"]
+    )
     arguments = cargo_config_arguments(command, cwd=cwd)[1::2]
     definitions: list[tuple[str, object]] = []
     for row in command_identity._tool_configuration_identities(
@@ -351,11 +377,17 @@ def _require_cargo_build_tool_environment_context(
             definitions.append((f"Cargo --config entry {index}", tomllib.loads(value)))
     inherited_keys = {name.upper() if os.name == "nt" else name for name in env}
     protected_environment = {
+        "CARGO",
+        "RUSTC",
+        "CARGO_BUILD_RUSTC",
         "CLANG_PATH",
         "LLVM_CONFIG_PATH",
         "RUSTFMT",
         "RUSTDOC",
         "CARGO_BUILD_RUSTDOC",
+        "CARGO",
+        "RUSTC",
+        "CARGO_BUILD_RUSTC",
         "PATH",
         *cargo_output_environment.TEMPORARY_VARIABLE_NAMES,
         *outputs.names,
@@ -377,24 +409,52 @@ def _require_cargo_build_tool_environment_context(
             raise ValueError(
                 f"Cargo {origin} redirects output outside declared placement"
             )
+        for role in ("rustc", "rustdoc"):
+            if (
+                isinstance(build, Mapping)
+                and role in build
+                and not any(
+                    (name.upper() if os.name == "nt" else name) == role.upper()
+                    and value
+                    for name, value in env.items()
+                )
+            ):
+                raise ValueError(
+                    f"unsupported Cargo build-tool environment context: {origin} defines build.{role}; "
+                    f"select the tool through explicit {role.upper()} before capture"
+                )
         if (
-            isinstance(build, Mapping)
-            and "rustdoc" in build
-            and not any(
-                (name.upper() if os.name == "nt" else name) == "RUSTDOC" and value
-                for name, value in env.items()
-            )
+            native_c_required
+            and isinstance(build, Mapping)
+            and "target" in build
+            and command_identity._rust_target(envelope, env) is None
         ):
             raise ValueError(
-                f"unsupported Cargo build-tool environment context: {origin} defines build.rustdoc; "
-                "select the documentation tool through explicit RUSTDOC before capture"
+                "native C selection requires explicit Cargo target before capture; unresolved build.target"
             )
+        if isinstance(build, Mapping) and any(
+            key in build for key in ("rustc-wrapper", "rustc-workspace-wrapper")
+        ):
+            for key, variable in (
+                ("rustc-wrapper", "RUSTC_WRAPPER"),
+                ("rustc-workspace-wrapper", "RUSTC_WORKSPACE_WRAPPER"),
+            ):
+                if (
+                    key in build
+                    and variable not in env
+                    and not (variable == "RUSTC" and "CARGO_BUILD_RUSTC" in env)
+                ):
+                    raise ValueError(
+                        f"unsupported Cargo build-tool environment context: {origin} defines build.{key}; select {variable} before capture"
+                    )
         environment = payload.get("env") if isinstance(payload, Mapping) else None
         if not isinstance(environment, Mapping):
             continue
         for name, value in environment.items():
             key = str(name).upper() if os.name == "nt" else str(name)
-            if key not in protected_environment:
+            if key not in protected_environment and not (
+                native_c_required and command_identity._runtime_c_environment_name(key)
+            ):
                 continue
             if key in inherited_keys and not (
                 isinstance(value, Mapping) and value.get("force") is True
@@ -435,9 +495,27 @@ def _execution_environment_executable_identities(
         identity = command_identity._executable_identity(path)
         if not command_identity._content_identity_available(identity):
             raise ValueError(f"executable environment {name} has no content identity")
+        images = [
+            process_image_capture.capture_image(f"env:{name}", path, preserve_path=True)
+        ]
+        resolved = Path(str(identity["resolved_path"]))
+        if resolved != path:
+            images.append(process_image_capture.capture_image(f"env:{name}", resolved))
+        rust_role = upper.removeprefix("CARGO_BUILD_").lower()
+        if rust_role in {"cargo", "rustc", "rustdoc", "rustfmt"}:
+            from molt.rust_toolchain import resolve_rustup_proxy
+
+            content = resolve_rustup_proxy(
+                path, role=rust_role, root=cwd, env=env
+            ).resolve(strict=True)
+            if content != resolved:
+                images.append(
+                    process_image_capture.capture_image(f"env:{name}", content)
+                )
         identities[name] = {
             "executable": identity,
             "argument_count": len(parts) - 1,
+            "process_images": process_image_capture.canonical_images(images),
         }
     return identities
 
@@ -463,7 +541,8 @@ def _capture_toolchains(
     requested = [str(name) for name in requested_raw]
     if len(requested) != len(set(requested)):
         raise ValueError("proof command envelope has duplicate toolchain authorities")
-    known = {policy.name for policy in plan.toolchain_policies}
+    policies = {policy.name: policy for policy in plan.toolchain_policies}
+    known = set(policies)
     unknown = sorted(set(requested) - known)
     if unknown:
         raise ValueError(f"proof command envelope has unknown toolchains: {unknown!r}")
@@ -495,22 +574,115 @@ def _capture_toolchains(
     toolchains: dict[str, object] = {}
     if proof_python is not None:
         toolchains["python"] = proof_python
+    sdk_resources: dict[str, dict[str, object]] = {}
+    sdk_verified_files = {}
     for name in requested:
         if name == "python":
             continue
         located = located_toolchains.get(name)
         if not isinstance(located, Mapping):
             raise ValueError(f"located {name} toolchain identity is unavailable")
-        process_image_capture.revalidate_images(
-            process_image_capture.toolchain_images(name, located)
-        )
+        located = dict(located)
+        verified_sdk_files = frozenset()
+        verified_resource_files = frozenset()
+        if toolchain_capture.sdk_required(policies[name].data, located):
+            closure = toolchain_capture.validate_wasi_sdk_closure(
+                located, full_capture=False
+            )
+            key = str(closure["sdk"])
+            if key not in sdk_resources:
+                sdk_verified_files[key] = (
+                    toolchain_capture.revalidate_wasi_sdk_selection(located)
+                )
+                sdk_resources[key] = toolchain_capture.capture_wasi_sdk_resources(
+                    closure
+                )
+            elif {
+                k: v for k, v in sdk_resources[key].items() if k != "resources"
+            } != dict(closure):
+                raise ValueError("one proof selected conflicting SDK generations")
+            verified_sdk_files = sdk_verified_files[key]
+            located["wasi_sdk"] = sdk_resources[key]
+            if located.get("identity_kind") == "target-derived":
+                # Additional family images (e.g. nm) retain actual image custody.
+                # Content aliases retain lexical membership, but one boundary
+                # reads each already admitted image content only once.
+                verified_contents = {
+                    Path(item.path).resolve(strict=True): (item.sha256, item.size)
+                    for item in verified_sdk_files
+                }
+                extra = []
+                images = process_image_capture.toolchain_images(name, located)
+                for image in images:
+                    content = Path(str(image["path"])).resolve(strict=True)
+                    expected = (image["sha256"], image["size_bytes"])
+                    if content in verified_contents:
+                        if verified_contents[content] != expected:
+                            raise ValueError(
+                                "SDK family image differs from verified content"
+                            )
+                    else:
+                        extra.append(image)
+                        verified_contents[content] = expected
+                process_image_capture.revalidate_images(extra)
+                verified_sdk_files |= frozenset(toolchain_capture.frozen_files(images))
+                sdk_verified_files[key] = verified_sdk_files
+            verified_sdk_files |= frozenset(
+                toolchain_capture.frozen_files(sdk_resources[key])
+            )
+            material = dict(located)
+            material.pop("identity_sha256", None)
+            located["identity_sha256"] = canonical_json_sha256(material)
+        verified_images = []
         if name == "rustc":
-            toolchain_capture.revalidate_rust_link_process_images(
-                located,
-                target=command_identity._rust_target(exact, env),
-                command_argv=admission._nested_command(exact) or exact,
+            verified_images, selection = (
+                toolchain_capture.revalidate_rust_link_process_images(
+                    located,
+                    target=command_identity._rust_target(envelope, env),
+                    command_argv=admission._nested_command(exact) or exact,
+                    required_native_c=envelope.get("cargo_native_c_units", []),
+                )
+            )
+            located["link_selection"] = selection
+            verified_resource_files = frozenset(
+                toolchain_capture.frozen_files(
+                    [row["resources"] for row in located["link_selection"]["native_c"]]
+                )
+            )
+        if not toolchain_capture.sdk_required(policies[name].data, located):
+            images = process_image_capture.toolchain_images(name, located)
+            verified_paths = {row["path"] for row in verified_images}
+            process_image_capture.revalidate_images(
+                [row for row in images if row["path"] not in verified_paths]
+            )
+            verified_resource_files |= frozenset(toolchain_capture.frozen_files(images))
+        package = command_identity._validate_node_package_identity(
+            policies[name], located
+        )
+        if package is not None:
+            if set(package) == {"root"}:
+                package = command_identity._directory_manifest_identity(
+                    Path(package["root"]), label=f"{name} node package"
+                )
+                located["node_package"] = {
+                    **located["node_package"],
+                    "package": package,
+                }
+                command_identity._validate_node_package_identity(
+                    policies[name], located, full_capture=True
+                )
+            else:
+                command_identity._revalidate_directory_manifest_identity(
+                    package,
+                    selected_root=Path(package["root"]),
+                    label=f"{name} node package",
+                )
+            verified_resource_files |= frozenset(
+                toolchain_capture.frozen_files(package)
             )
         for frozen in toolchain_capture.frozen_files({name: located}):
+            if frozen in verified_sdk_files or frozen in verified_resource_files:
+                continue
             path = Path(frozen.path)
             if command_identity._hash_file(path) != frozen.sha256 or (
                 frozen.size is not None and path.stat().st_size != frozen.size
@@ -518,6 +690,9 @@ def _capture_toolchains(
                 raise ValueError(
                     f"{name} toolchain file changed while live custody armed: {path}"
                 )
+        material = dict(located)
+        material.pop("identity_sha256", None)
+        located["identity_sha256"] = canonical_json_sha256(material)
         toolchains[name] = dict(located)
     if set(toolchains) != set(requested):
         raise ValueError(
@@ -554,7 +729,7 @@ def _locate_toolchain_watch_roots(
     env: Mapping[str, str],
     supervisor_binary: Path,
     reuse_root: Path | None = None,
-) -> tuple[list[Path], dict[str, object], dict[str, object]]:
+) -> tuple[list[Path], dict[str, object], dict[str, object], dict[str, str]]:
     """Locate broad roots and child executables without a full inventory."""
     started = time.perf_counter()
     reuse_telemetry: list[dict[str, object]] = []
@@ -565,6 +740,13 @@ def _locate_toolchain_watch_roots(
     ):
         raise ValueError("proof command envelope has no toolchain authority")
     requested = [str(name) for name in requested_raw]
+    # Rust metadata selects the host once. Its captured physical tools and C
+    # selections become the environment used by later policies and payload.
+    requested.sort(
+        key=lambda name: 0 if name == "cargo" else 1 if name == "rustc" else 2
+    )
+    env = dict(env)
+    selected_updates: dict[str, str] = {}
     policies = {policy.name: policy for policy in plan.toolchain_policies}
     roots: list[Path] = []
     policy_identities: dict[str, object] = {}
@@ -603,7 +785,6 @@ def _locate_toolchain_watch_roots(
             raise ValueError(
                 f"proof Python toolchain locator is invalid: {exc}"
             ) from exc
-        command_identity._reject_python_location_onedrive(located)
         executable_raw = located.get("selected_executable")
         base_executable_raw = located.get("base_executable")
         prefix_raw = located.get("prefix")
@@ -613,12 +794,14 @@ def _locate_toolchain_watch_roots(
             or not isinstance(prefix_raw, str)
         ):
             raise ValueError("proof Python toolchain locator has no executable chain")
-        executable = Path(os.path.abspath(executable_raw))
+        executable = process_image_capture.custody_path(Path(executable_raw))
         if not executable.is_file():
             raise ValueError(
                 "proof Python toolchain locator has no selected executable"
             )
-        base_executable = Path(base_executable_raw).resolve(strict=True)
+        base_executable = process_image_capture.custody_path(
+            Path(base_executable_raw)
+        ).resolve(strict=True)
         prefix = Path(prefix_raw).resolve(strict=True)
         if not prefix.is_dir():
             raise ValueError("proof Python toolchain locator has no environment prefix")
@@ -659,6 +842,21 @@ def _locate_toolchain_watch_roots(
             reuse_root=reuse_root,
             reuse_telemetry=reuse_telemetry,
         )
+        if name in {"rustc", "cargo"}:
+            updates = {name.upper(): str(identity["content_path"])}
+            if name == "rustc":
+                updates.update(
+                    toolchain_capture.native_c_environment(identity["link_selection"])
+                )
+                from molt.rust_toolchain import rust_toolchain_library_environment
+
+                updates.update(
+                    rust_toolchain_library_environment(
+                        Path(str(identity["content_path"])), env
+                    )
+                )
+            selected_updates.update(updates)
+            env.update(updates)
         probes = policies[name].data.get("process_image_probes", [])
         assert isinstance(probes, list)
         if probes:
@@ -698,7 +896,7 @@ def _locate_toolchain_watch_roots(
         "locate_s": time.perf_counter() - started,
         "tool_identity_reuse": reuse_telemetry,
     }
-    return roots, policy_identities, telemetry
+    return roots, policy_identities, telemetry, selected_updates
 
 
 def _python_editable_ineligible_reasons(
@@ -946,6 +1144,16 @@ def _broad_toolchain_roots(toolchains: Mapping[str, object]) -> list[Path]:
     for identity in toolchains.values():
         if not isinstance(identity, Mapping):
             continue
+        sdk = identity.get("wasi_sdk")
+        if isinstance(sdk, Mapping):
+            from molt.wasi_sdk_identity import SDK_RESOURCE_ROOTS
+
+            selected = toolchain_capture.validate_wasi_sdk_closure(
+                identity, full_capture=False
+            )
+            roots.extend(
+                Path(str(selected["sdk"])) / relative for relative in SDK_RESOURCE_ROOTS
+            )
         node_package = identity.get("node_package")
         package = (
             node_package.get("package") if isinstance(node_package, Mapping) else None
@@ -953,20 +1161,24 @@ def _broad_toolchain_roots(toolchains: Mapping[str, object]) -> list[Path]:
         raw_root = package.get("root") if isinstance(package, Mapping) else None
         if isinstance(raw_root, str) and Path(raw_root).is_dir():
             roots.append(Path(raw_root).resolve(strict=True))
-        sysroot = identity.get("sysroot_custody")
-        if isinstance(sysroot, Mapping):
-            raw_sysroot = sysroot.get("root")
-            if not isinstance(raw_sysroot, str) or not Path(raw_sysroot).is_dir():
-                raise ValueError("captured sysroot watch root is unavailable")
-            roots.append(Path(raw_sysroot).resolve(strict=True))
+        selection = identity.get("link_selection")
+        if isinstance(selection, Mapping):
+            for unit in selection.get("native_c", []):
+                for selected_root in unit["selection"]["resource_roots"]:
+                    lexical = Path(selected_root)
+                    roots.append(
+                        lexical.resolve(strict=True)
+                        if lexical.is_dir()
+                        else lexical.parent
+                    )
+                    if lexical.resolve(strict=False) != lexical:
+                        roots.append(lexical.parent)
         link_inputs = identity.get("link_inputs")
         if isinstance(link_inputs, Mapping):
-            archive = link_inputs.get("compiler_builtins")
+            archive = link_inputs.get("compiler_rt")
             if isinstance(archive, Mapping):
                 path = Path(str(archive["path"]))
                 if not path.is_absolute() or not path.is_file():
-                    raise ValueError(
-                        "captured compiler-builtins watch root is unavailable"
-                    )
+                    raise ValueError("captured compiler-rt watch root is unavailable")
                 roots.append(path.resolve(strict=True).parent)
     return list(dict.fromkeys(roots))

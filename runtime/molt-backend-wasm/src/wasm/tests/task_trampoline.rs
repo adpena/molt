@@ -87,7 +87,7 @@ fn typed_task_constructors_guard_allocation_before_payload_and_completion() {
         (
             "coroutine",
             "coroutine_body",
-            &["cancel_token_get_current", "task_register_token_owned"][..],
+            &["cancel_token_get_current", "task_register_execution"][..],
         ),
         (
             "async_generator",

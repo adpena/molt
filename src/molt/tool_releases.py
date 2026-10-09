@@ -12,6 +12,7 @@ attestation that discovery re-verifies by content hash on every use.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -21,8 +22,8 @@ import shutil
 import stat
 import sys
 import tarfile
-import tempfile
 import tomllib
+import urllib.parse
 import urllib.request
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
@@ -31,8 +32,27 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from molt.dx import TOOLCHAINS_DIRNAME
+from molt.file_locks import (
+    _acquire_file_lock,
+    _file_lock_owned_operation,
+    _release_file_lock,
+)
+from molt.file_publication import (
+    canonical_file_leaf,
+    durable_publish_exclusive,
+    durable_replace,
+)
+from molt.portable_paths import portable_relative_path
+from molt.temporary_artifacts import OwnedTemporaryDirectory
 from molt.source_root import compiler_source_root
-from molt.toolchain_identity import StableRegularFileError, stable_executable_probe
+from molt.toolchain_identity import (
+    StableRegularFileError,
+    open_stable_regular_file,
+    stable_executable_probe,
+    stable_regular_file_handle_identity,
+    stable_regular_file_identity,
+    stable_regular_file_version,
+)
 
 _ToolResult = TypeVar("_ToolResult")
 
@@ -355,62 +375,255 @@ def discover_tool(release: ToolRelease, toolchain_root: Path) -> ToolDiscovery |
     )
 
 
-def _download_asset(asset: ToolAsset, downloads: Path) -> Path:
-    downloads.mkdir(parents=True, exist_ok=True)
-    archive = downloads / asset.filename
-    if archive.is_file() and archive.stat().st_size == asset.size:
-        if _sha256_file(archive) == asset.sha256:
-            return archive
-    partial = archive.with_name(archive.name + ".partial")
-    with urllib.request.urlopen(asset.url, timeout=180) as response:  # noqa: S310
-        with partial.open("wb") as out:
-            shutil.copyfileobj(response, out)
-    size = partial.stat().st_size
-    digest = _sha256_file(partial)
-    if size != asset.size or digest != asset.sha256:
-        partial.unlink()
+def _archive_https_host(url: str) -> str:
+    """Checked-in archive URLs and each redirect must remain credential-free HTTPS."""
+    if not isinstance(url, str) or any(ord(c) <= 32 or ord(c) == 127 for c in url):
         raise ToolReleaseError(
-            f"{asset.url} does not match its pinned identity: got size {size} "
-            f"sha256 {digest}, expected size {asset.size} sha256 {asset.sha256}"
+            "pinned archive URL contains whitespace/control characters"
         )
-    os.replace(partial, archive)
-    return archive
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        host, port = parsed.hostname, parsed.port
+    except ValueError as exc:
+        raise ToolReleaseError("pinned archive URL is malformed") from exc
+    if (
+        parsed.scheme != "https"
+        or not host
+        or not re.fullmatch(r"[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*", host)
+        or port not in (None, 443)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or "\\" in url
+    ):
+        raise ToolReleaseError(
+            "pinned archive URL must use credential-free HTTPS on port 443"
+        )
+    return host.lower()
 
 
-def _extract_member(archive: Path, member: str, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        dir=destination.parent, prefix=destination.name + ".", delete=False
-    ) as staged:
-        staged_path = Path(staged.name)
+class _ArchiveRedirects(urllib.request.HTTPRedirectHandler):
+    def __init__(self, url: str) -> None:
+        self.hosts = {_archive_https_host(url)}
+        # GitHub documents this exact host for release-asset downloads. Other
+        # source authorities keep same-origin redirects only; no wildcard CDN.
+        if _RELEASE_ASSET_URL_RE.fullmatch(url):
+            self.hosts.add("release-assets.githubusercontent.com")
+
+    def admit(self, url: str) -> None:
+        if _archive_https_host(url) not in self.hosts:
+            raise ToolReleaseError(
+                "pinned archive redirect leaves its admitted HTTPS origin"
+            )
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        self.admit(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def provision_archive(*, url: str, size: int, sha256: str, downloads: Path) -> Path:
+    """Cache one exact archive through the shared pinned-tool transfer owner.
+
+    This is explicit development provisioning. It never extracts or executes
+    payloads. Cache readers still retain their own stable descriptor while
+    consuming bytes. Invalid old entries survive any pre-publication failure.
+    """
+    try:
+        redirects = _ArchiveRedirects(url)
+        parsed = urllib.parse.urlsplit(url)
+        filename = portable_relative_path(parsed.path.rsplit("/", 1)[-1])
+        if len(filename.parts) != 1 or parsed.query or "%" in filename.name:
+            raise ToolReleaseError("pinned archive URL must name one literal filename")
+        if (
+            type(size) is not int
+            or size <= 0
+            or not isinstance(sha256, str)
+            or not _SHA256_RE.fullmatch(sha256)
+        ):
+            raise ToolReleaseError(
+                "pinned archive needs a positive size and lowercase SHA-256"
+            )
+        archive = canonical_file_leaf(
+            Path(downloads) / filename.name, create_parent=True
+        )
+        lock_path = archive.parent / (
+            ".molt-archive-"
+            + hashlib.sha256(filename.name.encode()).hexdigest()[:16]
+            + ".lock"
+        )
+        busy_message = f"pinned archive cache is busy: {archive}"
         try:
-            if archive.name.endswith(".zip"):
-                with zipfile.ZipFile(archive) as bundle:
-                    with bundle.open(member) as source:
-                        shutil.copyfileobj(source, staged)
-            else:
-                with tarfile.open(archive) as bundle:
-                    entry = bundle.getmember(member)
-                    if not entry.isfile():
-                        raise ToolReleaseError(
-                            f"{archive.name}: {member} is not a regular file"
+            lock = _acquire_file_lock(
+                lock_path, timeout_s=180, timeout_message=busy_message
+            )
+        except RuntimeError as exc:
+            if str(exc) != busy_message:
+                raise
+            raise ToolReleaseError(busy_message) from exc
+        try:
+            with _file_lock_owned_operation(lock, expected_lock_path=lock_path):
+                previous = (
+                    stable_regular_file_version(archive, label="pinned archive cache")
+                    if archive.exists()
+                    else None
+                )
+                if previous is not None and previous.size == size:
+                    with open_stable_regular_file(
+                        archive, label="pinned archive cache", observed=previous
+                    ) as opened:
+                        identity = stable_regular_file_handle_identity(
+                            opened, label="pinned archive cache", max_bytes=size
                         )
-                    source = bundle.extractfile(entry)
-                    if source is None:
-                        raise ToolReleaseError(f"{archive.name}: cannot read {member}")
-                    with source:
-                        shutil.copyfileobj(source, staged)
-        except KeyError as exc:
-            staged_path.unlink(missing_ok=True)
-            raise ToolReleaseError(f"{archive.name} has no member {member}") from exc
-        except BaseException:
-            staged_path.unlink(missing_ok=True)
-            raise
-    if os.name != "nt":
-        staged_path.chmod(
-            staged_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+                    if identity.sha256 == sha256:
+                        return archive
+                with OwnedTemporaryDirectory(
+                    prefix="molt-archive-", dir=archive.parent
+                ) as raw:
+                    staged = Path(raw) / filename.name
+                    digest = hashlib.sha256()
+                    received = 0
+                    request = urllib.request.Request(
+                        url,
+                        headers={
+                            "User-Agent": "molt-pinned-archive/1",
+                            "Accept-Encoding": "identity",
+                        },
+                    )
+                    opener = urllib.request.build_opener(redirects)
+                    with (
+                        opener.open(request, timeout=180) as response,
+                        staged.open("xb") as stream,
+                    ):
+                        redirects.admit(response.geturl())
+                        if (
+                            response.status != 200
+                            or response.headers.get("Content-Encoding", "identity")
+                            != "identity"
+                        ):
+                            raise ToolReleaseError(
+                                "pinned archive response must be an unencoded HTTP 200 body"
+                            )
+                        declared = response.headers.get("Content-Length")
+                        if declared is not None and (
+                            not re.fullmatch(r"[0-9]+", declared)
+                            or int(declared) != size
+                        ):
+                            raise ToolReleaseError(
+                                "pinned archive response length disagrees with its pinned identity"
+                            )
+                        while chunk := response.read(
+                            min(1024 * 1024, size - received + 1)
+                        ):
+                            received += len(chunk)
+                            if received > size:
+                                raise ToolReleaseError(
+                                    "pinned archive download exceeds its pinned identity size"
+                                )
+                            stream.write(chunk)
+                            digest.update(chunk)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    if received != size or digest.hexdigest() != sha256:
+                        raise ToolReleaseError(
+                            f"{url} does not match its pinned identity: got size {received} sha256 {digest.hexdigest()}, expected size {size} sha256 {sha256}"
+                        )
+                    captured = stable_regular_file_identity(
+                        staged, label="staged pinned archive"
+                    )
+                    if (captured.size, captured.sha256) != (size, sha256):
+                        raise ToolReleaseError(
+                            "staged archive changed after its pinned transfer"
+                        )
+                    if previous is None:
+                        durable_publish_exclusive(staged, archive)
+                    else:
+                        # Do not replace a generation that changed while downloading.
+                        with open_stable_regular_file(
+                            archive, label="pinned archive cache", observed=previous
+                        ):
+                            pass
+                        durable_replace(staged, archive)
+                    admitted = stable_regular_file_identity(
+                        archive, label="published pinned archive"
+                    )
+                    if (admitted.size, admitted.sha256) != (size, sha256):
+                        raise ToolReleaseError(
+                            "published archive changed before admission"
+                        )
+                    return archive
+        finally:
+            _release_file_lock(lock)
+    except ValueError as exc:
+        raise ToolReleaseError("provision_archive refused: " + str(exc)) from exc
+
+
+@contextmanager
+def open_pinned_archive(path: Path, *, size: int, sha256: str):
+    """Bind the pin and every payload read to one owned descriptor lifetime."""
+    try:
+        if not path.is_file():
+            raise ToolReleaseError(
+                f"pinned archive absent: {path}; expected {size} bytes SHA-256 {sha256}; explicitly provision the input; consumer performs no automatic fetch"
+            )
+        with open_stable_regular_file(path, label="pinned archive") as opened:
+            identity = stable_regular_file_handle_identity(
+                opened, label="pinned archive", max_bytes=size
+            )
+            if (identity.size, identity.sha256) != (size, sha256):
+                raise ToolReleaseError(f"pinned archive identity mismatch: {path}")
+            yield opened
+    except ValueError as exc:
+        raise ToolReleaseError("open_pinned_archive refused: " + str(exc)) from exc
+
+
+def _extract_member(archive: Path, asset: ToolAsset, destination: Path) -> str:
+    destination = canonical_file_leaf(destination, create_parent=True)
+    with OwnedTemporaryDirectory(prefix="molt-tool-", dir=destination.parent) as raw:
+        staged_path = Path(raw) / "executable"
+        # The closing source fence must succeed before publishing extracted bytes.
+        with open_pinned_archive(
+            archive, size=asset.size, sha256=asset.sha256
+        ) as opened:
+            with staged_path.open("xb") as staged:
+                try:
+                    if archive.name.endswith(".zip"):
+                        with zipfile.ZipFile(opened.stream) as bundle:
+                            with bundle.open(asset.archive_member) as source:
+                                shutil.copyfileobj(source, staged, 1024 * 1024)
+                    else:
+                        with tarfile.open(fileobj=opened.stream, mode="r:*") as bundle:
+                            entry = bundle.getmember(asset.archive_member)
+                            if not entry.isfile():
+                                raise ToolReleaseError(
+                                    f"{archive.name}: {asset.archive_member} is not a regular file"
+                                )
+                            source = bundle.extractfile(entry)
+                            if source is None:
+                                raise ToolReleaseError(
+                                    f"{archive.name}: cannot read {asset.archive_member}"
+                                )
+                            with source:
+                                shutil.copyfileobj(source, staged, 1024 * 1024)
+                except KeyError as exc:
+                    raise ToolReleaseError(
+                        f"{archive.name} has no member {asset.archive_member}"
+                    ) from exc
+        if os.name != "nt":
+            staged_path.chmod(
+                staged_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            )
+        captured = stable_regular_file_identity(
+            staged_path, label="extracted pinned tool"
         )
-    os.replace(staged_path, destination)
+        durable_replace(staged_path, destination)
+        published = stable_regular_file_identity(
+            destination, label="published pinned tool"
+        )
+        if (published.size, published.sha256) != (captured.size, captured.sha256):
+            raise ToolReleaseError(
+                "published tool differs from its pinned archive member"
+            )
+        return captured.sha256
 
 
 def provision_tool(
@@ -421,32 +634,41 @@ def provision_tool(
     Idempotent: a valid attested installation is returned untouched. Otherwise
     the host asset is downloaded (or reused from ``downloads`` when its size and
     digest already match), verified against the manifest, and its executable
-    member is installed atomically together with the attestation.
+    member is published before its attestation. Discovery admits only the exact
+    matching pair, so an interrupted publication cannot attest different bytes.
     """
-    existing = discover_tool(release, toolchain_root)
-    if existing is not None:
-        return existing
-    asset = host_asset(release)
-    archive = _download_asset(
-        asset,
-        Path(toolchain_root) / TOOLCHAINS_DIRNAME / DOWNLOADS_DIRNAME
-        if downloads is None
-        else downloads,
-    )
-    prefix = tool_prefix(toolchain_root, release)
-    executable = tool_executable(prefix, release)
-    _extract_member(archive, asset.archive_member, executable)
-    payload = _attestation_payload(release, asset, _sha256_file(executable))
-    attestation_path = prefix / TOOL_ATTESTATION_FILENAME
-    staged = attestation_path.with_name(attestation_path.name + ".partial")
-    staged.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", "utf-8")
-    os.replace(staged, attestation_path)
-    discovered = discover_tool(release, toolchain_root)
-    if discovered is None:
-        raise ToolReleaseError(
-            f"{release.name} {release.version} did not attest after provisioning"
+    try:
+        existing = discover_tool(release, toolchain_root)
+        if existing is not None:
+            return existing
+        asset = host_asset(release)
+        archive = provision_archive(
+            url=asset.url,
+            size=asset.size,
+            sha256=asset.sha256,
+            downloads=Path(toolchain_root) / TOOLCHAINS_DIRNAME / DOWNLOADS_DIRNAME
+            if downloads is None
+            else downloads,
         )
-    return discovered
+        prefix = tool_prefix(toolchain_root, release)
+        executable = tool_executable(prefix, release)
+        executable_sha256 = _extract_member(archive, asset, executable)
+        payload = _attestation_payload(release, asset, executable_sha256)
+        attestation_path = prefix / TOOL_ATTESTATION_FILENAME
+        with OwnedTemporaryDirectory(prefix="molt-attestation-", dir=prefix) as raw:
+            staged = Path(raw) / TOOL_ATTESTATION_FILENAME
+            staged.write_text(
+                json.dumps(payload, sort_keys=True, indent=2) + "\n", "utf-8"
+            )
+            durable_replace(staged, attestation_path)
+        discovered = discover_tool(release, toolchain_root)
+        if discovered is None:
+            raise ToolReleaseError(
+                f"{release.name} {release.version} did not attest after provisioning"
+            )
+        return discovered
+    except ValueError as exc:
+        raise ToolReleaseError("provision_tool refused: " + str(exc)) from exc
 
 
 def discover_pinned_tool(

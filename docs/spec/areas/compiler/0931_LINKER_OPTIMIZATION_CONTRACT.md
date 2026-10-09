@@ -101,6 +101,15 @@ shape are required only when the bridge selects a CPython-ABI data symbol.
 Unrelated weak, local, or undefined PIC symbols do not fail a scan. Malformed
 relocation extents and out-of-range symbol/global indices still fail closed.
 
+Final callable layout counts are local to the artifact being published. App
+and monolithic publication derive the app entry count from their final active
+elements, including entries added by native linking. Shared-runtime publication
+retains the common runtime/app boundary and required fixed prefix, validates its
+own runtime entries, and publishes an app entry count of zero. An application's
+entry count must never enter the shared runtime bytes or its CDN identity. The
+app's final layout and attestation remain independently validated; runtime
+cacheability does not erase application metadata.
+
 Link-time `linking` and `reloc.*` sections are consumed before stable app identity
 markers are published, then removed before any optimizer or index-changing
 transform. Function import removal also drops the stale `name` section; other
@@ -143,6 +152,14 @@ not spelling-based callee specialization: positive sources retain full alias,
 mutation and deferred-body analysis, and relative statements retain module
 context analysis. Live module resolution and exact source-byte identities remain
 mandatory on cache hits; no whole-graph freshness assumption replaces them.
+
+The walk retains captured source bytes for identity, while each analysis owns
+its AST only for the duration of that projection. Aliased module contexts reuse
+the captured bytes and independently derive their import facts. Persisted
+analysis rows pass strict decoding and dynamic-contract validation before reuse;
+valid hits keep their serialized storage, and misses replace only their selected
+variant. Pruning remains independent of misses, and a failed traversal publishes
+no partial cache. This compiler-side cache adds no checks to emitted binaries.
 
 Private-name mangling is owned by `molt.python_private_names`, shared by
 custody, discovery, binding analysis and lowering. Importing this primitive

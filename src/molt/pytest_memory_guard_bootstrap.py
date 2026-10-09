@@ -1027,6 +1027,50 @@ def pytest_load_initial_conftests(
     install_windows_pytest_cache_dir_arg(args)
 
 
+def pytest_configure(config: object) -> None:
+    """Retain completed failures in the existing stream before later termination.
+
+    Workers send reports to the xdist controller; only that controller writes
+    diagnostics. Keep this pytest-only object out of ordinary package startup.
+    """
+    if hasattr(config, "workerinput"):
+        return
+    manager = getattr(config, "pluginmanager")
+    plugin_name = "molt-immediate-pytest-failures"
+    if manager.hasplugin(plugin_name):
+        return
+
+    class ImmediateFailures:
+        def _emit(self, report: object, phase: str) -> None:
+            if not getattr(report, "failed"):
+                return
+            terminal = manager.getplugin("terminalreporter")
+            if terminal is None:
+                # Respect pytest's explicit -p no:terminal output opt-out.
+                return
+            worker = getattr(report, "worker_id", "")
+            origin = f" [{worker}]" if worker else ""
+            terminal.write_sep(
+                "=",
+                f"Molt immediate pytest failure{origin}: "
+                f"{getattr(report, 'nodeid')} ({phase})",
+            )
+            # Match the pinned terminal reporter's summary_failures/errors
+            # body gate. _outrep_summary owns capture selection and encoding,
+            # but does not itself honor --tb=no. Stream without a full copy.
+            if getattr(config, "option").tbstyle != "no":
+                terminal._outrep_summary(report)
+            terminal.flush()
+
+        def pytest_runtest_logreport(self, report: object) -> None:
+            self._emit(report, getattr(report, "when"))
+
+        def pytest_collectreport(self, report: object) -> None:
+            self._emit(report, "collect")
+
+    manager.register(ImmediateFailures(), plugin_name)
+
+
 def _write_pytest_current_test(
     *,
     nodeid: str,

@@ -186,8 +186,20 @@ def native_archives(
 ) -> NativeArchiveFixtureCatalog:
     catalog = NativeArchiveFixtureCatalog()
     reader = runtime_fixture_root.native_executable("native-symbol-reader/python")
+    reader_digest = hashlib.sha256(reader.read_bytes()).hexdigest()
+
+    def reader_family(path_text: str, digest: str) -> tuple[str, str]:
+        # Only the external version observation is synthetic. The production
+        # admission still owns executable bytes, descriptors and cache identity.
+        assert Path(path_text) == reader.resolve()
+        assert digest == reader_digest
+        return "llvm", "LLVM nm synthetic fixture"
+
     monkeypatch.setattr(
         native_symbol_inspection, "_nm_candidate_binaries", lambda: [str(reader)]
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection, "_cached_nm_reader_family", reader_family
     )
     monkeypatch.setattr(
         native_symbol_inspection,
@@ -5225,6 +5237,95 @@ def test_native_archive_fixture_preserves_digest_and_cache_custody(
     second = native_symbol_inspection._native_archive_global_symbol_facts(artifact_path)
     assert second.artifact_digest == hashlib.sha256(second_bytes).hexdigest()
     assert second.artifact_digest != first.artifact_digest
+
+
+def test_native_archive_fixture_reads_owned_descriptor_without_reopening(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import builtins
+    from molt.toolchain_identity import open_stable_regular_file
+
+    catalog = NativeArchiveFixtureCatalog()
+    path = tmp_path / "owned.a"
+    payload = catalog.archive(
+        NativeSymbolFixture(functions=("entry",), data=("state",))
+    )
+    path.write_bytes(payload)
+    with open_stable_regular_file(path, label="fixture reader input") as opened:
+        members = native_symbol_inspection._symbol_artifact_members(
+            path, opened=opened, require_archive=True
+        )
+        assert members is not None and len(members) == 1
+        assert members[0].member.name == "object.o"
+        assert members[0].member.content_offset == 68
+        opened.stream.seek(7)
+        with monkeypatch.context() as no_reopen:
+            no_reopen.setattr(
+                Path,
+                "read_bytes",
+                lambda self: pytest.fail("reader must use its admitted descriptor"),
+            )
+            no_reopen.setattr(
+                Path,
+                "open",
+                lambda *args, **kwargs: pytest.fail(
+                    "reader must not reopen a pathname"
+                ),
+            )
+            no_reopen.setattr(
+                builtins,
+                "open",
+                lambda *args, **kwargs: pytest.fail(
+                    "reader must not reopen a pathname"
+                ),
+            )
+            facts = catalog.read_symbols(
+                path, timeout=1, archive_members=members, _opened=opened
+            )
+        assert facts.defined == frozenset({"entry", "state"})
+        assert facts.defined_functions == frozenset({"entry"})
+        assert facts.members is not None
+        assert facts.members[0].identity == members[0]
+        assert not opened.stream.closed
+        assert opened.stream.tell() == 7
+
+
+@pytest.mark.parametrize(
+    "violation", ["absent", "wrong-path", "member-digest", "closed"]
+)
+def test_native_archive_fixture_rejects_unowned_or_mismatched_reader_input(
+    tmp_path: Path, violation: str
+) -> None:
+    from molt.toolchain_identity import open_stable_regular_file
+
+    catalog = NativeArchiveFixtureCatalog()
+    path = tmp_path / "owned.a"
+    payload = catalog.archive(NativeSymbolFixture(functions=("entry",)))
+    path.write_bytes(payload)
+    other = tmp_path / "same-bytes-other.a"
+    other.write_bytes(payload)
+    with open_stable_regular_file(path, label="fixture reader input") as opened:
+        members = native_symbol_inspection._symbol_artifact_members(
+            path, opened=opened, require_archive=True
+        )
+        assert members is not None
+        if violation != "closed":
+            supplied = None if violation == "absent" else opened
+            selected_path = other if violation == "wrong-path" else path
+            if violation == "member-digest":
+                members = (replace(members[0], sha256="0" * 64),)
+            with pytest.raises(native_symbol_inspection.NativeSymbolInspectionError):
+                catalog.read_symbols(
+                    selected_path, timeout=1, archive_members=members, _opened=supplied
+                )
+    if violation == "closed":
+        with pytest.raises(
+            native_symbol_inspection.NativeSymbolInspectionError,
+            match="live owned descriptor",
+        ):
+            catalog.read_symbols(
+                path, timeout=1, archive_members=members, _opened=opened
+            )
 
 
 def test_native_archive_fixture_rejects_manifest_symbol_lie(
@@ -12653,7 +12754,9 @@ def test_linux_link_places_source_extension_archives_in_runtime_group(
         stub_path=stub_path,
         runtime_lib=runtime_lib,
         output_binary=output_binary,
-        target=resolve_native_target_spec(None, host_platform="linux"),
+        target=resolve_native_target_spec(
+            None, host_platform="linux", host_arch="x86_64"
+        ),
         sysroot_path=None,
         profile="release",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
@@ -12671,6 +12774,7 @@ def test_linux_link_places_source_extension_archives_in_runtime_group(
             ),
         ),
         host_platform="linux",
+        host_arch="x86_64",
     )
 
     start = link_plan.command.index("-Wl,--start-group")
@@ -12872,7 +12976,9 @@ def test_windows_link_force_loads_source_extension_archives_without_wildcard_exp
         stub_path=stub_path,
         runtime_lib=runtime_lib,
         output_binary=output_binary,
-        target=resolve_native_target_spec(None, host_platform="win32"),
+        target=resolve_native_target_spec(
+            None, host_platform="win32", host_arch="x86_64"
+        ),
         sysroot_path=None,
         profile="release",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
@@ -12890,6 +12996,7 @@ def test_windows_link_force_loads_source_extension_archives_without_wildcard_exp
             ),
         ),
         host_platform="win32",
+        host_arch="x86_64",
     )
 
     assert f"/WHOLEARCHIVE:{extension_archive.resolve()}" in link_plan.command
@@ -18946,14 +19053,33 @@ def test_stdlib_module_init_scan_excludes_lazy_regex_and_struct_edges() -> None:
         if not path.exists():
             path = stdlib_root.joinpath(*module_name.split("."), "__init__.py")
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        imports = set(
-            cli_module_import_scanner._collect_imports(
-                tree,
-                module_name=module_name,
-                is_package=path.name == "__init__.py",
-                import_scan_mode="module_init",
-            )
+        projection = cli_module_import_scanner._collect_imports_for_graph(
+            tree,
+            module_name=module_name,
+            is_package=path.name == "__init__.py",
+            import_scan_mode="module_init",
         )
+        imports = set(projection.imports) | set(
+            projection.dynamic_relative_import_candidates
+        )
+        if module_name == "importlib.metadata":
+            # Prior imports can mutate package metadata. Keep lexical candidates
+            # for graph discovery without granting runtime import custody.
+            assert projection.requires_runtime_package_anchor
+            assert (
+                "importlib.metadata._functools"
+                in projection.dynamic_relative_import_candidates
+            )
+            with pytest.raises(
+                cli_module_import_scanner.UnresolvedStaticImportError,
+                match="requires explicit runtime import custody",
+            ):
+                cli_module_import_scanner._collect_imports(
+                    tree,
+                    module_name=module_name,
+                    is_package=True,
+                    import_scan_mode="module_init",
+                )
         assert imports.isdisjoint(excluded), (
             f"{module_name} module-init imports leaked {sorted(imports & excluded)}"
         )
@@ -21627,6 +21753,7 @@ def test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair(
         runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
     )
     prepared_backend_setup = cli._PreparedBackendSetup(
+        backend="native",
         runtime_state=runtime_state,
         backend_bin=tmp_path / "molt-backend",
         cache_setup=cli._BackendCacheSetup(
@@ -21725,6 +21852,7 @@ def test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest(
         cache_hit_tier=None,
     )
     prepared_backend_setup = cli._PreparedBackendSetup(
+        backend="native",
         runtime_state=runtime_state,
         backend_bin=tmp_path / "molt-backend",
         cache_setup=cache_setup,
@@ -21785,6 +21913,7 @@ def test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_d
         cache_hit_tier=None,
     )
     prepared_backend_setup = cli._PreparedBackendSetup(
+        backend="native",
         runtime_state=runtime_state,
         backend_bin=tmp_path / "molt-backend",
         cache_setup=cache_setup,
@@ -21830,16 +21959,7 @@ def test_runtime_compile_key_is_stable_across_user_import_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SPEC,
-        "_cargo_build_env",
-        lambda: {"CARGO_TARGET_DIR": str(tmp_path / "target")},
-    )
-    for name in (
-        "_configure_wasm_toolchain_env",
-        "_configure_wasm_long_double_env",
-    ):
-        monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, name, lambda _env: None)
+    monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, "_cargo_build_env", lambda: {})
     common = dict(
         reloc=False,
         cargo_profile="dev-fast",
@@ -21917,16 +22037,7 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SPEC,
-        "_cargo_build_env",
-        lambda: {"CARGO_TARGET_DIR": str(tmp_path / "target")},
-    )
-    for name in (
-        "_configure_wasm_toolchain_env",
-        "_configure_wasm_long_double_env",
-    ):
-        monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, name, lambda _env: None)
+    monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, "_cargo_build_env", lambda: {})
     spec = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
         tmp_path,
         tmp_path / "runtime_reloc.wasm",
@@ -21949,14 +22060,40 @@ def _install_fake_wasm_link_runner(
     monkeypatch: pytest.MonkeyPatch,
     *,
     fixture_root: RuntimeFixtureRoot,
+    app_input_paths: tuple[Path, ...],
     link_calls: list[list[str]] | None = None,
     linked_bytes: bytes = b"\0asm\x01\0\0\0",
     app_bytes: bytes | None = None,
 ) -> dict[Path, SourceExtensionLinkRequirements]:
     plans: dict[Path, SourceExtensionLinkRequirements] = {}
+
+    # These deployment/link-plan tests replace external tool execution. Admit
+    # only their declared, independently valid empty module inputs; this fixture
+    # does not claim to exercise the attested structural validator.
+    def validate_empty_app(path: Path) -> None:
+        assert path in app_input_paths
+        assert path.read_bytes() == b"\0asm\x01\0\0\0"
+
+    monkeypatch.setattr(
+        cli_non_native_output, "_validate_wasm_structural", validate_empty_app
+    )
     # This child is mocked, but its scanner remains a real content input.
     # The shared native-image fixture proves custody, not scanner behavior.
     scanner = fixture_root.native_executable("molt-backend")
+    # This same fixture owns the substituted link process and its file-backed
+    # selected image. The bytes prove input custody, not execution of a real SDK.
+    linker = fixture_root.native_executable("mock-tools/wasm-ld")
+    linker_identity = cli_non_native_output.wasm_toolchain.WasmLinkerIdentity(
+        linker,
+        "fixture-selected-linker",
+        "fixture-selected-linker",
+        hashlib.sha256(linker.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        cli_non_native_output.wasm_toolchain,
+        "resolve_wasm_linker",
+        lambda: linker_identity,
+    )
     optimizer_fact = mock_wasm_optimizer_cache_fact(fixture_root)
     monkeypatch.setattr(
         cli_non_native_output, "wasm_optimizer_cache_fact", lambda: optimizer_fact
@@ -21986,6 +22123,7 @@ def _install_fake_wasm_link_runner(
             if argument == "--expected-input"
         ]
         assert scanner.resolve() in {path for path, _digest in expected_inputs}
+        assert (linker.resolve(), linker_identity.sha256) in expected_inputs
         for path, digest in expected_inputs:
             assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
         if link_calls is not None:
@@ -22138,6 +22276,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         fixture_root=runtime_fixture_root,
         link_calls=link_calls,
         linked_bytes=linked_bytes,
+        app_input_paths=(output_wasm, tmp_path / "relocated" / "output.wasm"),
     )
     closure_digest = ["captured-tooling-generation-one"]
     monkeypatch.setattr(
@@ -22180,9 +22319,6 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
 
     monkeypatch.setattr(
         cli_link_fingerprints, "_link_fingerprint", capture_link_fingerprint
-    )
-    monkeypatch.setattr(
-        cli_non_native_output, "_validate_wasm_structural", lambda path: None
     )
     runtime_state = _prepared_runtime_pair_state(runtime_wasm, runtime_reloc_wasm)
 
@@ -22398,6 +22534,7 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
         fixture_root=runtime_fixture_root,
         linked_bytes=payload_a,
         app_bytes=payload_a,
+        app_input_paths=(output,),
     )
     common = dict(
         is_rust_transpile=False,
@@ -22442,6 +22579,7 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
                     fixture_root=runtime_fixture_root,
                     linked_bytes=payload_b,
                     app_bytes=payload_b,
+                    app_input_paths=(output,),
                 )
                 prepared, error = (
                     cli_non_native_output._prepare_non_native_build_result(
@@ -22531,7 +22669,9 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
     vfs_support.write_text("globalThis.MoltVfs = class {};\n", encoding="utf-8")
     pair_required: list[frozenset[str]] = []
 
-    _install_fake_wasm_link_runner(monkeypatch, fixture_root=runtime_fixture_root)
+    _install_fake_wasm_link_runner(
+        monkeypatch, fixture_root=runtime_fixture_root, app_input_paths=(output_wasm,)
+    )
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
         del path
@@ -22706,7 +22846,10 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     link_fingerprint_inputs: list[Path] = []
 
     native_plans = _install_fake_wasm_link_runner(
-        monkeypatch, fixture_root=runtime_fixture_root, link_calls=link_calls
+        monkeypatch,
+        fixture_root=runtime_fixture_root,
+        link_calls=link_calls,
+        app_input_paths=(output_wasm,),
     )
     real_link_fingerprint = cli_link_fingerprints._link_fingerprint
 
@@ -22975,9 +23118,14 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         path.write_bytes(original)
         os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     assert cache_matches()
+    manifest_bytes = outputs["manifest"].read_bytes()
     outputs["manifest"].unlink()
     repeat_build()
-    assert len(link_calls) == 2 and cache_matches()
+    # Publication recovery restores the admitted final-link result and rebuilds
+    # its deployment metadata without paying for another linker invocation.
+    assert len(link_calls) == 1
+    assert outputs["manifest"].read_bytes() == manifest_bytes
+    assert cache_matches()
 
 
 def test_external_package_bundle_is_independent_of_absolute_source_roots(
@@ -23063,7 +23211,10 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
     link_calls: list[list[str]] = []
 
     _install_fake_wasm_link_runner(
-        monkeypatch, fixture_root=runtime_fixture_root, link_calls=link_calls
+        monkeypatch,
+        fixture_root=runtime_fixture_root,
+        link_calls=link_calls,
+        app_input_paths=(output_wasm,),
     )
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
@@ -23182,6 +23333,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     output_wasm = tmp_path / "out" / "output.wasm"
     output_wasm.parent.mkdir(parents=True, exist_ok=True)
     output_wasm.write_bytes(b"\0asm\x01\0\0\0")
+
     linked_wasm = tmp_path / "out" / "output_linked.wasm"
     runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
@@ -23199,11 +23351,11 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     cpython_abi_provider = tmp_path / "target" / "libmolt_cpython_abi.a"
     cpython_abi_provider.parent.mkdir(parents=True)
     cpython_abi_provider.write_bytes(static_archive_bytes(b"provider"))
-    libc_provider = tmp_path / "rustlib" / "self-contained" / "libc.a"
-    libc_provider.parent.mkdir(parents=True)
-    libc_provider.write_bytes(static_archive_bytes(b"libc"))
-    compiler_rt_provider = tmp_path / "rustlib" / "libcompiler_builtins-x.rlib"
-    compiler_rt_provider.write_bytes(static_archive_bytes(b"compiler-rt"))
+    from tests.runtime_build_identity_helper import runtime_wasi_c_abi_plan
+
+    c_abi_plan = runtime_wasi_c_abi_plan(runtime_fixture_root)
+    libc_provider = c_abi_plan.path("libc")
+    compiler_rt_provider = c_abi_plan.path("compiler_rt")
     libcxx_provider = tmp_path / "wasi-sysroot" / "eh" / "libc++.a"
     libcxxabi_provider = tmp_path / "wasi-sysroot" / "eh" / "libc++abi.a"
     libunwind_provider = tmp_path / "wasi-sysroot" / "eh" / "libunwind.a"
@@ -23268,7 +23420,10 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     link_calls: list[list[str]] = []
     pair_required: list[set[str]] = []
     native_plans = _install_fake_wasm_link_runner(
-        monkeypatch, fixture_root=runtime_fixture_root, link_calls=link_calls
+        monkeypatch,
+        fixture_root=runtime_fixture_root,
+        link_calls=link_calls,
+        app_input_paths=(output_wasm,),
     )
     monkeypatch.setattr(
         cli_non_native_output,
@@ -23276,22 +23431,21 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
         lambda _path, _module_name: set(),
     )
 
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "wasm_wasi_libc_archive",
-        lambda: libc_provider,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "wasm_compiler_builtins_archive",
-        lambda: compiler_rt_provider,
-        raising=True,
-    )
+    sdk_selections = []
+
+    def selected_sdk():
+        sdk_selections.append(c_abi_plan)
+        return c_abi_plan
+
+    def selected_cxx(*, plan):
+        assert plan is c_abi_plan
+        return (libcxx_provider, libcxxabi_provider, libunwind_provider)
+
+    monkeypatch.setattr(wasm_link_inputs, "resolve_wasi_c_abi_plan", selected_sdk)
     monkeypatch.setattr(
         wasm_link_inputs,
         "wasm_cxx_runtime_archives",
-        lambda: (libcxx_provider, libcxxabi_provider, libunwind_provider),
+        selected_cxx,
         raising=True,
     )
 
@@ -23320,6 +23474,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     )
 
     assert err is None
+    assert sdk_selections == [c_abi_plan]
     assert prepared is not None
     assert len(link_calls) == 1
     link_cmd = link_calls[0]
@@ -23350,6 +23505,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     output_wasm = tmp_path / "out" / "output.wasm"
     output_wasm.parent.mkdir(parents=True, exist_ok=True)
     output_wasm.write_bytes(b"\0asm\x01\0\0\0")
+
     linked_wasm = tmp_path / "out" / "output_linked.wasm"
     runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
@@ -23368,11 +23524,11 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     cpython_abi_provider = tmp_path / "target" / "libmolt_cpython_abi.a"
     cpython_abi_provider.parent.mkdir(parents=True)
     cpython_abi_provider.write_bytes(static_archive_bytes(b"provider"))
-    libc_provider = tmp_path / "rustlib" / "self-contained" / "libc.a"
-    libc_provider.parent.mkdir(parents=True)
-    libc_provider.write_bytes(static_archive_bytes(b"libc"))
-    compiler_rt_provider = tmp_path / "rustlib" / "libcompiler_builtins-x.rlib"
-    compiler_rt_provider.write_bytes(static_archive_bytes(b"compiler-rt"))
+    from tests.runtime_build_identity_helper import runtime_wasi_c_abi_plan
+
+    c_abi_plan = runtime_wasi_c_abi_plan(runtime_fixture_root)
+    libc_provider = c_abi_plan.path("libc")
+    compiler_rt_provider = c_abi_plan.path("compiler_rt")
     native_artifact_plan = _ExternalPackageNativeArtifactPlan(
         artifacts=(
             _ExternalPackageNativeArtifact(
@@ -23424,7 +23580,10 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     link_calls: list[list[str]] = []
     pair_required: list[set[str]] = []
     native_plans = _install_fake_wasm_link_runner(
-        monkeypatch, fixture_root=runtime_fixture_root, link_calls=link_calls
+        monkeypatch,
+        fixture_root=runtime_fixture_root,
+        link_calls=link_calls,
+        app_input_paths=(output_wasm,),
     )
     monkeypatch.setattr(
         cli_non_native_output,
@@ -23433,16 +23592,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     )
 
     monkeypatch.setattr(
-        wasm_link_inputs,
-        "wasm_wasi_libc_archive",
-        lambda: libc_provider,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "wasm_compiler_builtins_archive",
-        lambda: compiler_rt_provider,
-        raising=True,
+        wasm_link_inputs, "resolve_wasi_c_abi_plan", lambda **kw: c_abi_plan
     )
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
@@ -23680,7 +23830,9 @@ def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_i
     _write_split_runtime_vfs_support(tmp_path)
     missing_symbol = "molt_nativepkg_missing"
 
-    _install_fake_wasm_link_runner(monkeypatch, fixture_root=runtime_fixture_root)
+    _install_fake_wasm_link_runner(
+        monkeypatch, fixture_root=runtime_fixture_root, app_input_paths=(output_wasm,)
+    )
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
         del path
@@ -23764,7 +23916,9 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
     runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
     _write_split_runtime_vfs_support(tmp_path)
 
-    _install_fake_wasm_link_runner(monkeypatch, fixture_root=runtime_fixture_root)
+    _install_fake_wasm_link_runner(
+        monkeypatch, fixture_root=runtime_fixture_root, app_input_paths=(output_wasm,)
+    )
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
         del path
@@ -24220,6 +24374,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         )
         return (
             cli._PreparedBackendSetup(
+                backend="native",
                 runtime_state=runtime_state,
                 backend_bin=tmp_path / "molt-backend",
                 cache_setup=cache_setup,
@@ -33003,3 +33158,92 @@ def test_run_wrapper_build_uses_explicit_child_module_roots_over_ambient(
     receipt = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert Path(receipt["input"]["source_path"]) == entry.resolve()
     assert receipt["input"]["semantic_env"]["MOLT_MODULE_ROOTS"] == str(selected_root)
+
+
+@pytest.mark.parametrize(
+    "split_runtime,stage",
+    [(False, "linked-validation"), (True, "facts-scan"), (True, "split-native-link")],
+)
+def test_failed_wasm_link_evidence_survives_private_deployment_cleanup(
+    isolated_molt_cache: Path,
+    runtime_fixture_root: RuntimeFixtureRoot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    split_runtime: bool,
+    stage: str,
+) -> None:
+    from tools.wasm_link_fact_provider import preserve_rejected_wasm
+
+    output = tmp_path / "out" / "output.wasm"
+    output.parent.mkdir()
+    output.write_bytes(b"\0asm\x01\0\0\0")
+
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    shared = runtime_root / "molt_runtime.wasm"
+    reloc = runtime_root / "molt_runtime_reloc.wasm"
+    shared.write_bytes(output.read_bytes())
+    reloc.write_bytes(output.read_bytes())
+    _write_split_runtime_vfs_support(tmp_path)
+    _install_fake_wasm_link_runner(
+        monkeypatch, fixture_root=runtime_fixture_root, app_input_paths=(output,)
+    )
+    original_runner = cli_non_native_output._run_completed_command
+    linked = output.with_name("output_linked.wasm")
+    old_outputs = {
+        linked: b"old-linked",
+        output.with_name("manifest.json"): b"old-manifest",
+    }
+    if split_runtime:
+        old_outputs.update(
+            {
+                output.with_name("app.wasm"): b"old-app",
+                output.with_name("molt_runtime.wasm"): b"old-runtime",
+            }
+        )
+    for destination, data in old_outputs.items():
+        destination.write_bytes(data)
+    kept: list[Path] = []
+    generations: list[Path] = []
+    rejected = b"\0asm\x01\0\0\0rejected-link-output"
+
+    def rejected_link(command, **kwargs):
+        if "--wasm-facts-scanner" not in command:
+            return original_runner(command, **kwargs)
+        private_output = Path(command[command.index("--output") + 1])
+        generations.append(private_output.parent)
+        evidence_root = Path(command[command.index("--failure-evidence-dir") + 1])
+        assert evidence_root == output.parent / "wasm-link-evidence"
+        assert not evidence_root.is_relative_to(private_output.parent)
+        kept.append(preserve_rejected_wasm(rejected, evidence_root, stage=stage))
+        return subprocess.CompletedProcess(
+            command, 1, "", f"rejected input kept at {kept[-1]}"
+        )
+
+    monkeypatch.setattr(cli_non_native_output, "_run_completed_command", rejected_link)
+    prepared, error = cli_non_native_output._prepare_non_native_build_result(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=True,
+        linked=True,
+        require_linked=False,
+        linked_output_path=linked,
+        output_artifact=output,
+        json_output=True,
+        runtime_state=_prepared_runtime_pair_state(shared, reloc),
+        ensure_runtime_wasm_both=lambda _required=None: True,
+        runtime_cargo_profile="dev-fast",
+        molt_root=tmp_path,
+        split_runtime=split_runtime,
+        wasm_table_base=8192,
+        wasm_facts_scanner=tmp_path / "molt-backend",
+        app_export_contract_path=_empty_app_export_contract(tmp_path),
+        resolved_capability_policy=CapabilityManifest().resolve(),
+    )
+    assert prepared is None and error is not None
+    assert len(kept) == len(generations) == 1
+    assert not generations[0].exists()
+    assert kept[0].read_bytes() == rejected
+    assert {
+        destination: destination.read_bytes() for destination in old_outputs
+    } == old_outputs

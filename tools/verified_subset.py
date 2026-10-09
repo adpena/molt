@@ -599,15 +599,25 @@ def _backend_identity(coordinate: VerifiedSubsetCoordinate) -> dict[str, object]
     }
 
 
-def execution_profiles(build_profile: str) -> dict[str, str]:
+def execution_profiles(build_profile: str, *, backend: str) -> dict[str, str]:
     """Canonical guest and host profile selection; test headers own stdlib scope."""
     if build_profile not in {"dev", "release"}:
         raise ValueError("verified-subset build profile must be dev or release")
     from molt.cli.cargo_profiles import _resolve_cargo_profile_name_cached
 
-    runtime, error = _resolve_cargo_profile_name_cached(build_profile, "")
+    if backend not in {"native", "llvm", "wasm"}:
+        raise ValueError("unsupported verified-subset backend: " + backend)
+    runtime, error = _resolve_cargo_profile_name_cached(
+        build_profile, "", wasm=backend == "wasm"
+    )
     if error:
         raise ValueError(error)
+    if backend == "wasm":
+        from molt.cli.runtime_wasm_build_policy import (
+            _resolve_wasm_cargo_profile_cached,
+        )
+
+        runtime = _resolve_wasm_cargo_profile_cached(runtime, "", "")
     return {
         "build": build_profile,
         "runtime": runtime,
@@ -616,8 +626,8 @@ def execution_profiles(build_profile: str) -> dict[str, str]:
     }
 
 
-def _profile_environment(build_profile: str) -> dict[str, str]:
-    execution_profiles(build_profile)
+def _profile_environment(build_profile: str, *, backend: str) -> dict[str, str]:
+    execution_profiles(build_profile, backend=backend)
     env = {
         name: value
         for name, value in os.environ.items()
@@ -647,7 +657,9 @@ def _execution_identity(
     require_current_host(coordinate)
     return {
         "backend": _backend_identity(coordinate),
-        "profiles": execution_profiles(build_profile or coordinate.build_profile),
+        "profiles": execution_profiles(
+            build_profile or coordinate.build_profile, backend=coordinate.backend
+        ),
         "ci": _github_execution_identity(coordinate, source_sha=source_sha),
         "host": {
             "arch": test_policy.current_architecture(),
@@ -677,7 +689,7 @@ def run_differential_suites(
     build_profile = build_profile or coordinate.build_profile
     if build_profile != coordinate.build_profile:
         raise ValueError("requested build profile differs from coordinate")
-    env = _profile_environment(build_profile)
+    env = _profile_environment(build_profile, backend=coordinate.backend)
     env["MOLT_DIFF_RESULTS_JSONL"] = str(results_path)
     env["MOLT_DIFF_PYTHON"] = sys.executable
     env["MOLT_CAPABILITY_TIER"] = EXPLICIT_CAPABILITY_TIER
@@ -755,8 +767,8 @@ def verify_receipt_closure(
     validation: VerifiedSubsetValidation | None = None,
     build_profile: str | None = None,
 ) -> int:
-    if build_profile is not None:
-        execution_profiles(build_profile)
+    if build_profile is not None and build_profile not in {"dev", "release"}:
+        raise ValueError("verified-subset build profile must be dev or release")
     validation = validation or validate_manifest()
     validation.require_root(ROOT)
     expected_coordinates = {

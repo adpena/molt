@@ -48,6 +48,118 @@ _RESUME_EDGE = int(CFGEdgeKind.RESUME)
 _EDGE_KIND_BY_BITS = tuple(CFGEdgeKind(bits) for bits in range(1 << len(CFGEdgeKind)))
 
 
+@dataclass(frozen=True, slots=True)
+class DominatorTree:
+    """Reachable-node dominance with linear retained storage and O(1) queries.
+
+    Successors must be valid dense node IDs in [0, len(successors)). Node IDs
+    index immutable immediate-parent and tree-interval tables.
+    Entry and unreachable nodes have no immediate parent. Unreachable nodes do
+    not dominate anything, including themselves, matching TIR IndexedDominance.
+    """
+
+    _parents: tuple[int | None, ...]
+    _entered: tuple[int, ...]
+    _exited: tuple[int, ...]
+
+    @classmethod
+    def compute(
+        cls, successors: Sequence[Sequence[int]], entry: int = 0
+    ) -> DominatorTree:
+        count = len(successors)
+        entered = [-1] * count
+        exited = [-1] * count
+        parents: list[int | None] = [None] * count
+        if not 0 <= entry < count:
+            return cls(tuple(parents), tuple(entered), tuple(exited))
+
+        # Mark on entry, not when scheduling siblings: a cross-edge may visit
+        # a pending sibling first. Both traversals stay off Python's call stack.
+        seen = [False] * count
+        postorder: list[int] = []
+        stack = [(entry, False)]
+        while stack:
+            node, exiting = stack.pop()
+            if exiting:
+                postorder.append(node)
+            elif not seen[node]:
+                seen[node] = True
+                stack.append((node, True))
+                stack.extend(
+                    (child, False)
+                    for child in reversed(successors[node])
+                    if not seen[child]
+                )
+        order = list(reversed(postorder))
+        positions = [-1] * count
+        for index, node in enumerate(order):
+            positions[node] = index
+        predecessors: list[list[int]] = [[] for _ in order]
+        for index, node in enumerate(order):
+            for child in successors[node]:
+                predecessors[positions[child]].append(index)
+
+        # Cooper-Harvey-Kennedy, as in runtime/molt-ir/src/tir/dominators.rs:
+        # intersect immediate-parent paths in reachable reverse-postorder space
+        # instead of allocating the complete ancestor set for every CFG block.
+        idoms = [-1] * len(order)
+        idoms[0] = 0
+        changed = True
+        while changed:
+            changed = False
+            for node in range(1, len(order)):
+                parent = -1
+                for pred in predecessors[node]:
+                    if idoms[pred] == -1:
+                        continue
+                    if parent == -1:
+                        parent = pred
+                        continue
+                    left, right = parent, pred
+                    while left != right:
+                        while left > right:
+                            left = idoms[left]
+                        while right > left:
+                            right = idoms[right]
+                    parent = left
+                if parent != idoms[node]:
+                    idoms[node] = parent
+                    changed = True
+
+        children: list[list[int]] = [[] for _ in order]
+        for index in range(1, len(order)):
+            parent = idoms[index]
+            children[parent].append(index)
+            parents[order[index]] = order[parent]
+        clock = 0
+        stack = [(0, False)]
+        while stack:
+            index, exiting = stack.pop()
+            node = order[index]
+            if exiting:
+                exited[node] = clock
+            else:
+                entered[node] = clock
+                stack.append((index, True))
+                stack.extend((child, False) for child in reversed(children[index]))
+            clock += 1
+        return cls(tuple(parents), tuple(entered), tuple(exited))
+
+    def is_reachable(self, node: int) -> bool:
+        return 0 <= node < len(self._entered) and self._entered[node] >= 0
+
+    def dominates(self, definition: int, usage: int) -> bool:
+        return (
+            self.is_reachable(definition)
+            and self.is_reachable(usage)
+            and self._entered[definition] <= self._entered[usage]
+            and self._exited[usage] <= self._exited[definition]
+        )
+
+    def immediate_dominator(self, node: int) -> int | None:
+        return self._parents[node] if 0 <= node < len(self._parents) else None
+
+
 @dataclass(frozen=True)
 class CFGGraph:
     """Control flow of one op list. Immutable: ``build_cfg`` gives every op list
@@ -64,28 +176,12 @@ class CFGGraph:
     reachable: frozenset[int] | set[int]
 
     # Dominance is derived on first use: most graphs a pass round builds are
-    # never asked a dominance query.
+    # never asked a dominance query. Shared CFGs retain one immutable tree.
     @cached_property
-    def idom(self) -> dict[int, int]:
-        """Immediate dominator of each reachable block; the entry maps to itself."""
-        return _compute_immediate_dominators(
-            successors=self.successors, predecessors=self.predecessors
+    def dominance(self) -> DominatorTree:
+        return DominatorTree.compute(
+            tuple(self.successors[index] for index in range(len(self.successors)))
         )
-
-    @cached_property
-    def _dominance_span(self) -> dict[int, tuple[int, int]]:
-        return _dominator_tree_spans(self.idom)
-
-    def dominates(self, dominator: int, block: int) -> bool:
-        """Whether every entry path to ``block`` passes through ``dominator``.
-
-        An unreachable block is dominated only by itself.
-        """
-        inner = self._dominance_span.get(block)
-        if inner is None:
-            return dominator == block
-        outer = self._dominance_span.get(dominator)
-        return outer is not None and outer[0] <= inner[0] and inner[1] <= outer[1]
 
 
 def _collect_control_maps(kinds: Sequence[str]) -> ControlMaps:
@@ -385,101 +481,6 @@ def _reachable_blocks(successors: dict[int, list[int]]) -> set[int]:
             if succ not in seen:
                 stack.append(succ)
     return seen
-
-
-def _compute_immediate_dominators(
-    *,
-    successors: Mapping[int, Sequence[int]],
-    predecessors: Mapping[int, Sequence[int]],
-) -> dict[int, int]:
-    """Immediate dominators of the blocks reachable from the entry block 0.
-
-    Cooper, Harvey and Kennedy, "A Simple, Fast Dominance Algorithm" (2001):
-    iterate over reverse postorder, intersecting predecessor paths in the
-    dominator tree. It keeps one entry per block; a full dominator set per
-    block grows quadratically and took 5 GB for a 12,000-op module body.
-    """
-    if not successors:
-        return {}
-    postorder: list[int] = []
-    seen = {0}
-    stack = [(0, iter(successors.get(0, ())))]
-    while stack:
-        block, pending = stack[-1]
-        for successor in pending:
-            if successor not in seen:
-                seen.add(successor)
-                stack.append((successor, iter(successors.get(successor, ()))))
-                break
-        else:
-            stack.pop()
-            postorder.append(block)
-    # Work on postorder numbers: the entry has the highest, every dominator a
-    # higher number than the blocks it dominates, and lists replace dicts.
-    number = {block: index for index, block in enumerate(postorder)}
-    preds = [
-        [number[pred] for pred in predecessors.get(block, ()) if pred in number]
-        for block in postorder
-    ]
-    undefined = -1
-    entry = len(postorder) - 1
-    doms = [undefined] * len(postorder)
-    doms[entry] = entry
-    changed = True
-    while changed:
-        changed = False
-        for node in range(entry - 1, -1, -1):
-            chosen = undefined
-            for pred in preds[node]:
-                if doms[pred] == undefined:
-                    continue
-                if chosen == undefined:
-                    chosen = pred
-                    continue
-                left, right = pred, chosen
-                while left != right:
-                    while left < right:
-                        left = doms[left]
-                    while right < left:
-                        right = doms[right]
-                chosen = left
-            if chosen != undefined and doms[node] != chosen:
-                doms[node] = chosen
-                changed = True
-    return {
-        postorder[node]: postorder[dom]
-        for node, dom in enumerate(doms)
-        if dom != undefined
-    }
-
-
-def _dominator_tree_spans(idom: dict[int, int]) -> dict[int, tuple[int, int]]:
-    """Pre/post visit numbers in the dominator tree, for O(1) dominance tests."""
-    children: dict[int, list[int]] = {}
-    roots: list[int] = []
-    for block, parent in idom.items():
-        if block == parent:
-            roots.append(block)
-        else:
-            children.setdefault(parent, []).append(block)
-    spans: dict[int, tuple[int, int]] = {}
-    counter = 0
-    for root in sorted(roots):
-        entry: dict[int, int] = {root: counter}
-        counter += 1
-        stack = [(root, iter(sorted(children.get(root, ()))))]
-        while stack:
-            block, pending = stack[-1]
-            child = next(pending, None)
-            if child is None:
-                stack.pop()
-                spans[block] = (entry[block], counter)
-                counter += 1
-            else:
-                entry[child] = counter
-                counter += 1
-                stack.append((child, iter(sorted(children.get(child, ())))))
-    return spans
 
 
 # The CFG reads every op's kind and the first operand of these kinds only. The

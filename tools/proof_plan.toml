@@ -6,7 +6,7 @@
 # Workflows retain only executor mechanics.  Do not add path classifiers to
 # workflow YAML or another tool.
 
-schema = "molt.proof-plan.v4"
+schema = "molt.proof-plan.v5"
 
 authority_inputs = [
   "tools/compatibility_error_protocol.py",
@@ -174,6 +174,7 @@ authority_inputs = [
   "src/molt/file_locks.py",
   "src/molt/path_custody.py",
   "src/molt/toolchain_identity.py",
+  "src/molt/rust_toolchain.py",
   "src/molt/llvm_linker_roles.py",
   "src/molt/file_hashing.py",
   "src/molt/exact_json.py",
@@ -191,6 +192,7 @@ authority_inputs = [
   "src/molt/process_guard.py",
   "src/molt/llvm_toolchain.py",
   "src/molt/wasi_sdk_identity.py",
+  "src/molt/wasi_c_abi_protocol.txt",
   "tools/provision_wasi_sdk.py",
   "tools/nightly_prepare.py",
   "tools/nightly_profile_feedback.py",
@@ -326,6 +328,10 @@ authority_inputs = [
   "tests/tools/test_ci_gate.py",
   "tests/tools/test_guarded_exec.py",
   "tests/tools/test_proof_queue.py",
+  "tests/tools/test_proof_supervisor_generation.py",
+  "tests/tools/test_proof_queue_execution_custody_p0.py",
+  "tests/tools/test_cargo_bindgen_toolchain.py",
+  "tests/tools/test_tool_identity_reuse.py",
   "tests/tools/test_proof_queue_execution_receipt_details.py",
   "tests/tools/test_proof_queue_cargo_cache_custody.py",
   "tests/tools/test_proof_queue_cargo_reclamation.py",
@@ -357,6 +363,13 @@ always = [
 
 receipt_schema = "molt.proof-receipt.v4"
 
+# Each modeled CI or scheduled job declares a positive job_reserve_seconds.
+# It covers setup, identity capture, guard finalization and artifact transport
+# outside command deadlines. CI allowances use observed run 37935929479 setup
+# and post-proof elapsed time, rounded upward to whole minutes; scheduled
+# allowances preserve existing declared slack. These are minimum allowances,
+# not hard bounds on network provisioning or OS process cleanup. Headroom is
+# calculated after the reserve. Child deadlines remain independently owned.
 # One deterministic DAG executor owns command admission. The global ceiling
 # bounds process fanout; each resource policy additionally serializes or limits
 # commands that share mutable toolchain/build state.
@@ -411,9 +424,36 @@ setup_value = "3.12.15"
 setup_evidence = [".python-version::3.12.15", ".github/actions/setup-project/action.yml::bash .github/actions/setup-project/provision-python.sh"]
 
 [[toolchain_policy]]
+name = "bash"
+executable = "bash"
+version_args = ["--version"]
+# Completion probes exercise the hosted shells; capture their exact images and versions.
+setup_value = "Ubuntu hosted shell package"
+version_pattern = '^GNU bash, version [0-9]+\.[0-9]+\.'
+setup_evidence = [".github/workflows/ci.yml::Install completion test shells"]
+
+[[toolchain_policy]]
+name = "fish"
+executable = "fish"
+version_args = ["--version"]
+# Completion probes exercise the hosted shells; capture their exact images and versions.
+setup_value = "Ubuntu hosted shell package"
+version_pattern = '^fish, version [0-9]+\.[0-9]+\.'
+setup_evidence = [".github/workflows/ci.yml::Install completion test shells"]
+
+[[toolchain_policy]]
+name = "zsh"
+executable = "zsh"
+version_args = ["--version"]
+# Completion probes exercise the hosted shells; capture their exact images and versions.
+setup_value = "Ubuntu hosted shell package"
+version_pattern = '^zsh [0-9]+\.[0-9]+'
+setup_evidence = [".github/workflows/ci.yml::Install completion test shells"]
+
+[[toolchain_policy]]
 name = "source-extension"
 identity_provider = "source-extension"
-version_pattern = '^molt-source-extension-toolchain-v2$'
+version_pattern = '^molt-source-extension-toolchain-v4$'
 dependencies = ["git"]
 setup_evidence = [
   "src/molt/cli/source_extension_toolchain.py::_resolve_source_extension_toolchain",
@@ -512,6 +552,33 @@ version_args = ["--version"]
 version_pattern = 'clang version 22\.1\.8\b'
 setup_value = "22.1.8"
 setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
+name = "hosted-clang-cl"
+executable = "clang-cl"
+version_args = ["--version"]
+setup_value = "windows-2022 image C11 compiler"
+# C11/DLL ABI probes exercise the image compiler, not the pinned LLVM/MLIR ABI.
+# Exact compiler bytes and version output are captured by the toolchain owner.
+version_pattern = '^clang version [0-9]+\.[0-9]+\.[0-9]+\b'
+setup_evidence = [".github/workflows/ci.yml::The Windows image supplies clang-cl for the C ABI header probes."]
+
+[[toolchain_policy]]
+name = "ninja"
+executable = "ninja"
+version_args = ["--version"]
+version_pattern = '^1\.13\.0(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$'
+setup_value = "1.13.0"
+setup_evidence = ['pyproject.toml::"ninja==1.13.0"', 'uv.lock::version = "1.13.0"']
+
+[[toolchain_policy]]
+name = "wasi-clang"
+executable = "clang"
+wasi_sdk_tool = "clang"
+version_args = ["--version"]
+version_pattern = 'clang version 23\.1\.0\b'
+setup_value = "23.1.0"
+setup_evidence = ['config/llvm_toolchain_releases.toml::llvm_version = "23.1.0"']
 
 [[toolchain_policy]]
 name = "llvm-config"
@@ -866,13 +933,15 @@ admission_needs = []
 tiers = ["pre-push", "pr", "main"]
 required = true
 timeout_minutes = 60
+# Observed setup/post-proof total 64s, rounded up to whole minutes.
+job_reserve_seconds = 120
 resource_class = "repository-policy"
 dependencies = []
 
 [[ci_family]]
 name = "wasm"
 description = "WASM backend, shared runtime, linked artifact, Luau sibling, and control-flow proof."
-inputs = [".github/workflows/molt-wasm-ci.yml", ".python-version", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "runtime/**", "src/**", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/venv_exec.py", "tools/wasm_*.py", "tests/test_wasm_*.py", "tests/cli/test_native_symbol_authority.py", "tests/wasm_linked_runner.py", "wasm/**", "examples/*.py"]
+inputs = [".github/workflows/molt-wasm-ci.yml", ".python-version", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "runtime/**", "src/**", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/venv_exec.py", "tools/wasm_*.py", "tests/test_wasm_*.py", "tests/test_generate_worker.py", "tests/test_browser_asset_closure.py", "tests/cli/test_native_symbol_authority.py", "tests/wasm_linked_runner.py", "wasm/**", "examples/*.py", "tests/differential/basic/from_import_missing_name.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py", "tools/compat/**"]
 executor = "github-job"
 workflow = ".github/workflows/molt-wasm-ci.yml"
 job = "wasm-build"
@@ -881,7 +950,9 @@ admission_job = "wasm-validation"
 admission_needs = ["classify-changes"]
 tiers = ["pr", "main"]
 required = true
-timeout_minutes = 160
+timeout_minutes = 263
+# Observed setup/post-proof total 124s, rounded up to whole minutes.
+job_reserve_seconds = 180
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -897,7 +968,9 @@ admission_job = "python-static"
 admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main"]
 required = true
-timeout_minutes = 15
+timeout_minutes = 16
+# Observed setup/post-proof total 27s, rounded up to whole minutes.
+job_reserve_seconds = 60
 resource_class = "python-static"
 dependencies = []
 
@@ -913,7 +986,9 @@ admission_job = "python-unit"
 admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main"]
 required = true
-timeout_minutes = 40
+timeout_minutes = 41
+# Observed setup/post-proof total 38s, rounded up to whole minutes.
+job_reserve_seconds = 60
 resource_class = "python-tests"
 dependencies = []
 
@@ -930,7 +1005,10 @@ admission_job = "native-integration"
 admission_needs = ["classify-changes"]
 tiers = ["pr", "main"]
 required = true
-timeout_minutes = 40
+# The two cold compiler rows serialize on main; the Python row runs beside them.
+timeout_minutes = 43
+# Observed setup/post-proof total 126s, rounded up to whole minutes.
+job_reserve_seconds = 180
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -947,15 +1025,18 @@ admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main"]
 required = true
 # Full parallel runtime plus seven fresh-process shipping witnesses are mandatory.
-# The full resource-serialized DAG is bounded by this complete job envelope.
-timeout_minutes = 240
+# The full resource-serialized DAG, including the focused extension witness,
+# has a separate operational allowance inside the job backstop.
+timeout_minutes = 254
+# Observed setup/post-proof total 218s, rounded up to whole minutes.
+job_reserve_seconds = 240
 resource_class = "compiler-build-resource"
 dependencies = []
 
 [[ci_family]]
 name = "llvm"
 description = "LLVM, MLIR, and linker executable build/lowering/link/differential proof."
-inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/llvm_toolchain_arches.toml", "config/llvm_toolchain_releases.toml", ".github/actions/setup-llvm/**", ".github/workflows/perf-gate.yml", "src/molt/cli/setup_readiness.py", "src/molt/llvm_toolchain.py", "src/molt/wasi_sdk_identity.py", "tools/provision_wasi_sdk.py", "tests/tools/test_provision_wasi_sdk.py", "src/molt/cli/native_link*.py", "tests/test_bootstrap_llvm.py", "tests/test_llvm_toolchain.py", "tests/cli/test_native_link*.py", "tools/bootstrap_llvm.py", "runtime/molt-backend/**", "runtime/molt-artifact-publish/**", "runtime/molt-backend-mlir/**", "runtime/molt-backend-native/**", "runtime/molt-ir/**", "runtime/molt-passes/**", "runtime/molt-tir/**"]
+inputs = [".github/workflows/ci.yml", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "config/llvm_toolchain_arches.toml", "config/llvm_toolchain_releases.toml", ".github/actions/setup-llvm/**", ".github/workflows/perf-gate.yml", "src/molt/cli/setup_readiness.py", "src/molt/llvm_toolchain.py", "src/molt/wasi_sdk_identity.py", "tools/provision_wasi_sdk.py", "tests/tools/test_provision_wasi_sdk.py", "src/molt/cli/native_link*.py", "tests/test_bootstrap_llvm.py", "tests/test_llvm_toolchain.py", "tests/cli/test_native_link*.py", "tools/bootstrap_llvm.py", "runtime/molt-backend/**", "runtime/molt-artifact-publish/**", "runtime/molt-backend-mlir/**", "runtime/molt-backend-native/**", "runtime/molt-ir/**", "runtime/molt-passes/**", "runtime/molt-tir/**", "config/release_acceptance_matrix.toml", "src/molt/release_lanes.py", "src/molt/compiler_distribution.py", "src/molt/cli/compiler_identity.py", "src/molt/cli/installed_runtime.py", "tools/release/native_build.py", "tools/release/runtime_cells.py", "tools/release/verify_consumer.py", "vendor/llvm/**", "tests/cli/test_compiler_identity.py", "tests/cli/test_installed_runtime.py", "tests/tools/test_release_native_build.py", "tests/test_release_lanes.py"]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
 job = "llvm-backend"
@@ -965,6 +1046,8 @@ admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main", "scheduled"]
 required = true
 timeout_minutes = 75
+# Observed setup/post-proof total 116s, rounded up to whole minutes.
+job_reserve_seconds = 120
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -981,6 +1064,8 @@ admission_needs = ["classify-changes"]
 tiers = ["pr", "main", "scheduled"]
 required = true
 timeout_minutes = 20
+# Observed setup/post-proof total 22s, rounded up to whole minutes.
+job_reserve_seconds = 60
 resource_class = "network-audit"
 dependencies = []
 
@@ -996,7 +1081,9 @@ admission_job = "security-hardening"
 admission_needs = ["classify-changes"]
 tiers = ["pr", "main", "scheduled"]
 required = true
-timeout_minutes = 20
+timeout_minutes = 21
+# Observed setup/post-proof total 321s, rounded up to whole minutes.
+job_reserve_seconds = 360
 resource_class = "network-audit"
 dependencies = []
 
@@ -1019,7 +1106,9 @@ dependencies = []
 [[ci_family]]
 name = "platform_portability"
 description = "Hosted Linux, macOS, and Windows queue, process, path, and source-build custody proof, plus Rust workspace lint/compile and runtime test truth on macOS."
-inputs = [
+inputs = ["src/molt/cli/completion.py", "src/molt/cli/arg_helpers.py", "src/molt/cli/entrypoint.py", "tests/cli/test_cli_smoke.py",
+  "include/molt/**",
+  "tests/cli/test_c_api_headers.py",
   ".github/actions/setup-project/**",
   "tools/check_rust_toolchain.py",
   "tests/tools/test_setup_project_inputs.py",
@@ -1117,6 +1206,9 @@ inputs = [
   "tests/tools/test_proof_queue.py",
   "tests/tools/test_proof_supervisor_environment.py",
   "tests/tools/test_proof_supervisor_inventory.py",
+  "tests/tools/test_target_derived_toolchains.py",
+  "tests/tools/test_tool_identity_reuse.py",
+  "tests/tools/test_toolchain_capture.py",
   "tests/tools/test_win_job.py",
   "tests/tools/test_win_job_contract.py",
   "tests/tools/test_windows_process_api.py",
@@ -1140,8 +1232,10 @@ tiers = ["pr", "main"]
 required = true
 # The macOS Rust cell serializes its workspace lint (suite budget) and runtime
 # gate (shipping budget) on one compiler-build resource; the Python cells keep
-# their own 600-second command envelopes inside this backstop.
-timeout_minutes = 180
+# their declared per-command envelopes inside this backstop.
+timeout_minutes = 182
+# Observed setup/post-proof total 72s, rounded up to whole minutes.
+job_reserve_seconds = 120
 resource_class = "python-tests"
 dependencies = []
 
@@ -1155,6 +1249,8 @@ workflow = ".github/workflows/nightly.yml"
 job = "nightly-prepare"
 tiers = ["scheduled"]
 timeout_minutes = 60
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 300
 resource_class = "scheduled-suite"
 
 [[scheduled_family]]
@@ -1164,6 +1260,8 @@ workflow = ".github/workflows/nightly.yml"
 job = "conformance-aggregate"
 tiers = ["scheduled"]
 timeout_minutes = 15
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 300
 resource_class = "scheduled-suite"
 sharded_program = "conformance"
 shard_count = 8
@@ -1175,6 +1273,8 @@ workflow = ".github/workflows/nightly.yml"
 job = "differential-aggregate"
 tiers = ["scheduled"]
 timeout_minutes = 15
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 300
 resource_class = "scheduled-suite"
 sharded_program = "differential"
 shard_count = 16
@@ -1186,6 +1286,8 @@ workflow = ".github/workflows/nightly.yml"
 job = "regrtest-aggregate"
 tiers = ["scheduled"]
 timeout_minutes = 15
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 300
 resource_class = "scheduled-suite"
 sharded_program = "regrtest"
 shard_count = 4
@@ -1197,6 +1299,8 @@ workflow = ".github/workflows/nightly.yml"
 job = "shard-profile-feedback"
 tiers = ["scheduled"]
 timeout_minutes = 10
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 300
 resource_class = "scheduled-suite"
 needs = ["nightly-prepare", "conformance-aggregate", "differential-aggregate", "regrtest-aggregate"]
 
@@ -1226,6 +1330,8 @@ workflow = ".github/workflows/nightly.yml"
 job = "determinism-sweep"
 tiers = ["scheduled"]
 timeout_minutes = 95
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 300
 resource_class = "scheduled-suite"
 
 [[scheduled_family]]
@@ -1235,6 +1341,8 @@ workflow = ".github/workflows/nightly.yml"
 job = "verification-gate-t3"
 tiers = ["scheduled"]
 timeout_minutes = 90
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 600
 resource_class = "scheduled-suite"
 
 # Every executable partition has a stable command identity, exact matrix cell,
@@ -1449,6 +1557,18 @@ dependencies = ["nightly.verification-t3.compiler-prewarm"]
 argv = ["uv", "run", "python3", "-m", "pytest", "tests/model_based", "-x", "-q"]
 toolchains = ["python", "uv"]
 
+[[command]]
+id = "portability.completion.linux"
+family = "platform_portability"
+cell = "linux-x86_64-py312-queue-portability"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 120
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/cli/test_cli_smoke.py::test_cli_completion_uses_parser_commands_flags_and_positional_semantics"]
+toolchains = ["python", "uv", "bash", "fish", "zsh"]
+
 # The three queue cells share one argv. `-n auto` takes its worker count from
 # PYTEST_XDIST_AUTO_NUM_WORKERS, which the CI resource plan sizes per runner.
 # Windows process creation makes this suite ~8x slower than Linux (serially it
@@ -1462,7 +1582,7 @@ resource_class = "python-tests"
 timeout_seconds = 1800
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "-n", "auto", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "-n", "auto", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/tools/test_fs_delete.py", "tests/test_temporary_artifacts.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_supervisor_generation.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1474,7 +1594,7 @@ resource_class = "python-tests"
 timeout_seconds = 1800
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "-n", "auto", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "-n", "auto", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/tools/test_fs_delete.py", "tests/test_temporary_artifacts.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_supervisor_generation.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1486,7 +1606,7 @@ resource_class = "python-tests"
 timeout_seconds = 1800
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "-n", "auto", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "-n", "auto", "tests/test_dx_run_context.py", "tests/test_molt_queue_cli.py", "tests/tools/test_proof_queue.py", "tests/tools/test_proof_supervisor_environment.py", "tests/tools/test_windows_process_api.py", "tests/tools/test_scientific_stack_versions.py", "tests/cli/test_external_native_scipy_package_seal.py", "tests/cli/test_source_extension_set_registry.py", "tests/cli/test_source_extension_manifest_authority.py", "tests/cli/test_source_extension_link_requirements.py", "tests/cli/test_source_extension_producer.py", "tests/cli/test_source_build_environment_probe.py", "tests/cli/test_source_extension_candidate_attestation.py", "tests/cli/test_source_extension_candidate_transaction.py", "tests/cli/test_source_package_seal.py", "tests/test_exact_json.py", "tests/tools/test_fs_delete.py", "tests/test_temporary_artifacts.py", "tests/cli/test_atomic_io_authority.py", "tests/cli/test_python_module_names.py", "tests/cli/test_source_extension_runtime_imports.py", "tests/cli/test_source_extension_input_custody.py", "tests/cli/test_source_extension_target.py", "tests/cli/test_source_extension_language.py", "tests/cli/test_source_extension_compiler_target.py", "tests/cli/test_extension_wheel_retained_inputs.py", "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/tools/test_cargo_bindgen_toolchain.py", "tests/tools/test_proof_queue_execution_custody_p0.py", "tests/tools/test_proof_supervisor_generation.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1500,7 +1620,7 @@ resource_class = "python-tests"
 timeout_seconds = 120
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1514,7 +1634,7 @@ resource_class = "python-tests"
 timeout_seconds = 120
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1525,10 +1645,14 @@ cell = "windows-x86_64-py312-queue-portability"
 # PRs prove the changed pinned-toolchain boundary without repeating that suite.
 tiers = ["pr"]
 resource_class = "python-tests"
-timeout_seconds = 120
+# Windows cold Cargo took 105s before the independent Python-location cases.
+# Preserve the Cargo test's 120s bound and budget this whole cohort separately.
+timeout_seconds = 180
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"]
+# Retain successful nested command costs while diagnosing the prior timeout.
+env = { MOLT_GUARD_PROFILE = "all" }
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "--durations=10", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1557,6 +1681,7 @@ toolchains = ["python", "uv"]
 
 [[command]]
 id = "portability.rust.macos.clippy-workspace"
+cargo_native_c_units = ["target"]
 family = "platform_portability"
 cell = "macos-arm64-py312-rust-native-dev"
 tiers = ["pr", "main"]
@@ -1574,6 +1699,7 @@ toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "portability.rust.linux-aarch64.clippy-workspace"
+cargo_native_c_units = ["target"]
 family = "platform_portability"
 cell = "linux-aarch64-py312-rust-native-dev"
 tiers = ["pr", "main"]
@@ -1893,7 +2019,7 @@ resource_class = "repository-policy"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/tools/test_release_supply_chain.py", "tests/tools/test_release_matrix_acceptance.py", "tests/tools/test_release_matrix_consumer.py", "tests/tools/test_release_archive.py", "tests/tools/test_release_remote.py", "tests/tools/test_provision_wasi_sdk.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/tools/test_release_supply_chain.py", "tests/tools/test_release_sealed_replay.py", "tests/tools/test_release_matrix_acceptance.py", "tests/tools/test_release_matrix_consumer.py", "tests/tools/test_release_archive.py", "tests/tools/test_release_remote.py", "tests/tools/test_provision_wasi_sdk.py", "tests/test_release_lanes.py", "tests/tools/test_release_native_build.py", "tests/tools/test_release_installed_distribution.py", "tests/tools/test_release_exit_gate.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -1905,7 +2031,7 @@ resource_class = "repository-policy"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = ["repository.generator-manifest", "repository.generators", "repository.structural-debt", "repository.canonicalization", "repository.call-fact-coverage"]
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_dependabot_config.py", "tests/tools/test_check_test_ownership.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/tools/test_gen_python_numeric_errors.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_scoreboard.py", "tests/tools/test_perf_schema.py", "tests/tools/test_check_perf_gate_wiring.py",  "tests/tools/test_analysis_capsule.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py", "tests/tools/test_gen_luau_support_matrix.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/tools/test_runtime_test_gate.py", "tests/test_environment_registry.py", "tests/tools/test_check_environment_registry.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_dependabot_config.py", "tests/tools/test_check_test_ownership.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/tools/test_gen_python_numeric_errors.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_scoreboard.py", "tests/tools/test_perf_schema.py", "tests/tools/test_check_perf_gate_wiring.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py", "tests/tools/test_gen_luau_support_matrix.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/tools/test_runtime_test_gate.py", "tests/test_environment_registry.py", "tests/tools/test_check_environment_registry.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/test_gen_cpython_abi_layout.py", "tests/tools/test_perf_release_integrity.py"]
 toolchains = ["python", "uv", "rustfmt"]
 
 # Repository tooling: the checkers, guards, release and measurement tools
@@ -1936,7 +2062,7 @@ resource_class = "repository-policy"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "tests/test_agent_coordination.py", "tests/tools/test_anti_recurrence_gate.py", "tests/tools/test_apparatus_agent_safety.py", "tests/tools/test_check_commit_attribution.py", "tests/tools/test_check_gate_flips.py", "tests/tools/test_check_gate_liveness.py", "tests/tools/test_check_instruction_hierarchy.py", "tests/tools/test_check_sister_landed.py", "tests/tools/test_claim_lane.py", "tests/tools/test_claims_status.py", "tests/tools/test_commit_serializer.py", "tests/tools/test_custody_apparatus.py", "tests/tools/test_dirty_tree_landing_audit.py", "tests/tools/test_ff_land.py", "tests/tools/test_forbidden_checkout_guard.py", "tests/tools/test_hooks_bash_guard.py", "tests/tools/test_hooks_fail_open.py", "tests/tools/test_hooks_landing_gate.py", "tests/tools/test_hooks_session_digest.py", "tests/tools/test_hooks_session_learning.py", "tests/tools/test_hooks_waivers.py", "tests/tools/test_install_git_hooks.py", "tests/tools/test_magnitude_dismissal_gate.py", "tests/tools/test_subagent_contract.py", "tests/tools/test_triality.py", "tests/tools/test_triality_gate.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "tests/test_agent_coordination.py", "tests/tools/test_anti_recurrence_gate.py", "tests/tools/test_apparatus_agent_safety.py", "tests/tools/test_check_commit_attribution.py", "tests/tools/test_check_gate_flips.py", "tests/tools/test_check_gate_liveness.py", "tests/tools/test_check_instruction_hierarchy.py", "tests/tools/test_check_sister_landed.py", "tests/tools/test_claim_lane.py", "tests/tools/test_claims_status.py", "tests/tools/test_commit_serializer.py", "tests/tools/test_custody_apparatus.py", "tests/tools/test_dirty_tree_landing_audit.py", "tests/tools/test_ff_land.py", "tests/tools/test_hooks_bash_guard.py", "tests/tools/test_hooks_fail_open.py", "tests/tools/test_hooks_landing_gate.py", "tests/tools/test_hooks_session_digest.py", "tests/tools/test_hooks_session_learning.py", "tests/tools/test_hooks_waivers.py", "tests/tools/test_install_git_hooks.py", "tests/tools/test_magnitude_dismissal_gate.py", "tests/tools/test_subagent_contract.py", "tests/tools/test_triality.py", "tests/tools/test_triality_gate.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -1949,13 +2075,13 @@ timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = []
-env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
+env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-backend-build", "--target", "wasm", "--json"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld"]
 
 # The Node runner, browser host and loader bridge: table bases, callable
 # tables and split-runtime import conversion against synthetic WAT modules,
-# and startup and status-ABI failures against the hosts' own boundaries. Each
+# while startup/status-ABI controls belong to wasm.test.startup-lifecycle. Each
 # WAT fixture publishes its link facts with the backend wasm.build.backend
 # selects and builds, so the command follows that build and never compiles a
 # second one.
@@ -1969,11 +2095,12 @@ timeout_seconds = 600
 timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
 dependencies = ["wasm.build.backend"]
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "pytest", "-q", "-n", "auto", "tests/test_wasm_runner_table_base.py", "tests/test_wasm_startup_failures.py"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "-n", "auto", "tests/test_wasm_runner_table_base.py"]
 toolchains = ["python", "uv", "node", "wasm-tools", "rustc", "cargo"]
 
 [[command]]
 id = "wasm.build.host"
+cargo_native_c_units = ["target"]
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
@@ -1981,9 +2108,9 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.backend"]
+dependencies = []
 argv = ["cargo", "build", "--locked", "--profile", "dev-fast", "-p", "molt-wasm-host"]
-toolchains = ["rustc", "cargo", "ld.lld"]
+toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "wasm.build.shared-runtime"
@@ -1994,10 +2121,9 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.backend"]
-env = { RUSTC_WRAPPER = "" }
+dependencies = []
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-runtime-wasm-build", "--build-profile", "dev", "--kind", "shared", "--json"]
-toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
+toolchains = ["python", "uv", "rustc", "cargo", "wasm-ld", "wasm-tools", "wasi-clang"]
 
 [[command]]
 id = "wasm.build.split-runtime-release"
@@ -2008,9 +2134,9 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.backend"]
+dependencies = []
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-runtime-wasm-build", "--build-profile", "release", "--kind", "both", "--json"]
-toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
+toolchains = ["python", "uv", "rustc", "cargo", "wasm-ld", "wasm-tools", "wasi-clang"]
 
 [[command]]
 id = "wasm.compile.hello"
@@ -2021,8 +2147,8 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
-env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
+dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
+env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/hello.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/hello/hello.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
@@ -2035,10 +2161,10 @@ resource_class = "wasm-runtime"
 timeout_seconds = 300
 timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "none"
-dependencies = ["wasm.compile.hello"]
+dependencies = ["wasm.compile.hello", "wasm.build.host"]
 env = { MOLT_WASM_HOST_DEBUG = "1" }
-argv = ["target/sessions/wasm-ci/dev-fast/molt-wasm-host", "/tmp/molt-wasm-ci/hello/manifest.json"]
-toolchains = ["rustc", "cargo", "wasm-tools"]
+argv = ["python3", "tools/venv_exec.py", "python3", "tools/run_wasm_host.py", "--cargo-profile", "dev-fast", "--", "/tmp/molt-wasm-ci/hello/manifest.json"]
+toolchains = ["python"]
 
 [[command]]
 id = "wasm.compile.comprehension"
@@ -2049,8 +2175,8 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
-env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
+dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
+env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/comprehension_fail.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/comprehension/comprehension.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
@@ -2063,9 +2189,9 @@ resource_class = "wasm-runtime"
 timeout_seconds = 300
 timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "none"
-dependencies = ["wasm.compile.comprehension"]
-argv = ["target/sessions/wasm-ci/dev-fast/molt-wasm-host", "/tmp/molt-wasm-ci/comprehension/manifest.json"]
-toolchains = ["rustc", "cargo", "wasm-tools"]
+dependencies = ["wasm.compile.comprehension", "wasm.build.host"]
+argv = ["python3", "tools/venv_exec.py", "python3", "tools/run_wasm_host.py", "--cargo-profile", "dev-fast", "--", "/tmp/molt-wasm-ci/comprehension/manifest.json"]
+toolchains = ["python"]
 
 [[command]]
 id = "luau.compile.hello"
@@ -2077,7 +2203,7 @@ timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend"]
-env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
+env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/hello.py", "--build-profile", "dev", "--target", "luau", "--output", "/tmp/test_hello.luau"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
@@ -2091,7 +2217,7 @@ timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend"]
-env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
+env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/string_comprehension.py", "--build-profile", "dev", "--target", "luau", "--output", "/tmp/test_string_comprehension.luau"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
@@ -2104,8 +2230,8 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
-env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
+dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
+env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/sieve_bench.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/sieve/sieve.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
@@ -2118,9 +2244,39 @@ resource_class = "wasm-runtime"
 timeout_seconds = 300
 timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "none"
-dependencies = ["wasm.compile.sieve"]
-argv = ["target/sessions/wasm-ci/dev-fast/molt-wasm-host", "/tmp/molt-wasm-ci/sieve/manifest.json"]
-toolchains = ["rustc", "cargo", "wasm-tools"]
+dependencies = ["wasm.compile.sieve", "wasm.build.host"]
+argv = ["python3", "tools/venv_exec.py", "python3", "tools/run_wasm_host.py", "--cargo-profile", "dev-fast", "--", "/tmp/molt-wasm-ci/sieve/manifest.json"]
+toolchains = ["python"]
+
+# Shared loader lifecycle and publication consumers execute real JavaScript
+# without compiling a runtime. Keep this Node admission separate from Cargo.
+[[command]]
+id = "wasm.test.startup-lifecycle"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 120
+timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "pytest"
+dependencies = []
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_startup_failures.py", "tests/test_generate_worker.py", "tests/test_browser_asset_closure.py", "tests/test_wasm_reserved_callable_arity.py", "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication"]
+toolchains = ["python", "uv", "node"]
+
+[[command]]
+id = "wasm.test.linker-admission"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 120
+timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "pytest"
+# These literal objects exercise the selected linker without compiling Rust.
+# WASM CI provisions the attested host SDK before running this family.
+dependencies = []
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_link_validation.py::test_primary_runtime_fixture_passes_actual_relocatable_admission", "tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_shared_primary_before_publication", "tests/test_wasm_link_validation.py::test_wasm_module_identity_survives_distinct_staging_paths", "tests/test_wasm_link_validation.py::test_existing_alias_binding_controls_actual_llvm_resolution"]
+toolchains = ["python", "uv", "wasm-ld"]
 
 [[command]]
 id = "wasm.test.control-flow"
@@ -2131,25 +2287,31 @@ resource_class = "compiler-build-resource"
 timeout_budget = "integration"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
-dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "tests/test_wasm_control_flow.py", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive", "-q"]
-toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-ar", "llvm-nm", "ld.lld", "wasm-ld", "wasm-tools"]
+dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "tests/test_wasm_control_flow.py", "tests/test_wasm_longdouble_printf_link.py", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive", "-q"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-ar", "llvm-nm", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "ninja"]
 
 [[command]]
 id = "wasm.integration.split-runtime"
+evidence_outputs = ["proof-receipts/evidence/split-runtime"]
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
-tiers = ["main"]
+tiers = ["pr", "main"]
 resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.split-runtime-release"]
-argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts::test_repeated_build_preserves_complete_generation_and_executes", "tests/test_browser_vfs.py"]
+dependencies = ["wasm.build.backend", "wasm.build.split-runtime-release"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts", "tests/test_wasm_split_runtime.py::TestWorkerJsContent", "tests/test_wasm_split_runtime.py::TestManifestJson", "tests/test_wasm_split_runtime.py::TestRuntimeCacheability", "tests/test_browser_vfs.py"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
+# Each isolated application may start cold. Keep its own existing cold bound
+# and receipt; a sibling timeout must not consume its execution window.
+# These Node consumers do not precompile with the native WASM host. GPU/tinygrad
+# imports select their exact runtime feature generation inside the cold build;
+# the micro prebuild cannot supply it. AttributeError reuses the dev micro pair.
 [[command]]
-id = "wasm.integration.host-exports"
+id = "wasm.integration.host-exports.gpu-kernel"
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
@@ -2157,9 +2319,61 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime", "wasm.build.split-runtime-release"]
-argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output", "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module", "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"]
-toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
+dependencies = ["wasm.build.backend"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"]
+
+[[command]]
+id = "wasm.integration.host-exports.attribute-error"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"]
+
+[[command]]
+id = "wasm.integration.host-exports.tinygrad-dtype"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"]
+
+[[command]]
+id = "wasm.integration.host-exports.tinygrad-tensor"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"]
+
+[[command]]
+id = "wasm.integration.host-exports.tensor-row-ops"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"]
 
 [[command]]
 id = "wasm.test.freestanding-e2e"
@@ -2170,8 +2384,8 @@ resource_class = "compiler-build-resource"
 timeout_budget = "integration"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
-dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "pytest", "-q", "tests/test_wasm_freestanding.py::test_freestanding_produces_no_wasi_imports", "tests/test_wasm_freestanding.py::test_freestanding_binary_is_valid_wasm"]
+dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_freestanding.py::test_freestanding_produces_no_wasi_imports", "tests/test_wasm_freestanding.py::test_freestanding_binary_is_valid_wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
 [[command]]
@@ -2183,9 +2397,27 @@ resource_class = "compiler-build-resource"
 timeout_budget = "integration"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
-dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "pytest", "-q", "tests/test_finally_pending_observer_parity.py::test_finally_pending_observer_native_wasm_parity"]
+dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_finally_pending_observer_parity.py::test_finally_pending_observer_native_wasm_parity"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-config", "ld.lld", "lld-link", "wasm-ld", "wasm-tools"]
+
+# Real IMPORT_FROM and codec receivers share the existing differential adapters.
+# Full import closures may select a runtime generation distinct from prewarm;
+# admit that once through the CLI, without a second build-only pass.
+[[command]]
+id = "wasm.test.import-from-codec-parity"
+evidence_outputs = ["proof-receipts/evidence/import-from-codec"]
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_DIFF_BUILD_TIMEOUT", "MOLT_COMPAT_WASM_BUILD_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
+env = { MOLT_BACKEND_DAEMON = "0", MOLT_DIFF_TIMEOUT = "60", MOLT_COMPAT_WASM_RUN_TIMEOUT_SEC = "60", MOLT_DIFF_RESULTS_JSONL = "proof-receipts/evidence/import-from-codec/results.jsonl" }
+argv = ["python3", "tools/venv_exec.py", "python3", "tests/molt_diff.py", "--python-version", "3.12", "--molt-target-python", "3.12", "--build-profile", "dev", "--stdlib-profile", "full", "--target", "native,wasm", "--jobs", "1", "--no-retry-oom", "--json-output", "proof-receipts/evidence/import-from-codec/summary.json", "--log-aggregate", "proof-receipts/evidence/import-from-codec/output.log", "tests/differential/basic/from_import_missing_name.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py", "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"]
 
 [[command]]
 id = "python.static.ty"
@@ -2223,7 +2455,7 @@ resource_class = "python-tests"
 timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-m", "not slow", "tests/test_bench_harness.py", "tests/test_finally_pending_observer_harness.py", "tests/test_bench_tool.py", "tests/test_ci_workflow_topology.py", "tests/test_ci_cargo_cache.py", "tests/test_harness_conformance.py", "tests/test_harness_layers.py", "tests/test_harness_report.py", "tests/test_manifest_env.py", "tests/test_monty_conformance_runner.py", "tests/tools/test_proof_queue_execution_receipt_details.py", "tests/tools/test_proof_queue_cargo_cache_custody.py", "tests/test_build_state_layout.py", "tests/test_bench_individual_tool.py", "tests/test_compile_governor.py", "tests/test_bench_wasm_runtime_build_flags.py", "tests/test_harness_memory_guard.py", "tests/test_molt_diff_expected_failures.py", "tests/test_compat_multibackend_oracle.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/test_memory_guard_tool.py", "tests/test_memory_guard_wiring.py", "tests/test_molt_diff_memory_guard.py", "tests/test_demo_bench_memory_guard.py", "tests/test_standalone_benchmark_memory_guard.py", "tests/test_backend_daemon_argv.py", "tests/test_backend_daemon_suite_custody.py", "tests/test_bench_friends.py", "tests/test_bench_dashboard.py", "tests/test_bench_generator_memory_guard.py", "tests/test_bench_suites.py", "tests/test_bench_wasm_node_resolver.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-m", "not slow", "tests/test_bench_harness.py", "tests/test_finally_pending_observer_harness.py", "tests/test_bench_tool.py", "tests/test_ci_workflow_topology.py", "tests/test_ci_cargo_cache.py", "tests/test_harness_conformance.py", "tests/test_harness_layers.py", "tests/test_harness_report.py", "tests/test_manifest_env.py", "tests/test_monty_conformance_runner.py", "tests/tools/test_proof_queue_execution_receipt_details.py", "tests/tools/test_proof_queue_cargo_cache_custody.py", "tests/test_build_state_layout.py", "tests/test_bench_individual_tool.py", "tests/test_compile_governor.py", "tests/test_bench_wasm_runtime_build_flags.py", "tests/test_harness_memory_guard.py", "tests/test_molt_diff_expected_failures.py", "tests/test_compat_multibackend_oracle.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/test_memory_guard_tool.py", "tests/test_memory_guard_wiring.py", "tests/test_molt_diff_memory_guard.py", "tests/test_demo_bench_memory_guard.py", "tests/test_standalone_benchmark_memory_guard.py", "tests/test_backend_daemon_argv.py", "tests/test_backend_daemon_suite_custody.py", "tests/test_bench_friends.py", "tests/test_bench_dashboard.py", "tests/test_bench_generator_memory_guard.py", "tests/test_bench_suites.py", "tests/test_bench_wasm_node_resolver.py", "tests/test_wasm_linked_runner_node_flags.py", "tests/test_l7_numeric_attestation_runner.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -2235,7 +2467,7 @@ resource_class = "python-tests"
 timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-m", "not slow", "tests/test_bench_harness.py", "tests/test_finally_pending_observer_harness.py", "tests/test_bench_tool.py", "tests/test_ci_workflow_topology.py", "tests/test_ci_cargo_cache.py", "tests/test_harness_conformance.py", "tests/test_harness_layers.py", "tests/test_harness_report.py", "tests/test_manifest_env.py", "tests/test_monty_conformance_runner.py", "tests/tools/test_proof_queue_execution_receipt_details.py", "tests/tools/test_proof_queue_cargo_cache_custody.py", "tests/test_build_state_layout.py", "tests/test_bench_individual_tool.py", "tests/test_compile_governor.py", "tests/test_bench_wasm_runtime_build_flags.py", "tests/test_harness_memory_guard.py", "tests/test_molt_diff_expected_failures.py", "tests/test_compat_multibackend_oracle.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/test_memory_guard_tool.py", "tests/test_memory_guard_wiring.py", "tests/test_molt_diff_memory_guard.py", "tests/test_demo_bench_memory_guard.py", "tests/test_standalone_benchmark_memory_guard.py", "tests/test_backend_daemon_argv.py", "tests/test_backend_daemon_suite_custody.py", "tests/test_bench_friends.py", "tests/test_bench_dashboard.py", "tests/test_bench_generator_memory_guard.py", "tests/test_bench_suites.py", "tests/test_bench_wasm_node_resolver.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-m", "not slow", "tests/test_bench_harness.py", "tests/test_finally_pending_observer_harness.py", "tests/test_bench_tool.py", "tests/test_ci_workflow_topology.py", "tests/test_ci_cargo_cache.py", "tests/test_harness_conformance.py", "tests/test_harness_layers.py", "tests/test_harness_report.py", "tests/test_manifest_env.py", "tests/test_monty_conformance_runner.py", "tests/tools/test_proof_queue_execution_receipt_details.py", "tests/tools/test_proof_queue_cargo_cache_custody.py", "tests/test_build_state_layout.py", "tests/test_bench_individual_tool.py", "tests/test_compile_governor.py", "tests/test_bench_wasm_runtime_build_flags.py", "tests/test_harness_memory_guard.py", "tests/test_molt_diff_expected_failures.py", "tests/test_compat_multibackend_oracle.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_proof_queue_output_layout.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/test_memory_guard_tool.py", "tests/test_memory_guard_wiring.py", "tests/test_molt_diff_memory_guard.py", "tests/test_demo_bench_memory_guard.py", "tests/test_standalone_benchmark_memory_guard.py", "tests/test_backend_daemon_argv.py", "tests/test_backend_daemon_suite_custody.py", "tests/test_bench_friends.py", "tests/test_bench_dashboard.py", "tests/test_bench_generator_memory_guard.py", "tests/test_bench_suites.py", "tests/test_bench_wasm_node_resolver.py", "tests/test_wasm_linked_runner_node_flags.py", "tests/test_l7_numeric_attestation_runner.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -2356,7 +2588,7 @@ resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/test_abc_private_module_surface.py", "tests/test_abc_public_module_surface.py", "tests/test_agent_contract_budget.py", "tests/test_ast_unparse_private_module_surface.py", "tests/test_async.py", "tests/test_async_closure.py", "tests/test_asyncio_private_module_surface.py", "tests/test_batch_compile_client.py", "tests/test_bench_backend_incremental.py", "tests/test_bench_diff.py", "tests/test_bench_evidence.py", "tests/test_binaryen_toolchain.py", "tests/test_blake2_private_module_surface.py", "tests/test_bootstrap_llvm.py", "tests/test_browser_compute_backend_semantics.py", "tests/test_browser_target_feature_metadata.py", "tests/test_call_argument_schedule.py", "tests/test_capability_manifest_e2e.py", "tests/test_capability_policy.py", "tests/test_check_dynamic_policy.py", "tests/test_check_formal_methods_tool.py", "tests/test_check_runtime_feedback.py", "tests/test_cloudflare_demo_verify.py", "tests/test_cloudflare_ocr_tokenizer_contract.py", "tests/test_cloudflare_queue_batch_ocr_contract.py", "tests/test_codec_family_private_module_surface.py", "tests/test_codecs_private_module_surface.py", "tests/test_coff_import_library.py", "tests/test_collections_abc_private_module_surface.py", "tests/test_colorize_private_module_surface.py", "tests/test_compat_comparison.py", "tests/test_compat_diagnostics.py", "tests/test_compat_pickle_private_module_surface.py", "tests/test_compat_test_policy.py", "tests/test_compile_progress_build_profile.py", "tests/test_comprehension.py", "tests/test_concurrency_wrappers.py", "tests/test_conformance_environment_policy.py", "tests/test_contextvars_private_module_surface.py", "tests/test_convert_safetensors_dtype.py", "tests/test_copyreg_public_module_surface.py", "tests/test_cpython_abi_symbol_authority.py", "tests/test_cpython_regrtest_memory_guard.py", "tests/test_crypt_private_module_surface.py", "tests/test_crypto_private_capability_anchor_surfaces.py", "tests/test_csv_private_module_surface.py", "tests/test_ctypes_private_module_surface.py", "tests/test_custody_layout.py", "tests/test_custody_signal_fork.py", "tests/test_dbm_private_module_surface.py", "tests/test_debug_diff.py", "tests/test_debug_docs.py", "tests/test_debug_manifest.py", "tests/test_debug_perf.py", "tests/test_debug_reduce.py", "tests/test_disk_capacity.py", "tests/test_driver_cloudflare_verify.py", "tests/test_driver_cloudflare_worker.py", "tests/test_driver_layout.py", "tests/test_dx_sccache_wrapper.py", "tests/test_exception_constructors.py", "tests/test_executable_test_support.py", "tests/test_file_locks.py", "tests/test_functools_private_module_surface.py", "tests/test_future_private_intrinsic_surface.py", "tests/test_gdbm_private_module_surface.py", "tests/test_gen_cpython_abi_layout.py", "tests/test_gen_diff_lanes.py", "tests/test_gen_target_feature_manifest.py", "tests/test_gpu_api.py", "tests/test_gpu_gguf_hub_boundaries.py", "tests/test_gpu_optional_intrinsic_lookup.py", "tests/test_guard.py", "tests/test_harness_orchestrator.py", "tests/test_harness_self.py", "tests/test_hash_private_modules_surface.py", "tests/test_hashlib_private_module_surface.py", "tests/test_heapq_private_module_surface.py", "tests/test_hmac_private_module_surface.py", "tests/test_host_exit.py", "tests/test_import_runtime_private_module_surfaces.py", "tests/test_import_smoke_public_surfaces.py", "tests/test_intrinsics_bootstrap_contract.py", "tests/test_itertools_bridge_authority.py", "tests/test_itertools_islice_accumulate.py", "tests/test_itertools_public_module_surface.py", "tests/test_json.py", "tests/test_json_private_module_surface.py", "tests/test_lean_rust_correspondence.py", "tests/test_linear_seed_backlog_tool.py", "tests/test_linear_workspace_sync.py", "tests/test_linear_workspace_tool.py", "tests/test_luau_physics_ir.py", "tests/test_magic_concurrency.py", "tests/test_manifest_cli_integration.py", "tests/test_memoryview_strided_offset_guard.py", "tests/test_module_registry_gates.py", "tests/test_molt_accel_client.py", "tests/test_molt_accel_contracts.py", "tests/test_molt_accel_framing.py", "tests/test_molt_buffer.py", "tests/test_molt_db_adapter_contracts.py", "tests/test_molt_diff_daemon_pruning.py", "tests/test_molt_diff_scheduling.py", "tests/test_molt_regrtest_shim.py", "tests/test_msgpack.py", "tests/test_multibytecodec_private_module_surface.py", "tests/test_multiprocessing_private_module_surface.py", "tests/test_native_async_protocol.py", "tests/test_native_bytes.py", "tests/test_native_memoryview.py", "tests/test_native_process_guard.py", "tests/test_net.py", "tests/test_node_runtime.py", "tests/test_op_kind_semantic_aliases.py", "tests/test_opcode_metadata_private_module_surface.py", "tests/test_opcode_private_module_surface.py", "tests/test_openpilot_demo.py", "tests/test_operator_private_module_surface.py", "tests/test_paddleocr_no_host_deps.py", "tests/test_paddleocr_paths.py", "tests/test_parity_collection.py", "tests/test_pickle_private_module_surface.py", "tests/test_platform_toolchain.py", "tests/test_posixsubprocess_private_module_surface.py", "tests/test_prefix_cache.py", "tests/test_private_intrinsic_helper_surface_batch_a.py", "tests/test_private_intrinsic_helper_surface_batch_b.py", "tests/test_private_intrinsic_helper_surface_batch_c.py", "tests/test_process_guard.py", "tests/test_process_guard_common.py", "tests/test_proto.py", "tests/test_public_intrinsic_surface_batch_a.py", "tests/test_public_intrinsic_surface_batch_aa.py", "tests/test_public_intrinsic_surface_batch_ab.py", "tests/test_public_intrinsic_surface_batch_ac.py", "tests/test_public_intrinsic_surface_batch_ad.py", "tests/test_public_intrinsic_surface_batch_ae.py", "tests/test_public_intrinsic_surface_batch_af.py", "tests/test_public_intrinsic_surface_batch_ag.py", "tests/test_public_intrinsic_surface_batch_ah.py", "tests/test_public_intrinsic_surface_batch_az.py", "tests/test_public_intrinsic_surface_batch_b.py", "tests/test_public_intrinsic_surface_batch_ba.py", "tests/test_public_intrinsic_surface_batch_bb.py", "tests/test_public_intrinsic_surface_batch_bc.py", "tests/test_public_intrinsic_surface_batch_bd.py", "tests/test_public_intrinsic_surface_batch_be.py", "tests/test_public_intrinsic_surface_batch_bf.py", "tests/test_public_intrinsic_surface_batch_bg.py", "tests/test_public_intrinsic_surface_batch_bh.py", "tests/test_public_intrinsic_surface_batch_bi.py", "tests/test_public_intrinsic_surface_batch_c.py", "tests/test_public_intrinsic_surface_batch_d.py", "tests/test_public_intrinsic_surface_batch_e.py", "tests/test_public_intrinsic_surface_batch_h.py", "tests/test_public_intrinsic_surface_batch_i.py", "tests/test_public_intrinsic_surface_batch_j.py", "tests/test_public_intrinsic_surface_batch_k.py", "tests/test_public_intrinsic_surface_batch_l.py", "tests/test_public_intrinsic_surface_batch_m.py", "tests/test_public_intrinsic_surface_batch_n.py", "tests/test_public_intrinsic_surface_batch_o.py", "tests/test_public_intrinsic_surface_batch_p.py", "tests/test_public_intrinsic_surface_batch_q.py", "tests/test_public_intrinsic_surface_batch_s.py", "tests/test_public_intrinsic_surface_batch_t.py", "tests/test_public_intrinsic_surface_batch_u.py", "tests/test_public_intrinsic_surface_batch_v.py", "tests/test_public_intrinsic_surface_batch_w.py", "tests/test_public_intrinsic_surface_batch_x.py", "tests/test_public_intrinsic_surface_batch_y.py", "tests/test_public_intrinsic_surface_batch_z.py", "tests/test_py_abc_private_module_surface.py", "tests/test_pyperformance_adapter.py", "tests/test_python_ast_identity.py", "tests/test_python_builtin_shape_facts.py", "tests/test_python_interpreter.py", "tests/test_python_loop_metadata.py", "tests/test_python_private_names.py", "tests/test_queue_private_module_surface.py", "tests/test_queue_public_module_surface.py", "tests/test_random_private_module_surface.py", "tests/test_repl_process_guard.py", "tests/test_resource_enforcement_e2e.py", "tests/test_runpy_public_module_surface.py", "tests/test_runtime_feature_gates.py", "tests/test_runtime_profile_schema.py", "tests/test_runtime_safety.py", "tests/test_rust_source_scan.py", "tests/test_rust_toolchain.py", "tests/test_secret_guard.py", "tests/test_secret_guard_tool.py", "tests/test_security_regression.py", "tests/test_seq_snapshot_bridge_authority.py", "tests/test_signal_private_module_surface.py", "tests/test_sitebuiltins_private_module_surface.py", "tests/test_smoke.py", "tests/test_socket_private_module_surface.py", "tests/test_ssl_private_module_surface.py", "tests/test_static_expression_result.py", "tests/test_statistics_private_module_surface.py", "tests/test_stdlib_base64.py", "tests/test_stdlib_importlib_machinery.py", "tests/test_stdlib_inspect_signature_binding.py", "tests/test_stdlib_package_bootstrap_surface.py", "tests/test_stdlib_sys_scalar_metadata.py", "tests/test_stdlib_tempfile.py", "tests/test_stdlib_test_support_facade.py", "tests/test_stdlib_todo_burndown_fail_closed.py", "tests/test_stdlib_types_coroutine.py", "tests/test_stdlib_typing_lazy_once.py", "tests/test_stdlib_zipfile_metadata_submodules.py", "tests/test_struct.py", "tests/test_struct_private_module_surface.py", "tests/test_stub_surface_batch_au.py", "tests/test_stub_surface_batch_aw.py", "tests/test_stub_surface_batch_ax.py", "tests/test_stub_surface_batch_ay.py", "tests/test_suggestions_private_module_surface.py", "tests/test_surface_process_guard.py", "tests/test_table_drift_gate.py", "tests/test_target_python_oracle.py", "tests/test_temporary_artifacts.py", "tests/test_theorem_to_test_fixture.py", "tests/test_thread_private_module_surface.py", "tests/test_threading_local_private_module_surface.py", "tests/test_tinygrad_onnx_interpreter_ops.py", "tests/test_tinygrad_paddleocr_decode.py", "tests/test_tinygrad_stdlib_tensor_reductions.py", "tests/test_tinygrad_stdlib_typed_runtime.py", "tests/test_tinygrad_tensor_axis0_contract.py", "tests/test_tir_wasm_pseudo_authority_retired.py", "tests/test_tkinter_live_smoke.py", "tests/test_tkinter_phase0_wrappers.py", "tests/test_tokenize_private_module_surface.py", "tests/test_tokenize_public_module_surface.py", "tests/test_tool_releases.py", "tests/test_translation_validate_roots.py", "tests/test_translation_validation_e2e.py", "tests/test_translation_validator_unit.py", "tests/test_true_async.py", "tests/test_tv_hooks.py", "tests/test_types_private_module_surface.py", "tests/test_typing_private_module_surface.py", "tests/test_uuid_private_module_surface.py", "tests/test_warnings_private_module_surface.py", "tests/test_warnings_top_level_private_module_surface.py", "tests/test_wasm_async_protocol.py", "tests/test_wasm_browser_socket_host.py", "tests/test_wasm_browser_socket_udp_server.py", "tests/test_wasm_bytes_ops.py", "tests/test_wasm_call_arity_trampoline.py", "tests/test_wasm_channel_async.py", "tests/test_wasm_channel_basic.py", "tests/test_wasm_class_smoke.py", "tests/test_wasm_codec_parity.py", "tests/test_wasm_db_client_shim.py", "tests/test_wasm_db_host_poll.py", "tests/test_wasm_entry_main_name.py", "tests/test_wasm_function_object_smoke.py", "tests/test_wasm_generator_protocol.py", "tests/test_wasm_importlib_machinery.py", "tests/test_wasm_importlib_smoke.py", "tests/test_wasm_linking_symbols.py", "tests/test_wasm_list_dict_ops.py", "tests/test_wasm_longdouble_printf_link.py", "tests/test_wasm_memoryview_ops.py", "tests/test_wasm_optimization_policy.py", "tests/test_wasm_pickle_class_dataclass_roundtrip.py", "tests/test_wasm_pickle_hooks_surface_buffers.py", "tests/test_wasm_pickle_protocol01.py", "tests/test_wasm_print_keywords.py", "tests/test_wasm_reserved_callable_arity.py", "tests/test_wasm_runtime_call_signature_authority.py", "tests/test_wasm_runtime_export_no_mangle.py", "tests/test_wasm_runtime_heavy_regressions.py", "tests/test_wasm_set_ops.py", "tests/test_wasm_size_tracking.py", "tests/test_wasm_snapshot.py", "tests/test_wasm_split_runtime_got_data_bridge.py", "tests/test_wasm_string_ops.py", "tests/test_wasm_thread_exception_path.py", "tests/test_wasm_time_basic.py", "tests/test_wasm_tinygrad_import_shim.py", "tests/test_wasm_tuple_return_fnptr.py", "tests/test_wasm_vfs_e2e.py", "tests/test_weakref_private_module_surface.py", "tests/test_zstd_private_module_surface.py", "tests/test_capabilities.py", "tests/test_datetime_private_module_surface.py", "tests/test_molt_accel_decorator.py", "tests/test_django_demo.py", "tests/test_stdlib_stubs.py", "tests/test_stdlib_intrinsic_registry.py", "tests/test_bisect_private_module_surface.py", "tests/test_collections_private_module_surface.py", "tests/test_public_intrinsic_surface_batch_g.py", "tests/test_private_intrinsic_helper_surface_batch_d.py", "tests/test_stdlib_badsyntax_data.py", "tests/property/test_arithmetic.py", "tests/property/test_builtins.py", "tests/property/test_collection_intrinsics.py", "tests/property/test_collections.py", "tests/property/test_cpython_equivalence.py", "tests/property/test_hash_intrinsics.py", "tests/property/test_math_intrinsics.py", "tests/property/test_string_intrinsics.py", "tests/property/test_strings.py", "tests/test_cloudflare_ai_fallback_contract.py", "tests/test_cloudflare_ocr_response_contract.py", "tests/test_falcon_ocr_prompt_contract.py", "tests/reference/falcon/test_reference_scaffold.py", "tests/parity/test_error_handling.py", "tests/mutation/test_mutation_smoke.py", "tests/mutation/test_mutation_extended.py", "tests/fuzz/test_fuzz_smoke.py", "tests/c_api/test_c_api_parity.py", "tests/c_api/test_c_extension_basic.py", "tests/cloudflare/test_demo_endpoints.py", "tests/cloudflare/test_demo_endpoint_fuzz.py", "tests/test_manifest_enforcement.py", "tests/test_mxfp_quant.py", "tests/test_lean_python_correspondence.py", "tests/gpu/dflash/test_dflash_fidelity.py", "tests/e2e/test_falcon_ocr_parity.py", "tests/e2e/test_falcon_ocr_micro.py", "tests/e2e/test_binary_size.py", "tests/e2e/test_gpu_quality.py", "tests/cloudflare/test_deploy_verify.py", "tests/cloudflare/test_live_verifier.py", "tests/determinism/test_entropy_audit.py", "tests/test_generate_worker.py", "tests/test_tinygrad_tokenizer_contract.py", "tests/test_nemotron_ocr_boundaries.py", "tests/test_wasm_build_policy_authority.py", "tests/test_runtime_state_ownership.py"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/test_abc_private_module_surface.py", "tests/test_abc_public_module_surface.py", "tests/test_agent_contract_budget.py", "tests/test_ast_unparse_private_module_surface.py", "tests/test_async.py", "tests/test_async_closure.py", "tests/test_asyncio_private_module_surface.py", "tests/test_batch_compile_client.py", "tests/test_bench_backend_incremental.py", "tests/test_bench_diff.py", "tests/test_bench_evidence.py", "tests/test_binaryen_toolchain.py", "tests/test_blake2_private_module_surface.py", "tests/test_bootstrap_llvm.py", "tests/test_browser_compute_backend_semantics.py", "tests/test_browser_target_feature_metadata.py", "tests/test_call_argument_schedule.py", "tests/test_capability_manifest_e2e.py", "tests/test_capability_policy.py", "tests/test_check_dynamic_policy.py", "tests/test_check_formal_methods_tool.py", "tests/test_check_runtime_feedback.py", "tests/test_cloudflare_demo_verify.py", "tests/test_cloudflare_ocr_tokenizer_contract.py", "tests/test_cloudflare_queue_batch_ocr_contract.py", "tests/test_codec_family_private_module_surface.py", "tests/test_codecs_private_module_surface.py", "tests/test_coff_import_library.py", "tests/test_collections_abc_private_module_surface.py", "tests/test_colorize_private_module_surface.py", "tests/test_compat_comparison.py", "tests/test_compat_diagnostics.py", "tests/test_compat_pickle_private_module_surface.py", "tests/test_compat_test_policy.py", "tests/test_compile_progress_build_profile.py", "tests/test_comprehension.py", "tests/test_concurrency_wrappers.py", "tests/test_conformance_environment_policy.py", "tests/test_contextvars_private_module_surface.py", "tests/test_convert_safetensors_dtype.py", "tests/test_copyreg_public_module_surface.py", "tests/test_cpython_abi_symbol_authority.py", "tests/test_cpython_regrtest_memory_guard.py", "tests/test_crypt_private_module_surface.py", "tests/test_crypto_private_capability_anchor_surfaces.py", "tests/test_csv_private_module_surface.py", "tests/test_ctypes_private_module_surface.py", "tests/test_custody_layout.py", "tests/test_custody_signal_fork.py", "tests/test_dbm_private_module_surface.py", "tests/test_debug_diff.py", "tests/test_debug_docs.py", "tests/test_debug_manifest.py", "tests/test_debug_perf.py", "tests/test_debug_reduce.py", "tests/test_disk_capacity.py", "tests/test_driver_cloudflare_verify.py", "tests/test_driver_cloudflare_worker.py", "tests/test_driver_layout.py", "tests/test_dx_sccache_wrapper.py", "tests/test_exception_constructors.py", "tests/test_executable_test_support.py", "tests/test_file_locks.py", "tests/test_functools_private_module_surface.py", "tests/test_future_private_intrinsic_surface.py", "tests/test_gdbm_private_module_surface.py", "tests/test_gen_cpython_abi_layout.py", "tests/test_gen_diff_lanes.py", "tests/test_gen_target_feature_manifest.py", "tests/test_gpu_api.py", "tests/test_gpu_gguf_hub_boundaries.py", "tests/test_gpu_optional_intrinsic_lookup.py", "tests/test_guard.py", "tests/test_harness_orchestrator.py", "tests/test_harness_self.py", "tests/test_hash_private_modules_surface.py", "tests/test_hashlib_private_module_surface.py", "tests/test_heapq_private_module_surface.py", "tests/test_hmac_private_module_surface.py", "tests/test_host_exit.py", "tests/test_import_runtime_private_module_surfaces.py", "tests/test_import_smoke_public_surfaces.py", "tests/test_intrinsics_bootstrap_contract.py", "tests/test_itertools_bridge_authority.py", "tests/test_itertools_islice_accumulate.py", "tests/test_itertools_public_module_surface.py", "tests/test_json.py", "tests/test_json_private_module_surface.py", "tests/test_lean_rust_correspondence.py", "tests/test_linear_seed_backlog_tool.py", "tests/test_linear_workspace_sync.py", "tests/test_linear_workspace_tool.py", "tests/test_luau_physics_ir.py", "tests/test_magic_concurrency.py", "tests/test_manifest_cli_integration.py", "tests/test_memoryview_strided_offset_guard.py", "tests/test_module_registry_gates.py", "tests/test_molt_accel_client.py", "tests/test_molt_accel_contracts.py", "tests/test_molt_accel_framing.py", "tests/test_molt_buffer.py", "tests/test_molt_db_adapter_contracts.py", "tests/test_molt_diff_daemon_pruning.py", "tests/test_molt_diff_scheduling.py", "tests/test_molt_regrtest_shim.py", "tests/test_msgpack.py", "tests/test_multibytecodec_private_module_surface.py", "tests/test_multiprocessing_private_module_surface.py", "tests/test_native_async_protocol.py", "tests/test_native_bytes.py", "tests/test_native_memoryview.py", "tests/test_native_process_guard.py", "tests/test_net.py", "tests/test_node_runtime.py", "tests/test_op_kind_semantic_aliases.py", "tests/test_opcode_metadata_private_module_surface.py", "tests/test_opcode_private_module_surface.py", "tests/test_openpilot_demo.py", "tests/test_operator_private_module_surface.py", "tests/test_paddleocr_no_host_deps.py", "tests/test_paddleocr_paths.py", "tests/test_parity_collection.py", "tests/test_pickle_private_module_surface.py", "tests/test_platform_toolchain.py", "tests/test_posixsubprocess_private_module_surface.py", "tests/test_prefix_cache.py", "tests/test_private_intrinsic_helper_surface_batch_a.py", "tests/test_private_intrinsic_helper_surface_batch_b.py", "tests/test_private_intrinsic_helper_surface_batch_c.py", "tests/test_process_guard.py", "tests/test_process_guard_common.py", "tests/test_proto.py", "tests/test_public_intrinsic_surface_batch_a.py", "tests/test_public_intrinsic_surface_batch_aa.py", "tests/test_public_intrinsic_surface_batch_ab.py", "tests/test_public_intrinsic_surface_batch_ac.py", "tests/test_public_intrinsic_surface_batch_ad.py", "tests/test_public_intrinsic_surface_batch_ae.py", "tests/test_public_intrinsic_surface_batch_af.py", "tests/test_public_intrinsic_surface_batch_ag.py", "tests/test_public_intrinsic_surface_batch_ah.py", "tests/test_public_intrinsic_surface_batch_az.py", "tests/test_public_intrinsic_surface_batch_b.py", "tests/test_public_intrinsic_surface_batch_ba.py", "tests/test_public_intrinsic_surface_batch_bb.py", "tests/test_public_intrinsic_surface_batch_bc.py", "tests/test_public_intrinsic_surface_batch_bd.py", "tests/test_public_intrinsic_surface_batch_be.py", "tests/test_public_intrinsic_surface_batch_bf.py", "tests/test_public_intrinsic_surface_batch_bg.py", "tests/test_public_intrinsic_surface_batch_bh.py", "tests/test_public_intrinsic_surface_batch_bi.py", "tests/test_public_intrinsic_surface_batch_c.py", "tests/test_public_intrinsic_surface_batch_d.py", "tests/test_public_intrinsic_surface_batch_e.py", "tests/test_public_intrinsic_surface_batch_h.py", "tests/test_public_intrinsic_surface_batch_i.py", "tests/test_public_intrinsic_surface_batch_j.py", "tests/test_public_intrinsic_surface_batch_k.py", "tests/test_public_intrinsic_surface_batch_l.py", "tests/test_public_intrinsic_surface_batch_m.py", "tests/test_public_intrinsic_surface_batch_n.py", "tests/test_public_intrinsic_surface_batch_o.py", "tests/test_public_intrinsic_surface_batch_p.py", "tests/test_public_intrinsic_surface_batch_q.py", "tests/test_public_intrinsic_surface_batch_s.py", "tests/test_public_intrinsic_surface_batch_t.py", "tests/test_public_intrinsic_surface_batch_u.py", "tests/test_public_intrinsic_surface_batch_v.py", "tests/test_public_intrinsic_surface_batch_w.py", "tests/test_public_intrinsic_surface_batch_x.py", "tests/test_public_intrinsic_surface_batch_y.py", "tests/test_public_intrinsic_surface_batch_z.py", "tests/test_py_abc_private_module_surface.py", "tests/test_pyperformance_adapter.py", "tests/test_python_ast_identity.py", "tests/test_python_builtin_shape_facts.py", "tests/test_python_interpreter.py", "tests/test_python_loop_metadata.py", "tests/test_python_private_names.py", "tests/test_queue_private_module_surface.py", "tests/test_queue_public_module_surface.py", "tests/test_random_private_module_surface.py", "tests/test_repl_process_guard.py", "tests/test_resource_enforcement_e2e.py", "tests/test_runpy_public_module_surface.py", "tests/test_runtime_feature_gates.py", "tests/test_runtime_profile_schema.py", "tests/test_runtime_safety.py", "tests/test_rust_source_scan.py", "tests/test_rust_toolchain.py", "tests/test_secret_guard.py", "tests/test_secret_guard_tool.py", "tests/test_security_regression.py", "tests/test_seq_snapshot_bridge_authority.py", "tests/test_signal_private_module_surface.py", "tests/test_sitebuiltins_private_module_surface.py", "tests/test_smoke.py", "tests/test_socket_private_module_surface.py", "tests/test_ssl_private_module_surface.py", "tests/test_static_expression_result.py", "tests/test_statistics_private_module_surface.py", "tests/test_stdlib_base64.py", "tests/test_stdlib_importlib_machinery.py", "tests/test_stdlib_inspect_signature_binding.py", "tests/test_stdlib_package_bootstrap_surface.py", "tests/test_stdlib_sys_scalar_metadata.py", "tests/test_stdlib_tempfile.py", "tests/test_stdlib_test_support_facade.py", "tests/test_stdlib_todo_burndown_fail_closed.py", "tests/test_stdlib_types_coroutine.py", "tests/test_stdlib_typing_lazy_once.py", "tests/test_stdlib_zipfile_metadata_submodules.py", "tests/test_struct.py", "tests/test_struct_private_module_surface.py", "tests/test_stub_surface_batch_au.py", "tests/test_stub_surface_batch_aw.py", "tests/test_stub_surface_batch_ax.py", "tests/test_stub_surface_batch_ay.py", "tests/test_suggestions_private_module_surface.py", "tests/test_surface_process_guard.py", "tests/test_table_drift_gate.py", "tests/test_target_python_oracle.py", "tests/test_temporary_artifacts.py", "tests/test_theorem_to_test_fixture.py", "tests/test_thread_private_module_surface.py", "tests/test_threading_local_private_module_surface.py", "tests/test_tinygrad_onnx_interpreter_ops.py", "tests/test_tinygrad_paddleocr_decode.py", "tests/test_tinygrad_stdlib_tensor_reductions.py", "tests/test_tinygrad_stdlib_typed_runtime.py", "tests/test_tinygrad_tensor_axis0_contract.py", "tests/test_tir_wasm_pseudo_authority_retired.py", "tests/test_tkinter_live_smoke.py", "tests/test_tkinter_phase0_wrappers.py", "tests/test_tokenize_private_module_surface.py", "tests/test_tokenize_public_module_surface.py", "tests/test_tool_releases.py", "tests/test_translation_validate_roots.py", "tests/test_translation_validation_e2e.py", "tests/test_translation_validator_unit.py", "tests/test_true_async.py", "tests/test_tv_hooks.py", "tests/test_types_private_module_surface.py", "tests/test_typing_private_module_surface.py", "tests/test_uuid_private_module_surface.py", "tests/test_warnings_private_module_surface.py", "tests/test_warnings_top_level_private_module_surface.py", "tests/test_wasm_async_protocol.py", "tests/test_wasm_browser_socket_host.py", "tests/test_wasm_browser_socket_udp_server.py", "tests/test_wasm_bytes_ops.py", "tests/test_wasm_call_arity_trampoline.py", "tests/test_wasm_channel_async.py", "tests/test_wasm_channel_basic.py", "tests/test_wasm_class_smoke.py", "tests/test_wasm_codec_parity.py", "tests/test_wasm_db_client_shim.py", "tests/test_wasm_db_host_poll.py", "tests/test_wasm_entry_main_name.py", "tests/test_wasm_function_object_smoke.py", "tests/test_wasm_generator_protocol.py", "tests/test_wasm_importlib_machinery.py", "tests/test_wasm_importlib_smoke.py", "tests/test_wasm_linking_symbols.py", "tests/test_wasm_list_dict_ops.py", "tests/test_wasm_memoryview_ops.py", "tests/test_wasm_optimization_policy.py", "tests/test_wasm_pickle_class_dataclass_roundtrip.py", "tests/test_wasm_pickle_hooks_surface_buffers.py", "tests/test_wasm_pickle_protocol01.py", "tests/test_wasm_print_keywords.py", "tests/test_wasm_reserved_callable_arity.py", "tests/test_wasm_runtime_call_signature_authority.py", "tests/test_wasm_runtime_export_no_mangle.py", "tests/test_wasm_runtime_heavy_regressions.py", "tests/test_wasm_set_ops.py", "tests/test_wasm_size_tracking.py", "tests/test_wasm_snapshot.py", "tests/test_wasm_split_runtime_got_data_bridge.py", "tests/test_wasm_string_ops.py", "tests/test_wasm_thread_exception_path.py", "tests/test_wasm_time_basic.py", "tests/test_wasm_tinygrad_import_shim.py", "tests/test_wasm_tuple_return_fnptr.py", "tests/test_wasm_vfs_e2e.py", "tests/test_weakref_private_module_surface.py", "tests/test_zstd_private_module_surface.py", "tests/test_capabilities.py", "tests/test_datetime_private_module_surface.py", "tests/test_molt_accel_decorator.py", "tests/test_django_demo.py", "tests/test_stdlib_stubs.py", "tests/test_stdlib_intrinsic_registry.py", "tests/test_bisect_private_module_surface.py", "tests/test_collections_private_module_surface.py", "tests/test_public_intrinsic_surface_batch_g.py", "tests/test_private_intrinsic_helper_surface_batch_d.py", "tests/test_stdlib_badsyntax_data.py", "tests/property/test_arithmetic.py", "tests/property/test_builtins.py", "tests/property/test_collection_intrinsics.py", "tests/property/test_collections.py", "tests/property/test_cpython_equivalence.py", "tests/property/test_hash_intrinsics.py", "tests/property/test_math_intrinsics.py", "tests/property/test_string_intrinsics.py", "tests/property/test_strings.py", "tests/test_cloudflare_ai_fallback_contract.py", "tests/test_cloudflare_ocr_response_contract.py", "tests/test_falcon_ocr_prompt_contract.py", "tests/reference/falcon/test_reference_scaffold.py", "tests/parity/test_error_handling.py", "tests/mutation/test_mutation_smoke.py", "tests/mutation/test_mutation_extended.py", "tests/fuzz/test_fuzz_smoke.py", "tests/c_api/test_c_api_parity.py", "tests/c_api/test_c_extension_basic.py", "tests/cloudflare/test_demo_endpoints.py", "tests/cloudflare/test_demo_endpoint_fuzz.py", "tests/test_manifest_enforcement.py", "tests/test_mxfp_quant.py", "tests/test_lean_python_correspondence.py", "tests/gpu/dflash/test_dflash_fidelity.py", "tests/e2e/test_falcon_ocr_parity.py", "tests/e2e/test_falcon_ocr_micro.py", "tests/e2e/test_binary_size.py", "tests/e2e/test_gpu_quality.py", "tests/cloudflare/test_deploy_verify.py", "tests/cloudflare/test_live_verifier.py", "tests/determinism/test_entropy_audit.py", "tests/test_generate_worker.py", "tests/test_tinygrad_tokenizer_contract.py", "tests/test_nemotron_ocr_boundaries.py", "tests/test_wasm_build_policy_authority.py", "tests/test_runtime_state_ownership.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -2368,7 +2600,7 @@ resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/test_abc_private_module_surface.py", "tests/test_abc_public_module_surface.py", "tests/test_agent_contract_budget.py", "tests/test_ast_unparse_private_module_surface.py", "tests/test_async.py", "tests/test_async_closure.py", "tests/test_asyncio_private_module_surface.py", "tests/test_batch_compile_client.py", "tests/test_bench_backend_incremental.py", "tests/test_bench_diff.py", "tests/test_bench_evidence.py", "tests/test_binaryen_toolchain.py", "tests/test_blake2_private_module_surface.py", "tests/test_bootstrap_llvm.py", "tests/test_browser_compute_backend_semantics.py", "tests/test_browser_target_feature_metadata.py", "tests/test_call_argument_schedule.py", "tests/test_capability_manifest_e2e.py", "tests/test_capability_policy.py", "tests/test_check_dynamic_policy.py", "tests/test_check_formal_methods_tool.py", "tests/test_check_runtime_feedback.py", "tests/test_cloudflare_demo_verify.py", "tests/test_cloudflare_ocr_tokenizer_contract.py", "tests/test_cloudflare_queue_batch_ocr_contract.py", "tests/test_codec_family_private_module_surface.py", "tests/test_codecs_private_module_surface.py", "tests/test_coff_import_library.py", "tests/test_collections_abc_private_module_surface.py", "tests/test_colorize_private_module_surface.py", "tests/test_compat_comparison.py", "tests/test_compat_diagnostics.py", "tests/test_compat_pickle_private_module_surface.py", "tests/test_compat_test_policy.py", "tests/test_compile_progress_build_profile.py", "tests/test_comprehension.py", "tests/test_concurrency_wrappers.py", "tests/test_conformance_environment_policy.py", "tests/test_contextvars_private_module_surface.py", "tests/test_convert_safetensors_dtype.py", "tests/test_copyreg_public_module_surface.py", "tests/test_cpython_abi_symbol_authority.py", "tests/test_cpython_regrtest_memory_guard.py", "tests/test_crypt_private_module_surface.py", "tests/test_crypto_private_capability_anchor_surfaces.py", "tests/test_csv_private_module_surface.py", "tests/test_ctypes_private_module_surface.py", "tests/test_custody_layout.py", "tests/test_custody_signal_fork.py", "tests/test_dbm_private_module_surface.py", "tests/test_debug_diff.py", "tests/test_debug_docs.py", "tests/test_debug_manifest.py", "tests/test_debug_perf.py", "tests/test_debug_reduce.py", "tests/test_disk_capacity.py", "tests/test_driver_cloudflare_verify.py", "tests/test_driver_cloudflare_worker.py", "tests/test_driver_layout.py", "tests/test_dx_sccache_wrapper.py", "tests/test_exception_constructors.py", "tests/test_executable_test_support.py", "tests/test_file_locks.py", "tests/test_functools_private_module_surface.py", "tests/test_future_private_intrinsic_surface.py", "tests/test_gdbm_private_module_surface.py", "tests/test_gen_cpython_abi_layout.py", "tests/test_gen_diff_lanes.py", "tests/test_gen_target_feature_manifest.py", "tests/test_gpu_api.py", "tests/test_gpu_gguf_hub_boundaries.py", "tests/test_gpu_optional_intrinsic_lookup.py", "tests/test_guard.py", "tests/test_harness_orchestrator.py", "tests/test_harness_self.py", "tests/test_hash_private_modules_surface.py", "tests/test_hashlib_private_module_surface.py", "tests/test_heapq_private_module_surface.py", "tests/test_hmac_private_module_surface.py", "tests/test_host_exit.py", "tests/test_import_runtime_private_module_surfaces.py", "tests/test_import_smoke_public_surfaces.py", "tests/test_intrinsics_bootstrap_contract.py", "tests/test_itertools_bridge_authority.py", "tests/test_itertools_islice_accumulate.py", "tests/test_itertools_public_module_surface.py", "tests/test_json.py", "tests/test_json_private_module_surface.py", "tests/test_lean_rust_correspondence.py", "tests/test_linear_seed_backlog_tool.py", "tests/test_linear_workspace_sync.py", "tests/test_linear_workspace_tool.py", "tests/test_luau_physics_ir.py", "tests/test_magic_concurrency.py", "tests/test_manifest_cli_integration.py", "tests/test_memoryview_strided_offset_guard.py", "tests/test_module_registry_gates.py", "tests/test_molt_accel_client.py", "tests/test_molt_accel_contracts.py", "tests/test_molt_accel_framing.py", "tests/test_molt_buffer.py", "tests/test_molt_db_adapter_contracts.py", "tests/test_molt_diff_daemon_pruning.py", "tests/test_molt_diff_scheduling.py", "tests/test_molt_regrtest_shim.py", "tests/test_msgpack.py", "tests/test_multibytecodec_private_module_surface.py", "tests/test_multiprocessing_private_module_surface.py", "tests/test_native_async_protocol.py", "tests/test_native_bytes.py", "tests/test_native_memoryview.py", "tests/test_native_process_guard.py", "tests/test_net.py", "tests/test_node_runtime.py", "tests/test_op_kind_semantic_aliases.py", "tests/test_opcode_metadata_private_module_surface.py", "tests/test_opcode_private_module_surface.py", "tests/test_openpilot_demo.py", "tests/test_operator_private_module_surface.py", "tests/test_paddleocr_no_host_deps.py", "tests/test_paddleocr_paths.py", "tests/test_parity_collection.py", "tests/test_pickle_private_module_surface.py", "tests/test_platform_toolchain.py", "tests/test_posixsubprocess_private_module_surface.py", "tests/test_prefix_cache.py", "tests/test_private_intrinsic_helper_surface_batch_a.py", "tests/test_private_intrinsic_helper_surface_batch_b.py", "tests/test_private_intrinsic_helper_surface_batch_c.py", "tests/test_process_guard.py", "tests/test_process_guard_common.py", "tests/test_proto.py", "tests/test_public_intrinsic_surface_batch_a.py", "tests/test_public_intrinsic_surface_batch_aa.py", "tests/test_public_intrinsic_surface_batch_ab.py", "tests/test_public_intrinsic_surface_batch_ac.py", "tests/test_public_intrinsic_surface_batch_ad.py", "tests/test_public_intrinsic_surface_batch_ae.py", "tests/test_public_intrinsic_surface_batch_af.py", "tests/test_public_intrinsic_surface_batch_ag.py", "tests/test_public_intrinsic_surface_batch_ah.py", "tests/test_public_intrinsic_surface_batch_az.py", "tests/test_public_intrinsic_surface_batch_b.py", "tests/test_public_intrinsic_surface_batch_ba.py", "tests/test_public_intrinsic_surface_batch_bb.py", "tests/test_public_intrinsic_surface_batch_bc.py", "tests/test_public_intrinsic_surface_batch_bd.py", "tests/test_public_intrinsic_surface_batch_be.py", "tests/test_public_intrinsic_surface_batch_bf.py", "tests/test_public_intrinsic_surface_batch_bg.py", "tests/test_public_intrinsic_surface_batch_bh.py", "tests/test_public_intrinsic_surface_batch_bi.py", "tests/test_public_intrinsic_surface_batch_c.py", "tests/test_public_intrinsic_surface_batch_d.py", "tests/test_public_intrinsic_surface_batch_e.py", "tests/test_public_intrinsic_surface_batch_h.py", "tests/test_public_intrinsic_surface_batch_i.py", "tests/test_public_intrinsic_surface_batch_j.py", "tests/test_public_intrinsic_surface_batch_k.py", "tests/test_public_intrinsic_surface_batch_l.py", "tests/test_public_intrinsic_surface_batch_m.py", "tests/test_public_intrinsic_surface_batch_n.py", "tests/test_public_intrinsic_surface_batch_o.py", "tests/test_public_intrinsic_surface_batch_p.py", "tests/test_public_intrinsic_surface_batch_q.py", "tests/test_public_intrinsic_surface_batch_s.py", "tests/test_public_intrinsic_surface_batch_t.py", "tests/test_public_intrinsic_surface_batch_u.py", "tests/test_public_intrinsic_surface_batch_v.py", "tests/test_public_intrinsic_surface_batch_w.py", "tests/test_public_intrinsic_surface_batch_x.py", "tests/test_public_intrinsic_surface_batch_y.py", "tests/test_public_intrinsic_surface_batch_z.py", "tests/test_py_abc_private_module_surface.py", "tests/test_pyperformance_adapter.py", "tests/test_python_ast_identity.py", "tests/test_python_builtin_shape_facts.py", "tests/test_python_interpreter.py", "tests/test_python_loop_metadata.py", "tests/test_python_private_names.py", "tests/test_queue_private_module_surface.py", "tests/test_queue_public_module_surface.py", "tests/test_random_private_module_surface.py", "tests/test_repl_process_guard.py", "tests/test_resource_enforcement_e2e.py", "tests/test_runpy_public_module_surface.py", "tests/test_runtime_feature_gates.py", "tests/test_runtime_profile_schema.py", "tests/test_runtime_safety.py", "tests/test_rust_source_scan.py", "tests/test_rust_toolchain.py", "tests/test_secret_guard.py", "tests/test_secret_guard_tool.py", "tests/test_security_regression.py", "tests/test_seq_snapshot_bridge_authority.py", "tests/test_signal_private_module_surface.py", "tests/test_sitebuiltins_private_module_surface.py", "tests/test_smoke.py", "tests/test_socket_private_module_surface.py", "tests/test_ssl_private_module_surface.py", "tests/test_static_expression_result.py", "tests/test_statistics_private_module_surface.py", "tests/test_stdlib_base64.py", "tests/test_stdlib_importlib_machinery.py", "tests/test_stdlib_inspect_signature_binding.py", "tests/test_stdlib_package_bootstrap_surface.py", "tests/test_stdlib_sys_scalar_metadata.py", "tests/test_stdlib_tempfile.py", "tests/test_stdlib_test_support_facade.py", "tests/test_stdlib_todo_burndown_fail_closed.py", "tests/test_stdlib_types_coroutine.py", "tests/test_stdlib_typing_lazy_once.py", "tests/test_stdlib_zipfile_metadata_submodules.py", "tests/test_struct.py", "tests/test_struct_private_module_surface.py", "tests/test_stub_surface_batch_au.py", "tests/test_stub_surface_batch_aw.py", "tests/test_stub_surface_batch_ax.py", "tests/test_stub_surface_batch_ay.py", "tests/test_suggestions_private_module_surface.py", "tests/test_surface_process_guard.py", "tests/test_table_drift_gate.py", "tests/test_target_python_oracle.py", "tests/test_temporary_artifacts.py", "tests/test_theorem_to_test_fixture.py", "tests/test_thread_private_module_surface.py", "tests/test_threading_local_private_module_surface.py", "tests/test_tinygrad_onnx_interpreter_ops.py", "tests/test_tinygrad_paddleocr_decode.py", "tests/test_tinygrad_stdlib_tensor_reductions.py", "tests/test_tinygrad_stdlib_typed_runtime.py", "tests/test_tinygrad_tensor_axis0_contract.py", "tests/test_tir_wasm_pseudo_authority_retired.py", "tests/test_tkinter_live_smoke.py", "tests/test_tkinter_phase0_wrappers.py", "tests/test_tokenize_private_module_surface.py", "tests/test_tokenize_public_module_surface.py", "tests/test_tool_releases.py", "tests/test_translation_validate_roots.py", "tests/test_translation_validation_e2e.py", "tests/test_translation_validator_unit.py", "tests/test_true_async.py", "tests/test_tv_hooks.py", "tests/test_types_private_module_surface.py", "tests/test_typing_private_module_surface.py", "tests/test_uuid_private_module_surface.py", "tests/test_warnings_private_module_surface.py", "tests/test_warnings_top_level_private_module_surface.py", "tests/test_wasm_async_protocol.py", "tests/test_wasm_browser_socket_host.py", "tests/test_wasm_browser_socket_udp_server.py", "tests/test_wasm_bytes_ops.py", "tests/test_wasm_call_arity_trampoline.py", "tests/test_wasm_channel_async.py", "tests/test_wasm_channel_basic.py", "tests/test_wasm_class_smoke.py", "tests/test_wasm_codec_parity.py", "tests/test_wasm_db_client_shim.py", "tests/test_wasm_db_host_poll.py", "tests/test_wasm_entry_main_name.py", "tests/test_wasm_function_object_smoke.py", "tests/test_wasm_generator_protocol.py", "tests/test_wasm_importlib_machinery.py", "tests/test_wasm_importlib_smoke.py", "tests/test_wasm_linking_symbols.py", "tests/test_wasm_list_dict_ops.py", "tests/test_wasm_longdouble_printf_link.py", "tests/test_wasm_memoryview_ops.py", "tests/test_wasm_optimization_policy.py", "tests/test_wasm_pickle_class_dataclass_roundtrip.py", "tests/test_wasm_pickle_hooks_surface_buffers.py", "tests/test_wasm_pickle_protocol01.py", "tests/test_wasm_print_keywords.py", "tests/test_wasm_reserved_callable_arity.py", "tests/test_wasm_runtime_call_signature_authority.py", "tests/test_wasm_runtime_export_no_mangle.py", "tests/test_wasm_runtime_heavy_regressions.py", "tests/test_wasm_set_ops.py", "tests/test_wasm_size_tracking.py", "tests/test_wasm_snapshot.py", "tests/test_wasm_split_runtime_got_data_bridge.py", "tests/test_wasm_string_ops.py", "tests/test_wasm_thread_exception_path.py", "tests/test_wasm_time_basic.py", "tests/test_wasm_tinygrad_import_shim.py", "tests/test_wasm_tuple_return_fnptr.py", "tests/test_wasm_vfs_e2e.py", "tests/test_weakref_private_module_surface.py", "tests/test_zstd_private_module_surface.py", "tests/test_capabilities.py", "tests/test_datetime_private_module_surface.py", "tests/test_molt_accel_decorator.py", "tests/test_django_demo.py", "tests/test_stdlib_stubs.py", "tests/test_stdlib_intrinsic_registry.py", "tests/test_bisect_private_module_surface.py", "tests/test_collections_private_module_surface.py", "tests/test_public_intrinsic_surface_batch_g.py", "tests/test_private_intrinsic_helper_surface_batch_d.py", "tests/test_stdlib_badsyntax_data.py", "tests/property/test_arithmetic.py", "tests/property/test_builtins.py", "tests/property/test_collection_intrinsics.py", "tests/property/test_collections.py", "tests/property/test_cpython_equivalence.py", "tests/property/test_hash_intrinsics.py", "tests/property/test_math_intrinsics.py", "tests/property/test_string_intrinsics.py", "tests/property/test_strings.py", "tests/test_cloudflare_ai_fallback_contract.py", "tests/test_cloudflare_ocr_response_contract.py", "tests/test_falcon_ocr_prompt_contract.py", "tests/reference/falcon/test_reference_scaffold.py", "tests/parity/test_error_handling.py", "tests/mutation/test_mutation_smoke.py", "tests/mutation/test_mutation_extended.py", "tests/fuzz/test_fuzz_smoke.py", "tests/c_api/test_c_api_parity.py", "tests/c_api/test_c_extension_basic.py", "tests/cloudflare/test_demo_endpoints.py", "tests/cloudflare/test_demo_endpoint_fuzz.py", "tests/test_manifest_enforcement.py", "tests/test_mxfp_quant.py", "tests/test_lean_python_correspondence.py", "tests/gpu/dflash/test_dflash_fidelity.py", "tests/e2e/test_falcon_ocr_parity.py", "tests/e2e/test_falcon_ocr_micro.py", "tests/e2e/test_binary_size.py", "tests/e2e/test_gpu_quality.py", "tests/cloudflare/test_deploy_verify.py", "tests/cloudflare/test_live_verifier.py", "tests/determinism/test_entropy_audit.py", "tests/test_generate_worker.py", "tests/test_tinygrad_tokenizer_contract.py", "tests/test_nemotron_ocr_boundaries.py", "tests/test_wasm_build_policy_authority.py", "tests/test_runtime_state_ownership.py"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/test_abc_private_module_surface.py", "tests/test_abc_public_module_surface.py", "tests/test_agent_contract_budget.py", "tests/test_ast_unparse_private_module_surface.py", "tests/test_async.py", "tests/test_async_closure.py", "tests/test_asyncio_private_module_surface.py", "tests/test_batch_compile_client.py", "tests/test_bench_backend_incremental.py", "tests/test_bench_diff.py", "tests/test_bench_evidence.py", "tests/test_binaryen_toolchain.py", "tests/test_blake2_private_module_surface.py", "tests/test_bootstrap_llvm.py", "tests/test_browser_compute_backend_semantics.py", "tests/test_browser_target_feature_metadata.py", "tests/test_call_argument_schedule.py", "tests/test_capability_manifest_e2e.py", "tests/test_capability_policy.py", "tests/test_check_dynamic_policy.py", "tests/test_check_formal_methods_tool.py", "tests/test_check_runtime_feedback.py", "tests/test_cloudflare_demo_verify.py", "tests/test_cloudflare_ocr_tokenizer_contract.py", "tests/test_cloudflare_queue_batch_ocr_contract.py", "tests/test_codec_family_private_module_surface.py", "tests/test_codecs_private_module_surface.py", "tests/test_coff_import_library.py", "tests/test_collections_abc_private_module_surface.py", "tests/test_colorize_private_module_surface.py", "tests/test_compat_comparison.py", "tests/test_compat_diagnostics.py", "tests/test_compat_pickle_private_module_surface.py", "tests/test_compat_test_policy.py", "tests/test_compile_progress_build_profile.py", "tests/test_comprehension.py", "tests/test_concurrency_wrappers.py", "tests/test_conformance_environment_policy.py", "tests/test_contextvars_private_module_surface.py", "tests/test_convert_safetensors_dtype.py", "tests/test_copyreg_public_module_surface.py", "tests/test_cpython_abi_symbol_authority.py", "tests/test_cpython_regrtest_memory_guard.py", "tests/test_crypt_private_module_surface.py", "tests/test_crypto_private_capability_anchor_surfaces.py", "tests/test_csv_private_module_surface.py", "tests/test_ctypes_private_module_surface.py", "tests/test_custody_layout.py", "tests/test_custody_signal_fork.py", "tests/test_dbm_private_module_surface.py", "tests/test_debug_diff.py", "tests/test_debug_docs.py", "tests/test_debug_manifest.py", "tests/test_debug_perf.py", "tests/test_debug_reduce.py", "tests/test_disk_capacity.py", "tests/test_driver_cloudflare_verify.py", "tests/test_driver_cloudflare_worker.py", "tests/test_driver_layout.py", "tests/test_dx_sccache_wrapper.py", "tests/test_exception_constructors.py", "tests/test_executable_test_support.py", "tests/test_file_locks.py", "tests/test_functools_private_module_surface.py", "tests/test_future_private_intrinsic_surface.py", "tests/test_gdbm_private_module_surface.py", "tests/test_gen_cpython_abi_layout.py", "tests/test_gen_diff_lanes.py", "tests/test_gen_target_feature_manifest.py", "tests/test_gpu_api.py", "tests/test_gpu_gguf_hub_boundaries.py", "tests/test_gpu_optional_intrinsic_lookup.py", "tests/test_guard.py", "tests/test_harness_orchestrator.py", "tests/test_harness_self.py", "tests/test_hash_private_modules_surface.py", "tests/test_hashlib_private_module_surface.py", "tests/test_heapq_private_module_surface.py", "tests/test_hmac_private_module_surface.py", "tests/test_host_exit.py", "tests/test_import_runtime_private_module_surfaces.py", "tests/test_import_smoke_public_surfaces.py", "tests/test_intrinsics_bootstrap_contract.py", "tests/test_itertools_bridge_authority.py", "tests/test_itertools_islice_accumulate.py", "tests/test_itertools_public_module_surface.py", "tests/test_json.py", "tests/test_json_private_module_surface.py", "tests/test_lean_rust_correspondence.py", "tests/test_linear_seed_backlog_tool.py", "tests/test_linear_workspace_sync.py", "tests/test_linear_workspace_tool.py", "tests/test_luau_physics_ir.py", "tests/test_magic_concurrency.py", "tests/test_manifest_cli_integration.py", "tests/test_memoryview_strided_offset_guard.py", "tests/test_module_registry_gates.py", "tests/test_molt_accel_client.py", "tests/test_molt_accel_contracts.py", "tests/test_molt_accel_framing.py", "tests/test_molt_buffer.py", "tests/test_molt_db_adapter_contracts.py", "tests/test_molt_diff_daemon_pruning.py", "tests/test_molt_diff_scheduling.py", "tests/test_molt_regrtest_shim.py", "tests/test_msgpack.py", "tests/test_multibytecodec_private_module_surface.py", "tests/test_multiprocessing_private_module_surface.py", "tests/test_native_async_protocol.py", "tests/test_native_bytes.py", "tests/test_native_memoryview.py", "tests/test_native_process_guard.py", "tests/test_net.py", "tests/test_node_runtime.py", "tests/test_op_kind_semantic_aliases.py", "tests/test_opcode_metadata_private_module_surface.py", "tests/test_opcode_private_module_surface.py", "tests/test_openpilot_demo.py", "tests/test_operator_private_module_surface.py", "tests/test_paddleocr_no_host_deps.py", "tests/test_paddleocr_paths.py", "tests/test_parity_collection.py", "tests/test_pickle_private_module_surface.py", "tests/test_platform_toolchain.py", "tests/test_posixsubprocess_private_module_surface.py", "tests/test_prefix_cache.py", "tests/test_private_intrinsic_helper_surface_batch_a.py", "tests/test_private_intrinsic_helper_surface_batch_b.py", "tests/test_private_intrinsic_helper_surface_batch_c.py", "tests/test_process_guard.py", "tests/test_process_guard_common.py", "tests/test_proto.py", "tests/test_public_intrinsic_surface_batch_a.py", "tests/test_public_intrinsic_surface_batch_aa.py", "tests/test_public_intrinsic_surface_batch_ab.py", "tests/test_public_intrinsic_surface_batch_ac.py", "tests/test_public_intrinsic_surface_batch_ad.py", "tests/test_public_intrinsic_surface_batch_ae.py", "tests/test_public_intrinsic_surface_batch_af.py", "tests/test_public_intrinsic_surface_batch_ag.py", "tests/test_public_intrinsic_surface_batch_ah.py", "tests/test_public_intrinsic_surface_batch_az.py", "tests/test_public_intrinsic_surface_batch_b.py", "tests/test_public_intrinsic_surface_batch_ba.py", "tests/test_public_intrinsic_surface_batch_bb.py", "tests/test_public_intrinsic_surface_batch_bc.py", "tests/test_public_intrinsic_surface_batch_bd.py", "tests/test_public_intrinsic_surface_batch_be.py", "tests/test_public_intrinsic_surface_batch_bf.py", "tests/test_public_intrinsic_surface_batch_bg.py", "tests/test_public_intrinsic_surface_batch_bh.py", "tests/test_public_intrinsic_surface_batch_bi.py", "tests/test_public_intrinsic_surface_batch_c.py", "tests/test_public_intrinsic_surface_batch_d.py", "tests/test_public_intrinsic_surface_batch_e.py", "tests/test_public_intrinsic_surface_batch_h.py", "tests/test_public_intrinsic_surface_batch_i.py", "tests/test_public_intrinsic_surface_batch_j.py", "tests/test_public_intrinsic_surface_batch_k.py", "tests/test_public_intrinsic_surface_batch_l.py", "tests/test_public_intrinsic_surface_batch_m.py", "tests/test_public_intrinsic_surface_batch_n.py", "tests/test_public_intrinsic_surface_batch_o.py", "tests/test_public_intrinsic_surface_batch_p.py", "tests/test_public_intrinsic_surface_batch_q.py", "tests/test_public_intrinsic_surface_batch_s.py", "tests/test_public_intrinsic_surface_batch_t.py", "tests/test_public_intrinsic_surface_batch_u.py", "tests/test_public_intrinsic_surface_batch_v.py", "tests/test_public_intrinsic_surface_batch_w.py", "tests/test_public_intrinsic_surface_batch_x.py", "tests/test_public_intrinsic_surface_batch_y.py", "tests/test_public_intrinsic_surface_batch_z.py", "tests/test_py_abc_private_module_surface.py", "tests/test_pyperformance_adapter.py", "tests/test_python_ast_identity.py", "tests/test_python_builtin_shape_facts.py", "tests/test_python_interpreter.py", "tests/test_python_loop_metadata.py", "tests/test_python_private_names.py", "tests/test_queue_private_module_surface.py", "tests/test_queue_public_module_surface.py", "tests/test_random_private_module_surface.py", "tests/test_repl_process_guard.py", "tests/test_resource_enforcement_e2e.py", "tests/test_runpy_public_module_surface.py", "tests/test_runtime_feature_gates.py", "tests/test_runtime_profile_schema.py", "tests/test_runtime_safety.py", "tests/test_rust_source_scan.py", "tests/test_rust_toolchain.py", "tests/test_secret_guard.py", "tests/test_secret_guard_tool.py", "tests/test_security_regression.py", "tests/test_seq_snapshot_bridge_authority.py", "tests/test_signal_private_module_surface.py", "tests/test_sitebuiltins_private_module_surface.py", "tests/test_smoke.py", "tests/test_socket_private_module_surface.py", "tests/test_ssl_private_module_surface.py", "tests/test_static_expression_result.py", "tests/test_statistics_private_module_surface.py", "tests/test_stdlib_base64.py", "tests/test_stdlib_importlib_machinery.py", "tests/test_stdlib_inspect_signature_binding.py", "tests/test_stdlib_package_bootstrap_surface.py", "tests/test_stdlib_sys_scalar_metadata.py", "tests/test_stdlib_tempfile.py", "tests/test_stdlib_test_support_facade.py", "tests/test_stdlib_todo_burndown_fail_closed.py", "tests/test_stdlib_types_coroutine.py", "tests/test_stdlib_typing_lazy_once.py", "tests/test_stdlib_zipfile_metadata_submodules.py", "tests/test_struct.py", "tests/test_struct_private_module_surface.py", "tests/test_stub_surface_batch_au.py", "tests/test_stub_surface_batch_aw.py", "tests/test_stub_surface_batch_ax.py", "tests/test_stub_surface_batch_ay.py", "tests/test_suggestions_private_module_surface.py", "tests/test_surface_process_guard.py", "tests/test_table_drift_gate.py", "tests/test_target_python_oracle.py", "tests/test_temporary_artifacts.py", "tests/test_theorem_to_test_fixture.py", "tests/test_thread_private_module_surface.py", "tests/test_threading_local_private_module_surface.py", "tests/test_tinygrad_onnx_interpreter_ops.py", "tests/test_tinygrad_paddleocr_decode.py", "tests/test_tinygrad_stdlib_tensor_reductions.py", "tests/test_tinygrad_stdlib_typed_runtime.py", "tests/test_tinygrad_tensor_axis0_contract.py", "tests/test_tir_wasm_pseudo_authority_retired.py", "tests/test_tkinter_live_smoke.py", "tests/test_tkinter_phase0_wrappers.py", "tests/test_tokenize_private_module_surface.py", "tests/test_tokenize_public_module_surface.py", "tests/test_tool_releases.py", "tests/test_translation_validate_roots.py", "tests/test_translation_validation_e2e.py", "tests/test_translation_validator_unit.py", "tests/test_true_async.py", "tests/test_tv_hooks.py", "tests/test_types_private_module_surface.py", "tests/test_typing_private_module_surface.py", "tests/test_uuid_private_module_surface.py", "tests/test_warnings_private_module_surface.py", "tests/test_warnings_top_level_private_module_surface.py", "tests/test_wasm_async_protocol.py", "tests/test_wasm_browser_socket_host.py", "tests/test_wasm_browser_socket_udp_server.py", "tests/test_wasm_bytes_ops.py", "tests/test_wasm_call_arity_trampoline.py", "tests/test_wasm_channel_async.py", "tests/test_wasm_channel_basic.py", "tests/test_wasm_class_smoke.py", "tests/test_wasm_codec_parity.py", "tests/test_wasm_db_client_shim.py", "tests/test_wasm_db_host_poll.py", "tests/test_wasm_entry_main_name.py", "tests/test_wasm_function_object_smoke.py", "tests/test_wasm_generator_protocol.py", "tests/test_wasm_importlib_machinery.py", "tests/test_wasm_importlib_smoke.py", "tests/test_wasm_linking_symbols.py", "tests/test_wasm_list_dict_ops.py", "tests/test_wasm_memoryview_ops.py", "tests/test_wasm_optimization_policy.py", "tests/test_wasm_pickle_class_dataclass_roundtrip.py", "tests/test_wasm_pickle_hooks_surface_buffers.py", "tests/test_wasm_pickle_protocol01.py", "tests/test_wasm_print_keywords.py", "tests/test_wasm_reserved_callable_arity.py", "tests/test_wasm_runtime_call_signature_authority.py", "tests/test_wasm_runtime_export_no_mangle.py", "tests/test_wasm_runtime_heavy_regressions.py", "tests/test_wasm_set_ops.py", "tests/test_wasm_size_tracking.py", "tests/test_wasm_snapshot.py", "tests/test_wasm_split_runtime_got_data_bridge.py", "tests/test_wasm_string_ops.py", "tests/test_wasm_thread_exception_path.py", "tests/test_wasm_time_basic.py", "tests/test_wasm_tinygrad_import_shim.py", "tests/test_wasm_tuple_return_fnptr.py", "tests/test_wasm_vfs_e2e.py", "tests/test_weakref_private_module_surface.py", "tests/test_zstd_private_module_surface.py", "tests/test_capabilities.py", "tests/test_datetime_private_module_surface.py", "tests/test_molt_accel_decorator.py", "tests/test_django_demo.py", "tests/test_stdlib_stubs.py", "tests/test_stdlib_intrinsic_registry.py", "tests/test_bisect_private_module_surface.py", "tests/test_collections_private_module_surface.py", "tests/test_public_intrinsic_surface_batch_g.py", "tests/test_private_intrinsic_helper_surface_batch_d.py", "tests/test_stdlib_badsyntax_data.py", "tests/property/test_arithmetic.py", "tests/property/test_builtins.py", "tests/property/test_collection_intrinsics.py", "tests/property/test_collections.py", "tests/property/test_cpython_equivalence.py", "tests/property/test_hash_intrinsics.py", "tests/property/test_math_intrinsics.py", "tests/property/test_string_intrinsics.py", "tests/property/test_strings.py", "tests/test_cloudflare_ai_fallback_contract.py", "tests/test_cloudflare_ocr_response_contract.py", "tests/test_falcon_ocr_prompt_contract.py", "tests/reference/falcon/test_reference_scaffold.py", "tests/parity/test_error_handling.py", "tests/mutation/test_mutation_smoke.py", "tests/mutation/test_mutation_extended.py", "tests/fuzz/test_fuzz_smoke.py", "tests/c_api/test_c_api_parity.py", "tests/c_api/test_c_extension_basic.py", "tests/cloudflare/test_demo_endpoints.py", "tests/cloudflare/test_demo_endpoint_fuzz.py", "tests/test_manifest_enforcement.py", "tests/test_mxfp_quant.py", "tests/test_lean_python_correspondence.py", "tests/gpu/dflash/test_dflash_fidelity.py", "tests/e2e/test_falcon_ocr_parity.py", "tests/e2e/test_falcon_ocr_micro.py", "tests/e2e/test_binary_size.py", "tests/e2e/test_gpu_quality.py", "tests/cloudflare/test_deploy_verify.py", "tests/cloudflare/test_live_verifier.py", "tests/determinism/test_entropy_audit.py", "tests/test_generate_worker.py", "tests/test_tinygrad_tokenizer_contract.py", "tests/test_nemotron_ocr_boundaries.py", "tests/test_wasm_build_policy_authority.py", "tests/test_runtime_state_ownership.py"]
 toolchains = ["python", "uv"]
 [[command]]
 id = "python.unit.runtime-artifacts"
@@ -2379,7 +2611,7 @@ resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/cli/test_backend_manifest_contract.py", "tests/test_cargo_workspace.py", "tests/test_cli_build_profile_policy.py", "tests/cli/test_runtime_build_identity.py", "tests/cli/test_runtime_family_authority.py", "tests/cli/test_runtime_artifact_selection.py", "tests/cli/test_cli_backend_binary_materialization.py", "tests/cli/test_cli_artifact_format_validation.py", "tests/cli/test_cli_shared_stdlib_cache.py", "tests/test_ustar.py", "tests/test_native_artifact_header.py", "tests/cli/test_cli_native_binary_authority.py", "tests/cli/test_native_artifact_contract.py", "tests/cli/test_native_symbol_authority.py", "tests/cli/test_native_symbol_build_errors.py", "tests/cli/test_backend_artifact_contract.py", "tests/cli/test_artifact_sync.py", "tests/cli/test_native_link_custody.py", "tests/cli/test_native_link_manifest.py", "tests/cli/test_cargo_execution_failure_authority.py", "tests/cli/test_runtime_wasm_generation.py", "tests/cli/test_runtime_wasm_single_compile.py", "tests/cli/test_cli_runtime_wasm_shared_cache.py", "tests/cli/test_cli_wasm_artifact_validation.py", "tests/cli/test_cli_toolchain_artifact_hydration.py", "tests/test_wasm_link_runtime_generation.py", "tests/test_wasm_longdouble_durable_provisioning.py", "tests/tools/test_nightly_runtime_bundle.py", "tests/tools/test_nightly_prepare.py", "tests/tools/test_native_link_benchmark.py", "tests/cli/test_runtime_c_resource_custody.py", "tests/cli/test_runtime_native_failure_custody.py", "tests/cli/test_static_archive_identity.py", "tests/cli/test_link_fingerprints.py", "tests/cli/test_runtime_wasm_build_timings.py", "tests/test_wasm_link_validation.py", "tests/test_wasm_section_spans.py", "tests/tools/test_artifact_publish.py", "tests/test_wasm_bundle.py", "tests/cli/test_link_member_selection.py", "tests/cli/test_link_selection_admission.py", "tests/test_artifact_release_sibling.py", "tests/test_llvm_toolchain.py"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/cli/test_backend_manifest_contract.py", "tests/test_cargo_workspace.py", "tests/test_cli_build_profile_policy.py", "tests/cli/test_runtime_build_identity.py", "tests/cli/test_runtime_family_authority.py", "tests/cli/test_runtime_artifact_selection.py", "tests/cli/test_cli_backend_binary_materialization.py", "tests/cli/test_cli_artifact_format_validation.py", "tests/cli/test_cli_shared_stdlib_cache.py", "tests/test_ustar.py", "tests/test_native_artifact_header.py", "tests/cli/test_cli_native_binary_authority.py", "tests/cli/test_native_artifact_contract.py", "tests/cli/test_native_symbol_authority.py", "tests/cli/test_native_symbol_build_errors.py", "tests/cli/test_backend_artifact_contract.py", "tests/cli/test_artifact_sync.py", "tests/cli/test_native_link_custody.py", "tests/cli/test_native_link_manifest.py", "tests/cli/test_cargo_execution_failure_authority.py", "tests/cli/test_runtime_wasm_generation.py", "tests/cli/test_runtime_wasm_single_compile.py", "tests/cli/test_cli_runtime_wasm_shared_cache.py", "tests/cli/test_cli_wasm_artifact_validation.py", "tests/cli/test_cli_toolchain_artifact_hydration.py", "tests/test_wasm_link_runtime_generation.py", "tests/test_wasm_longdouble_durable_provisioning.py", "tests/tools/test_nightly_runtime_bundle.py", "tests/tools/test_nightly_prepare.py", "tests/tools/test_native_link_benchmark.py", "tests/cli/test_runtime_c_resource_custody.py", "tests/cli/test_runtime_native_failure_custody.py", "tests/cli/test_static_archive_identity.py", "tests/cli/test_link_fingerprints.py", "tests/cli/test_runtime_wasm_build_timings.py", "tests/test_wasm_link_validation.py", "tests/test_wasm_section_spans.py", "tests/tools/test_artifact_publish.py", "tests/test_wasm_bundle.py", "tests/cli/test_link_member_selection.py", "tests/cli/test_link_selection_admission.py", "tests/test_artifact_release_sibling.py", "tests/test_llvm_toolchain.py", "tests/test_bootstrap_llvm.py", "tests/cli/test_compiler_identity.py", "tests/cli/test_installed_compiler.py", "tests/cli/test_installed_runtime.py", "tests/cli/test_installed_toolchain_rules.py", "tests/cli/test_cli_backend_output_pipeline_authority.py", "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair", "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest", "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_digest", "tests/cli/test_cli_import_collection.py::test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen", "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift", "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -2391,7 +2623,7 @@ resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/cli/test_backend_manifest_contract.py", "tests/test_cargo_workspace.py", "tests/test_cli_build_profile_policy.py", "tests/cli/test_runtime_build_identity.py", "tests/cli/test_runtime_family_authority.py", "tests/cli/test_runtime_artifact_selection.py", "tests/cli/test_cli_backend_binary_materialization.py", "tests/cli/test_cli_artifact_format_validation.py", "tests/cli/test_cli_shared_stdlib_cache.py", "tests/test_ustar.py", "tests/test_native_artifact_header.py", "tests/cli/test_cli_native_binary_authority.py", "tests/cli/test_native_artifact_contract.py", "tests/cli/test_native_symbol_authority.py", "tests/cli/test_native_symbol_build_errors.py", "tests/cli/test_backend_artifact_contract.py", "tests/cli/test_artifact_sync.py", "tests/cli/test_native_link_custody.py", "tests/cli/test_native_link_manifest.py", "tests/cli/test_cargo_execution_failure_authority.py", "tests/cli/test_runtime_wasm_generation.py", "tests/cli/test_runtime_wasm_single_compile.py", "tests/cli/test_cli_runtime_wasm_shared_cache.py", "tests/cli/test_cli_wasm_artifact_validation.py", "tests/cli/test_cli_toolchain_artifact_hydration.py", "tests/test_wasm_link_runtime_generation.py", "tests/test_wasm_longdouble_durable_provisioning.py", "tests/tools/test_nightly_runtime_bundle.py", "tests/tools/test_nightly_prepare.py", "tests/tools/test_native_link_benchmark.py", "tests/cli/test_runtime_c_resource_custody.py", "tests/cli/test_runtime_native_failure_custody.py", "tests/cli/test_static_archive_identity.py", "tests/cli/test_link_fingerprints.py", "tests/cli/test_runtime_wasm_build_timings.py", "tests/test_wasm_link_validation.py", "tests/test_wasm_section_spans.py", "tests/tools/test_artifact_publish.py", "tests/test_wasm_bundle.py", "tests/cli/test_link_member_selection.py", "tests/cli/test_link_selection_admission.py", "tests/test_artifact_release_sibling.py", "tests/test_llvm_toolchain.py"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "2", "-m", "not slow", "tests/cli/test_backend_manifest_contract.py", "tests/test_cargo_workspace.py", "tests/test_cli_build_profile_policy.py", "tests/cli/test_runtime_build_identity.py", "tests/cli/test_runtime_family_authority.py", "tests/cli/test_runtime_artifact_selection.py", "tests/cli/test_cli_backend_binary_materialization.py", "tests/cli/test_cli_artifact_format_validation.py", "tests/cli/test_cli_shared_stdlib_cache.py", "tests/test_ustar.py", "tests/test_native_artifact_header.py", "tests/cli/test_cli_native_binary_authority.py", "tests/cli/test_native_artifact_contract.py", "tests/cli/test_native_symbol_authority.py", "tests/cli/test_native_symbol_build_errors.py", "tests/cli/test_backend_artifact_contract.py", "tests/cli/test_artifact_sync.py", "tests/cli/test_native_link_custody.py", "tests/cli/test_native_link_manifest.py", "tests/cli/test_cargo_execution_failure_authority.py", "tests/cli/test_runtime_wasm_generation.py", "tests/cli/test_runtime_wasm_single_compile.py", "tests/cli/test_cli_runtime_wasm_shared_cache.py", "tests/cli/test_cli_wasm_artifact_validation.py", "tests/cli/test_cli_toolchain_artifact_hydration.py", "tests/test_wasm_link_runtime_generation.py", "tests/test_wasm_longdouble_durable_provisioning.py", "tests/tools/test_nightly_runtime_bundle.py", "tests/tools/test_nightly_prepare.py", "tests/tools/test_native_link_benchmark.py", "tests/cli/test_runtime_c_resource_custody.py", "tests/cli/test_runtime_native_failure_custody.py", "tests/cli/test_static_archive_identity.py", "tests/cli/test_link_fingerprints.py", "tests/cli/test_runtime_wasm_build_timings.py", "tests/test_wasm_link_validation.py", "tests/test_wasm_section_spans.py", "tests/tools/test_artifact_publish.py", "tests/test_wasm_bundle.py", "tests/cli/test_link_member_selection.py", "tests/cli/test_link_selection_admission.py", "tests/test_artifact_release_sibling.py", "tests/test_llvm_toolchain.py", "tests/test_bootstrap_llvm.py", "tests/cli/test_compiler_identity.py", "tests/cli/test_installed_compiler.py", "tests/cli/test_installed_runtime.py", "tests/cli/test_installed_toolchain_rules.py", "tests/cli/test_cli_backend_output_pipeline_authority.py", "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair", "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest", "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_digest", "tests/cli/test_cli_import_collection.py::test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen", "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift", "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -2403,7 +2635,7 @@ resource_class = "python-tests"
 timeout_seconds = 120
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/test_moltlib_io.py", "tests/test_moltlib_io_runtime.py", "tests/test_moltlib_runtime_exports.py", "tests/test_io_private_module_surface.py", "tests/test_check_stdlib_intrinsics.py", "tests/test_stdlib_inspect_coroutine_marking.py", "tests/cli/test_cli_core_io_closure.py", "tests/cli/test_required_features_reachability.py", "tests/test_stdlib_intrinsic_import_evidence.py", "tests/cli/test_cli_intrinsic_enforcement.py", "tests/test_weakrefset_private_module_surface.py", "tests/test_weakref_native_authority.py", "tests/test_unittest_mock_protocol.py"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/test_moltlib_io.py", "tests/test_moltlib_io_runtime.py", "tests/test_moltlib_runtime_exports.py", "tests/test_io_private_module_surface.py", "tests/test_check_stdlib_intrinsics.py", "tests/test_stdlib_inspect_coroutine_marking.py", "tests/cli/test_cli_core_io_closure.py", "tests/cli/test_required_features_reachability.py", "tests/test_stdlib_intrinsic_import_evidence.py", "tests/cli/test_cli_intrinsic_enforcement.py", "tests/test_weakrefset_private_module_surface.py", "tests/test_weakref_native_authority.py", "tests/test_unittest_mock_protocol.py", "tests/test_public_intrinsic_surface_batch_d.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -2415,7 +2647,7 @@ resource_class = "python-tests"
 timeout_seconds = 120
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/test_moltlib_io.py", "tests/test_moltlib_io_runtime.py", "tests/test_moltlib_runtime_exports.py", "tests/test_io_private_module_surface.py", "tests/test_check_stdlib_intrinsics.py", "tests/test_stdlib_inspect_coroutine_marking.py", "tests/cli/test_cli_core_io_closure.py", "tests/cli/test_required_features_reachability.py", "tests/test_stdlib_intrinsic_import_evidence.py", "tests/cli/test_cli_intrinsic_enforcement.py", "tests/test_weakrefset_private_module_surface.py", "tests/test_weakref_native_authority.py", "tests/test_unittest_mock_protocol.py"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-m", "not slow", "tests/test_moltlib_io.py", "tests/test_moltlib_io_runtime.py", "tests/test_moltlib_runtime_exports.py", "tests/test_io_private_module_surface.py", "tests/test_check_stdlib_intrinsics.py", "tests/test_stdlib_inspect_coroutine_marking.py", "tests/cli/test_cli_core_io_closure.py", "tests/cli/test_required_features_reachability.py", "tests/test_stdlib_intrinsic_import_evidence.py", "tests/cli/test_cli_intrinsic_enforcement.py", "tests/test_weakrefset_private_module_surface.py", "tests/test_weakref_native_authority.py", "tests/test_unittest_mock_protocol.py", "tests/test_public_intrinsic_surface_batch_d.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -2428,7 +2660,7 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/test_runtime_build_python.py", "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive", "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges", "tests/cli/test_native_link_manifest.py::test_static_nobundle_order_changes_real_archive_resolution", "tests/cli/test_link_selection_admission.py"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/test_runtime_build_python.py", "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive", "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges", "tests/cli/test_native_link_manifest.py::test_static_nobundle_order_changes_real_archive_resolution", "tests/cli/test_link_selection_admission.py", "tests/cli/test_c_api_headers.py"]
 toolchains = ["python", "uv", "rustc", "clang", "llvm-ar", "llvm-nm", "wasm-ld"]
 
 [[command]]
@@ -2452,10 +2684,13 @@ family = "native_integration"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["pr", "main"]
 resource_class = "compiler-build-resource"
+# The first CLI build may compile its selected runtime and host compiler.
+# Dependency cache restoration does not establish prepared artifact receipts.
 timeout_budget = "cold"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest", "tests/tools/test_proof_queue_native_receipts.py", "tests/cli/test_backend_daemon_sequential.py"]
+# Current-test/output and guard profiles retain progress under the cold budget.
+argv = ["uv", "run", "--python", "3.12", "pytest", "-vv", "-s", "--durations=0", "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest", "tests/tools/test_proof_queue_native_receipts.py", "tests/cli/test_backend_daemon_sequential.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
 [[command]]
@@ -2520,6 +2755,7 @@ toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "rust.test.default-truth"
+cargo_native_c_units = ["target"]
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
@@ -2566,9 +2802,11 @@ dependencies = []
 # Libtest ORs these family filters. Do not include ignored runtime GC benchmarks.
 # Public ownership/memory contracts link the ordinary pass library in a separate
 # target; its tir:: namespace keeps the same family filter and proof custody.
+# Select the raw C-symbol witness in the same compression-disabled runtime build;
+# default-truth owns feature-enabled native and the two-cell WASM artifact target.
 # Emit assertion detail immediately; a later fatal ownership check must not
 # erase the earlier mismatch diagnostics held by libtest's output capture.
-argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set", "--", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "--nocapture", "--test-threads=1"]
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set", "--", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "test_raw_compression_c_exports_are_linkable", "--nocapture", "--test-threads=1"]
 toolchains = ["cargo", "node", "wasm-ld"]
 
 [[command]]
@@ -2591,7 +2829,27 @@ argv = ["uv", "run", "--frozen", "python3", "tools/run_runtime_test_gate.py", "-
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
+id = "rust.test.runtime-extension-admission"
+cargo_native_c_units = ["target"]
+evidence_outputs = ["proof-receipts/evidence/runtime-extension-admission"]
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "integration"
+cache_domain = "cargo-workspace"
+dependencies = []
+# Preserve default runtime features and enable the native dynamic-loader branch.
+# Cargo invokes this runner from runtime/molt-runtime; both paths below are
+# relative to that selected package and retain the normal libtest cwd.
+# Require the public resolver regression to pass, not merely a nonempty filter;
+# the existing binary runner owns accounting, bounded execution and receipts.
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--target", "x86_64-unknown-linux-gnu", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--config", "target.x86_64-unknown-linux-gnu.runner=[\"uv\",\"run\",\"--frozen\",\"python3\",\"../../tools/cargo_test_binary_runner.py\",\"--timeout-seconds\",\"300\",\"--receipt-dir\",\"../../proof-receipts/evidence/runtime-extension-admission\",\"--require-passed-test\",\"builtins::platform::tests::resolver_admission_tests::public_import_resolver_miss_and_error_do_not_load_extension_candidates\",\"--\"]", "-p", "molt-runtime", "--lib", "--features", "cext_loader", "--", "builtins::platform::tests::", "--nocapture", "--test-threads=1"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
 id = "rust.clippy.workspace-default"
+cargo_native_c_units = ["target"]
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
@@ -3604,26 +3862,23 @@ gates = [
 
 [[rule]]
 name = "apparatus-learning-protection"
-description = "Recurring-harm registry, forbidden-checkout policy, no-agent-termination meta-gate, anti-recurrence advisory, and Stop-session learning persistence."
+description = "Recurring-harm registry, no-agent-termination meta-gate, anti-recurrence advisory, and Stop-session learning persistence."
 globs = [
   ".claude/settings.json",
-  "tools/forbidden_checkout_guard.py",
   "tools/apparatus_agent_safety.py",
   "tools/anti_recurrence_gate.py",
   "tools/recurring_harms.toml",
-  "tools/hooks/path_guard.py",
   "tools/hooks/session_learning.py",
   "tools/hooks/stop_gates.py",
   "tools/memory_graph.py",
   "tools/check_gate_liveness.py",
-  "tests/tools/test_forbidden_checkout_guard.py",
   "tests/tools/test_apparatus_agent_safety.py",
   "tests/tools/test_anti_recurrence_gate.py",
   "tests/tools/test_hooks_session_learning.py",
   "tests/tools/test_memory_graph.py",
 ]
 gates = [
-  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_forbidden_checkout_guard.py tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
+  "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
   "python3 tools/venv_exec.py python tools/apparatus_agent_safety.py --check",
   "python3 tools/venv_exec.py python tools/anti_recurrence_gate.py --check",
 ]
@@ -3920,10 +4175,11 @@ family = "platform_portability"
 cell = "linux-x86_64-py312-queue-portability"
 tiers = ["pr", "main"]
 resource_class = "python-tests"
-timeout_seconds = 120
+# Complete image-custody consumers retain their prior queue-family envelope.
+timeout_seconds = 1800
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_target_derived_toolchains.py", "tests/tools/test_tool_identity_reuse.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -3932,10 +4188,11 @@ family = "platform_portability"
 cell = "macos-arm64-py312-queue-portability"
 tiers = ["pr", "main"]
 resource_class = "python-tests"
-timeout_seconds = 120
+# Complete image-custody consumers retain their prior queue-family envelope.
+timeout_seconds = 1800
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_target_derived_toolchains.py", "tests/tools/test_tool_identity_reuse.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -3944,8 +4201,58 @@ family = "platform_portability"
 cell = "windows-x86_64-py312-queue-portability"
 tiers = ["pr", "main"]
 resource_class = "python-tests"
-timeout_seconds = 120
+# Complete image-custody consumers retain their prior queue-family envelope.
+timeout_seconds = 1800
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/test_cargo_quarantine_custody.py", "tests/test_child_clock_custody.py", "tests/test_perf_calibration.py", "tests/test_exception_diagnostics.py", "tests/tools/test_memory_guard_windows_sampling.py", "tests/tools/test_proof_supervisor_inventory.py", "tests/tools/test_target_derived_toolchains.py", "tests/tools/test_tool_identity_reuse.py", "tests/tools/test_toolchain_capture.py"]
 toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "portability.headers.windows"
+family = "platform_portability"
+cell = "windows-x86_64-py312-queue-portability"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 300
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/cli/test_c_api_headers.py::test_optimize_flag_headers_share_data_across_translation_units"]
+toolchains = ["python", "uv", "rustc", "cargo", "hosted-clang-cl"]
+
+
+[[matrix_cell]]
+id = "linux-x86_64-rust-native-release"
+runner = "ubuntu-latest"
+os = "linux"
+arch = "x86_64"
+python = "none"
+backend = "rust"
+target = "x86_64-unknown-linux-gnu"
+profile = "release"
+
+# Explicit workflow_dispatch mode only; no changed-path or scheduled allocation.
+[[scheduled_family]]
+name = "runtime_candidate_costs"
+description = "Controlled candidate-only numeric/list/shared-storage measurements; no comparative or release PASS."
+workflow = ".github/workflows/perf-gate.yml"
+job = "candidate-runtime-costs"
+tiers = ["scheduled"]
+timeout_minutes = 180
+# Declared allowance retained from the existing job slack; not measured.
+job_reserve_seconds = 1800
+resource_class = "compiler-build-resource"
+
+[[command]]
+id = "runtime.cost.candidate"
+cargo_native_c_units = ["target"]
+family = "runtime_candidate_costs"
+cell = "linux-x86_64-rust-native-release"
+tiers = ["scheduled"]
+resource_class = "compiler-build-resource"
+timeout_budget = "shipping"
+cache_domain = "cargo-workspace"
+dependencies = []
+evidence_outputs = ["proof-receipts/evidence/candidate-runtime-costs"]
+argv = ["uv", "run", "--frozen", "python", "tools/run_candidate_runtime_costs.py"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang", "ld.lld"]

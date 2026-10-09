@@ -1,24 +1,28 @@
 use molt_obj_model::MoltObject;
 
-use crate::builtins::numbers::{index_bigint_from_obj, int_bits_from_bigint};
+use crate::builtins::numbers::{exact_integer_from_owned, index_from_object};
 use crate::{
     molt_abs_builtin, molt_add, molt_bit_and, molt_bit_or, molt_bit_xor, molt_div, molt_eq,
     molt_floordiv, molt_ge, molt_gt, molt_invert, molt_is_truthy, molt_le, molt_lshift, molt_lt,
-    molt_matmul, molt_mod, molt_mul, molt_ne, molt_pow, molt_rshift, molt_sub, obj_from_bits,
-    type_name,
+    molt_matmul, molt_mod, molt_mul, molt_ne, molt_pow, molt_rshift, molt_sub,
 };
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_index(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let err = format!(
-            "'{}' object cannot be interpreted as an integer",
-            type_name(_py, obj_from_bits(obj_bits))
-        );
-        let Some(value) = index_bigint_from_obj(_py, obj_bits, &err) else {
+        if crate::exception_pending(_py) {
             return MoltObject::none().bits();
-        };
-        int_bits_from_bigint(_py, value)
+        }
+        let value = index_from_object(_py, obj_bits);
+        if crate::exception_pending(_py) {
+            if MoltObject::from_bits(value).is_ptr() {
+                drop(crate::builtins::exceptions::ExceptionValue::adopt(
+                    _py, value,
+                ));
+            }
+            return MoltObject::none().bits();
+        }
+        exact_integer_from_owned(_py, value)
     })
 }
 

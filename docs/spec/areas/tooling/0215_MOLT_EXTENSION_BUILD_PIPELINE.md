@@ -56,6 +56,16 @@ runtime-library and optimization semantics. Forced headers resolve relative to
 the recorded compilation directory. Precompiled-header/module inputs require
 explicit custody and are rejected until that capability is implemented.
 
+Automatic source-extension archive selection requires `llvm-ar` from the existing
+LLVM/WASI tool family, including managed installations and PATH. A generic `ar`
+next to the selected compiler does not establish LLVM's deterministic operation
+grammar and cannot shadow a later LLVM archiver. Native emission retains `rcsD`;
+missing LLVM archive capability fails during toolchain planning. Explicit
+producer-owned tool commands retain their existing admission contract. An explicit
+archiver still receives `rcsD`; an unsupported operation fails without removing
+`D`, selecting a replacement tool, or publishing an extension. Selection alone
+is not evidence that an explicit tool implements the archive capability.
+
 Outputs:
 - `.whl` tagged with `py3-molt_abi<major>-<platform_tag>`.
 - `extension_manifest.json` sidecar (ABI/capability metadata + checksums).

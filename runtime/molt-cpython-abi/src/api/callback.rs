@@ -10,7 +10,9 @@ use crate::bridge::GLOBAL_BRIDGE;
 use std::os::raw::c_int;
 use std::ptr;
 
-pub(crate) struct CallbackOperands<const N: usize> {
+/// Internal cross-crate runtime integration; not a C-API surface.
+#[doc(hidden)]
+pub struct CallbackOperands<const N: usize> {
     roots: [*mut PyObject; N],
     inline: [*mut PyObject; 8],
     inline_len: usize,
@@ -75,10 +77,12 @@ impl<const N: usize> CallbackOperands<N> {
         true
     }
 
-    pub(crate) unsafe fn from_vector(
-        roots: [*mut PyObject; N],
-        values: &[*mut PyObject],
-    ) -> Option<Self> {
+    /// Capture a native callback's direct vector operands.
+    ///
+    /// # Safety
+    /// Non-null roots and every value must be live Python objects; values must
+    /// remain readable through capture. Null roots denote absent operands.
+    pub unsafe fn from_vector(roots: [*mut PyObject; N], values: &[*mut PyObject]) -> Option<Self> {
         let mut operands = unsafe { Self::new(roots) };
         if !operands.reserve_arguments(values.len()) {
             return None;
@@ -91,7 +95,12 @@ impl<const N: usize> CallbackOperands<N> {
         Some(operands)
     }
 
-    pub(crate) unsafe fn from_tuple_dict(
+    /// Capture container operands and their direct entries before reentry.
+    ///
+    /// # Safety
+    /// Non-null pointers must be live Python objects. `args` must be a tuple
+    /// and `kwargs` a dictionary when present; roots may include either.
+    pub unsafe fn from_tuple_dict(
         roots: [*mut PyObject; N],
         args: *mut PyObject,
         kwargs: *mut PyObject,
@@ -183,11 +192,12 @@ impl<const N: usize> CallbackOperands<N> {
         synchronized
     }
 
-    pub(crate) unsafe fn complete_result(
-        &self,
-        result: *mut PyObject,
-        operation: &str,
-    ) -> *mut PyObject {
+    /// Validate the native result and publish captured mutable projections.
+    ///
+    /// # Safety
+    /// `result` is null or an owned Python reference returned by the callback.
+    /// Completion consumes that reference on failure and lends it on success.
+    pub unsafe fn complete_result(&self, result: *mut PyObject, operation: &str) -> *mut PyObject {
         let result = unsafe { errors::check_native_result(result, operation) };
         if self.synchronize() {
             result

@@ -28,7 +28,7 @@ impl CallArgs {
     pub(super) unsafe fn keyword_count(&self) -> usize {
         obj_from_bits(self.keywords)
             .as_ptr()
-            .map_or(0, |dict| unsafe { dict_order(dict).len() / 2 })
+            .map_or(0, |dict| unsafe { dict_len(dict) })
     }
 }
 
@@ -52,6 +52,9 @@ unsafe fn exclusively_owned(ptr: *mut u8) -> bool {
 pub(super) enum ArgumentCustody {
     Frame,
     Instruction,
+    /// Public C-API calls retain their inputs through dispatch and release the
+    /// unpacked stack forward, independently of the source CALL instruction.
+    Capi,
 }
 
 /// The CPython path that releases the arguments a call still owns. The
@@ -62,6 +65,9 @@ enum ReleaseOrder {
     /// `initialize_locals` and `_PyEvalFramePushAndInit` failures: positional
     /// values, then keyword values, each first to last.
     Forward,
+    /// _PyStack_UnpackDict_Free releases values forward, then the names tuple
+    /// releases its items backward. Source CALL keeps its separate policy.
+    Capi,
     /// CALL's cleanup after a callee without an inlined frame (DECREF_INPUTS),
     /// and an inlined frame's parameters (`_PyFrame_ClearLocals`): first to
     /// last through 3.13, last to first from 3.14.
@@ -97,29 +103,77 @@ pub(super) enum Admission {
     Copy,
 }
 
+/// Public C-API spans are borrowed only through synchronous dispatch. Source
+/// instructions own their vectors; receiver insertion explicitly promotes just
+/// the positional span before it can mutate or acquire argument ownership.
+enum PositionalArguments<'a> {
+    Owned(Vec<u64>),
+    Borrowed(&'a [u64]),
+}
+impl Default for PositionalArguments<'_> {
+    fn default() -> Self {
+        Self::Owned(Vec::new())
+    }
+}
+impl std::ops::Deref for PositionalArguments<'_> {
+    type Target = [u64];
+    fn deref(&self) -> &[u64] {
+        match self {
+            Self::Owned(values) => values,
+            Self::Borrowed(values) => values,
+        }
+    }
+}
+impl PositionalArguments<'_> {
+    fn owned_mut(&mut self) -> &mut Vec<u64> {
+        match self {
+            Self::Owned(values) => values,
+            Self::Borrowed(_) => unreachable!("borrowed C-API operands require explicit promotion"),
+        }
+    }
+    fn capacity(&self) -> usize {
+        match self {
+            Self::Owned(values) => values.capacity(),
+            Self::Borrowed(_) => 0,
+        }
+    }
+}
+
 /// The consuming call's arguments: CPython's value-stack operands of a CALL,
 /// or the positional tuple and keyword mapping of a CALL_FUNCTION_EX. The
 /// consuming entry moves the heap builder's edges here (T1). A CALL's inlined
 /// frame takes them over (T2); every other callee borrows them. Whatever
 /// remains is released by the CPython path that owns it at that point.
-pub(super) struct CallArguments<'a, 'py> {
+pub(crate) struct CallArguments<'a, 'py> {
     py: &'a PyToken<'py>,
     pub(super) form: CallForm,
     /// Decided once, from the call instruction's callee; redispatch keeps it.
     custody: Option<ArgumentCustody>,
     release: ReleaseOrder,
-    positional: Vec<u64>,
+    positional: PositionalArguments<'a>,
     /// Positional values before this index have moved into a frame.
     positional_start: usize,
-    keywords: CallKeywords,
+    keywords: CallKeywords<'a>,
 }
 
 /// Keyword custody. The builder's dictionary stays whole until a consumer
 /// needs ordered entries, so extension callees still receive it directly.
-enum CallKeywords {
+enum CallKeywords<'a> {
     /// One owned reference to the keyword dictionary, or `None`.
     Mapping(u64),
     Unpacked(KeywordArguments),
+    /// The hook caller pins these spans through return; Capi custody always
+    /// copies into a callee frame and cannot move or release borrowed edges.
+    Borrowed {
+        names: &'a [u64],
+        values: &'a [u64],
+    },
+    /// Constructor inspection pins an observation while the original mapping
+    /// remains authoritative for each subsequent child call.
+    ObservedMapping {
+        mapping: u64,
+        entries: KeywordArguments,
+    },
 }
 
 /// Owned keyword entries in insertion order.
@@ -135,6 +189,7 @@ struct KeywordArguments {
 enum KeywordRelease {
     /// Value-stack entries, first to last.
     InOrder,
+    Capi,
     /// Value-stack entries, last to first.
     Reversed,
     /// A mapping's teardown: each entry's name, then its value, in insertion
@@ -142,19 +197,29 @@ enum KeywordRelease {
     Mapping,
 }
 
-impl CallKeywords {
+impl CallKeywords<'_> {
     /// Keyword values this call still owns.
     fn owned_count(&self) -> usize {
         match self {
-            CallKeywords::Mapping(bits) => obj_from_bits(*bits)
-                .as_ptr()
-                .map_or(0, |dict| unsafe { dict_order(dict).len() / 2 }),
+            CallKeywords::Mapping(bits) | CallKeywords::ObservedMapping { mapping: bits, .. } => {
+                obj_from_bits(*bits)
+                    .as_ptr()
+                    .map_or(0, |dict| unsafe { dict_len(dict) })
+            }
             CallKeywords::Unpacked(keywords) => keywords.values.len() - keywords.start,
+            CallKeywords::Borrowed { values, .. } => values.len(),
         }
     }
 
     fn release(self, py: &PyToken<'_>, order: KeywordRelease) {
         match self {
+            CallKeywords::Borrowed { .. } => {}
+            CallKeywords::ObservedMapping { mapping, entries } => {
+                // Retire the pinned observation while the live dictionary still
+                // owns its current entries; removed entries follow caller order.
+                CallKeywords::Unpacked(entries).release(py, order);
+                CallKeywords::Mapping(mapping).release(py, order);
+            }
             CallKeywords::Mapping(bits) => {
                 // Stack entries end one by one. Only a mapping this call alone
                 // owns can be taken apart; a shared one ends with its owners.
@@ -164,15 +229,15 @@ impl CallKeywords {
                         unsafe { exclusively_owned(dict) }.then(|| unsafe {
                             crate::object::ops::dict_clear_deferred(py, dict)
                                 .expect("an exclusively owned call dictionary is mutable")
-                                .into_owned_bits()
+                                .into_owned_storage()
                         })
                     })
                     .flatten();
                 dec_ref_bits(py, bits);
                 if let Some(entries) = reversed {
-                    for pair in entries.as_chunks::<2>().0.iter().rev() {
-                        dec_ref_bits(py, pair[1]);
-                        dec_ref_bits(py, pair[0]);
+                    for row in entries.iter().rev().filter(|row| row.hash.is_some()) {
+                        dec_ref_bits(py, row.value);
+                        dec_ref_bits(py, row.key);
                     }
                 }
             }
@@ -181,6 +246,10 @@ impl CallKeywords {
                 values,
                 start,
             }) => match order {
+                KeywordRelease::Capi => {
+                    release_in_order(py, &values[start..]);
+                    release_reversed(py, &names);
+                }
                 KeywordRelease::InOrder => {
                     release_in_order(py, &values[start..]);
                     release_in_order(py, &names);
@@ -217,10 +286,10 @@ fn release_reversed(py: &PyToken<'_>, values: &[u64]) {
 /// A borrowed projection of unpacked `CallArguments` for builtin, extension
 /// and constructor binders. It owns nothing.
 #[derive(Clone, Copy)]
-pub(super) struct CallArgumentView<'a> {
-    pub(super) pos: &'a [u64],
-    pub(super) kw_names: &'a [u64],
-    pub(super) kw_values: &'a [u64],
+pub(crate) struct CallArgumentView<'a> {
+    pub(crate) pos: &'a [u64],
+    pub(crate) kw_names: &'a [u64],
+    pub(crate) kw_values: &'a [u64],
 }
 
 impl<'a, 'py> CallArguments<'a, 'py> {
@@ -230,7 +299,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
             form,
             custody: None,
             release: ReleaseOrder::instruction(form),
-            positional: Vec::new(),
+            positional: PositionalArguments::default(),
             positional_start: 0,
             keywords: CallKeywords::Mapping(MoltObject::none().bits()),
         }
@@ -251,7 +320,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         let builder = unsafe { &mut *require_callargs_ptr(py, builder_ptr)? };
         let mut arguments = Self::empty(py, builder.form);
         if unsafe { exclusively_owned(builder_ptr) } {
-            arguments.positional = std::mem::take(&mut builder.pos);
+            arguments.positional = PositionalArguments::Owned(std::mem::take(&mut builder.pos));
             arguments.keywords = CallKeywords::Mapping(std::mem::replace(
                 &mut builder.keywords,
                 MoltObject::none().bits(),
@@ -260,6 +329,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         }
         if arguments
             .positional
+            .owned_mut()
             .try_reserve_exact(builder.pos.len())
             .is_err()
         {
@@ -275,7 +345,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         );
         for &bits in &builder.pos {
             inc_ref_bits(py, bits);
-            arguments.positional.push(bits);
+            arguments.positional.owned_mut().push(bits);
         }
         inc_ref_bits(py, builder.keywords);
         arguments.keywords = CallKeywords::Mapping(builder.keywords);
@@ -303,6 +373,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         let receivers = usize::from(receiver.is_some());
         if arguments
             .positional
+            .owned_mut()
             .try_reserve_exact(receivers + positional.len())
             .is_err()
             || keywords.names.try_reserve_exact(names.len()).is_err()
@@ -323,7 +394,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         );
         for &bits in receiver.iter().chain(positional) {
             inc_ref_bits(py, bits);
-            arguments.positional.push(bits);
+            arguments.positional.owned_mut().push(bits);
         }
         for (&name, &value) in names.iter().zip(values) {
             inc_ref_bits(py, name);
@@ -333,6 +404,132 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         }
         arguments.keywords = CallKeywords::Unpacked(keywords);
         Ok(arguments)
+    }
+
+    /// C-API vector ingress already supplies separate names and values. Retain
+    /// it directly; only a resolved non-vector target may later request a dict.
+    pub(crate) fn capi_vector(
+        py: &'a PyToken<'py>,
+        positional: &'a [u64],
+        names: &'a [u64],
+        values: &'a [u64],
+    ) -> Result<Self, u64> {
+        debug_assert_eq!(names.len(), values.len());
+        let mut arguments = Self::empty(py, CallForm::Stack);
+        arguments.positional = PositionalArguments::Borrowed(positional);
+        arguments.keywords = CallKeywords::Borrowed { names, values };
+        arguments.custody = Some(ArgumentCustody::Capi);
+        arguments.release = ReleaseOrder::Capi;
+        Ok(arguments)
+    }
+
+    /// Retain the actual dictionary-call carrier. Unpacking is deferred until
+    /// the target requires a vector, without hashing or rebuilding its names.
+    pub(crate) fn capi(
+        py: &'a PyToken<'py>,
+        receiver: Option<u64>,
+        positional: &'a [u64],
+        mapping: u64,
+    ) -> Result<Self, u64> {
+        let mut arguments = Self::empty(py, CallForm::Stack);
+        arguments.positional = PositionalArguments::Borrowed(positional);
+        inc_ref_bits(py, mapping);
+        arguments.keywords = CallKeywords::Mapping(mapping);
+        arguments.custody = Some(ArgumentCustody::Capi);
+        arguments.release = ReleaseOrder::Capi;
+        if let Some(receiver) = receiver {
+            arguments.prepend_positional(receiver)?;
+        }
+        Ok(arguments)
+    }
+
+    /// Only dictionary ingress may lend its original mapping to a tuple-based
+    /// C target. Source CALL and vector ingress retain their existing unpacking
+    /// and construction semantics.
+    pub(crate) fn capi_mapping(&self) -> Option<u64> {
+        if self.custody != Some(ArgumentCustody::Capi) {
+            return None;
+        }
+        match &self.keywords {
+            CallKeywords::Mapping(bits) | CallKeywords::ObservedMapping { mapping: bits, .. } => {
+                Some(*bits)
+            }
+            CallKeywords::Unpacked(_) | CallKeywords::Borrowed { .. } => None,
+        }
+    }
+
+    /// A non-vector type call requires one mapping. Vector ingress constructs
+    /// it here once; dictionary ingress retains its exact original carrier.
+    pub(crate) fn prepare_constructor_mapping(&mut self) -> Result<(), u64> {
+        if matches!(
+            self.keywords,
+            CallKeywords::Unpacked(_) | CallKeywords::Borrowed { .. }
+        ) {
+            let mapping = self.keyword_mapping()?;
+            let old = std::mem::replace(&mut self.keywords, CallKeywords::Mapping(mapping));
+            old.release(self.py, KeywordRelease::Capi);
+        }
+        Ok(())
+    }
+
+    /// The prepared type-call carrier remains owned by this call.
+    pub(crate) fn constructor_mapping(&self) -> u64 {
+        match &self.keywords {
+            CallKeywords::Mapping(bits) | CallKeywords::ObservedMapping { mapping: bits, .. } => {
+                *bits
+            }
+            _ => unreachable!("constructor mapping must be prepared"),
+        }
+    }
+
+    /// Child phases borrow the existing mapping carrier, not the observation.
+    /// Positional replacement supports metaclass winner/base normalization.
+    pub(crate) fn constructor_child<'b>(
+        &'b self,
+        receiver: Option<u64>,
+        positional: &'b [u64],
+    ) -> Result<CallArguments<'b, 'py>, u64> {
+        let mapping = match &self.keywords {
+            CallKeywords::Mapping(bits) | CallKeywords::ObservedMapping { mapping: bits, .. } => {
+                *bits
+            }
+            CallKeywords::Unpacked(_) | CallKeywords::Borrowed { .. } => {
+                unreachable!("constructor mapping must be prepared before a child call")
+            }
+        };
+        CallArguments::capi(self.py, receiver, positional, mapping)
+    }
+
+    /// Allocate an owned inspection only at a constructor branch that actually
+    /// consumes names/values. Plain __new__/__init__ forwarding never needs it.
+    pub(crate) unsafe fn observe_constructor_keywords(&mut self) -> Result<(), u64> {
+        self.prepare_constructor_mapping()?;
+        if let CallKeywords::Mapping(mapping) = self.keywords {
+            if self.keyword_count() == 0 {
+                return Ok(());
+            }
+            let entries = unsafe { self.mapping_entries(mapping, false) }?;
+            self.keywords = CallKeywords::ObservedMapping { mapping, entries };
+        }
+        Ok(())
+    }
+
+    pub(crate) fn constructor_view(&self) -> CallArgumentView<'_> {
+        if matches!(self.keywords, CallKeywords::Mapping(_)) && self.keyword_count() == 0 {
+            return CallArgumentView {
+                pos: self.positional(),
+                kw_names: &[],
+                kw_values: &[],
+            };
+        }
+        let CallKeywords::ObservedMapping { entries, .. } = &self.keywords else {
+            unreachable!("constructor inspection requires an owned observation");
+        };
+        CallArgumentView {
+            pos: self.positional(),
+            kw_names: &entries.names,
+            kw_values: &entries.values,
+        }
     }
 
     /// A call instruction's adopted positional operands, `receiver` first when
@@ -348,6 +545,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         let receivers = usize::from(receiver.is_some());
         if arguments
             .positional
+            .owned_mut()
             .try_reserve_exact(receivers + positional.len())
             .is_err()
         {
@@ -362,8 +560,11 @@ impl<'a, 'py> CallArguments<'a, 'py> {
             (arguments.positional.capacity() * std::mem::size_of::<u64>()) as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
-        arguments.positional.extend(receiver);
-        arguments.positional.extend_from_slice(positional);
+        arguments.positional.owned_mut().extend(receiver);
+        arguments
+            .positional
+            .owned_mut()
+            .extend_from_slice(positional);
         Ok(arguments)
     }
 
@@ -378,6 +579,7 @@ impl<'a, 'py> CallArguments<'a, 'py> {
             (ArgumentCustody::Frame, CallForm::Stack) => ReleaseOrder::Forward,
             (ArgumentCustody::Frame, CallForm::Expanded) => ReleaseOrder::TupleThenMapping,
             (ArgumentCustody::Instruction, form) => ReleaseOrder::instruction(form),
+            (ArgumentCustody::Capi, _) => ReleaseOrder::Capi,
         };
     }
 
@@ -402,19 +604,23 @@ impl<'a, 'py> CallArguments<'a, 'py> {
         }
     }
 
-    pub(super) fn positional(&self) -> &[u64] {
+    pub(crate) fn positional(&self) -> &[u64] {
         &self.positional[self.positional_start..]
     }
 
     /// An adopting entry takes every remaining positional value over as its
     /// parameters; this call releases none of them afterwards.
     pub(super) fn surrender_positional(&mut self) -> &[u64] {
+        debug_assert!(
+            matches!(self.positional, PositionalArguments::Owned(_)),
+            "C-API borrowed arguments cannot move into a frame"
+        );
         let start = std::mem::replace(&mut self.positional_start, self.positional.len());
         &self.positional[start..]
     }
 
     /// Keyword entries this call still owns.
-    pub(super) fn keyword_count(&self) -> usize {
+    pub(crate) fn keyword_count(&self) -> usize {
         self.keywords.owned_count()
     }
 
@@ -424,7 +630,36 @@ impl<'a, 'py> CallArguments<'a, 'py> {
             self.positional_start, 0,
             "receivers bind before any transfer"
         );
-        if self.positional.try_reserve(1).is_err() {
+        if let PositionalArguments::Borrowed(values) = &self.positional {
+            let mut owned = Vec::new();
+            let Some(count) = values.len().checked_add(1) else {
+                return Err(raise_exception::<_>(
+                    self.py,
+                    "MemoryError",
+                    "call arguments allocation failed",
+                ));
+            };
+            if owned.try_reserve_exact(count).is_err() {
+                return Err(raise_exception::<_>(
+                    self.py,
+                    "MemoryError",
+                    "call arguments allocation failed",
+                ));
+            }
+            inc_ref_bits(self.py, bits);
+            owned.push(bits);
+            for &value in *values {
+                inc_ref_bits(self.py, value);
+                owned.push(value);
+            }
+            ALLOC_BYTES_CALLARGS.fetch_add(
+                (owned.capacity() * std::mem::size_of::<u64>()) as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            self.positional = PositionalArguments::Owned(owned);
+            return Ok(());
+        }
+        if self.positional.owned_mut().try_reserve(1).is_err() {
             return Err(raise_exception::<_>(
                 self.py,
                 "MemoryError",
@@ -432,17 +667,20 @@ impl<'a, 'py> CallArguments<'a, 'py> {
             ));
         }
         inc_ref_bits(self.py, bits);
-        self.positional.insert(0, bits);
+        self.positional.owned_mut().insert(0, bits);
         Ok(())
     }
 
     /// Keyword names are strings (subclasses included) at every call boundary.
     pub(super) fn validate_keywords(&self) -> bool {
         match &self.keywords {
-            CallKeywords::Mapping(bits) => {
+            CallKeywords::Mapping(bits) | CallKeywords::ObservedMapping { mapping: bits, .. } => {
                 obj_from_bits(*bits).as_ptr().is_none_or(|dict| unsafe {
                     crate::object::mapping_merge::validate_keywords(self.py, dict)
                 })
+            }
+            CallKeywords::Borrowed { names, .. } => {
+                crate::object::mapping_merge::validate_keyword_names(self.py, names.iter().copied())
             }
             CallKeywords::Unpacked(keywords) => {
                 crate::object::mapping_merge::validate_keyword_names(
@@ -456,31 +694,33 @@ impl<'a, 'py> CallArguments<'a, 'py> {
     /// An owned keyword mapping for extension callees: the builder's own
     /// dictionary while it is whole, otherwise a fresh dictionary of the
     /// entries this call still owns. `None` when there are no keywords.
-    pub(super) fn keyword_mapping(&self) -> Result<u64, u64> {
-        let keywords = match &self.keywords {
-            CallKeywords::Mapping(bits) => {
+    pub(crate) fn keyword_mapping(&self) -> Result<u64, u64> {
+        let (names, values, start) = match &self.keywords {
+            CallKeywords::Mapping(bits) | CallKeywords::ObservedMapping { mapping: bits, .. } => {
                 inc_ref_bits(self.py, *bits);
                 return Ok(*bits);
             }
-            CallKeywords::Unpacked(keywords) => keywords,
+            CallKeywords::Unpacked(keywords) => (
+                keywords.names.as_slice(),
+                keywords.values.as_slice(),
+                keywords.start,
+            ),
+            CallKeywords::Borrowed { names, values } => (*names, *values, 0),
         };
-        if keywords.start == keywords.values.len() {
+        if start == values.len() {
             return Ok(MoltObject::none().bits());
         }
         let mut pairs = Vec::new();
-        if pairs
-            .try_reserve_exact(2 * (keywords.values.len() - keywords.start))
-            .is_err()
-        {
+        if pairs.try_reserve_exact(2 * (values.len() - start)).is_err() {
             return Err(raise_exception::<_>(
                 self.py,
                 "MemoryError",
                 "call keywords allocation failed",
             ));
         }
-        for index in keywords.start..keywords.values.len() {
-            pairs.push(keywords.names[index]);
-            pairs.push(keywords.values[index]);
+        for index in start..values.len() {
+            pairs.push(names[index]);
+            pairs.push(values[index]);
         }
         let dict = alloc_dict_with_pairs(self.py, &pairs);
         if dict.is_null() {
@@ -496,68 +736,89 @@ impl<'a, 'py> CallArguments<'a, 'py> {
     /// its only reference. A dictionary another owner can reach stays intact
     /// and the call retains its entries, as `_PyStack_UnpackDict` does. Either
     /// way no later keyword callback can change what binding reads.
-    pub(super) unsafe fn unpacked_view(&mut self) -> Result<CallArgumentView<'_>, u64> {
-        if let CallKeywords::Mapping(bits) = self.keywords {
-            let mut keywords = KeywordArguments {
-                names: Vec::new(),
-                values: Vec::new(),
-                start: 0,
-            };
-            if let Some(dict) = obj_from_bits(bits).as_ptr() {
-                let count = unsafe { dict_order(dict).len() } / 2;
-                if keywords.names.try_reserve_exact(count).is_err()
-                    || keywords.values.try_reserve_exact(count).is_err()
-                {
-                    return Err(raise_exception::<_>(
-                        self.py,
-                        "MemoryError",
-                        "call keywords allocation failed",
-                    ));
+    unsafe fn mapping_entries(&self, bits: u64, detach: bool) -> Result<KeywordArguments, u64> {
+        let mut keywords = KeywordArguments {
+            names: Vec::new(),
+            values: Vec::new(),
+            start: 0,
+        };
+        if let Some(dict) = obj_from_bits(bits).as_ptr() {
+            let count = unsafe { dict_len(dict) };
+            if keywords.names.try_reserve_exact(count).is_err()
+                || keywords.values.try_reserve_exact(count).is_err()
+            {
+                return Err(raise_exception::<_>(
+                    self.py,
+                    "MemoryError",
+                    "call keywords allocation failed",
+                ));
+            }
+            ALLOC_BYTES_CALLARGS.fetch_add(
+                ((keywords.names.capacity() + keywords.values.capacity())
+                    * std::mem::size_of::<u64>()) as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            if detach && unsafe { exclusively_owned(dict) } {
+                // Publishing the dictionary empty is unobservable: no
+                // other owner can reach it.
+                let detached = unsafe { crate::object::ops::dict_clear_deferred(self.py, dict) };
+                let entries = detached
+                    .expect("an exclusively owned call dictionary is mutable")
+                    .into_owned_storage();
+                for row in entries.iter().filter(|row| row.hash.is_some()) {
+                    keywords.names.push(row.key);
+                    keywords.values.push(row.value);
                 }
-                ALLOC_BYTES_CALLARGS.fetch_add(
-                    ((keywords.names.capacity() + keywords.values.capacity())
-                        * std::mem::size_of::<u64>()) as u64,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                if unsafe { exclusively_owned(dict) } {
-                    // Publishing the dictionary empty is unobservable: no
-                    // other owner can reach it.
-                    let detached =
-                        unsafe { crate::object::ops::dict_clear_deferred(self.py, dict) };
-                    let entries = detached
-                        .expect("an exclusively owned call dictionary is mutable")
-                        .into_owned_bits();
-                    for pair in entries.as_chunks::<2>().0 {
-                        keywords.names.push(pair[0]);
-                        keywords.values.push(pair[1]);
-                    }
-                } else {
-                    // No Python callback or dictionary mutation occurs here.
-                    for pair in unsafe { dict_order(dict) }.as_chunks::<2>().0 {
-                        inc_ref_bits(self.py, pair[0]);
-                        inc_ref_bits(self.py, pair[1]);
-                        keywords.names.push(pair[0]);
-                        keywords.values.push(pair[1]);
-                    }
+            } else {
+                // No Python callback or dictionary mutation occurs here.
+                for row in unsafe { dict_live_entries(dict) } {
+                    inc_ref_bits(self.py, row.key);
+                    inc_ref_bits(self.py, row.value);
+                    keywords.names.push(row.key);
+                    keywords.values.push(row.value);
                 }
             }
-            // Publish the entries before the dictionary edge can be released.
+        }
+        Ok(keywords)
+    }
+
+    pub(crate) unsafe fn unpacked_view(&mut self) -> Result<CallArgumentView<'_>, u64> {
+        if let CallKeywords::Mapping(bits) = self.keywords {
+            let keywords = unsafe { self.mapping_entries(bits, true) }?;
             self.keywords = CallKeywords::Unpacked(keywords);
             dec_ref_bits(self.py, bits);
+        } else if matches!(self.keywords, CallKeywords::ObservedMapping { .. }) {
+            let CallKeywords::ObservedMapping { mapping, entries } = std::mem::replace(
+                &mut self.keywords,
+                CallKeywords::Mapping(MoltObject::none().bits()),
+            ) else {
+                unreachable!()
+            };
+            self.keywords = CallKeywords::Unpacked(entries);
+            dec_ref_bits(self.py, mapping);
         }
-        let CallKeywords::Unpacked(keywords) = &self.keywords else {
-            unreachable!("keyword entries were just unpacked");
+        let (names, values) = match &self.keywords {
+            CallKeywords::Unpacked(keywords) => (
+                &keywords.names[keywords.start..],
+                &keywords.values[keywords.start..],
+            ),
+            CallKeywords::Borrowed { names, values } => (*names, *values),
+            _ => unreachable!("keywords unpacked"),
         };
         Ok(CallArgumentView {
-            pos: &self.positional[self.positional_start..],
-            kw_names: &keywords.names[keywords.start..],
-            kw_values: &keywords.values[keywords.start..],
+            pos: self.positional(),
+            kw_names: names,
+            kw_values: values,
         })
     }
 
     /// T2 under `Admission::Move`: the next positional value moves into its
     /// frame slot.
     pub(super) fn take_positional(&mut self) -> u64 {
+        debug_assert!(
+            matches!(self.positional, PositionalArguments::Owned(_)),
+            "C-API borrowed arguments cannot move into a frame"
+        );
         let bits = self.positional[self.positional_start];
         self.positional_start += 1;
         bits
@@ -566,6 +827,10 @@ impl<'a, 'py> CallArguments<'a, 'py> {
     /// T2 under `Admission::Move`: the remaining positional values become the
     /// frame's `*args` tuple. Ownership transfers only when the tuple exists.
     pub(super) fn take_positional_tuple(&mut self) -> Option<u64> {
+        debug_assert!(
+            matches!(self.positional, PositionalArguments::Owned(_)),
+            "C-API borrowed arguments cannot move into a frame"
+        );
         let tuple = crate::object::builders::alloc_tuple_owned(self.py, self.positional());
         if tuple.is_null() {
             return None;
@@ -595,7 +860,11 @@ impl<'a, 'py> CallArguments<'a, 'py> {
     /// Number of unpacked keyword entries, bound or not.
     pub(super) fn keyword_len(&self) -> usize {
         match &self.keywords {
-            CallKeywords::Unpacked(keywords) => keywords.values.len(),
+            CallKeywords::Borrowed { values, .. } => values.len(),
+            CallKeywords::Unpacked(keywords)
+            | CallKeywords::ObservedMapping {
+                entries: keywords, ..
+            } => keywords.values.len(),
             CallKeywords::Mapping(bits) => {
                 assert!(
                     obj_from_bits(*bits).is_none(),
@@ -608,6 +877,9 @@ impl<'a, 'py> CallArguments<'a, 'py> {
 
     /// Keyword entry `index` of the unpacked call, borrowed.
     pub(super) fn keyword_entry(&self, index: usize) -> (u64, u64) {
+        if let CallKeywords::Borrowed { names, values } = &self.keywords {
+            return (names[index], values[index]);
+        }
         let CallKeywords::Unpacked(keywords) = &self.keywords else {
             unreachable!("binding reads unpacked keywords");
         };
@@ -629,7 +901,11 @@ impl<'a, 'py> CallArguments<'a, 'py> {
     /// Every keyword name of the call, bound or not.
     pub(super) fn keyword_names(&self) -> &[u64] {
         match &self.keywords {
-            CallKeywords::Unpacked(keywords) => &keywords.names,
+            CallKeywords::Borrowed { names, .. } => names,
+            CallKeywords::Unpacked(keywords)
+            | CallKeywords::ObservedMapping {
+                entries: keywords, ..
+            } => &keywords.names,
             CallKeywords::Mapping(_) => &[],
         }
     }
@@ -639,7 +915,10 @@ impl Drop for CallArguments<'_, '_> {
     fn drop(&mut self) {
         let py = self.py;
         let positional = std::mem::take(&mut self.positional);
-        let positional = &positional[self.positional_start..];
+        let positional = match &positional {
+            PositionalArguments::Owned(values) => &values[self.positional_start..],
+            PositionalArguments::Borrowed(_) => &[],
+        };
         let keywords = std::mem::replace(
             &mut self.keywords,
             CallKeywords::Mapping(MoltObject::none().bits()),
@@ -649,6 +928,10 @@ impl Drop for CallArguments<'_, '_> {
         let owned = positional.len() + keywords.owned_count();
         let from_3_14 = || owned > 1 && crate::object::ops_sys::runtime_target_at_least(py, 3, 14);
         match self.release {
+            ReleaseOrder::Capi => {
+                release_in_order(py, positional);
+                keywords.release(py, KeywordRelease::Capi);
+            }
             ReleaseOrder::StackByTarget if from_3_14() => {
                 keywords.release(py, KeywordRelease::Reversed);
                 release_reversed(py, positional);

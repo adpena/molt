@@ -65,6 +65,13 @@ macro_rules! native_method_families {
 }
 
 native_method_families! {
+    dict_keyiterator => super::specialized::dict_keyiterator_method_bits, super::specialized::publish_dict_keyiterator_methods;
+    dict_valueiterator => super::specialized::dict_valueiterator_method_bits, super::specialized::publish_dict_valueiterator_methods;
+    dict_itemiterator => super::specialized::dict_itemiterator_method_bits, super::specialized::publish_dict_itemiterator_methods;
+    dict_reversekeyiterator => super::specialized::dict_reversekeyiterator_method_bits, super::specialized::publish_dict_reversekeyiterator_methods;
+    dict_reversevalueiterator => super::specialized::dict_reversevalueiterator_method_bits, super::specialized::publish_dict_reversevalueiterator_methods;
+    dict_reverseitemiterator => super::specialized::dict_reverseitemiterator_method_bits, super::specialized::publish_dict_reverseitemiterator_methods;
+    set_iterator => super::specialized::set_iterator_method_bits, super::specialized::publish_set_iterator_methods;
     union_type => super::specialized::union_method_bits, super::specialized::publish_union_methods;
     dict_keys => super::specialized::dict_keys_method_bits, super::specialized::publish_dict_keys_methods;
     dict_items => super::specialized::dict_items_method_bits, super::specialized::publish_dict_items_methods;
@@ -74,6 +81,7 @@ native_method_families! {
     type_obj => super::core_types::type_method_bits, super::core_types::publish_type_methods;
     module => crate::builtins::modules::module_method_bits, crate::builtins::modules::publish_module_methods;
     int => super::numeric::int_method_bits, super::numeric::publish_int_methods;
+    bool => super::numeric::bool_method_bits, super::numeric::publish_bool_methods;
     float => super::numeric::float_method_bits, super::numeric::publish_float_methods;
     complex => super::numeric::complex_method_bits, super::numeric::publish_complex_methods;
     dict => crate::builtins::containers::dict_method_bits, crate::builtins::containers::publish_dict_methods;

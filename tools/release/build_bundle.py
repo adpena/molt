@@ -3,9 +3,8 @@
 
 from __future__ import annotations
 
-from molt.temporary_artifacts import OwnedTemporaryDirectory
-
 import argparse
+import sys
 import gzip
 import json
 import os
@@ -15,21 +14,31 @@ import tarfile
 from pathlib import PurePosixPath
 from typing import Any, Callable
 
-from .archive import ArchivePolicy, write_reproducible_zip
-from .compiler_payload import (
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
+
+from tools.release.archive import ArchivePolicy, write_reproducible_zip  # noqa: E402
+from tools.release.compiler_payload import (  # noqa: E402
     compiler_record,
     launcher_record,
     materialize_sources,
 )
-from .binary_compatibility import (
+from tools.release.binary_compatibility import (  # noqa: E402
     WheelCompatibilityError,
     audit_wheel,
     derive_bundle_wheel_compatibility,
 )
-from .git_source_snapshot import GitSourceSnapshot
-from .platform_wheel import write_platform_wheel
-from .runtime_cells import read_runtime_inventory
-from molt.compiler_distribution import (
+from tools.release.git_source_snapshot import GitSourceSnapshot  # noqa: E402
+from tools.release.platform_wheel import write_platform_wheel  # noqa: E402
+from tools.release.runtime_cells import read_runtime_inventory  # noqa: E402
+from molt.compiler_distribution import (  # noqa: E402
     COMPILER_BUNDLE_DIRECTORIES,
     MAX_SOURCE_FILES,
     RUNTIME_ROOT,
@@ -171,6 +180,7 @@ def _bundle_molt(
         source / "packaging" / "INSTALL.md", root / "share" / "molt" / "INSTALL.md"
     )
     _copy_file(source / "LICENSE", root / "share" / "molt" / "LICENSE")
+    _copy_file(source / "vendor/llvm/LICENSE.TXT", root / "share/molt/LLVM-LICENSE.TXT")
     if {entry.name for entry in root.iterdir()} != set(
         COMPILER_BUNDLE_DIRECTORIES
     ) or not all((root / name).is_dir() for name in COMPILER_BUNDLE_DIRECTORIES):
@@ -344,7 +354,7 @@ def main() -> None:
         default=int(os.environ.get("SOURCE_DATE_EPOCH", "0")),
     )
     args = parser.parse_args()
-    from .compiler_payload import source_snapshot
+    from tools.release.compiler_payload import source_snapshot
 
     build_bundle(
         version=args.version,

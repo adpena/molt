@@ -4,6 +4,8 @@ import os
 import json
 import shutil
 import subprocess
+import sys
+import textwrap
 import tempfile
 import threading
 from enum import Enum
@@ -397,6 +399,31 @@ def run_guarded_test_process(
         setattr(error, "guarded_result", result)
         raise error
     return result
+
+
+def run_isolated_python_probe(
+    source: str,
+    *,
+    args: Sequence[str | Path] = (),
+    payload: object = None,
+) -> Any:
+    """Run test-owned Python with JSON transport through the existing guard.
+
+    The child starts no pytest session or sentinel. Its source owns setup and
+    measurement boundaries; startup and transport are outside those boundaries.
+    """
+    root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join((str(root / "src"), str(root)))
+    result = run_guarded_test_process(
+        [sys.executable, "-c", textwrap.dedent(source), *map(str, args)],
+        cwd=root,
+        env=env,
+        input=json.dumps(payload),
+        check=True,
+    )
+    assert isinstance(result.stdout, str)
+    return json.loads(result.stdout)
 
 
 def check_output_guarded_test_process(

@@ -270,17 +270,6 @@ unsafe impl Send for PyGenericAliasObject {}
 unsafe impl Sync for PyGenericAliasObject {}
 
 #[repr(C)]
-pub struct PyContextVarObject {
-    pub ob_base: PyObject,
-    pub name: *mut PyObject,
-    pub default_value: *mut PyObject,
-    pub current_value: *mut PyObject,
-}
-
-unsafe impl Send for PyContextVarObject {}
-unsafe impl Sync for PyContextVarObject {}
-
-#[repr(C)]
 pub struct PyTypeObject {
     pub ob_base: PyVarObject,
     pub tp_name: *const c_char,
@@ -854,6 +843,9 @@ pub struct PyMethodObject {
     pub ob_base: PyObject,
     pub im_func: *mut PyObject,
     pub im_self: *mut PyObject,
+    // Required CPython field; remains null while native weakrefs are unsupported.
+    pub im_weakreflist: *mut PyObject,
+    pub vectorcall: Option<PyVectorcallFunc>,
 }
 
 unsafe impl Send for PyCFunctionObject {}
@@ -1234,9 +1226,12 @@ pub enum MoltTypeTag {
     FrozenSet = 14,
     Traceback = 15,
     Exception = 16,
-    BuiltinCallable = 17,
+    /// Runtime function or bound-method storage, independent of semantic class.
+    RuntimeCallable = 17,
     MemoryView = 18,
     Slice = 19,
+    /// Ordinary Python method, with canonical PyMethodObject projection.
+    BoundMethod = 20,
     Other = 255,
 }
 
@@ -1365,6 +1360,12 @@ pub static mut Py_GenericAliasType: PyTypeObject = unsafe { std::mem::zeroed() }
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyContextVar_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyContext_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyContextToken_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PySet_Type: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -1830,6 +1831,14 @@ unsafe extern "C" fn tuple_slot_new(
     subtype
 }
 
+static mut MOLT_LONG_AS_NUMBER: PyNumberMethods = unsafe { std::mem::zeroed() };
+static mut MOLT_FLOAT_AS_NUMBER: PyNumberMethods = unsafe { std::mem::zeroed() };
+static mut MOLT_COMPLEX_AS_NUMBER: PyNumberMethods = unsafe { std::mem::zeroed() };
+static mut MOLT_BOOL_AS_NUMBER: PyNumberMethods = unsafe { std::mem::zeroed() };
+static mut MOLT_SET_AS_NUMBER: PyNumberMethods = unsafe { std::mem::zeroed() };
+static mut MOLT_FROZENSET_AS_NUMBER: PyNumberMethods = unsafe { std::mem::zeroed() };
+static mut MOLT_DICT_AS_NUMBER: PyNumberMethods = unsafe { std::mem::zeroed() };
+
 /// Process-owned type storage, installed only by the canonical ABI bootstrap.
 ///
 /// # Safety
@@ -1867,6 +1876,8 @@ pub(crate) unsafe fn initialize_static_type_storage() {
         set_name!(PyDictProxy_Type, b"mappingproxy\0");
         set_name!(Py_GenericAliasType, b"types.GenericAlias\0");
         set_name!(PyContextVar_Type, b"_contextvars.ContextVar\0");
+        set_name!(PyContext_Type, b"_contextvars.Context\0");
+        set_name!(PyContextToken_Type, b"_contextvars.Token\0");
         set_name!(PySet_Type, b"set\0");
         set_name!(PyBool_Type, b"bool\0");
         set_name!(PyModule_Type, b"module\0");
@@ -1896,6 +1907,30 @@ pub(crate) unsafe fn initialize_static_type_storage() {
         set_name!(PyDateTime_TimeType, b"datetime.time\0");
         set_name!(PyDateTime_DeltaType, b"datetime.timedelta\0");
         set_name!(PyDateTime_TZInfoType, b"datetime.tzinfo\0");
+
+        // These process-owned tables are installed once with the static shells.
+        // Runtime rebinding changes namespace custody, never their physical ABI.
+        MOLT_LONG_AS_NUMBER =
+            crate::api::typeobj::builtin_number_table::<{ MoltTypeTag::Int as u8 }>();
+        PyLong_Type.tp_as_number = (&raw mut MOLT_LONG_AS_NUMBER).cast();
+        MOLT_FLOAT_AS_NUMBER =
+            crate::api::typeobj::builtin_number_table::<{ MoltTypeTag::Float as u8 }>();
+        PyFloat_Type.tp_as_number = (&raw mut MOLT_FLOAT_AS_NUMBER).cast();
+        MOLT_COMPLEX_AS_NUMBER =
+            crate::api::typeobj::builtin_number_table::<{ MoltTypeTag::Complex as u8 }>();
+        PyComplex_Type.tp_as_number = (&raw mut MOLT_COMPLEX_AS_NUMBER).cast();
+        MOLT_BOOL_AS_NUMBER =
+            crate::api::typeobj::builtin_number_table::<{ MoltTypeTag::Bool as u8 }>();
+        PyBool_Type.tp_as_number = (&raw mut MOLT_BOOL_AS_NUMBER).cast();
+        MOLT_SET_AS_NUMBER =
+            crate::api::typeobj::builtin_number_table::<{ MoltTypeTag::Set as u8 }>();
+        PySet_Type.tp_as_number = (&raw mut MOLT_SET_AS_NUMBER).cast();
+        MOLT_FROZENSET_AS_NUMBER =
+            crate::api::typeobj::builtin_number_table::<{ MoltTypeTag::FrozenSet as u8 }>();
+        PyFrozenSet_Type.tp_as_number = (&raw mut MOLT_FROZENSET_AS_NUMBER).cast();
+        MOLT_DICT_AS_NUMBER =
+            crate::api::typeobj::builtin_number_table::<{ MoltTypeTag::Dict as u8 }>();
+        PyDict_Type.tp_as_number = (&raw mut MOLT_DICT_AS_NUMBER).cast();
 
         // The builtin list owns physical sequence slots. Managed/native
         // descendants inherit these exact functions through declared owners.
@@ -2012,8 +2047,9 @@ pub(crate) unsafe fn initialize_static_type_storage() {
         Py_GenericAliasType.tp_basicsize =
             std::mem::size_of::<PyGenericAliasObject>() as Py_ssize_t;
         Py_GenericAliasType.tp_dealloc = Some(crate::api::object::molt_generic_alias_dealloc);
-        PyContextVar_Type.tp_basicsize = std::mem::size_of::<PyContextVarObject>() as Py_ssize_t;
-        PyContextVar_Type.tp_dealloc = Some(crate::api::contextvars::molt_contextvar_dealloc);
+        PyContextVar_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+        PyContext_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+        PyContextToken_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
         PyCapsule_Type.tp_dealloc = Some(crate::api::capsule::molt_capsule_dealloc);
         // Exact slices have one runtime owner and a concrete bridge projection.
         // The collector traverses runtime fields; C field mirrors add no graph edges.
@@ -2070,7 +2106,13 @@ pub(crate) unsafe fn initialize_static_type_storage() {
             + std::mem::offset_of!(PyCFunctionObject, vectorcall))
             as Py_ssize_t;
         PyCMethod_Type.tp_dealloc = Some(crate::api::object::molt_cfunction_dealloc);
-        PyMethod_Type.tp_call = Some(crate::api::object::molt_method_call);
+        PyMethod_Type.tp_call = Some(crate::api::object::PyVectorcall_Call);
+        PyMethod_Type.tp_basicsize = std::mem::size_of::<PyMethodObject>() as Py_ssize_t;
+        PyMethod_Type.tp_flags |= Py_TPFLAGS_HAVE_VECTORCALL;
+        PyMethod_Type.tp_vectorcall_offset =
+            std::mem::offset_of!(PyMethodObject, vectorcall) as Py_ssize_t;
+        // Native weakref creation/lifetime remains unsupported. Do not advertise
+        // tp_weaklistoffset or delegate to the known silent-clear placeholder.
         PyMethod_Type.tp_dealloc = Some(crate::api::object::molt_method_dealloc);
         // CPython's `PyType_Type.tp_call = type_call` — calling a type object
         // (class instantiation from C) drives `tp_new`/`tp_init`. A C-extension
@@ -2373,6 +2415,8 @@ pub fn type_static_ptrs() -> Vec<*mut PyObject> {
         &raw mut PyCapsule_Type as *mut PyObject,
         &raw mut PyComplex_Type as *mut PyObject,
         &raw mut PyContextVar_Type as *mut PyObject,
+        &raw mut PyContext_Type as *mut PyObject,
+        &raw mut PyContextToken_Type as *mut PyObject,
         &raw mut PyDateTime_DateTimeType as *mut PyObject,
         &raw mut PyDateTime_DateType as *mut PyObject,
         &raw mut PyDateTime_DeltaType as *mut PyObject,
@@ -3198,10 +3242,17 @@ mod unresolved_pyobject_tests {
     #[test]
     fn type_static_ptrs_are_distinct_and_nonnull() {
         // Canonical builtin shells, including the internal managed carrier
-        // and CMethod/WrapperDescr types (43 statics). Guards
+        // and all three Context-family types (45 statics). Guards
         // against an accidental drop/duplicate when the type static list changes.
         let ptrs = type_static_ptrs();
-        assert_eq!(ptrs.len(), 43, "type static count drifted");
+        assert_eq!(ptrs.len(), 45, "type static count drifted");
+        for required in [
+            &raw mut PyContextVar_Type,
+            &raw mut PyContext_Type,
+            &raw mut PyContextToken_Type,
+        ] {
+            assert!(ptrs.contains(&required.cast::<PyObject>()));
+        }
         for p in &ptrs {
             assert!(!p.is_null());
         }
@@ -3210,7 +3261,7 @@ mod unresolved_pyobject_tests {
         addrs.dedup();
         assert_eq!(
             addrs.len(),
-            43,
+            ptrs.len(),
             "duplicate type static in type_static_ptrs()"
         );
     }

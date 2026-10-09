@@ -239,7 +239,7 @@ unsafe fn keyword_items(kwargs: *mut PyObject) -> Option<Vec<(OwnedPyObject, Own
             OwnedPyObject::from_borrowed(value)
         }));
     }
-    if !unsafe { PyErr_Occurred() }.is_null() {
+    if raised_error_pending() {
         return None;
     }
     Some(items)
@@ -390,7 +390,11 @@ unsafe fn parse_arguments(
             }
             continue;
         }
-        if unsafe { convert_unit(unit, &value, format, outs, &mut cleanup) } == 0 {
+        let location = ArgumentLocation {
+            parent: None,
+            index: index + 1,
+        };
+        if unsafe { convert_unit(unit, &value, format, outs, &mut cleanup, &location) } == 0 {
             return 0;
         }
     }
@@ -452,12 +456,62 @@ unsafe fn parse_arguments(
     1
 }
 
+// Conversion diagnostics carry only a borrowed stack path on success. Build
+// CPython's argument/item/function prefix only when this parser rejects a type;
+// exceptions from user conversion slots remain untouched.
+struct ArgumentLocation<'a> {
+    parent: Option<&'a ArgumentLocation<'a>>,
+    index: usize,
+}
+
+impl ArgumentLocation<'_> {
+    fn append_to(&self, message: &mut String) {
+        use std::fmt::Write;
+        if let Some(parent) = self.parent {
+            parent.append_to(message);
+            if message.len() < 220 {
+                let _ = write!(message, ", item {}", self.index);
+            }
+        } else {
+            let _ = write!(message, "argument {}", self.index);
+        }
+    }
+
+    unsafe fn type_error(&self, format: &[u8], detail: &str) {
+        if raised_error_pending() {
+            return;
+        }
+        let suffix = format.iter().position(|byte| matches!(byte, b':' | b';'));
+        if let Some(offset) = suffix
+            && format[offset] == b';'
+        {
+            unsafe { set_parse_type_error(&String::from_utf8_lossy(&format[offset + 1..])) };
+            return;
+        }
+        let mut message = String::new();
+        if let Some(offset) = suffix {
+            let name = &format[offset + 1..];
+            message.push_str(&String::from_utf8_lossy(&name[..name.len().min(200)]));
+            message.push_str("() ");
+        }
+        self.append_to(&mut message);
+        message.push(' ');
+        let detail = detail
+            .strip_prefix("argument ")
+            .unwrap_or(detail)
+            .as_bytes();
+        message.push_str(&String::from_utf8_lossy(&detail[..detail.len().min(256)]));
+        unsafe { set_parse_type_error(&message) };
+    }
+}
+
 unsafe fn convert_unit(
     unit: &FormatUnit,
     item: &OwnedPyObject,
     format: &[u8],
     outs: &mut [*mut c_void],
     cleanup: &mut ParseCleanup,
+    location: &ArgumentLocation<'_>,
 ) -> c_int {
     if format[unit.source.start] != b'(' {
         return unsafe {
@@ -466,11 +520,13 @@ unsafe fn convert_unit(
                 &format[unit.source.clone()],
                 &mut outs[unit.outputs.clone()],
                 cleanup,
+                location,
+                format,
             )
         };
     }
     if unsafe { crate::api::strings::PyUnicode_Check(item.as_ptr()) } != 0 {
-        unsafe { set_parse_type_error("argument must be a sequence, not str") };
+        unsafe { location.type_error(format, "argument must be a sequence, not str") };
         return 0;
     }
     let len = unsafe { crate::api::abstract_sequence::PySequence_Size(item.as_ptr()) };
@@ -478,7 +534,7 @@ unsafe fn convert_unit(
         return 0;
     }
     if len as usize != unit.children.len() {
-        unsafe { set_parse_type_error("argument sequence has incorrect length") };
+        unsafe { location.type_error(format, "argument sequence has incorrect length") };
         return 0;
     }
     for (index, unit) in unit.children.iter().enumerate() {
@@ -491,7 +547,11 @@ unsafe fn convert_unit(
         if child.as_ptr().is_null() {
             return 0;
         }
-        if unsafe { convert_unit(unit, &child, format, outs, cleanup) } == 0 {
+        let child_location = ArgumentLocation {
+            parent: Some(location),
+            index,
+        };
+        if unsafe { convert_unit(unit, &child, format, outs, cleanup, &child_location) } == 0 {
             return 0;
         }
     }
@@ -529,6 +589,8 @@ unsafe fn convert_argument(
     fmt: &[u8],
     outs_slice: &mut [*mut c_void],
     cleanup: &mut ParseCleanup,
+    location: &ArgumentLocation<'_>,
+    source_format: &[u8],
 ) -> c_int {
     let ch = fmt[0] as char;
     // The format plan already sliced one unit and its output addresses.
@@ -546,12 +608,144 @@ unsafe fn convert_argument(
         }};
     }
 
+    // Numeric format units consume the canonical physical C numeric APIs.
+    // In particular, masking never passes through a signed-width conversion.
+    if matches!(
+        ch,
+        'b' | 'B' | 'h' | 'H' | 'i' | 'I' | 'l' | 'k' | 'L' | 'K' | 'n' | 'f' | 'd'
+    ) {
+        use crate::api::abstract_number::{PyIndex_Check, number_index};
+        use crate::api::numbers::{
+            PyFloat_AsDouble, PyLong_AsLong, PyLong_AsLongLong, PyLong_AsSsize_t,
+            PyLong_AsUnsignedLongLongMask, PyLong_AsUnsignedLongMask, PyLong_Check,
+        };
+        let argument = item.as_ptr();
+        macro_rules! checked {
+            ($conversion:expr, $sentinel:expr) => {{
+                let value = unsafe { $conversion };
+                if value == $sentinel && raised_error_pending() {
+                    return 0;
+                }
+                value
+            }};
+        }
+        macro_rules! ranged {
+            ($ty:ty, $minimum:literal, $maximum:literal) => {{
+                // CPython getargs.c first converts to C long, then narrows.
+                // The first rejecting stage owns the exception diagnostic.
+                let value = checked!(PyLong_AsLong(argument), -1);
+                match <$ty>::try_from(value) {
+                    Ok(value) => write_out!(0, $ty, value),
+                    Err(_) => {
+                        unsafe { set_parse_overflow(if value < 0 { $minimum } else { $maximum }) };
+                        return 0;
+                    }
+                }
+            }};
+        }
+        match ch {
+            'b' => ranged!(
+                u8,
+                "unsigned byte integer is less than minimum",
+                "unsigned byte integer is greater than maximum"
+            ),
+            'h' => ranged!(
+                i16,
+                "signed short integer is less than minimum",
+                "signed short integer is greater than maximum"
+            ),
+            'i' => ranged!(
+                c_int,
+                "signed integer is less than minimum",
+                "signed integer is greater than maximum"
+            ),
+            'l' => write_out!(0, c_long, checked!(PyLong_AsLong(argument), -1)),
+            'L' => write_out!(0, i64, checked!(PyLong_AsLongLong(argument), -1)),
+            'B' | 'H' | 'I' => {
+                let value = checked!(PyLong_AsUnsignedLongMask(argument), c_ulong::MAX);
+                match ch {
+                    'B' => write_out!(0, u8, value as u8),
+                    'H' => write_out!(0, u16, value as u16),
+                    'I' => write_out!(0, u32, value as u32),
+                    _ => unreachable!(),
+                }
+            }
+            'k' | 'K' => {
+                // Python 3.14 extends these two units to the index protocol.
+                // Earlier targets require an actual int (including subtypes).
+                let accepts_index =
+                    unsafe { (crate::hooks::hooks_or_stubs().target_python_minor)() } >= 14;
+                let admitted = if accepts_index {
+                    unsafe { PyIndex_Check(argument) }
+                } else {
+                    unsafe { PyLong_Check(argument) }
+                };
+                if admitted == 0 {
+                    if !raised_error_pending() {
+                        let actual_type = unsafe { crate::api::object::Py_TYPE(argument) };
+                        unsafe {
+                            set_parse_converter_type_error(
+                                b"int",
+                                argument,
+                                actual_type,
+                                location,
+                                source_format,
+                            )
+                        };
+                    }
+                    return 0;
+                }
+                if ch == 'k' {
+                    write_out!(
+                        0,
+                        c_ulong,
+                        checked!(PyLong_AsUnsignedLongMask(argument), c_ulong::MAX)
+                    );
+                } else {
+                    write_out!(
+                        0,
+                        u64,
+                        checked!(PyLong_AsUnsignedLongLongMask(argument), u64::MAX)
+                    );
+                }
+            }
+            'n' => {
+                // _PyNumber_Index keeps an existing physical integer subtype;
+                // avoid the public PyNumber_Index exact-type copy in that case.
+                if unsafe { crate::api::numbers::has_layout_long(argument) } {
+                    write_out!(0, Py_ssize_t, checked!(PyLong_AsSsize_t(argument), -1));
+                    return 1;
+                }
+                let index = unsafe { number_index(argument) };
+                if index.is_null() {
+                    return 0;
+                }
+                let value = unsafe { PyLong_AsSsize_t(index) };
+                unsafe { release_preserving_error(&[index]) };
+                if value == -1 && raised_error_pending() {
+                    return 0;
+                }
+                write_out!(0, Py_ssize_t, value);
+            }
+            'f' | 'd' => {
+                let value = checked!(PyFloat_AsDouble(argument), -1.0);
+                if ch == 'f' {
+                    write_out!(0, f32, value as f32);
+                } else {
+                    write_out!(0, f64, value);
+                }
+            }
+            _ => unreachable!(),
+        }
+        return 1;
+    }
+
     if matches!(ch, 'D' | 'Y' | 'w' | 'O' | 'S' | 'U' | 'p') {
         match ch {
             'D' => {
                 let py_ptr = item.as_ptr();
                 let value = unsafe { crate::api::numbers::PyComplex_AsCComplex(py_ptr) };
-                if !unsafe { PyErr_Occurred() }.is_null() {
+                if raised_error_pending() {
                     return 0;
                 }
                 write_out!(0, Py_complex, value);
@@ -561,7 +755,7 @@ unsafe fn convert_argument(
                 if unsafe { crate::api::strings::PyByteArray_Check(py_ptr) } != 0 {
                     write_out!(0, *mut PyObject, py_ptr);
                 } else {
-                    unsafe { set_parse_type_error("argument must be bytearray") };
+                    unsafe { location.type_error(source_format, "argument must be bytearray") };
                     return 0;
                 }
             }
@@ -618,7 +812,21 @@ unsafe fn convert_argument(
                             || unsafe { crate::api::typeobj::PyType_IsSubtype(arg_type, type_ptr) }
                                 == 0
                         {
-                            unsafe { set_parse_o_bang_type_error(type_ptr, arg_type) };
+                            unsafe {
+                                let expected =
+                                    if type_ptr.is_null() || (*type_ptr).tp_name.is_null() {
+                                        b"<unknown>".as_slice()
+                                    } else {
+                                        CStr::from_ptr((*type_ptr).tp_name).to_bytes()
+                                    };
+                                set_parse_converter_type_error(
+                                    expected,
+                                    py_ptr,
+                                    arg_type,
+                                    location,
+                                    source_format,
+                                )
+                            };
                             return 0;
                         }
                         if !dest.is_null() {
@@ -640,8 +848,10 @@ unsafe fn convert_argument(
                         if status == 0 {
                             // The converter should have set an exception; guarantee
                             // a NULL-return never escapes without one.
-                            if unsafe { PyErr_Occurred() }.is_null() {
-                                unsafe { set_parse_type_error("argument conversion failed") };
+                            if !raised_error_pending() {
+                                unsafe {
+                                    location.type_error(source_format, "argument conversion failed")
+                                };
                             }
                             return 0;
                         }
@@ -662,11 +872,14 @@ unsafe fn convert_argument(
                 };
                 if valid == 0 {
                     unsafe {
-                        set_parse_type_error(if ch == 'S' {
-                            "argument must be bytes"
-                        } else {
-                            "argument must be str"
-                        })
+                        location.type_error(
+                            source_format,
+                            if ch == 'S' {
+                                "argument must be bytes"
+                            } else {
+                                "argument must be str"
+                            },
+                        )
                     };
                     return 0;
                 }
@@ -688,109 +901,7 @@ unsafe fn convert_argument(
     };
     let bits = value.bits();
     let obj = MoltObject::from_bits(bits);
-    // CPython (Python/getargs.c `convertsimple`): a converter that receives
-    // the wrong type sets TypeError and the whole parse returns 0. Resolve
-    // the current argument to an int-like `i64` (int, bool-as-int-subtype, or
-    // a heap BigInt / `__index__` object via the runtime authority); a float
-    // is NOT int-like for the integer units. `None` => raise TypeError.
-    macro_rules! int_arg {
-        () => {{
-            match arg_int_like(&obj, bits) {
-                Some(v) => v,
-                None => {
-                    unsafe { set_parse_type_error("argument must be an integer") };
-                    return 0;
-                }
-            }
-        }};
-    }
-
-    // Signed, range-checked store (CPython 'b'/'h'/'i' raise OverflowError
-    // with the exact getargs.c message). The store width is the EXACT C width
-    // the caller declared — u8 for b, i16 for h, i32 for i — so the previous
-    // 4-byte `c_int` store into a 1/2-byte target (adjacent-memory clobber)
-    // is gone.
-    macro_rules! int_ranged {
-        ($v:expr, $ty:ty, $lo:expr, $hi:expr, $lomsg:literal, $himsg:literal) => {{
-            let value = $v;
-            if value < $lo {
-                unsafe { set_parse_overflow($lomsg) };
-                return 0;
-            }
-            if value > $hi {
-                unsafe { set_parse_overflow($himsg) };
-                return 0;
-            }
-            write_out!(0, $ty, value as $ty);
-        }};
-    }
-
     match ch {
-        // ── Signed, range-checked (OverflowError on out-of-range) ──────────
-        // Each stores its EXACT declared C width; the previous `as c_int`
-        // 4-byte store into a 1/2-byte b/B/H target (OOB write) is gone.
-        'b' => int_ranged!(
-            int_arg!(),
-            u8,
-            0,
-            u8::MAX as i64,
-            "unsigned byte integer is less than minimum",
-            "unsigned byte integer is greater than maximum"
-        ),
-        'h' => int_ranged!(
-            int_arg!(),
-            i16,
-            i16::MIN as i64,
-            i16::MAX as i64,
-            "signed short integer is less than minimum",
-            "signed short integer is greater than maximum"
-        ),
-        'i' => int_ranged!(
-            int_arg!(),
-            i32,
-            i32::MIN as i64,
-            i32::MAX as i64,
-            "signed integer is less than minimum",
-            "signed integer is greater than maximum"
-        ),
-        // 'l': PyLong_AsLong range (OverflowError). `try_from` is width- and
-        // platform-correct (c_long is 32-bit on Windows/wasm32, 64-bit on
-        // LP64) and clippy-clean (no absurd fixed-width comparison).
-        'l' => match c_long::try_from(int_arg!()) {
-            Ok(v) => write_out!(0, c_long, v),
-            Err(_) => {
-                unsafe { set_parse_overflow("Python int too large to convert to C long") };
-                return 0;
-            }
-        },
-        // ── Unsigned bitfield (mask low N bits, no range check) ────────────
-        'B' => write_out!(0, u8, int_arg!() as u8),
-        'H' => write_out!(0, u16, int_arg!() as u16),
-        'I' => write_out!(0, u32, int_arg!() as u32),
-        'k' => write_out!(0, c_ulong, int_arg!() as c_ulong),
-        'L' => write_out!(0, i64, int_arg!()),
-        'K' => write_out!(0, u64, int_arg!() as u64),
-        'n' => write_out!(0, Py_ssize_t, int_arg!() as Py_ssize_t),
-        'd' => {
-            let v = match float_like(&obj, bits) {
-                Some(v) => v,
-                None => {
-                    unsafe { set_parse_type_error("argument must be a float") };
-                    return 0;
-                }
-            };
-            write_out!(0, f64, v);
-        }
-        'f' => {
-            let v = match float_like(&obj, bits) {
-                Some(v) => v as f32,
-                None => {
-                    unsafe { set_parse_type_error("argument must be a float") };
-                    return 0;
-                }
-            };
-            write_out!(0, f32, v);
-        }
         'e' => {
             if !matches!(fmt.get(1), Some(b's' | b't')) {
                 unsafe { set_parse_format_error() };
@@ -842,7 +953,7 @@ unsafe fn convert_argument(
                 }
                 owned_bytes
             } else {
-                unsafe { set_parse_type_error("argument must be str") };
+                unsafe { location.type_error(source_format, "argument must be str") };
                 return 0;
             };
             let mut source_ptr = ptr::null_mut();
@@ -865,7 +976,7 @@ unsafe fn convert_argument(
                 .contains(&0)
             {
                 unsafe { crate::api::refcount::Py_XDECREF(owned_bytes) };
-                unsafe { set_parse_type_error("encoded string without null bytes") };
+                unsafe { location.type_error(source_format, "encoded string without null bytes") };
                 return 0;
             }
             let required = source_len as usize + 1;
@@ -905,7 +1016,7 @@ unsafe fn convert_argument(
             let has_buffer = fmt.get(1) == Some(&b'*');
             if obj.is_none() {
                 if ch != 'z' {
-                    unsafe { set_parse_type_error("argument must be str, not None") };
+                    unsafe { location.type_error(source_format, "argument must be str, not None") };
                     return 0;
                 }
                 if has_buffer {
@@ -958,7 +1069,7 @@ unsafe fn convert_argument(
                     write_out!(1, Py_ssize_t, molt_str_len(bits) as Py_ssize_t);
                 }
             } else {
-                unsafe { set_parse_type_error("argument must be str") };
+                unsafe { location.type_error(source_format, "argument must be str") };
                 return 0;
             }
         }
@@ -994,7 +1105,7 @@ unsafe fn convert_argument(
                     write_out!(1, Py_ssize_t, molt_bytes_len(bits) as Py_ssize_t);
                 }
             } else {
-                unsafe { set_parse_type_error("a bytes-like object is required") };
+                unsafe { location.type_error(source_format, "a bytes-like object is required") };
                 return 0;
             }
         }
@@ -1009,7 +1120,9 @@ unsafe fn convert_argument(
                 };
                 write_out!(0, c_char, byte as c_char);
             } else {
-                unsafe { set_parse_type_error("argument must be a byte string of length 1") };
+                unsafe {
+                    location.type_error(source_format, "argument must be a byte string of length 1")
+                };
                 return 0;
             }
         }
@@ -1019,7 +1132,10 @@ unsafe fn convert_argument(
                 Some(cp) => write_out!(0, c_int, cp as c_int),
                 None => {
                     unsafe {
-                        set_parse_type_error("argument must be a unicode character, not a string")
+                        location.type_error(
+                            source_format,
+                            "argument must be a unicode character, not a string",
+                        )
                     };
                     return 0;
                 }
@@ -1036,44 +1152,16 @@ unsafe fn convert_argument(
     1
 }
 
-/// Resolve an int-compatible object (heap BigInt or other) to i64 via the
-/// runtime int-conversion authority. Returns `None` for non-integer objects so
-/// the caller can raise TypeError. Inline int and bool are handled by the caller
-/// before this is reached.
-fn int_like_to_i64(bits: u64) -> Option<i64> {
-    let h = crate::hooks::hooks_or_stubs();
-    let mut out: i64 = 0;
-    let rc = unsafe { (h.int_as_i64_checked)(bits, std::ptr::addr_of_mut!(out)) };
-    (rc == 0).then_some(out)
-}
-
 /// Converter-function pointer for the PyArg `O&` unit
 /// (CPython `int (*)(PyObject *, void *)`).
 type ConverterFn = unsafe extern "C" fn(*mut PyObject, *mut c_void) -> c_int;
-
-/// Resolve the current argument to an int-like `i64` for the integer format
-/// units. Accepts int, bool (an int subtype), and a heap BigInt / `__index__`
-/// object via the runtime authority; a float is deliberately NOT int-like
-/// (CPython's integer units convert through `PyLong_AsLong`, which rejects a
-/// float). `None` => the caller raises TypeError.
-fn arg_int_like(obj: &MoltObject, bits: u64) -> Option<i64> {
-    if let Some(v) = obj.as_int() {
-        Some(v)
-    } else if obj.is_bool() {
-        Some(obj.as_bool().unwrap_or(false) as i64)
-    } else if obj.is_float() {
-        None
-    } else {
-        int_like_to_i64(bits)
-    }
-}
 
 /// Classify a heap argument handle via the runtime tag hook (`None` for a
 /// non-heap immediate). Backs the `s`/`z`/`y`/`S`/`U`/`c`/`C` type checks so a
 /// wrong-typed arg raises TypeError instead of fabricating an empty string.
 fn arg_heap_tag(obj: &MoltObject, bits: u64) -> Option<u8> {
     obj.is_ptr()
-        .then(|| unsafe { (crate::hooks::hooks_or_stubs().classify_heap)(bits) })
+        .then(|| unsafe { crate::hooks::hooks_or_stubs().classify_heap(bits) })
 }
 
 fn arg_is_str(obj: &MoltObject, bits: u64) -> bool {
@@ -1161,40 +1249,37 @@ unsafe fn set_parse_value_error(message: &str) {
     }
 }
 
-/// TypeError for an `O!` type mismatch, shaped like CPython's
-/// `converterr(type->tp_name, ...)`.
-unsafe fn set_parse_o_bang_type_error(want: *mut PyTypeObject, got: *mut PyTypeObject) {
-    fn tp_name(tp: *mut PyTypeObject) -> String {
-        if tp.is_null() {
-            return "<unknown>".to_string();
-        }
-        let name = unsafe { (*tp).tp_name };
-        if name.is_null() {
-            "<unknown>".to_string()
-        } else {
-            unsafe { CStr::from_ptr(name) }
-                .to_string_lossy()
-                .into_owned()
-        }
+/// Shared getargs.c `converterr` rule for parser-owned mismatches. Precision
+/// is a byte bound applied before decoding, not a Unicode character count.
+/// None is identified by the object, not by the spelling of its class name.
+/// Only refusal paths enter here; numeric conversion callbacks retain their
+/// own exception and successful conversions perform no diagnostic formatting.
+unsafe fn set_parse_converter_type_error(
+    expected: &[u8],
+    argument: *mut PyObject,
+    actual_type: *mut PyTypeObject,
+    location: &ArgumentLocation<'_>,
+    format: &[u8],
+) {
+    if raised_error_pending() {
+        return;
     }
-    let message = format!("argument must be {}, not {}", tp_name(want), tp_name(got));
-    unsafe { set_parse_type_error(&message) };
-}
-
-/// Resolve a float-compatible argument to f64 for the `d`/`f` format units.
-/// CPython accepts float, int (incl. bool as int subtype), and any object with
-/// `__float__`/`__index__`. Returns `None` for genuinely non-numeric objects so
-/// the caller can raise TypeError.
-fn float_like(obj: &MoltObject, bits: u64) -> Option<f64> {
-    if obj.is_float() {
-        obj.as_float()
-    } else if let Some(x) = obj.as_int() {
-        Some(x as f64)
-    } else if obj.is_bool() {
-        Some(obj.as_bool().unwrap_or(false) as i64 as f64)
+    if expected.first() == Some(&b'(') {
+        let detail = String::from_utf8_lossy(&expected[..expected.len().min(100)]);
+        unsafe { location.type_error(format, &detail) };
+        return;
+    }
+    let actual = if std::ptr::eq(argument, &raw mut crate::abi_types::Py_None) {
+        b"None".as_slice()
+    } else if actual_type.is_null() || unsafe { (*actual_type).tp_name.is_null() } {
+        b"<unknown>".as_slice()
     } else {
-        int_like_to_i64(bits).map(|x| x as f64)
-    }
+        unsafe { CStr::from_ptr((*actual_type).tp_name) }.to_bytes()
+    };
+    let expected = String::from_utf8_lossy(&expected[..expected.len().min(50)]);
+    let actual = String::from_utf8_lossy(&actual[..actual.len().min(50)]);
+    let message = format!("argument must be {expected}, not {actual}");
+    unsafe { location.type_error(format, &message) };
 }
 
 /// Set a TypeError for a PyArg_ParseTuple converter type mismatch, matching

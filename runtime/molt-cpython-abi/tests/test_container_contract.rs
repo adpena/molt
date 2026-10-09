@@ -15,7 +15,7 @@ fn register(bits: u64) -> *mut PyObject {
 fn pyset_add_rejects_shared_frozenset() {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.set_add = accept_set_add;
-    support::prepare_abi_test_thread(hooks);
+    let _abi_test = support::enter_abi_test(hooks);
     let frozen = Box::into_raw(Box::new(PyObject {
         ob_refcnt: 1,
         ob_type: &raw mut molt_cpython_abi::abi_types::PyFrozenSet_Type,

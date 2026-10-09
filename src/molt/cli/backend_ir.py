@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, Sequence, cast
 
@@ -1977,6 +1978,91 @@ def _reachability_feature_refusal(
     )
 
 
+def _finalize_gpu_descriptors(
+    functions: list[dict[str, Any]],
+    *,
+    target_python: TargetPythonVersion,
+    global_code_ids: Mapping[str, int],
+) -> None:
+    """Bind compiler-authored descriptors after module/cache integration.
+
+    Source origin is a semantic-content comparison over the *lowered* AST,
+    never a reopen of application source or a path-name assertion. Both cache
+    tiers preserve these optional facts under source+compilation-context keys.
+    Foreign IR/native ABI authors remain trusted compiler inputs.
+    """
+    from molt.frontend.lowering.gpu_kernel_descriptor import descriptor_publications
+
+    publications = [
+        publication
+        for function in functions
+        for publication in descriptor_publications(function["ops"])
+    ]
+    if not publications:
+        # A plain struct/GPU import never captures or parses reference bodies,
+        # and never retains a hardware-only callable resolver cohort.
+        for function in functions:
+            function.pop("gpu_body_origin", None)
+        return
+
+    from molt.cli.cache_fingerprints import _frontend_semantic_tooling_snapshot
+    from molt.frontend.lowering.gpu_kernel_descriptor import (
+        GPU_PYTHON_BODY_REFERENCES,
+        body_origin_evidence,
+    )
+    from molt.python_private_names import resolve_python_private_names
+    from molt.target_python import _parse_source_for_target
+
+    snapshot = _frontend_semantic_tooling_snapshot()
+    expected: dict[str, dict[str, Any]] = {}
+    for module_name, (relative, _) in GPU_PYTHON_BODY_REFERENCES.items():
+        captured = snapshot.reference_source(relative)
+        tree = resolve_python_private_names(
+            _parse_source_for_target(
+                captured.content,
+                filename=str(captured.path),
+                target_python=target_python,
+            )
+        )
+        for evidence in body_origin_evidence(
+            module_name, tree, target_python.feature_version
+        ).values():
+            expected[evidence["role"]] = evidence
+
+    admitted: dict[str, dict[str, Any]] = {}
+    ambiguous: set[str] = set()
+    for function in functions:
+        evidence = function.pop("gpu_body_origin", None)
+        if not isinstance(evidence, dict):
+            continue
+        role = evidence.get("role")
+        if not isinstance(role, str) or evidence != expected.get(role):
+            continue
+        if role in admitted:
+            ambiguous.add(role)
+        admitted[role] = {
+            "symbol": function["name"],
+            "arity": len(function["params"]),
+            "code_slot": global_code_ids[function["name"]],
+            "defaults": evidence["defaults"],
+        }
+    missing = sorted((set(expected) - admitted.keys()) | ambiguous)
+    for constant in publications:
+        descriptor = json.loads(constant["s_value"])
+        symbol = descriptor.get("symbol")
+        if symbol not in global_code_ids:
+            raise ValueError("GPU metadata publication has no integrated code owner")
+        descriptor["code_slot"] = global_code_ids[symbol]
+        descriptor["python_bodies"] = admitted if not missing else {}
+        if missing:
+            descriptor["unsupported"] = (
+                "canonical Python buffer body origin unavailable: " + ", ".join(missing)
+            )
+        constant["s_value"] = json.dumps(
+            descriptor, sort_keys=True, separators=(",", ":")
+        )
+
+
 def _prepare_backend_ir(
     *,
     entry_module: str,
@@ -2225,6 +2311,16 @@ def _prepare_backend_ir(
                 "return_abi": "value",
                 "ops": import_ops,
             }
+        )
+    try:
+        _finalize_gpu_descriptors(
+            functions,
+            target_python=target_python,
+            global_code_ids=global_code_ids,
+        )
+    except ValueError as exc:
+        return None, fail(
+            f"GPU metadata assembly failed: {exc}", json_output, command="build"
         )
     ir = _finalize_backend_ir(
         functions=functions,

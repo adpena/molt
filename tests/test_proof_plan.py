@@ -1,4 +1,5 @@
 from __future__ import annotations
+import shutil
 
 import ast
 import hashlib
@@ -8,10 +9,12 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 import re
+import subprocess
 import sys
 import threading
 import time
 from typing import Any
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,7 +31,6 @@ from tools.proof_queue_pkg import command_admission, supervisor_custody
 from tools.proof_queue_pkg import custody as proof_queue_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
 from tests.process_guard_common import install_module_view, run_guarded_test_process
-import subprocess
 
 
 PLAN = proof_plan.ProofPlan.load()
@@ -84,6 +86,9 @@ def test_execution_authority_covers_its_transitive_python_imports() -> None:
                         pending.append(candidate.relative_to(root).as_posix())
                         break
     assert seen <= set(PLAN.authority_inputs), sorted(seen - set(PLAN.authority_inputs))
+    # Fingerprint selection belongs to core toolchain authorities. Importing a
+    # CLI helper executes the facade and pulls the compiler/frontend into proofs.
+    assert not any(path.startswith("src/molt/cli/") for path in seen)
 
 
 def test_python_capture_source_closure_is_proof_authority(
@@ -203,7 +208,7 @@ def _classes(*paths: str) -> dict[str, bool]:
 def test_manifest_is_complete_and_single_authority() -> None:
     assert PLAN.path.name == "proof_plan.toml"
     assert len(PLAN.families) == 11
-    assert len(PLAN.scheduled_families) == 7
+    assert len(PLAN.scheduled_families) == 8
     assert len(PLAN.commands) >= 84
     assert len(PLAN.matrix_cells) >= 17
     assert len(PLAN.toolchain_policies) >= 15
@@ -243,7 +248,7 @@ def test_lean_cache_is_ignored_untracked_build_state() -> None:
 
 def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     projection = json.loads(gen_proof_plan._json_projection(PLAN))
-    assert projection["schema"] == "molt.proof-plan-projection.v6"
+    assert projection["schema"] == "molt.proof-plan-projection.v7"
     assert projection["receipt_schema"] == "molt.proof-receipt.v4"
     assert projection["authority_inputs"] == list(PLAN.authority_inputs)
     assert projection["authority_sha256"] == proof_plan._authority_sha256(PLAN)
@@ -304,12 +309,17 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         for family in families:
             envelope = PLAN.timeout_envelope(family.name)
             budget = int(family.data["timeout_minutes"]) * 60
+            reserve = int(family.data["job_reserve_seconds"])
             assert projected_envelopes[family.name] == {
                 "budget_seconds": budget,
                 "projected_makespan_seconds": envelope.projected_makespan_seconds,
                 "critical_path_seconds": envelope.critical_path_seconds,
                 "resource_capacity_floor_seconds": envelope.resource_capacity_floor_seconds,
-                "headroom_seconds": budget - envelope.projected_makespan_seconds,
+                "job_reserve_seconds": reserve,
+                "required_job_seconds": envelope.projected_makespan_seconds + reserve,
+                "headroom_seconds": budget
+                - envelope.projected_makespan_seconds
+                - reserve,
             }
     matrix_envelopes = projection["executor"]["github_matrix_timeout_envelopes"]
     matrix_families = tuple(
@@ -325,6 +335,14 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
             assert (
                 projected["projected_makespan_seconds"]
                 == envelope.projected_makespan_seconds
+            )
+            reserve = int(family.data["job_reserve_seconds"])
+            assert projected["job_reserve_seconds"] == reserve
+            assert projected["required_job_seconds"] == (
+                envelope.projected_makespan_seconds + reserve
+            )
+            assert projected["headroom_seconds"] == (
+                budget - envelope.projected_makespan_seconds - reserve
             )
             assert projected["headroom_seconds"] >= 0
     local = projection["local"]
@@ -356,7 +374,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         core.argv[index + 1]
         for index, arg in enumerate(core.argv[:-1])
         if arg == "--test"
-    ] == ["ownership_memory_contracts"]
+    ] == ["ownership_memory_contracts", "test_builtins"]
     assert "--bins" not in core.argv
     assert "--include-ignored" not in core.argv
     assert {
@@ -383,6 +401,109 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "builtins::attr::",
         "builtins::classes::",
     }.issubset(filters)
+
+
+def test_compression_export_proofs_select_both_feature_coordinates() -> None:
+    from tools import run_cargo_test_truth
+
+    commands = {command.id: command for command in PLAN.commands}
+    truth = commands["rust.test.default-truth"]
+    assert truth.argv == (
+        "uv",
+        "run",
+        "--frozen",
+        "python3",
+        "tools/run_cargo_test_truth.py",
+    )
+    # The canonical workspace test command includes test_builtins with default
+    # features and wasm_cdylib_exports, whose existing artifact owner tests the
+    # compression-disabled/enabled WASM pair. A --lib-only rewrite loses both.
+    assert run_cargo_test_truth.CANONICAL_COMMAND == (
+        "cargo",
+        "test",
+        "--locked",
+        "--workspace",
+        "--tests",
+        "--no-fail-fast",
+    )
+    micro = commands["rust.test.ir-wasm-runtime-authorities"]
+    cargo = micro.argv[: micro.argv.index("--")]
+    filters = micro.argv[micro.argv.index("--") + 1 :]
+    assert "--no-default-features" in cargo and "--no-run" not in cargo
+    assert cargo[cargo.index("--features") + 1].split(",") == [
+        "molt-passes/native-backend",
+        "molt-passes/wasm-backend",
+        "molt-passes/test-util",
+        "molt-backend-wasm/test-util",
+        "molt-runtime/stdlib_micro",
+        "molt-runtime/builtin_complex",
+        "molt-runtime/builtin_set",
+    ]
+    assert "test_builtins" in [
+        cargo[index + 1] for index, arg in enumerate(cargo[:-1]) if arg == "--test"
+    ]
+    assert "test_raw_compression_c_exports_are_linkable" in filters
+
+
+def test_extension_admission_proof_executes_required_public_resolver_witness() -> None:
+    import tomllib
+
+    command = next(
+        item
+        for item in PLAN.commands
+        if item.id == "rust.test.runtime-extension-admission"
+    )
+    cargo, libtest = (
+        command.argv[: command.argv.index("--")],
+        command.argv[command.argv.index("--") + 1 :],
+    )
+    assert cargo[:2] == ("cargo", "test")
+    assert cargo[cargo.index("-p") + 1] == "molt-runtime"
+    assert cargo.count("-p") == 1 and cargo.count("--lib") == 1
+    assert "--no-default-features" not in cargo and "--no-run" not in cargo
+    assert cargo[cargo.index("--features") + 1] == "cext_loader"
+    target = cargo[cargo.index("--target") + 1]
+    assert target == "x86_64-unknown-linux-gnu"
+    assert libtest == ("builtins::platform::tests::", "--nocapture", "--test-threads=1")
+    config = {}
+    for index, argument in enumerate(cargo[:-1]):
+        if argument == "--config":
+            config.update(tomllib.loads(cargo[index + 1]))
+    runner = config["target"][target]["runner"]
+    assert runner[:4] == [
+        "uv",
+        "run",
+        "--frozen",
+        "python3",
+    ]
+    root = Path(__file__).resolve().parents[1]
+    package_root = root / "runtime/molt-runtime"
+    assert (
+        package_root / runner[4]
+    ).resolve() == root / "tools/cargo_test_binary_runner.py"
+    receipt_root = (package_root / runner[runner.index("--receipt-dir") + 1]).resolve()
+    assert runner[-1] == "--"
+    assert [
+        runner[index + 1]
+        for index, argument in enumerate(runner[:-1])
+        if argument == "--require-passed-test"
+    ] == [
+        "builtins::platform::tests::resolver_admission_tests::"
+        "public_import_resolver_miss_and_error_do_not_load_extension_candidates"
+    ]
+    assert command.data["cell"] == "linux-x86_64-rust-native-dev"
+    assert command.dependencies == ()
+    assert command.data["evidence_outputs"] == [
+        receipt_root.relative_to(root).as_posix()
+    ]
+    job = proof_plan._workflow_job_block(
+        (root / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
+        "rust-build-unit-smoke",
+    )
+    assert job is not None
+    assert command.data["evidence_outputs"][0] + "/" in job
+    assert proof_plan.cargo_native_c_units(command.data) == ("target",)
+    assert {"python", "uv", "rustc", "cargo"} <= set(PLAN.required_toolchains(command))
 
 
 def test_shipping_runtime_gate_requires_full_parallel_and_fresh_child_accounting() -> (
@@ -567,8 +688,39 @@ def test_llvm_control_plane_changes_run_llvm_stack() -> None:
         "config/llvm_toolchain_arches.toml",
         ".github/actions/setup-llvm/action.yml",
         "tools/bootstrap_llvm.py",
+        "config/release_acceptance_matrix.toml",
+        "src/molt/release_lanes.py",
+        "src/molt/cli/compiler_identity.py",
+        "src/molt/cli/installed_runtime.py",
+        "tools/release/native_build.py",
+        "vendor/llvm/LICENSE.TXT",
     ):
         assert _classes(path)["llvm"] is True, path
+
+
+def test_release_lane_changes_exercise_installed_and_source_consumers() -> None:
+    commands = {command.id: command for command in PLAN.commands}
+    for path in ("src/molt/release_lanes.py", "tools/release/native_build.py"):
+        classes = _classes(path)
+        assert classes["repository_policy"] and classes["python_unit"]
+    for selector in (
+        "tests/test_release_lanes.py",
+        "tests/tools/test_release_native_build.py",
+        "tests/tools/test_release_installed_distribution.py",
+        "tests/tools/test_release_exit_gate.py",
+    ):
+        assert commands["repository.release-supply-chain"].argv.count(selector) == 1
+    for suffix in ("", ".macos"):
+        argv = commands[f"python.unit.runtime-artifacts{suffix}"].argv
+        for selector in (
+            "tests/test_llvm_toolchain.py",
+            "tests/cli/test_compiler_identity.py",
+            "tests/cli/test_installed_compiler.py",
+            "tests/cli/test_installed_runtime.py",
+            "tests/cli/test_cli_backend_output_pipeline_authority.py",
+            "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction",
+        ):
+            assert argv.count(selector) == 1
 
 
 def test_selected_family_does_not_pull_unrelated_proof_families() -> None:
@@ -765,11 +917,96 @@ def test_matrix_family_budget_binds_each_cell() -> None:
     # and surface contracts (600) fill slot 2 until 2700 s; runtime-artifacts
     # (600) takes slot 1 at 2401 s and ends at 3001 s; the 120 s boundary
     # partition takes slot 2 at 2700 s. The makespan is 3001 s. The Linux job
-    # is unchanged, so only the macOS cell exceeds its 40-minute budget.
+    # is unchanged, so only the macOS cell exceeds its 41-minute budget.
     assert [error for error in errors if "timeout envelope" in error] == [
         "python_unit: projected resource-aware timeout envelope 3001s in matrix "
-        "cell macos-arm64-py312-unit exceeds GitHub job budget 2400s"
+        "cell macos-arm64-py312-unit plus job reserve 60s exceeds GitHub job budget 2460s"
     ]
+
+
+@pytest.mark.parametrize(
+    ("family_name", "reserve"),
+    [
+        ("wasm", None),
+        ("wasm", True),
+        ("python_unit", 0),
+        ("python_unit", -1),
+        ("nightly_determinism", 1.5),
+        ("nightly_determinism", "60"),
+    ],
+)
+def test_job_reserve_requires_an_explicit_positive_integer(
+    family_name, reserve
+) -> None:
+    def alter(family):
+        if family.name != family_name:
+            return family
+        data = dict(family.data)
+        if reserve is None:
+            del data["job_reserve_seconds"]
+        else:
+            data["job_reserve_seconds"] = reserve
+        return replace(family, data=data)
+
+    plan = replace(
+        PLAN,
+        families=tuple(alter(family) for family in PLAN.families),
+        scheduled_families=tuple(alter(family) for family in PLAN.scheduled_families),
+    )
+    assert (
+        f"{family_name}: job_reserve_seconds must be a positive integer"
+        in plan.validate()
+    )
+
+
+def test_job_reserve_is_not_a_workflow_wide_budget() -> None:
+    families = tuple(
+        replace(family, data={**family.data, "job_reserve_seconds": 60})
+        if family.name == "formal"
+        else family
+        for family in PLAN.families
+    )
+    assert (
+        "formal: job_reserve_seconds requires a modeled job"
+        in replace(PLAN, families=families).validate()
+    )
+
+
+@pytest.mark.parametrize(
+    ("command_id", "deadline", "expected_error"),
+    [
+        (
+            "python.static.ty",
+            300,
+            "python_static: projected resource-aware timeout envelope 901s "
+            "plus job reserve 60s exceeds GitHub job budget 960s",
+        ),
+        (
+            "nightly.shards.profile-feedback",
+            300,
+            "nightly_shard_profile_feedback: projected resource-aware timeout "
+            "envelope 301s plus job reserve 300s exceeds scheduled job budget 600s",
+        ),
+    ],
+)
+def test_command_schedule_cannot_consume_the_job_reserve(
+    command_id, deadline, expected_error
+) -> None:
+    def at_deadline(value):
+        return replace(
+            PLAN,
+            commands=tuple(
+                replace(command, data={**command.data, "timeout_seconds": value})
+                if command.id == command_id
+                else command
+                for command in PLAN.commands
+            ),
+        )
+
+    # The selected command, existing sibling work and reserve fill the workflow cap.
+    # One more second of command work consumes the reserved time.
+    assert at_deadline(deadline).validate() == []
+    assert at_deadline(deadline + 1).validate() == [expected_error]
 
 
 def test_github_job_timeout_covers_resource_aware_dag_envelope() -> None:
@@ -778,11 +1015,34 @@ def test_github_job_timeout_covers_resource_aware_dag_envelope() -> None:
             continue
         envelope = PLAN.timeout_envelope(family.name)
         budget = int(family.data["timeout_minutes"]) * 60
-        assert envelope.projected_makespan_seconds <= budget
+        assert (
+            envelope.projected_makespan_seconds
+            + int(family.data["job_reserve_seconds"])
+            <= budget
+        )
         assert envelope.critical_path_seconds <= envelope.projected_makespan_seconds
         assert max(envelope.resource_capacity_floor_seconds.values()) <= (
             envelope.projected_makespan_seconds
         )
+
+    # Both first-build fixtures may compile from an empty dependency cache.
+    # On main they serialize under the same compiler resource; the unrelated
+    # Python custody row runs beside them and cannot make either build warm.
+    native_builds = [
+        command
+        for command in PLAN.commands
+        if command.id
+        in {"native.integration.bench-cli", "native.integration.capability-manifest"}
+    ]
+    native_build_seconds = sum(
+        int(command.data["timeout_seconds"]) for command in native_builds
+    )
+    native_envelope = PLAN.timeout_envelope("native_integration")
+    assert native_envelope.projected_makespan_seconds == native_build_seconds
+    assert (
+        native_envelope.resource_capacity_floor_seconds["compiler-build-resource"]
+        == native_build_seconds
+    )
 
     repository_declared = sum(
         int(command.data["timeout_seconds"])
@@ -931,7 +1191,7 @@ def test_wasm_backend_prewarm_admits_the_consumer_compiler(
         300,
     )
     # Both entry points must inherit host-profile/session overrides identically
-    # while explicitly selecting the consumer's no-wrapper/no-daemon lane.
+    # and the selected compiler wrapper while disabling the backend daemon.
     inherited = {
         "MOLT_BACKEND_PROFILE": "release",
         "MOLT_RELEASE_BACKEND_CARGO_PROFILE": "release-fast",
@@ -947,8 +1207,237 @@ def test_wasm_backend_prewarm_admits_the_consumer_compiler(
             PLAN, command, command.data["timeout_seconds"]
         )
         assert {name: environment[name] for name in inherited} == inherited
-        assert environment["RUSTC_WRAPPER"] == ""
+        assert environment["RUSTC_WRAPPER"] == "/opt/cache/sccache"
+        assert environment["CARGO_INCREMENTAL"] == "0"
         assert environment["MOLT_BACKEND_DAEMON"] == "0"
+
+
+def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
+    monkeypatch,
+) -> None:
+    rows = {row.id: row for row in PLAN.commands if row.family == "wasm"}
+    expected_pytest_rows = {
+        "wasm.host.runner-fixtures",
+        "wasm.test.startup-lifecycle",
+        "wasm.test.linker-admission",
+        "wasm.test.control-flow",
+        "wasm.integration.split-runtime",
+        "wasm.integration.host-exports.gpu-kernel",
+        "wasm.integration.host-exports.attribute-error",
+        "wasm.integration.host-exports.tinygrad-dtype",
+        "wasm.integration.host-exports.tinygrad-tensor",
+        "wasm.integration.host-exports.tensor-row-ops",
+        "wasm.test.freestanding-e2e",
+        "wasm.test.finally-pending-observer-parity",
+    }
+    assert {
+        name for name, row in rows.items() if "pytest" in row.argv
+    } == expected_pytest_rows
+    for name in expected_pytest_rows:
+        assert rows[name].argv[:5] == (
+            "python3",
+            "tools/venv_exec.py",
+            "python3",
+            "-m",
+            "pytest",
+        )
+    for name in (
+        "wasm.build.backend",
+        "wasm.build.shared-runtime",
+        "wasm.build.split-runtime-release",
+    ):
+        assert rows[name].argv[:5] == (
+            "python3",
+            "tools/venv_exec.py",
+            "python3",
+            "-m",
+            "molt.cli",
+        )
+    # The proof chooses a wrapper once; prebuild and consumer rows must not
+    # silently erase that choice. The shared policy still disables incremental.
+    monkeypatch.setenv("RUSTC_WRAPPER", "/selected/sccache")
+    monkeypatch.setenv("CARGO_INCREMENTAL", "1")
+    monkeypatch.setenv("MOLT_BUILD_PYTHON", "/selected/build-python")
+    for row in rows.values():
+        environment, _policies = proof_plan._command_environment(
+            PLAN, row, row.data["timeout_seconds"]
+        )
+        assert environment["RUSTC_WRAPPER"] == "/selected/sccache"
+        assert environment["CARGO_INCREMENTAL"] == (
+            "0" if "cargo" in row.toolchains else "1"
+        )
+        assert environment["MOLT_BUILD_PYTHON"] == "/selected/build-python"
+
+
+def test_wasm_host_export_applications_have_independent_cold_partitions() -> None:
+    expected: dict[str, tuple[str, set[str]]] = {
+        "wasm.integration.host-exports.gpu-kernel": (
+            "test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output",
+            set(),
+        ),
+        "wasm.integration.host-exports.attribute-error": (
+            "test_linked_host_export_attribute_error_does_not_return_none",
+            {"wasm.build.shared-runtime"},
+        ),
+        "wasm.integration.host-exports.tinygrad-dtype": (
+            "test_linked_host_export_imports_tinygrad_dtype_class",
+            set(),
+        ),
+        "wasm.integration.host-exports.tinygrad-tensor": (
+            "test_linked_host_export_imports_tinygrad_tensor_module",
+            set(),
+        ),
+        "wasm.integration.host-exports.tensor-row-ops": (
+            "test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype",
+            set(),
+        ),
+    }
+    rows = {
+        row.id: row
+        for row in PLAN.commands
+        if row.id.startswith("wasm.integration.host-exports")
+    }
+    assert set(rows) == set(expected)
+    for name, (test_name, runtime_dependencies) in expected.items():
+        row = rows[name]
+        assert row.argv[6:] == (f"tests/test_wasm_split_runtime.py::{test_name}",)
+        assert row.data["timeout_budget"] == "cold"
+        assert {"node", "wasi-clang"}.issubset(PLAN.required_toolchains(row))
+        # Each program retains its own import closure. The GPU/tinygrad cells
+        # compile their exact feature generation; AttributeError consumes the
+        # admitted micro pair. Node needs no native host or other runtime tier.
+        assert set(row.dependencies) == {"wasm.build.backend", *runtime_dependencies}
+        assert {
+            selected.id
+            for selected in proof_plan._topological_commands(PLAN, command_id=name)
+        } == {name, "wasm.build.backend", *runtime_dependencies}
+
+    # The shared compiler resource serializes cold application rows. Allocate
+    # their declared work in the existing job, without extending a child bound.
+    compiler_seconds = sum(
+        int(row.data["timeout_seconds"])
+        for row in PLAN.commands
+        if row.family == "wasm"
+        and row.data["resource_class"] == "compiler-build-resource"
+    )
+    envelope = PLAN.timeout_envelope("wasm")
+    assert envelope.projected_makespan_seconds == compiler_seconds
+    assert (
+        envelope.resource_capacity_floor_seconds["compiler-build-resource"]
+        == compiler_seconds
+    )
+    family = next(family for family in PLAN.families if family.name == "wasm")
+    assert int(family.data["timeout_minutes"]) * 60 >= (
+        compiler_seconds + int(family.data["job_reserve_seconds"])
+    )
+
+
+def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
+    rows = {row.id: row for row in PLAN.commands}
+    startup = rows["wasm.test.startup-lifecycle"]
+    assert set(startup.argv[6:]) == {
+        "tests/test_wasm_startup_failures.py",
+        "tests/test_generate_worker.py",
+        "tests/test_browser_asset_closure.py",
+        "tests/test_wasm_reserved_callable_arity.py",
+        "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication",
+    }
+    assert {"pr", "main"} <= set(startup.data["tiers"])
+    assert "node" in PLAN.required_toolchains(startup)
+    assert not startup.dependencies
+    runner = rows["wasm.host.runner-fixtures"]
+    assert runner.dependencies == ("wasm.build.backend",)
+    assert {arg for arg in runner.argv if arg.startswith("tests/")} == {
+        "tests/test_wasm_runner_table_base.py"
+    }
+    assert not set(startup.argv[6:]) & {
+        arg for arg in runner.argv if arg.startswith("tests/")
+    }
+    for path in startup.argv[6:]:
+        assert "wasm" in {
+            family.name for family in PLAN.select([path.split("::", 1)[0]]).selected
+        }
+    split = rows["wasm.integration.split-runtime"]
+    assert set(split.argv[6:]) == {
+        "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts",
+        "tests/test_wasm_split_runtime.py::TestWorkerJsContent",
+        "tests/test_wasm_split_runtime.py::TestManifestJson",
+        "tests/test_wasm_split_runtime.py::TestRuntimeCacheability",
+        "tests/test_browser_vfs.py",
+    }
+    assert "node" in PLAN.required_toolchains(split)
+    assert split.evidence_outputs == ("proof-receipts/evidence/split-runtime",)
+    assert any(
+        "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication"
+        in command.argv
+        for command in PLAN.commands
+        if command.id == "wasm.test.startup-lifecycle"
+    )
+    assert {"pr", "main"} <= set(split.data["tiers"])
+    assert "wasm.build.host" not in {
+        row.id for row in proof_plan._topological_commands(PLAN, command_id=split.id)
+    }
+
+
+def test_import_from_codec_receivers_execute_both_targets() -> None:
+    from tools.compat import test_policy
+
+    row = next(
+        row for row in PLAN.commands if row.id == "wasm.test.import-from-codec-parity"
+    )
+    receivers = (
+        "tests/differential/basic/from_import_missing_name.py",
+        "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py",
+        "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py",
+    )
+    assert row.argv[:4] == (
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "tests/molt_diff.py",
+    )
+    assert row.argv[-3:] == receivers
+    assert row.evidence_outputs == ("proof-receipts/evidence/import-from-codec",)
+    for option, value in (
+        ("--target", "native,wasm"),
+        ("--jobs", "1"),
+        ("--build-profile", "dev"),
+        ("--stdlib-profile", "full"),
+        ("--python-version", "3.12"),
+        ("--molt-target-python", "3.12"),
+    ):
+        assert row.argv[row.argv.index(option) + 1] == value
+    assert "--no-retry-oom" in row.argv
+    assert "--warm-cache" not in row.argv
+    assert set(row.dependencies) == {"wasm.build.backend", "wasm.build.shared-runtime"}
+    assert {"node", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"} <= set(
+        PLAN.required_toolchains(row)
+    )
+    assert {"pr", "main"} <= set(row.data["tiers"])
+    assert row.data["resource_class"] == "compiler-build-resource"
+    assert row.data["timeout_budget"] == "cold"
+    family = next(family for family in PLAN.families if family.name == "wasm")
+    for receiver in receivers:
+        assert receiver in family.inputs
+        assert "wasm" in {family.name for family in PLAN.select([receiver]).selected}
+        metadata = test_policy.parse_metadata(
+            Path(__file__).resolve().parents[1] / receiver
+        )
+        # The runner's ordinary expectation policy cannot turn one of these
+        # required semantic failures into xfail, skip, or approximate stdout.
+        assert not metadata.expect_molt_fail
+        assert metadata.stdout_mode == "exact"
+        for backend in ("native", "wasm"):
+            assert (
+                test_policy.exclusion_reason(
+                    metadata,
+                    python_version=(3, 12),
+                    platform_tags={"linux", "posix"},
+                    architecture="x86_64",
+                    backend=backend,
+                )
+                is None
+            )
 
 
 def test_wasm_e2e_commands_bind_complete_child_toolchain_closure() -> None:
@@ -970,6 +1459,46 @@ def test_wasm_e2e_commands_bind_complete_child_toolchain_closure() -> None:
     harness = by_id["python.unit.harness"]
     assert "tests/test_finally_pending_observer_harness.py" in harness.argv
     assert "tests/test_finally_pending_observer_parity.py" not in harness.argv
+
+
+def test_actual_wasm_linker_fixtures_have_one_provisioned_lane() -> None:
+    commands = {command.id: command for command in PLAN.commands}
+    actual = commands["wasm.test.linker-admission"]
+    names = {
+        "test_primary_runtime_fixture_passes_actual_relocatable_admission",
+        "test_run_wasm_ld_rejects_shared_primary_before_publication",
+        "test_wasm_module_identity_survives_distinct_staging_paths",
+        "test_existing_alias_binding_controls_actual_llvm_resolution",
+    }
+    selectors = {f"tests/test_wasm_link_validation.py::{name}" for name in names}
+    assert set(arg for arg in actual.argv if "::" in arg) == selectors
+    assert actual.family == "wasm"
+    assert actual.data["cell"] == "linux-x86_64-py312-wasm-dev"
+    assert set(actual.data["tiers"]) == {"pr", "main"}
+    assert {"python", "uv", "wasm-ld"} <= set(PLAN.required_toolchains(actual))
+    assert "-m" not in actual.argv[actual.argv.index("pytest") + 1 :]
+    assert {
+        command.id for command in PLAN.commands if selectors & set(command.argv)
+    } == {actual.id}
+
+    root = Path(__file__).resolve().parents[1]
+    module = ast.parse((root / "tests/test_wasm_link_validation.py").read_bytes())
+    actual_functions = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name in names
+    }
+    assert set(actual_functions) == names
+    for node in actual_functions.values():
+        assert any(
+            ast.unparse(decorator) == "pytest.mark.slow"
+            for decorator in node.decorator_list
+        )
+    for suffix in ("", ".macos"):
+        unit = commands[f"python.unit.runtime-artifacts{suffix}"]
+        assert any(pair == ("-m", "not slow") for pair in zip(unit.argv, unit.argv[1:]))
+        assert "tests/test_wasm_link_validation.py" in unit.argv
+        assert not (selectors & set(unit.argv))
 
 
 def test_git_toolchain_declares_lossless_process_image_probe() -> None:
@@ -1193,6 +1722,7 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
         "repository_policy",
         "rust",
         "rust_security",
+        "runtime_candidate_costs",
         "wasm",
     }
     for command in rust_commands:
@@ -1284,10 +1814,12 @@ def test_command_direct_rustc_override_does_not_apply_sccache_policy(
 ) -> None:
     monkeypatch.setenv("RUSTC_WRAPPER", "/opt/cache/sccache")
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
-    command = next(
-        command
-        for command in PLAN.commands
-        if command.data.get("env", {}).get("RUSTC_WRAPPER") == ""
+    template = next(
+        command for command in PLAN.commands if command.id == "wasm.build.host"
+    )
+    command = replace(
+        template,
+        data={**template.data, "env": {"RUSTC_WRAPPER": ""}},
     )
 
     environment, applied = proof_plan._command_environment(PLAN, command, 30)
@@ -1358,7 +1890,7 @@ def test_toolchain_fingerprint_selects_sdk_only_for_declared_wasm_role(
         return str(selected)
 
     monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", sdk_role)
-    monkeypatch.setattr(proof_plan.shutil, "which", native_role)
+    install_module_view(monkeypatch, "shutil", shutil, proof_plan, which=native_role)
     commands = []
 
     def run(command, **_kwargs):
@@ -1388,8 +1920,12 @@ def test_missing_sdk_role_is_a_toolchain_preflight_error(
         raise llvm_toolchain.LlvmToolchainConfigError("provision SDK explicitly")
 
     monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", missing)
-    monkeypatch.setattr(
-        proof_plan.shutil, "which", lambda *_a, **_k: pytest.fail("no PATH fallback")
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        proof_plan,
+        which=lambda *_a, **_k: pytest.fail("no PATH fallback"),
     )
     with pytest.raises(
         ValueError, match="wasm-ld toolchain selection failed.*provision SDK explicitly"
@@ -1420,7 +1956,13 @@ def test_toolchain_content_and_version_probes_share_declared_cwd(monkeypatch) ->
         )
         return proof_plan.subprocess.CompletedProcess(argv, 0, output)
 
-    monkeypatch.setattr(proof_plan.shutil, "which", lambda _requested: sys.executable)
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        proof_plan,
+        which=lambda _requested: sys.executable,
+    )
     install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=fake_run)
 
     fingerprint = proof_plan._version_fingerprint(policy)
@@ -1461,7 +2003,13 @@ def test_toolchain_content_probe_ignores_provisioner_stderr(
             )
         return proof_plan.subprocess.CompletedProcess(argv, 0, "probe 1.0\n", "")
 
-    monkeypatch.setattr(proof_plan.shutil, "which", lambda _requested: sys.executable)
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        proof_plan,
+        which=lambda _requested: sys.executable,
+    )
     install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=fake_run)
 
     fingerprint = proof_plan._version_fingerprint(policy)
@@ -1638,6 +2186,14 @@ def test_generated_matrix_records_selection_reason() -> None:
     assert by_name["rust"]["selected_by"] == ["Cargo.lock"]
     assert by_name["rust"]["resource_class"] == "compiler-build-resource"
     assert by_name["rust"]["dependencies"] == []
+    for family in selection.selected:
+        if family.name not in by_name:
+            continue
+        record = by_name[family.name]
+        if family.data["executor"] in {"github-job", "github-matrix"}:
+            assert record["job_reserve_seconds"] == family.data["job_reserve_seconds"]
+        else:
+            assert "job_reserve_seconds" not in record
     assert by_name["rust"]["admission_job"] == "rust-build-unit-smoke"
     assert by_name["rust"]["admission_needs"] == ["classify-changes"]
     assert "rust.test.default-truth" in by_name["rust"]["command_ids"]
@@ -1684,6 +2240,7 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
     assert all(entry["family"] == "platform_portability" for entry in matrix)
     assert {entry["cell"]: entry["command_ids"] for entry in matrix} == {
         "linux-x86_64-py312-queue-portability": [
+            "portability.completion.linux",
             "portability.queue.linux",
             "portability.cargo-link.linux",
             "portability.cargo-custody.linux",
@@ -1706,6 +2263,7 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
             "portability.cargo-link.windows",
             "portability.ir.windows",
             "portability.cargo-custody.windows",
+            "portability.headers.windows",
         ],
     }
     for entry in matrix:
@@ -1716,6 +2274,31 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
         )
         assert [command.id for command in commands] == entry["command_ids"]
         assert all(command.data["cell"] == entry["cell"] for command in commands)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "include/molt/Python.h",
+        "include/molt/shared/_data_api.h",
+        "runtime/molt-cpython-abi/include/Python.h",
+        "tests/cli/test_c_api_headers.py",
+    ],
+)
+def test_header_changes_execute_real_windows_data_imports(path: str) -> None:
+    assert _classes(path)["platform_portability"]
+    command = next(
+        command
+        for command in PLAN.commands
+        if command.id == "portability.headers.windows"
+    )
+    assert command.data["cell"] == "windows-x86_64-py312-queue-portability"
+    assert set(command.data["tiers"]) == {"pr", "main"}
+    assert (
+        "tests/cli/test_c_api_headers.py::test_optimize_flag_headers_share_data_across_translation_units"
+        in command.data["argv"]
+    )
+    assert "hosted-clang-cl" in PLAN.required_toolchains(command)
 
 
 @pytest.mark.parametrize(
@@ -2233,7 +2816,7 @@ def test_provisioned_lean_fingerprint_admits_formal_build_receipt(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, current, _metrics, _cancel: _successful_synthetic_record(current),
+        lambda _plan, current, _cancel: _successful_synthetic_record(current),
     )
     receipt_path = tmp_path / "formal-lean-receipt.json"
 
@@ -2302,6 +2885,18 @@ def test_timeout_envelope_models_dependencies_and_resource_capacity() -> None:
     assert envelope.resource_capacity_floor_seconds == {
         "resource-a": 30,
         "resource-b": 10,
+    }
+    projected = gen_proof_plan._envelope_record(
+        plan, "synthetic", 60, job_reserve_seconds=10
+    )
+    assert projected == {
+        "budget_seconds": 60,
+        "projected_makespan_seconds": 30,
+        "critical_path_seconds": 20,
+        "resource_capacity_floor_seconds": {"resource-a": 30, "resource-b": 10},
+        "job_reserve_seconds": 10,
+        "required_job_seconds": 40,
+        "headroom_seconds": 20,
     }
 
 
@@ -2404,7 +2999,6 @@ def test_executor_schedules_dependencies_and_resources_with_deterministic_receip
     def fake_run(
         _plan: proof_plan.ProofPlan,
         command: proof_plan.ProofCommand,
-        _metrics: Path,
         _cancel: threading.Event,
     ) -> dict[str, object]:
         resource = str(command.data["resource_class"])
@@ -2469,7 +3063,7 @@ def test_executor_partition_failure_preserves_independent_work_and_blocks_depend
     )
     live_started = threading.Event()
 
-    def fake_run(_plan, command, _metrics, cancel):
+    def fake_run(_plan, command, cancel):
         if command.id == "synthetic.fail":
             assert live_started.wait(timeout=1)
             return {
@@ -2517,6 +3111,7 @@ def test_actual_rust_roots_continue_after_failure_without_overlapping_capacity(
         "rust.test.compiler-authorities",
         "rust.test.ir-wasm-runtime-authorities",
         "rust.test.runtime-cold-lifecycle",
+        "rust.test.runtime-extension-admission",
     ]
     declared = tuple(command for command in PLAN.commands if command.id in expected)
     assert [command.id for command in declared] == expected
@@ -2555,6 +3150,9 @@ def test_actual_rust_roots_continue_after_failure_without_overlapping_capacity(
                 ],
                 "toolchains": ["python"],
                 "timeout_seconds": 30,
+                # These finite scheduler children emit the fixture marker, not
+                # Cargo receipts. Never clear or claim real repository evidence.
+                "evidence_outputs": [],
             },
         )
         for command in declared
@@ -2580,6 +3178,7 @@ def test_actual_rust_roots_continue_after_failure_without_overlapping_capacity(
     assert receipt["execution"]["completed_commands"] == len(expected)
     assert [record["status"] for record in receipt["commands"]] == [
         "failure",
+        "success",
         "success",
         "success",
         "success",
@@ -2611,7 +3210,6 @@ def test_executor_does_not_convert_control_plane_interrupts_into_records(
     def interrupt(
         _plan: proof_plan.ProofPlan,
         _command: proof_plan.ProofCommand,
-        _metrics: Path,
         _cancel: threading.Event,
     ) -> dict[str, object]:
         raise KeyboardInterrupt
@@ -2621,10 +3219,15 @@ def test_executor_does_not_convert_control_plane_interrupts_into_records(
         proof_plan.execute_commands(plan, (command,), tmp_path / "receipt.json")
 
 
+@pytest.mark.parametrize("agent_home", [".codex", ".claude"])
 def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, agent_home: str
 ) -> None:
-    child_pid_path = tmp_path / "guarded-child.pid"
+    # Keep the real child cancellation oracle active from ordinary CI checkouts:
+    # a project data path in argv is not a host-helper identity. The actual
+    # interpreter may itself also live under an agent-managed worktree.
+    child_pid_path = tmp_path / agent_home / "worktrees" / "molt" / "guarded-child.pid"
+    child_pid_path.parent.mkdir(parents=True)
     fail = _synthetic_executor_command("synthetic.fail")
     live = _synthetic_executor_command("synthetic.live", resource_class="resource-b")
     fail = replace(
@@ -2634,7 +3237,21 @@ def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
             "argv": [
                 sys.executable,
                 "-c",
-                "import time; time.sleep(0.75); raise SystemExit(130)",
+                "import pathlib, sys, time\n"
+                f"marker = pathlib.Path({str(child_pid_path)!r})\n"
+                "deadline = time.monotonic() + 5.0\n"
+                "while True:\n"
+                "    try:\n"
+                "        ready = marker.read_text().strip().isdecimal()\n"
+                "    except FileNotFoundError:\n"
+                "        ready = False\n"
+                "    if ready:\n"
+                "        break\n"
+                "    if time.monotonic() >= deadline:\n"
+                "        print('live child readiness deadline expired', file=sys.stderr)\n"
+                "        raise SystemExit(97)\n"
+                "    time.sleep(0.01)\n"
+                "raise SystemExit(130)\n",
             ],
         },
     )
@@ -2763,7 +3380,7 @@ def test_executor_rejects_source_mutation_during_partition(
     monkeypatch.setattr(
         proof_plan,
         "_run_command",
-        lambda _plan, command, _metrics, _cancel: {
+        lambda _plan, command, _cancel: {
             "id": command.id,
             "status": "success",
             "returncode": 0,
@@ -2922,7 +3539,11 @@ def test_terminal_command_execution_closes_transitive_dependencies() -> None:
 
 
 def test_nightly_workflow_is_a_typed_scheduled_family_consumer() -> None:
-    scheduled = {family.name: family for family in PLAN.scheduled_families}
+    scheduled = {
+        family.name: family
+        for family in PLAN.scheduled_families
+        if family.data["workflow"] == ".github/workflows/nightly.yml"
+    }
     assert set(scheduled) == {
         "nightly_conformance",
         "nightly_determinism",
@@ -3115,7 +3736,10 @@ def test_executor_failure_scope_uses_guard_and_quarantine_authority(
     metrics, returncode, expected
 ) -> None:
     scope, reason = proof_plan._guarded_failure_scope(
-        metrics, metrics_valid=True, returncode=returncode, cancelled=False
+        {"descendants_closed": True, **metrics},
+        metrics_valid=True,
+        returncode=returncode,
+        cancelled=False,
     )
     assert scope == expected
     assert reason
@@ -3123,10 +3747,11 @@ def test_executor_failure_scope_uses_guard_and_quarantine_authority(
 
 def _job_cleanup_with_survivor(image: Path) -> dict[str, object]:
     return {
+        "descendants_closed": True,
         "windows_job_cleanup": {
             "completed": True,
             "remaining_processes": [{"pid": 720, "image": str(image)}],
-        }
+        },
     }
 
 
@@ -3209,7 +3834,7 @@ def test_executor_stops_on_candidate_change_even_when_checkout_is_clean(
     )
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
 
-    def run(_plan, command, _metrics, _cancel):
+    def run(_plan, command, _cancel):
         current[field] = "c" * 40
         return _successful_synthetic_record(command)
 
@@ -3244,7 +3869,7 @@ def test_executor_control_plane_interrupt_cancels_siblings_before_join(
     live_started = threading.Event()
     closed = threading.Event()
 
-    def run(_plan, command, _metrics, cancel):
+    def run(_plan, command, cancel):
         if command.id == "interrupt":
             assert live_started.wait(1)
             raise KeyboardInterrupt
@@ -3315,7 +3940,7 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
         },
     )
     plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
-    record = proof_plan._run_command(plan, command, tmp_path / "metrics.json")
+    record = proof_plan._run_command(plan, command)
     assert started.read_bytes() == b"started", record
     assert record["status"] == "timeout"
     assert record["returncode"] == 124
@@ -3487,7 +4112,11 @@ def test_pull_requests_skip_main_only_commands_but_keep_their_dependencies() -> 
         command = next(c for c in PLAN.commands if c.id == command_id)
         assert command.data["cell"] == cell
         assert selector in command.data["argv"]
-        assert command.data["timeout_seconds"] == 120
+        assert (
+            "tests/tools/test_proof_queue.py::"
+            "test_python_selection_location_join_preserves_coordinate_and_content"
+        ) in command.data["argv"]
+        assert command.data["timeout_seconds"] == (180 if host == "windows" else 120)
         assert {"python", "uv", "rustc", "cargo"} <= set(command.toolchains)
         main_command = next(
             c for c in PLAN.commands if c.id == f"portability.queue.{host}"
@@ -3576,3 +4205,821 @@ def test_setup_contract_inputs_and_native_portability_routes_are_complete() -> N
             "tests/tools/test_rust_toolchain_contract.py",
         ):
             assert commands[name].argv.count(path) == 1
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        None,
+        "missing",
+        "unclosed",
+        "startup",
+        "infrastructure",
+        "refusal",
+        "wrong-returncode",
+        "noncanonical-code",
+        "not-cancelled",
+    ],
+)
+def test_executor_cancellation_requires_exact_terminal_closure(
+    tmp_path, monkeypatch, defect
+):
+    from tools.command_execution import GuardedCommand
+
+    command = _synthetic_executor_command("synthetic.cancel")
+    plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
+    event = threading.Event()
+    startup = {
+        "launch_id": "a" * 32,
+        "guard_pid": 410,
+        "command": list(command.argv),
+        "child_process": {"pid": 411, "started_at": "fixture-birth"},
+    }
+    terminal = {
+        **startup,
+        "schema": "molt.guarded-command-metrics.v1",
+        "returncode": 137,
+        "child_returncode": -15,
+        "duration_seconds": 0.2,
+        "peak_tree_rss_bytes": 1024,
+        "cancelled": True,
+        "descendants_closed": True,
+    }
+    startup_path = tmp_path / "startup.json"
+    summary_path = tmp_path / "summary.json"
+    if defect == "unclosed":
+        terminal["descendants_closed"] = False
+    elif defect == "startup":
+        startup["launch_id"] = "b" * 32
+    elif defect == "infrastructure":
+        terminal["infrastructure_failure"] = {"phase": "temporary_artifact_custody"}
+    elif defect == "refusal":
+        terminal["termination_reports"] = [
+            {"remaining_pids": [411], "remaining_pgids": []}
+        ]
+    elif defect == "noncanonical-code":
+        terminal["returncode"] = 130
+    elif defect == "not-cancelled":
+        terminal["cancelled"] = False
+    elif defect == "wrong-returncode":
+        terminal["returncode"] = 0
+    startup_path.write_text(json.dumps(startup), encoding="utf-8")
+    if defect != "missing":
+        summary_path.write_text(json.dumps(terminal), encoding="utf-8")
+
+    class Process:
+        pid = 409  # Launcher identity deliberately differs from the guard.
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = 130 if defect == "noncanonical-code" else 137
+            return self.returncode
+
+        def terminate(self):
+            pytest.fail("guard owner must remain alive until its own closure")
+
+        kill = terminate
+
+    owned = GuardedCommand(
+        Process(),
+        tmp_path / "cancel",
+        summary_path,
+        tmp_path / "custody.json",
+        "a" * 32,
+        startup_path,
+        command.argv,
+    )
+
+    def start(*_args, **kwargs):
+        assert kwargs["harness"] is True
+        assert "summary_json" not in kwargs  # A unique owner directory survives retry.
+        event.set()
+        return owned
+
+    monkeypatch.setattr(proof_plan, "_COMMANDS", SimpleNamespace(start_guarded=start))
+    if defect in {"missing", "unclosed", "startup"}:
+        with pytest.raises(RuntimeError) as caught:
+            proof_plan._run_command(plan, command, event)
+        assert caught.value.guard_command is owned
+        record = caught.value.proof_record
+    else:
+        record = proof_plan._run_command(plan, command, event)
+    assert record["guard_returncode"] == (130 if defect == "noncanonical-code" else 137)
+    assert record["failure_scope"] == "global"
+    assert record["status"] == ("cancelled" if defect is None else "failure")
+    assert record["returncode"] == (130 if defect is None else 2)
+    assert record["guard_custody"]["launch_id"] == owned.launch_id
+    assert record["guard_custody"]["summary_path"] == str(summary_path)
+    assert owned.cancellation_path.exists()
+    assert summary_path.exists() is (defect != "missing")
+
+
+def test_executor_retains_owner_in_failure_receipt_and_library_exception(
+    tmp_path, monkeypatch
+):
+    from tools.command_execution import GuardedCommand
+
+    command = _synthetic_executor_command("synthetic.unresolved")
+    plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
+    monkeypatch.setattr(
+        proof_plan,
+        "toolchain_fingerprints",
+        lambda *_: {"python": {"identity_sha256": "0" * 64}},
+    )
+    process = SimpleNamespace(pid=31, returncode=None)
+    owned = GuardedCommand(
+        process,
+        tmp_path / "cancel",
+        tmp_path / "summary.json",
+        tmp_path / "custody.json",
+        "c" * 32,
+        tmp_path / "startup.json",
+        command.argv,
+    )
+    error = subprocess.TimeoutExpired("guard", 5)
+    error.guard_command = owned
+    record = {
+        **_successful_synthetic_record(command),
+        "status": "failure",
+        "returncode": 2,
+        "failure_scope": "global",
+        "failure_reason": "guard outcome unavailable or inconsistent",
+        "guard_custody": {
+            "launch_id": owned.launch_id,
+            "summary_path": str(owned.summary_path),
+            "startup_path": str(owned.startup_path),
+            "evidence_path": str(owned.evidence_path),
+            "cancellation_path": str(owned.cancellation_path),
+            "terminal": False,
+        },
+    }
+    error.proof_record = record
+
+    def run(*_args):
+        raise error
+
+    monkeypatch.setattr(proof_plan, "_run_command", run)
+    receipt_path = tmp_path / "receipt.json"
+    with pytest.raises(ExceptionGroup) as caught:
+        proof_plan.execute_commands(plan, (command,), receipt_path)
+    assert caught.value.exceptions == (error,)
+    assert caught.value.exceptions[0].guard_command is owned
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["status"] == "failure"
+    assert receipt["executed_partitions"] == []
+    assert receipt["commands"][0]["guard_custody"] == record["guard_custody"]
+    # The CLI may release its Python objects: ordinary durable custody references
+    # remain in the failure receipt and the autonomous guard owns eventual close.
+    monkeypatch.setattr(proof_plan.ProofPlan, "load", lambda _: plan)
+    monkeypatch.setattr(
+        proof_plan, "_topological_commands", lambda *_a, **_k: (command,)
+    )
+    assert (
+        proof_plan.main(["--run-command", command.id, "--receipt", str(receipt_path)])
+        == 2
+    )
+    assert (
+        json.loads(receipt_path.read_text(encoding="utf-8"))["commands"][0][
+            "guard_custody"
+        ]["launch_id"]
+        == owned.launch_id
+    )
+
+
+def test_cli_process_exit_preserves_autonomous_guard_and_eventual_closure(tmp_path):
+    """The CLI's interpreter exits while its existing guard still owns closure."""
+    from tools.command_execution import CommandExecutor
+    from tools import memory_guard
+
+    root = Path(proof_plan.__file__).resolve().parents[1]
+    release = tmp_path / "release"
+    entered = tmp_path / "entered"
+    ready = tmp_path / "ready"
+    receipt = tmp_path / "receipt.json"
+    worker = tmp_path / "held_worker.py"
+    worker.write_text(
+        "import os,pathlib,sys,time\n"
+        f"sys.path.insert(0, {str(root)!r})\n"
+        "from tools import guarded_exec\n"
+        "if os.environ.get('MOLT_TEST_HOLD_CLOSURE') == '1':\n"
+        " guard=guarded_exec.harness_memory_guard.memory_guard\n"
+        " original=guard._temporary_artifact_descendant_closure\n"
+        " def held(**kwargs):\n"
+        f"  pathlib.Path({str(entered)!r}).write_text('entered', encoding='utf-8')\n"
+        "  deadline=time.monotonic()+30\n"
+        f"  while not pathlib.Path({str(release)!r}).exists() and time.monotonic()<deadline: time.sleep(.02)\n"
+        "  return original(**kwargs)\n"
+        " guard._temporary_artifact_descendant_closure=held\n"
+        "raise SystemExit(guarded_exec.main())\n",
+        encoding="utf-8",
+    )
+    live_code = f"import pathlib,time; pathlib.Path({str(ready)!r}).write_text('ready', encoding='utf-8'); time.sleep(30)"
+    fail_code = (
+        "import pathlib,time; deadline=time.monotonic()+15\n"
+        f"while not pathlib.Path({str(ready)!r}).exists() and time.monotonic()<deadline: time.sleep(.02)\n"
+        "raise SystemExit(130)"
+    )
+    commands = (
+        replace(
+            _synthetic_executor_command("synthetic.fail"),
+            data={
+                **_synthetic_executor_command("synthetic.fail").data,
+                "argv": [sys.executable, "-c", fail_code],
+                "timeout_seconds": 20,
+            },
+        ),
+        replace(
+            _synthetic_executor_command("synthetic.live", resource_class="resource-b"),
+            data={
+                **_synthetic_executor_command(
+                    "synthetic.live", resource_class="resource-b"
+                ).data,
+                "argv": [sys.executable, "-c", live_code],
+                "timeout_seconds": 20,
+                "env": {"MOLT_TEST_HOLD_CLOSURE": "1"},
+            },
+        ),
+    )
+    cli = tmp_path / "proof_cli.py"
+    cli.write_text(
+        "import sys\nfrom dataclasses import replace\nfrom pathlib import Path\n"
+        f"sys.path.insert(0, {str(root)!r})\n"
+        "from tools import proof_plan as p\nfrom tools.command_execution import CommandExecutor\n"
+        "base=p.ProofPlan.load()\n"
+        f"commands=tuple(p.ProofCommand(identity,data) for identity,data in {[(c.id, c.data) for c in commands]!r})\n"
+        "plan=replace(base,commands=commands,executor_max_workers=2,resource_policies=(p.ResourcePolicy('resource-a',1),p.ResourcePolicy('resource-b',1)))\n"
+        "p.ProofPlan.load=lambda _:plan\np._topological_commands=lambda *a,**k:commands\n"
+        "p._source_tree_changes=lambda:()\np.toolchain_fingerprints=lambda *a:{}\n"
+        "p._source_identity=lambda:{'commit':'a'*40,'tree':'b'*40}\n"
+        "start=CommandExecutor.start_owned\n"
+        "def held_start(self,args,**kwargs):\n"
+        f" return start(self,[args[0],{str(worker)!r},*args[2:]],**kwargs)\n"
+        "CommandExecutor.start_owned=held_start\n"
+        f"raise SystemExit(p.main(['--run-family','synthetic','--receipt',{str(receipt)!r}]))\n",
+        encoding="utf-8",
+    )
+    executor = CommandExecutor(prefix="MOLT_TEST_CLI_EXIT", repo_root=root)
+    with (tmp_path / "cli.log").open("wb") as output:
+        process = executor.start_owned(
+            [sys.executable, str(cli)],
+            cwd=root,
+            env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path / "state")},
+            stdout=output,
+            stderr=output,
+        )
+        try:
+            assert process.wait(timeout=20) == 2
+            payload = json.loads(receipt.read_text(encoding="utf-8"))
+            assert payload["status"] == "failure"
+            live = next(r for r in payload["commands"] if r["id"] == "synthetic.live")
+            custody = live["guard_custody"]
+            assert live["status"] == "failure"
+            assert custody["terminal"] is False
+            assert custody["observation_error"]["type"] == "TimeoutExpired"
+            assert entered.is_file()
+            startup = json.loads(
+                Path(custody["startup_path"]).read_text(encoding="utf-8")
+            )
+            assert startup["launch_id"] == custody["launch_id"]
+            assert startup["guard_pid"] in memory_guard.sample_processes()
+            release.write_text("release", encoding="utf-8")
+            deadline = time.monotonic() + 10
+            terminal = {}
+            while time.monotonic() < deadline:
+                terminal = json.loads(
+                    Path(custody["summary_path"]).read_text(encoding="utf-8")
+                )
+                if terminal.get("descendants_closed") is True:
+                    break
+                time.sleep(0.02)
+            assert terminal["descendants_closed"] is True
+            assert terminal["cancelled"] is True
+            assert terminal["launch_id"] == custody["launch_id"]
+            assert terminal["child_process"] == startup["child_process"]
+            assert (
+                startup["child_process"]["pid"] not in memory_guard.sample_processes()
+            )
+            assert (
+                json.loads(receipt.read_text(encoding="utf-8"))["status"] == "failure"
+            )
+        finally:
+            release.write_text("release", encoding="utf-8")
+            process.wait(timeout=30)
+
+
+def test_wasi_c_abi_witness_is_required_and_selects_sdk_compiler():
+    policies = {policy.name: policy for policy in PLAN.toolchain_policies}
+    command = next(
+        command for command in PLAN.commands if command.id == "wasm.test.control-flow"
+    )
+    assert "wasm.build.host" in command.dependencies
+    assert "wasi-clang" in command.toolchains
+    assert "tests/test_wasm_longdouble_printf_link.py" in command.argv
+    assert command.argv[:3] == ("python3", "tools/venv_exec.py", "python3")
+    assert "wasm.build.shared-runtime" in command.dependencies
+    assert command.data["timeout_budget"] == "integration"
+    assert "main" in command.data["tiers"]
+    assert all(item.id != "wasm.execute.c-abi" for item in PLAN.commands)
+    workflow = (
+        Path(__file__).resolve().parents[1] / ".github/workflows/molt-wasm-ci.yml"
+    ).read_text(encoding="utf-8")
+    steps = workflow.split("      - ")
+    setup_index = next(
+        index
+        for index, step in enumerate(steps)
+        if "uses: ./.github/actions/setup-project\n" in step
+    )
+    run_index = next(
+        index
+        for index, step in enumerate(steps)
+        if "tools/proof_plan.py --run-family wasm" in step
+    )
+    assert setup_index < run_index
+    assert 'sync-frozen: "true"' in steps[setup_index]
+    assert "sync-groups: source-build-numpy" in steps[setup_index]
+    assert policies["wasi-clang"].data["wasi_sdk_tool"] == "clang"
+    assert policies["wasi-clang"].identity_kind == "executable"
+    assert policies["clang"].data["setup_value"] == "22.1.8"
+
+
+def test_wasm_execution_uses_selected_host_from_its_completed_build():
+    commands = {command.id: command for command in PLAN.commands}
+    for name in ("hello", "comprehension", "sieve"):
+        execute = commands[f"wasm.run.{name}"]
+        compile = commands[f"wasm.compile.{name}"]
+        assert compile.id in execute.dependencies
+        assert "wasm.build.host" in execute.dependencies
+        assert "wasm.build.host" not in compile.dependencies
+        order = [
+            command.id
+            for command in proof_plan._topological_commands(PLAN, command_id=execute.id)
+        ]
+        assert order.index("wasm.build.host") < order.index(execute.id)
+        assert order.index(compile.id) < order.index(execute.id)
+        assert execute.argv == (
+            "python3",
+            "tools/venv_exec.py",
+            "python3",
+            "tools/run_wasm_host.py",
+            "--cargo-profile",
+            "dev-fast",
+            "--",
+            f"/tmp/molt-wasm-ci/{name}/manifest.json",
+        )
+        assert execute.toolchains == ("python",)
+
+
+def test_wasi_compiler_fingerprint_bypasses_native_path_and_binds_helpers(
+    tmp_path, monkeypatch
+):
+    from molt import llvm_toolchain, wasi_sdk_identity
+
+    compiler = tmp_path / "clang"
+    compiler.write_bytes(b"selected SDK compiler")
+    policy = next(
+        policy for policy in PLAN.toolchain_policies if policy.name == "wasi-clang"
+    )
+    selected = []
+
+    def resolve(root, role, *, environ):
+        selected.append(role)
+        return compiler
+
+    monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", resolve)
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        proof_plan,
+        which=lambda name: pytest.fail("native PATH consulted"),
+    )
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        proof_plan,
+        run=lambda argv, **kwargs: proof_plan.subprocess.CompletedProcess(
+            argv, 0, "clang version 23.1.0", ""
+        ),
+    )
+    closure = {
+        "resources": "first",
+        "process_images": [
+            {
+                "path": str(compiler),
+                "sha256": hashlib.sha256(compiler.read_bytes()).hexdigest(),
+            },
+        ],
+    }
+    monkeypatch.setattr(
+        llvm_toolchain, "capture_wasi_sdk_selection", lambda **kwargs: closure
+    )
+    monkeypatch.setattr(
+        wasi_sdk_identity,
+        "capture_wasi_sdk_tool_files",
+        lambda selected: selected["process_images"],
+    )
+    open_file = Path.open
+
+    def no_duplicate_image_read(path, *args, **kwargs):
+        assert path != compiler, "SDK capture's compiler identity was hashed again"
+        return open_file(path, *args, **kwargs)
+
+    with monkeypatch.context() as io_scope:
+        io_scope.setattr(Path, "open", no_duplicate_image_read)
+        first = proof_plan._version_fingerprint(policy)
+        closure["resources"] = "changed helper"
+        second = proof_plan._version_fingerprint(policy)
+        assert first["path"] == str(compiler) == second["path"]
+        assert first["identity_sha256"] != second["identity_sha256"]
+        assert selected == ["clang", "clang"]
+
+
+def test_ninja_identity_binds_locked_release_and_observed_distribution_banner(
+    tmp_path, monkeypatch
+):
+    import tomllib
+
+    policy = next(
+        policy for policy in PLAN.toolchain_policies if policy.name == "ninja"
+    )
+    root = Path(__file__).resolve().parents[1]
+    package = next(
+        item
+        for item in tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))[
+            "package"
+        ]
+        if item["name"] == "ninja"
+    )
+    assert package["version"] == policy.data["setup_value"] == "1.13.0"
+    assert any(
+        wheel["hash"]
+        == "sha256:fa2a8bfc62e31b08f83127d1613d10821775a0eb334197154c4d6067b7068ff1"
+        for wheel in package["wheels"]
+    )
+    pattern = str(policy.data["version_pattern"])
+    observed = "1.13.0.git.kitware.jobserver-pipe-1"
+    assert re.fullmatch(pattern, observed)
+    for rejected in (
+        "1.13.1.git.kitware.jobserver-pipe-1",
+        "1.13.01",
+        "1.13.0.git.unowned",
+        "1.13.0.git.kitware.jobserver-pipe-2",
+    ):
+        assert not re.fullmatch(pattern, rejected)
+    executable = tmp_path / "ninja"
+    executable.write_bytes(b"pinned ninja distribution image")
+    install_module_view(
+        monkeypatch, "shutil", shutil, proof_plan, which=lambda name: str(executable)
+    )
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        proof_plan,
+        run=lambda argv, **kwargs: proof_plan.subprocess.CompletedProcess(
+            argv, 0, observed + "\n", ""
+        ),
+    )
+    fingerprint = proof_plan._version_fingerprint(policy)
+    assert fingerprint["version"] == observed
+    assert (
+        fingerprint["executable_sha256"]
+        == hashlib.sha256(executable.read_bytes()).hexdigest()
+    )
+
+
+def test_receipt_verdict_binds_sdk_closure_without_changing_native_hashes(tmp_path):
+    command = next(item for item in PLAN.commands if item.id == "python.static.ty")
+    for sibling in PLAN.commands:
+        if sibling.family == command.family and sibling.id != command.id:
+            (tmp_path / f"{sibling.id}.json").write_text(
+                json.dumps(_receipt_for(sibling, tmp_path)), encoding="utf-8"
+            )
+    receipt = _receipt_for(command, tmp_path)
+    policy = next(item for item in PLAN.toolchain_policies if item.name == "wasi-clang")
+    sdk = {
+        "path": "/sdk/bin/clang",
+        "launcher_path": "/sdk/bin/clang-23",
+        "launcher_sha256": "1" * 64,
+        "content_path": "/sdk/bin/clang-23",
+        "executable_sha256": "1" * 64,
+        "version": "clang version 23.1.0",
+        "probe_cwd": ".",
+        "version_pattern": policy.data["version_pattern"],
+        "wasi_sdk_sha256": "2" * 64,
+    }
+    # Independent wire oracle: native identities retain their old seven fields;
+    # this selected SDK role binds its complete captured closure as field eight.
+    sdk["identity_sha256"] = hashlib.sha256(
+        (
+            "/sdk/bin/clang\0/sdk/bin/clang-23\0"
+            + "1" * 64
+            + "\0/sdk/bin/clang-23\0"
+            + "1" * 64
+            + "\0clang version 23.1.0\0.\0"
+            + "2" * 64
+        ).encode()
+    ).hexdigest()
+    receipt["toolchains"]["wasi-clang"] = sdk
+    path = tmp_path / "sdk.json"
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path) == []
+    sdk["wasi_sdk_sha256"] = "3" * 64
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert any(
+        "wasi-clang toolchain identity hash is invalid" in error
+        for error in proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+    )
+    del sdk["wasi_sdk_sha256"]
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert any(
+        "invalid wasi-clang toolchain identity" in error
+        for error in proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+    )
+
+
+def test_selected_sdk_fingerprint_roundtrips_through_actual_receipt_receiver(
+    tmp_path, monkeypatch
+):
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        provisioned_wasi_sdk_fixture,
+    )
+
+    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    with monkeypatch.context() as selected:
+        selected.setenv("WASI_SDK_PATH", str(installation.sdk))
+        selected.setattr(
+            proof_plan.subprocess,
+            "run",
+            lambda argv, **kwargs: proof_plan.subprocess.CompletedProcess(
+                argv, 0, "clang version 23.1.0", ""
+            ),
+        )
+        sdk = proof_plan.toolchain_fingerprints(PLAN, ("wasi-clang",))["wasi-clang"]
+    command = next(item for item in PLAN.commands if item.id == "python.static.ty")
+    receipt_root = tmp_path / "receipts"
+    receipt_root.mkdir()
+    for sibling in PLAN.commands:
+        if sibling.family == command.family and sibling.id != command.id:
+            (receipt_root / f"{sibling.id}.json").write_text(
+                json.dumps(_receipt_for(sibling, receipt_root)), encoding="utf-8"
+            )
+    receipt = _receipt_for(command, receipt_root)
+    receipt["toolchains"]["wasi-clang"] = sdk
+    path = receipt_root / "sdk.json"
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert proof_plan.verify_receipts(PLAN, ["python_static"], receipt_root) == []
+    native_name = next(name for name in receipt["toolchains"] if name != "wasi-clang")
+    native = receipt["toolchains"][native_name]
+    native["wasi_sdk_sha256"] = sdk["wasi_sdk_sha256"]
+    # Even a correctly sealed extended digest must not change the native contract.
+    native["identity_sha256"] = hashlib.sha256(
+        "\0".join(
+            str(native[key])
+            for key in (
+                "path",
+                "launcher_path",
+                "launcher_sha256",
+                "content_path",
+                "executable_sha256",
+                "version",
+                "probe_cwd",
+                "wasi_sdk_sha256",
+            )
+        ).encode()
+    ).hexdigest()
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert any(
+        f"invalid {native_name} toolchain identity" in error
+        for error in proof_plan.verify_receipts(PLAN, ["python_static"], receipt_root)
+    )
+
+
+def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
+    commands = {command.id: command for command in PLAN.commands}
+    for name in ("wasm.build.shared-runtime", "wasm.build.split-runtime-release"):
+        command = commands[name]
+        assert command.dependencies == ()
+        assert set(command.toolchains) == {
+            "python",
+            "uv",
+            "rustc",
+            "cargo",
+            "wasm-ld",
+            "wasm-tools",
+            "wasi-clang",
+        }
+    assert commands["wasm.build.host"].dependencies == ()
+    assert set(commands["wasm.build.host"].toolchains) == {"rustc", "cargo"}
+    for name in (
+        "wasm.compile.hello",
+        "wasm.compile.comprehension",
+        "wasm.compile.sieve",
+        "wasm.test.freestanding-e2e",
+    ):
+        selected = {
+            command.id
+            for command in proof_plan._topological_commands(PLAN, command_id=name)
+        }
+        assert "wasm.build.host" not in selected
+        assert {name, "wasm.build.backend", "wasm.build.shared-runtime"} <= selected
+    split = "wasm.integration.split-runtime"
+    assert {
+        command.id
+        for command in proof_plan._topological_commands(PLAN, command_id=split)
+    } == {split, "wasm.build.backend", "wasm.build.split-runtime-release"}
+    # The split artifact and browser VFS consumers execute Node, with no native
+    # precompile request. The native consumers below retain their host producer.
+    for name in (
+        "wasm.run.hello",
+        "wasm.run.comprehension",
+        "wasm.run.sieve",
+        "wasm.test.control-flow",
+        "wasm.test.finally-pending-observer-parity",
+    ):
+        assert "wasm.build.host" in commands[name].dependencies
+    for name in (
+        "wasm.compile.hello",
+        "wasm.compile.comprehension",
+        "wasm.compile.sieve",
+        "wasm.test.control-flow",
+        "wasm.test.freestanding-e2e",
+        "wasm.test.finally-pending-observer-parity",
+        "wasm.integration.split-runtime",
+    ):
+        assert "wasm.build.backend" in commands[name].dependencies
+
+
+def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
+    plan = proof_plan.ProofPlan.load()
+    declared = {
+        row.id for row in plan.commands if proof_plan.cargo_native_c_units(row.data)
+    }
+    assert declared == {
+        "wasm.build.host",
+        "rust.clippy.workspace-default",
+        "portability.rust.linux-aarch64.clippy-workspace",
+        "portability.rust.macos.clippy-workspace",
+        "rust.test.default-truth",
+        "rust.test.runtime-extension-admission",
+        "runtime.cost.candidate",
+    }
+    for name in ("wasm.build.shared-runtime", "wasm.build.split-runtime-release"):
+        row = next(row for row in plan.commands if row.id == name)
+        assert proof_plan.cargo_native_c_units(row.data) == ()
+
+
+@pytest.mark.parametrize(
+    "units,tools",
+    [
+        (["target", "target"], ["cargo", "rustc"]),
+        (["everything"], ["cargo", "rustc"]),
+        (["target"], ["rustc"]),
+        (["host"], ["cargo"]),
+    ],
+)
+def test_native_c_declaration_rejects_unbound_or_duplicate_units(units, tools):
+    with pytest.raises(ValueError, match="native C|cargo_native_c_units"):
+        proof_plan.cargo_native_c_units(
+            {"cargo_native_c_units": units, "toolchains": tools}
+        )
+
+
+@pytest.mark.parametrize("name", ["rustc", "cargo"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_rust_fingerprint_keeps_selected_physical_tool_without_rustup(
+    tmp_path, monkeypatch, name, explicit
+):
+    from molt import process_guard
+
+    selected = tmp_path / name
+    selected.write_bytes(b"independent physical Rust component")
+    selected.chmod(0o755)
+    (tmp_path / ("rustup.exe" if os.name == "nt" else "rustup")).write_bytes(
+        b"different rustup image"
+    )
+    for key in ("RUSTC", "CARGO", "CARGO_BUILD_RUSTC"):
+        monkeypatch.delenv(key, raising=False)
+    if explicit:
+        monkeypatch.setenv(
+            "CARGO_BUILD_RUSTC" if name == "rustc" else "CARGO", str(selected)
+        )
+    requests, commands = [], []
+
+    def which(requested):
+        requests.append(requested)
+        assert requested == (str(selected) if explicit else name)
+        return str(selected)
+
+    def run(command, **kwargs):
+        commands.append(command)
+        assert command[0] == str(selected)
+        return proof_plan.subprocess.CompletedProcess(command, 0, name + " 1.99.0", "")
+
+    install_module_view(monkeypatch, "shutil", shutil, proof_plan, which=which)
+    install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=run)
+    monkeypatch.setattr(
+        process_guard,
+        "run_completed_command",
+        lambda *args, **kwargs: pytest.fail("physical component invoked rustup"),
+    )
+    policy = next(row for row in PLAN.toolchain_policies if row.name == name)
+    result = proof_plan._version_fingerprint(policy)
+    assert result["content_path"] == str(selected)
+    assert (
+        result["executable_sha256"] == hashlib.sha256(selected.read_bytes()).hexdigest()
+    )
+    assert len(commands) == len(requests) == 1
+
+
+@pytest.mark.parametrize("role", ["clang", "llvm-ar", "wasm-ld"])
+def test_sdk_fingerprint_refuses_changed_helper_before_version_probe(
+    tmp_path, monkeypatch, role
+):
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        provisioned_wasi_sdk_fixture,
+    )
+
+    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    fact = installation.tool_fact(role)
+    content = installation.sdk / str(fact["content_path"])
+    content.write_bytes(content.read_bytes() + b"changed after provisioning")
+    monkeypatch.setenv("WASI_SDK_PATH", str(installation.sdk))
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        proof_plan,
+        run=lambda *args, **kwargs: pytest.fail(
+            "changed SDK helper reached a version probe"
+        ),
+    )
+    with pytest.raises(
+        ValueError, match="helper differs from its provisioned generation"
+    ):
+        proof_plan.toolchain_fingerprints(PLAN, ("wasi-clang",))
+
+
+@pytest.mark.parametrize(
+    "cli,environment,configured,expected",
+    [
+        ({"build": {"rustc": "cli"}}, {"RUSTC": "env"}, "config", "cli"),
+        ({}, {"RUSTC": "env", "CARGO_BUILD_RUSTC": "cargo-env"}, "config", "env"),
+        ({}, {"CARGO_BUILD_RUSTC": "cargo-env"}, "config", "cargo-env"),
+        ({}, {"RUSTC": ""}, "config", ""),
+        ({}, {}, "config", "config"),
+        ({}, {}, None, "default"),
+    ],
+)
+def test_core_cargo_selection_preserves_declared_precedence(
+    cli, environment, configured, expected
+):
+    from molt.rust_toolchain import cargo_selected_value
+
+    assert (
+        cargo_selected_value(
+            {"build": {"rustc": configured}},
+            cli,
+            environment,
+            ("build", "rustc"),
+            ("RUSTC", "CARGO_BUILD_RUSTC"),
+            "default",
+        )
+        == expected
+    )
+    with pytest.raises(ValueError, match="string-keyed table"):
+        cargo_selected_value(
+            {"build": {"rustc": "value", 1: "invalid"}},
+            {},
+            {},
+            ("build", "rustc"),
+            (),
+            "default",
+        )
+
+
+def test_fingerprint_mock_preserves_unrelated_process_sampler_boundary(monkeypatch):
+    from tests.process_guard_common import run_custody_subject_process
+
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        proof_plan,
+        run=lambda *args, **kwargs: pytest.fail("fingerprint probe must remain unused"),
+    )
+    result = run_custody_subject_process(
+        [sys.executable, "-c", "print('independent-process-boundary')"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "independent-process-boundary"

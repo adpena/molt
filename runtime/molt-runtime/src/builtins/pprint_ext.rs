@@ -2,7 +2,6 @@ use std::collections::HashSet;
 
 use crate::object::ops_format::{
     format_class_name_bytes, format_native_repr_override_bytes, format_obj_bytes,
-    snapshot_format_inputs,
 };
 use crate::*;
 
@@ -286,7 +285,7 @@ pub(crate) fn safe_repr_inner(
             }
         }
         TYPE_ID_SET => {
-            let Some(order) = snapshot_format_inputs(_py, unsafe { set_order(ptr) }) else {
+            let Some(order) = (unsafe { crate::object::ops_set::set_snapshot(_py, ptr) }) else {
                 seen.remove(&bits);
                 return (Vec::new(), false, false);
             };
@@ -312,7 +311,7 @@ pub(crate) fn safe_repr_inner(
             }
         }
         TYPE_ID_FROZENSET => {
-            let Some(order) = snapshot_format_inputs(_py, unsafe { set_order(ptr) }) else {
+            let Some(order) = (unsafe { crate::object::ops_set::set_snapshot(_py, ptr) }) else {
                 seen.remove(&bits);
                 return (Vec::new(), false, false);
             };
