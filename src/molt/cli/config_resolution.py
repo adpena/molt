@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Mapping, cast
+from typing import Any, Mapping
 
 from molt.backend_executable_names import (
     CODEGEN_BACKENDS,
@@ -196,4 +196,4 @@ def _select_codegen_backend(
             DEFAULT_CODEGEN_BACKEND,
             (f"Unknown backend {backend_choice!r}; expected one of: {choices}."),
         )
-    return target, cast(CodegenBackend, backend_choice), None
+    return target, backend_choice, None
