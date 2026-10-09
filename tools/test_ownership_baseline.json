@@ -128,7 +128,6 @@
   "tests/test_bytearray_fill_range.py",
   "tests/test_codec_lowering.py",
   "tests/test_dead_code_allow_ratchet.py",
-  "tests/test_debug_verify.py",
   "tests/test_falcon_driver_scaffold.py",
   "tests/test_frontend_fused_binding_reads.py",
   "tests/test_gen_gpu_op_contract.py",

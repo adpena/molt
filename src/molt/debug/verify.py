@@ -1,46 +1,35 @@
 from __future__ import annotations
 
-import argparse
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 import json
 import os
 import re
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from molt.source_root import compiler_source_root
 
+_IR_SPEC = "docs/spec/areas/compiler/0100_MOLT_IR.md"
+
 # Writable differential evidence retains its existing output authority.
 _DEFAULT_DIFF_ROOT = Path(__file__).resolve().parents[3]
 
-ALIASES: dict[str, list[str]] = {
-    "ConstInt": ["CONST", "CONST_BIGINT"],
-    "Branch": ["IF", "ELSE", "END_IF"],
-    "Return": ["ret"],
-    "Throw": ["RAISE"],
-    "LoadAttr": ["GETATTR"],
-    "StoreAttr": ["SETATTR"],
-    "LoadIndex": ["INDEX"],
-    "Iter": ["ITER_NEW"],
-    "ClosureLoad": ["LOAD_CLOSURE"],
-    "ClosureStore": ["STORE_CLOSURE"],
-    "GetAttrGenericPtr": ["GETATTR_GENERIC_PTR"],
-    "SetAttrGenericPtr": ["SETATTR_GENERIC_PTR"],
-    "GetAttrGenericObj": ["GETATTR_GENERIC_OBJ"],
-    "SetAttrGenericObj": ["SETATTR_GENERIC_OBJ"],
-    "Buffer2DNew": ["BUFFER2D_NEW"],
-    "Buffer2DGet": ["BUFFER2D_GET"],
-    "Buffer2DSet": ["BUFFER2D_SET"],
-    "Buffer2DMatmul": ["BUFFER2D_MATMUL"],
-    "Import": ["MODULE_IMPORT"],
-    "ImportFrom": ["MODULE_IMPORT", "MODULE_IMPORT_STAR"],
-    "AIter": ["AITER"],
-    "ANext": ["ANEXT"],
-    "AllocGenerator": ["ASYNCGEN_NEW"],
-}
-
-DEFAULT_ALLOWED_MISSING: set[str] = set()
-P0_REQUIRED = {"CallIndirect", "InvokeFFI", "GuardTag", "GuardDictShape"}
+# Spec op names whose frontend kind is not the upper-snake spelling of the
+# name. The inventory check rejects an entry that names no spec op, names an
+# unregistered kind, or repeats the default spelling.
+SPEC_OP_KIND_ALIASES: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "Branch": ("IF", "ELSE", "END_IF"),
+        "Return": ("ret",),
+        "Throw": ("RAISE",),
+        "LoadIndex": ("INDEX",),
+        "AIter": ("AITER",),
+        "ANext": ("ANEXT",),
+        "AllocGenerator": ("ASYNCGEN_NEW",),
+    }
+)
 
 REQUIRED_BACKEND_KINDS = {
     "call_indirect",
@@ -91,56 +80,25 @@ class VerificationFinding:
     severity: str = "error"
 
 
-FRONTEND_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
-    SemanticAssertion(
-        scope="frontend",
-        description="CALL_INDIRECT lowers to dedicated lane",
-        pattern=(r'elif op\.kind == "CALL_INDIRECT":[\s\S]*?"kind": "call_indirect"'),
-    ),
-    SemanticAssertion(
-        scope="frontend",
-        description="INVOKE_FFI lowers to dedicated lane",
-        pattern=(r'elif op\.kind == "INVOKE_FFI":[\s\S]*?"kind": "invoke_ffi"'),
-    ),
-    SemanticAssertion(
-        scope="frontend",
-        description="GUARD_TAG lowers to dedicated lane",
-        pattern=(r'elif op\.kind == "GUARD_TAG":[\s\S]*?"kind": "guard_tag"'),
-    ),
-    SemanticAssertion(
-        scope="frontend",
-        description="GUARD_DICT_SHAPE lowers to dedicated lane",
-        pattern=(
-            r'elif op\.kind == "GUARD_DICT_SHAPE":[\s\S]*?"kind": "guard_dict_shape"'
-        ),
-    ),
-    SemanticAssertion(
-        scope="frontend",
-        description="INC_REF lowers to dedicated lane",
-        pattern=(r'elif op\.kind == "INC_REF":[\s\S]*?"kind": "inc_ref"'),
-    ),
-    SemanticAssertion(
-        scope="frontend",
-        description="DEC_REF lowers to dedicated lane",
-        pattern=(r'elif op\.kind == "DEC_REF":[\s\S]*?"kind": "dec_ref"'),
-    ),
-    SemanticAssertion(
-        scope="frontend",
-        description="BORROW lowers through the canonical inc_ref lane",
-        pattern=(r'elif op\.kind == "BORROW":[\s\S]*?"kind": "inc_ref"'),
-    ),
-    SemanticAssertion(
-        scope="frontend",
-        description="RELEASE lowers through the canonical dec_ref lane",
-        pattern=(r'elif op\.kind == "RELEASE":[\s\S]*?"kind": "dec_ref"'),
-    ),
-    SemanticAssertion(
-        scope="frontend",
-        description="conversion ops preserve dedicated lowering map",
-        pattern=(
-            r'"BOX": "box",[\s\S]*?"UNBOX": "unbox",[\s\S]*?"CAST": "cast",[\s\S]*?"WIDEN": "widen"'
-        ),
-    ),
+# Each frontend op kind and the backend lane its serialization must emit.
+# Checked by serializing the op, so a refactor that keeps the lowering passes.
+FRONTEND_LOWERING_LANES: Mapping[str, str] = MappingProxyType(
+    {
+        "CALL_INDIRECT": "call_indirect",
+        "INVOKE_FFI": "invoke_ffi",
+        "GUARD_TAG": "guard_tag",
+        "GUARD_DICT_SHAPE": "guard_dict_shape",
+        "INC_REF": "inc_ref",
+        "DEC_REF": "dec_ref",
+        # Ownership transfers lower through the canonical refcount lanes.
+        "BORROW": "inc_ref",
+        "RELEASE": "dec_ref",
+        # Conversions keep their dedicated lanes.
+        "BOX": "box",
+        "UNBOX": "unbox",
+        "CAST": "cast",
+        "WIDEN": "widen",
+    }
 )
 
 NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
@@ -296,30 +254,58 @@ def _ordered_unique(items: list[str]) -> list[str]:
     return out
 
 
+_SPEC_SECTION = "## Instruction categories (minimum set)"
+_SPEC_SECTION_END = "## Invariants"
+_SPEC_OP_NAME = re.compile(r"`([A-Za-z][A-Za-z0-9]*)`")
+_SENTENCE_END = re.compile(r"\.(?:\s|$)")
+
+
+def _without_parentheticals(text: str) -> str:
+    kept: list[str] = []
+    depth = 0
+    for ch in text:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif depth == 0:
+            kept.append(ch)
+    return "".join(kept)
+
+
 def _parse_spec_ops(spec_text: str) -> list[str]:
-    marker = "## Instruction categories (minimum set)"
-    end = "## Invariants"
-    if marker not in spec_text or end not in spec_text:
+    """Return the op names each category bullet lists, in spec order.
+
+    A category is a ``- **Name**:`` bullet and its indented continuation
+    lines. Its op list is the first sentence after the colon, read without
+    parenthetical remarks; nested bullets and later sentences are prose.
+    """
+
+    if _SPEC_SECTION not in spec_text or _SPEC_SECTION_END not in spec_text:
         raise RuntimeError(
             "Could not locate instruction categories section in IR spec."
         )
-    section = spec_text.split(marker, 1)[1].split(end, 1)[0]
-    ops: list[str] = []
+    section = spec_text.split(_SPEC_SECTION, 1)[1].split(_SPEC_SECTION_END, 1)[0]
+    categories: list[list[str]] = []
+    current: list[str] | None = None
     for line in section.splitlines():
-        if line.strip().startswith("- **"):
-            ops.extend(re.findall(r"`([A-Za-z][A-Za-z0-9]*)`", line))
+        if line.startswith("- **"):
+            current = [line]
+            categories.append(current)
+        elif (
+            current is not None
+            and line.startswith("  ")
+            and not line.lstrip().startswith("- ")
+        ):
+            current.append(line.strip())
+        else:
+            current = None
+    ops: list[str] = []
+    for category in categories:
+        listing = " ".join(category).split("**:", 1)[1]
+        first_sentence = _SENTENCE_END.split(_without_parentheticals(listing), 1)[0]
+        ops.extend(_SPEC_OP_NAME.findall(first_sentence))
     return _ordered_unique(ops)
-
-
-def _scan_frontend_emit_kinds(frontend_text: str) -> set[str]:
-    return set(re.findall(r'MoltOp\(kind="([A-Za-z0-9_]+)"', frontend_text))
-
-
-def _scan_frontend_lower_kinds(frontend_text: str) -> set[str]:
-    lower_kinds = set(re.findall(r'op\.kind == "([A-Za-z0-9_]+)"', frontend_text))
-    for body in re.findall(r"op\.kind in \{([^}]*)\}", frontend_text, flags=re.S):
-        lower_kinds.update(re.findall(r"['\"]([A-Za-z0-9_]+)['\"]", body))
-    return lower_kinds
 
 
 def _scan_backend_kinds(backend_text: str) -> set[str]:
@@ -329,28 +315,79 @@ def _scan_backend_kinds(backend_text: str) -> set[str]:
     return kinds
 
 
-def _candidate_kinds(spec_op: str) -> list[str]:
-    candidates = [_camel_to_upper_snake(spec_op)]
-    candidates.extend(ALIASES.get(spec_op, ()))
-    return _ordered_unique(candidates)
+def _candidate_kinds(spec_op: str) -> tuple[str, ...]:
+    return SPEC_OP_KIND_ALIASES.get(spec_op, (_camel_to_upper_snake(spec_op),))
 
 
-def _parse_allow_missing(raw: str | None) -> set[str]:
-    if raw is None:
-        return set(DEFAULT_ALLOWED_MISSING)
-    return {part for part in (item.strip() for item in raw.split(",")) if part}
+def check_ir_inventory(
+    spec_ops: list[str], registered_kinds: frozenset[str]
+) -> list[str]:
+    """Each spec op names a registered frontend kind; aliases stay minimal."""
+
+    failures: list[str] = []
+    for spec_op, kinds in SPEC_OP_KIND_ALIASES.items():
+        if spec_op not in spec_ops:
+            failures.append(f"alias names no spec op: {spec_op}")
+        if _camel_to_upper_snake(spec_op) in registered_kinds:
+            failures.append(
+                f"alias for {spec_op} repeats its registered default spelling"
+            )
+        failures.extend(
+            f"alias for {spec_op} names an unregistered kind: {kind}"
+            for kind in kinds
+            if kind not in registered_kinds
+        )
+    for spec_op in spec_ops:
+        if spec_op in SPEC_OP_KIND_ALIASES:
+            continue
+        kind = _camel_to_upper_snake(spec_op)
+        if kind not in registered_kinds:
+            failures.append(
+                f"IR op has no registered frontend kind: {spec_op} ({kind})"
+            )
+    return failures
+
+
+def _serialized_frontend_kinds(kind: str) -> list[str]:
+    from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
+
+    op = MoltOp(
+        kind=kind, args=[MoltValue("v0"), MoltValue("v1")], result=MoltValue("v2")
+    )
+    emitted = SimpleTIRGenerator().map_ops_to_json(
+        [op], function_name="molt_debug_verify", run_midend=False
+    )
+    return [str(item["kind"]) for item in emitted if item["kind"] != "ret_void"]
+
+
+def check_frontend_lowering_lanes(
+    serialize: Callable[[str], list[str]] = _serialized_frontend_kinds,
+) -> list[str]:
+    """Serialize each op kind and compare the emitted lane with its contract."""
+
+    failures: list[str] = []
+    for kind, lane in FRONTEND_LOWERING_LANES.items():
+        try:
+            emitted = serialize(kind)
+        except Exception as exc:  # the report names any serializer failure
+            failures.append(
+                f"[frontend] {kind} must lower to {lane}; serialization failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            continue
+        if emitted != [lane]:
+            failures.append(f"[frontend] {kind} must lower to {lane}, got {emitted}")
+    return failures
 
 
 def check_semantic_assertions(
-    frontend_text: str, native_backend_text: str, wasm_backend_text: str
+    native_backend_text: str, wasm_backend_text: str
 ) -> list[str]:
     failures: list[str] = []
     checks: list[tuple[str, SemanticAssertion]] = []
-    checks.extend(("frontend", assertion) for assertion in FRONTEND_SEMANTIC_ASSERTIONS)
     checks.extend(("native", assertion) for assertion in NATIVE_SEMANTIC_ASSERTIONS)
     checks.extend(("wasm", assertion) for assertion in WASM_SEMANTIC_ASSERTIONS)
     text_by_scope = {
-        "frontend": frontend_text,
         "native": native_backend_text,
         "wasm": wasm_backend_text,
     }
@@ -499,19 +536,16 @@ def _read_production_source_tree(root: Path, suffix: str) -> str:
     return "\n".join(path.read_text(encoding="utf-8") for path in sources)
 
 
-def _read_backend_texts() -> tuple[str, str, str, str]:
+def _read_backend_texts() -> tuple[str, str, str]:
     root = compiler_source_root()
-    spec_text = (root / "docs/spec/areas/compiler/0100_MOLT_IR.md").read_text(
-        encoding="utf-8"
-    )
-    frontend_text = _read_production_source_tree(root / "src/molt/frontend", ".py")
+    spec_text = (root / _IR_SPEC).read_text(encoding="utf-8")
     native_backend_text = _read_production_source_tree(
         root / "runtime/molt-backend-native/src/native_backend", ".rs"
     )
     wasm_backend_text = _read_production_source_tree(
         root / "runtime/molt-backend-wasm/src", ".rs"
     )
-    return spec_text, frontend_text, native_backend_text, wasm_backend_text
+    return spec_text, native_backend_text, wasm_backend_text
 
 
 def _build_findings(
@@ -527,73 +561,35 @@ def _build_findings(
 
 def run_default_verify_checks(
     *,
-    allow_missing: str | None = None,
     require_probe_execution: bool = False,
     probe_rss_metrics: Path | None = None,
     probe_run_id: str | None = None,
     failure_queue: Path | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    spec_text, frontend_text, native_backend_text, wasm_backend_text = (
-        _read_backend_texts()
-    )
+    from molt.frontend.lowering.op_kinds_generated import FRONTEND_REGISTERED_KINDS
 
-    spec_ops = _parse_spec_ops(spec_text)
-    emit_kinds = _scan_frontend_emit_kinds(frontend_text)
-    lower_kinds = _scan_frontend_lower_kinds(frontend_text)
-    frontend_kinds = emit_kinds | lower_kinds
+    spec_text, native_backend_text, wasm_backend_text = _read_backend_texts()
     native_backend_kinds = _scan_backend_kinds(native_backend_text)
     wasm_backend_kinds = _scan_backend_kinds(wasm_backend_text)
-    semantic_failures = check_semantic_assertions(
-        frontend_text=frontend_text,
+    semantic_failures = check_frontend_lowering_lanes() + check_semantic_assertions(
         native_backend_text=native_backend_text,
         wasm_backend_text=wasm_backend_text,
     )
-
-    allow_missing_set = _parse_allow_missing(allow_missing)
-    unknown_allow = sorted(allow_missing_set - set(spec_ops))
-    missing: list[str] = []
-    missing_lowering: list[str] = []
-    for spec_op in spec_ops:
-        candidates = _candidate_kinds(spec_op)
-        if not any(candidate in frontend_kinds for candidate in candidates):
-            missing.append(spec_op)
-        if not any(candidate in lower_kinds for candidate in candidates):
-            missing_lowering.append(spec_op)
-
-    missing_set = set(missing)
-    unexpected_missing = sorted(missing_set - allow_missing_set)
-    p0_missing = sorted(P0_REQUIRED & missing_set)
-    unexpected_missing_lowering = sorted(set(missing_lowering) - allow_missing_set)
-    native_missing_backend_kinds = sorted(REQUIRED_BACKEND_KINDS - native_backend_kinds)
-    wasm_missing_backend_kinds = sorted(REQUIRED_BACKEND_KINDS - wasm_backend_kinds)
     missing_diff_probes = check_required_diff_probes()
 
     checks: list[dict[str, Any]] = []
     errors: list[str] = []
 
-    inventory_messages: list[str] = []
-    if unknown_allow:
-        inventory_messages.extend(
-            f"unknown --allow-missing entry: {name}" for name in unknown_allow
-        )
-    if p0_missing:
-        inventory_messages.extend(
-            f"P0-required IR op missing: {name}" for name in p0_missing
-        )
-    inventory_messages.extend(
-        f"unexpected missing IR op: {name}" for name in unexpected_missing
-    )
-    inventory_messages.extend(
-        f"unexpected IR op missing lowering coverage: {name}"
-        for name in unexpected_missing_lowering
+    inventory_messages = check_ir_inventory(
+        _parse_spec_ops(spec_text), FRONTEND_REGISTERED_KINDS
     )
     inventory_messages.extend(
         f"native backend missing required lowered lane: {kind}"
-        for kind in native_missing_backend_kinds
+        for kind in sorted(REQUIRED_BACKEND_KINDS - native_backend_kinds)
     )
     inventory_messages.extend(
         f"wasm backend missing required lowered lane: {kind}"
-        for kind in wasm_missing_backend_kinds
+        for kind in sorted(REQUIRED_BACKEND_KINDS - wasm_backend_kinds)
     )
     checks.append(
         {
@@ -602,9 +598,7 @@ def run_default_verify_checks(
             "findings": _build_findings(
                 "ir-inventory",
                 inventory_messages,
-                artifact=str(
-                    compiler_source_root() / "docs/spec/areas/compiler/0100_MOLT_IR.md"
-                ),
+                artifact=str(compiler_source_root() / _IR_SPEC),
             ),
         }
     )
@@ -688,76 +682,3 @@ def run_default_verify_checks(
         )
 
     return checks, errors
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Verify 0100_MOLT_IR inventory coverage against frontend emit/lowering op kinds."
-    )
-    parser.add_argument(
-        "--allow-missing", help="Comma-separated spec op names allowed to be missing."
-    )
-    parser.add_argument(
-        "--require-probe-execution",
-        action="store_true",
-        help="Require required differential probes to have status=ok in RSS metrics and to be absent from the failure queue.",
-    )
-    parser.add_argument(
-        "--probe-rss-metrics", help="Path to rss_metrics.jsonl from differential runs."
-    )
-    parser.add_argument(
-        "--probe-run-id",
-        help="Optional differential run_id to validate for probe execution status.",
-    )
-    parser.add_argument(
-        "--failure-queue", help="Path to differential failure queue file."
-    )
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-    checks, errors = run_default_verify_checks(
-        allow_missing=args.allow_missing,
-        require_probe_execution=args.require_probe_execution,
-        probe_rss_metrics=Path(args.probe_rss_metrics).expanduser()
-        if args.probe_rss_metrics
-        else None,
-        probe_run_id=args.probe_run_id,
-        failure_queue=Path(args.failure_queue).expanduser()
-        if args.failure_queue
-        else None,
-    )
-    spec_text, frontend_text, native_backend_text, wasm_backend_text = (
-        _read_backend_texts()
-    )
-    spec_ops = _parse_spec_ops(spec_text)
-    emit_kinds = _scan_frontend_emit_kinds(frontend_text)
-    lower_kinds = _scan_frontend_lower_kinds(frontend_text)
-    native_backend_kinds = _scan_backend_kinds(native_backend_text)
-    wasm_backend_kinds = _scan_backend_kinds(wasm_backend_text)
-    semantic_assertions_total = (
-        len(FRONTEND_SEMANTIC_ASSERTIONS)
-        + len(NATIVE_SEMANTIC_ASSERTIONS)
-        + len(WASM_SEMANTIC_ASSERTIONS)
-    )
-    missing_diff_probes = check_required_diff_probes()
-    print(
-        "molt_ir_ops gate summary: "
-        f"spec_ops={len(spec_ops)} emit_kinds={len(emit_kinds)} "
-        f"lower_kinds={len(lower_kinds)} "
-        f"native_backend_kinds={len(native_backend_kinds)} "
-        f"wasm_backend_kinds={len(wasm_backend_kinds)} "
-        f"semantic_assertions={semantic_assertions_total} "
-        f"diff_probes={len(REQUIRED_DIFF_PROBES) - len(missing_diff_probes)}/{len(REQUIRED_DIFF_PROBES)} "
-        f"probe_exec={'on' if args.require_probe_execution else 'off'} "
-        f"missing={sum(len(check['findings']) for check in checks if check['status'] == 'error')}"
-    )
-    if errors:
-        print("molt_ir_ops gate failed:")
-        for error in errors:
-            print(f"  - {error}")
-        return 1
-    print("molt_ir_ops gate: ok")
-    return 0
