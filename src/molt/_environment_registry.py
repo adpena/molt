@@ -3712,11 +3712,11 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "developer",
-      "default": "/Users/adpena/Projects/enjoice/experiments/tinygrad-molt/falcon-ocr",
+      "default": "",
       "kind": "path",
       "name": "MOLT_FALCON_OCR_ARTIFACT_ROOT",
       "owner": "tests/helpers/falcon_ocr_paths.py",
-      "summary": "Directory that holds the Falcon OCR weights the e2e OCR tests load from weights/model.safetensors, weights/config.json and weights/tokenizer.json; falcon_ocr_weights_available() reports whether all three files exist, and the default is the fixed path /Users/adpena/Projects/enjoice/experiments/tinygrad-molt/falcon-ocr.",
+      "summary": "Falcon OCR experiment checkout that holds the weights (weights/model.safetensors, weights/config.json, weights/tokenizer.json) and the helper modules the OCR tests load; these are external artifacts with no default location, so a test that needs one skips while this is unset.",
       "values": []
     },
     {
