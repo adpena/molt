@@ -912,11 +912,20 @@ def test_wasi_compiler_user_sysroot_uses_same_selected_path_for_probe_and_identi
 
 
 def _owned_manifest(root):
+    member = root / "include" / "errno.h"
+    member.parent.mkdir(parents=True, exist_ok=True)
+    member.write_bytes(b"/*owned*/\n")
     return {
         "root": str(root),
         "file_count": 1,
         "directories": ["include"],
-        "files": [{"relative_path": "include/errno.h", "size": 10, "sha256": "a" * 64}],
+        "files": [
+            {
+                "relative_path": "include/errno.h",
+                "size": 10,
+                "sha256": hashlib.sha256(b"/*owned*/\n").hexdigest(),
+            }
+        ],
         "manifest_sha256": "b" * 64,
     }
 
@@ -926,7 +935,9 @@ def test_owned_directory_projects_relative_members_without_a_second_manifest(tmp
     files = toolchain_capture.frozen_files({"resource_custody": manifest})
     assert files == [
         toolchain_capture.FrozenFile(
-            str(tmp_path / "include" / "errno.h"), "a" * 64, 10
+            str(tmp_path / "include" / "errno.h"),
+            hashlib.sha256(b"/*owned*/\n").hexdigest(),
+            10,
         )
     ]
     assert "path" not in manifest["files"][0]
@@ -1178,3 +1189,31 @@ def test_native_source_extension_receivers_require_compiler_phases(
     forged = custody_cas.put_json(cas, raw).as_dict()
     with pytest.raises(ValueError):
         toolchain_capture.load_capture(forged, cas_root=cas)
+
+
+@pytest.mark.parametrize("name", ["ordinary", "OneDrive - selected tools"])
+def test_entrypoint_admission_uses_actual_identity_not_directory_name(
+    tmp_path, monkeypatch, name
+):
+    resolved = _resolved(tmp_path / name)
+    selected = resolved.tools.cc.path
+    admitted = provider._entrypoint(str(selected), role="compiler")
+    assert admitted.samefile(selected)
+    traversal = selected.parent / ".." / selected.parent.name / selected.name
+    # Product selection keeps the kernel's spelling; proof image/watch custody
+    # is the owner that refuses unsupported traversal before hashing an image.
+    lexical = provider._entrypoint(str(traversal), role="compiler")
+    assert str(lexical) == str(traversal)
+    assert lexical.samefile(selected)
+    tools = resolved.tools.metadata()
+    roles, _ = _source_extension_tool_role_contract(resolved.target_plan.target_triple)
+    compiler = tools[roles["c"]]
+    compiler["path"] = str(traversal)
+    compiler["command"][0] = str(traversal)
+    monkeypatch.setattr(
+        provider,
+        "native_executable_content_identity",
+        lambda *args, **kwargs: pytest.fail("unadmitted compiler image hashed"),
+    )
+    with pytest.raises(ValueError, match="parent traversal"):
+        provider._tool_images(tools, target=resolved.target_plan)

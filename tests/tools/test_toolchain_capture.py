@@ -208,9 +208,7 @@ def test_toolchain_capture_frozen_manifest_rehash_detects_mutation(
         reference, workers=2, cas_root=tmp_path / "cas"
     )
     assert verification["stable"] is False
-    assert verification["mismatches"][0][
-        "path"
-    ] == process_image_capture._image_path_key(owned)  # type: ignore[index]
+    assert verification["mismatches"][0]["path"] == str(owned)  # type: ignore[index]
 
 
 def test_toolchain_capture_deduplicates_references_and_rejects_conflicts(
@@ -247,7 +245,7 @@ def test_python_relative_node_inventory_keeps_full_file_custody_in_cas(
     assert "file_custody" not in summaries["python"]
     assert "node_custody" not in summaries["python"]
     loaded = toolchain_capture.load_capture(reference, cas_root=tmp_path / "cas")
-    assert loaded["files"][0]["path"] == process_image_capture._image_path_key(owned)
+    assert loaded["files"][0]["path"] == str(owned)
     assert loaded["toolchains"]["python"]["file_custody"] == python["file_custody"]
     assert loaded["toolchains"]["python"]["node_custody"] == python["node_custody"]
     owned.write_bytes(b"after!")
@@ -255,9 +253,7 @@ def test_python_relative_node_inventory_keeps_full_file_custody_in_cas(
         reference, workers=1, cas_root=tmp_path / "cas"
     )
     assert verification["stable"] is False
-    assert verification["mismatches"][0][
-        "path"
-    ] == process_image_capture._image_path_key(owned)
+    assert verification["mismatches"][0]["path"] == str(owned)
 
 
 @pytest.mark.parametrize(
@@ -3041,7 +3037,13 @@ def test_parent_traversal_cannot_borrow_another_captured_image(
     except OSError as exc:
         pytest.skip(f"directory symlink capability unavailable: {exc}")
     witness = hop / ".." / original.name
-    assert witness.samefile(other) and not witness.samefile(original)
+    # Win32 normalizes the lexical parent before following the directory
+    # link; POSIX follows the link first. Both coordinates remain unsupported
+    # by proof custody, including when the two executable byte strings match.
+    expected, excluded = (
+        (original, other) if sys.platform == "win32" else (other, original)
+    )
+    assert witness.samefile(expected) and not witness.samefile(excluded)
     if coordinate == "resolution":
         identity["link_selection"]["units"][0]["process_resolution"][0][
             "content_path"

@@ -341,8 +341,9 @@ Rust via rustup:
   LLVM-C, Clang, LLD, Clang resource headers, LLVM/MLIR/LLD/Polly libraries, and a real
   C++ compile-link probe all pass. Cached validation projects that attested
   proof and forces full hashing whenever NTFS ChangeTime is unavailable.
-  `D:\` is retired and rejected for every source, build, download, prefix, and
-  environment authority. Unlisted development releases require an explicit
+  Drive letters and directory names do not establish toolchain custody. Source,
+  build, download, prefix, and environment selections retain the same content,
+  alias, receipt, and publication checks on every host. Unlisted development releases require an explicit
   noncanonical prefix, source URL, and SHA-256; their source/download/build
   custody is derived beside that prefix and cannot overlap canonical managed
   custody.

@@ -127,19 +127,24 @@ def test_explicit_targets_parse_before_unknown_host_default(
     )
 
 
-def test_managed_paths_share_checkout_family_custody() -> None:
+def test_managed_paths_share_checkout_family_custody(tmp_path: Path) -> None:
     pin = bootstrap_llvm.required_llvm_backend_pin(ROOT)
     assert pin is not None
-    paths = managed_llvm_paths(ROOT, pin)
-    worktree_paths = managed_llvm_paths(
-        ROOT.parent / "independent-checkout",
-        pin,
-    )
+    family = tmp_path / "Molt"
+    checkout = family / "molt-src"
+    worktree = family / "worktrees" / "lane"
+    checkout.mkdir(parents=True)
+    worktree.mkdir(parents=True)
+    paths = managed_llvm_paths(checkout, pin)
+    worktree_paths = managed_llvm_paths(worktree, pin)
+    independent = tmp_path / "independent-checkout"
+    independent.mkdir()
+    assert managed_llvm_paths(independent, pin) != paths
 
     assert paths == worktree_paths
     assert paths.root.name == "toolchains"
     assert paths.root.parent.name == "target-root"
-    assert ROOT not in paths.prefix.parents
+    assert checkout not in paths.prefix.parents
 
 
 def test_native_backend_inkwell_mapping_matches_arch_contract_exactly() -> None:
@@ -1086,32 +1091,6 @@ def test_canonical_bootstrap_requires_exact_projects_and_build_type(
         bootstrap_llvm.main([option, value])
 
 
-def test_bootstrap_rejects_d_drive_for_every_explicit_custody_path() -> None:
-    for poisoned in (r"D:\poison", r"d:/poison", r"\\?\D:\poison"):
-        for option in ("--prefix", "--archive", "--source-root", "--build-dir"):
-            with pytest.raises(Exception, match="retired D: canonical custody"):
-                bootstrap_llvm.main([option, poisoned])
-
-
-def test_bootstrap_rejects_d_drive_for_every_prefix_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pin = bootstrap_llvm.required_llvm_backend_pin(ROOT)
-    assert pin is not None
-    for name in (
-        "MOLT_TARGET_ROOT",
-        "MOLT_LLVM_PREFIX",
-        pin.env_var,
-        f"MLIR_SYS_{pin.major * 10}_PREFIX",
-        f"TABLEGEN_{pin.major * 10}_PREFIX",
-        "LLVM_CONFIG_PATH",
-    ):
-        monkeypatch.setenv(name, r"\\?\D:\poison")
-        with pytest.raises(Exception, match="retired D: canonical custody"):
-            bootstrap_llvm.main(["--check"])
-        monkeypatch.delenv(name)
-
-
 def test_arch_contract_windows_rows_are_complete() -> None:
     contract = load_llvm_architecture_contract(ROOT)
     windows_rows = [row for row in contract.architectures if row.windows_component]
@@ -1307,3 +1286,22 @@ def test_managed_builds_exclude_host_optional_libraries(
             ninja=NINJA_TOOL,
         )
     assert "-DLLVM_ENABLE_ZSTD=OFF" in commands[0]
+
+
+@pytest.mark.parametrize("name", ["ordinary", "OneDrive - archive cache"])
+def test_cached_archive_uses_bytes_not_directory_brand(tmp_path, monkeypatch, name):
+    archive = tmp_path / name / "llvm.tar.xz"
+    archive.parent.mkdir()
+    archive.write_bytes(b"owned LLVM archive")
+    monkeypatch.setattr(
+        bootstrap_llvm.urllib.request,
+        "urlopen",
+        lambda *a, **k: pytest.fail("valid cache was downloaded"),
+    )
+    bootstrap_llvm._download(
+        "https://example.invalid/llvm",
+        archive,
+        expected_sha256=hashlib.sha256(b"owned LLVM archive").hexdigest(),
+        expected_size=len(b"owned LLVM archive"),
+    )
+    assert archive.read_bytes() == b"owned LLVM archive"

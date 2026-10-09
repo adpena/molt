@@ -304,7 +304,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `memory-graph` | 5 | 2 | no |
 | `ci-wiring` | 56 | 2 | no |
 | `apparatus-hooks` | 11 | 3 | no |
-| `apparatus-learning-protection` | 15 | 3 | no |
+| `apparatus-learning-protection` | 12 | 3 | no |
 | `apparatus-a11` | 10 | 5 | no |
 | `apparatus-a8-a12-disk-reclaim` | 11 | 3 | no |
 | `import-symbol-gate` | 2 | 2 | no |

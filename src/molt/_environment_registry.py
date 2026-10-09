@@ -160,6 +160,13 @@ _REGISTRY_JSON = r"""{
   ],
   "retired": [
     {
+      "name": "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_EXT_ROOT",
+      "retired": "2026-10-09"
+    },
+    {
       "name": "MOLT_BACKEND_TIR_CACHE_DISK_BYTES",
       "note": "",
       "rejected_by": [],
@@ -284,6 +291,13 @@ _REGISTRY_JSON = r"""{
       "rejected_by": [],
       "replacement": "MOLT_PERF_PROFILE",
       "retired": "2026-10-06"
+    },
+    {
+      "name": "MOLT_PRESERVE_TARGET_ROOT",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_TARGET_ROOT",
+      "retired": "2026-10-09"
     },
     {
       "name": "MOLT_SUBPROCESS_KEEPALIVE_SECS",
@@ -751,15 +765,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_AGENT_ID",
       "owner": "tools/agent_coordination.py",
       "summary": "Agent identity written into a coordination task record when no --agent argument is given; unset falls back to MOLT_SESSION_ID, then to agent-<task>-<pid>.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
-      "owner": "src/molt/dx.py",
-      "summary": "Lets the dx RunContext keep build artifacts on the Windows C: drive even when MOLT_REQUIRE_EXTERNAL_ARTIFACTS asks for an external root; 1/true/yes/on enable, and RunContext sets it to 1 for child processes once it has accepted a C: artifact root.",
       "values": []
     },
     {
@@ -4719,15 +4724,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "developer",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_PRESERVE_TARGET_ROOT",
-      "owner": "src/molt/dx.py",
-      "summary": "Windows only; set to 1, true, yes, or on to keep an inherited toolchain target root on a different drive from the artifact root instead of treating it as a custody conflict; a D: root is always rejected; default off.",
-      "values": []
-    },
-    {
       "audience": "user",
       "default": "",
       "kind": "int",
@@ -5156,7 +5152,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
       "owner": "src/molt/dx.py",
-      "summary": "Set to 1, true, yes, or on to fail closed when no healthy external artifact root is available instead of falling back to repo-local roots; MOLT_ALLOW_C_DRIVE_ARTIFACTS=1 cancels it, and tools/dev.py defaults it to 1 on a Windows C: checkout; default off.",
+      "summary": "Set to 1, true, yes, or on to fail closed when no healthy external artifact root is available instead of falling back to repo-local roots; explicit artifact paths must also remain outside the checkout on every platform; this does not require another physical device; default off.",
       "values": []
     },
     {

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from molt.dx import CheckoutCustody
-from molt.path_custody import CustodyPathRole, PathCustodyError, canonical_host_path
+from molt.path_custody import PathCustodyError, canonical_host_path
 from tests.process_guard_common import run_guarded_test_process
 from tools import runtime_wasm_final_preflight as preflight
 
@@ -412,14 +412,23 @@ def test_launch_custody_requires_exact_guard_pid_equality(tmp_path: Path) -> Non
         preflight._revalidate_launch_custody(context)
 
 
-def test_canonical_host_path_rejects_poison_and_filesystem_aliases(
+def test_canonical_host_path_rejects_filesystem_aliases(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(PathCustodyError, match="forbidden D"):
+    admitted = tmp_path / "OneDrive" / "target"
+    admitted.mkdir(parents=True)
+    assert (
         canonical_host_path(
-            r"D:\\Molt\\target",
-            CustodyPathRole.DURABLE_AUTHORITY,
+            admitted,
             authority="test target",
+            require_exists=True,
+        )
+        == admitted.resolve()
+    )
+    with pytest.raises(PathCustodyError, match="cannot contain"):
+        canonical_host_path(
+            admitted / ".." / "target",
+            authority="test traversal",
         )
 
     real = tmp_path / "real"
@@ -432,7 +441,6 @@ def test_canonical_host_path_rejects_poison_and_filesystem_aliases(
     with pytest.raises(PathCustodyError, match="canonical filesystem spelling"):
         canonical_host_path(
             alias,
-            CustodyPathRole.EXPLICIT_SCRATCH,
             authority="test alias",
             require_exists=True,
         )

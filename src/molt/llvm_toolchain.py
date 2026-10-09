@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 import platform
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 import re
 import shlex
 import shutil
@@ -257,35 +257,6 @@ class LlvmContentFact:
 
 LLVM_ATTESTATION_SCHEMA = "molt.llvm-toolchain.v6"
 LLVM_ATTESTATION_FILENAME = ".molt-llvm-toolchain.json"
-
-
-def reject_poison_toolchain_path(raw: str | Path, *, authority: str) -> None:
-    """Reject retired D: and OneDrive custody before host path normalization.
-
-    ``Path.resolve`` on a non-Windows review host turns ``D:\\...`` into a
-    relative POSIX path, so inspect the lexical Windows drive first.  This is a
-    repository-authority invariant, not a host-platform convenience rule.
-    """
-
-    rendered = str(raw).strip()
-    unquoted = (
-        rendered[1:-1]
-        if len(rendered) >= 2
-        and rendered[0] == rendered[-1]
-        and rendered[0] in {'"', "'"}
-        else rendered
-    )
-    windows_path = PureWindowsPath(unquoted)
-    drive = windows_path.drive.upper()
-    normalized = unquoted.replace("/", "\\").upper()
-    if drive == "D:" or re.match(r"^(?:\\\\[?.]\\|\\\?\?\\)D:\\", normalized):
-        raise LlvmToolchainConfigError(
-            f"{authority} cannot use retired D: canonical custody: {raw}"
-        )
-    if any("onedrive" in part.casefold() for part in windows_path.parts):
-        raise LlvmToolchainConfigError(
-            f"{authority} cannot use OneDrive custody; use C:\\Molt: {raw}"
-        )
 
 
 def llvm_architecture_contract_path(root: Path) -> Path:
@@ -786,7 +757,6 @@ def load_wasi_sdk_installation(
     Explicit verification captures the tree once and checks every finite fact.
     """
 
-    reject_poison_toolchain_path(prefix, authority="WASI SDK installation")
     expected = wasi_sdk_host_asset(root)
     lexical = prefix.expanduser().absolute()
     if lexical.name != wasi_sdk_install_prefix(lexical, expected).name:
@@ -1186,7 +1156,6 @@ def managed_llvm_prefix(root: Path, pin: LlvmBackendPin | None = None) -> Path:
         / "toolchains"
         / f"llvm-{resolved_pin.default_release}"
     )
-    reject_poison_toolchain_path(managed, authority="managed LLVM prefix")
     return managed
 
 
@@ -1207,7 +1176,6 @@ def managed_llvm_paths(
     from molt.dx import canonical_toolchain_root
 
     custody = canonical_toolchain_root(root, require_exists=False) / "toolchains"
-    reject_poison_toolchain_path(custody, authority="managed LLVM custody")
     return LlvmManagedPaths(
         root=custody,
         prefix=custody / f"llvm-{release}",
@@ -1267,7 +1235,6 @@ def _llvm_config_prefix(executable: Path) -> Path:
         raise LlvmToolchainConfigError(
             f"llvm-config returned an empty SDK prefix: {executable}"
         )
-    reject_poison_toolchain_path(rendered, authority=f"{executable} --prefix")
     return Path(rendered).expanduser().resolve(strict=False)
 
 
@@ -1343,13 +1310,6 @@ def discover_llvm_toolchain(
         mlir_sys_prefix_env_var(pin.major),
         tablegen_prefix_env_var(pin.major),
     )
-    for name in (*sdk_authority_names, pin.env_var):
-        if value := env.get(name, "").strip():
-            reject_poison_toolchain_path(value, authority=name)
-    if llvm_config_path := env.get("LLVM_CONFIG_PATH", "").strip():
-        reject_poison_toolchain_path(llvm_config_path, authority="LLVM_CONFIG_PATH")
-    if target_root := env.get("MOLT_TARGET_ROOT", "").strip():
-        reject_poison_toolchain_path(target_root, authority="MOLT_TARGET_ROOT")
 
     explicit = {
         _normalized_prefix(value)
@@ -1372,7 +1332,6 @@ def discover_llvm_toolchain(
     for candidate, source in _llvm_config_candidates(
         root, pin, env, explicit_prefix, llvm_sys_search_prefix
     ):
-        reject_poison_toolchain_path(candidate, authority=f"{source} llvm-config")
         if not candidate.is_file():
             continue
         try:
@@ -1775,14 +1734,6 @@ def _tool_version_fact_and_identity(
             entrypoint,
             executable_identity,
         ):
-            reject_poison_toolchain_path(
-                entrypoint,
-                authority=f"captured LLVM tool {role} entrypoint",
-            )
-            reject_poison_toolchain_path(
-                executable_identity.path,
-                authority=f"captured LLVM tool {role} content",
-            )
             result = subprocess.run(
                 [str(entrypoint), "--version"],
                 check=False,
@@ -1891,7 +1842,6 @@ def verify_llvm_toolchain_prefix(
 ) -> LlvmPrefixVerification:
     """Verify the complete compiler/linker/MLIR prefix consumed by Molt."""
 
-    reject_poison_toolchain_path(prefix, authority="LLVM/MLIR prefix")
     resolved = prefix.expanduser().resolve()
     pin = required_llvm_backend_pin(root)
     if pin is None:
@@ -2450,7 +2400,6 @@ def resolve_wasi_sdk_tool(
     selector = selectors[role]
     configured = environment.get(selector, "").strip()
     if configured:
-        reject_poison_toolchain_path(configured, authority=selector)
         selected = _explicit_wasm_tool(
             configured, selector=selector, environment=environment
         )
@@ -2464,14 +2413,12 @@ def resolve_wasi_sdk_tool(
             )
         installation = load_wasi_sdk_installation(root, prefix, verify_tree=False)
         selected = installation.wasm_ld if role == "wasm-ld" else installation.llvm_nm
-    reject_poison_toolchain_path(selected, authority=f"selected {role} entrypoint")
     try:
-        content = selected.resolve(strict=True)
+        selected.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
         raise LlvmToolchainConfigError(
             f"selected {role} entrypoint cannot be resolved: {selected}: {exc}"
         ) from exc
-    reject_poison_toolchain_path(content, authority=f"selected {role} content")
     if role == "wasm-ld" and not executable_selects_linker_role(selected, "wasm-ld"):
         raise LlvmToolchainConfigError(
             f"{selector} does not select a wasm-ld entrypoint: {selected}"

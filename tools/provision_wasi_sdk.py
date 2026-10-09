@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 import hashlib
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PureWindowsPath, PurePosixPath
 import sys
 import tarfile
 import tempfile
@@ -93,9 +93,6 @@ def cached_archive(asset: llvm_toolchain.WasiSdkHostAsset, downloads: Path) -> P
     file is never reused and is replaced only by a fully verified download.
     """
 
-    llvm_toolchain.reject_poison_toolchain_path(
-        downloads, authority="WASI SDK download cache"
-    )
     downloads.mkdir(parents=True, exist_ok=True)
     archive = downloads / f"{asset.archive_root}-{asset.sha256}.tar.gz"
     if _archive_matches(archive, asset):
@@ -277,9 +274,6 @@ def provision_wasi_sdk(
     tree matches its receipt; it is never repaired or replaced in place.
     """
 
-    llvm_toolchain.reject_poison_toolchain_path(
-        toolchain_root, authority="WASI SDK toolchain root"
-    )
     asset = llvm_toolchain.wasi_sdk_host_asset(root)
     prefix = llvm_toolchain.wasi_sdk_install_prefix(
         toolchain_root.expanduser().absolute(), asset

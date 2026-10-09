@@ -343,7 +343,6 @@ def test_uv_project_wrapper_binds_declared_policy_without_claiming_runtime(
         {
             **os.environ,
             "MOLT_EXT_ROOT": str(tmp_path / "artifacts"),
-            "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
         },
     )
     assert env["UV_PROJECT_ENVIRONMENT"] == str(explicit.resolve())

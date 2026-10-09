@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
-from molt.dx import _reject_onedrive
 from molt.wasi_sdk_identity import WasiCAbiProjection
 from molt.exact_json import string_keyed_mapping
 
@@ -118,5 +117,4 @@ def validate_source_extension_link_inputs(
         raise ValueError(
             "source-extension compiler-rt requires canonical absolute syntax"
         )
-    _reject_onedrive(path, "source-extension compiler-rt")
     return SourceExtensionLinkInputs(target_triple, path, sha256_value, size_value)

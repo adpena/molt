@@ -18,7 +18,6 @@ import sys
 from typing import Any, BinaryIO, Iterable, Mapping, Sequence, cast
 
 from molt import file_publication
-from molt.dx import _reject_onedrive
 from molt.toolchain_identity import executable_environment_value, find_executable
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
 from molt.rust_toolchain import cargo_config_arguments, cargo_configuration_paths
@@ -658,7 +657,6 @@ def _python_identity(
         "prefix",
     }:
         raise ValueError("proof Python selection identity shape is invalid")
-    _reject_python_location_onedrive(location)
     selected_external_roots = selection.get("external_roots")
     if not isinstance(selected_external_roots, list) or not all(
         isinstance(value, str) and value for value in selected_external_roots
@@ -819,32 +817,6 @@ def _python_process_images(
             "proof Python environment external roots differ from pre-arm location"
         )
     return process_image_capture.revalidate_images(process_images)
-
-
-def _reject_python_location_onedrive(
-    location: Mapping[str, object], *, source_root: Path | None = None
-) -> None:
-    roles: list[tuple[str, Path]] = [
-        ("environment prefix", Path(str(location["prefix"]))),
-        ("selected executable", Path(str(location["selected_executable"]))),
-        ("base executable", Path(str(location["base_executable"]))),
-    ]
-    roles.extend(
-        ("custody root", Path(value))
-        for value in cast(Sequence[str], location["roots"])
-    )
-    roles.extend(
-        ("external editable root", Path(str(value)))
-        for value in cast(Sequence[str], location["external_roots"])
-    )
-    roles.extend(
-        ("native dependency", Path(value))
-        for value in cast(Sequence[str], location["file_paths"])
-    )
-    if source_root is not None:
-        roles.append(("proof source root", source_root))
-    for role, path in roles:
-        _reject_onedrive(path, f"proof Python {role}")
 
 
 def _file_identity(path: Path) -> dict[str, object]:
@@ -1819,7 +1791,6 @@ def _validate_toolchain_identity(
             or str(source_root.resolve(strict=True)) != source_root_raw
         ):
             raise ValueError("python identity source root is invalid")
-        _reject_python_location_onedrive(location, source_root=source_root)
         expected_images = _python_process_images(
             environment, location, source_root=source_root
         )
