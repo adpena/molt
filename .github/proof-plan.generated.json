@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "4c5d3e53399547895fc8c0f6aed1ed1fe33d8a69763fa2fddfb6f5017262e164",
+  "authority_sha256": "bba407b37deab6c147754c409378178b64a88e2322f031f03779bcf6eb9dd254",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -846,6 +846,35 @@
       "argv": [
         "uv",
         "run",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "auto",
+        "tests/determinism/test_ir_determinism.py"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-native-dev",
+      "dependencies": [],
+      "family": "nightly_determinism",
+      "id": "nightly.determinism.ir-hashseed",
+      "resource_class": "scheduled-suite",
+      "tiers": [
+        "scheduled"
+      ],
+      "timeout_seconds": 1800,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
         "python3",
         "tools/nightly_prepare.py",
         "--output-root",
@@ -1014,19 +1043,24 @@
     },
     {
       "argv": [
-        "cargo",
+        "uv",
+        "run",
+        "python3",
+        "-m",
+        "molt.cli",
         "build",
-        "--locked",
-        "-p",
-        "molt-runtime",
         "--profile",
-        "dev-fast"
+        "dev",
+        "--json",
+        "--output",
+        "proof-results/nightly/prewarm/determinism-hello",
+        "examples/hello.py"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [],
       "family": "nightly_determinism",
-      "id": "nightly.determinism.runtime-build",
+      "id": "nightly.determinism.compiler-prewarm",
       "resource_class": "compiler-build-resource",
       "tiers": [
         "scheduled"
@@ -1034,8 +1068,11 @@
       "timeout_budget": "cold",
       "timeout_seconds": 1200,
       "toolchains": [
+        "python",
+        "uv",
         "rustc",
-        "cargo"
+        "cargo",
+        "ld.lld"
       ]
     },
     {
@@ -1056,7 +1093,7 @@
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [
-        "nightly.determinism.runtime-build"
+        "nightly.determinism.compiler-prewarm"
       ],
       "evidence_outputs": [
         "proof-results/nightly/deterministic-runtime.json"
@@ -1067,7 +1104,7 @@
       "tiers": [
         "scheduled"
       ],
-      "timeout_seconds": 1200,
+      "timeout_seconds": 2400,
       "toolchains": [
         "python",
         "uv",
@@ -1090,7 +1127,7 @@
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [
-        "nightly.determinism.runtime"
+        "nightly.determinism.compiler-prewarm"
       ],
       "evidence_outputs": [
         "proof-results/nightly/ir-verification.json"
@@ -1111,19 +1148,24 @@
     },
     {
       "argv": [
-        "cargo",
+        "uv",
+        "run",
+        "python3",
+        "-m",
+        "molt.cli",
         "build",
-        "--locked",
-        "-p",
-        "molt-runtime",
         "--profile",
-        "dev-fast"
+        "dev",
+        "--json",
+        "--output",
+        "proof-results/nightly/prewarm/verification-t3-hello",
+        "examples/hello.py"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [],
       "family": "nightly_verification_t3",
-      "id": "nightly.verification-t3.runtime-build",
+      "id": "nightly.verification-t3.compiler-prewarm",
       "resource_class": "compiler-build-resource",
       "tiers": [
         "scheduled"
@@ -1131,8 +1173,11 @@
       "timeout_budget": "cold",
       "timeout_seconds": 1200,
       "toolchains": [
+        "python",
+        "uv",
         "rustc",
-        "cargo"
+        "cargo",
+        "ld.lld"
       ]
     },
     {
@@ -1152,7 +1197,7 @@
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [
-        "nightly.verification-t3.runtime-build"
+        "nightly.verification-t3.compiler-prewarm"
       ],
       "evidence_outputs": [
         "proof-results/reproducibility-tier3.json"
@@ -1188,7 +1233,7 @@
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [
-        "nightly.verification-t3.runtime-build"
+        "nightly.verification-t3.compiler-prewarm"
       ],
       "evidence_outputs": [
         "proof-results/fuzz-compiler-extended.json"
@@ -1223,7 +1268,7 @@
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [
-        "nightly.verification-t3.runtime-build"
+        "nightly.verification-t3.compiler-prewarm"
       ],
       "evidence_outputs": [
         "proof-results/mutation-tier3.json"
@@ -1253,7 +1298,7 @@
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [
-        "nightly.verification-t3.runtime-build"
+        "nightly.verification-t3.compiler-prewarm"
       ],
       "evidence_outputs": [
         "proof-results/translation-tier3.json"
@@ -1286,7 +1331,7 @@
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [
-        "nightly.verification-t3.runtime-build"
+        "nightly.verification-t3.compiler-prewarm"
       ],
       "family": "nightly_verification_t3",
       "id": "nightly.verification-t3.model-based",
@@ -6316,12 +6361,12 @@
       },
       "nightly_determinism": {
         "budget_seconds": 3600,
-        "critical_path_seconds": 3300,
-        "headroom_seconds": 300,
-        "projected_makespan_seconds": 3300,
+        "critical_path_seconds": 3600,
+        "headroom_seconds": 0,
+        "projected_makespan_seconds": 3600,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 1200,
-          "scheduled-suite": 525
+          "scheduled-suite": 1275
         }
       },
       "nightly_differential": {

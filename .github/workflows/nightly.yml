@@ -385,6 +385,10 @@ jobs:
           cache-cargo: "true"
           sync: "true"
           sync-frozen: "true"
+          sync-groups: dev
+
+      - name: Setup canonical native linker SDK
+        uses: ./.github/actions/setup-llvm
 
       - name: Run deterministic runtime and IR sweep
         run: |

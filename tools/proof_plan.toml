@@ -1200,6 +1200,24 @@ timeout_minutes = 10
 resource_class = "scheduled-suite"
 needs = ["nightly-prepare", "conformance-aggregate", "differential-aggregate", "regrtest-aggregate"]
 
+# Frontend IR determinism: each case recompiles a program in fresh
+# interpreters (several hash seeds, both parse codecs, a midend wall-clock
+# budget) and requires byte-identical IR. The 145 cases take 140 s at -n 4 on
+# an M-series Mac and about five times as long on a hosted runner, too slow for
+# the PR unit job. It needs no build, so it runs beside the runtime build.
+[[command]]
+id = "nightly.determinism.ir-hashseed"
+family = "nightly_determinism"
+cell = "linux-x86_64-py312-native-dev"
+tiers = ["scheduled"]
+resource_class = "scheduled-suite"
+timeout_seconds = 1800
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "-n", "auto", "tests/determinism/test_ir_determinism.py"]
+toolchains = ["python", "uv"]
+
+
 [[scheduled_family]]
 name = "nightly_determinism"
 description = "Runtime determinism and typed IR verification after one runtime build."
@@ -1286,8 +1304,13 @@ evidence_outputs = ["proof-results/nightly/shard-profile-candidate.json", "proof
 argv = ["uv", "run", "python3", "tools/nightly_profile_feedback.py", "fit", "--plan", "proof-results/nightly/prepare/shard-plan.json", "--conformance-aggregate", "proof-results/nightly/conformance-aggregate.json", "--differential-aggregate", "proof-results/nightly/differential-aggregate.json", "--regrtest-aggregate", "proof-results/nightly/regrtest-aggregate.json", "--out", "proof-results/nightly/shard-profile-candidate.json", "--report-out", "proof-results/nightly/shard-profile-report.json"]
 toolchains = ["python", "uv"]
 
+# One cold `molt build` warms the backend and runtime through the CLI's own
+# build lane, so the measured builds that follow start warm. A raw
+# `cargo build -p molt-runtime` selects other features and no backend, so it
+# warmed nothing a later `molt build` used: every first program build ran cold
+# into its per-build timeout.
 [[command]]
-id = "nightly.determinism.runtime-build"
+id = "nightly.determinism.compiler-prewarm"
 family = "nightly_determinism"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1295,8 +1318,8 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "build", "--locked", "-p", "molt-runtime", "--profile", "dev-fast"]
-toolchains = ["rustc", "cargo"]
+argv = ["uv", "run", "python3", "-m", "molt.cli", "build", "--profile", "dev", "--json", "--output", "proof-results/nightly/prewarm/determinism-hello", "examples/hello.py"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
 [[command]]
 id = "nightly.determinism.runtime"
@@ -1304,9 +1327,9 @@ family = "nightly_determinism"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
 resource_class = "scheduled-suite"
-timeout_seconds = 1200
+timeout_seconds = 2400
 cache_domain = "cargo-workspace"
-dependencies = ["nightly.determinism.runtime-build"]
+dependencies = ["nightly.determinism.compiler-prewarm"]
 evidence_outputs = ["proof-results/nightly/deterministic-runtime.json"]
 argv = ["uv", "run", "python3", "tools/check_deterministic_runtime.py", "--corpus", "full", "--runs", "3", "--build-profile", "dev", "--json-out", "proof-results/nightly/deterministic-runtime.json"]
 toolchains = ["python", "uv", "rustc", "cargo"]
@@ -1319,13 +1342,18 @@ tiers = ["scheduled"]
 resource_class = "scheduled-suite"
 timeout_seconds = 900
 cache_domain = "cargo-workspace"
-dependencies = ["nightly.determinism.runtime"]
+dependencies = ["nightly.determinism.compiler-prewarm"]
 evidence_outputs = ["proof-results/nightly/ir-verification.json"]
 argv = ["uv", "run", "python3", "tools/verify_ir_suite.py", "--dir", "tests/differential/basic", "--examples", "--json-out", "proof-results/nightly/ir-verification.json"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
+# One cold `molt build` warms the backend and runtime through the CLI's own
+# build lane, so the measured builds that follow start warm. A raw
+# `cargo build -p molt-runtime` selects other features and no backend, so it
+# warmed nothing a later `molt build` used: every first program build ran cold
+# into its per-build timeout.
 [[command]]
-id = "nightly.verification-t3.runtime-build"
+id = "nightly.verification-t3.compiler-prewarm"
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1333,8 +1361,8 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "build", "--locked", "-p", "molt-runtime", "--profile", "dev-fast"]
-toolchains = ["rustc", "cargo"]
+argv = ["uv", "run", "python3", "-m", "molt.cli", "build", "--profile", "dev", "--json", "--output", "proof-results/nightly/prewarm/verification-t3-hello", "examples/hello.py"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
 [[command]]
 id = "nightly.verification-t3.reproducibility"
@@ -1344,7 +1372,7 @@ tiers = ["scheduled"]
 resource_class = "scheduled-suite"
 timeout_seconds = 600
 cache_domain = "cargo-workspace"
-dependencies = ["nightly.verification-t3.runtime-build"]
+dependencies = ["nightly.verification-t3.compiler-prewarm"]
 evidence_outputs = ["proof-results/reproducibility-tier3.json"]
 argv = ["uv", "run", "python3", "tools/check_reproducible_build.py", "--corpus", "full", "--runs", "5", "--audit-ir", "--json-out", "proof-results/reproducibility-tier3.json"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang"]
@@ -1357,7 +1385,7 @@ tiers = ["scheduled"]
 resource_class = "scheduled-suite"
 timeout_seconds = 600
 cache_domain = "cargo-workspace"
-dependencies = ["nightly.verification-t3.runtime-build"]
+dependencies = ["nightly.verification-t3.compiler-prewarm"]
 evidence_outputs = ["proof-results/fuzz-compiler-extended.json"]
 argv = ["uv", "run", "python3", "tools/fuzz_compiler.py", "--count", "100", "--timeout", "300", "--json-out", "proof-results/fuzz-compiler-extended.json"]
 toolchains = ["python", "uv", "rustc", "cargo"]
@@ -1370,7 +1398,7 @@ tiers = ["scheduled"]
 resource_class = "scheduled-suite"
 timeout_seconds = 3600
 cache_domain = "pytest"
-dependencies = ["nightly.verification-t3.runtime-build"]
+dependencies = ["nightly.verification-t3.compiler-prewarm"]
 evidence_outputs = ["proof-results/mutation-tier3.json"]
 argv = ["uv", "run", "python3", "tools/mutation_test.py", "--max-mutations", "50", "--timeout", "60", "--json-out", "proof-results/mutation-tier3.json"]
 toolchains = ["python", "uv"]
@@ -1383,7 +1411,7 @@ tiers = ["scheduled"]
 resource_class = "scheduled-suite"
 timeout_seconds = 1800
 cache_domain = "cargo-workspace"
-dependencies = ["nightly.verification-t3.runtime-build"]
+dependencies = ["nightly.verification-t3.compiler-prewarm"]
 evidence_outputs = ["proof-results/translation-tier3.json"]
 argv = ["uv", "run", "python3", "tools/translation_validate.py", "--json-out", "proof-results/translation-tier3.json", "tests/differential"]
 toolchains = ["python", "uv", "rustc", "cargo"]
@@ -1396,7 +1424,7 @@ tiers = ["scheduled"]
 resource_class = "scheduled-suite"
 timeout_seconds = 600
 cache_domain = "pytest"
-dependencies = ["nightly.verification-t3.runtime-build"]
+dependencies = ["nightly.verification-t3.compiler-prewarm"]
 argv = ["uv", "run", "python3", "-m", "pytest", "tests/model_based", "-x", "-q"]
 toolchains = ["python", "uv"]
 
