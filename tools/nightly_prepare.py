@@ -12,7 +12,6 @@ from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -120,11 +119,16 @@ def prepare(
         ],
         cwd=ROOT,
         env=build_env,
-        stdout=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
         timeout=1800,
     )
     if packed.returncode != 0 or not manifest_path.is_file():
-        raise RuntimeError("Nightly runtime bundle packing failed")
+        detail = (packed.stderr or packed.stdout or "").strip()[-4000:]
+        raise RuntimeError(
+            f"Nightly runtime bundle packing failed (exit {packed.returncode})"
+            + (f":\n{detail}" if detail else "")
+        )
     manifest = loads_exact(manifest_path.read_text(encoding="utf-8"))
     smoke_output.unlink()
     plan = nightly_sharding.build_plan(
