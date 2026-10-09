@@ -1308,7 +1308,8 @@ toolchains = ["python", "uv"]
 # build lane, so the measured builds that follow start warm. A raw
 # `cargo build -p molt-runtime` selects other features and no backend, so it
 # warmed nothing a later `molt build` used: every first program build ran cold
-# into its per-build timeout.
+# into its per-build timeout. A one-shot build starts no backend daemon to
+# outlive it.
 [[command]]
 id = "nightly.determinism.compiler-prewarm"
 family = "nightly_determinism"
@@ -1318,6 +1319,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 cache_domain = "cargo-workspace"
 dependencies = []
+env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["uv", "run", "python3", "-m", "molt.cli", "build", "--profile", "dev", "--json", "--output", "proof-results/nightly/prewarm/determinism-hello", "examples/hello.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
@@ -1331,7 +1333,7 @@ timeout_seconds = 2400
 cache_domain = "cargo-workspace"
 dependencies = ["nightly.determinism.compiler-prewarm"]
 evidence_outputs = ["proof-results/nightly/deterministic-runtime.json"]
-argv = ["uv", "run", "python3", "tools/check_deterministic_runtime.py", "--corpus", "full", "--runs", "3", "--build-profile", "dev", "--json-out", "proof-results/nightly/deterministic-runtime.json"]
+argv = ["uv", "run", "python3", "-u", "tools/check_deterministic_runtime.py", "--corpus", "full", "--runs", "3", "--build-profile", "dev", "--json-out", "proof-results/nightly/deterministic-runtime.json"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -1351,7 +1353,8 @@ toolchains = ["python", "uv", "rustc", "cargo"]
 # build lane, so the measured builds that follow start warm. A raw
 # `cargo build -p molt-runtime` selects other features and no backend, so it
 # warmed nothing a later `molt build` used: every first program build ran cold
-# into its per-build timeout.
+# into its per-build timeout. A one-shot build starts no backend daemon to
+# outlive it.
 [[command]]
 id = "nightly.verification-t3.compiler-prewarm"
 family = "nightly_verification_t3"
@@ -1361,33 +1364,41 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 cache_domain = "cargo-workspace"
 dependencies = []
+env = { MOLT_BACKEND_DAEMON = "0" }
 argv = ["uv", "run", "python3", "-m", "molt.cli", "build", "--profile", "dev", "--json", "--output", "proof-results/nightly/prewarm/verification-t3-hello", "examples/hello.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
+# Fifteen builds (three programs, five runs), each compiling the stdlib into a
+# fresh cache, plus the IR audit, with three other suites on a 4-core runner:
+# 600 s did not finish in Nightly run 37947710312. `-u` streams progress, so a
+# timeout shows how far the sweep got.
 [[command]]
 id = "nightly.verification-t3.reproducibility"
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
 resource_class = "scheduled-suite"
-timeout_seconds = 600
+timeout_seconds = 1800
 cache_domain = "cargo-workspace"
 dependencies = ["nightly.verification-t3.compiler-prewarm"]
 evidence_outputs = ["proof-results/reproducibility-tier3.json"]
-argv = ["uv", "run", "python3", "tools/check_reproducible_build.py", "--corpus", "full", "--runs", "5", "--audit-ir", "--json-out", "proof-results/reproducibility-tier3.json"]
+argv = ["uv", "run", "python3", "-u", "tools/check_reproducible_build.py", "--corpus", "full", "--runs", "5", "--audit-ir", "--json-out", "proof-results/reproducibility-tier3.json"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang"]
 
+# Nightly run 37947710312 built and ran about one program per 55 s beside the
+# other Tier 3 suites; 40 programs fit 2700 s, and the 90-minute job leaves no
+# room for 100 after the cold prewarm.
 [[command]]
 id = "nightly.verification-t3.fuzz-compiler"
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
 resource_class = "scheduled-suite"
-timeout_seconds = 600
+timeout_seconds = 2700
 cache_domain = "cargo-workspace"
 dependencies = ["nightly.verification-t3.compiler-prewarm"]
 evidence_outputs = ["proof-results/fuzz-compiler-extended.json"]
-argv = ["uv", "run", "python3", "tools/fuzz_compiler.py", "--count", "100", "--timeout", "300", "--json-out", "proof-results/fuzz-compiler-extended.json"]
+argv = ["uv", "run", "python3", "tools/fuzz_compiler.py", "--count", "40", "--timeout", "300", "--json-out", "proof-results/fuzz-compiler-extended.json"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
