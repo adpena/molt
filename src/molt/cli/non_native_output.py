@@ -1365,6 +1365,14 @@ def _prepare_non_native_build_result_in_generation(
                 native_link_plan_path: Path | None = None
                 link_timings_path: Path | None = None
                 link_run_cmd = [*link_cmd, *runtime_admission_args]
+                # Rejected bytes outlive both linker scratch and the private
+                # deployment generation, even when final publication fails.
+                link_run_cmd.extend(
+                    [
+                        "--failure-evidence-dir",
+                        str(deployment_plan.root / "wasm-link-evidence"),
+                    ]
+                )
                 # The link is its own top-level build phase: without this
                 # marker its whole wall time (wasm-ld, post-link passes,
                 # wasm-opt, split-runtime processing) was charged to the last

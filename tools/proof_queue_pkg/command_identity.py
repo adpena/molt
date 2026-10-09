@@ -39,6 +39,7 @@ from tools.toolchain_probe import resolve_single_file_path
 
 def _hash_file(path: Path) -> str:
     try:
+        path = process_image_capture.custody_path(path)
         with path.open("rb") as handle:
             return hashlib.file_digest(handle, "sha256").hexdigest()
     except OSError as exc:
@@ -287,7 +288,7 @@ def _owned_directory_manifest_identity(path: Path, *, label: str) -> dict[str, o
 
 
 def _executable_identity(path: Path) -> dict[str, object]:
-    lexical = Path(os.path.abspath(path))
+    lexical = process_image_capture.custody_path(path)
     try:
         resolved = lexical.resolve(strict=True)
         size = lexical.stat().st_size
@@ -300,7 +301,8 @@ def _executable_identity(path: Path) -> dict[str, object]:
     identity: dict[str, object] = {
         "path": str(lexical),
         "resolved_path": str(resolved),
-        "symlinked": os.path.normcase(str(lexical)) != os.path.normcase(str(resolved)),
+        "symlinked": process_image_capture._image_path_key(lexical)
+        != process_image_capture._image_path_key(resolved),
         "size_bytes": size,
         "sha256": digest,
     }
@@ -328,6 +330,7 @@ def _run_captured(
     timeout: float = 30.0,
     text: bool = True,
 ) -> subprocess.CompletedProcess[Any]:
+    process_image_capture.require_custody_coordinate(Path(command[0]))
     return admission._COMMANDS.run(
         list(command),
         cwd=cwd,
@@ -354,6 +357,7 @@ def _resolve_outer_executable(token: str, *, cwd: Path, env: Mapping[str, str]) 
         if Path(token).is_absolute() or any(separator in token for separator in "/\\"):
             raise ValueError(f"proof executable {token!r} is unavailable")
         raise ValueError(f"proof executable {token!r} is not on the execution PATH")
+    process_image_capture.require_custody_coordinate(selected)
     return selected
 
 
@@ -759,15 +763,19 @@ def _python_process_images(
     base_images = [row for row in process_images if row["role"] == "base-interpreter"]
 
     def lexical(value: object) -> str:
-        return os.path.normcase(str(Path(os.path.abspath(str(value)))))
+        return process_image_capture._image_path_key(Path(str(value)))
 
     if len(selected_images) != 1 or lexical(selected_images[0]["path"]) != lexical(
         selected
     ):
         raise ValueError("proof Python selection is absent from launcher closure")
-    if len(base_images) != 1 or os.path.normcase(
-        str(Path(str(base_images[0]["path"])).resolve(strict=True))
-    ) != os.path.normcase(str(Path(base).resolve(strict=True))):
+    if len(base_images) != 1 or process_image_capture._image_path_key(
+        process_image_capture.custody_path(Path(str(base_images[0]["path"]))).resolve(
+            strict=True
+        )
+    ) != process_image_capture._image_path_key(
+        process_image_capture.custody_path(Path(base)).resolve(strict=True)
+    ):
         raise ValueError("proof Python base executable differs from launcher closure")
     external_rows = environment.get("external_roots")
     if not isinstance(external_rows, list) or not all(
@@ -1388,6 +1396,7 @@ def _tool_identity(
         path = _which_in_command_environment(
             requested, envelope, exact, cwd=probe_cwd, env=env
         )
+    path = process_image_capture.custody_path(path)
     selected_content_path = None
     if policy.data.get("fingerprint_domain") == "rustup":
         from molt.rust_toolchain import resolve_rustup_proxy
@@ -1594,7 +1603,9 @@ def _capture_tool_identity(
             f"{name}-launcher", path, preserve_path=True
         )
         process_images = [launcher_image]
-    if os.path.normcase(str(content_path)) == os.path.normcase(str(path)):
+    if process_image_capture._image_path_key(
+        content_path
+    ) == process_image_capture._image_path_key(path):
         content_image = launcher_image
     else:
         content_image = process_image_capture.capture_image(name, content_path)

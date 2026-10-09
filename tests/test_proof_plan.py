@@ -998,6 +998,46 @@ def test_wasm_e2e_commands_bind_complete_child_toolchain_closure() -> None:
     assert "tests/test_finally_pending_observer_parity.py" not in harness.argv
 
 
+def test_actual_wasm_linker_fixtures_have_one_provisioned_lane() -> None:
+    commands = {command.id: command for command in PLAN.commands}
+    actual = commands["wasm.test.linker-admission"]
+    names = {
+        "test_primary_runtime_fixture_passes_actual_relocatable_admission",
+        "test_run_wasm_ld_rejects_shared_primary_before_publication",
+        "test_wasm_module_identity_survives_distinct_staging_paths",
+        "test_existing_alias_binding_controls_actual_llvm_resolution",
+    }
+    selectors = {f"tests/test_wasm_link_validation.py::{name}" for name in names}
+    assert set(arg for arg in actual.argv if "::" in arg) == selectors
+    assert actual.family == "wasm"
+    assert actual.data["cell"] == "linux-x86_64-py312-wasm-dev"
+    assert set(actual.data["tiers"]) == {"pr", "main"}
+    assert {"python", "uv", "wasm-ld"} <= set(PLAN.required_toolchains(actual))
+    assert "-m" not in actual.argv[actual.argv.index("pytest") + 1 :]
+    assert {
+        command.id for command in PLAN.commands if selectors & set(command.argv)
+    } == {actual.id}
+
+    root = Path(__file__).resolve().parents[1]
+    module = ast.parse((root / "tests/test_wasm_link_validation.py").read_bytes())
+    actual_functions = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name in names
+    }
+    assert set(actual_functions) == names
+    for node in actual_functions.values():
+        assert any(
+            ast.unparse(decorator) == "pytest.mark.slow"
+            for decorator in node.decorator_list
+        )
+    for suffix in ("", ".macos"):
+        unit = commands[f"python.unit.runtime-artifacts{suffix}"]
+        assert any(pair == ("-m", "not slow") for pair in zip(unit.argv, unit.argv[1:]))
+        assert "tests/test_wasm_link_validation.py" in unit.argv
+        assert not (selectors & set(unit.argv))
+
+
 def test_git_toolchain_declares_lossless_process_image_probe() -> None:
     git = next(policy for policy in PLAN.toolchain_policies if policy.name == "git")
 

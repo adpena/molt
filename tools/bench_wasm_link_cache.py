@@ -100,7 +100,12 @@ def _worker_main(args: argparse.Namespace) -> int:
     started_at = datetime.now(timezone.utc).isoformat()
     runtime_data = runtime.read_bytes()
     facts_metrics: dict[str, float] = {}
-    provider = make_rust_wasm_facts_provider(scanner, scratch, facts_metrics)
+    provider = make_rust_wasm_facts_provider(
+        scanner,
+        scratch,
+        facts_metrics,
+        evidence_root=output.parent / "wasm-link-evidence",
+    )
     required_exports = _canonical_split_runtime_required_exports(
         runtime_data,
         runtime_imports=generation.shared_runtime_import_names(),

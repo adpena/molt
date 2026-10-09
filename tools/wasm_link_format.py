@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import re
+from collections.abc import Mapping
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +16,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from molt import _wasm_abi_generated as _WASM_ABI  # noqa: E402
+from molt import _wasm_runtime_exports as _runtime_exports  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
     WasmImport,
     parse_wasm_export_section,
@@ -49,10 +50,6 @@ _STANDARD_SECTION_ORDER = {
     10: 12,
     11: 13,
 }
-
-CALL_INDIRECT_RE = re.compile(r"molt_call_indirect(\d+)")
-
-CALL_INDIRECT_MANGLED_RE = re.compile(r"molt_call_indirect(\d+)(?=\d{2}h[0-9a-fA-F]+E)")
 
 WASM_CALL_INDIRECT_IMPORTS = tuple(_WASM_ABI.WASM_CALL_INDIRECT_IMPORTS)
 
@@ -101,25 +98,54 @@ def wasm_runtime_export_name(name: str) -> str | None:
     return _WASM_ABI.wasm_runtime_export_name(name)
 
 
-_CALL_INDIRECT_IMPORT_BY_ARITY = {
-    int(name.removeprefix("molt_call_indirect")): name
-    for name in WASM_CALL_INDIRECT_IMPORTS
-}
-
 _CALL_INDIRECT_IMPORT_SET = frozenset(WASM_CALL_INDIRECT_IMPORTS)
-
-
-def call_indirect_import_name_for_arity(arity_text: str) -> str | None:
-    if not arity_text.isdecimal():
-        return None
-    arity = int(arity_text)
-    if str(arity) != arity_text:
-        return None
-    return _CALL_INDIRECT_IMPORT_BY_ARITY.get(arity)
 
 
 def is_call_indirect_import_name(name: str) -> bool:
     return name in _CALL_INDIRECT_IMPORT_SET
+
+
+_WASM_VALUE_TYPE_ENCODINGS = {
+    "i32": (0x7F,),
+    "i64": (0x7E,),
+    "f32": (0x7D,),
+    "f64": (0x7C,),
+    "v128": (0x7B,),
+    "funcref": (0x70,),
+    "externref": (0x6F,),
+}
+
+
+def generated_function_type(import_name: str) -> dict[str, object] | None:
+    signature = _runtime_exports.wasm_split_runtime_import_signature(import_name)
+    if signature is None:
+        return None
+    params, results = signature
+    try:
+        encoded_params = tuple(_WASM_VALUE_TYPE_ENCODINGS[value] for value in params)
+        encoded_results = tuple(_WASM_VALUE_TYPE_ENCODINGS[value] for value in results)
+    except KeyError as exc:
+        raise ValueError(
+            f"generated split-runtime signature uses unsupported value type {exc.args[0]!r}"
+        ) from exc
+    return {
+        "kind": "function",
+        "exact": False,
+        "params": encoded_params,
+        "results": encoded_results,
+    }
+
+
+def canonical_extern_type(value: object) -> object:
+    if isinstance(value, Mapping):
+        return tuple(
+            sorted(
+                (str(key), canonical_extern_type(item)) for key, item in value.items()
+            )
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(canonical_extern_type(item) for item in value)
+    return value
 
 
 _OUTPUT_RUNTIME_EXPORT_ALIASES = _WASM_ABI.WASM_OUTPUT_RUNTIME_EXPORT_ALIASES
@@ -324,13 +350,10 @@ def _append_linking_function_symbols(
 ) -> bytes | None:
     if not entries:
         return None
-    existing_names = {
-        symbol.name
-        for symbol in facts_provider(data).linking_symbols.function_symbols
-        if symbol.name
-    }
-    sections = _parse_sections(data)
     facts = facts_provider(data)
+    existing_names = {
+        symbol.name for symbol in facts.linking_symbols.function_symbols if symbol.name
+    }
     func_import_count = int(facts["function_import_count"])
     total_func_count = func_import_count + int(facts["defined_function_count"])
     pending = []
@@ -347,6 +370,7 @@ def _append_linking_function_symbols(
         pending.append(
             _encode_function_symbol_entry(flags=flags, index=index, name=name)
         )
+        existing_names.add(name)
     if not pending:
         return None
 

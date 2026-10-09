@@ -361,29 +361,13 @@ def test_real_git_launcher_runtime_closure_is_kernel_observed(tmp_path: Path) ->
     assert process_image_capture.revalidate_images(images) == images
 
 
-@pytest.mark.parametrize(
-    "extended,ordinary",
-    [
-        (r"\\?\C:\Tools\Compiler.EXE", r"c:\tools\compiler.exe"),
-        (r"\\?\UNC\Server\Share\Compiler.EXE", r"\\server\share\compiler.exe"),
-    ],
-)
-def test_image_membership_normalizes_windows_device_spelling(
-    monkeypatch, extended, ordinary
-):
-    import ntpath
-    from types import SimpleNamespace
-    from tools.proof_queue_pkg import process_image_capture
-
-    # Only the path-platform boundary is simulated, not shared os module state.
-    monkeypatch.setattr(
-        process_image_capture,
-        "os",
-        SimpleNamespace(name="nt", path=ntpath, fspath=os.fspath),
-    )
-    assert process_image_capture._image_path_key(Path(extended)) == ntpath.normcase(
-        ordinary
-    )
+@pytest.mark.skipif(os.name != "nt", reason="native Windows directory-entry identity")
+def test_image_membership_normalizes_windows_device_spelling(tmp_path):
+    image = tmp_path / "Compiler.EXE"
+    image.write_bytes(b"image")
+    ordinary = str(image).swapcase()
+    extended = "\\\\?\\" + str(image)
+    assert Path(ordinary).samefile(image)
     assert process_image_capture._image_path_key(
         Path(extended)
     ) == process_image_capture._image_path_key(Path(ordinary))
@@ -419,3 +403,328 @@ def test_extended_windows_environment_tool_reaches_both_consumers(tmp_path):
         for row in native
         if row["role"] == "env:CC"
     } == expected
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "capture",
+        "canonical",
+        "revalidate",
+        "frozen",
+        "supervisor",
+        "hash",
+        "probe",
+        "inventory",
+    ],
+)
+def test_proof_image_admission_refuses_parent_traversal_before_custody(
+    tmp_path, monkeypatch, boundary
+):
+    from types import SimpleNamespace
+    from tools.proof_queue_pkg import command_identity, toolchain_capture
+
+    base = tmp_path / "bin"
+    foreign = tmp_path / "foreign"
+    base.mkdir()
+    (foreign / "deep").mkdir(parents=True)
+    selected = base / "tool"
+    selected.write_bytes(b"same bytes")
+    other = foreign / "tool"
+    other.write_bytes(selected.read_bytes())
+    hop = base / "hop"
+    try:
+        hop.symlink_to(foreign / "deep", target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink capability unavailable: {exc}")
+    witness = hop / ".." / "tool"
+    assert witness.samefile(other) and not witness.samefile(selected)
+    row = process_image_capture.capture_image("tool", selected, preserve_path=True)
+    changed = {**row, "path": str(witness)}
+    monkeypatch.setattr(
+        command_identity.admission,
+        "_COMMANDS",
+        SimpleNamespace(run=lambda *a, **k: pytest.fail("unadmitted probe launched")),
+    )
+    with pytest.raises(ValueError, match="parent traversal"):
+        if boundary == "capture":
+            process_image_capture.capture_image("tool", witness, preserve_path=True)
+        elif boundary == "canonical":
+            process_image_capture.canonical_images([changed])
+        elif boundary == "revalidate":
+            process_image_capture.revalidate_images([changed])
+        elif boundary == "frozen":
+            toolchain_capture.frozen_files(changed)
+        elif boundary == "supervisor":
+            supervisor_custody._supervisor_fixed_images({}, {}, [str(witness)])
+        elif boundary == "hash":
+            command_identity._hash_file(witness)
+        elif boundary == "inventory":
+            supervisor_custody.capture_process_image_inventory(
+                binary=selected,
+                role="tool",
+                executable=witness,
+                probe_args=["--version"],
+                cwd=tmp_path,
+                env={},
+            )
+        else:
+            command_identity._run_captured([str(witness)], cwd=tmp_path, env={})
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="native Windows case-sensitive directory capability"
+)
+@pytest.mark.parametrize("kind", ["file", "hardlink", "symlink"])
+def test_windows_case_distinct_entries_keep_image_and_watch_identity(tmp_path, kind):
+    from molt.llvm_linker_roles import lexical_executable_path
+    from tools.proof_queue_pkg import toolchain_capture
+
+    upper, lower = tmp_path / "Driver.EXE", tmp_path / "driver.exe"
+    content = tmp_path / "content.exe"
+    content.write_bytes(b"same bytes")
+    try:
+        if kind == "symlink":
+            upper.symlink_to(content)
+            lower.symlink_to(content)
+        else:
+            upper.write_bytes(content.read_bytes())
+            if kind == "hardlink":
+                os.link(upper, lower)
+            else:
+                with lower.open("xb") as stream:
+                    stream.write(content.read_bytes())
+    except (FileExistsError, PermissionError) as exc:
+        pytest.skip(f"case-distinct entry capability unavailable: {exc}")
+    except OSError as exc:
+        if kind == "symlink":
+            pytest.skip(f"symlink capability unavailable: {exc}")
+        raise
+    assert {entry.name for entry in tmp_path.iterdir()} >= {"Driver.EXE", "driver.exe"}
+    if kind in {"hardlink", "symlink"}:
+        assert upper.samefile(lower)
+    assert str(lexical_executable_path(upper)) == str(upper)
+    rows = [
+        process_image_capture.capture_image("compiler", path, preserve_path=True)
+        for path in (upper, lower)
+    ]
+    assert len(process_image_capture.canonical_images(rows)) == 2
+    assert process_image_capture.revalidate_images(rows) == rows
+    assert len(toolchain_capture.frozen_files(rows)) == 2
+    assert execution_custody._norm(upper) != execution_custody._norm(lower)
+    watch = execution_custody.WatchSpec(
+        tmp_path, frozenset({execution_custody._norm(upper)})
+    )
+    assert watch.owns(upper) and not watch.owns(lower)
+    _, native = supervisor_custody._supervisor_fixed_images({}, {}, [str(upper)], rows)
+    assert len([row for row in native if row["role"] == "compiler"]) == 2
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows directory-entry identity")
+def test_windows_case_distinct_ancestor_aliases_and_missing_entries(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "tool.exe").write_bytes(b"same image")
+    upper, lower = tmp_path / "Entry", tmp_path / "entry"
+    try:
+        upper.symlink_to(target, target_is_directory=True)
+        lower.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"case-distinct directory symlink capability unavailable: {exc}")
+    assert {p.name for p in tmp_path.iterdir()} >= {"Entry", "entry"}
+    selected, other = upper / "tool.exe", lower / "tool.exe"
+    assert selected.samefile(other)
+    first = process_image_capture._image_path_key(selected)
+    second = process_image_capture._image_path_key(other)
+    assert first != second
+    rows = [
+        process_image_capture.capture_image("tool", p, preserve_path=True)
+        for p in (selected, other)
+    ]
+    assert len(process_image_capture.canonical_images(rows)) == 2
+    upper.unlink()
+    with pytest.raises((OSError, ValueError)):
+        process_image_capture._image_path_key(selected)
+    with pytest.raises((OSError, ValueError)):
+        process_image_capture.revalidate_images(rows)
+    watch = execution_custody.WatchSpec(tmp_path, frozenset({first}))
+    assert watch.owns(upper)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows path identity")
+def test_windows_exact_name_image_custody_uses_real_file_identity(tmp_path):
+    executable = tmp_path / "ExactCompiler.EXE"
+    executable.write_bytes(b"exact image")
+    selected = process_image_capture.capture_image(
+        "compiler", executable, preserve_path=True
+    )
+    key = process_image_capture._image_path_key(executable)
+    assert Path(key).samefile(executable)
+    assert Path(key).name == executable.name
+    assert process_image_capture.canonical_images([selected]) == [selected]
+    assert process_image_capture.revalidate_images([selected]) == [selected]
+    extended = Path("\\\\?\\" + str(executable))
+    assert process_image_capture._image_path_key(extended) == key
+    assert (
+        process_image_capture.capture_image("compiler", extended, preserve_path=True)
+        == selected
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows verbatim entry semantics")
+@pytest.mark.parametrize("suffix", [".", " "])
+@pytest.mark.parametrize("ancestor", [False, True])
+@pytest.mark.parametrize("same_inode", [False, True])
+def test_verbatim_sensitive_entry_cannot_borrow_ordinary_image(
+    tmp_path, monkeypatch, suffix, ancestor, same_inode
+):
+    from types import SimpleNamespace
+    from molt.llvm_linker_roles import lexical_executable_path
+    from tools.proof_queue_pkg import command_identity, toolchain_capture
+
+    directory = tmp_path / "tools"
+    directory.mkdir()
+    ordinary = directory / "CLANG.EXE"
+    ordinary.write_bytes(b"identical bytes")
+    if ancestor:
+        selected_directory = Path("\\\\?\\" + str(directory) + suffix)
+        selected_directory.mkdir()
+        selected = selected_directory / ordinary.name
+    else:
+        selected = Path("\\\\?\\" + str(ordinary) + suffix)
+    if same_inode:
+        os.link(ordinary, selected)
+    else:
+        selected.write_bytes(ordinary.read_bytes())
+    assert selected.read_bytes() == ordinary.read_bytes()
+    assert selected.samefile(ordinary) is same_inode
+    assert str(selected) != str(ordinary)
+    assert str(lexical_executable_path(selected)) == str(selected)
+    row = process_image_capture.capture_image("compiler", ordinary, preserve_path=True)
+    changed = {**row, "path": str(selected)}
+    refusal = "verbatim trailing-dot/space"
+    monkeypatch.setattr(
+        command_identity.admission,
+        "_COMMANDS",
+        SimpleNamespace(run=lambda *a, **k: pytest.fail("unsupported probe launched")),
+    )
+    monkeypatch.setattr(
+        toolchain_capture, "_COMMANDS", command_identity.admission._COMMANDS
+    )
+    with pytest.raises(ValueError, match=refusal):
+        command_identity._run_captured([str(selected)], cwd=tmp_path, env={})
+    with pytest.raises(ValueError, match=refusal):
+        toolchain_capture._run_rust_link_probe(
+            [str(selected)],
+            phase="selection",
+            unit="host",
+            cwd=tmp_path,
+            compiler_cwd=tmp_path,
+            env={},
+            timeout=1,
+            probes=[],
+        )
+    with pytest.raises(ValueError, match=refusal):
+        process_image_capture.capture_image("compiler", selected, preserve_path=True)
+    with pytest.raises(ValueError, match=refusal):
+        process_image_capture.canonical_images([changed])
+    with pytest.raises(ValueError, match=refusal):
+        process_image_capture.revalidate_images([changed])
+    with pytest.raises(ValueError, match=refusal):
+        toolchain_capture.frozen_files(changed)
+    with pytest.raises(ValueError, match=refusal):
+        supervisor_custody._supervisor_fixed_images({}, {}, [str(selected)])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows namespace syntax")
+@pytest.mark.parametrize(
+    "coordinate",
+    [
+        r"\\?\Volume{00000000-0000-0000-0000-000000000000}\CLANG.EXE",
+        r"\\?\GLOBALROOT\Device\MissingDevice\CLANG.EXE",
+        r"\\?\UNC\server",
+        r"\\?\unc\server",
+    ],
+)
+def test_unsupported_windows_namespace_refuses_before_lookup_or_probe(
+    tmp_path, monkeypatch, coordinate
+):
+    from types import SimpleNamespace
+    from tools.proof_queue_pkg import command_identity
+
+    monkeypatch.setattr(
+        command_identity.admission,
+        "_COMMANDS",
+        SimpleNamespace(
+            run=lambda *a, **k: pytest.fail("unsupported namespace launched")
+        ),
+    )
+    with pytest.raises(ValueError, match="proof path custody requires"):
+        command_identity._run_captured([coordinate], cwd=tmp_path, env={})
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="native Windows per-drive working directory"
+)
+@pytest.mark.parametrize("cross_drive", [False, True])
+@pytest.mark.parametrize("consumer", ["product", "capture"])
+def test_windows_drive_relative_selection_preserves_absolute_entrypoint(
+    tmp_path, cross_drive, consumer
+):
+    from molt.llvm_linker_roles import lexical_executable_path
+
+    if len(tmp_path.drive) != 2 or tmp_path.drive[1] != ":":
+        pytest.skip("fixture root has no DOS drive-relative coordinate")
+    original_cwd = Path.cwd()
+    fixture_drive_cwd = Path(os.path.abspath(tmp_path.drive))
+    other_cwd = None
+    if cross_drive:
+        other = next(
+            (
+                Path(root)
+                for root in os.listdrives()
+                if Path(root).drive.casefold() != tmp_path.drive.casefold()
+                and Path(root).is_dir()
+            ),
+            None,
+        )
+        if other is None:
+            pytest.skip(
+                "no second accessible drive for actual per-drive-CWD regression"
+            )
+        # Observe that drive's existing cwd; do not reset its remembered state
+        # to its root merely to select a different current drive.
+        other_cwd = Path(os.path.abspath(other.drive))
+    executable = tmp_path / "clang++.exe"
+    executable.write_bytes(b"this drive's selected compiler")
+    try:
+        os.chdir(tmp_path)
+        requested = Path(tmp_path.drive + executable.name)
+        assert not requested.is_absolute()
+        assert requested.samefile(executable)
+        if other_cwd is not None:
+            try:
+                os.chdir(other_cwd)
+            except OSError as exc:
+                pytest.skip(f"second drive cannot be selected as cwd: {exc}")
+            assert Path.cwd().drive.casefold() != tmp_path.drive.casefold()
+            assert requested.samefile(executable), (
+                "OS per-drive coordinate must name fixture"
+            )
+        if consumer == "product":
+            selected = lexical_executable_path(requested)
+        else:
+            row = process_image_capture.capture_image(
+                "compiler", requested, preserve_path=True
+            )
+            selected = Path(row["path"])
+            assert row["sha256"] == hashlib.sha256(executable.read_bytes()).hexdigest()
+            assert process_image_capture.revalidate_images([row]) == [row]
+        assert selected.is_absolute()
+        assert selected.name == executable.name
+        assert selected.samefile(executable)
+    finally:
+        try:
+            os.chdir(fixture_drive_cwd)
+        finally:
+            os.chdir(original_cwd)

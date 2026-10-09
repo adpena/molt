@@ -90,9 +90,10 @@ def test_python_hook_broker_matches_cpython_child_path_selection(
         "allowed": [
             {
                 "toolchain": "python",
-                "path": os.path.normcase(str(image)),
+                "path": execution_custody._norm(directory / name),
                 "sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
             }
+            for directory in (parent_bin, child_cwd, child_cwd / "bin")
         ],
     }
     server = execution_custody.ChildCustodyEventServer("python", policy)
@@ -122,7 +123,16 @@ def test_python_hook_broker_matches_cpython_child_path_selection(
     ]
     assert len(decisions) == 1, receipt
     assert decisions[0]["admitted"] is found, decisions
-    assert decisions[0]["resolved"] == (str(image) if found else None), decisions
+    selected_directory = (
+        parent_bin
+        if selection == "inherit"
+        else child_cwd / "bin"
+        if selection == "relative"
+        else child_cwd
+    )
+    assert decisions[0]["resolved"] == (
+        str(selected_directory / name) if found else None
+    ), decisions
     assert bool(receipt["violations"]) is not found
 
 
@@ -574,3 +584,34 @@ def test_environment_rust_proxy_component_reaches_both_custody_consumers(
         )
     with pytest.raises(ValueError, match="no process-image closure"):
         supervisor_custody._supervisor_fixed_images({}, incomplete, [sys.executable])
+
+
+def test_watch_custody_retains_ancestor_alias_and_deleted_entry(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    tool = target / "tool"
+    tool.write_bytes(b"same bytes")
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink capability unavailable: {exc}")
+    selected = alias / "tool"
+    specs = execution_custody.watch_specs(
+        source_root=source,
+        tracked_paths=[],
+        identities=[{"path": str(selected)}],
+        broad_roots=[],
+    )
+    assert any(spec.owns(tool) for spec in specs if spec.root == target)
+    alias_spec = next(spec for spec in specs if spec.root == tmp_path)
+    assert alias_spec.owns(alias)
+    alias.unlink()
+    assert alias_spec.owns(alias), "removed selection must retain a mutation event"
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    (replacement / "tool").write_bytes(tool.read_bytes())
+    alias.symlink_to(replacement, target_is_directory=True)
+    assert alias_spec.owns(alias), "same-byte alias retarget still changes selection"

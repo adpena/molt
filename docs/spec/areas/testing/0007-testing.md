@@ -15,6 +15,19 @@ re-execute their own image use `runtime/test_support/captured_runtime_children.r
 which retains the child's complete streams under the same custody and publishes
 a source/image-bound descendant record (see `docs/agent/PROOF_QUEUE.md`).
 
+`runtime/molt-runtime/src/test_support.rs` owns process-wide runtime test
+transactions. Cleanup must preserve an original body panic and report a second
+cleanup failure separately; cleanup failure cannot produce a successful result.
+After terminal runtime failure, restoration must neither initialize the runtime
+nor release detached owners through partially retired metadata. Pending-call
+cleanup uses its existing callback-free queue operation, and the failed process
+retains already detached runtime owners until exit. This does not permit tests
+to continue using a failed runtime. Child evidence binds each actual mode to its
+exact termination, completion and mode-specific proof marker through
+`tools/runtime_descendant_receipts.py`; exchanging two modes' valid transcripts
+must fail verification. These controls belong to development test binaries and
+receipt tooling, not emitted programs.
+
 ## Test quality and agent-written tests
 
 This is the shared test-authoring contract for human and agent contributions.

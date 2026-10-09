@@ -56,56 +56,6 @@ from wasm_link_operations import (
 )
 
 
-def _add_symtab_alias(
-    data: bytes,
-    alias_name: str,
-    alias_index: int,
-    alias_flags: int,
-    *,
-    preserve_export: bool = False,
-    facts_provider: WasmFactsProvider,
-) -> bytes | None:
-    if any(
-        symbol.kind == "function" and symbol.name == alias_name
-        for symbol in facts_provider(data).linking_symbols.symbols
-    ):
-        return None
-    sections = _parse_sections(data)
-    modified = False
-    for idx, (section_id, payload) in enumerate(sections):
-        if section_id != 0:
-            continue
-        name, custom_payload = _parse_custom_section(payload)
-        if name != "linking":
-            continue
-        version, subsections = _parse_linking_payload(custom_payload)
-        new_subsections: list[tuple[int, bytes]] = []
-        for sub_id, sub_payload in subsections:
-            if sub_id != SYMTAB_SUBSECTION_ID:
-                new_subsections.append((sub_id, sub_payload))
-                continue
-            count, offset = _read_varuint(sub_payload, 0)
-            entries = sub_payload[offset:]
-            alias_entry = bytearray()
-            alias_entry.append(SYMBOL_KIND_FUNCTION)
-            entry_flags = alias_flags
-            if not preserve_export:
-                entry_flags &= ~FLAG_EXPORTED
-            alias_entry.extend(_write_varuint(entry_flags | FLAG_EXPLICIT_NAME))
-            alias_entry.extend(_write_varuint(alias_index))
-            alias_entry.extend(_write_string(alias_name))
-            new_payload = _write_varuint(count + 1) + entries + alias_entry
-            new_subsections.append((sub_id, new_payload))
-            modified = True
-        if modified:
-            updated = _build_linking_payload(version, new_subsections)
-            sections[idx] = (section_id, _build_custom_section(name, updated))
-            break
-    if not modified:
-        return None
-    return _build_sections(sections)
-
-
 def _collect_output_export_symbol_map(
     data: bytes, *, facts_provider: WasmFactsProvider
 ) -> dict[str, str]:

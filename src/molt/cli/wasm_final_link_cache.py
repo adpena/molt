@@ -40,7 +40,7 @@ _NAMED_OUTPUT_OPTIONS = frozenset({"--output"})
 # Private locations whose names carry no output content: split roles have fixed
 # names inside the directory, and phase timings are diagnostics only.
 _LOCATION_ONLY_OPTIONS = frozenset({"--split-output-dir"})
-_DIAGNOSTIC_OPTIONS = frozenset({"--phase-timings-file"})
+_DIAGNOSTIC_OPTIONS = frozenset({"--phase-timings-file", "--failure-evidence-dir"})
 
 
 def final_link_cache_key(

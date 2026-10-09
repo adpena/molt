@@ -2196,6 +2196,171 @@ def _native_c_capture_fixture(
     return identity, tools, environment, command, calls
 
 
+def _equivalent_image_spelling(path: str, spelling: str) -> str:
+    selected = Path(path)
+    if spelling == "dot":
+        result = str(selected.parent) + os.sep + "." + os.sep + selected.name
+    elif spelling == "case":
+        result = str(selected).swapcase()
+    else:
+        result = "\\\\?\\" + str(selected)
+    assert result != path
+    assert Path(result).samefile(selected), (
+        "positive spelling must name the actual same file"
+    )
+    return result
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "dot",
+        pytest.param(
+            "case",
+            marks=pytest.mark.skipif(os.name != "nt", reason="Windows path spelling"),
+        ),
+        pytest.param(
+            "device",
+            marks=pytest.mark.skipif(os.name != "nt", reason="Windows device path"),
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "coordinate",
+    [
+        "images",
+        "unit-refs",
+        "resolution",
+        "native-compiler",
+        "native-helper",
+        "archiver",
+    ],
+)
+def test_rust_image_membership_preserves_os_equivalent_spellings(
+    tmp_path, monkeypatch, spelling, coordinate
+):
+    identity, _tools, env, _command, calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch
+    )
+    prior_calls = list(calls)
+    selection = identity["link_selection"]
+    native = selection["native_c"][0]
+    if coordinate == "images":
+        for row in identity["process_images"]:
+            row["path"] = _equivalent_image_spelling(row["path"], spelling)
+    elif coordinate == "unit-refs":
+        for unit in selection["units"]:
+            for row in unit["process_image_refs"]:
+                row["path"] = _equivalent_image_spelling(row["path"], spelling)
+    elif coordinate == "resolution":
+        for unit in selection["units"]:
+            for row in unit["process_resolution"]:
+                for field in ("path", "content_path"):
+                    row[field] = _equivalent_image_spelling(row[field], spelling)
+    elif coordinate == "native-compiler":
+        command = native["selection"]["compiler"]
+        changed = _equivalent_image_spelling(command[0], spelling)
+        command[0] = changed
+        native["compiler"]["command"][0] = changed
+        for probe in native["compiler"]["probes"]:
+            probe["argv"][0] = changed
+    elif coordinate == "native-helper":
+        for phase in native["compiler"]["phases"]:
+            for helper in phase["helpers"]:
+                helper["path"] = _equivalent_image_spelling(helper["path"], spelling)
+    else:
+        native["selection"]["archiver"] = _equivalent_image_spelling(
+            native["selection"]["archiver"], spelling
+        )
+    assert (
+        toolchain_capture.validate_rust_link_selection(identity, full_capture=True)
+        == selection
+    )
+    assert toolchain_capture.native_compiler_selection_is_current(
+        native["compiler"], env=env
+    )
+    assert calls == prior_calls, "structural verification must not run probes"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "different-path",
+        "relative",
+        "missing-content",
+        "role",
+        "duplicate-ref",
+        "digest",
+        "disposition",
+        "helper-digest",
+        "helper-role",
+        "archiver",
+    ],
+)
+def test_rust_image_membership_rejects_non_equivalent_custody(
+    tmp_path, monkeypatch, mutation
+):
+    identity, _tools, _env, _command, _calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch
+    )
+    selection = identity["link_selection"]
+    unit = selection["units"][0]
+    native = selection["native_c"][0]
+    if mutation in {"different-path", "archiver"}:
+        original = Path(unit["process_resolution"][0]["path"])
+        foreign = tmp_path / "same-bytes-different-coordinate"
+        foreign.write_bytes(original.read_bytes())
+        if mutation == "archiver":
+            native["selection"]["archiver"] = str(foreign)
+        else:
+            unit["process_resolution"][0]["content_path"] = str(foreign)
+    elif mutation == "relative":
+        unit["process_resolution"][0]["path"] = Path(
+            unit["process_resolution"][0]["path"]
+        ).name
+    elif mutation == "missing-content":
+        del unit["process_resolution"][0]["content_path"]
+    elif mutation == "role":
+        unit["process_image_refs"][0]["role"] = "rust-link-helper"
+    elif mutation == "duplicate-ref":
+        row = dict(unit["process_image_refs"][0])
+        row["path"] = _equivalent_image_spelling(row["path"], "dot")
+        unit["process_image_refs"].append(row)
+        unit["selected_process_count"] += 1
+    elif mutation in {"digest", "disposition"}:
+        row = dict(
+            next(
+                row
+                for row in identity["process_images"]
+                if row["role"] == "rust-linker"
+            )
+        )
+        row["path"] = _equivalent_image_spelling(row["path"], "dot")
+        row["sha256" if mutation == "digest" else "root_exit_disposition"] = (
+            "0" * 64 if mutation == "digest" else "terminate"
+        )
+        identity["process_images"].append(row)
+    elif mutation == "helper-digest":
+        native["compiler"]["phases"][0]["helpers"][0]["sha256"] = "0" * 64
+    else:
+        helper = native["compiler"]["phases"][0]["helpers"][0]
+        for row in identity["process_images"]:
+            if row["path"] == helper["path"]:
+                row["role"] = "rust-link-helper"
+    with pytest.raises(ValueError) as caught:
+        toolchain_capture.validate_rust_link_selection(identity, full_capture=True)
+    if mutation == "different-path":
+        detail = json.loads(str(caught.value).split("; image_edge=", 1)[1])
+        assert detail["unit"] == unit["unit"]
+        assert detail["role"] == "rust-linker"
+        assert detail["selected_path"] == str(original)
+        assert detail["content_path"] == str(foreign)
+        assert {"role": "rust-linker", "path": str(original)} in detail[
+            "captured_images"
+        ]
+        assert "sha256" not in detail and "environment" not in detail
+
+
 def test_native_c_capture_uses_actual_helpers_and_independent_archiver(
     tmp_path, monkeypatch
 ):
@@ -2495,11 +2660,35 @@ def test_native_c_resource_receivers_reject_resealed_substitutions(
         directory["files"][0]["size"] = file["size_bytes"]
         directory["files"][0]["symlinked"] = True
         directory["manifest_sha256"] = canonical_json_sha256(directory["files"])
+    changed.pop("identity_sha256")
+    changed["identity_sha256"] = canonical_json_sha256(changed)
     with pytest.raises(ValueError, match="resource"):
         toolchain_capture.publish_capture(cas, {"rustc": changed})
     raw = custody_cas.read_ref(reference, expected_root=cas)
     raw["toolchains"] = {"rustc": changed}
-    raw["files"] = [row.as_dict() for row in toolchain_capture.frozen_files(changed)]
+    if mutation == "parent-escape":
+        # Forge the complete transport independently: the production projector
+        # now refuses this coordinate before the receiver could observe it.
+        header = str((tmp_path / "include" / "header.h").resolve())
+        original = [row for row in raw["files"] if row["path"] == header]
+        assert len(original) == 1
+        forced = (tmp_path / "forced.h").read_bytes()
+        replacement = {
+            "path": directory["files"][0]["resolved_path"],
+            "sha256": hashlib.sha256(forced).hexdigest(),
+            "size": len(forced),
+        }
+        assert ".." in Path(replacement["path"]).parts
+        assert not any(row["path"] == replacement["path"] for row in raw["files"])
+        retained = [row for row in raw["files"] if row["path"] != header]
+        assert any(
+            row["path"] == str((tmp_path / "forced.h").resolve()) for row in retained
+        )
+        raw["files"] = sorted([*retained, replacement], key=lambda row: row["path"])
+    else:
+        raw["files"] = [
+            row.as_dict() for row in toolchain_capture.frozen_files(changed)
+        ]
     forged = custody_cas.put_json(cas, raw).as_dict()
     with pytest.raises(ValueError, match="resource"):
         toolchain_capture.load_capture(forged, cas_root=cas)
@@ -2799,3 +2988,64 @@ def test_rust_artifact_capture_retains_admitted_cargo_role_after_custom_binding(
         toolchain_capture.validate_rust_link_selection(
             retained, command_argv=[str(selected), "check"]
         )
+
+
+@pytest.mark.parametrize("same_bytes", [False, True])
+@pytest.mark.parametrize("coordinate", ["resolution", "native-helper"])
+def test_parent_traversal_cannot_borrow_another_captured_image(
+    tmp_path, monkeypatch, same_bytes, coordinate
+):
+    identity, tools, _env, _command, _calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch
+    )
+    original = tools["linker" if coordinate == "resolution" else "cc1"]
+    foreign = tmp_path / "foreign"
+    (foreign / "deep").mkdir(parents=True)
+    other = foreign / original.name
+    other.write_bytes(original.read_bytes() if same_bytes else b"foreign image")
+    hop = original.parent / "hop"
+    try:
+        hop.symlink_to(foreign / "deep", target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink capability unavailable: {exc}")
+    witness = hop / ".." / original.name
+    assert witness.samefile(other) and not witness.samefile(original)
+    if coordinate == "resolution":
+        identity["link_selection"]["units"][0]["process_resolution"][0][
+            "content_path"
+        ] = str(witness)
+    else:
+        compiler = identity["link_selection"]["native_c"][0]["compiler"]
+        helper = compiler["phases"][0]["helpers"][0]
+        helper["path"] = str(witness)
+        helper["command"][0] = str(witness)
+        compiler["probes"][0]["stderr"] = compiler["probes"][0]["stderr"].replace(
+            json.dumps(str(original)), json.dumps(str(witness))
+        )
+    with pytest.raises(ValueError, match="parent traversal"):
+        toolchain_capture.validate_rust_link_selection(identity, full_capture=True)
+
+
+def test_image_membership_diagnostic_bounds_untrusted_coordinates():
+    visited = 0
+
+    def captured():
+        nonlocal visited
+        for _ in range(100):
+            visited += 1
+            yield "r" * 10000, "p" * 10000
+
+    error = toolchain_capture._image_membership_error(
+        "missing image",
+        unit="u" * 10000,
+        role="r" * 10000,
+        selected="s" * 10000,
+        content="c" * 10000,
+        images=captured(),
+    )
+    detail = json.loads(str(error).split("; image_edge=", 1)[1])
+    assert visited == 9
+    assert len(detail["captured_images"]) == 8
+    assert detail["captured_images_truncated"] is True
+    assert len(str(error)) < 12000
+    assert detail["content_path"] == "c" * 512

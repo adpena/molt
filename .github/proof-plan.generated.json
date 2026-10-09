@@ -338,7 +338,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "b4fbf40aabd9830b7493fb9a243df501d4b9790177ffd4a07e1761fe0d1c8b76",
+  "authority_sha256": "e1700c74e643a4525e9bc3fc898110f7bfe312f9f532ac959a6bc15d88cd18ba",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2855,6 +2855,46 @@
     },
     {
       "argv": [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--no-sync",
+        "--no-config",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_wasm_link_validation.py::test_primary_runtime_fixture_passes_actual_relocatable_admission",
+        "tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_shared_primary_before_publication",
+        "tests/test_wasm_link_validation.py::test_wasm_module_identity_survives_distinct_staging_paths",
+        "tests/test_wasm_link_validation.py::test_existing_alias_binding_controls_actual_llvm_resolution"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [],
+      "family": "wasm",
+      "id": "wasm.test.linker-admission",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_env": [
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv",
+        "wasm-ld"
+      ]
+    },
+    {
+      "argv": [
         "python3",
         "tools/venv_exec.py",
         "python3",
@@ -4746,6 +4786,7 @@
         "projected_makespan_seconds": 9600,
         "resource_capacity_floor_seconds": {
           "compiler-build-resource": 9600,
+          "python-tests": 60,
           "wasm-runtime": 450
         }
       }

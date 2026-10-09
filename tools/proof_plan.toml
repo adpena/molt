@@ -2023,6 +2023,21 @@ argv = ["target/sessions/wasm-ci/dev-fast/molt-wasm-host", "/tmp/molt-wasm-ci/si
 toolchains = ["rustc", "cargo", "wasm-tools"]
 
 [[command]]
+id = "wasm.test.linker-admission"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 120
+timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "pytest"
+# These literal objects exercise the selected linker without compiling Rust.
+# WASM CI provisions the attested host SDK before running this family.
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "-m", "pytest", "-q", "tests/test_wasm_link_validation.py::test_primary_runtime_fixture_passes_actual_relocatable_admission", "tests/test_wasm_link_validation.py::test_run_wasm_ld_rejects_shared_primary_before_publication", "tests/test_wasm_link_validation.py::test_wasm_module_identity_survives_distinct_staging_paths", "tests/test_wasm_link_validation.py::test_existing_alias_binding_controls_actual_llvm_resolution"]
+toolchains = ["python", "uv", "wasm-ld"]
+
+[[command]]
 id = "wasm.test.control-flow"
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"

@@ -795,12 +795,14 @@ def _locate_toolchain_watch_roots(
             or not isinstance(prefix_raw, str)
         ):
             raise ValueError("proof Python toolchain locator has no executable chain")
-        executable = Path(os.path.abspath(executable_raw))
+        executable = process_image_capture.custody_path(Path(executable_raw))
         if not executable.is_file():
             raise ValueError(
                 "proof Python toolchain locator has no selected executable"
             )
-        base_executable = Path(base_executable_raw).resolve(strict=True)
+        base_executable = process_image_capture.custody_path(
+            Path(base_executable_raw)
+        ).resolve(strict=True)
         prefix = Path(prefix_raw).resolve(strict=True)
         if not prefix.is_dir():
             raise ValueError("proof Python toolchain locator has no environment prefix")

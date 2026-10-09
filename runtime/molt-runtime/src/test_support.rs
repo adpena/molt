@@ -63,12 +63,14 @@ impl Drop for RuntimeTestRestartCustody {
 }
 
 struct PendingCallTestCustody {
+    restore_prior_runtime: bool,
     snapshot: Option<molt_cpython_abi::api::pending_calls::PendingCallRuntimeTestSnapshot>,
 }
 
 impl PendingCallTestCustody {
     fn enter() -> Self {
         Self {
+            restore_prior_runtime: true,
             snapshot: Some(
                 molt_cpython_abi::api::pending_calls::begin_runtime_test_transaction(
                     std::thread::current().id(),
@@ -79,10 +81,22 @@ impl PendingCallTestCustody {
 
     fn restore(&mut self) {
         if let Some(snapshot) = self.snapshot.take() {
-            crate::with_gil_entry_nopanic!(_py, {
+            // Serialize the one queue consumer without entering or initializing
+            // RuntimeState. Finish only quiesces producers and discards opaque C
+            // callback tokens; it never invokes them or releases Python owners.
+            let _gil = crate::concurrency::GilGuard::new();
+            if self.restore_prior_runtime && crate::state::runtime_state::runtime_is_ready() {
                 molt_cpython_abi::api::pending_calls::restore_runtime_test_transaction(snapshot);
-            });
+            } else {
+                molt_cpython_abi::api::pending_calls::reset_runtime_test_transaction(snapshot);
+            }
         }
+    }
+
+    fn prior_runtime_retired(&mut self) {
+        // A destructive transaction must never restore an earlier generation's
+        // queue owner if bootstrap, the body, or final cleanup subsequently fails.
+        self.restore_prior_runtime = false;
     }
 
     fn reset(&mut self) {
@@ -146,6 +160,16 @@ impl PendingExceptionSnapshot {
     }
 
     fn restore(mut self) {
+        if !crate::state::runtime_state::runtime_is_ready() {
+            // Failed lifecycle allocations remain pinned until process exit.
+            // OwnedCError::drop would decref into their partially retired graph.
+            std::mem::forget(self);
+            assert!(
+                std::thread::panicking(),
+                "test exception restoration requires a live runtime"
+            );
+            return;
+        }
         unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
         if let Some(error) = self.c_error {
             molt_cpython_abi::api::errors::restore_current_error_exact(error);
@@ -302,6 +326,10 @@ impl RuntimeTestTransaction {
 
     fn with_runtime_lifecycle<R>(mode: RuntimeTestLifecycleMode, f: impl FnOnce() -> R) -> R {
         let _process_state = process_global_test_state();
+        assert!(
+            crate::state::runtime_state::runtime_execution_is_admitted_for_current_thread(false),
+            "runtime lifecycle transaction requires a restartable runtime"
+        );
         let mut restart =
             (mode == RuntimeTestLifecycleMode::TrustedFresh).then(RuntimeTestRestartCustody::enter);
         let _capability_environment = (mode == RuntimeTestLifecycleMode::TrustedFresh)
@@ -315,6 +343,7 @@ impl RuntimeTestTransaction {
                 "runtime lifecycle transaction could not retire the prior runtime"
             );
         }
+        pending_calls.prior_runtime_retired();
         crate::state::runtime_state::molt_runtime_reset_for_testing();
         if mode == RuntimeTestLifecycleMode::Cold {
             // The prior runtime's pending-call owner was retired with it. Do
@@ -336,31 +365,49 @@ impl RuntimeTestTransaction {
         }
 
         let outcome = std::panic::catch_unwind(AssertUnwindSafe(f));
-        if crate::state::runtime_state::runtime_is_initialized() {
-            assert_eq!(
-                crate::state::runtime_state::molt_runtime_shutdown(),
-                1,
-                "runtime lifecycle transaction could not retire its runtime"
-            );
-        }
-        crate::state::runtime_state::molt_runtime_reset_for_testing();
-        if mode == RuntimeTestLifecycleMode::Cold {
-            // Production initialization selected the body's real main-thread
-            // owner after the entry snapshot was reset. Borrow that completed
-            // lifecycle once, prove its ring is empty, and clear the retired
-            // owner instead of leaking it into the next test runtime.
-            let mut completed_pending_calls = PendingCallTestCustody::enter();
-            completed_pending_calls.reset();
-        } else {
-            pending_calls.reset();
-        }
-        if let Some(restart) = restart.as_mut() {
-            restart.finish();
-        }
-
-        match outcome {
-            Ok(value) => value,
-            Err(payload) => std::panic::resume_unwind(payload),
+        let cleanup = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            if crate::state::runtime_state::runtime_is_initialized() {
+                assert_eq!(
+                    crate::state::runtime_state::molt_runtime_shutdown(),
+                    1,
+                    "runtime lifecycle transaction could not retire its runtime"
+                );
+            }
+            crate::state::runtime_state::molt_runtime_reset_for_testing();
+            if mode == RuntimeTestLifecycleMode::Cold {
+                // Production initialization selected the body's real main-thread
+                // owner after the entry snapshot was reset. Borrow that completed
+                // lifecycle once, prove its ring is empty, and clear the retired
+                // owner instead of leaking it into the next test runtime.
+                let mut completed_pending_calls = PendingCallTestCustody::enter();
+                completed_pending_calls.reset();
+            } else {
+                pending_calls.reset();
+            }
+            if let Some(restart) = restart.as_mut() {
+                restart.finish();
+            }
+        }));
+        match (outcome, cleanup) {
+            (Ok(value), Ok(())) => value,
+            (Ok(_), Err(cleanup)) => std::panic::resume_unwind(cleanup),
+            (Err(primary), Ok(())) => std::panic::resume_unwind(primary),
+            (Err(primary), Err(cleanup)) => {
+                // Do not replace the body's original panic with a cleanup
+                // assertion. Keep both diagnostics, including under a caught
+                // panic hook, and leave a failed runtime permanently closed.
+                use std::io::Write;
+                let message = cleanup
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| cleanup.downcast_ref::<&str>().copied())
+                    .unwrap_or("non-string cleanup panic");
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "runtime test cleanup also failed: {message}"
+                );
+                std::panic::resume_unwind(primary)
+            }
         }
     }
 
@@ -368,12 +415,13 @@ impl RuntimeTestTransaction {
         let process_state = process_global_test_state();
         let retained_thread_state_before =
             molt_cpython_abi::api::object::current_thread_has_retained_runtime_state();
-        let pending_calls = PendingCallTestCustody::enter();
         assert_eq!(
             crate::state::runtime_state::molt_runtime_init(),
             1,
             "runtime test transaction requires successful production bootstrap"
         );
+        // Failed bootstrap must not reopen the process-static pending queue.
+        let pending_calls = PendingCallTestCustody::enter();
         let execution_thread_attached =
             molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
         let pending_exceptions = PendingExceptionSnapshot::detach();
@@ -413,6 +461,21 @@ impl RuntimeTestTransaction {
 
 impl Drop for RuntimeTestTransaction {
     fn drop(&mut self) {
+        if !crate::state::runtime_state::runtime_is_ready() {
+            // There is no legal callback/decref boundary after terminal failure.
+            // The saved C/runtime error and sys owners stay with the unrecoverable
+            // runtime until process exit, as its production lifecycle requires.
+            // This is bounded by this transaction; no new owner registry exists.
+            std::mem::forget(self.pending_exceptions.take());
+            drop(self.interpreter_sys.take());
+            drop(self.gc.take());
+            self.pending_calls.reset();
+            assert!(
+                std::thread::panicking(),
+                "runtime test transaction lost its live runtime before restoration"
+            );
+            return;
+        }
         if let Some(snapshot) = self.interpreter_sys.take() {
             crate::with_gil_entry_nopanic!(py, {
                 snapshot.restore(py);
@@ -717,5 +780,219 @@ impl Drop for NativeProviderTestNamespace {
                 crate::dec_ref_bits(py, bits);
             }
         });
+    }
+}
+
+/// Terminal lifecycle cases must own a process: Failed is deliberately not
+/// resettable. The parent checks a real normal exit and the original diagnostic,
+/// so the old destructor-abort behavior cannot satisfy these controls.
+#[cfg(all(not(target_arch = "wasm32"), panic = "unwind"))]
+#[test]
+fn runtime_test_transactions_preserve_terminal_failures() {
+    const MODE: &str = "MOLT_TEST_TRANSACTION_TERMINAL";
+    const TEST: &str = "test_support::runtime_test_transactions_preserve_terminal_failures";
+    const MODES: [&str; 9] = [
+        "prior",
+        "cleanup",
+        "both",
+        "cold-both",
+        "body-only",
+        "ordinary",
+        "ordinary-return",
+        "reentry",
+        "healthy",
+    ];
+    if let Ok(mode) = std::env::var(MODE) {
+        use crate::state::runtime_state::{
+            molt_runtime_init, molt_runtime_shutdown, runtime_is_ready,
+        };
+        use molt_cpython_abi::api::{errors, pending_calls};
+        assert_eq!(molt_runtime_init(), 1);
+        let entered = Cell::new(false);
+        let marker = Box::new(0x51a7_u64);
+        let marker_address = (&*marker as *const u64).addr();
+        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| match mode.as_str() {
+            "prior" => {
+                crate::concurrency::execution::inject_shutdown_drain_drop_panic();
+                RuntimeTestTransaction::with_trusted_fresh_runtime(|| entered.set(true));
+            }
+            "cleanup" | "both" | "body-only" => {
+                RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+                    entered.set(true);
+                    if mode != "body-only" {
+                        crate::concurrency::execution::inject_shutdown_drain_drop_panic();
+                    }
+                    if mode != "cleanup" {
+                        std::panic::resume_unwind(marker);
+                    }
+                });
+            }
+            "cold-both" => {
+                RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+                    assert_eq!(molt_runtime_init(), 1);
+                    crate::concurrency::execution::inject_shutdown_drain_drop_panic();
+                    std::panic::resume_unwind(marker);
+                });
+            }
+            "ordinary" | "ordinary-return" => {
+                unsafe {
+                    errors::PyErr_SetString(
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast(),
+                        c"owner detached before terminal failure".as_ptr(),
+                    );
+                }
+                let _transaction = RuntimeTestTransaction::with_gc_isolation();
+                entered.set(true);
+                crate::concurrency::execution::inject_shutdown_drain_drop_panic();
+                assert_eq!(molt_runtime_shutdown(), 0);
+                if mode == "ordinary" {
+                    std::panic::resume_unwind(marker);
+                }
+            }
+            "reentry" => {
+                crate::concurrency::execution::inject_shutdown_drain_drop_panic();
+                assert_eq!(molt_runtime_shutdown(), 0);
+                let _transaction = RuntimeTestTransaction::new();
+                entered.set(true);
+            }
+            "healthy" => {
+                unsafe {
+                    errors::PyErr_SetString(
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast(),
+                        c"borrowed pre-transaction error".as_ptr(),
+                    );
+                }
+                let original = errors::take_current_error().expect("actual C error owner");
+                let identity = (original.exc_type, original.value, original.traceback);
+                errors::restore_current_error_exact(original);
+                {
+                    let _transaction = RuntimeTestTransaction::with_gc_isolation();
+                    assert!(errors::take_current_error().is_none());
+                }
+                let normal = errors::take_current_error().expect("normal restored C error");
+                assert_eq!((normal.exc_type, normal.value, normal.traceback), identity);
+                errors::restore_current_error_exact(normal);
+                let failure = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    let _transaction = RuntimeTestTransaction::with_gc_isolation();
+                    assert!(errors::take_current_error().is_none());
+                    std::panic::resume_unwind(marker);
+                }))
+                .expect_err("ordinary body panic must survive restoration");
+                let restored = errors::take_current_error().expect("restored original C error");
+                assert_eq!(
+                    (restored.exc_type, restored.value, restored.traceback),
+                    identity
+                );
+                drop(restored);
+                assert!(runtime_is_ready());
+                // Restoration must reopen exactly the prior producer admission.
+                unsafe extern "C" fn no_op(_: *mut std::ffi::c_void) -> std::os::raw::c_int {
+                    0
+                }
+                assert_eq!(
+                    unsafe { pending_calls::Py_AddPendingCall(Some(no_op), std::ptr::null_mut()) },
+                    0
+                );
+                crate::with_gil_entry_nopanic!(_py, {
+                    assert_eq!(pending_calls::Py_MakePendingCalls(), 0);
+                });
+                std::panic::resume_unwind(failure);
+            }
+            _ => panic!("unknown transaction mode"),
+        }));
+        let failure = outcome.expect_err("failed transaction must never return success");
+        if matches!(
+            mode.as_str(),
+            "both" | "cold-both" | "body-only" | "ordinary" | "healthy"
+        ) {
+            let original = failure
+                .downcast::<u64>()
+                .expect("original body panic payload");
+            assert_eq!((&*original as *const u64).addr(), marker_address);
+            assert_eq!(*original, 0x51a7);
+        } else {
+            let text = failure
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| failure.downcast_ref::<&str>().copied())
+                .unwrap_or("");
+            let expected = match mode.as_str() {
+                "prior" => "could not retire the prior runtime",
+                "cleanup" => "could not retire its runtime",
+                "ordinary-return" => "lost its live runtime before restoration",
+                "reentry" => "requires successful production bootstrap",
+                _ => unreachable!(),
+            };
+            assert!(text.contains(expected), "{mode}: {text}");
+        }
+        if matches!(mode.as_str(), "prior" | "reentry") {
+            assert!(!entered.get(), "body entered after failed admission");
+        }
+        if mode == "body-only" {
+            assert_eq!(
+                molt_runtime_init(),
+                1,
+                "ordinary panic must permit the next generation"
+            );
+        } else if mode != "healthy" {
+            assert!(!runtime_is_ready());
+            assert_eq!(molt_runtime_init(), 0, "terminal runtime must never revive");
+            let rejected = std::panic::catch_unwind(|| {
+                RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+                    panic!("terminal lifecycle admitted a body")
+                });
+            })
+            .expect_err("a terminal lifecycle must not reopen test custody");
+            let message = rejected
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| rejected.downcast_ref::<&str>().copied())
+                .unwrap_or("");
+            assert_eq!(
+                message,
+                "runtime lifecycle transaction requires a restartable runtime"
+            );
+            unsafe extern "C" fn forbidden(_: *mut std::ffi::c_void) -> std::os::raw::c_int {
+                panic!("closed queue callback")
+            }
+            assert_eq!(
+                unsafe { pending_calls::Py_AddPendingCall(Some(forbidden), std::ptr::null_mut()) },
+                -1
+            );
+        }
+        println!("transaction outcome and custody verified: {mode}");
+        return;
+    }
+    for mode in MODES {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+            .env(MODE, mode);
+        let output =
+            captured_runtime_children::capture(&mut command, "runtime-test-transaction", mode);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(0), "{mode}: {stdout}\n{stderr}");
+        assert!(
+            stdout.contains(&format!("transaction outcome and custody verified: {mode}")),
+            "{stdout}"
+        );
+        assert!(
+            !stderr.contains("panic in a destructor during cleanup"),
+            "{stderr}"
+        );
+        if !matches!(mode, "body-only" | "healthy") {
+            assert!(stderr.contains("molt runtime lifecycle failed: injected shutdown drain C extension cleanup panic"), "{mode}: {stderr}");
+        } else {
+            assert!(
+                !stderr.contains("molt runtime lifecycle failed:"),
+                "{mode}: {stderr}"
+            );
+        }
+        assert_eq!(
+            stderr.contains("runtime test cleanup also failed:"),
+            matches!(mode, "both" | "cold-both"),
+            "{mode}: {stderr}"
+        );
     }
 }

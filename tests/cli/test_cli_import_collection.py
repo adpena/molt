@@ -33106,3 +33106,92 @@ def test_run_wrapper_build_uses_explicit_child_module_roots_over_ambient(
     receipt = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert Path(receipt["input"]["source_path"]) == entry.resolve()
     assert receipt["input"]["semantic_env"]["MOLT_MODULE_ROOTS"] == str(selected_root)
+
+
+@pytest.mark.parametrize(
+    "split_runtime,stage",
+    [(False, "linked-validation"), (True, "facts-scan"), (True, "split-native-link")],
+)
+def test_failed_wasm_link_evidence_survives_private_deployment_cleanup(
+    isolated_molt_cache: Path,
+    runtime_fixture_root: RuntimeFixtureRoot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    split_runtime: bool,
+    stage: str,
+) -> None:
+    from tools.wasm_link_fact_provider import preserve_rejected_wasm
+
+    output = tmp_path / "out" / "output.wasm"
+    output.parent.mkdir()
+    output.write_bytes(b"\0asm\x01\0\0\0")
+
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    shared = runtime_root / "molt_runtime.wasm"
+    reloc = runtime_root / "molt_runtime_reloc.wasm"
+    shared.write_bytes(output.read_bytes())
+    reloc.write_bytes(output.read_bytes())
+    _write_split_runtime_vfs_support(tmp_path)
+    _install_fake_wasm_link_runner(
+        monkeypatch, fixture_root=runtime_fixture_root, app_input_paths=(output,)
+    )
+    original_runner = cli_non_native_output._run_completed_command
+    linked = output.with_name("output_linked.wasm")
+    old_outputs = {
+        linked: b"old-linked",
+        output.with_name("manifest.json"): b"old-manifest",
+    }
+    if split_runtime:
+        old_outputs.update(
+            {
+                output.with_name("app.wasm"): b"old-app",
+                output.with_name("molt_runtime.wasm"): b"old-runtime",
+            }
+        )
+    for destination, data in old_outputs.items():
+        destination.write_bytes(data)
+    kept: list[Path] = []
+    generations: list[Path] = []
+    rejected = b"\0asm\x01\0\0\0rejected-link-output"
+
+    def rejected_link(command, **kwargs):
+        if "--wasm-facts-scanner" not in command:
+            return original_runner(command, **kwargs)
+        private_output = Path(command[command.index("--output") + 1])
+        generations.append(private_output.parent)
+        evidence_root = Path(command[command.index("--failure-evidence-dir") + 1])
+        assert evidence_root == output.parent / "wasm-link-evidence"
+        assert not evidence_root.is_relative_to(private_output.parent)
+        kept.append(preserve_rejected_wasm(rejected, evidence_root, stage=stage))
+        return subprocess.CompletedProcess(
+            command, 1, "", f"rejected input kept at {kept[-1]}"
+        )
+
+    monkeypatch.setattr(cli_non_native_output, "_run_completed_command", rejected_link)
+    prepared, error = cli_non_native_output._prepare_non_native_build_result(
+        is_rust_transpile=False,
+        is_luau_transpile=False,
+        is_wasm=True,
+        linked=True,
+        require_linked=False,
+        linked_output_path=linked,
+        output_artifact=output,
+        json_output=True,
+        runtime_state=_prepared_runtime_pair_state(shared, reloc),
+        ensure_runtime_wasm_both=lambda _required=None: True,
+        runtime_cargo_profile="dev-fast",
+        molt_root=tmp_path,
+        split_runtime=split_runtime,
+        wasm_table_base=8192,
+        wasm_facts_scanner=tmp_path / "molt-backend",
+        app_export_contract_path=_empty_app_export_contract(tmp_path),
+        resolved_capability_policy=CapabilityManifest().resolve(),
+    )
+    assert prepared is None and error is not None
+    assert len(kept) == len(generations) == 1
+    assert not generations[0].exists()
+    assert kept[0].read_bytes() == rejected
+    assert {
+        destination: destination.read_bytes() for destination in old_outputs
+    } == old_outputs

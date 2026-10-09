@@ -13,7 +13,6 @@ import subprocess
 import sys
 from molt.temporary_artifacts import OwnedTemporaryDirectory
 import time
-from typing import Literal
 
 from molt import artifact_publication as artifact_publish
 from molt._wasm_abi_generated import (
@@ -35,7 +34,6 @@ from molt.cli.source_extension_link_requirements import (
     source_extension_link_file,
 )
 from molt.exact_json import dumps_exact
-from molt.dx import proof_scratch_root
 from molt.link_outputs import wasm_link_output_paths
 from molt.cli.link_fingerprints import FinalLinkReceiptRequest, publish_link_outputs
 from molt.cli.link_selection_admission import (
@@ -73,8 +71,6 @@ from wasm_stub_wasi import stub_wasi_imports
 
 TOOLS_ROOT = Path(__file__).resolve().parent
 
-RuntimeLinkInputRole = Literal["reloc", "shared"]
-
 
 @dataclass(frozen=True, slots=True)
 class _SplitPublication:
@@ -104,7 +100,7 @@ class _SplitAppLinkPlan:
     provider_symbols: frozenset[str]
     data_alias_plan: _runtime_data.SplitRuntimeDataAliasPlan | None
     got_runtime_addresses: Mapping[str, int]
-    failure_artifact: Path
+    failure_evidence_dir: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,7 +174,6 @@ class _PreparedLinkedArtifact:
 class _LinkCommandInputs:
     wasm_ld: str
     runtime: Path
-    runtime_role: RuntimeLinkInputRole
     allowlist: Path
     base_allowlist: Path
     output_callable_layout: CallableTableLayout | None
@@ -280,6 +275,7 @@ def _publish_final_outputs_stage(
     link_outputs: Mapping[str, Path],
     selection_roles: Mapping[str, Mapping[str, object]],
     staged_outputs: list[Path],
+    failure_evidence_dir: Path,
 ) -> bool:
     """Validate and atomically publish one fully transformed artifact family."""
 
@@ -405,14 +401,20 @@ def _publish_final_outputs_stage(
         linked_artifact.path,
         facts_provider=linked_artifact.facts_provider,
     ):
-        failed_validation = linked_destination.with_name(
-            f"{linked_destination.stem}.failed-validation.wasm"
-        )
-        failed_validation.write_bytes(linked_artifact.data)
-        print(
-            f"Preserved failed linked validation artifact: {failed_validation}",
-            file=sys.stderr,
-        )
+        try:
+            failed_validation = _facts.preserve_rejected_wasm(
+                linked_artifact.data, failure_evidence_dir, stage="linked-validation"
+            )
+        except (OSError, ValueError) as exc:
+            print(
+                f"Linked validation failed; failed to preserve rejected artifact: {exc}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Preserved failed linked validation artifact: {failed_validation}",
+                file=sys.stderr,
+            )
         if split is not None:
             print(
                 "Linked wasm validation failed before split-runtime publication; "
@@ -650,13 +652,13 @@ def _load_link_contract_stage(
     runtime: Path,
     output: Path,
     *,
-    runtime_role: RuntimeLinkInputRole,
     app_export_contract_path: Path,
     wasm_facts_scanner: Path,
     wasm_facts_scanner_sha256: str | None,
     facts_provider: _facts.WasmFactsProvider | None,
     temp_dir: OwnedTemporaryDirectory,
     facts_metrics: dict[str, float],
+    failure_evidence_dir: Path,
     split_runtime: bool,
     deploy_runtime_override: Path | None,
 ) -> _LoadedLinkContract | None:
@@ -669,24 +671,22 @@ def _load_link_contract_stage(
                 Path(temp_dir.name),
                 facts_metrics,
                 expected_sha256=wasm_facts_scanner_sha256,
-                evidence_root=proof_scratch_root(TOOLS_ROOT.parent)
-                / "wasm-link-evidence",
+                evidence_root=failure_evidence_dir,
             )
         runtime_data = runtime.read_bytes()
         runtime_facts = facts_provider(runtime_data)
-        runtime_exports = (
-            frozenset(runtime_facts.linking_symbols.defined_names)
-            if runtime_role == "reloc"
-            else frozenset(runtime_facts.exports)
-        )
+        runtime_exports = frozenset(runtime_facts.linking_symbols.defined_names)
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         print(
-            f"Failed to parse {runtime_role} runtime symbols ({runtime}): {exc}",
+            f"Failed to parse relocatable runtime symbols ({runtime}): {exc}",
             file=sys.stderr,
         )
         return None
     if not runtime_exports:
-        print("Runtime exports unavailable for linking.", file=sys.stderr)
+        print(
+            f"Relocatable runtime linking definitions unavailable: {runtime}",
+            file=sys.stderr,
+        )
         return None
     try:
         output_data = output.read_bytes()
@@ -929,12 +929,16 @@ def _prepare_link_inputs_stage(
             item.loading,
         ),
     )
-    rewritten_path = _command._inject_call_indirect_alias(
-        rewritten_path,
-        runtime,
-        temp_dir,
-        facts_provider=facts_provider,
-    )
+    try:
+        rewritten_path = _command._inject_call_indirect_alias(
+            rewritten_path,
+            runtime,
+            temp_dir,
+            facts_provider=facts_provider,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"Wasm call_indirect alias admission failed: {exc}", file=sys.stderr)
+        return None
     base_allowlist = (
         allowlist_override
         if allowlist_override is not None
@@ -997,14 +1001,6 @@ def _plan_link_commands_stage(
 ) -> _PlannedLinkCommands | None:
     """Construct the monolithic and optional split linker transactions."""
 
-    if inputs.force_exports and inputs.runtime_role != "reloc":
-        missing_list = ", ".join(sorted(set(inputs.force_exports)))
-        print(
-            f"Wasm link failed: {len(inputs.force_exports)} import(s) missing from "
-            f"the explicitly selected shared runtime: {missing_list}",
-            file=sys.stderr,
-        )
-        return None
     command = [
         inputs.wasm_ld,
         "--no-entry",
@@ -1479,11 +1475,20 @@ def _link_split_app_stage(
         return _SplitAppLinkResult(1, None)
     if native_link_error is not None:
         print(native_link_error, file=sys.stderr)
-        plan.failure_artifact.write_bytes(artifact.data)
-        print(
-            f"Split-runtime native app failure artifact: {plan.failure_artifact}",
-            file=sys.stderr,
-        )
+        try:
+            evidence = _facts.preserve_rejected_wasm(
+                artifact.data, plan.failure_evidence_dir, stage="split-native-link"
+            )
+        except (OSError, ValueError) as exc:
+            print(
+                f"Failed to preserve split-runtime native app rejection: {exc}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Split-runtime native app failure artifact: {evidence}",
+                file=sys.stderr,
+            )
         print(
             "Split-runtime native app linker argv: " + shlex.join(plan.command),
             file=sys.stderr,
@@ -1725,7 +1730,7 @@ def run_wasm_ld_with_custodied_inputs(
     output: Path,
     linked: Path,
     *,
-    runtime_role: RuntimeLinkInputRole,
+    failure_evidence_dir: Path,
     allowlist_override: Path | None = None,
     optimize: bool = False,
     optimize_level: str = "Oz",
@@ -1826,13 +1831,13 @@ def run_wasm_ld_with_custodied_inputs(
         loaded_contract = _load_link_contract_stage(
             runtime,
             output,
-            runtime_role=runtime_role,
             app_export_contract_path=app_export_contract_path,
             wasm_facts_scanner=wasm_facts_scanner,
             wasm_facts_scanner_sha256=wasm_facts_scanner_sha256,
             facts_provider=facts_provider,
             temp_dir=temp_dir,
             facts_metrics=facts_metrics,
+            failure_evidence_dir=failure_evidence_dir,
             split_runtime=split_runtime,
             deploy_runtime_override=deploy_runtime_override,
         )
@@ -1920,7 +1925,6 @@ def run_wasm_ld_with_custodied_inputs(
             _LinkCommandInputs(
                 wasm_ld=wasm_ld,
                 runtime=runtime,
-                runtime_role=runtime_role,
                 allowlist=allowlist,
                 base_allowlist=base_allowlist,
                 output_callable_layout=output_callable_layout,
@@ -2048,9 +2052,7 @@ def run_wasm_ld_with_custodied_inputs(
                     provider_symbols=provider_symbols,
                     data_alias_plan=split_link.data_alias_plan,
                     got_runtime_addresses=split_link.got_runtime_addresses,
-                    failure_artifact=linked.with_name(
-                        linked.stem + ".split-native-link-failure.wasm"
-                    ),
+                    failure_evidence_dir=failure_evidence_dir,
                 ),
                 split_link.linked_path,
                 facts_provider=facts_provider,
@@ -2176,6 +2178,7 @@ def run_wasm_ld_with_custodied_inputs(
             link_outputs=link_outputs,
             selection_roles=selection_roles,
             staged_outputs=staged_outputs,
+            failure_evidence_dir=failure_evidence_dir,
         ):
             return 1
 

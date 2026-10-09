@@ -2,26 +2,32 @@
 
 from __future__ import annotations
 
-from wasm_link_fact_provider import WasmFactsProvider
+from wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
 
 from collections.abc import Iterable, Mapping, Sequence
 import contextlib
 import os
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
 from molt.temporary_artifacts import OwnedTemporaryDirectory
 import time
 
 from command_execution import CommandExecutor
-from wasm_link_edit import _add_symtab_alias
+from molt.wasm_linking_symbols import (
+    FLAG_BINDING_GLOBAL,
+    FLAG_BINDING_WEAK,
+    FLAG_EXPLICIT_NAME,
+    FLAG_EXPORTED,
+    SYMBOL_BINDING_MASK,
+    WasmLinkingSymbol,
+)
 from wasm_link_format import (
-    CALL_INDIRECT_MANGLED_RE,
-    CALL_INDIRECT_RE,
     FLAG_UNDEFINED,
+    _append_linking_function_symbols,
     _is_wasm_binary,
-    call_indirect_import_name_for_arity,
+    canonical_extern_type,
+    generated_function_type,
     is_call_indirect_import_name,
 )
 
@@ -151,65 +157,121 @@ def _preflight_relocatable_runtime(
     return f"relocatable runtime preflight failed for {runtime}: {detail}"
 
 
-def _dump_symbols(
-    path: Path,
-    *,
-    facts_provider: WasmFactsProvider,
-) -> list[tuple[int, int, str, str]]:
-    try:
-        data = path.read_bytes()
-    except OSError as exc:
-        print(f"Failed to read wasm symbols from {path}: {exc}", file=sys.stderr)
+def _call_indirect_alias_entries(
+    output_facts: WasmLinkFacts,
+    runtime_facts: WasmLinkFacts,
+) -> list[tuple[str, int, int]]:
+    """Join the generated ABI to opaque linker identities through function indices."""
+    abi_imports = tuple(
+        item
+        for item in runtime_facts.imports
+        if item.module == "env" and is_call_indirect_import_name(item.name)
+    )
+    if not abi_imports:
         return []
-    try:
-        parsed = [
-            (symbol.flags, symbol.index, symbol.name, "")
-            for symbol in facts_provider(data).linking_symbols.function_symbols
-            if symbol.index is not None
-        ]
-    except ValueError as exc:
-        print(
-            f"Failed to parse linking symbol table from {path}: {exc}",
-            file=sys.stderr,
-        )
-        return []
-    return parsed
+    for item in abi_imports:
+        if item.kind != 0:
+            raise ValueError(
+                f"runtime call_indirect import is not a function: {item.name}"
+            )
+        generated = generated_function_type(item.name)
+        if generated is None or canonical_extern_type(item.extern_type) != (
+            canonical_extern_type(generated)
+        ):
+            raise ValueError(f"runtime call_indirect ABI type mismatch: {item.name}")
 
-
-def _find_call_indirect_mangled(
-    runtime: Path, *, facts_provider: WasmFactsProvider
-) -> dict[str, str]:
-    names: dict[str, str] = {}
-    for flags, _index, name, _flags_text in _dump_symbols(
-        runtime, facts_provider=facts_provider
-    ):
-        if not (flags & FLAG_UNDEFINED):
+    imports = {item.index: item for item in abi_imports}
+    runtime_aliases: dict[int, set[str]] = {index: set() for index in imports}
+    for symbol in runtime_facts.linking_symbols.function_symbols:
+        if symbol.index not in imports:
             continue
-        if match := CALL_INDIRECT_RE.fullmatch(name):
-            if import_name := call_indirect_import_name_for_arity(match.group(1)):
-                names[import_name] = name
-            continue
-        if match := CALL_INDIRECT_MANGLED_RE.search(name):
-            if import_name := call_indirect_import_name_for_arity(match.group(1)):
-                names[import_name] = name
-    if not names:
-        print("Unable to locate runtime call_indirect symbol names.", file=sys.stderr)
-    return names
+        if (
+            not symbol.flags & FLAG_UNDEFINED
+            or symbol.flags & SYMBOL_BINDING_MASK
+            not in {FLAG_BINDING_GLOBAL, FLAG_BINDING_WEAK}
+            or not symbol.name
+        ):
+            raise ValueError(
+                "runtime call_indirect import has an invalid linker symbol: "
+                f"{imports[symbol.index].name} -> {symbol.name!r}"
+            )
+        runtime_aliases[symbol.index].add(symbol.name)
 
-
-def _find_output_call_indirect_symbol(
-    output: Path, *, facts_provider: WasmFactsProvider
-) -> dict[str, tuple[int, int]]:
-    symbols = {
-        name: (index, flags)
-        for flags, index, name, _flags_text in _dump_symbols(
-            output, facts_provider=facts_provider
-        )
-        if is_call_indirect_import_name(name)
-    }
-    if not symbols:
-        print("Unable to locate output call_indirect symbols.", file=sys.stderr)
-    return symbols
+    relevant_names = {item.name for item in abi_imports}.union(
+        *(names for names in runtime_aliases.values())
+    )
+    output_symbols: dict[str, list[WasmLinkingSymbol]] = {}
+    for symbol in output_facts.linking_symbols.symbols:
+        if symbol.name in relevant_names:
+            output_symbols.setdefault(symbol.name, []).append(symbol)
+    import_count = int(output_facts["function_import_count"])
+    function_count = import_count + int(output_facts["defined_function_count"])
+    pending: dict[str, tuple[int, int]] = {}
+    for index, item in imports.items():
+        aliases = runtime_aliases[index]
+        if not aliases:
+            raise ValueError(
+                f"runtime call_indirect import has no undefined linker symbol: {item.name}"
+            )
+        exported = output_facts.exports.get(item.name)
+        if (
+            exported is None
+            or exported.kind != 0
+            or not import_count <= exported.index < function_count
+        ):
+            raise ValueError(
+                f"app call_indirect export is not a defined function: {item.name}"
+            )
+        if canonical_extern_type(exported.extern_type) != canonical_extern_type(
+            item.extern_type
+        ):
+            raise ValueError(f"app/runtime call_indirect type mismatch: {item.name}")
+        definitions = output_symbols.get(item.name, [])
+        if not definitions or any(
+            symbol.kind != "function"
+            or symbol.index != exported.index
+            or not symbol.is_externally_linkable
+            for symbol in definitions
+        ):
+            raise ValueError(
+                f"app call_indirect export has no unambiguous linkable definition: {item.name}"
+            )
+        definition_flags = {symbol.flags for symbol in definitions}
+        if len(definition_flags) != 1:
+            raise ValueError(
+                f"app call_indirect definition flags disagree: {item.name}"
+            )
+        canonical_flags = next(iter(definition_flags))
+        if canonical_flags & SYMBOL_BINDING_MASK != FLAG_BINDING_GLOBAL:
+            raise ValueError(
+                f"app call_indirect definition must have global binding: {item.name}"
+            )
+        alias_flags = (canonical_flags & ~FLAG_EXPORTED) | FLAG_EXPLICIT_NAME
+        for name in sorted(aliases):
+            existing = output_symbols.get(name, [])
+            if existing:
+                if any(
+                    symbol.kind != "function"
+                    or symbol.index != exported.index
+                    or not symbol.is_externally_linkable
+                    or (symbol.flags & SYMBOL_BINDING_MASK)
+                    != (alias_flags & SYMBOL_BINDING_MASK)
+                    for symbol in existing
+                ):
+                    raise ValueError(
+                        f"call_indirect linker alias conflicts with app symbol: {name!r}"
+                    )
+                continue
+            requested = (exported.index, alias_flags)
+            if name in pending and pending[name] != requested:
+                raise ValueError(
+                    f"call_indirect linker alias has conflicting targets: {name!r}"
+                )
+            pending[name] = requested
+    return sorted(
+        ((name, index, flags) for name, (index, flags) in pending.items()),
+        key=lambda item: (item[1], item[0]),
+    )
 
 
 def _inject_call_indirect_alias(
@@ -219,30 +281,13 @@ def _inject_call_indirect_alias(
     *,
     facts_provider: WasmFactsProvider,
 ) -> Path:
-    mangled = _find_call_indirect_mangled(runtime, facts_provider=facts_provider)
-    symbol_info = _find_output_call_indirect_symbol(
-        output, facts_provider=facts_provider
+    runtime_facts = facts_provider(runtime.read_bytes())
+    output_data = output.read_bytes()
+    entries = _call_indirect_alias_entries(facts_provider(output_data), runtime_facts)
+    updated = _append_linking_function_symbols(
+        output_data, entries, facts_provider=facts_provider
     )
-    if not mangled or not symbol_info:
-        return output
-    updated = output.read_bytes()
-    modified = False
-    for name, mangled_name in mangled.items():
-        alias = symbol_info.get(name)
-        if alias is None:
-            print(f"Unable to locate output {name} symbol.", file=sys.stderr)
-            continue
-        alias_index, alias_flags = alias
-        if next_data := _add_symtab_alias(
-            updated,
-            mangled_name,
-            alias_index,
-            alias_flags,
-            facts_provider=facts_provider,
-        ):
-            updated = next_data
-            modified = True
-    if not modified:
+    if updated is None:
         return output
     alias_path = Path(temp_dir.name) / "output_alias.wasm"
     alias_path.write_bytes(updated)

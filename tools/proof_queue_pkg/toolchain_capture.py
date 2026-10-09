@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
 from dataclasses import dataclass
 import hashlib
 import json
@@ -14,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import TYPE_CHECKING, Mapping, Sequence, cast
+from typing import TYPE_CHECKING, Iterable, Mapping, Sequence, cast
 
 from molt.exact_json import canonical_json_sha256
 from molt.toolchain_identity import (
@@ -41,6 +42,9 @@ from tools.command_execution import CommandExecutor
 from tools.proof_queue_pkg import custody_cas
 from tools.proof_queue_pkg.process_image_capture import (
     PROCESS_IMAGE_SCHEMA,
+    _image_path_key,
+    custody_path,
+    require_custody_coordinate,
     canonical_images,
     capture_image,
     revalidate_images,
@@ -65,6 +69,35 @@ _COMMAND_PROGRAM_OVERRIDE = re.compile(r'\[(?=")')
 # gcc collect2.cc under -debug: fprintf (stderr, "ld_file_name        = %s\n").
 _COLLECT2_LINKER_REPORT = re.compile(r"ld_file_name +=\x20(.*)")
 _COMMANDS = CommandExecutor.for_file(__file__)
+
+
+def _image_membership_error(
+    message: str,
+    *,
+    unit: object = None,
+    role: object = None,
+    selected: object = None,
+    content: object = None,
+    images: Iterable[tuple[str, str]] = (),
+) -> ValueError:
+    """Retain the rejected edge without dumping environments or transcripts."""
+
+    def bounded(value: object) -> str | None:
+        return value[:512] if isinstance(value, str) else None
+
+    captured = list(islice(images, 9))
+    detail = {
+        "unit": bounded(unit),
+        "role": bounded(role),
+        "selected_path": bounded(selected),
+        "content_path": bounded(content),
+        "captured_images": [
+            {"role": bounded(image_role), "path": bounded(path)}
+            for image_role, path in captured[:8]
+        ],
+        "captured_images_truncated": len(captured) > 8,
+    }
+    return ValueError(message + "; image_edge=" + json.dumps(detail, sort_keys=True))
 
 
 class RustLinkCaptureError(ValueError):
@@ -102,6 +135,7 @@ def _run_rust_link_probe(
     probes: list[dict[str, object]],
 ) -> subprocess.CompletedProcess[str]:
     """Retain command results, without logging environment values or retrying."""
+    require_custody_coordinate(Path(command[0]))
     record: dict[str, object] = {
         "phase": phase,
         "unit": unit,
@@ -172,7 +206,7 @@ def select_cargo_build_tool_environment(
                 f"Cargo build tool {name} requires an absolute executable path; "
                 "build-script working directories differ from Cargo's invocation directory"
             )
-        path = Path(os.path.abspath(path))
+        path = custody_path(path)
         if not path.is_file() or not os.access(path, os.X_OK):
             raise ValueError(f"Cargo build tool {name} must name one executable file")
         return path
@@ -1122,9 +1156,16 @@ def capture_native_compiler_process_images(
     captured: dict[str, dict[str, object]] = {}
 
     def image(path: Path) -> dict[str, object]:
-        value = str(path.absolute())
+        value = _image_path_key(path)
         if value not in captured:
-            prior = next((row for row in captured_images if row["path"] == value), None)
+            prior = next(
+                (
+                    row
+                    for row in captured_images
+                    if _image_path_key(Path(row["path"])) == value
+                ),
+                None,
+            )
             captured[value] = (
                 {**prior, "role": role, "path_kind": "selection"}
                 if prior is not None
@@ -1277,8 +1318,12 @@ def validate_native_compiler_capture(
         )
     ):
         raise ValueError("native compiler phase transcripts are incomplete")
-    expected = {command[0]}
-    observed = {str(row["path"]): row for row in images if row["role"] == role}
+    if not Path(command[0]).is_absolute():
+        raise ValueError("native compiler command is not absolute")
+    expected = {_image_path_key(Path(command[0]))}
+    observed = {
+        _image_path_key(Path(row["path"])): row for row in images if row["role"] == role
+    }
     for phase, probe in zip(phases, probes, strict=True):
         helpers = phase.get("helpers")
         if not isinstance(helpers, list) or not helpers:
@@ -1311,23 +1356,41 @@ def validate_native_compiler_capture(
                     for value in helper["command"]
                 )
                 or not isinstance(helper["path"], str)
-                or helper["path"] not in observed
-                or observed[helper["path"]]["sha256"] != helper["sha256"]
+                or not Path(helper["path"]).is_absolute()
+                or _image_path_key(Path(helper["path"])) not in observed
+                or observed[_image_path_key(Path(helper["path"]))]["sha256"]
+                != helper["sha256"]
             ):
-                raise ValueError(
-                    "native compiler phase helper differs from captured images"
+                raise _image_membership_error(
+                    "native compiler phase helper differs from captured images",
+                    unit=phase.get("language"),
+                    role=role,
+                    selected=helper.get("path")
+                    if isinstance(helper, Mapping)
+                    else None,
+                    images=((image["role"], image["path"]) for image in images),
                 )
             invoked = helper["command"][0]
-            if (
-                Path(invoked).is_absolute()
-                and str(Path(invoked).absolute()) != helper["path"]
-            ):
-                raise ValueError(
-                    "native compiler helper binding differs from its exact command"
+            if Path(invoked).is_absolute() and _image_path_key(
+                Path(invoked)
+            ) != _image_path_key(Path(helper["path"])):
+                raise _image_membership_error(
+                    "native compiler helper binding differs from its exact command",
+                    unit=phase.get("language"),
+                    role=role,
+                    selected=invoked,
+                    content=helper["path"],
+                    images=((image["role"], image["path"]) for image in images),
                 )
-            expected.add(helper["path"])
+            expected.add(_image_path_key(Path(helper["path"])))
     if set(observed) != expected:
-        raise ValueError("native compiler phase image membership is incomplete")
+        raise _image_membership_error(
+            "native compiler phase image membership is incomplete",
+            unit=language,
+            role=role,
+            selected=command[0],
+            images=((image["role"], image["path"]) for image in images),
+        )
 
 
 def native_compiler_selection_is_current(
@@ -1338,7 +1401,9 @@ def native_compiler_selection_is_current(
             value = helper["command"][0]
             if not Path(value).is_absolute():
                 selected = find_executable(value, environment=env)
-                if selected is None or str(selected.absolute()) != helper["path"]:
+                if selected is None or _image_path_key(selected) != _image_path_key(
+                    Path(helper["path"])
+                ):
                     return False
     return True
 
@@ -1881,16 +1946,18 @@ def _capture_rust_link_unit(
             if helper.is_file():
                 selected_helpers.append(helper.absolute())
         selected_paths.extend(selected_helpers)
-        unique_paths = list(dict.fromkeys(selected_paths))
+        unique_paths = list(
+            {str(path): path for path in map(custody_path, selected_paths)}.values()
+        )
         images = []
-        auxiliary_keys = {os.path.normcase(str(path)) for path in selected_helpers}
+        auxiliary_keys = {_image_path_key(path) for path in selected_helpers}
         for index, path in enumerate(unique_paths):
             image = capture_image(
                 "rust-linker" if index == 0 else "rust-link-helper",
                 path,
                 root_exit_disposition=(
                     "terminate"
-                    if os.path.normcase(str(path)) in auxiliary_keys
+                    if _image_path_key(path) in auxiliary_keys
                     else "require-exit"
                 ),
             )
@@ -2128,7 +2195,9 @@ def validate_rust_link_selection(
     if not isinstance(raw_images, list):
         raise ValueError("Rust process image closure is missing")
     images = canonical_images(raw_images)
-    image_keys = {(image["role"], image["path"]) for image in images}
+    image_keys = {
+        (image["role"], _image_path_key(Path(image["path"]))) for image in images
+    }
     unit_keys: set[tuple[str, str]] = set()
     for unit in units:
         refs = unit.get("process_image_refs")
@@ -2137,35 +2206,81 @@ def validate_rust_link_selection(
             or set(row) != {"role", "path"}
             or not isinstance(row["role"], str)
             or not isinstance(row["path"], str)
+            or not Path(row["path"]).is_absolute()
             for row in refs
         ):
             raise ValueError("Rust unit image references are malformed")
-        keys = {(row["role"], row["path"]) for row in refs}
+        keys = {(row["role"], _image_path_key(Path(row["path"]))) for row in refs}
         if (
             len(keys) != len(refs)
             or len(refs) != unit["selected_process_count"]
             or not keys <= image_keys
         ):
-            raise ValueError("Rust unit image membership is incomplete")
+            missing = next(
+                (
+                    ref
+                    for ref in refs
+                    if (ref["role"], _image_path_key(Path(ref["path"])))
+                    not in image_keys
+                ),
+                refs[0] if refs else {},
+            )
+            raise _image_membership_error(
+                "Rust unit image membership is incomplete",
+                unit=unit.get("unit"),
+                role=missing.get("role"),
+                selected=missing.get("path"),
+                images=((image["role"], image["path"]) for image in images),
+            )
         resolutions = unit.get("process_resolution")
         if not isinstance(resolutions, list) or any(
-            not isinstance(row, Mapping) for row in resolutions
+            not isinstance(row, Mapping)
+            or any(
+                not isinstance(row.get(field), str)
+                or not Path(row[field]).is_absolute()
+                for field in ("path", "content_path")
+            )
+            for row in resolutions
         ):
             raise ValueError("Rust unit process resolution is malformed")
         if unit["artifact_selection"]["link_required"]:
             if (
                 not resolutions
-                or ("rust-linker", resolutions[0].get("path")) not in keys
+                or ("rust-linker", _image_path_key(Path(resolutions[0]["path"])))
+                not in keys
             ):
-                raise ValueError("Rust target linker resolution has no captured image")
-            paths = {path for _role, path in keys}
-            if any(
-                row.get("path") not in paths or row.get("content_path") not in paths
-                for row in resolutions
-            ):
-                raise ValueError(
-                    "Rust resolved process is missing from its unit images"
+                first = resolutions[0] if resolutions else {}
+                raise _image_membership_error(
+                    "Rust target linker resolution has no captured image",
+                    unit=unit.get("unit"),
+                    role="rust-linker",
+                    selected=first.get("path"),
+                    content=first.get("content_path"),
+                    images=((ref["role"], ref["path"]) for ref in refs),
                 )
+            paths = {path for _role, path in keys}
+            for resolution in resolutions:
+                if (
+                    _image_path_key(Path(resolution["path"])) not in paths
+                    or _image_path_key(Path(resolution["content_path"])) not in paths
+                ):
+                    role = next(
+                        (
+                            ref["role"]
+                            for ref in refs
+                            if _image_path_key(Path(ref["path"]))
+                            == _image_path_key(Path(resolution["path"]))
+                        ),
+                        None,
+                    )
+                    raise _image_membership_error(
+                        "Rust resolved process is missing from its unit images",
+                        unit=unit.get("unit"),
+                        role=role,
+                        selected=resolution["path"],
+                        content=resolution["content_path"],
+                        images=((ref["role"], ref["path"]) for ref in refs),
+                    )
         elif refs or resolutions:
             raise ValueError("archive-only Rust unit has process images")
         unit_keys.update(keys)
@@ -2208,8 +2323,20 @@ def validate_rust_link_selection(
             role=role,
         )
         archivers = [image for image in images if image["role"] == role + "-archiver"]
-        if len(archivers) != 1 or archivers[0]["path"] != selection["archiver"]:
-            raise ValueError("native C independent archiver custody is incomplete")
+        if (
+            len(archivers) != 1
+            or not isinstance(selection["archiver"], str)
+            or not Path(selection["archiver"]).is_absolute()
+            or _image_path_key(Path(archivers[0]["path"]))
+            != _image_path_key(Path(selection["archiver"]))
+        ):
+            raise _image_membership_error(
+                "native C independent archiver custody is incomplete",
+                unit=triple,
+                role=role + "-archiver",
+                selected=selection["archiver"],
+                images=((image["role"], image["path"]) for image in archivers),
+            )
         resources = row["resources"]
         roots = selection["resource_roots"]
         if (
@@ -2288,12 +2415,18 @@ def validate_rust_link_selection(
         or str(row["role"]).startswith("rust-build-")
     ]
     expected_unit_keys = {
-        (row["role"], row["path"])
+        (row["role"], _image_path_key(Path(row["path"])))
         for row in selected
         if not str(row["role"]).startswith("rust-build-native-c-")
     }
     if unit_keys != expected_unit_keys:
-        raise ValueError("Rust unit image references differ from the captured closure")
+        different = next(iter(sorted(unit_keys ^ expected_unit_keys)))
+        raise _image_membership_error(
+            "Rust unit image references differ from the captured closure",
+            role=different[0],
+            selected=different[1],
+            images=((image["role"], image["path"]) for image in selected),
+        )
     if len(selected) != telemetry.get("selected_process_count") or (
         not selected
         and any(row["artifact_selection"]["link_required"] for row in units)
@@ -2407,7 +2540,7 @@ def frozen_files(payload: object) -> list[FrozenFile]:
         path = Path(raw_path)
         if not path.is_absolute():
             return
-        normalized = os.path.normcase(os.path.abspath(path))
+        normalized = _image_path_key(path)
         size = raw_size if isinstance(raw_size, int) and raw_size >= 0 else None
         row = FrozenFile(str(path), digest, size)
         prior = files.get(normalized)
