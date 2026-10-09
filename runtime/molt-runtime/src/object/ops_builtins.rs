@@ -1262,6 +1262,21 @@ mod direct_call_tests {
         CodeExecutionKind, code_publish_execution_kind, function_set_closure_bits,
     };
 
+    static ADOPTING_ENTRY_REFS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    extern "C" fn adopting_identity_entry(argument: u64) -> u64 {
+        let references = obj_from_bits(argument).as_ptr().map_or(0, |ptr| unsafe {
+            (*crate::object::header_from_obj_ptr(ptr)).ref_count_snapshot()
+        });
+        ADOPTING_ENTRY_REFS.store(references, std::sync::atomic::Ordering::SeqCst);
+        // The adopted argument edge becomes the owned return edge.
+        argument
+    }
+
+    extern "C" fn adopting_identity_trampoline(_closure: u64, argv: u64, _argc: u64) -> i64 {
+        adopting_identity_entry(unsafe { *(argv as *const u64) }) as i64
+    }
+
     #[test]
     fn admission_tracks_actual_shape_binding_and_code_kind() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
@@ -1361,7 +1376,11 @@ mod direct_call_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             unsafe {
-                let function = alloc_function_obj(py, 17, 1);
+                let function = crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    adopting_identity_entry as *const () as usize as u64,
+                    1,
+                );
                 assert!(!function.is_null());
                 let bits = MoltObject::from_ptr(function).bits();
                 // A borrowing entry admits only a borrowing call site.
@@ -1372,13 +1391,86 @@ mod direct_call_tests {
                         function,
                         crate::object::layout::EntryCustody::Adopting,
                     ),
+                    Err("an adopting entry needs a trampoline for borrowed invocation")
+                );
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 0b00), 1);
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 0b10), 0);
+                dec_ref_bits(py, bits);
+
+                let bits = crate::builtins::functions::molt_func_new(
+                    adopting_identity_entry as *const () as usize as u64,
+                    adopting_identity_trampoline as *const () as usize as u64,
+                    1,
+                    molt_codegen_abi::ENTRY_CUSTODY_ADOPTS,
+                );
+                assert!(!exception_pending(py));
+                let function = obj_from_bits(bits).as_ptr().expect("compiled function");
+                // A trampoline alone does not certify a direct execution kind.
+                assert_eq!(molt_function_direct_call_eligible(bits, 1, 0b10), 0);
+                let name = alloc_string(py, b"custody_argument");
+                let empty = alloc_tuple(py, &[]);
+                assert!(!name.is_null() && !empty.is_null());
+                let name_bits = MoltObject::from_ptr(name).bits();
+                let empty_bits = MoltObject::from_ptr(empty).bits();
+                let varnames = alloc_tuple(py, &[name_bits]);
+                assert!(!varnames.is_null());
+                let varnames_bits = MoltObject::from_ptr(varnames).bits();
+                let code = alloc_code_obj(
+                    py,
+                    name_bits,
+                    name_bits,
+                    1,
+                    MoltObject::none().bits(),
+                    varnames_bits,
+                    empty_bits,
+                    1,
+                    0,
+                    0,
+                );
+                assert!(!code.is_null());
+                let code_bits = MoltObject::from_ptr(code).bits();
+                assert_eq!(
+                    code_publish_execution_kind(code, CodeExecutionKind::Direct),
                     Ok(())
                 );
+                assert!(function_set_code_bits(py, function, code_bits));
+                dec_ref_bits(py, code_bits);
                 // An adopting entry admits only an adopting call site.
                 assert_eq!(molt_function_direct_call_eligible(bits, 1, 0b00), 0);
                 assert_eq!(molt_function_direct_call_eligible(bits, 1, 0b10), 1);
                 assert_eq!(molt_function_direct_call_eligible(bits, 1, 0b100), 0);
+
+                let argument = alloc_list(py, &[]);
+                assert!(!argument.is_null());
+                let argument_bits = MoltObject::from_ptr(argument).bits();
+                let references =
+                    (*crate::object::header_from_obj_ptr(argument)).ref_count_snapshot();
+                let result =
+                    crate::call::function::call_function_obj_trampoline(py, bits, &[argument_bits]);
+                assert!(!exception_pending(py));
+                assert_eq!(result, argument_bits);
+                assert_eq!(
+                    ADOPTING_ENTRY_REFS.load(std::sync::atomic::Ordering::SeqCst),
+                    references + 1,
+                    "the borrowed invocation must supply exactly one adopted edge"
+                );
+                assert_eq!(
+                    (*crate::object::header_from_obj_ptr(argument)).ref_count_snapshot(),
+                    references + 1,
+                    "the adopted edge must remain owned by the return value"
+                );
+                dec_ref_bits(py, result);
+                assert_eq!(
+                    (*crate::object::header_from_obj_ptr(argument)).ref_count_snapshot(),
+                    references,
+                    "releasing the result must discharge only the return edge"
+                );
+                dec_ref_bits(py, argument_bits);
                 dec_ref_bits(py, bits);
+                dec_ref_bits(py, varnames_bits);
+                dec_ref_bits(py, empty_bits);
+                dec_ref_bits(py, name_bits);
+                assert!(!exception_pending(py));
             }
         });
     }

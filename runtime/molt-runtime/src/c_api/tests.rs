@@ -646,15 +646,114 @@ static WEAKREF_CB_CALL_GC: AtomicU32 = AtomicU32::new(0);
 // re-entrant `gc.collect()` — while the revival window still holds the target
 // live. A freed-mid-collect target would show a poisoned (non-OBJECT) type_id.
 static WEAKREF_CB_TYPE_ID_AFTER_GC: AtomicU32 = AtomicU32::new(0);
-// P6 Scenario C: a callback that creates a NEW weakref against the dying target
-// (`weakref.ref(target)`), re-inserting a registry entry keyed on the about-to-be
-// -freed address. `weakref_clear_for_ptr`'s post-loop re-drain must remove it so
-// no orphan survives to mis-fire on slot reuse. The callback stashes the new
-// weakref's bits so the test can drop it afterward, and we record the by_target
-// presence the test inspects.
+// P6 Scenario C: re-registration against a committed-dead target must be
+// rejected before publishing a registry entry keyed on its retiring address.
+// Record that return boundary for the Rust test to inspect after the callback.
 static WEAKREF_CB_REREGISTER: AtomicU32 = AtomicU32::new(0);
 static WEAKREF_CB_REREGISTER_WEAK_BITS: AtomicU64 = AtomicU64::new(0);
 static WEAKREF_CB_REREGISTER_NEW_WEAK_OUT: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug)]
+struct WeakrefGcObservation {
+    collected: Option<i64>,
+    collections_before: u64,
+    collections_after: u64,
+    error: Option<(String, String)>,
+}
+
+static WEAKREF_CB_GC_OBSERVATION: std::sync::Mutex<Option<WeakrefGcObservation>> =
+    std::sync::Mutex::new(None);
+
+// Only plain Rust diagnostic values cross the callback boundary; no borrowed
+// runtime pointer or exception owner escapes into the observation.
+fn observe_weakref_gc_collect(py: &crate::PyToken<'_>, generation: usize) -> WeakrefGcObservation {
+    let collections_before = crate::runtime_state(py).gc.generation_stats()[generation].collections;
+    let result = crate::molt_gc_collect(MoltObject::from_int(generation as i64).bits());
+    let collections_after = crate::runtime_state(py).gc.generation_stats()[generation].collections;
+    let collected = obj_from_bits(result).as_int();
+    let error = crate::exception_last_bits_noinc(py)
+        .and_then(|bits| obj_from_bits(bits).as_ptr())
+        .map(|ptr| {
+            (
+                crate::builtins::exceptions::exception_diagnostic_name(ptr),
+                crate::format_exception_message(py, ptr),
+            )
+        });
+    if exception_pending(py) {
+        clear_exception(py);
+    }
+    dec_ref_bits(py, result);
+    WeakrefGcObservation {
+        collected,
+        collections_before,
+        collections_after,
+        error,
+    }
+}
+
+// Called only after the extern C callback has returned to its Rust test.
+fn assert_weakref_gc_observation(observed: &WeakrefGcObservation) {
+    let completed = observed
+        .collections_after
+        .checked_sub(observed.collections_before);
+    if cfg!(feature = "free-threaded") {
+        // The current runtime explicitly refuses GC without a stop-the-world
+        // epoch. This checks refusal and lifetime, not collection coverage.
+        assert_eq!(observed.collected, None, "{observed:?}");
+        assert_eq!(completed, Some(0), "{observed:?}");
+        assert_eq!(
+            observed
+                .error
+                .as_ref()
+                .map(|(kind, text)| (kind.as_str(), text.as_str())),
+            Some((
+                "RuntimeError",
+                "cyclic GC requires a free-threaded stop-the-world guard"
+            )),
+            "{observed:?}"
+        );
+    } else {
+        assert_eq!(observed.error, None, "{observed:?}");
+        assert!(
+            observed.collected.is_some_and(|count| count >= 0),
+            "{observed:?}"
+        );
+        // ReentrantNoop also returns integer zero, but does not complete a
+        // collection. It must not satisfy this callback's collection oracle.
+        assert_eq!(completed, Some(1), "{observed:?}");
+    }
+}
+
+struct WeakrefCallbackProbeGuard;
+
+impl WeakrefCallbackProbeGuard {
+    fn new() -> Self {
+        Self::reset();
+        Self
+    }
+
+    fn reset() {
+        WEAKREF_CB_CALL_COUNT.store(0, Ordering::SeqCst);
+        WEAKREF_CB_TARGET_BITS.store(0, Ordering::SeqCst);
+        WEAKREF_CB_TARGET_RC_AT_FIRE.store(0, Ordering::SeqCst);
+        WEAKREF_CB_CALL_GC.store(0, Ordering::SeqCst);
+        WEAKREF_CB_TYPE_ID_AFTER_GC.store(0, Ordering::SeqCst);
+        WEAKREF_CB_REREGISTER.store(0, Ordering::SeqCst);
+        WEAKREF_CB_REREGISTER_WEAK_BITS.store(0, Ordering::SeqCst);
+        WEAKREF_CB_REREGISTER_NEW_WEAK_OUT.store(0, Ordering::SeqCst);
+        *WEAKREF_CB_GC_OBSERVATION
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
+impl Drop for WeakrefCallbackProbeGuard {
+    fn drop(&mut self) {
+        // The enclosing CApiTestGuard still owns process-state custody, even
+        // if a Rust-side assertion unwinds after enabling a callback mode.
+        Self::reset();
+    }
+}
 
 fn weakref_target_rc(bits: u64) -> u32 {
     match obj_from_bits(bits).as_ptr() {
@@ -679,10 +778,10 @@ extern "C" fn c_api_test_weakref_callback_probe(weak_bits: u64) -> u64 {
             // asserted by the caller). Record the
             // refcount AFTER the collection too, to prove the target was not freed
             // out from under the callback by the re-entrant collect.
-            let _collected = crate::molt_gc_collect(MoltObject::from_int(0).bits());
-            if exception_pending(_py) {
-                clear_exception(_py);
-            }
+            let observed = observe_weakref_gc_collect(_py, 0);
+            *WEAKREF_CB_GC_OBSERVATION
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(observed);
             WEAKREF_CB_TARGET_RC_AT_FIRE.store(weakref_target_rc(target_bits), Ordering::SeqCst);
             // Read the target header WHILE the window still holds it live. A
             // mid-collect free would poison this; capturing it here (not after the
@@ -695,16 +794,14 @@ extern "C" fn c_api_test_weakref_callback_probe(weak_bits: u64) -> u64 {
             WEAKREF_CB_TYPE_ID_AFTER_GC.store(tid_after, Ordering::SeqCst);
         }
         if WEAKREF_CB_REREGISTER.load(Ordering::SeqCst) != 0 {
-            // P6 Scenario C: create a fresh weakref against the DYING target. This
-            // re-inserts a `by_target` entry keyed on the about-to-be-freed address.
-            // `weakref_clear_for_ptr`'s post-loop re-drain must remove it. The new
-            // weakref object is a heap instance supplied via REREGISTER_WEAK_BITS.
+            // Attempt to attach the supplied weakref to a committed-dead target;
+            // the existing registration boundary must reject that publication.
             let new_weak_bits = WEAKREF_CB_REREGISTER_WEAK_BITS.load(Ordering::SeqCst);
             if new_weak_bits != 0 && !obj_from_bits(new_weak_bits).is_none() {
                 let registered =
                     crate::molt_weakref_register(new_weak_bits, target_bits, none_bits());
-                // Return value is a fresh strong ref to the weakref; stash it so the
-                // test owns and drops it. Do NOT drop here — the test asserts on it.
+                // Capture the expected None failure sentinel for the Rust test;
+                // the enclosing unraisable boundary consumes the raised error.
                 WEAKREF_CB_REREGISTER_NEW_WEAK_OUT.store(registered, Ordering::SeqCst);
             }
         }
@@ -1195,9 +1292,7 @@ fn guarded_class_def_arms_and_runs_instance_finalizer() {
 fn weakref_callback_runs_with_live_target_not_rc0() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
-        WEAKREF_CB_CALL_COUNT.store(0, Ordering::SeqCst);
-        WEAKREF_CB_TARGET_BITS.store(0, Ordering::SeqCst);
-        WEAKREF_CB_TARGET_RC_AT_FIRE.store(0, Ordering::SeqCst);
+        let _probe = WeakrefCallbackProbeGuard::new();
 
         // A plain class: instances have NO __del__, so the revival window here
         // is opened SOLELY by the HAS_WEAKREF lifetime-boundary bit.
@@ -1276,11 +1371,8 @@ fn explicit_gc_collect_preserves_strongly_reachable_weakref_target() {
         let registered = crate::molt_weakref_register(weak_bits, target_bits, none_bits());
         assert!(is_truthy(_py, obj_from_bits(registered)));
 
-        let collected = crate::molt_gc_collect(MoltObject::from_int(2).bits());
-        assert!(
-            !obj_from_bits(collected).is_none(),
-            "gc.collect must return its integer collection count"
-        );
+        let collected = observe_weakref_gc_collect(_py, 2);
+        assert_weakref_gc_observation(&collected);
 
         let resolved = crate::molt_weakref_get(weak_bits);
         assert_eq!(
@@ -1304,9 +1396,7 @@ fn explicit_gc_collect_preserves_strongly_reachable_weakref_target() {
 fn repeated_weakref_callbacks_transfer_registration_custody_without_leak() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
-        WEAKREF_CB_CALL_COUNT.store(0, Ordering::SeqCst);
-        WEAKREF_CB_CALL_GC.store(0, Ordering::SeqCst);
-        WEAKREF_CB_REREGISTER.store(0, Ordering::SeqCst);
+        let _probe = WeakrefCallbackProbeGuard::new();
 
         let (class_bits, attr_storage) =
             create_guarded_test_class(_py, b"WeakCallbackCustody", &[]);
@@ -1364,11 +1454,8 @@ fn repeated_weakref_callbacks_transfer_registration_custody_without_leak() {
 fn weakref_callback_calling_gc_collect_keeps_target_live() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
-        WEAKREF_CB_CALL_COUNT.store(0, Ordering::SeqCst);
-        WEAKREF_CB_TARGET_BITS.store(0, Ordering::SeqCst);
-        WEAKREF_CB_TARGET_RC_AT_FIRE.store(0, Ordering::SeqCst);
+        let _probe = WeakrefCallbackProbeGuard::new();
         WEAKREF_CB_CALL_GC.store(1, Ordering::SeqCst);
-        WEAKREF_CB_TYPE_ID_AFTER_GC.store(0, Ordering::SeqCst);
 
         let (class_bits, attr_storage) = create_guarded_test_class(_py, b"WeakTargetGc", &[]);
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
@@ -1394,6 +1481,13 @@ fn weakref_callback_calling_gc_collect_keeps_target_live() {
         // gc.collect(), which re-enters the weakref subsystem. The target must be
         // live both during and after that re-entrant collection.
         dec_ref_bits(_py, inst_bits);
+
+        let collected = WEAKREF_CB_GC_OBSERVATION
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("callback must record its gc.collect outcome");
+        assert_weakref_gc_observation(&collected);
 
         assert_eq!(
             WEAKREF_CB_CALL_COUNT.load(Ordering::SeqCst),
@@ -1429,30 +1523,22 @@ fn weakref_callback_calling_gc_collect_keeps_target_live() {
     });
 }
 
-// P6 Scenario C (council #1): a weakref callback that registers a NEW weakref
-// against the DYING target re-inserts a registry entry keyed on the about-to-be
-// -freed address. Without the post-loop re-drain in `weakref_clear_for_ptr`, that
-// orphan would survive the free and, on slot reuse, mis-fire as a wrong-target
-// callback. The re-drain nulls the orphan's target so it resolves to None and
-// never fires; this test proves the orphan does not survive the target's death.
+// P6 Scenario C: a weakref callback cannot attach a new weakref to a target
+// after death is committed. Rejection must leave no registry entry that could
+// resolve to freed storage or mis-fire after allocation-slot reuse.
 #[test]
 fn weakref_callback_reregistering_on_dying_target_leaves_no_orphan() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
-        WEAKREF_CB_CALL_COUNT.store(0, Ordering::SeqCst);
-        WEAKREF_CB_TARGET_BITS.store(0, Ordering::SeqCst);
-        WEAKREF_CB_TARGET_RC_AT_FIRE.store(0, Ordering::SeqCst);
-        WEAKREF_CB_CALL_GC.store(0, Ordering::SeqCst);
+        let _probe = WeakrefCallbackProbeGuard::new();
         WEAKREF_CB_REREGISTER.store(1, Ordering::SeqCst);
-        WEAKREF_CB_REREGISTER_NEW_WEAK_OUT.store(0, Ordering::SeqCst);
 
         let (class_bits, attr_storage) = create_guarded_test_class(_py, b"WeakTargetReReg", &[]);
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let weak_bits = alloc_test_weakref(_py);
-        // The fresh weakref object the callback will register against the dying
-        // target. Allocated up front and kept alive across the death so its
-        // registry entry would persist as an orphan absent the re-drain.
+        // Keep the supplied weakref alive across the attempted registration so
+        // its post-callback resolution tests whether an entry was published.
         let new_weak_bits = alloc_test_weakref(_py);
         WEAKREF_CB_REREGISTER_WEAK_BITS.store(new_weak_bits, Ordering::SeqCst);
 
@@ -1471,10 +1557,8 @@ fn weakref_callback_reregistering_on_dying_target_leaves_no_orphan() {
         let registered = crate::molt_weakref_register(weak_bits, inst_bits, cb_bits);
         assert!(is_truthy(_py, obj_from_bits(registered)));
 
-        // Drop the sole strong ref: the callback fires and registers `new_weak`
-        // against the dying target. Registration does NOT incref the target, so the
-        // target is still freed at the window close; the post-loop re-drain must
-        // remove the orphan entry it created.
+        // Drop the sole strong ref. The callback's attempted registration must
+        // fail without retaining the target or publishing a weakref edge.
         dec_ref_bits(_py, inst_bits);
 
         assert_eq!(
@@ -1492,14 +1576,13 @@ fn weakref_callback_reregistering_on_dying_target_leaves_no_orphan() {
         );
         assert!(!crate::exception_pending(_py));
 
-        // THE CONTRACT: the orphan must not survive. Resolving the new weakref must
-        // return None (its target was nulled by the re-drain), and it must NOT
-        // resolve to the dead/freed target nor a reused slot.
+        // The rejected weakref remains unattached and cannot resolve to the
+        // dead target or to an object later allocated at the same address.
         let resolved = crate::molt_weakref_get(new_weak_bits);
         assert!(
             obj_from_bits(resolved).is_none(),
             "weakref registered against a dying target must resolve to None after the \
-             target's death (orphan re-drain), got non-None bits=0x{:x}",
+             target's death, got non-None bits=0x{:x}",
             resolved
         );
         if !obj_from_bits(resolved).is_none() {

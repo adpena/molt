@@ -482,6 +482,28 @@ impl ObjectBridge {
         )
     }
 
+    /// Mirror-adjusted ownership for a live runtime handle. None positively
+    /// identifies absence of a managed view; a changed/finalizing view refuses.
+    /// The runtime caller holds its ordinary GIL/object lifetime custody.
+    pub fn managed_handle_is_uniquely_referenced(&self, bits: AbiHandle) -> Option<bool> {
+        let addr = {
+            let handle = self.handle_shard(bits).lock();
+            let entry = handle.to_py.get(&bits)?;
+            entry.view.py_obj().addr()
+        };
+        let (address, handle) = self.lock_address_then_handle(addr, bits);
+        let Some(entry) = handle.to_py.get(&bits) else {
+            return Some(false);
+        };
+        if entry.view.py_obj().addr() != addr {
+            return Some(false);
+        }
+        Some(self.managed_entry_is_unique(
+            entry,
+            address.projection_refs.get(&addr).copied().unwrap_or(0),
+        ))
+    }
+
     /// Check and promote in one transaction. The stable runtime hold becomes
     /// the external lifetime root; no shared runtime header is immortalized.
     pub unsafe fn managed_try_set_immortal(&self, ptr: *mut PyObject) -> Option<bool> {

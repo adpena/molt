@@ -1976,17 +1976,16 @@ fn pending_exception_kind_and_message(_py: &PyToken<'_>) -> Option<(String, Stri
     if !exception_pending(_py) {
         return None;
     }
-    let exc_bits = molt_exception_last_pending();
-    let Some(exc_ptr) = maybe_ptr_from_bits(exc_bits) else {
-        if !obj_from_bits(exc_bits).is_none() {
-            dec_ref_bits(_py, exc_bits);
-        }
-        return None;
-    };
+    let exception =
+        crate::builtins::exceptions::ExceptionValue::adopt(_py, molt_exception_last_pending());
+    let exc_ptr = maybe_ptr_from_bits(exception.bits())?;
     let kind = crate::builtins::exceptions::exception_diagnostic_name(exc_ptr);
-    let message = format_obj_str(_py, obj_from_bits(exc_bits));
-    if !obj_from_bits(exc_bits).is_none() {
-        dec_ref_bits(_py, exc_bits);
+    let mut message = String::new();
+    if !crate::builtins::exceptions::with_saved_raised_exception(_py, || {
+        message = format_obj_str(_py, obj_from_bits(exception.bits()));
+        !exception_pending(_py)
+    }) {
+        return None;
     }
     Some((kind, message))
 }
