@@ -145,7 +145,7 @@ unsafe fn dump_pending_exception() {
     #[cfg(unix)]
     {
         let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
-        if unsafe { libc::dladdr(occ, &mut info) } != 0 && !info.dli_sname.is_null() {
+        if unsafe { libc::dladdr(occ.cast(), &mut info) } != 0 && !info.dli_sname.is_null() {
             let sym = unsafe { CStr::from_ptr(info.dli_sname) }.to_string_lossy();
             eprintln!("===MOLT_DISCOVERY_EXC_TYPE (dladdr symbol): {sym}");
         } else {
