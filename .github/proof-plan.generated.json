@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "4957f0cc7f4e327750c91895e1c8e6c75506ca6db0c3522f894e9f75df8b2a49",
+  "authority_sha256": "5e2d364c0a3c6ab9dc62d435c6bcf0b2df76126ce8b340aed082e9de139058d2",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2446,7 +2446,10 @@
         "tests/tools/test_wasm_strip_unused_parsing.py",
         "tests/tools/test_win_job.py",
         "tests/tools/test_win_job_contract.py",
-        "tests/tools/test_z3_pass_verify.py"
+        "tests/tools/test_z3_pass_verify.py",
+        "tests/tools/test_nightly_profile_feedback.py",
+        "tests/tools/test_nightly_shard_profile.py",
+        "tests/tools/test_nightly_sharding.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
