@@ -17,6 +17,7 @@ from molt.wasi_sdk_identity import (
     wasi_sdk_tree_identity,
 )
 from tools import provision_wasi_sdk as provisioner
+from tests.process_guard_common import install_module_view
 
 
 # The pinned SDK's VERSION file, read from its one authority.
@@ -394,7 +395,9 @@ def test_sdk_tree_byte_limit_is_checked_before_file_content_is_read(
     def forbidden_hash(*_args, **_kwargs):
         pytest.fail("out-of-policy file content must not be read")
 
-    monkeypatch.setattr(wasi_sdk_identity.hashlib, "file_digest", forbidden_hash)
+    install_module_view(
+        monkeypatch, "hashlib", hashlib, wasi_sdk_identity, file_digest=forbidden_hash
+    )
     with pytest.raises(ValueError, match="total-byte policy"):
         wasi_sdk_tree_identity(tmp_path)
 

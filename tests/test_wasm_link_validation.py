@@ -26,6 +26,7 @@ from molt.cli.source_extension_link_requirements import (
 )
 from tests.cli.native_link_test_support import static_archive_bytes
 from tests.executable_test_support import write_mock_executable
+from tests.process_guard_common import install_module_view
 from molt import wasm_artifact
 from molt._wasm_runtime_exports import (
     wasm_split_runtime_export_name_for_import,
@@ -1440,7 +1441,9 @@ def test_stable_snapshot_rejects_midstream_source_change(
             return self._inner.hexdigest()
 
     monkeypatch.setattr(identity_authority, "_STABLE_SNAPSHOT_CHUNK_BYTES", 4)
-    monkeypatch.setattr(identity_authority.hashlib, "sha256", ChangingHasher)
+    install_module_view(
+        monkeypatch, "hashlib", hashlib, identity_authority, sha256=ChangingHasher
+    )
 
     with pytest.raises(
         identity_authority.StableRegularFileChangedError,
