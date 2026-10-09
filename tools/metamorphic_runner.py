@@ -24,6 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from molt.cargo_execution_policy import default_nested_process_timeout_seconds  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 
 
@@ -59,9 +60,21 @@ def _extract_binary(build_json: dict) -> str | None:
 class MetamorphicRunner:
     """Compile and run two Python sources, comparing output."""
 
-    def __init__(self, build_profile: str = "dev", timeout: int = 30):
+    def __init__(
+        self,
+        build_profile: str = "dev",
+        timeout: int = 30,
+        build_timeout: float | None = None,
+    ):
+        """``timeout`` bounds each program run; a build gets the proof plan's
+        nested build budget unless ``build_timeout`` names one."""
         self.build_profile = build_profile
         self.timeout = timeout
+        self.build_timeout = (
+            default_nested_process_timeout_seconds("build")
+            if build_timeout is None
+            else build_timeout
+        )
         self.python = sys.executable
         self.env = os.environ.copy()
         self.env.setdefault("PYTHONPATH", "src")
@@ -103,15 +116,23 @@ class MetamorphicRunner:
                 "--json",
                 src_path,
             ]
-            build_result = harness_memory_guard.guarded_completed_process(
-                build_cmd,
-                prefix="MOLT_TEST_SUITE",
-                capture_output=True,
-                text=True,
-                env=self.env,
-                timeout=self.timeout,
-                limits=self.limits,
-            )
+            try:
+                build_result = harness_memory_guard.guarded_completed_process(
+                    build_cmd,
+                    prefix="MOLT_TEST_SUITE",
+                    capture_output=True,
+                    text=True,
+                    env=self.env,
+                    timeout=self.build_timeout,
+                    limits=self.limits,
+                )
+            except subprocess.TimeoutExpired:
+                return (
+                    "",
+                    "",
+                    None,
+                    f"Build timeout ({self.build_timeout:g}s) for {label}",
+                )
             if build_result.returncode != 0:
                 return (
                     "",
@@ -176,7 +197,7 @@ class MetamorphicRunner:
             return run_result.stdout, run_result.stderr, run_result.returncode, None
 
         except subprocess.TimeoutExpired:
-            return "", "", None, f"Timeout ({self.timeout}s) for {label}"
+            return "", "", None, f"Run timeout ({self.timeout}s) for {label}"
         finally:
             # Clean up source file
             if src_path:
