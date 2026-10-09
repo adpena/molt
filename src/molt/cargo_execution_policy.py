@@ -10,6 +10,11 @@ from pathlib import Path
 import re
 import tomllib
 
+from .disk_capacity import (
+    DiskCapacityReceipt,
+    FreeSpaceMeasurement,
+    require_build_capacity,
+)
 from .source_root import compiler_source_root
 
 
@@ -178,6 +183,94 @@ def is_cargo_command(command: Sequence[str]) -> bool:
     if _executable_name(str(command[0])) != "rustup":
         return False
     return any(_executable_name(str(part)) == "cargo" for part in command[1:])
+
+
+def _cargo_output_path(raw: str, *, cwd: Path, label: str) -> Path:
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(f"Cargo execution requires a non-empty {label}")
+    path = Path(raw)
+    if not path.is_absolute():
+        path = cwd / path
+    try:
+        return path.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(f"cannot resolve Cargo {label} {raw!r}: {exc}") from exc
+
+
+def _command_target_dirs(command: Sequence[str]) -> tuple[str, ...]:
+    declarations: list[str] = []
+    index = 1
+    while index < len(command):
+        argument = command[index]
+        if argument == "--":
+            break
+        if argument == "--target-dir":
+            index += 1
+            if index >= len(command) or not command[index]:
+                raise ValueError("Cargo --target-dir requires a non-empty path")
+            declarations.append(command[index])
+        elif argument.startswith("--target-dir="):
+            value = argument.partition("=")[2]
+            if not value:
+                raise ValueError("Cargo --target-dir= requires a non-empty path")
+            declarations.append(value)
+        index += 1
+    return tuple(declarations)
+
+
+def cargo_output_paths(
+    command: Sequence[str], *, cwd: Path, env: Mapping[str, str]
+) -> tuple[Path, ...]:
+    """Return the directories one Cargo invocation writes build output below.
+
+    The target is ``--target-dir``, else ``CARGO_TARGET_DIR``; two declarations
+    that disagree are refused. Without either, Cargo writes below the workspace
+    that contains ``cwd``, on the same filesystem, so ``cwd`` stands for it.
+    ``CARGO_BUILD_BUILD_DIR`` adds its own root.
+    """
+
+    command = [str(part) for part in command]
+    declared = {
+        _cargo_output_path(value, cwd=cwd, label="--target-dir")
+        for value in _command_target_dirs(command)
+    }
+    raw_target = env.get("CARGO_TARGET_DIR")
+    if raw_target is not None:
+        declared.add(_cargo_output_path(raw_target, cwd=cwd, label="CARGO_TARGET_DIR"))
+    if len(declared) > 1:
+        raise ValueError(
+            "Cargo --target-dir conflicts with the resolved CARGO_TARGET_DIR: "
+            + " != ".join(str(path) for path in sorted(declared))
+        )
+    outputs = list(declared) or [_cargo_output_path(str(cwd), cwd=cwd, label="cwd")]
+    if "CARGO_BUILD_BUILD_DIR" in env:
+        outputs.append(
+            _cargo_output_path(
+                env["CARGO_BUILD_BUILD_DIR"], cwd=cwd, label="CARGO_BUILD_BUILD_DIR"
+            )
+        )
+    return tuple(outputs)
+
+
+def require_cargo_build_capacity(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    measure_free_bytes: FreeSpaceMeasurement | None = None,
+) -> DiskCapacityReceipt:
+    """Admit build capacity for every output root of one Cargo build.
+
+    Call it before Cargo starts, for every invocation that compiles (build,
+    check, clippy, test, run, rustc, doc, bench, miri, fuzz, llvm-cov). A
+    refusal raises ``DiskCapacityError`` and no Cargo process starts.
+    """
+
+    return require_build_capacity(
+        cargo_output_paths(command, cwd=cwd, env=env),
+        env=env,
+        measure_free_bytes=measure_free_bytes,
+    )
 
 
 def cargo_subprocess_environment(
