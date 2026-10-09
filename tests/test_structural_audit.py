@@ -16,6 +16,7 @@ CI : python3 tools/structural_audit.py --check  (the same gate, exit-coded)
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import sys
@@ -2816,3 +2817,50 @@ def test_build_failure_skip_probe_keeps_capability_skips(tmp_path: Path):
         "    pytest.fail('Compilation failed')\n"
     )
     assert _build_failure_skip_count(tmp_path, body) == 0
+
+
+def test_raise_collector_finds_every_raise_in_every_statement_block():
+    source = (
+        "def f(x):\n"
+        "    if x:\n"
+        "        raise A\n"
+        "    elif x:\n"
+        "        raise B\n"
+        "    else:\n"
+        "        raise C\n"
+        "    for _ in x:\n"
+        "        raise D\n"
+        "    else:\n"
+        "        raise E\n"
+        "    while x:\n"
+        "        raise F\n"
+        "    try:\n"
+        "        raise G\n"
+        "    except H:\n"
+        "        raise I\n"
+        "    else:\n"
+        "        raise J\n"
+        "    finally:\n"
+        "        raise K\n"
+        "    with x:\n"
+        "        raise L\n"
+        "    match x:\n"
+        "        case 1:\n"
+        "            raise M\n"
+        "    class N:\n"
+        "        def g(self):\n"
+        "            raise O\n"
+        "    try:\n"
+        "        pass\n"
+        "    except* P:\n"
+        "        raise Q\n"
+        "    return lambda: x\n"
+    )
+    tree = ast.parse(source)
+    expected = sorted(
+        node.lineno for node in ast.walk(tree) if isinstance(node, ast.Raise)
+    )
+    assert len(expected) == 14
+    assert sorted(node.lineno for node in SA._python_raise_nodes(tree, source)) == (
+        expected
+    )
