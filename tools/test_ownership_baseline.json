@@ -185,8 +185,6 @@
   "tests/test_ord_at_native.py",
   "tests/test_runtime_abi_width_authority.py",
   "tests/test_runtime_state_ownership.py",
-  "tests/test_stub_surface_batch_an.py",
-  "tests/test_stub_surface_batch_at.py",
   "tests/test_stub_surface_batch_av.py",
   "tests/test_tinygrad_import_shim.py",
   "tests/test_tinygrad_onnx_public_interpreter.py",
