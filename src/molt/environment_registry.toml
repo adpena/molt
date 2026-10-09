@@ -4241,7 +4241,7 @@ audience = "developer"
 kind = "path"
 default = ""
 owner = "tools/startup_bench.py"
-summary = "Path of the baseline CPython interpreter that tools/startup_bench.py measures against; unset uses C:\\Molt\\molt-src\\.venv\\Scripts\\python.exe when that file exists, else the running interpreter."
+summary = "Path of the development baseline CPython interpreter that tools/startup_bench.py measures against; unset uses the running interpreter. The selected interpreter is verified before measurement; an invalid explicit path fails without substitution. This does not select an interpreter for compiled Molt programs."
 
 [[variable]]
 name = "MOLT_STATIC_IMPORT_MODULES"

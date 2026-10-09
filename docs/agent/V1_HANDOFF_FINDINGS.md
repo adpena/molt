@@ -43,7 +43,23 @@ instances and missing qualification into the existing owning open requirement;
 retain the historical repair evidence without treating it as release acceptance.
 
 Current integration evidence (2026-10-09 UTC): draft PR119 is not merged into
-main. Published candidate `9cb436428` includes the complete image/fixture and
+main. Published candidate `ce4426c3e` includes the portable custody, shared header
+data, numeric declaring-type and fixture lifetime corrections below. CI run
+`37893822034` passes Python static, Linux/macOS Python units, native integration,
+LLVM, Linux/macOS queue portability and formal checks. Windows reaches 723 passes,
+50 failures and nine skips; the cleared drive bans expose deeper SDK receipt and
+executable fixture joins, which remain under repair. Linux ARM/macOS compile the
+corrected runtime but fail the development discovery diagnostic's remaining typed
+`PyObject` to `dladdr` pointer conversion. The sole call is corrected locally;
+actual recompilation remains required. Docs pass. The serial runtime cohort
+passes 776 tests with two ignored; parallel release-output execution fails and
+reports 484 failing rows, with the initiating failure still under investigation.
+The wider ABI check also exposes missing fixture imports. Full runtime child
+receipts are absent from the uploaded diagnostics, which must be corrected before
+further diagnosis can rely on them. WASM remains running. Candidate-cost run `37893847852` is also running; no new measurement
+result is claimed.
+
+Preceding published candidate `9cb436428` includes the complete image/fixture and
 WASM development-orchestration corrections described below. CI run
 `37889192767` passes documentation, Python static checks, Linux/macOS Python
 units, native integration, LLVM, Linux/macOS queue portability and formal
@@ -120,8 +136,20 @@ pass. Actual Windows execution remains required before landing this unit.
 The frozen GPU source candidate is withheld from integration after independent
 Astra review exposes shader signedness, parameter-order binding, mutable buffer
 extent, shared-storage alias, Python argument binding and custom indexing
-semantics defects. V1-11 owns their complete compiler/runtime/backend correction;
+semantics defects. Follow-up also rejects implicit floating-point narrowing,
+unproved cross-thread memory effects and a caller-forgeable safety certificate.
+Exact numeric admission, public method binding and compiler metadata authority
+must close together. V1-11 owns their complete compiler/runtime/backend correction;
 AST, formatting or a buffers-first vector example cannot qualify these cells.
+
+The startup benchmark now selects its development CPython baseline from the
+captured environment, defaults to its running interpreter, verifies the selected
+CPython identity once before measurement and records that identity. An invalid
+explicit selector fails before samples or benchmark output creation; the fixed Windows
+path and silent substitution are removed. The owning benchmark/interpreter and
+environment consumers pass 51 checks, including actual interpreter probes. The
+environment projections are regenerated. This changes no compiled guest path
+and is not a startup-performance measurement.
 
 The optional candidate-cost workflow reuses the existing L7/list measurement
 owners and retained shared-storage binary receipts. Its actual file/module

@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+import os
+import platform
+import sys
+from pathlib import Path
+
+import pytest
+
+from molt.python_interpreter import PythonInterpreterError
 from tools import startup_bench
 
 
@@ -67,3 +75,77 @@ def test_cpython_env_removes_project_startup_hooks() -> None:
     assert "PYTHONPATH" not in env
     assert "PYTHONHOME" not in env
     assert "UV_PROJECT_ENVIRONMENT" not in env
+
+
+def test_baseline_identity_uses_captured_environment_not_ambient_override(
+    monkeypatch, tmp_path
+) -> None:
+    env = dict(os.environ)
+    env.pop("MOLT_STARTUP_PYTHON", None)
+    monkeypatch.setenv("MOLT_STARTUP_PYTHON", str(tmp_path / "absent-python"))
+    baseline = startup_bench._baseline_python(env)
+    assert baseline.command == (sys.executable, "-I")
+    assert Path(baseline.executable).samefile(sys.executable)
+    assert baseline.version == platform.python_version()
+    assert baseline.implementation == "CPython"
+
+
+def test_invalid_baseline_override_never_substitutes_running_python(tmp_path) -> None:
+    env = {**os.environ, "MOLT_STARTUP_PYTHON": str(tmp_path / "absent-python")}
+    with pytest.raises(PythonInterpreterError, match="identity probe failed"):
+        startup_bench._baseline_python(env)
+
+
+def test_invalid_baseline_fails_before_measurement_or_output_creation(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["startup_bench.py"])
+    monkeypatch.setenv("MOLT_STARTUP_PYTHON", str(tmp_path / "absent-python"))
+    monkeypatch.setattr(startup_bench.output_audit, "_canonical_env", lambda env: env)
+    scratch, results = tmp_path / "scratch", tmp_path / "results"
+    monkeypatch.setattr(startup_bench, "TMP", scratch)
+    monkeypatch.setattr(startup_bench, "RESULTS", results)
+    monkeypatch.setattr(
+        startup_bench,
+        "_measure",
+        lambda *args, **kwargs: pytest.fail("measurement before baseline admission"),
+    )
+    with pytest.raises(PythonInterpreterError, match="identity probe failed"):
+        startup_bench.main()
+    assert not scratch.exists()
+    assert not results.exists()
+
+
+def test_startup_and_import_samples_share_the_verified_baseline(monkeypatch, tmp_path):
+    env = dict(os.environ)
+    env["MOLT_STARTUP_PYTHON"] = sys.executable
+    baseline = startup_bench._baseline_python(env)
+    env["MOLT_STARTUP_PYTHON"] = str(tmp_path / "later-selector")
+    commands = []
+
+    def measure(command, **kwargs):
+        commands.append(command)
+        return {}
+
+    def build(*args, **kwargs):
+        raise RuntimeError("compiled build outside reference selection test")
+
+    monkeypatch.setattr(startup_bench, "_measure", measure)
+    monkeypatch.setattr(startup_bench, "_build", build)
+    script = tmp_path / "probe.py"
+    row = startup_bench._measure_probe(
+        "hello",
+        script,
+        env=env,
+        baseline=baseline,
+        samples=3,
+        timeout=10,
+        build_timeout=10,
+    )
+    assert commands == [
+        [sys.executable, "-I", str(script)],
+        [sys.executable, "-I", "-X", "importtime", str(script)],
+    ]
+    assert row["build_blocker"]["message"] == (
+        "compiled build outside reference selection test"
+    )
