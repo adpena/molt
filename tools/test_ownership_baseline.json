@@ -191,7 +191,6 @@
   "tests/tools/test_perf_history.py",
   "tests/tools/test_perf_release_integrity.py",
   "tests/tools/test_process_sentinel.py",
-  "tests/tools/test_profile_python_import_consumer.py",
   "tests/tools/test_proof_command_semantics.py",
   "tests/tools/test_proof_queue_cargo_reclamation.py",
   "tests/tools/test_proof_queue_disk_capacity.py",

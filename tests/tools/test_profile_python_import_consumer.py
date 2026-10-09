@@ -151,7 +151,8 @@ def test_analysis_failure_preserves_progress_and_propagates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seed = tmp_path / "entry.py"
-    seed.write_text("call()\n", encoding="utf-8")
+    # A dynamic import needs binding facts; a module without one never asks.
+    seed.write_text("__import__(name)\n", encoding="utf-8")
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     events = tmp_path / "events.jsonl"
     summary = tmp_path / "summary.json"
@@ -277,7 +278,8 @@ def test_diagnostic_failure_preserves_primary_or_is_fatal_without_one(
     events = tmp_path / "events.jsonl"
     summary = tmp_path / "summary.json"
     seed = tmp_path / "entry.py"
-    seed.write_text("call()\n", encoding="utf-8")
+    # A dynamic import needs binding facts; a module without one never asks.
+    seed.write_text("__import__(name)\n", encoding="utf-8")
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
     primary = primary_type("original analysis failure") if primary_type else None
     diagnostic = OSError("diagnostic sink unavailable")
