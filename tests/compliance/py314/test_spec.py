@@ -88,10 +88,12 @@ def _compile_and_run(
             cwd=str(MOLT_DIR),
         )
         if build.returncode != 0:
-            pytest.skip(f"Compilation failed: {build.stderr[:300]}")
+            pytest.fail(
+                f"Compilation failed (exit {build.returncode}): {build.stderr[-2000:]}"
+            )
 
         if not binary_path.exists():
-            pytest.skip(f"Binary not produced at {binary_path}")
+            pytest.fail(f"Build succeeded without producing {binary_path}")
 
         run = run_compliance_process(
             [str(binary_path)],
@@ -147,7 +149,7 @@ def _python_output(source: str, *, min_version: tuple[int, int] = (3, 12)) -> st
         timeout=10,
     )
     if result.returncode != 0:
-        pytest.skip(f"CPython itself failed: {result.stderr[:200]}")
+        pytest.fail(f"CPython rejected the test program: {result.stderr[-2000:]}")
     return result.stdout.strip()
 
 
