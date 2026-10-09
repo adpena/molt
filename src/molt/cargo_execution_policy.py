@@ -109,26 +109,20 @@ def sccache_client_environment(
     """Return ``environ`` with the sccache server temp dir in every temp variable.
 
     Every process that may start the shared server (a Cargo child whose
-    compiler wrapper is sccache, or an sccache probe) runs with this
-    environment. The second value says whether the directory was pinned.
+    compiler wrapper is sccache, a rustc probe through that wrapper, or an
+    sccache probe) runs with this environment, so the directory exists
+    whenever the environment names it. The second value says whether the
+    directory was pinned.
     """
 
     child = dict(environ)
     temporary = sccache_server_temp_dir(child)
     if temporary is None:
         return child, False
+    temporary.mkdir(parents=True, exist_ok=True)
     for name in TEMPORARY_DIRECTORY_ENV_NAMES:
         child[name] = str(temporary)
     return child, True
-
-
-def sccache_client_launch_environment(environ: Mapping[str, str]) -> dict[str, str]:
-    """Pin the server temp dir and create it, just before an sccache client starts."""
-
-    child, pinned = sccache_client_environment(environ)
-    if pinned:
-        Path(child["TMPDIR"]).mkdir(parents=True, exist_ok=True)
-    return child
 
 
 def normalize_cargo_environment(
@@ -358,13 +352,10 @@ def cargo_subprocess_environment(
 ) -> tuple[Mapping[str, str] | None, tuple[str, ...]]:
     if not is_cargo_command(command):
         return environ, ()
-    child, applied = normalize_cargo_environment(
+    return normalize_cargo_environment(
         environ,
         default_incremental=default_incremental,
     )
-    if SCCACHE_SERVER_TEMP_POLICY in applied:
-        child = sccache_client_launch_environment(child)
-    return child, applied
 
 
 def proof_command_timeout_seconds(

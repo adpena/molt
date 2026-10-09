@@ -17,7 +17,7 @@ from molt.cargo_execution_policy import (
     cargo_compiler_wrappers,
     normalize_cargo_environment,
     require_cargo_build_capacity,
-    sccache_client_launch_environment,
+    sccache_client_environment,
     sccache_compiler_wrappers,
     without_sccache_compiler_wrappers,
 )
@@ -298,7 +298,7 @@ def _sccache_server_responsive(sccache: str, env: Mapping[str, str]) -> bool:
         result = _run_completed_command(
             [sccache, "--show-stats"],
             cwd=Path.cwd(),
-            env=sccache_client_launch_environment(env),
+            env=sccache_client_environment(env)[0],
             capture_output=True,
             memory_guard_prefix="MOLT_BUILD",
             timeout=15,
@@ -336,12 +336,14 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
             "set MOLT_USE_SCCACHE=1 to force. Using direct rustc."
         )
         return
-    root = compiler_source_root()
-    ext_root = Path(env.get("MOLT_EXT_ROOT", root)).expanduser()
-    if not ext_root.is_absolute():
-        ext_root = root / ext_root
     cache_env = dict(env)
-    cache_env.setdefault("SCCACHE_DIR", str((ext_root / ".sccache").resolve()))
+    if not cache_env.get("SCCACHE_DIR"):
+        # The DX authority owns the artifact root. Deriving it here fell back to
+        # the checkout, which put the cache, and the server temp dir pinned
+        # beside it, inside the checkout.
+        cache_env["SCCACHE_DIR"] = development_artifact_env(
+            compiler_source_root(), env, create_dirs=False
+        )["SCCACHE_DIR"]
     cache_env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
     if not _sccache_server_responsive(sccache, cache_env):
         _sccache_diag(
