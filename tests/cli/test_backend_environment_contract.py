@@ -14,6 +14,10 @@ from molt.cli.backend_artifact_contract import (
 )
 from molt.cli.backend_execution import _backend_codegen_env_digest
 
+# These cases build synthetic projects and assert developer-host roots;
+# hosted custody has its own cases in tests/test_dx_run_context.py.
+pytestmark = pytest.mark.usefixtures("no_hosted_checkout_custody")
+
 
 def test_emitter_and_presence_gated_pass_inputs_invalidate_frontend_identity():
     baseline = _backend_codegen_env_digest(is_wasm=False, env={})
