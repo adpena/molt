@@ -478,6 +478,7 @@ def _dispatch_entrypoint_command(
                 or extension_cfg.get("support_files")
                 or extension_cfg.get("support-files"),
                 deterministic=deterministic,
+                python_version=args.python_version,
                 target=args.target or extension_cfg.get("target"),
                 source_plan=args.source_plan or source_plan,
                 source_plan_target=args.source_plan_target or source_plan_target,

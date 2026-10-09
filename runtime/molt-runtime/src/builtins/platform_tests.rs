@@ -2672,3 +2672,208 @@ fn extension_spec_origin_suffix_and_descriptor_errors_remain_independent_of_load
         }
     });
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+mod resolver_admission_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[allow(dead_code)]
+    mod cargo_test_artifacts {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../test_support/cargo_test_artifacts.rs"
+        ));
+    }
+
+    thread_local! {
+        static FINDER_CALLS: Cell<usize> = const { Cell::new(0) };
+        // Borrowed only while the enclosing test owns the exception.
+        static FINDER_ERROR: Cell<u64> = const { Cell::new(0) };
+    }
+
+    struct FinderState;
+
+    impl Drop for FinderState {
+        fn drop(&mut self) {
+            FINDER_ERROR.set(0);
+            FINDER_CALLS.set(0);
+        }
+    }
+
+    extern "C" fn find_spec(_name: u64, _package: u64) -> u64 {
+        FINDER_CALLS.set(FINDER_CALLS.get() + 1);
+        let error = FINDER_ERROR.get();
+        if error != 0 {
+            crate::builtins::exceptions::molt_exception_set_last(error);
+        }
+        MoltObject::none().bits()
+    }
+
+    fn owner(bits: u64) -> crate::PtrDropGuard {
+        crate::PtrDropGuard::new(obj_from_bits(bits).as_ptr().expect("owned test object"))
+    }
+
+    fn refs(bits: u64) -> u32 {
+        unsafe {
+            (*crate::header_from_obj_ptr(obj_from_bits(bits).as_ptr().unwrap()))
+                .ref_count_snapshot()
+        }
+    }
+
+    #[test]
+    fn public_import_resolver_miss_and_error_do_not_load_extension_candidates() {
+        let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("import-resolver-admission")
+            .expect("own import candidates within Cargo test artifacts");
+        // These files are deliberately not libraries: reaching the raw loader
+        // changes the observed exception from the resolver's result to ImportError.
+        let suffixes = [
+            ".so",
+            ".pyd",
+            ".dll",
+            ".dylib",
+            ".abi3.so",
+            ".cpython-312-test.so",
+            ".cpython-313t-test.so",
+            ".cp314t-test.pyd",
+        ];
+        for (index, suffix) in suffixes.iter().enumerate() {
+            std::fs::write(
+                artifacts
+                    .path()
+                    .join(format!("molt_resolver_candidate_{index}{suffix}")),
+                b"not an admitted dynamic library",
+            )
+            .expect("write extension candidate");
+        }
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                let sys_name = alloc_test_string_bits(py, "sys");
+                let _sys_name = owner(sys_name);
+                let sys = crate::molt_module_new(sys_name);
+                let _sys = owner(sys);
+                crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
+                assert!(!exception_pending(py));
+                let paths =
+                    alloc_string_list_bits(py, &[artifacts.path().to_string_lossy().into_owned()])
+                        .expect("sys.path fixture");
+                let _paths = owner(paths);
+                loader_identity_setattr(py, sys, b"path", paths);
+                let modules = importlib_runtime_modules_bits(py).expect("public sys.modules");
+                let _modules = owner(modules);
+                let modules_ptr = obj_from_bits(modules).as_ptr().unwrap();
+                let util_name = alloc_test_string_bits(py, "importlib.util");
+                let _util_name = owner(util_name);
+                let util = crate::molt_module_new(util_name);
+                let _util = owner(util);
+                let function_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    crate::builtins::functions::runtime_fn_addr(
+                        "import_resolver_admission_find_spec",
+                        find_spec as *const (),
+                    ),
+                    2,
+                );
+                assert!(!function_ptr.is_null());
+                let finder = MoltObject::from_ptr(function_ptr).bits();
+                let _finder = owner(finder);
+                loader_identity_setattr(py, util, b"find_spec", finder);
+                unsafe {
+                    dict_set_in_place(py, modules_ptr, util_name, util);
+                }
+                assert!(!exception_pending(py));
+                let _ = raise_exception::<u64>(py, "RuntimeError", "finder's exact exception");
+                let original = crate::builtins::exceptions::ExceptionValue::adopt(
+                    py,
+                    molt_exception_last_pending(),
+                );
+                clear_exception(py);
+                // Reset borrowed callback state before original's owner drops, including unwind.
+                let _finder_state = FinderState;
+                FINDER_CALLS.set(0);
+                FINDER_ERROR.set(0);
+                let baseline = [
+                    refs(sys),
+                    refs(paths),
+                    refs(modules),
+                    refs(util),
+                    refs(finder),
+                ];
+                for (index, _) in suffixes.iter().enumerate() {
+                    let name_text = format!("molt_resolver_candidate_{index}");
+                    let name = alloc_test_string_bits(py, &name_text);
+                    let _name = owner(name);
+                    for fail in [false, true] {
+                        FINDER_ERROR.set(if fail { original.bits() } else { 0 });
+                        let calls = FINDER_CALLS.get();
+                        let result = molt_importlib_import_module(name, MoltObject::none().bits());
+                        assert!(obj_from_bits(result).is_none());
+                        assert_eq!(
+                            FINDER_CALLS.get(),
+                            calls + 1,
+                            "finder is consulted exactly once"
+                        );
+                        if fail {
+                            let raised = crate::builtins::exceptions::ExceptionValue::adopt(
+                                py,
+                                molt_exception_last_pending(),
+                            );
+                            assert_eq!(
+                                raised.bits(),
+                                original.bits(),
+                                "propagate the original finder error"
+                            );
+                        } else {
+                            assert_eq!(
+                                pending_exception_kind_and_message(py),
+                                Some((
+                                    "ModuleNotFoundError".to_owned(),
+                                    format!("No module named '{name_text}'"),
+                                ))
+                            );
+                        }
+                        clear_exception(py);
+                        assert_eq!(
+                            unsafe { dict_get_in_place(py, modules_ptr, name) },
+                            None,
+                            "failed import must not publish a module"
+                        );
+                        assert_eq!(
+                            [
+                                refs(sys),
+                                refs(paths),
+                                refs(modules),
+                                refs(util),
+                                refs(finder)
+                            ],
+                            baseline,
+                            "import must release every temporary support owner"
+                        );
+                    }
+                    // Public cache authority still wins, even while the finder would raise.
+                    let cached = crate::molt_module_new(name);
+                    let _cached = owner(cached);
+                    unsafe {
+                        dict_set_in_place(py, modules_ptr, name, cached);
+                    }
+                    assert!(!exception_pending(py));
+                    let cached_refs = refs(cached);
+                    let calls = FINDER_CALLS.get();
+                    let result = molt_importlib_import_module(name, MoltObject::none().bits());
+                    assert_eq!(result, cached);
+                    let result_owner = owner(result);
+                    assert!(!exception_pending(py));
+                    assert_eq!(FINDER_CALLS.get(), calls);
+                    assert_eq!(
+                        refs(cached),
+                        cached_refs + 1,
+                        "public import returns one owner"
+                    );
+                    drop(result_owner);
+                    assert_eq!(refs(cached), cached_refs);
+                }
+                FINDER_ERROR.set(0);
+            });
+        });
+    }
+}

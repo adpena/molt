@@ -43,38 +43,94 @@ instances and missing qualification into the existing owning open requirement;
 retain the historical repair evidence without treating it as release acceptance.
 
 Current integration evidence (2026-10-09 UTC): draft PR119 is not merged into
-main. Published candidate `76f63a816` integrates the runtime, numeric, Context,
-GPU, frontend and secret-gate consumer families below, together with the earlier
-`0e2e0a47b` proof-output, allocation and portable-fixture repairs. Fresh CI
-`37922534973` completed against that exact commit. LLVM, Linux/macOS Python
-units, Python static, Linux/macOS queue portability, both security jobs and all
-three formal jobs pass. Native, WASM and Rust qualification fail: Context/GPU
-callers used inaccessible symbols, a trie branch borrowed temporary arrays, and
-obsolete imports/helpers plus two fixed-width GPU conversions fail Clippy.
-The shared owners are corrected locally without compatibility exports; GPU
-source review confirms unchanged extent admission and publication ordering.
-The stale runtime-bridge and CPython-version projections are regenerated and the
-complete reproducible generator check passes. Target recompilation is required.
-Windows exposes a frozen-file fixture comparing lexical paths with normalized
-image keys; the fixture and two sibling consumers now use the existing image-key
-authority. Their local controls pass, with actual Windows replay still required.
-Its separate 20-test Cargo/Python-location cohort passes in 153 seconds, but
-cleanup returns 125 on a read-only interpreter hardlink. Process closure is
-proven; artifact cleanup is blocked. The local canonical deletion repair removes
-the owned link without changing shared attributes, retains ordinary unlink's
-fast path, and propagates unsupported filesystem/ACL failures. Its direct,
-temporary-artifact and durable-retirement consumers pass on macOS; actual
-Windows execution is required. All three portability cohorts now include the
-owning deletion and temporary-artifact suites. The original failed receipt
-remains failed. All 26 reproducible generators are current and all 223 proof-plan
-tests pass; the Windows-only native controls remain unverified locally.
-The selected-scope subprocess audit now preserves global/default and explicit
+main. Published candidate `68ddf6b85` integrates the runtime, numeric, Context,
+GPU, frontend and tooling consumer families below. CI `37926018942` executes
+PR merge commit `083f2da8c`, whose source tree is identical to the candidate.
+Windows portability, Linux/macOS Python units, native integration, LLVM,
+Python static, Linux/macOS queue portability, both security jobs and all three
+formal jobs pass. The run completes with Rust/WASM failures. The serial runtime
+cohort passes 776 tests with two ignored. The native ARM jobs, feature-enabled
+Rust builds and all four retained WASM host-export failures identify the same
+two GPU callable consumers referencing private layout functions through the
+crate root. Both now use the existing layout owner; actual recompilation remains
+required. The WASM parity fixture also exposes missing public parser/dispatcher
+wiring for the extension builder's existing target-Python selector. The parser,
+dispatcher, parser-derived extension completions and public snapshot now consume
+that selector. Target/artifact/completion/public-contract checks pass 39 cases;
+the real native C build then exposes automatic selection of Apple's `ar` with
+LLVM's deterministic `D` flag. Automatic archive discovery now selects LLVM's
+archiver through the existing tool authority; explicit producer commands retain
+their identity and fail before publication if unsupported. The real native C
+extension build passes with the installed LLVM 22 tools, including independent
+archive timestamp and owner-ID checks. The toolchain cohort passes 360 checks
+with three skips; its ten failures identify nine ambient mock-compiler cases
+and that real-C tool selection. All 36 selected mock-compiler cases pass after
+complete migration to the existing admitted tool fixture. These checks qualify
+those consumers, not every native/WASM archive cell. A stale target-cache
+fixture is migrated to its real keyword-only
+boundary without changing its version/key oracle; its target/cache cohort passes
+32 checks. Freestanding format/import tests now omit unused precompilation, and
+the proof graph attaches the native host only to actual host consumers. The
+dedicated explicit-precompile test retains its behavior. All 292 WASM routing and
+proof-plan checks pass; actual rebuilt native/WASM parity and freestanding
+execution remain required. Docs detects two obsolete unowned-test
+baseline entries after the deletion suites gained portability ownership. The
+canonical updater removes precisely those entries, and the ownership check
+passes without changing the policy.
+
+Windows now passes its 20-test Cargo/Python-location cohort, 12 header checks
+and 776 portability checks with nine skips. Its four partition receipts report
+successful exit and closed descendants; the previously failing read-only-link
+cleanup completes and reclaims its owned artifacts. The shared deletion owner
+preserves source attributes and ordinary unlink's fast path. Earlier run
+`37922534973` remains failed evidence: it exposed inaccessible Context/GPU
+symbols, temporary trie-array borrows, obsolete Clippy sites, stale generated
+projections, normalized-path fixture mismatches and the Windows cleanup defect.
+Those source/fixture corrections are integrated; passing Windows execution does
+not qualify unrelated Rust, WASM, no-GIL or performance coordinates.
+
+The C-header family also incorrectly defined `Py_GIL_DISABLED` as zero, although
+CPython selects its different object layout by macro presence. Both transports
+now leave it undefined and share an early rejection of caller definitions.
+Actual regression controls reproduce eleven failures on the old headers; the
+same shared owner also rejects `Py_TRACE_REFS`, whose presence adds two header
+pointers in the declared CPython 3.12 ABI. Nine additional controls reproduce
+that missing refusal before correction. The corrected existing header suite
+passes 48 checks with six platform-specific skips. Nineteen installed-header,
+ABI-admission and target-layout controls pass,
+including real C frontend checks for all six native targets and wasm32. All 26
+reproducible generators remain current. These compile/preprocessing controls
+add no runtime checks, calls or allocation; they do not establish true no-GIL
+execution or CPython free-threaded binary compatibility. Source review also
+identifies a resolver-miss path that bypasses normal extension metadata and
+capability admission. Its sole raw load call/helper are removed in the candidate;
+ordinary compiled lookup, public-cache ownership and admitted spec loading retain
+their existing owners. Public-entry regressions cover eight extension filename
+families, finder errors and cache recovery. Actual `cext_loader`-enabled execution
+is required; default-feature success cannot qualify the removed path. The proof
+plan now enables that feature explicitly and requires the exact public-resolver
+regression identity to pass through the existing bounded Cargo runner. Empty,
+ignored or unrelated results cannot satisfy that witness. The proof-tool cohort
+passes 387 checks and exposes one scheduler fixture that inherited a real Cargo
+output declaration. The fixture now owns only its finite child markers; the
+three affected scheduler, row and job-envelope checks pass while production
+receipt requirements remain intact. Actual feature-enabled Rust execution is
+still required. Library byte custody between validation and loading remains a
+separate open obligation.
+
+The selected-scope subprocess audit preserves global/default and explicit
 custom allowance policy while reporting the actual selected denominator.
 Regression controls fail on the prior owner; current audit consumers pass.
 The full audit also exposed a raw Git call in a secret-scanner fixture; it now
 uses the shared guarded test launcher with binary transport. All 21 secret-tool
-tests and selected/global subprocess and memory-wiring CLIs pass. These checks
-are development apparatus and add no work to emitted programs.
+tests and selected/global subprocess and memory-wiring CLIs pass. Final staged
+validation also exposes two public native-ABI identifiers classified as secrets.
+The scanner now recognizes only those exact reviewed literals at their owning
+TOML/public-snapshot paths, preserving same-line credentials and independent
+provider, bearer and private-key detection. Five controls reproduce the original
+false positives; all 217 scanner, CLI and hook-installation checks pass after
+correction. Mutable ABI declarations cannot enroll new security exceptions.
+These checks are development apparatus and add no work to emitted programs.
 The preceding candidate `05ecb011e` remains historical evidence:
 CI `37898759470` passes Python static, Linux/macOS
 Python units, native integration, LLVM, Linux/macOS queue portability and formal
@@ -541,7 +597,7 @@ result alone cannot redefine the contract.
 | HF-53 | Apple `ld` segfaults intermittently on this Mac (`ld::FixupFromRelocs::arm64_ptr64` while its parallel object parser, `parseAllFiles` via `dispatch_apply`, reads an input), so identical Cranelift links pass in one run and crash in the next; the reports start at 12:46 on 2026-10-06, the first managed-clang-driven link to reach the system linker. | `~/Library/Logs/DiagnosticReports/ld-2026-10-06-18064*.ips`; lane `llvm-carrier` differential (dev/release-cranelift). | Find the triggering input, then either avoid the crash structurally (the managed `ld64.lld` the toolchain already pins) or prove the input invalid; file the crash with Apple. Existing family owners: V1-02, HF-34; historical observations are not fresh qualification. |
 | HF-55 | A sweeper deleted a live `~/Molt/tmp/molt-wasm-test-execution-*` directory in the middle of a test (one spurious WASM failure; clean on rerun). Cleanup must never remove a directory a running process owns. | Lane `llvm-carrier` report, 2026-10-06. | Find the sweeper, and make it require custody or liveness proof before removal. Existing family owners: V1-12, V1-25, HF-41; historical observations are not fresh qualification. |
 | HF-56 | Five `molt-backend-native` lib tests fail on macOS at main 1db68e318 (`cargo test --locked -p molt-backend-native --features llvm --lib`: 413 passed, 5 failed): `direct_bitcode_emitter_retains_generated_object_abi_witness`, `generated_object_retains_exact_abi_import`, `native_pyinit_transfers_initializer_address_and_module_name_to_runtime_transaction`, `native_direct_symbol_object_call_links_provider_archive_and_executes`, `marked_finally_observer_imports_only_the_fused_runtime_projection`. | macOS, integrator, 2026-10-06. | Root-cause each on macOS (Mach-O object and link assumptions are the likely class) and add the crate's tests to a macOS CI cell. Existing family owners: HF-37, HF-34, V1-02; historical observations are not fresh qualification. |
-| HF-57 | CPython parity gaps found in the C-width work: `binascii.crc32(data, value=0)` takes no `value` argument in Molt (`molt_binascii_crc32(data)`; the shared CRC kernel already accepts an initial value); CPython's `T_BYTE` member setter warns on truncation using `CHAR_MIN`/`CHAR_MAX`, Molt truncates silently. | Lane `rust-macos-wasm-truth` report, 2026-10-06. | `binascii.crc32(data, value=0, /)` now takes the running value bitwise like CPython (`tests/differential/stdlib/binascii_crc32_value.py`). The independently reviewed numeric member repair is integrated in the candidate: narrow and unsigned members warn after publication, unsigned coercion retains one private index owner and never clears/retries converter errors, and wide signed/DOUBLE failure writes follow target Python 3.12 versus 3.13+. All providers and numeric/member fixtures share the warning transport. Actual Rust, LLP64/wasm32, unsigned-char and version execution remain required. The same source census exposed direct-call `Py_RELATIVE_OFFSET`, `T_STRING_INPLACE`, and missing/unknown-member diagnostic gaps. The independently reviewed correction is now integrated with actual FromSpec descriptor-consumer controls; CPython 3.12.15 passes 42 independent direct-member and FromSpec oracle checks. Molt Rust/native/WASM/version execution is still required. Free-threaded numeric atomics and object-field synchronization remain open release blockers under this owner. Existing family owners: V1-26, HF-37; historical observations are not fresh qualification. |
+| HF-57 | CPython parity gaps found in the C-width work: `binascii.crc32(data, value=0)` takes no `value` argument in Molt (`molt_binascii_crc32(data)`; the shared CRC kernel already accepts an initial value); CPython's `T_BYTE` member setter warns on truncation using `CHAR_MIN`/`CHAR_MAX`, Molt truncates silently. | Lane `rust-macos-wasm-truth` report, 2026-10-06. | `binascii.crc32(data, value=0, /)` now takes the running value bitwise like CPython (`tests/differential/stdlib/binascii_crc32_value.py`). The independently reviewed numeric member repair is integrated in the candidate: narrow and unsigned members warn after publication, unsigned coercion retains one private index owner and never clears/retries converter errors, and wide signed/DOUBLE failure writes follow target Python 3.12 versus 3.13+. All providers and numeric/member fixtures share the warning transport. Actual Rust, LLP64/wasm32, unsigned-char and version execution remain required. The same source census exposed direct-call `Py_RELATIVE_OFFSET`, `T_STRING_INPLACE`, and missing/unknown-member diagnostic gaps. The independently reviewed correction is now integrated with actual FromSpec descriptor-consumer controls; CPython 3.12.15 passes 42 independent direct-member and FromSpec oracle checks. Molt Rust/native/WASM/version execution is still required. The shared C-header owner now leaves the presence-tested `Py_GIL_DISABLED` selector undefined and rejects incoming definitions, including zero; the same owner rejects the incompatible CPython 3.12 `Py_TRACE_REFS` layout. Forty-eight existing header controls pass with six platform skips and 19 installed/admission/target controls pass. This removes a false layout signal without changing runtime storage or adding locks. The current native atomic-refcount mode still uses the global GIL; genuine no-GIL numeric atomics, object-field synchronization and compatible binary admission remain open release blockers under this owner. Existing family owners: V1-26, HF-37; historical observations are not fresh qualification. |
 | HF-58 | `molt --help` takes about 1.8 s on this Mac: about 700 ms importing `molt.cli` (the frontend pipeline; `_wasm_abi_generated` alone 85 ms), and a `PYTHONHASHSEED` re-exec doubles the cost. CLI startup is a product promise (fast to start). | Lane `env-registry` measurement, 20 runs on a quiet host, baseline median 1810.8 ms, 2026-10-06. | Make `molt --help` and other non-build commands import only what they use; remove the re-exec (set the hash seed contract without restarting the interpreter); measure before and after. Existing family owners: V1-07; historical observations are not fresh qualification. |
 | HF-59 | Environment follow-ups found while building the registry: two readers of one memory budget (`molt-tir` `pipeline_cache::env_memory_limit_bytes` and `molt-passes` `cache::usable_memory_budget_bytes_from_env`); three nested stage-audit switches (`MOLT_WASM_STAGE_AUDIT` ⊃ `MOLT_MODULE_STAGE_AUDIT` ⊃ `MOLT_DROP_STAGE_AUDIT`); `MOLT_WASM_LOCALE_{DECIMAL,THOUSANDS,GROUPING}` set for the guest but never read; `tools/check_memory_guard_wiring.py` maps `guarded_exec.py` to a stem it never uses; docs and code disagree for `MOLT_ENTRY_MODULE`, `MOLT_WASM_DATA_BASE`, `MOLT_RESOURCE_MAX_OPERATION_RESULT`, `MOLT_MODULE_CHUNK_OPS` (3000 vs 1400), `MOLT_DIFF_MEASURE_RSS`; `MOLT_TYPE_GATE`'s reader has no caller; `MOLT_BIN` means a directory in one place and a command in another; `MOLT_FALCON_OCR_ARTIFACT_ROOT` defaults to one developer's home path. | `~/Molt/lanes/env-registry.handoff.md` (registry rows record current behavior), 2026-10-06. | Fix each at its owner: one budget reader, one stage-audit switch with levels, delete the unread locale variables and dead reader, make docs follow code, split `MOLT_BIN`, derive the OCR root from custody. Existing family owners: V1-25, V1-12, V1-19; historical observations are not fresh qualification. |
 | HF-60 | The CLI writes `os.environ["MOLT_BACKEND"]` (`src/molt/cli/config_resolution.py`) to route the backend choice to code that later reads the process environment, so any in-process caller (library use, a daemon, a test) leaks the choice into later work. The test suite now restores the environment after every test, but the product still uses the process environment as a parameter channel. | `test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys` saw `llvm` only in mixed runs, 2026-10-06. | Thread the resolved backend explicitly through the build context; pass it to child processes in their own environment mapping, never by mutating `os.environ`. Existing family owners: V1-25; historical observations are not fresh qualification. |

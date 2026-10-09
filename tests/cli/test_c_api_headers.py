@@ -17,6 +17,92 @@ from tests.cli.process_guard import run_cli_test_process
 
 
 @pytest.mark.parametrize("transport", ["source-linked", "source-host", "abi-linked"])
+def test_headers_compile_with_traditional_object_layout(
+    tmp_path: Path, transport: str
+) -> None:
+    """CPython's presence-tested build flags must not be fabricated as zero."""
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for C-API header compilation")
+    root = Path(__file__).resolve().parents[2]
+    header = "Python.h" if transport == "abi-linked" else "molt/Python.h"
+    probe = tmp_path / "traditional_layout.c"
+    probe.write_text(
+        f"#include <{header}>\n"
+        + """
+#if defined(Py_GIL_DISABLED) || defined(Py_DEBUG) || defined(Py_TRACE_REFS) || defined(Py_REF_DEBUG)
+#error "default headers must not advertise a different CPython build mode"
+#endif
+_Static_assert(offsetof(PyObject, ob_refcnt) == 0, "traditional reference count");
+_Static_assert(offsetof(PyObject, ob_type) == sizeof(Py_ssize_t), "traditional type pointer");
+_Static_assert(sizeof(PyObject) == sizeof(Py_ssize_t) + sizeof(void *), "traditional object header");
+int probe(void) { return (int)sizeof(PyObject); }
+""",
+        encoding="utf-8",
+    )
+    includes = _source_extension_include_dirs_for_abi_tier(
+        molt_root=root,
+        abi_tier="cpython-abi" if transport == "abi-linked" else "source-compat",
+    )
+    command = [clang, "-std=c11", *(f"-I{path}" for path in includes)]
+    if transport == "source-host":
+        command.append("-DMOLT_EXTENSION_HOST_ABI")
+    result = run_cli_test_process(
+        [*command, "-c", str(probe), "-o", str(tmp_path / "traditional_layout.o")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("transport", ["source-linked", "source-host", "abi-linked"])
+@pytest.mark.parametrize(
+    ("selector", "diagnostic"),
+    [
+        ("Py_GIL_DISABLED", "CPython free-threaded object layout"),
+        ("Py_TRACE_REFS", "CPython 3.12 trace-reference object layout"),
+    ],
+)
+@pytest.mark.parametrize("value", ["", "=0", "=1"])
+def test_headers_reject_unsupported_object_layout_before_compilation(
+    tmp_path: Path, transport: str, selector: str, diagnostic: str, value: str
+) -> None:
+    """Presence, including '=0', selects layouts outside the declared release ABI."""
+    clang = shutil.which("clang")
+    if clang is None:
+        pytest.skip("clang is required for C-API header preprocessing")
+    root = Path(__file__).resolve().parents[2]
+    header = "Python.h" if transport == "abi-linked" else "molt/Python.h"
+    probe = tmp_path / "unsupported_layout.c"
+    probe.write_text(f"#include <{header}>\n", encoding="utf-8")
+    includes = _source_extension_include_dirs_for_abi_tier(
+        molt_root=root,
+        abi_tier="cpython-abi" if transport == "abi-linked" else "source-compat",
+    )
+    command = [clang, "-std=c11", *(f"-I{path}" for path in includes)]
+    if transport == "source-host":
+        command.append("-DMOLT_EXTENSION_HOST_ABI")
+    result = run_cli_test_process(
+        [
+            *command,
+            f"-D{selector}{value}",
+            "-E",
+            str(probe),
+            "-o",
+            str(tmp_path / "unsupported_layout.i"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert (
+        f"Molt C headers do not support the {diagnostic} ({selector})" in result.stderr
+    )
+
+
+@pytest.mark.parametrize("transport", ["source-linked", "source-host", "abi-linked"])
 def test_descriptor_headers_share_layout_and_compiled_constructors(
     tmp_path: Path, transport: str
 ) -> None:

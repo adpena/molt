@@ -475,6 +475,13 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help="Target triple for extension build (default: native host target).",
     )
     extension_build_parser.add_argument(
+        "--python-version",
+        help=(
+            "Target Python version recorded in the extension artifact "
+            "(default: extension config, project.requires-python, then 3.12)."
+        ),
+    )
+    extension_build_parser.add_argument(
         "--source-plan",
         help=(
             "Upstream extension target plan. Meson intro-targets.json is "

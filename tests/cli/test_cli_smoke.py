@@ -1698,7 +1698,7 @@ def test_cli_completion_includes_build_flags() -> None:
     payload = json.loads(res.stdout)
     script = payload["data"]["script"]
     assert "extension" in script
-    assert "build audit" in script
+    assert "audit" in script
     assert "factgraph" in script
     assert "dx" in script
     assert "env run check" in script
@@ -1715,6 +1715,61 @@ def test_cli_completion_includes_build_flags() -> None:
     assert "--require-checksum" in script
     assert "--extension-metadata" in script
     assert "--require-extension-capabilities" in script
+
+
+@pytest.mark.parametrize("shell", ["bash", "zsh", "fish"])
+def test_cli_extension_completion_tracks_actual_version_and_candidate_commands(
+    shell: str,
+) -> None:
+    res = _run_cli(["completion", "--shell", shell, "--json"])
+    assert res.returncode == 0, res.stderr
+    script = json.loads(res.stdout)["data"]["script"]
+    for subcommand in (
+        "build",
+        "metadata",
+        "produce-set",
+        "attest-set-candidate",
+        "publish-set-candidate",
+    ):
+        if shell == "bash":
+            case = re.search(
+                rf'^      {re.escape(subcommand)}\) opts="([^"]*)"',
+                script,
+                re.MULTILINE,
+            )
+            assert case is not None
+            flags = set(case.group(1).split())
+        elif shell == "zsh":
+            case = re.search(
+                rf"^      {re.escape(subcommand)}\) extension_opts=\(([^)]*)\)",
+                script,
+                re.MULTILINE,
+            )
+            assert case is not None
+            flags = set(case.group(1).split())
+        else:
+            flags = {
+                "--" + match.group(1)
+                for match in re.finditer(
+                    "__fish_seen_subcommand_from extension; and "
+                    rf"__fish_seen_subcommand_from {re.escape(subcommand)}' -l (\S+)",
+                    script,
+                )
+            }
+            assert flags
+        if subcommand == "publish-set-candidate":
+            assert "--candidate" in flags
+            assert "--expected-incumbent-seal-sha256" in flags
+            assert "--python-version" not in flags, (
+                "publication consumes sealed metadata"
+            )
+        else:
+            assert "--python-version" in flags
+        if subcommand == "build":
+            assert "--source-plan-exclude-linked-static-library" in flags
+            assert "--profile" not in flags, (
+                "internal build parameters are not CLI flags"
+            )
 
 
 def test_cli_extension_requires_subcommand() -> None:

@@ -686,7 +686,7 @@ pub extern "C" fn __molt_gpu_function_binding(function: u64, name: *const u8, le
                 Err(()) => return refused(),
                 Ok(None) => (),
             }
-            let mut builtins = crate::function_builtins_bits(function);
+            let mut builtins = crate::object::layout::function_builtins_bits(function);
             if let Some(ptr) = crate::obj_from_bits(builtins).as_ptr() {
                 if crate::object_type_id(ptr) == crate::TYPE_ID_MODULE
                     && crate::object_class_bits(ptr) == crate::builtin_classes(py).module

@@ -438,9 +438,16 @@ Build and audit C extensions compiled against `libmolt`.
 ```bash
 molt extension build                     # Build a C extension
 molt extension build --target wasm       # Build a wasm32 static-link artifact
+molt extension build --python-version 3.12  # Select the artifact's target Python
 molt extension audit                     # Audit extension ABI compatibility
 molt extension scan                      # Scan for C API usage
 ```
+
+`molt extension build --python-version VERSION` passes the explicit target to the
+shared target-Python resolver. Without it, the build uses the selected project's
+`[tool.molt.extension]` version, then `project.requires-python`, then `3.12`.
+The selected version is recorded as `target_python` in the extension manifest;
+it is independent of the interpreter running the CLI.
 
 `molt extension build --target wasm` emits a `.molt.wasm` static-link artifact
 plus `extension_manifest.json` with `runtime_linkage = "static_link"`,

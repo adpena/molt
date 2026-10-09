@@ -253,7 +253,11 @@ def test_wrapper_cache_manifest_input_changes_with_target_python(
         "_wrapper_build_dependency_fingerprints",
         dependency_fingerprints,
     )
-    monkeypatch.setattr(cli_wrapper_build, "_cache_fingerprint", lambda: "runtime")
+    monkeypatch.setattr(
+        cli_wrapper_build,
+        "_cache_fingerprint",
+        lambda *, env, backend_features: "runtime",
+    )
     monkeypatch.setattr(
         cli_wrapper_build, "_cache_tooling_fingerprint", lambda: "frontend"
     )

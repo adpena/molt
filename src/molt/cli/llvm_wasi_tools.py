@@ -50,7 +50,10 @@ _LLVM_TOOL_NAMES: dict[LlvmToolRole, tuple[str, ...]] = {
     "cc": ("clang",),
     "cxx": ("clang++",),
     "wasm_ld": ("wasm-ld",),
-    "ar": ("llvm-ar", "ar"),
+    # Archive producers use LLVM's deterministic, cross-format operation grammar.
+    # A compiler's sibling `ar` may be Apple's incompatible cctools executable;
+    # discover the maintained LLVM entrypoint through the same managed/PATH ladder.
+    "ar": ("llvm-ar",),
     "ranlib": ("llvm-ranlib", "ranlib"),
     "nm": ("llvm-nm", "nm"),
     "strip": ("llvm-strip", "strip"),

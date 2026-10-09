@@ -104,6 +104,16 @@ PUBLIC_SYMBOL_MAP_ENTRY_RE = re.compile(
     r'\s*"(?P<key>[A-Za-z_][A-Za-z0-9_]*)"\s*:\s*'
     r'"(?P<value>[A-Za-z_][A-Za-z0-9_]*)",?\s*'
 )
+# Reviewed public text, not the ABI registry. Do not enroll values by reading
+# mutable source/index data while scanning: a credential must not self-enroll.
+# New long ABI identifiers require explicit review of this security policy.
+PUBLIC_ABI_IDENTIFIER_VALUES = frozenset(
+    {"molt.object_callargs_v1", "molt.pyinit_module_v1"}
+)
+PUBLIC_ABI_JSON_FIELD_RE = re.compile(r'"token"\s*:\s*"(?P<value>[^"\\]*)"\s*(?=[,}])')
+PUBLIC_ABI_TOML_FIELD_RE = re.compile(
+    r"""\s*token\s*=\s*(?P<quote>["'])(?P<value>[^"'\\]*)(?P=quote)\s*(?:\#.*)?"""
+)
 ALLOW_PATH_PREFIXES = ("vendor/rustpython-parser/",)
 
 
@@ -186,6 +196,14 @@ def _assignment_values(path: str, line: str) -> Iterator[str]:
             continue
         value = _quoted_value(line, match.end())
         if value is not None:
+            if match.group("name") == "token" and value in PUBLIC_ABI_IDENTIFIER_VALUES:
+                field = None
+                if path == "config/public_contract_v1.surface.json":
+                    field = PUBLIC_ABI_JSON_FIELD_RE.match(line, match.start())
+                elif path == "runtime/native_callable_abi.toml":
+                    field = PUBLIC_ABI_TOML_FIELD_RE.fullmatch(line)
+                if field is not None and field.group("value") == value:
+                    continue
             if path in PUBLIC_SYMBOL_MAP_PATHS:
                 entry = PUBLIC_SYMBOL_MAP_ENTRY_RE.fullmatch(line)
                 if entry is not None:

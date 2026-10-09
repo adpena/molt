@@ -1460,6 +1460,9 @@ def _prepare_host_precompile_routing(
     fixture_root: RuntimeFixtureRoot,
     outcome: str,
     verify_reuse: bool = False,
+    precompile: bool = True,
+    freestanding: bool = False,
+    runtime_profile: str = "release",
 ) -> tuple[_PreparedNonNativeResult | None, int | None, list[str], Path]:
     """Run the real private deployment and host receipt admission boundary."""
     from molt import artifact_publication
@@ -1496,7 +1499,10 @@ def _prepare_host_precompile_routing(
     )
     events: list[str] = []
     host_binary = tmp_path / "molt-wasm-host"
-    host_binary.write_bytes(b"fixture host identity")
+    if precompile:
+        host_binary.write_bytes(b"fixture host identity")
+    else:
+        monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_binary))
     # The mocked link child still receives real content-admitted scanner bytes.
     # This native-image fixture proves custody, not scanner execution behavior.
     scanner = fixture_root.native_executable("molt-wasm-facts")
@@ -1519,12 +1525,15 @@ def _prepare_host_precompile_routing(
         return real_app_exports(contract, artifact)
 
     def resolve_host(root: Path, *, cargo_profile: str) -> str | None:
-        assert root == tmp_path and cargo_profile == "release"
+        if not precompile:
+            pytest.fail("plain WASM emission selected a precompile host")
+        assert root == tmp_path and cargo_profile == runtime_profile
         events.append("resolve-host")
         return None if outcome == "missing-host" else str(host_binary)
 
     def run_child(command, **kwargs):  # type: ignore[no-untyped-def]
         if "--output" in command:
+            assert ("--freestanding" in command) == freestanding
             assert command[command.index("--wasm-facts-scanner") + 1] == str(scanner)
             expected_inputs = [
                 (Path(command[index + 1]), command[index + 2])
@@ -1557,6 +1566,7 @@ def _prepare_host_precompile_routing(
             )
             nno.link_fingerprints.publish_link_outputs(candidates, receipt=request)
             return subprocess.CompletedProcess(command, 0, "", "")
+        assert precompile, "plain WASM emission invoked a native host"
         assert command[:2] == [str(host_binary), "--precompile"]
         private_manifest = Path(command[2])
         assert private_manifest != manifest_path
@@ -1620,8 +1630,7 @@ def _prepare_host_precompile_routing(
     monkeypatch.setattr(nno, "resolve_molt_wasm_host_binary", resolve_host)
     monkeypatch.setattr(nno, "_run_completed_command", run_child)
     # Host routing is under test, not toolchain selection: bind a hermetic
-    # wasm-ld so the result never depends on whether this host provisioned the
-    # WASI SDK (Linux CI has none; the toolchain authority would refuse).
+    # wasm-ld so the routing fixture is independent of the local WASI SDK state.
     hermetic_linker = write_mock_executable(
         tmp_path / ("wasm-ld.exe" if os.name == "nt" else "wasm-ld"), b"wasm-ld"
     )
@@ -1640,6 +1649,7 @@ def _prepare_host_precompile_routing(
         is_rust_transpile=False,
         is_luau_transpile=False,
         is_wasm=True,
+        is_wasm_freestanding=freestanding,
         linked=linked,
         require_linked=False,
         linked_output_path=linked_output if linked else None,
@@ -1647,9 +1657,9 @@ def _prepare_host_precompile_routing(
         json_output=True,
         runtime_state=state,
         ensure_runtime_wasm_both=ensure_pair,
-        runtime_cargo_profile="release",
+        runtime_cargo_profile=runtime_profile,
         molt_root=tmp_path,
-        precompile=True,
+        precompile=precompile,
         wasm_facts_scanner=scanner,
         app_export_contract_path=_empty_app_export_contract(tmp_path),
     )
@@ -1658,18 +1668,35 @@ def _prepare_host_precompile_routing(
         assert error is None and prepared is not None
         before = {
             path: path.stat().st_mtime_ns
-            for path in (linked_output, manifest_path, native_path)
+            for path in (
+                linked_output,
+                manifest_path,
+                *((native_path,) if precompile else ()),
+            )
         }
+        if not precompile:
+            # An unused host selection cannot become a deployment cache input.
+            monkeypatch.setenv(
+                "MOLT_WASM_HOST_BIN", str(tmp_path / "other-absent-host")
+            )
         event_count = len(events)
         reused, reuse_error = nno._prepare_non_native_build_result(**build_kwargs)
         assert reuse_error is None and reused is not None
-        assert events[event_count:] == ["ensure-pair", "resolve-host"]
+        assert events[event_count:] == [
+            "ensure-pair",
+            *(("resolve-host",) if precompile else ()),
+        ]
         assert {path: path.stat().st_mtime_ns for path in before} == before
-        native_path.write_bytes(b"tampered host container")
-        repaired, repair_error = nno._prepare_non_native_build_result(**build_kwargs)
-        assert repair_error is None and repaired is not None
-        assert events.count("invoke-host") == 2
-        assert native_path.read_bytes() == b"opaque host-produced native container"
+        if precompile:
+            native_path.write_bytes(b"tampered host container")
+            repaired, repair_error = nno._prepare_non_native_build_result(
+                **build_kwargs
+            )
+            assert repair_error is None and repaired is not None
+            assert events.count("invoke-host") == 2
+            assert native_path.read_bytes() == b"opaque host-produced native container"
+        else:
+            assert not native_path.exists()
     assert events and events[0] == "ensure-pair"
     if error is not None:
         assert linked_output.read_bytes() == b"previous linked generation"
@@ -1678,6 +1705,37 @@ def _prepare_host_precompile_routing(
         )
         assert native_path.read_bytes() == b"previous native generation"
     return prepared, error, events, native_path
+
+
+@pytest.mark.parametrize("freestanding", [False, True])
+@pytest.mark.parametrize("runtime_profile", ["dev-fast", "release-output"])
+def test_plain_wasm_deployment_and_reuse_never_select_a_precompile_host(
+    isolated_molt_cache: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    runtime_fixture_root: RuntimeFixtureRoot,
+    freestanding: bool,
+    runtime_profile: str,
+) -> None:
+    prepared, error, events, native_path = _prepare_host_precompile_routing(
+        monkeypatch,
+        tmp_path,
+        fixture_root=runtime_fixture_root,
+        outcome="success",
+        precompile=False,
+        freestanding=freestanding,
+        runtime_profile=runtime_profile,
+        verify_reuse=True,
+    )
+    assert error is None and prepared is not None
+    assert events == ["ensure-pair", "link", "app-exports", "ensure-pair"]
+    assert prepared.consumer_output == tmp_path / "output_linked.wasm"
+    assert prepared.consumer_output.read_bytes() == b"\0asm\x01\0\0\0"
+    assert prepared.artifacts is not None
+    assert prepared.artifacts["manifest"] == str(tmp_path / "manifest.json")
+    assert "cwasm" not in prepared.artifacts
+    assert "cwasm_output" not in prepared.extra_fields
+    assert not native_path.exists()
 
 
 def test_precompile_build_routes_linked_manifest_to_host_and_consumes_receipt(

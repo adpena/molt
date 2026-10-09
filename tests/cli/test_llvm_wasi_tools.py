@@ -109,6 +109,133 @@ def test_tool_family_resolves_every_tool_from_explicit_compiler_siblings(
     }
 
 
+@pytest.mark.parametrize("target_family", ["native", "wasm"])
+@pytest.mark.parametrize("source", ["managed", "path"])
+def test_archive_role_does_not_select_compiler_sibling_generic_ar(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_family: llvm_wasi_tools.LlvmTargetFamily,
+    source: str,
+) -> None:
+    compiler_tools = _write_tool_family(tmp_path / "compiler" / "bin")
+    compiler_tools["ar"].unlink()
+    suffix = ".exe" if os.name == "nt" else ""
+    generic_ar = compiler_tools["cc"].parent / f"ar{suffix}"
+    generic_ar.write_bytes(b"Apple cctools ar: no deterministic D modifier")
+    archive_directory = tmp_path / "archive-tools" / "bin"
+    archive_directory.mkdir(parents=True)
+    llvm_ar = _tool_path(archive_directory, "ar")
+    llvm_ar.write_bytes(b"maintained LLVM archiver")
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_tool_version", lambda _path, **_kwargs: "LLVM version 22.1.8"
+    )
+    monkeypatch.setattr(
+        llvm_wasi_tools,
+        "_managed_llvm_bin_directories",
+        lambda _root, **_kwargs: (archive_directory,) if source == "managed" else (),
+    )
+    monkeypatch.setattr(
+        llvm_wasi_tools,
+        "find_executable",
+        lambda name, **_kwargs: (
+            str(llvm_ar) if source == "path" and name == "llvm-ar" else None
+        ),
+    )
+
+    family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
+        target_family=target_family,
+        explicit_commands={"cc": (str(compiler_tools["cc"]),)},
+        sibling_directories=(compiler_tools["cc"].parent,),
+        environment={},
+    )
+
+    assert family.ar is not None
+    assert family.ar.path == llvm_ar.absolute()
+    assert family.ar.command == (str(llvm_ar.absolute()),)
+    assert family.ar.sha256 == hashlib.sha256(b"maintained LLVM archiver").hexdigest()
+    assert family.metadata()["ar"]["command"] == [str(llvm_ar.absolute())]
+    assert family.cc is not None
+    assert family.cc.path == compiler_tools["cc"].absolute()
+
+
+@pytest.mark.parametrize("target_family", ["native", "wasm"])
+def test_archive_role_requires_llvm_entrypoint_for_automatic_discovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_family: llvm_wasi_tools.LlvmTargetFamily,
+) -> None:
+    directory = tmp_path / "compiler" / "bin"
+    tools = _write_tool_family(directory)
+    tools["ar"].unlink()
+    suffix = ".exe" if os.name == "nt" else ""
+    generic_ar = directory / f"ar{suffix}"
+    generic_ar.write_bytes(b"unclassified system archiver")
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_tool_version", lambda _path, **_kwargs: "tool version"
+    )
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_managed_llvm_bin_directories", lambda _root, **_kwargs: ()
+    )
+    monkeypatch.setattr(
+        llvm_wasi_tools,
+        "find_executable",
+        lambda name, **_kwargs: str(generic_ar) if name == "ar" else None,
+    )
+
+    family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
+        target_family=target_family,
+        sibling_directories=(directory,),
+        environment={},
+    )
+
+    assert family.ar is None
+    assert family.missing_roles() == ("ar",)
+
+    if target_family == "native":
+        tools["cc"].chmod(0o755)
+        plan = source_extension_target.resolve_source_extension_target_plan(
+            "native", host_platform="linux", host_arch="x86_64"
+        )
+        with pytest.raises(ValueError, match="tool family is incomplete; missing: ar"):
+            source_extension_toolchain._resolve_source_extension_native_toolchain(
+                plan, environment={"CC": str(tools["cc"])}
+            )
+
+
+@pytest.mark.parametrize("target_family", ["native", "wasm"])
+def test_explicit_archive_command_keeps_its_selected_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_family: llvm_wasi_tools.LlvmTargetFamily,
+) -> None:
+    tools = _write_tool_family(tmp_path / "llvm" / "bin")
+    suffix = ".exe" if os.name == "nt" else ""
+    explicit_ar = tmp_path / f"ar{suffix}"
+    explicit_ar.write_bytes(b"explicit producer-owned archiver")
+    monkeypatch.setattr(llvm_wasi_tools, "_tool_version", lambda _path, **_kwargs: None)
+    monkeypatch.setattr(
+        llvm_wasi_tools, "_managed_llvm_bin_directories", lambda _root, **_kwargs: ()
+    )
+    monkeypatch.setattr(
+        llvm_wasi_tools, "find_executable", lambda _name, **_kwargs: None
+    )
+
+    family = llvm_wasi_tools.resolve_llvm_wasi_tool_family(
+        target_family=target_family,
+        explicit_commands={"ar": (str(explicit_ar),)},
+        sibling_directories=(tools["cc"].parent,),
+        environment={},
+    )
+
+    assert family.ar is not None
+    assert family.ar.path == explicit_ar.absolute()
+    assert family.ar.command == (str(explicit_ar.absolute()),)
+    assert (
+        family.ar.sha256
+        == hashlib.sha256(b"explicit producer-owned archiver").hexdigest()
+    )
+
+
 def test_wasm_ld_symlink_keeps_role_entrypoint_in_explicit_prefix(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

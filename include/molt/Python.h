@@ -459,7 +459,6 @@ static inline void PyGILState_Release(PyGILState_STATE state);
 #define NOWAIT_LOCK 0
 #define WAIT_LOCK 1
 
-#define Py_GIL_DISABLED 0
 #define Py_MOD_GIL_USED ((void *)0)
 #define Py_MOD_GIL_NOT_USED ((void *)1)
 #define Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED ((void *)0)

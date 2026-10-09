@@ -85,6 +85,14 @@ does not admit unrelated values, assignments or concatenated expressions;
 provider and private-key detection remain independent. It trusts the exact
 public naming relation, without exempting the containing file.
 
+The ABI declaration and public surface snapshot also use the field `token` for
+public names. Only the reviewed literals `molt.object_callargs_v1` and
+`molt.pyinit_module_v1` are admitted under that exact key in
+`runtime/native_callable_abi.toml` and `config/public_contract_v1.surface.json`.
+Every other assignment and independent signature on the line is still scanned.
+New literals require explicit security-policy review; editing the ABI registry
+cannot enroll an exception.
+
 This line heuristic is not a complete language parser or a guarantee that no
 secrets exist. Multiline, computed, escaped and newly introduced credential
 formats need separate coverage. It requires no network, external detector or

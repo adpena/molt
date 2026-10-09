@@ -27,61 +27,35 @@ def _completion_script(shell: str) -> str:
         "config",
         "completion",
     ]
-    extension_subcommands = [
-        "build",
-        "audit",
-        "metadata",
-        "produce-set",
-        "seal",
-        "scan",
-    ]
+    # Build this projection only when completion is requested. The parser owns
+    # extension subcommands and their accepted flags; shell rendering stays here.
+    import argparse
+
+    from molt.cli.entrypoint_parser import _build_entrypoint_parser
+
+    def subcommands(
+        parser: argparse.ArgumentParser,
+    ) -> dict[str, argparse.ArgumentParser]:
+        return {
+            name: child
+            for action in parser._actions
+            if isinstance(action, argparse._SubParsersAction)
+            for name, child in action.choices.items()
+        }
+
+    extension_parsers = subcommands(
+        subcommands(_build_entrypoint_parser())["extension"]
+    )
+    extension_subcommands = list(extension_parsers)
+    # These renderers complete long option names, not values or short aliases.
     extension_options = {
-        "build": [
-            "--project",
-            "--out-dir",
-            "--molt-abi",
-            "--target",
-            "--capabilities",
-            "--deterministic",
-            "--no-deterministic",
-            "--json",
-            "--verbose",
-        ],
-        "audit": [
-            "--path",
-            "--require-capabilities",
-            "--require-abi",
-            "--require-checksum",
-            "--json",
-            "--verbose",
-        ],
-        "metadata": ["--target", "--out-dir", "--abi-tier", "--json", "--verbose"],
-        "produce-set": [
-            "--package",
-            "--module-set",
-            "--source",
-            "--build-root",
-            "--target",
-            "--abi-tier",
-            "--json",
-        ],
-        "seal": [
-            "--path",
-            "--out-dir",
-            "--python-export",
-            "--callable-export-json",
-            "--support-file",
-            "--json",
-            "--verbose",
-        ],
-        "scan": [
-            "--project",
-            "--source",
-            "--exclude-dir",
-            "--fail-on-missing",
-            "--json",
-            "--verbose",
-        ],
+        name: [
+            option
+            for action in parser._actions
+            for option in action.option_strings
+            if option.startswith("--")
+        ]
+        for name, parser in extension_parsers.items()
     }
     options = {
         "build": [
