@@ -536,7 +536,8 @@ def test_native_receipt_contract_selects_existing_integration_batch(path: str) -
     command = owners[0]
     assert command.family == "native_integration"
     assert command.data["resource_class"] == "compiler-build-resource"
-    assert command.data["timeout_budget"] == "warm"
+    # It is the first compiler build on the PR tier, where bench-cli does not run.
+    assert command.data["timeout_budget"] == "cold"
 
 
 def test_runtime_leaf_change_runs_rust_without_llvm_or_formal() -> None:
@@ -1221,7 +1222,7 @@ def test_compiler_build_commands_use_shared_timeout_budgets() -> None:
     } == {
         "wasm.build.host": ("cold", 1200),
         "native.integration.bench-cli": ("cold", 1200),
-        "native.integration.capability-manifest": ("warm", 300),
+        "native.integration.capability-manifest": ("cold", 1200),
         "rust.clippy.wasi32": ("cold", 1200),
         "rust.test.default-truth": ("suite", 1800),
         "llvm.build.backend": ("cold", 1200),

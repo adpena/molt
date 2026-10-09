@@ -12,11 +12,13 @@ from molt.cli import queue_cli
 from molt.dx import checkout_custody
 
 
+pytestmark = pytest.mark.usefixtures("no_hosted_checkout_custody")
+
+
 @pytest.fixture(autouse=True)
-def _isolate_synthetic_queue_repos_from_hosted_checkout_contract(
+def _isolate_synthetic_queue_repos_from_hosted_cargo_target(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("MOLT_CI_EPHEMERAL_CUSTODY_ROOT", raising=False)
     # Hosted CI exports its Cargo cache target; an explicit target directory
     # rightly wins over the custody-derived one these tests assert.
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)

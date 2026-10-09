@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "52c58952a94e6ae660d4ce66dc81ed47c5ff918ae78f8be3be6eb156d7aee914",
+  "authority_sha256": "83f78277a2a4dc9f0e25ad25bf500c3a435b9b65d8eaceaef44c59ab67491f35",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -528,7 +528,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 25,
+      "timeout_minutes": 40,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -4909,8 +4909,8 @@
         "pr",
         "main"
       ],
-      "timeout_budget": "warm",
-      "timeout_seconds": 300,
+      "timeout_budget": "cold",
+      "timeout_seconds": 1200,
       "toolchains": [
         "python",
         "uv",
@@ -5875,12 +5875,12 @@
         }
       },
       "native_integration": {
-        "budget_seconds": 1500,
+        "budget_seconds": 2400,
         "critical_path_seconds": 1200,
         "headroom_seconds": 0,
-        "projected_makespan_seconds": 1500,
+        "projected_makespan_seconds": 2400,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 1500,
+          "compiler-build-resource": 2400,
           "python-tests": 150
         }
       },
