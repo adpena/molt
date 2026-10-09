@@ -89,7 +89,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    gpu_kernel_symbols_by_name: dict[str, str]
     imported_attr_names: dict[str, str]
     imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
@@ -1793,6 +1792,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _imported_module_binding_target(self, binding_name: str) -> str | None: ...
 
+    def _in_coroutine_body(self) -> bool: ...
+
     def _infer_predefined_value_names(self, ops: list[MoltOp]) -> set[str]: ...
 
     def _inherit_free_var_import_resolution(
@@ -2357,6 +2358,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     @staticmethod
     def _require_async_poll_target(kind: str, target: Any) -> str: ...
 
+    def _require_coroutine_body(self, node: ast.AST, construct: str) -> None: ...
+
     def _reserve_function_symbol(
         self, name: str, *, kind: FunctionKind = ...
     ) -> str: ...
@@ -2778,8 +2781,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def generic_visit(self, node): ...
 
     def is_async(self) -> bool: ...
-
-    def is_async_context(self) -> bool: ...
 
     def map_ops_to_json(
         self,
