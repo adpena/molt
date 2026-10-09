@@ -1905,9 +1905,9 @@ argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld"]
 
 # The Node runner and loader bridge against synthetic WAT modules: table
-# bases, callable tables, split-runtime import conversion. It needs no WASM
-# build; it waits for the cold backend build only so the two never share the
-# runner's four cores (together they ran past 300 s).
+# bases, callable tables, split-runtime import conversion. Each fixture
+# publishes its link facts with the backend wasm.build.backend selects and
+# builds, so the command follows that build and never compiles a second one.
 [[command]]
 id = "wasm.host.runner-fixtures"
 family = "wasm"
@@ -1919,7 +1919,7 @@ timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
 dependencies = ["wasm.build.backend"]
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "pytest", "-q", "-n", "auto", "tests/test_wasm_runner_table_base.py"]
-toolchains = ["python", "uv", "node", "wasm-tools"]
+toolchains = ["python", "uv", "node", "wasm-tools", "rustc", "cargo"]
 
 [[command]]
 id = "wasm.build.host"
