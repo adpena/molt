@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 from types import MappingProxyType
 
-from generator_io import display_path, generator_main
+from generator_io import display_path, generator_main, rustfmt_source
 
 from wasm_abi_gen import render_python as _render_python
 from wasm_abi_gen.manifest import (
@@ -120,29 +120,6 @@ def _rust_val_slice(vals: list[str]) -> str:
     if not vals:
         return "&[]"
     return "&[" + ", ".join(_rust_val_type(val) for val in vals) + "]"
-
-
-def _rustfmt(module_name: str, source: str) -> str:
-    try:
-        proc = subprocess.run(
-            ["rustfmt", "--edition", "2024", "--emit", "stdout"],
-            input=source,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            encoding="utf-8",
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            "rustfmt is required to generate canonical WASM ABI Rust modules"
-        ) from exc
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"rustfmt failed for generated WASM ABI module {module_name}:\n"
-            f"{proc.stderr.strip()}"
-        )
-    return proc.stdout.rstrip() + "\n"
 
 
 def _rustfmt_many(modules: dict[str, str]) -> dict[str, str]:
@@ -1231,7 +1208,7 @@ def render_native_exception_observer_abi_rs(data: dict) -> str:
         pattern = " | ".join(_rust_string(name) for name in names)
         lines.append(f"        {pattern} => Some({_rust_string(runtime_symbol)}),\n")
     lines.extend(["        _ => None,\n", "    }\n", "}\n"])
-    return _rustfmt("exception_observer_abi.rs", "".join(lines))
+    return rustfmt_source("".join(lines), label="exception_observer_abi.rs")
 
 
 def _render_rs_container_runtime_selector(
@@ -2375,7 +2352,7 @@ def render_runtime_callables_rs(data: dict) -> str:
             "}\n",
         ]
     )
-    return _rustfmt("wasm_callables_generated.rs", "".join(lines))
+    return rustfmt_source("".join(lines), label="wasm_callables_generated.rs")
 
 
 def _render_rs_pure_profile(data: dict) -> str:
@@ -2563,22 +2540,22 @@ def render_outputs(data: dict) -> dict[Path, str]:
         render_native_exception_observer_abi_rs(data)
     )
     outputs[OUT_RUNTIME_CALLABLES_RS] = render_runtime_callables_rs(data)
-    outputs[OUT_RUNTIME_CALLABLE_ABI_RS] = _rustfmt(
-        "runtime_callable_abi_generated.rs", render_runtime_callable_abi_rs(data)
+    outputs[OUT_RUNTIME_CALLABLE_ABI_RS] = rustfmt_source(
+        render_runtime_callable_abi_rs(data), label="runtime_callable_abi_generated.rs"
     )
-    outputs[OUT_RUNTIME_BOXED_ABI_RS] = _rustfmt(
-        "runtime_boxed_abi_generated.rs", render_runtime_boxed_abi_rs(data)
+    outputs[OUT_RUNTIME_BOXED_ABI_RS] = rustfmt_source(
+        render_runtime_boxed_abi_rs(data), label="runtime_boxed_abi_generated.rs"
     )
-    outputs[OUT_RUNTIME_RAW_ABI_RS] = _rustfmt(
-        "runtime_raw_abi_generated.rs", render_runtime_raw_abi_rs(data)
+    outputs[OUT_RUNTIME_RAW_ABI_RS] = rustfmt_source(
+        render_runtime_raw_abi_rs(data), label="runtime_raw_abi_generated.rs"
     )
-    outputs[OUT_PYTHON_BUILTIN_CALLABLES_RS] = _rustfmt(
-        "python_builtin_callables_generated.rs",
+    outputs[OUT_PYTHON_BUILTIN_CALLABLES_RS] = rustfmt_source(
         render_python_builtin_callables_rs(data),
+        label="python_builtin_callables_generated.rs",
     )
-    outputs[OUT_WASM_FACTS_CALLABLE_TABLE_RS] = _rustfmt(
-        "callable_table_generated.rs",
+    outputs[OUT_WASM_FACTS_CALLABLE_TABLE_RS] = rustfmt_source(
         _render_rs_callable_table(data, include_active_element_role=False),
+        label="callable_table_generated.rs",
     )
     outputs[OUT_PY] = render_py(data)
     outputs[OUT_JS_ABI] = render_js_abi(data)

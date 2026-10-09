@@ -132,6 +132,15 @@ class RustSourceProjection(NamedTuple):
     comments: list[tuple[int, str]]
 
 
+def _rust_non_code_spans(text: str) -> tuple[_NonCodeSpan, ...]:
+    """Comment and literal spans, scanned once per text in an active scan.
+
+    Every projection of a text (masks, tokens, comments, items) starts from
+    these spans, which depend on the text alone.
+    """
+    return _memoized("spans", None, text, lambda: tuple(_non_code_spans(text)))
+
+
 def _project_rust_source(
     text: str,
     *,
@@ -144,7 +153,7 @@ def _project_rust_source(
     comments: list[tuple[int, str]] = []
     cursor = 0
     line = 1
-    for span in _non_code_spans(text) if spans is None else spans:
+    for span in _rust_non_code_spans(text) if spans is None else spans:
         if include_mask:
             output.append(text[cursor : span.start])
             original = text[span.start : span.end]
@@ -199,7 +208,7 @@ class RustSourceToken(NamedTuple):
 
 def _rust_token_index(text: str) -> tuple[tuple[RustSourceToken, ...], tuple[str, ...]]:
     def compute() -> tuple[tuple[RustSourceToken, ...], tuple[str, ...]]:
-        tokens = tuple(_rust_source_tokens(text, _non_code_spans(text)))
+        tokens = tuple(_rust_source_tokens(text, _rust_non_code_spans(text)))
         return tokens, tuple(token.text for token in tokens)
 
     return _memoized("tokens", None, text, compute)
@@ -519,17 +528,29 @@ def prewarm_rust_item_projections(texts: Iterable[str], *, workers: int) -> None
     from concurrent.futures import ProcessPoolExecutor
 
     with ProcessPoolExecutor(max_workers=workers) as pool:
-        projections = pool.map(
-            _compute_rust_item_projection,
+        results = pool.map(
+            _compute_rust_item_projection_and_spans,
             missing,
             chunksize=max(1, len(missing) // (workers * 4)),
         )
-        for text, projection in zip(missing, projections, strict=True):
+        for text, (projection, spans) in zip(missing, results, strict=True):
             memo[("items", None, text)] = projection
+            memo[("spans", None, text)] = spans
 
 
-def _compute_rust_item_projection(text: str) -> _RustItemProjection:
+def _compute_rust_item_projection_and_spans(
+    text: str,
+) -> tuple[_RustItemProjection, tuple[_NonCodeSpan, ...]]:
+    """A worker's item projection, with the spans every later projection reuses."""
     spans = tuple(_non_code_spans(text))
+    return _compute_rust_item_projection(text, spans), spans
+
+
+def _compute_rust_item_projection(
+    text: str, spans: tuple[_NonCodeSpan, ...] | None = None
+) -> _RustItemProjection:
+    if spans is None:
+        spans = _rust_non_code_spans(text)
     code = (
         _project_rust_source(
             text, include_mask=True, include_comments=False, spans=spans

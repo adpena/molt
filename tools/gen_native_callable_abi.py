@@ -11,14 +11,13 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from generator_io import generator_main
+from generator_io import generator_main, rustfmt_source
 
 try:
     from tools.command_execution import CommandExecutor
@@ -812,29 +811,10 @@ def _format_python(source: str) -> str:
     return completed.stdout
 
 
-def _format_rust(source: str) -> str:
-    rustfmt = shutil.which("rustfmt")
-    if rustfmt is None:
-        raise RuntimeError("rustfmt is required to generate native-callable ABI Rust")
-    completed = _COMMANDS.run(
-        [rustfmt, "--edition", "2024", "--emit", "stdout"],
-        cwd=ROOT,
-        input=source,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(f"rustfmt failed:\n{completed.stderr}")
-    return completed.stdout
-
-
 def render_all(schema: Schema) -> dict[Path, str]:
     return {
         OUT_PYTHON: _format_python(render_python(schema)),
-        OUT_RUST: _format_rust(render_rust(schema)),
+        OUT_RUST: rustfmt_source(render_rust(schema), label="native-callable ABI Rust"),
         OUT_JAVASCRIPT: render_javascript(schema),
     }
 

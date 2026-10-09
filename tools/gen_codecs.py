@@ -5,11 +5,10 @@ from __future__ import annotations
 
 import ast
 import re
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from generator_io import generator_main
+from generator_io import generator_main, rustfmt_source
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "runtime/molt-stdlib-text/src/codec_registry.rs"
@@ -234,29 +233,6 @@ def _rust_u32_array(values: tuple[int, ...], *, width: int = 4) -> str:
     return "\n".join(lines)
 
 
-def _rustfmt_rust_source(module_name: str, source: str) -> str:
-    try:
-        proc = subprocess.run(
-            ["rustfmt", "--edition", "2024", "--emit", "stdout"],
-            input=source,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            encoding="utf-8",
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            "rustfmt is required to generate canonical codec Rust tables"
-        ) from exc
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"rustfmt failed for generated codec module {module_name}:\n"
-            f"{proc.stderr.strip()}"
-        )
-    return proc.stdout.rstrip() + "\n"
-
-
 def _encoding_search_key(name: str) -> str:
     chars: list[str] = []
     punct = False
@@ -366,9 +342,8 @@ def _render_aliases_unformatted() -> str:
 
 
 def render_aliases() -> str:
-    return _rustfmt_rust_source(
-        "codec_aliases_generated.rs",
-        _render_aliases_unformatted(),
+    return rustfmt_source(
+        _render_aliases_unformatted(), label="codec_aliases_generated.rs"
     )
 
 
@@ -495,9 +470,8 @@ def _render_charmap_unformatted() -> str:
 
 
 def render() -> str:
-    return _rustfmt_rust_source(
-        "charmap_codecs_generated.rs",
-        _render_charmap_unformatted(),
+    return rustfmt_source(
+        _render_charmap_unformatted(), label="charmap_codecs_generated.rs"
     )
 
 

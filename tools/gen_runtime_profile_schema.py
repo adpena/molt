@@ -4,13 +4,12 @@
 from __future__ import annotations
 
 import re
-import shutil
 import sys
 import tomllib
 from pathlib import Path
 from typing import Any
 
-from generator_io import generator_main
+from generator_io import generator_main, rustfmt_source
 
 try:
     from tools.command_execution import CommandExecutor
@@ -239,25 +238,6 @@ def render_rust(schema: dict[str, Any]) -> str:
     return "".join(lines)
 
 
-def _format_rust(source: str) -> str:
-    rustfmt = shutil.which("rustfmt")
-    if rustfmt is None:
-        raise RuntimeError("rustfmt is required to generate runtime-profile Rust")
-    completed = _COMMANDS.run(
-        [rustfmt, "--edition", "2024", "--emit", "stdout"],
-        cwd=ROOT,
-        input=source,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(f"rustfmt failed:\n{completed.stderr}")
-    return completed.stdout
-
-
 def _python_tuple(values: list[str], *, indent: str = "") -> str:
     body = "".join(f'{indent}    "{value}",\n' for value in values)
     return f"(\n{body}{indent})"
@@ -357,7 +337,7 @@ def _format_python(source: str) -> str:
 
 def render_all(schema: dict[str, Any]) -> dict[Path, str]:
     return {
-        OUT_RUST: _format_rust(render_rust(schema)),
+        OUT_RUST: rustfmt_source(render_rust(schema), label="runtime-profile Rust"),
         OUT_PYTHON: _format_python(render_python(schema)),
     }
 

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -12,7 +11,7 @@ from pathlib import Path
 from collections.abc import Iterable
 from typing import cast
 
-from generator_io import generator_main
+from generator_io import generator_main, rustfmt_source
 from molt.cli.build_output_layout import _DEPLOY_PROFILE_CHOICES
 from molt.release_matrix import RELEASE_TARGETS, SUPPORTED_CPYTHON_VERSIONS
 from molt.wasi_sysroot import WASI_TARGET_INCLUDE_DIRS
@@ -888,29 +887,10 @@ def _format_python(source: str) -> str:
     return completed.stdout
 
 
-def _format_rust(source: str) -> str:
-    rustfmt = shutil.which("rustfmt")
-    if rustfmt is None:
-        raise RuntimeError("rustfmt is required to generate host capabilities")
-    completed = _COMMANDS.run(
-        [rustfmt, "--edition", "2024", "--emit", "stdout"],
-        cwd=ROOT,
-        input=source,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(f"rustfmt failed:\n{completed.stderr}")
-    return completed.stdout
-
-
 def render_all(schema: Schema) -> dict[Path, str]:
     return {
         OUT_PYTHON: _format_python(render_python(schema)),
-        OUT_RUST: _format_rust(render_rust(schema)),
+        OUT_RUST: rustfmt_source(render_rust(schema), label="host capabilities"),
         OUT_JAVASCRIPT: render_javascript(schema),
         OUT_MARKDOWN: render_markdown(schema),
     }

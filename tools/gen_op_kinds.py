@@ -80,11 +80,6 @@ def load_table(table_path: Path | None = None) -> dict:
     return _validate.load_table(TABLE if table_path is None else table_path)
 
 
-def _rustfmt_rust_source(source: str) -> str:
-    _sync_facade_hooks()
-    return _render_rust._rustfmt_rust_source(source)
-
-
 def render_rs(data: dict) -> str:
     _sync_facade_hooks()
     return _render_rust.render_rs(data)

@@ -17,18 +17,10 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import tomllib
 from pathlib import Path
 
-from generator_io import generator_main
-
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
-
-_COMMANDS = CommandExecutor.for_file(__file__)
+from generator_io import generator_main, rustfmt_source
 
 ROOT = Path(__file__).resolve().parents[1]
 TABLE = ROOT / "runtime" / "heap_kinds.toml"
@@ -649,34 +641,19 @@ def render_python(kinds: list[dict[str, object]]) -> str:
     return "".join(lines)
 
 
-def _format_rust(source: str) -> str:
-    """Return the canonical repository rustfmt representation of generated Rust."""
-    rustfmt = shutil.which("rustfmt")
-    if rustfmt is None:
-        raise RuntimeError("rustfmt is required to generate heap-kind Rust authorities")
-    completed = _COMMANDS.run(
-        [rustfmt, "--edition", "2024", "--emit", "stdout"],
-        cwd=ROOT,
-        input=source,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            f"rustfmt failed for generated heap-kind authority:\n{completed.stderr}"
-        )
-    return completed.stdout
-
-
 def render_all(kinds: list[dict[str, object]]) -> dict[Path, str]:
     shapes = load_object_shapes()
     return {
-        OUT_CODEGEN: _format_rust(render_constants(kinds)),
-        OUT_CORE: _format_rust(render_constants(kinds) + render_object_shapes(shapes)),
-        OUT_RUNTIME: _format_rust(render_runtime(kinds)),
+        OUT_CODEGEN: rustfmt_source(
+            render_constants(kinds), label="heap-kind Rust authorities"
+        ),
+        OUT_CORE: rustfmt_source(
+            render_constants(kinds) + render_object_shapes(shapes),
+            label="heap-kind Rust authorities",
+        ),
+        OUT_RUNTIME: rustfmt_source(
+            render_runtime(kinds), label="heap-kind Rust authorities"
+        ),
         OUT_AUDIT: render_audit(kinds, shapes),
         OUT_PYTHON: render_python(kinds),
     }
