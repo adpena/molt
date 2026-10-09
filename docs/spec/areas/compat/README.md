@@ -94,8 +94,7 @@ stdlib/version coverage changes, the existing commands are:
 
 1. Refresh stdlib union baseline and stubs when their inputs change:
    - `python3 tools/gen_stdlib_module_union.py --write`
-   - `python3 tools/sync_stdlib_top_level_stubs.py --write`
-   - `python3 tools/sync_stdlib_submodule_stubs.py --write`
+   - `python3 tools/gen_stdlib_stubs.py --write`
 2. Refresh stdlib intrinsic audit doc:
    - `python3 tools/check_stdlib_intrinsics.py --update-doc`
 3. Refresh CPython availability matrix:

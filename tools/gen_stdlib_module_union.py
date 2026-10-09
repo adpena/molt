@@ -219,7 +219,7 @@ def _format_facade_module(
             "Update workflow:",
             "1. Install/enable target CPython versions with `uv`.",
             "2. Run `python3 tools/gen_stdlib_module_union.py --write`.",
-            "3. Run `python3 tools/sync_stdlib_top_level_stubs.py --write`.",
+            "3. Run `python3 tools/gen_stdlib_stubs.py --write`.",
             "4. Re-run `python3 tools/check_stdlib_intrinsics.py --update-doc`.",
             "",
             "This file is consumed by tools/check_stdlib_intrinsics.py and is the",

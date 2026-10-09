@@ -11,9 +11,9 @@
 - Each audit scan reports all failed gates. `--json-out` preserves diagnostics on failure and marks incomplete analysis explicitly; `--update-doc` publishes this document only after all gates pass.
 
 ## Progress Summary (Generated)
-- Total audited modules: `881`
+- Total audited modules: `949`
 - `intrinsic-backed`: `41`
-- `intrinsic-partial`: `838`
+- `intrinsic-partial`: `906`
 - `intrinsic-support`: `2`
 - `policy-gate`: `0`
 - `probe-only`: `0`
@@ -543,6 +543,71 @@
 - `idlelib.history`
 - `idlelib.hyperparser`
 - `idlelib.idle`
+- `idlelib.idle_test`
+- `idlelib.idle_test.htest`
+- `idlelib.idle_test.mock_idle`
+- `idlelib.idle_test.mock_tk`
+- `idlelib.idle_test.template`
+- `idlelib.idle_test.test_autocomplete`
+- `idlelib.idle_test.test_autocomplete_w`
+- `idlelib.idle_test.test_autoexpand`
+- `idlelib.idle_test.test_browser`
+- `idlelib.idle_test.test_calltip`
+- `idlelib.idle_test.test_calltip_w`
+- `idlelib.idle_test.test_codecontext`
+- `idlelib.idle_test.test_colorizer`
+- `idlelib.idle_test.test_config`
+- `idlelib.idle_test.test_config_key`
+- `idlelib.idle_test.test_configdialog`
+- `idlelib.idle_test.test_debugger`
+- `idlelib.idle_test.test_debugger_r`
+- `idlelib.idle_test.test_debugobj`
+- `idlelib.idle_test.test_debugobj_r`
+- `idlelib.idle_test.test_delegator`
+- `idlelib.idle_test.test_editmenu`
+- `idlelib.idle_test.test_editor`
+- `idlelib.idle_test.test_filelist`
+- `idlelib.idle_test.test_format`
+- `idlelib.idle_test.test_grep`
+- `idlelib.idle_test.test_help`
+- `idlelib.idle_test.test_help_about`
+- `idlelib.idle_test.test_history`
+- `idlelib.idle_test.test_hyperparser`
+- `idlelib.idle_test.test_iomenu`
+- `idlelib.idle_test.test_macosx`
+- `idlelib.idle_test.test_mainmenu`
+- `idlelib.idle_test.test_multicall`
+- `idlelib.idle_test.test_outwin`
+- `idlelib.idle_test.test_parenmatch`
+- `idlelib.idle_test.test_pathbrowser`
+- `idlelib.idle_test.test_percolator`
+- `idlelib.idle_test.test_pyparse`
+- `idlelib.idle_test.test_pyshell`
+- `idlelib.idle_test.test_query`
+- `idlelib.idle_test.test_redirector`
+- `idlelib.idle_test.test_replace`
+- `idlelib.idle_test.test_rpc`
+- `idlelib.idle_test.test_run`
+- `idlelib.idle_test.test_runscript`
+- `idlelib.idle_test.test_scrolledlist`
+- `idlelib.idle_test.test_search`
+- `idlelib.idle_test.test_searchbase`
+- `idlelib.idle_test.test_searchengine`
+- `idlelib.idle_test.test_sidebar`
+- `idlelib.idle_test.test_squeezer`
+- `idlelib.idle_test.test_stackviewer`
+- `idlelib.idle_test.test_statusbar`
+- `idlelib.idle_test.test_text`
+- `idlelib.idle_test.test_textview`
+- `idlelib.idle_test.test_tooltip`
+- `idlelib.idle_test.test_tree`
+- `idlelib.idle_test.test_undo`
+- `idlelib.idle_test.test_util`
+- `idlelib.idle_test.test_warning`
+- `idlelib.idle_test.test_window`
+- `idlelib.idle_test.test_zoomheight`
+- `idlelib.idle_test.test_zzdummy`
+- `idlelib.idle_test.tkinter_testing_utils`
 - `idlelib.iomenu`
 - `idlelib.macosx`
 - `idlelib.mainmenu`
@@ -699,6 +764,9 @@
 - `modulefinder`
 - `molt.stdlib`
 - `msilib`
+- `msilib.schema`
+- `msilib.sequence`
+- `msilib.text`
 - `msvcrt`
 - `multiprocessing`
 - `multiprocessing._api_surface`
