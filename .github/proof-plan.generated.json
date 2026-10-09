@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "bba407b37deab6c147754c409378178b64a88e2322f031f03779bcf6eb9dd254",
+  "authority_sha256": "fb56e9d4fcc5ed20d7b7823654f94c0cef805450b3a91b3d421a2e76b1180e95",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -3496,7 +3496,11 @@
         "tests/test_standalone_benchmark_memory_guard.py",
         "tests/test_backend_daemon_argv.py",
         "tests/test_backend_daemon_suite_custody.py",
-        "tests/test_bench_friends.py"
+        "tests/test_bench_friends.py",
+        "tests/test_bench_dashboard.py",
+        "tests/test_bench_generator_memory_guard.py",
+        "tests/test_bench_suites.py",
+        "tests/test_bench_wasm_node_resolver.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -3556,7 +3560,11 @@
         "tests/test_standalone_benchmark_memory_guard.py",
         "tests/test_backend_daemon_argv.py",
         "tests/test_backend_daemon_suite_custody.py",
-        "tests/test_bench_friends.py"
+        "tests/test_bench_friends.py",
+        "tests/test_bench_dashboard.py",
+        "tests/test_bench_generator_memory_guard.py",
+        "tests/test_bench_suites.py",
+        "tests/test_bench_wasm_node_resolver.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
