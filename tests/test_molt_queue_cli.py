@@ -12,7 +12,7 @@ from molt.cli import queue_cli
 from molt.dx import checkout_custody
 
 
-pytestmark = pytest.mark.usefixtures("no_hosted_checkout_custody")
+pytestmark = pytest.mark.usefixtures("developer_host_context")
 
 
 @pytest.fixture(autouse=True)

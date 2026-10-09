@@ -292,8 +292,16 @@ def test_affinity_requires_one_logical_cpu(value: str) -> None:
         runner._normalize_affinity_mask(value)
 
 
-def test_affinity_is_normalized_for_provenance() -> None:
+def test_affinity_is_normalized_for_provenance(monkeypatch) -> None:
+    # CPU 4 must be visible; pin the count instead of reading the host's.
+    monkeypatch.setattr(runner.os, "cpu_count", lambda: 8)
     assert runner._normalize_affinity_mask("16") == "0x10"
+
+
+def test_affinity_beyond_the_visible_cpus_is_rejected(monkeypatch) -> None:
+    monkeypatch.setattr(runner.os, "cpu_count", lambda: 4)
+    with pytest.raises(ValueError, match="selects CPU 4, but only 4 logical CPUs"):
+        runner._normalize_affinity_mask("0x10")
 
 
 def test_auto_affinity_avoids_primary_housekeeping_logicals(monkeypatch) -> None:
@@ -322,6 +330,7 @@ def test_explicit_affinity_must_be_available_to_process(monkeypatch) -> None:
 
 
 def test_explicit_affinity_records_allowed_topology(monkeypatch) -> None:
+    monkeypatch.setattr(runner.os, "cpu_count", lambda: 8)
     monkeypatch.setattr(runner, "_allowed_affinity_mask", lambda: 0b1_0101)
     assert runner._resolve_execution_control("0x10") == {
         "affinity_mask": "0x10",

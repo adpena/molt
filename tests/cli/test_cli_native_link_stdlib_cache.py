@@ -11,7 +11,7 @@ import pytest
 import molt.cli as cli
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import link_pipeline as cli_link_pipeline
-from molt.cli import native_link_command
+from molt.cli import native_link_command, native_symbol_inspection
 from molt.cli.native_link_plan import (
     NativeArtifactKind,
     native_artifact_link_arguments,
@@ -35,6 +35,16 @@ from tests.native_artifact_fixtures import native_relocatable_object
 )
 def link_target(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
     target_triple: str = request.param
+    if not resolve_native_target_spec(target_triple).is_host and not any(
+        candidate.admission_error is None and candidate.reader_family == "llvm"
+        for candidate in native_symbol_inspection._native_symbol_reader(
+            nm_command=None, target_triple=target_triple
+        ).candidates
+    ):
+        # Staging admits the archive by its real symbols. Only an llvm-family nm
+        # reads every object format; which foreign formats GNU nm reads depends
+        # on how the distribution built binutils.
+        pytest.skip(f"no llvm-family nm on this host to read {target_triple} objects")
     # Retain production link planning; these snapshot tests do not discover or
     # execute a compiler, nor content-identify installed linker tools.
     monkeypatch.setattr(

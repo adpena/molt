@@ -243,9 +243,16 @@ in CI, load the same state for the local checkout and rerun the test:
 eval "$(python3 tools/hosted_ci_env.py --runner-temp /tmp/molt-runner)"
 ```
 
+CI starts each partition through the proof plan, whose guarded executor roots
+`MOLT_EXT_ROOT`, `TMPDIR` and the Cargo targets in the custody root. For the
+same launch path, put the project venv first on `PATH` (the plan requires its
+pinned Python) and run
+`python3 tools/proof_plan.py --run-command <command-id> --receipt <file>`. Keep
+the runner temp short: the backend daemon socket path derives from it.
+
 A unit test that builds a synthetic project or asserts developer-host roots or
 guard limits must not inherit that state: it uses the shared
-`no_hosted_checkout_custody` and `no_ambient_guard_caps` fixtures from
+`developer_host_context` and `no_ambient_guard_caps` fixtures from
 `tests/conftest.py`. Hosted custody itself has its own cases in
 `tests/test_dx_run_context.py`.
 

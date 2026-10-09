@@ -9,6 +9,7 @@ import pytest
 
 import molt.cli as cli
 import molt.cli.native_toolchain as NATIVE_TOOLCHAIN
+from molt.cli import native_link_command
 from molt.cli.native_link_manifest import write_native_link_dependency_manifest
 from tests.cli.native_link_test_support import (
     write_test_static_archive,
@@ -226,6 +227,13 @@ def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal
 ) -> None:
     monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
     target_triple = "aarch64-apple-darwin"
+    # The plan's driver comes from host compiler discovery (zig or
+    # MOLT_CROSS_CC off macOS); this case checks only the framework flags.
+    monkeypatch.setattr(
+        native_link_command,
+        "_build_native_link_driver_command",
+        lambda **kwargs: (["clang", "-target", target_triple], None, target_triple),
+    )
     build_identity = native_runtime_staticlib_identity(
         cargo_profile="dev-fast",
         target_triple=target_triple,

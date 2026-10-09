@@ -74,7 +74,7 @@ def test_run_miri_defaults_to_canonical_tmp_root(monkeypatch) -> None:
     )
 
 
-@pytest.mark.usefixtures("no_hosted_checkout_custody")
+@pytest.mark.usefixtures("developer_host_context")
 def test_run_with_log_uses_memory_guard_and_canonical_env(
     monkeypatch,
     tmp_path: Path,
