@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "1946573356b5358844712980642780a1dcf6a534f4fa92d739c1bfd988cc0efe",
+  "authority_sha256": "a1bfa192a79a35a6ec6203c1f812aced9878edd58d509fbb169c21e3bf26eec6",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -3692,7 +3692,6 @@
         "-m",
         "not slow",
         "tests/cli/test_backend_admission_receipt_consistency.py",
-        "tests/cli/test_backend_daemon_sequential.py",
         "tests/cli/test_backend_environment_contract.py",
         "tests/cli/test_backend_initialization_contract.py",
         "tests/cli/test_binary_image_analysis_projection.py",
@@ -3827,7 +3826,6 @@
         "-m",
         "not slow",
         "tests/cli/test_backend_admission_receipt_consistency.py",
-        "tests/cli/test_backend_daemon_sequential.py",
         "tests/cli/test_backend_environment_contract.py",
         "tests/cli/test_backend_initialization_contract.py",
         "tests/cli/test_binary_image_analysis_projection.py",
@@ -4943,7 +4941,8 @@
         "pytest",
         "-q",
         "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest",
-        "tests/tools/test_proof_queue_native_receipts.py"
+        "tests/tools/test_proof_queue_native_receipts.py",
+        "tests/cli/test_backend_daemon_sequential.py"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-native-dev",
