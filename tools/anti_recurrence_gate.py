@@ -8,8 +8,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from tools import claims_status
-from tools.hooks import _common, landing_gate
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
+
+bind_repository_imports(__file__)
+
+from tools import claims_status  # noqa: E402
+from tools.hooks import _common, landing_gate  # noqa: E402
 
 BUG_CLASS_WORDS = ("bug class", "recurring", "root cause", "class-fix", "metabug")
 GATE_MARKERS = ("gate.py", "guard.py", "recurring_harms.toml")

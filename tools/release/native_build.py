@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from molt.temporary_artifacts import OwnedTemporaryDirectory
-
 import argparse
 from collections.abc import Mapping, Sequence
 import os
@@ -14,49 +12,58 @@ import sys
 import tempfile
 from typing import Any
 
-from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
-from molt.cli.native_binary import validate_native_binary_architecture
-from molt.cli.runtime_build_python import build_python_scope
-from molt.cli.runtime_identity_schema import _validated_build_python_identity
-from molt.compiler_distribution import (
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES  # noqa: E402
+from molt.cli.native_binary import validate_native_binary_architecture  # noqa: E402
+from molt.cli.runtime_build_python import build_python_scope  # noqa: E402
+from molt.cli.runtime_identity_schema import _validated_build_python_identity  # noqa: E402
+from molt.compiler_distribution import (  # noqa: E402
     PRODUCTION_COMPILER_FEATURES,
     PRODUCTION_COMPILER_PROFILE,
 )
-from molt.exact_json import canonical_json_sha256, read_exact, write_exact
-from molt.file_publication import (
+from molt.exact_json import canonical_json_sha256, read_exact, write_exact  # noqa: E402
+from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
+from molt.file_publication import (  # noqa: E402
     durable_publish_directory_exclusive,
     resolve_owned_path,
 )
-from molt.release_matrix import RUST_TARGET_BY_COORDINATE
-from molt.platform_toolchain import (
+from molt.release_matrix import RUST_TARGET_BY_COORDINATE  # noqa: E402
+from molt.platform_toolchain import (  # noqa: E402
     SDK_ENVIRONMENT_NAMES,
     activate_msvc_environment,
     select_darwin_toolchain,
     DarwinToolchain,
 )
-from molt.rust_toolchain import (
+from molt.rust_toolchain import (  # noqa: E402
     cargo_configuration_paths,
     resolve_rustup_proxy,
     rust_channel,
     rustc_host,
 )
-from molt.toolchain_identity import (
+from molt.toolchain_identity import (  # noqa: E402
     native_executable_content_identity,
     probe_executable,
     resolve_executable,
     snapshot_stable_regular_file,
     stable_regular_file_content_identity,
 )
-from tools.command_execution import CommandExecutor
-from tools.git_identity import require_git_object_id
+from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.git_identity import require_git_object_id  # noqa: E402
 
-from .compiler_payload import source_environment, source_snapshot
-from .git_source_snapshot import (
+from tools.release.compiler_payload import source_environment, source_snapshot  # noqa: E402
+from tools.release.git_source_snapshot import (  # noqa: E402
     GitSourceSnapshot,
     materialize_git_source_snapshot,
     read_git_source_file,
 )
-from .release_model import ROOT, target_by_id
+from tools.release.release_model import ROOT, target_by_id  # noqa: E402
 
 SCHEMA = "molt.release-native-build.v2"
 RECEIPT_NAME = "native-build.json"
