@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.llvm_toolchain import capture_wasi_sdk_selection
+
 from concurrent.futures import ThreadPoolExecutor
 import gc
 import gzip
@@ -346,6 +348,40 @@ def test_compact_process_inventories_are_bounded_and_full_capture_is_preserved(
             "process_image_inventories": inventory,
             "link_selection": selection,
         }
+    rust_images = [process_image_capture.capture_image("rust-linker", owned)]
+    identity["rustc"]["process_images"] = rust_images
+    identity["rustc"]["link_selection"] = {
+        "schema": "molt.proof-rust-link-selection-telemetry.v4",
+        "target": None,
+        "compiler_host": "x86_64-unknown-linux-gnu",
+        "selection_probe_count": 1,
+        "selected_process_count": 1,
+        "units": [
+            {
+                "schema": "molt.proof-rust-link-unit.v2",
+                "unit": "target",
+                "selection_probe_count": 1,
+                "selected_process_count": 1,
+                "command_semantics_sha256": canonical_json_sha256(["rustc"]),
+                "artifact_context": None,
+                "process_image_refs": [{"role": "rust-linker", "path": str(owned)}],
+                "process_resolution": [
+                    {"path": str(owned), "content_path": str(owned)}
+                ],
+                "artifact_selection": {
+                    "cargo_crate_types": None,
+                    "manifest_crate_types": None,
+                    "rustc_crate_types": [],
+                    "link_required": True,
+                },
+            }
+        ],
+        "admitted_command": ["rustc"],
+        "producer_command": ["rustc"],
+        "native_c_required": [],
+        "native_c": [],
+        "command_semantics_sha256": canonical_json_sha256(["rustc"]),
+    }
     compact = toolchain_capture.compact_toolchains(identity)
     # Production's non-toolchain custody already occupies ~52KiB. The summary
     # must stay bounded even when runtime/helper inventories grow by thousands.
@@ -366,7 +402,10 @@ def test_compact_process_inventories_are_bounded_and_full_capture_is_preserved(
     assert full_capture["toolchains"] == identity
     assert toolchain_capture.compact_toolchains(full_capture["toolchains"]) == compact
     # Same count, different selection: digest authority must still notice.
-    identity["rustc"]["link_selection"] = {**selection, "selection_probe_count": 2}
+    identity["rustc"]["link_selection"] = {
+        **identity["rustc"]["link_selection"],
+        "selection_probe_count": 2,
+    }
     changed = toolchain_capture.compact_toolchains(identity)
     assert (
         changed["rustc"]["link_selection"]["count"]
@@ -799,6 +838,13 @@ def _rust_metadata_probe(command, root: Path):
         kind in {"link-args", "native-static-libs"} for kind in print_kinds
     ), "metadata-only print requests stop rustc before linking"
     if list(command[1:]) == ["-vV"]:
+        # The retained physical compiler is also the Cargo probe's RUSTC.
+        # Its real file boundary must exist even when execution is substituted.
+        compiler = Path(command[0])
+        assert compiler.parent == root
+        if not compiler.exists():
+            compiler.write_bytes(b"fixture physical Rust compiler")
+            compiler.chmod(0o755)
         host = (
             "x86_64-pc-windows-msvc" if os.name == "nt" else "x86_64-unknown-linux-gnu"
         )
@@ -826,8 +872,12 @@ def _rust_metadata_probe(command, root: Path):
 @pytest.mark.parametrize(
     "command_prefix", ["", 'LC_ALL="C" PATH="/rust/lib:/usr/bin" ']
 )
+@pytest.mark.parametrize("metadata_mutation", [False, True])
 def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command_prefix: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command_prefix: str,
+    metadata_mutation: bool,
 ) -> None:
     cargo = tmp_path / ("cargo.exe" if os.name == "nt" else "cargo")
     rustc = tmp_path / ("rustc.exe" if os.name == "nt" else "rustc")
@@ -839,8 +889,59 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
         path.chmod(0o755)
     observed: list[tuple[list[str], dict[str, str]]] = []
     observed_manifests: list[str] = []
+    original_manifest = tmp_path / "Cargo.toml"
+    original_manifest.write_text(
+        '[package]\nname="fixture"\nversion="0.1.0"\n[lib]\ncrate-type=["cdylib"]\n'
+    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/lib.rs").write_text("pub fn fixture() {}\n")
+    (tmp_path / "src/main.rs").write_text("fn main() {}\n")
+    metadata_calls = []
+    package_calls = []
 
     def fake_run(command, **kwargs):
+        if command[1] == "pkgid":
+            assert command[command.index("--package") + 1] == "fixture"
+            package_calls.append(list(command))
+            return subprocess.CompletedProcess(command, 0, "fixture\n", "")
+        if command[1] == "metadata":
+            metadata_calls.append(list(command))
+            if metadata_mutation and len(metadata_calls) == 2:
+                original_manifest.write_text(
+                    original_manifest.read_text().replace('"cdylib"', '"rlib"')
+                )
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                json.dumps(
+                    {
+                        "workspace_root": str(tmp_path),
+                        "workspace_default_members": ["fixture"],
+                        "packages": [
+                            {
+                                "id": "fixture",
+                                "source": None,
+                                "manifest_path": str(original_manifest),
+                                "targets": [
+                                    {
+                                        "name": "fixture",
+                                        "kind": ["lib"],
+                                        "crate_types": ["cdylib"],
+                                        "src_path": str(tmp_path / "src/lib.rs"),
+                                    },
+                                    {
+                                        "name": "other",
+                                        "kind": ["bin"],
+                                        "crate_types": ["bin"],
+                                        "src_path": str(tmp_path / "src/main.rs"),
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                "",
+            )
         metadata = _rust_metadata_probe(command, tmp_path)
         if metadata is not None:
             return metadata
@@ -849,7 +950,7 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
         observed.append((argv, environment))
         if "--manifest-path" in argv:
             probe_root = Path(argv[argv.index("--manifest-path") + 1]).parent
-            if "--lib" in argv:
+            if (probe_root / "host.rs").exists():
                 assert (probe_root / "host.rs").is_file()
                 assert not (probe_root / "main.rs").exists()
             else:
@@ -875,6 +976,9 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
     command_argv = [
         "cargo",
         "rustc",
+        "--package",
+        "fixture",
+        "--lib",
         "--profile",
         "frontier-fast",
         "--features",
@@ -886,8 +990,23 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
         f"linker={linker}",
         "-Clink-arg=/DEBUG:NONE",
         "--crate-type",
-        "cdylib",
+        "staticlib",
     ]
+    if metadata_mutation:
+        with pytest.raises(
+            toolchain_capture.RustLinkCaptureError, match="Cargo artifact input changed"
+        ):
+            toolchain_capture.capture_rust_link_process_images(
+                rustc=rustc,
+                cargo=cargo,
+                cwd=tmp_path,
+                env=environment,
+                target="test-triple",
+                command_argv=command_argv,
+            )
+        assert len(metadata_calls) == 2
+        assert not observed, "mutation must reject before synthetic compilation"
+        return
     images, telemetry = toolchain_capture.capture_rust_link_process_images(
         rustc=rustc,
         cargo=cargo,
@@ -905,11 +1024,17 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
         observed[0][0].index("-C") : observed[0][0].index("-C") + 2
     ]
     assert "-Clink-arg=/DEBUG:NONE" in observed[0][0]
-    assert observed[0][0][observed[0][0].index("--crate-type") + 1] == "cdylib"
+    assert observed[0][0][observed[0][0].index("--crate-type") + 1] == "staticlib"
     assert '[profile.frontier-fast]\ninherits="release"' in observed_manifests[0]
-    assert "[[bin]]" in observed_manifests[0] and "[lib]" not in observed_manifests[0]
+    assert (
+        "[lib]" in observed_manifests[0]
+        and 'crate-type=["cdylib"]' in observed_manifests[0]
+    )
+    assert len(metadata_calls) == len(package_calls) == 2
     assert "[lib]" in observed_manifests[1] and "[[bin]]" not in observed_manifests[1]
     assert observed[0][1]["CARGO_TARGET_TEST_TRIPLE_LINKER"] == str(linker)
+    assert all(environment["RUSTC"] == str(rustc) for _, environment in observed)
+    assert "RUSTC" not in environment
     assert images == [
         {
             "schema": process_image_capture.PROCESS_IMAGE_SCHEMA,
@@ -946,6 +1071,66 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
     assert revalidated == images
     assert reused_telemetry == telemetry
     assert len(observed) == 2
+
+    assert str(original_manifest) in {
+        row.path for row in toolchain_capture.frozen_files(selected_identity)
+    }
+    _, reference, _ = toolchain_capture.publish_capture(
+        tmp_path / "cas", {"rustc": selected_identity}
+    )
+    loaded = toolchain_capture.load_capture(reference, cas_root=tmp_path / "cas")
+    for mutation in ("context", "manifest", "base", "selected-target"):
+        altered = __import__("copy").deepcopy(loaded)
+        unit = altered["toolchains"]["rustc"]["link_selection"]["units"][0]
+        if mutation == "context":
+            unit["artifact_context"] = None
+        elif mutation == "manifest":
+            del unit["artifact_context"]["sources"][0]["manifest"]
+        elif mutation == "base":
+            # Keep the exact Cargo transcript and manifest bytes. Erasing the
+            # manifest's cdylib obligation must not make this archive-only.
+            unit["artifact_context"]["sources"][0]["crate_types"] = ["rlib"]
+            unit["artifact_selection"].update(
+                manifest_crate_types=["rlib"], link_required=False
+            )
+            unit.update(
+                selected_process_count=0,
+                process_resolution=[],
+                process_image_refs=[],
+                link_argv_sha256=canonical_json_sha256([]),
+            )
+        else:
+            # Another target exists in the same Cargo metadata. It is not the
+            # actual --lib selection even though the package/manifest match.
+            source = unit["artifact_context"]["sources"][0]
+            source.update(crate_types=["bin"], source=str(tmp_path / "src/main.rs"))
+            unit["artifact_selection"].update(manifest_crate_types=["bin"])
+        diagnostic = (
+            "manifest" if mutation in {"context", "manifest"} else "selected target"
+        )
+        with pytest.raises(ValueError, match=diagnostic):
+            toolchain_capture.publish_capture(tmp_path / "cas", altered["toolchains"])
+        altered["files"] = [
+            row.as_dict()
+            for row in toolchain_capture.frozen_files(altered["toolchains"])
+        ]
+        reference = custody_cas.put_json(tmp_path / "cas", altered).as_dict()
+        with pytest.raises(ValueError, match=diagnostic):
+            toolchain_capture.load_capture(reference, cas_root=tmp_path / "cas")
+
+    captured_manifest = telemetry["units"][0]["artifact_context"]["sources"][0][
+        "manifest"
+    ]
+    assert (
+        captured_manifest["sha256"]
+        == hashlib.sha256(original_manifest.read_bytes()).hexdigest()
+    )
+    toolchain_capture.revalidate_rust_artifact_manifests(telemetry)
+    original_manifest.write_text(
+        original_manifest.read_text().replace('"cdylib"', '"rlib"')
+    )
+    with pytest.raises(ValueError, match="artifact manifest/source changed"):
+        toolchain_capture.revalidate_rust_artifact_manifests(telemetry)
 
     linker.write_bytes(b"substituted-linker")
     with pytest.raises(ValueError, match="changed while live custody armed"):
@@ -1039,6 +1224,7 @@ def test_rust_capture_failure_retains_complete_phase_transcript_without_environm
     monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
     with pytest.raises(toolchain_capture.RustLinkCaptureError) as caught:
         toolchain_capture.capture_rust_link_process_images(
+            command_argv=["rustc"],
             rustc=tmp_path / "rustc",
             cargo=None,
             cwd=tmp_path,
@@ -1108,9 +1294,25 @@ def test_rust_cargo_legal_feature_names_are_not_print_argument_positions(
 
 @pytest.mark.parametrize("cargo_mode", [False, True])
 @pytest.mark.parametrize("relative_sysroot", [False, True])
-@pytest.mark.parametrize("relative_linker", [False, True])
+@pytest.mark.parametrize(
+    "relative_linker,codegen_spelling",
+    [
+        (False, "-C"),
+        (True, "-C"),
+        (True, "-Cjoined"),
+        (True, "--codegen"),
+        (True, "--codegen="),
+        (True, "-gC"),
+        (True, "-gCjoined"),
+    ],
+)
 def test_rust_link_capture_resolves_sysroot_override_and_host_consumer(
-    tmp_path, monkeypatch, cargo_mode, relative_sysroot, relative_linker
+    tmp_path,
+    monkeypatch,
+    cargo_mode,
+    relative_sysroot,
+    relative_linker,
+    codegen_spelling,
 ):
     host = "x86_64-pc-windows-msvc" if os.name == "nt" else "x86_64-unknown-linux-gnu"
     suffix = ".exe" if os.name == "nt" else ""
@@ -1133,6 +1335,7 @@ def test_rust_link_capture_resolves_sysroot_override_and_host_consumer(
     def fake_run(command, **kwargs):
         if command[1] == "metadata":
             assert kwargs["cwd"] == invocation_cwd
+            assert kwargs["env"]["RUSTC"] == str(compiler / "rustc")
             return subprocess.CompletedProcess(
                 command,
                 0,
@@ -1178,7 +1381,14 @@ def test_rust_link_capture_resolves_sysroot_override_and_host_consumer(
                 else "rust-lld"
             )
             if relative_linker:
-                assert "linker=" + selected in command
+                expected = "linker=" + selected
+                assert (
+                    (expected in command)
+                    if codegen_spelling in {"-C", "--codegen", "-gC"}
+                    else (
+                        (codegen_spelling.removesuffix("joined")) + expected in command
+                    )
+                )
         return subprocess.CompletedProcess(command, 0, json.dumps(selected) + "\n", "")
 
     monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=fake_run))
@@ -1197,7 +1407,12 @@ def test_rust_link_capture_resolves_sysroot_override_and_host_consumer(
         else ["rustc", "--sysroot", override_arg]
     )
     if relative_linker:
-        argv.extend(("-C", "linker=" + str(linker.relative_to(tmp_path))))
+        value = "linker=" + str(linker.relative_to(tmp_path))
+        argv.extend(
+            (codegen_spelling, value)
+            if codegen_spelling in {"-C", "--codegen", "-gC"}
+            else ((codegen_spelling.removesuffix("joined")) + value,)
+        )
     images, telemetry = toolchain_capture.capture_rust_link_process_images(
         rustc=compiler / "rustc",
         cargo=compiler / "cargo" if cargo_mode else None,
@@ -1211,6 +1426,7 @@ def test_rust_link_capture_resolves_sysroot_override_and_host_consumer(
         *([str(native.resolve())] if cargo_mode else []),
     }
     assert len(calls) == (2 if cargo_mode else 1)
+    assert telemetry["producer_command"] == argv
     target_unit = telemetry["units"][0]
     assert target_unit["process_resolution"][0]["origin"] == (
         "explicit-path" if relative_linker else "rust-sysroot-host-tool"
@@ -1400,6 +1616,7 @@ def test_rust_driver_alias_preserves_invocation_and_revalidates_selection(
 
     monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
     images, telemetry = toolchain_capture.capture_rust_link_process_images(
+        command_argv=["rustc"],
         rustc=tmp_path / "rustc",
         cargo=None,
         cwd=tmp_path,
@@ -1417,6 +1634,7 @@ def test_rust_driver_alias_preserves_invocation_and_revalidates_selection(
     with pytest.raises(ValueError, match="changed while live custody armed"):
         toolchain_capture.revalidate_rust_link_process_images(
             {"process_images": images, "link_selection": telemetry},
+            command_argv=["rustc"],
             target=None,
         )
 
@@ -1506,6 +1724,7 @@ def test_gcc_link_capture_seals_the_linker_collect2_reports(
     )
 
     images, telemetry = toolchain_capture.capture_rust_link_process_images(
+        command_argv=["rustc"],
         rustc=tmp_path / "rustc",
         cargo=None,
         cwd=tmp_path,
@@ -1560,6 +1779,7 @@ def test_gcc_collect2_linker_report_fails_closed_with_child_evidence(
     )
     with pytest.raises(toolchain_capture.RustLinkCaptureError, match=message) as caught:
         toolchain_capture.capture_rust_link_process_images(
+            command_argv=["rustc"],
             rustc=tmp_path / "rustc",
             cargo=None,
             cwd=tmp_path,
@@ -1597,6 +1817,7 @@ def test_gcc_link_capture_follows_the_rust_lld_wrapper_collect2_selects(
     )
 
     images, telemetry = toolchain_capture.capture_rust_link_process_images(
+        command_argv=["rustc"],
         rustc=tmp_path / "rustc",
         cargo=None,
         cwd=tmp_path,
@@ -1613,13 +1834,17 @@ def test_gcc_link_capture_follows_the_rust_lld_wrapper_collect2_selects(
         "rust-lld-wrapper",
     ]
     revalidated, _ = toolchain_capture.revalidate_rust_link_process_images(
-        {"process_images": images, "link_selection": telemetry}, target=None
+        {"process_images": images, "link_selection": telemetry},
+        command_argv=["rustc"],
+        target=None,
     )
     assert revalidated == images
     rust_lld.write_bytes(b"substituted rust-lld")
     with pytest.raises(ValueError, match="changed while live custody armed"):
         toolchain_capture.revalidate_rust_link_process_images(
-            {"process_images": images, "link_selection": telemetry}, target=None
+            {"process_images": images, "link_selection": telemetry},
+            command_argv=["rustc"],
+            target=None,
         )
 
 
@@ -1796,3 +2021,781 @@ def test_rust_link_capture_declares_exact_msvc_build_tool_family(
     )
     assert revalidated == images
     assert reused == telemetry
+
+
+@pytest.mark.parametrize("mutation", ["header", "new-header", "compiler-rt", "linker"])
+def test_wasi_sdk_closure_binds_helpers_and_complete_resources(tmp_path, mutation):
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        provisioned_wasi_sdk_fixture,
+    )
+    from molt.llvm_toolchain import wasi_c_abi_plan
+    from tools import proof_plan
+    from tools.proof_queue_pkg import execution_environment
+
+    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    plan = wasi_c_abi_plan(installation)
+    selection = capture_wasi_sdk_selection(
+        root=proof_plan.ROOT, env={"WASI_SDK_PATH": str(installation.sdk)}
+    )
+    assert "resources" not in selection
+    assert execution_environment._broad_toolchain_roots(
+        {"wasi-clang": {"wasi_sdk": selection}}
+    ) == [
+        installation.sdk / "lib",
+        installation.sysroot,
+    ]
+    images = toolchain_capture.capture_wasi_sdk_images(selection)
+    identity = {
+        "path": str(plan.driver),
+        "wasi_sdk": selection,
+        "process_images": images,
+    }
+    toolchain_capture.validate_wasi_sdk_closure(
+        identity, full_capture=False, selected_role="clang"
+    )
+    verified_images = toolchain_capture.revalidate_wasi_sdk_selection(identity)
+    assert plan.linker in {Path(row.path) for row in verified_images}
+    closure = toolchain_capture.capture_wasi_sdk_resources(selection)
+    identity["wasi_sdk"] = closure
+    toolchain_capture.validate_wasi_sdk_closure(
+        identity, full_capture=True, selected_role="clang"
+    )
+    frozen = {Path(row.path) for row in toolchain_capture.frozen_files(identity)}
+    assert {plan.path("compiler_rt"), plan.path("long_double"), plan.linker}.issubset(
+        frozen
+    )
+    if mutation == "linker":
+        plan.linker.write_bytes(plan.linker.read_bytes() + b"changed")
+        with pytest.raises(ValueError, match="changed|identity|digest|size"):
+            process_image_capture.revalidate_images(images)
+    else:
+        path = (
+            plan.path("compiler_rt")
+            if mutation == "compiler-rt"
+            else plan.include / ("new.h" if mutation == "new-header" else "errno.h")
+        )
+        path.write_bytes(b"changed SDK resource")
+        with pytest.raises(ValueError, match="provisioned generation"):
+            toolchain_capture.capture_wasi_sdk_resources(selection)
+
+
+def _native_c_capture_fixture(
+    tmp_path, monkeypatch, *, required=True, resources=False, armed=True
+):
+    """Real Rust/C capture boundary with independent compiler transcripts."""
+    from tools import proof_plan
+
+    tools = {}
+    for name in (
+        "rustc",
+        "cargo",
+        "linker",
+        "selected-gcc",
+        "selected-ar",
+        "cc1",
+        "as",
+    ):
+        directory = tmp_path / (
+            "helpers-outside-bin" if name in {"cc1", "as"} else "bin"
+        )
+        directory.mkdir(exist_ok=True)
+        path = directory / (name + (".exe" if os.name == "nt" else ""))
+        path.write_bytes(name.encode())
+        path.chmod(0o755)
+        tools[name] = path
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(list(command))
+        metadata = _rust_metadata_probe(command, tmp_path)
+        if metadata is not None:
+            return metadata
+        if str(command[0]) == str(tools["selected-gcc"]):
+            assert "-###" in command
+            assert Path(kwargs["cwd"]) != tmp_path
+            assert all(
+                Path(value).is_file()
+                for value in command
+                if value.endswith((".c", ".S"))
+            )
+            language = command[command.index("-x") + 1]
+            # Independent absolute frontend and PATH-resolved assembler.
+            transcript = " " + json.dumps(str(tools["cc1"])) + ' "-E"\n'
+            if language == "c":
+                transcript += " " + json.dumps(tools["as"].name) + ' "-o" "unit.o"\n'
+            return subprocess.CompletedProcess(command, 0, "", transcript)
+        # rustc archive creation has no linker command to print. Inspect the
+        # actual compiler argv rather than the production artifact projection;
+        # Cargo's host proc-macro has no staticlib override and still links.
+        if (
+            "--crate-type" in command
+            and command[command.index("--crate-type") + 1] == "staticlib"
+        ):
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps(str(tools["linker"])) + ' "probe.o"\n', ""
+        )
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    command = (
+        list(
+            next(
+                row.argv
+                for row in proof_plan.ProofPlan.load().commands
+                if row.id == "wasm.build.host"
+            )
+        )
+        if required
+        else ["cargo", "build"]
+    )
+    environment = {
+        "PATH": str(tools["as"].parent),
+        "CC": str(tools["selected-gcc"]),
+        "AR": str(tools["selected-ar"]),
+    }
+    if resources:
+        includes = tmp_path / "include"
+        includes.mkdir()
+        (includes / "header.h").write_text("#define CAPTURED 1\n")
+        forced = tmp_path / "forced.h"
+        forced.write_text("#define FORCED 1\n")
+        environment["CFLAGS"] = f"-I{includes} -include {forced}"
+    images, selection = toolchain_capture.capture_rust_link_process_images(
+        rustc=tools["rustc"],
+        cargo=tools["cargo"],
+        cwd=tmp_path,
+        env=environment,
+        target=None,
+        rustc_version="rustc 1.99.0\nhost: x86_64-unknown-linux-gnu\n",
+        command_argv=command,
+        admitted_command=command,
+        native_c_units=["target"] if required else [],
+    )
+    if armed:
+        _, selection = toolchain_capture.revalidate_rust_link_process_images(
+            {"process_images": images, "link_selection": selection},
+            target=None,
+            command_argv=command,
+            required_native_c=["target"] if required else [],
+        )
+    compiler = process_image_capture.capture_image("rustc", tools["rustc"])
+    identity = {
+        "process_images": [compiler, *images],
+        "link_selection": selection,
+        "path": str(tools["rustc"]),
+        "content_path": str(tools["rustc"]),
+        "launcher_sha256": compiler["sha256"],
+        "executable_sha256": compiler["sha256"],
+        "version": "rustc 1.99.0",
+        "probe_cwd": str(tmp_path),
+        "policy_sha256": "a" * 64,
+        "configuration_files": [],
+    }
+    identity["identity_sha256"] = canonical_json_sha256(identity)
+    return identity, tools, environment, command, calls
+
+
+def test_native_c_capture_uses_actual_helpers_and_independent_archiver(
+    tmp_path, monkeypatch
+):
+    identity, tools, env, command, calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch
+    )
+    selected = toolchain_capture.validate_rust_link_selection(
+        identity, required_native_c=["target"]
+    )
+    unit = selected["native_c"][0]
+    assert unit["selection"]["compiler"] == [str(tools["selected-gcc"])]
+    assert unit["selection"]["archiver"] == str(tools["selected-ar"])
+    assert [row["language"] for row in unit["compiler"]["phases"]] == [
+        "c",
+        "assembler-with-cpp",
+    ]
+    assert {
+        str(tools[name]) for name in ("selected-gcc", "selected-ar", "cc1", "as")
+    } <= {row.path for row in toolchain_capture.frozen_files(identity)}
+    assert sum("-###" in command for command in calls) == 2
+    before = len(calls)
+    toolchain_capture.revalidate_rust_link_process_images(
+        identity, target=None, command_argv=command, required_native_c=["target"]
+    )
+    assert len(calls) == before
+    assert toolchain_capture.native_c_environment(selected)[
+        "CC_x86_64_unknown_linux_gnu"
+    ] == str(tools["selected-gcc"])
+    assert toolchain_capture.native_compiler_selection_is_current(
+        unit["compiler"], env=env
+    )
+
+
+@pytest.mark.parametrize("member", ["selected-gcc", "selected-ar", "cc1", "as"])
+def test_native_c_capture_refuses_changed_actual_image(tmp_path, monkeypatch, member):
+    identity, tools, _env, command, _calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch
+    )
+    tools[member].write_bytes(b"replacement")
+    with pytest.raises(ValueError, match="changed while live custody armed"):
+        toolchain_capture.revalidate_rust_link_process_images(
+            identity, target=None, command_argv=command, required_native_c=["target"]
+        )
+
+
+def test_rust_only_capture_has_no_native_c_probe_or_selection(tmp_path, monkeypatch):
+    identity, _tools, _env, _command, calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch, required=False
+    )
+    assert identity["link_selection"]["native_c"] == []
+    assert not any("-###" in command for command in calls)
+    toolchain_capture.validate_rust_link_selection(identity, required_native_c=[])
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["units", "required", "phase", "helper", "archiver", "command", "resources"],
+)
+def test_native_c_capture_receivers_reject_resealed_omissions(
+    tmp_path, monkeypatch, mutation
+):
+    import copy
+
+    identity, _tools, _env, _command, _calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch
+    )
+    cas = tmp_path / "cas"
+    _, reference, _ = toolchain_capture.publish_capture(cas, {"rustc": identity})
+    changed = copy.deepcopy(identity)
+    if mutation == "units":
+        changed["link_selection"]["native_c"] = []
+    elif mutation == "required":
+        del changed["link_selection"]["native_c_required"]
+    elif mutation == "phase":
+        changed["link_selection"]["native_c"][0]["compiler"]["phases"].pop()
+    elif mutation == "command":
+        changed["link_selection"]["admitted_command"] = []
+        changed["link_selection"]["native_c"] = []
+        changed["link_selection"]["native_c_required"] = []
+    elif mutation == "resources":
+        changed["link_selection"]["native_c"][0]["resources"] = None
+    else:
+        changed["process_images"] = [
+            row
+            for row in changed["process_images"]
+            if not (
+                row["role"].endswith("-archiver")
+                if mutation == "archiver"
+                else "helpers-outside-bin" in row["path"]
+            )
+        ]
+        changed["link_selection"]["selected_process_count"] = len(
+            changed["process_images"]
+        )
+    with pytest.raises(ValueError):
+        toolchain_capture.publish_capture(cas, {"rustc": changed})
+    raw = custody_cas.read_ref(reference, expected_root=cas)
+    raw["toolchains"] = {"rustc": changed}
+    raw["files"] = [row.as_dict() for row in toolchain_capture.frozen_files(changed)]
+    forged = custody_cas.put_json(cas, raw).as_dict()
+    with pytest.raises(ValueError):
+        toolchain_capture.load_capture(forged, cas_root=cas)
+
+
+@pytest.mark.parametrize("mutation", ["none", "new-member", "file-content"])
+def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
+    tmp_path, monkeypatch, mutation
+):
+    from tools.proof_queue_pkg import (
+        command_admission,
+        command_identity,
+        execution_environment,
+    )
+
+    directory_calls = []
+    real_directory = command_identity._directory_manifest_identity
+
+    def counted_directory(path, **kwargs):
+        directory_calls.append(path)
+        return real_directory(path, **kwargs)
+
+    monkeypatch.setattr(
+        command_identity, "_directory_manifest_identity", counted_directory
+    )
+    identity, tools, env, command, _calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch, resources=True, armed=False
+    )
+    assert directory_calls == []
+    # Keep the real configuration authority for every admitted toolchain.
+    # The handcrafted Rust transcript supplies compiler observations only.
+    identity["configuration_files"] = command_identity._tool_configuration_identities(
+        "rustc", cwd=tmp_path, env=env, command_argv=command
+    )
+    identity.pop("identity_sha256")
+    identity["identity_sha256"] = canonical_json_sha256(identity)
+    from tools import proof_plan
+
+    probes = len(_calls)
+    assert command_identity._reused_identity_is_current(
+        proof_plan.ToolchainPolicy("rustc", {}),
+        identity,
+        cwd=tmp_path,
+        env=env,
+        command_argv=command,
+        native_c_units=["target"],
+    )
+    assert directory_calls == [] and len(_calls) == probes
+    if mutation == "new-member":
+        (tmp_path / "include" / "added.h").write_text("#define ADDED 1\n")
+    elif mutation == "file-content":
+        (tmp_path / "forced.h").write_text("#define FORCED 2\n")
+    monkeypatch.setattr(
+        command_identity, "_python_identity", lambda *args, **kwargs: None
+    )
+    envelope = command_admission.envelope_for_command(command)
+    assert envelope["toolchains"] == ["rustc", "cargo", "git"]
+    assert envelope["cargo_native_c_units"] == ["target"]
+    env["CARGO"] = str(tools["cargo"])
+    # Git is admitted for source custody in addition to the build's Rust tools.
+    # Give it a real executable image on this fixture's exclusive PATH.
+    tools["git"] = tools["as"].with_name("git.exe" if os.name == "nt" else "git")
+    tools["git"].write_bytes(b"fixture git executable")
+    tools["git"].chmod(0o755)
+    version_calls = []
+    versions = {
+        str(tools["cargo"]): "cargo 1.99.0\n",
+        str(tools["git"]): "git version 2.49.0\n",
+    }
+
+    def tool_version(argv, **kwargs):
+        version_calls.append(list(argv))
+        assert list(argv) == [argv[0], "--version"]
+        return subprocess.CompletedProcess(argv, 0, versions[argv[0]], "")
+
+    # Only version processes are synthetic. Resolve and capture all remaining
+    # admitted roles with the real policy, image and configuration authorities.
+    monkeypatch.setattr(command_identity, "_run_captured", tool_version)
+    plan = proof_plan.ProofPlan.load()
+    located = {"rustc": identity}
+    for name in envelope["toolchains"]:
+        if name != "rustc":
+            located[name] = command_identity._tool_identity(
+                plan, name, envelope, command, cwd=tmp_path, env=env
+            )
+    assert version_calls == [
+        [str(tools["cargo"]), "--version"],
+        [str(tools["git"]), "--version"],
+    ]
+    assert set(located) == {"rustc", "cargo", "git"}
+    assert located["git"]["path"] == str(tools["git"])
+    assert located["git"]["version"] == "git version 2.49.0"
+    # Git's canonical selector currently has no configuration-file inputs;
+    # exercise that authority instead of fabricating configuration custody.
+    assert located["git"]["configuration_files"] == []
+    original_open = Path.open
+    reads = []
+
+    def counted_open(path, mode="r", *args, **kwargs):
+        if mode == "rb":
+            reads.append(path)
+        return original_open(path, mode, *args, **kwargs)
+
+    def capture():
+        return execution_environment._capture_toolchains(
+            envelope,
+            command,
+            cwd=tmp_path,
+            env=env,
+            source_root=tmp_path,
+            hash_workers=1,
+            located_toolchains=located,
+        )
+
+    # Instrument only the operation, never pytest/report teardown.
+    with monkeypatch.context() as scope:
+        scope.setattr(Path, "open", counted_open)
+        _, captured = capture()
+    assert set(captured) == {"rustc", "cargo", "git"}
+    assert captured["git"]["process_images"] == located["git"]["process_images"]
+    for name in located:
+        assert (
+            captured[name]["configuration_files"]
+            == located[name]["configuration_files"]
+        )
+    assert directory_calls == [tmp_path / "include"]
+    assert identity["link_selection"]["native_c"][0]["resources"] is None
+    files = {row.path for row in toolchain_capture.frozen_files(captured)}
+    assert str(tools["git"]) in files
+    for tool in located.values():
+        assert {row["path"] for row in tool["configuration_files"]} <= files
+    if mutation == "new-member":
+        assert str(tmp_path / "include" / "added.h") in files
+    for path in [
+        *(
+            tools[name]
+            for name in (
+                "rustc",
+                "cargo",
+                "git",
+                "linker",
+                "selected-gcc",
+                "selected-ar",
+                "cc1",
+                "as",
+            )
+        ),
+        tmp_path / "include" / "header.h",
+        tmp_path / "forced.h",
+    ]:
+        assert reads.count(path) == 1, (path, reads)
+    # Once the armed inventory exists, both new members and changed bytes are
+    # rejected at a subsequent verification boundary.
+    if mutation == "new-member":
+        (tmp_path / "include" / "late.h").write_text("late header")
+    else:
+        (tmp_path / "forced.h").write_text("late file mutation")
+    with pytest.raises(ValueError, match="resource.*changed while live custody armed"):
+        toolchain_capture.revalidate_rust_link_process_images(
+            captured["rustc"],
+            target=None,
+            command_argv=command,
+            required_native_c=["target"],
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation", ["digest", "path", "directory-member", "parent-escape"]
+)
+def test_native_c_resource_receivers_reject_resealed_substitutions(
+    tmp_path, monkeypatch, mutation
+):
+    import copy
+
+    identity, _tools, _env, _command, _calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch, resources=True
+    )
+    cas = tmp_path / "cas"
+    _, reference, _ = toolchain_capture.publish_capture(cas, {"rustc": identity})
+    changed = copy.deepcopy(identity)
+    resources = changed["link_selection"]["native_c"][0]["resources"]
+    file = next(row for row in resources if "path" in row)
+    if mutation == "digest":
+        file.pop("sha256")
+    elif mutation == "path":
+        file["path"] = str(tmp_path / "include" / "header.h")
+        header = tmp_path / "include" / "header.h"
+        file["sha256"] = hashlib.sha256(header.read_bytes()).hexdigest()
+        file["size_bytes"] = header.stat().st_size
+    else:
+        directory = next(row for row in resources if "root" in row)
+        directory["files"][0]["resolved_path"] = (
+            directory["root"] + "/../forced.h"
+            if mutation == "parent-escape"
+            else file["path"]
+        )
+        directory["files"][0]["sha256"] = file["sha256"]
+        directory["files"][0]["size"] = file["size_bytes"]
+        directory["files"][0]["symlinked"] = True
+        directory["manifest_sha256"] = canonical_json_sha256(directory["files"])
+    with pytest.raises(ValueError, match="resource"):
+        toolchain_capture.publish_capture(cas, {"rustc": changed})
+    raw = custody_cas.read_ref(reference, expected_root=cas)
+    raw["toolchains"] = {"rustc": changed}
+    raw["files"] = [row.as_dict() for row in toolchain_capture.frozen_files(changed)]
+    forged = custody_cas.put_json(cas, raw).as_dict()
+    with pytest.raises(ValueError, match="resource"):
+        toolchain_capture.load_capture(forged, cas_root=cas)
+
+
+@pytest.mark.parametrize("failure", ["nonzero", "unparseable", "missing-helper"])
+def test_native_c_phase_failure_preserves_completed_probe_diagnostics(
+    tmp_path, monkeypatch, failure
+):
+    driver = tmp_path / "cc"
+    driver.write_bytes(b"independent compiler fixture")
+    stderr = (
+        ' "missing-native-helper" "unit.c"\n'
+        if failure == "missing-helper"
+        else "compiler diagnostic without a command"
+    )
+
+    def run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command, 17 if failure == "nonzero" else 0, "retained stdout", stderr
+        )
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    with pytest.raises(toolchain_capture.RustLinkCaptureError) as caught:
+        toolchain_capture.capture_native_compiler_process_images(
+            [str(driver)],
+            role="test-native-c",
+            language="c",
+            target="x86_64-unknown-linux-gnu",
+            cwd=tmp_path,
+            env={"PATH": str(tmp_path)},
+        )
+    diagnostic = caught.value.diagnostic
+    assert diagnostic["unit"] == "test-native-c"
+    assert diagnostic["phase"] == "native-compile-c"
+    assert len(diagnostic["probes"]) == 1
+    probe = diagnostic["probes"][0]
+    assert probe["argv"][0:2] == [str(driver), "-###"]
+    assert probe["stdout"] == "retained stdout" and probe["stderr"] == stderr
+    assert probe["returncode"] == (17 if failure == "nonzero" else 0)
+
+
+def test_native_c_cross_target_requires_actual_effective_command(tmp_path, monkeypatch):
+    _identity, tools, env, command, calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch
+    )
+    calls.clear()
+    env.update(
+        CC_aarch64_unknown_linux_gnu=str(tools["selected-gcc"]),
+        AR_aarch64_unknown_linux_gnu=str(tools["selected-ar"]),
+    )
+    with pytest.raises(ValueError, match="effective cc-rs compiler command"):
+        toolchain_capture.capture_rust_link_process_images(
+            rustc=tools["rustc"],
+            cargo=tools["cargo"],
+            cwd=tmp_path,
+            env=env,
+            target="aarch64-unknown-linux-gnu",
+            command_argv=command,
+            native_c_units=["target"],
+            rustc_version="rustc 1.99.0\nhost: x86_64-unknown-linux-gnu\n",
+        )
+    assert not any("-###" in argv for argv in calls)
+
+
+def test_directory_resource_producer_receiver_roundtrip_with_unicode(tmp_path):
+    from tools.proof_queue_pkg import command_identity
+
+    root = tmp_path / "répertoire"
+    root.mkdir()
+    (root / "entête.h").write_text("#define UNICODE 1\n", encoding="utf-8")
+    captured = command_identity._directory_manifest_identity(
+        root, label="Unicode fixture"
+    )
+    independent = hashlib.sha256(
+        json.dumps(
+            captured["files"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    assert captured["manifest_sha256"] == independent
+    command_identity._validate_directory_manifest_identity(captured, selected_root=root)
+    command_identity._revalidate_directory_manifest_identity(
+        captured, selected_root=root, label="Unicode fixture"
+    )
+    (root / "ajouté.h").write_text("changed membership")
+    with pytest.raises(ValueError, match="membership or content changed"):
+        command_identity._revalidate_directory_manifest_identity(
+            captured, selected_root=root, label="Unicode fixture"
+        )
+
+
+@pytest.mark.parametrize(
+    "crate_types,links",
+    [
+        ("lib", False),
+        ("rlib", False),
+        ("staticlib", False),
+        ("cdylib", True),
+        ("staticlib,cdylib", True),
+        ("proc-macro", True),
+        ("rlib,rlib", False),
+        ("cdylib,cdylib", True),
+    ],
+)
+def test_cargo_capture_preserves_explicit_library_artifacts_and_host(
+    tmp_path, monkeypatch, crate_types, links
+):
+    tools = {}
+    for name in ("rustc", "cargo", "target-linker", "host-linker"):
+        path = tmp_path / name
+        path.write_bytes(("image:" + name).encode())
+        path.chmod(0o755)
+        tools[name] = path
+    observed = []
+
+    def run(command, **kwargs):
+        assert command[1] not in {"metadata", "pkgid"}, (
+            "exact Cargo override must not rediscover manifest kinds"
+        )
+        metadata = _rust_metadata_probe(command, tmp_path)
+        if metadata is not None:
+            return metadata
+        manifest = Path(command[command.index("--manifest-path") + 1])
+        text = manifest.read_text()
+        source = (
+            manifest.parent / ("host.rs" if "proc-macro=true" in text else "main.rs")
+        ).read_text()
+        observed.append((list(command), text, source))
+        assert "[lib]" in text and "[[bin]]" not in text
+        assert "#![no_std]" not in source
+        host = "proc-macro=true" in text
+        assert "--lib" in command and "--bin" not in command
+        if host:
+            assert "--crate-type" not in command
+            assert source == "extern crate proc_macro;\n"
+        else:
+            assert source == "fn main() {}\n#[test]\nfn proof_link_test() {}\n"
+            assert command.index("--crate-type") < command.index("--")
+            assert command[command.index("--crate-type") + 1] == crate_types
+        selected = tools["host-linker" if host else "target-linker"]
+        output = (
+            json.dumps(str(selected)) + ' "std-library-probe.o"\n'
+            if host or links
+            else ""
+        )
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    command = ["cargo", "rustc", "--lib", "--crate-type", crate_types]
+    images, selection = toolchain_capture.capture_rust_link_process_images(
+        rustc=tools["rustc"],
+        cargo=tools["cargo"],
+        cwd=tmp_path,
+        env={"PATH": str(tmp_path)},
+        target="wasm32-wasip1",
+        command_argv=command,
+    )
+    assert len(observed) == 2
+    target_unit, host_unit = selection["units"]
+    assert target_unit["artifact_selection"] == {
+        "cargo_crate_types": crate_types.split(","),
+        "rustc_crate_types": [],
+        "manifest_crate_types": None,
+        "link_required": links,
+    }
+    assert host_unit["artifact_selection"] == {
+        "cargo_crate_types": None,
+        "rustc_crate_types": ["proc-macro"],
+        "manifest_crate_types": None,
+        "link_required": True,
+    }
+    assert target_unit["selected_process_count"] == int(links)
+    assert {row["path"] for row in images} == {
+        str(tools["host-linker"]),
+        *([str(tools["target-linker"])] if links else []),
+    }
+    identity = {"process_images": images, "link_selection": selection}
+    toolchain_capture.validate_rust_link_selection(identity, full_capture=True)
+    _, reference, _ = toolchain_capture.publish_capture(
+        tmp_path / "cas", {"rustc": identity}
+    )
+    loaded = toolchain_capture.load_capture(reference, cas_root=tmp_path / "cas")
+    assert loaded["toolchains"]["rustc"] == identity
+    if links:
+        incomplete = __import__("copy").deepcopy(identity)
+        incomplete["link_selection"]["units"][0]["process_resolution"] = []
+        with pytest.raises(ValueError, match="target linker resolution"):
+            toolchain_capture.validate_rust_link_selection(
+                incomplete, full_capture=True
+            )
+        incomplete["link_selection"]["units"][0]["process_image_refs"] = []
+        with pytest.raises(ValueError, match="image membership"):
+            toolchain_capture.validate_rust_link_selection(
+                incomplete, full_capture=True
+            )
+    for mutation in ("omit", "invert"):
+        altered = __import__("copy").deepcopy(loaded)
+        artifact = altered["toolchains"]["rustc"]["link_selection"]["units"][0]
+        if mutation == "omit":
+            del artifact["artifact_selection"]
+        else:
+            artifact["artifact_selection"]["link_required"] = not links
+        with pytest.raises(ValueError, match="artifact selection"):
+            toolchain_capture.publish_capture(tmp_path / "cas", altered["toolchains"])
+        raw = custody_cas.put_json(tmp_path / "cas", altered).as_dict()
+        with pytest.raises(ValueError, match="artifact selection"):
+            toolchain_capture.load_capture(raw, cas_root=tmp_path / "cas")
+    # An archive-shaped record cannot erase an actual cdylib obligation even
+    # if its command digest and all optional counts are resealed coherently.
+    if not links:
+        altered = __import__("copy").deepcopy(identity)
+        altered["link_selection"]["admitted_command"] = [
+            "cargo",
+            "rustc",
+            "--lib",
+            "--crate-type",
+            "cdylib",
+        ]
+        altered["link_selection"]["command_semantics_sha256"] = canonical_json_sha256(
+            altered["link_selection"]["admitted_command"]
+        )
+        with pytest.raises(ValueError, match="producer command|artifact selection"):
+            toolchain_capture.validate_rust_link_selection(altered, full_capture=True)
+
+
+@pytest.mark.parametrize("owner", ["cargo", "delegated-cargo", "rustc"])
+def test_rust_artifact_capture_retains_admitted_cargo_role_after_custom_binding(
+    tmp_path, monkeypatch, owner
+):
+    from tools import proof_plan
+    from tools.proof_queue_pkg import command_admission, command_identity
+
+    _identity, tools, env, _command, _calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch, required=False
+    )
+    selected_name = "custom-cargo" if owner != "rustc" else "rustc"
+    selected = tmp_path / (selected_name + (".exe" if os.name == "nt" else ""))
+    selected.write_bytes(b"independently selected Cargo executable")
+    selected.chmod(0o755)
+    payload = (
+        ["cargo", "rustc", "--lib", "--crate-type", "staticlib"]
+        if owner != "rustc"
+        else [str(selected), "--crate-type", "staticlib"]
+    )
+    admitted = (
+        [sys.executable, "tools/guarded_exec.py", "--", *payload]
+        if owner == "delegated-cargo"
+        else payload
+    )
+    envelope = command_admission.envelope_for_command(admitted)
+    selected_env = {**env, "CARGO": str(selected)}
+    exact = command_identity._exact_command(
+        envelope, cwd=proof_plan.ROOT, env=selected_env
+    )
+    command_identity._bind_delegated_command(
+        envelope, exact, cwd=proof_plan.ROOT, env=selected_env
+    )
+    producer = command_admission._nested_command(exact) or exact
+    assert producer == [str(selected), *payload[1:]]
+    _calls.clear()
+    images, selection = toolchain_capture.capture_rust_link_process_images(
+        rustc=tools["rustc"] if owner != "rustc" else selected,
+        cargo=selected if owner != "rustc" else None,
+        cwd=tmp_path,
+        env=selected_env,
+        target=None,
+        command_argv=producer,
+        admitted_command=admitted,
+        rustc_version="rustc 1.99.0\nhost: x86_64-unknown-linux-gnu\n",
+    )
+    link_probes = [argv for argv in _calls if "link-args" in argv]
+    assert len(link_probes) == (2 if owner != "rustc" else 1)
+    assert link_probes[0][link_probes[0].index("--crate-type") + 1] == "staticlib"
+    if owner != "rustc":
+        assert "--crate-type" not in link_probes[1]
+        # The temporary file is retired after capture; the host command itself
+        # independently identifies its proc-macro library probe.
+        assert "--lib" in link_probes[1]
+    assert selection["producer_command"] == producer
+    assert selection["units"][0]["artifact_selection"] == {
+        "cargo_crate_types": ["staticlib"] if owner != "rustc" else None,
+        "rustc_crate_types": [] if owner != "rustc" else ["staticlib"],
+        "manifest_crate_types": None,
+        "link_required": False,
+    }
+    assert selection["units"][0]["selected_process_count"] == 0
+    if owner != "rustc":
+        assert selection["units"][1]["artifact_selection"]["link_required"] is True
+    else:
+        assert len(selection["units"]) == 1
+    retained = {"process_images": images, "link_selection": selection}
+    assert (
+        toolchain_capture.validate_rust_link_selection(retained, command_argv=producer)
+        == selection
+    )
+    with pytest.raises(ValueError, match="actual admission"):
+        toolchain_capture.validate_rust_link_selection(
+            retained, command_argv=[str(selected), "check"]
+        )

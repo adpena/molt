@@ -11,7 +11,9 @@ from typing import Literal
 from molt.dx import TOOLCHAINS_DIRNAME
 
 from molt.cli.command_runtime import _run_completed_command
-from molt.cli.wasm_link_inputs import _wasi_sdk_root_for_sysroot
+from molt.llvm_toolchain import LlvmToolchainConfigError, selected_wasi_sdk_installation
+from molt.source_root import compiler_source_root
+from molt.wasi_sysroot import normalize_wasi_sysroot
 from molt.file_hashing import _sha256_file
 from molt.rust_toolchain import RustToolSearch, rustc_host, rustc_printed_sysroot
 from molt.toolchain_identity import (
@@ -240,21 +242,32 @@ def _managed_llvm_bin_directories(
 
 
 def _selected_wasi_sdk_bins(environment: Mapping[str, str]) -> tuple[Path, ...]:
-    """Project existing SDK/sysroot selectors without changing native PATH."""
-    roots = []
-    for name in ("WASI_SDK_PATH", "WASI_SDK_PREFIX"):
-        if raw := executable_environment_value(environment, name).strip():
-            roots.append(expand_user_path(raw, environment=environment))
+    """Use the admitted SDK's provenance; sysroot paths are never guessed."""
+    selectors = (
+        "WASI_SDK_PATH",
+        "WASI_SDK_PREFIX",
+        "MOLT_WASI_SYSROOT",
+        "WASI_SYSROOT",
+    )
+    if not any(
+        executable_environment_value(environment, name).strip() for name in selectors
+    ):
+        return ()
+    installation = selected_wasi_sdk_installation(
+        compiler_source_root(), environ=environment
+    )
+    if installation is None:
+        raise LlvmToolchainConfigError("selected WASI SDK is not provisioned")
     for name in ("MOLT_WASI_SYSROOT", "WASI_SYSROOT"):
         if raw := executable_environment_value(environment, name).strip():
-            root = _wasi_sdk_root_for_sysroot(
+            selected = normalize_wasi_sysroot(
                 expand_user_path(raw, environment=environment)
             )
-            if root is not None:
-                roots.append(root)
-    return _dedupe_search_directories(
-        (root / "bin" for root in roots), environment=environment
-    )
+            if selected != installation.sysroot:
+                raise LlvmToolchainConfigError(
+                    f"{name} differs from the selected WASI SDK"
+                )
+    return (installation.sdk / "bin",)
 
 
 def _observe_provenance_path(
@@ -792,6 +805,22 @@ def resolve_llvm_wasi_tool_family(
         role: _selected_tool_command(command, environment=effective_environment)
         for role, command in (explicit_commands or {}).items()
     }
+    installation = (
+        selected_wasi_sdk_installation(
+            compiler_source_root(), environ=effective_environment
+        )
+        if target_family == "wasm"
+        else None
+    )
+    managed = (
+        {}
+        if installation is None
+        else {
+            os.path.normcase(os.path.abspath(installation.sdk / fact["path"])): fact
+            for fact in installation.facts["tools"].values()
+            if fact is not None
+        }
+    )
     resolved: dict[LlvmToolRole, ResolvedLlvmTool | None] = {}
     search_directories = list(sibling_directories)
     identity_by_path: dict[str, tuple[str | None, str]] = {}
@@ -812,9 +841,16 @@ def resolve_llvm_wasi_tool_family(
         search_directories.append(path.parent)
         key = os.path.normcase(os.path.realpath(path))
         if key not in identity_by_path:
+            fact = managed.get(
+                os.path.normcase(str(path.parent.resolve(strict=True) / path.name))
+            )
             identity_by_path[key] = (
-                _tool_version(path, environment=effective_environment),
-                _sha256_file(path),
+                (installation.asset.llvm_version, str(fact["sha256"]))
+                if fact is not None and installation is not None
+                else (
+                    _tool_version(path, environment=effective_environment),
+                    _sha256_file(path),
+                )
             )
         version, sha256 = identity_by_path[key]
         selected_command = (str(path),)

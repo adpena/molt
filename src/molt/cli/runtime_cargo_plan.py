@@ -31,7 +31,11 @@ from molt.cli.cargo_target_cfg import (
 )
 from molt.exact_json import canonical_json_sha256, string_keyed_mapping
 from molt.rust_toolchain import (
+    canonical_rust_codegen_option,
+    rust_flag_spans,
     cargo_configuration_paths,
+    cargo_configuration_value,
+    cargo_selected_value,
     resolve_rustup_proxy,
     rust_toolchain_library_environment,
 )
@@ -39,7 +43,19 @@ from molt.cli.runtime_identity_schema import (
     RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
     _freeze_json,
 )
-from molt.cli.wasm_link_args import runtime_link_response_arguments
+from molt.cli.wasm_link_args import (
+    runtime_link_response_arguments,
+    wasi_external_libc_rustflags,
+)
+from molt.llvm_toolchain import (
+    LlvmToolchainConfigError,
+    WasiSdkInstallation,
+    apply_provisioned_wasm_toolchain,
+    selected_wasi_sdk_installation,
+    wasi_c_abi_plan,
+)
+from molt.source_root import compiler_source_root
+from molt.wasi_sdk_identity import WasiCAbiProjection, wasi_c_abi_projection
 from molt.toolchain_identity import (
     ExecutableIdentity,
     StableRegularFileIdentity,
@@ -192,7 +208,10 @@ class CargoResourceCustody:
     files: tuple[CargoFileCustody, ...]
 
     @classmethod
-    def capture(cls, roots: tuple[CargoResourceRoot, ...]) -> CargoResourceCustody:
+    def capture(
+        cls,
+        roots: tuple[CargoResourceRoot, ...],
+    ) -> CargoResourceCustody:
         snapshots: dict[Path, StableRegularFileIdentity] = {}
         files: list[CargoFileCustody] = []
         selected = tuple(
@@ -234,8 +253,25 @@ class CargoResourceCustody:
         )
         if selected != tuple((item.label, item.entrypoint) for item in self.files):
             raise ValueError("runtime Rust resource selection changed during build")
+        verified: set[Path] = set()
         for item in self.files:
-            item.verify()
+            if (
+                executable_content_path(item.entrypoint, label=item.label)
+                != item.identity.path
+            ):
+                raise ValueError(f"{item.label} selected content changed")
+            if item.identity.path not in verified:
+                verify_stable_regular_file_identity(item.identity, label=item.label)
+                verified.add(item.identity.path)
+
+    def file_identity(self, path: Path) -> StableRegularFileIdentity:
+        """Project a captured lexical resource; never select or hash a new file."""
+        matches = [item.identity for item in self.files if item.entrypoint == path]
+        if not matches or any(identity != matches[0] for identity in matches):
+            raise ValueError(
+                f"runtime resource has no unique captured identity: {path}"
+            )
+        return matches[0]
 
     def content_identity(self) -> dict[str, object]:
         """Project captured bytes, without probing or reading a second generation."""
@@ -415,6 +451,12 @@ def runtime_c_flag_environment_names(
         names.update((prefix, "HOST_" + prefix, "TARGET_" + prefix))
         names.update(prefix + "_" + form for form in forms)
     return tuple(sorted(names))
+
+
+def runtime_c_flag_tokens(value: str, *, shell_escaped: bool) -> tuple[str, ...]:
+    if shell_escaped:
+        return tuple(shlex.split(value, comments=True, posix=True))
+    return tuple(item for item in re.split(r"[ \t\n\r\v\f]+", value) if item)
 
 
 @dataclass(frozen=True, slots=True)
@@ -640,15 +682,12 @@ def _resolve_c_build_resources(
         if name in _C_FLAG_CONTROLS:
             projection[key] = (value,)
             continue
-        if shell_flags:
-            try:
-                tokens = shlex.split(value, comments=True, posix=True)
-            except ValueError as exc:
-                raise ValueError(
-                    f"runtime C {name} has invalid shell-escaped flags: {exc}"
-                ) from exc
-        else:
-            tokens = [item for item in re.split(r"[ \t\n\r\v\f]+", value) if item]
+        try:
+            tokens = runtime_c_flag_tokens(value, shell_escaped=shell_flags)
+        except ValueError as exc:
+            raise ValueError(
+                f"runtime C {name} has invalid shell-escaped flags: {exc}"
+            ) from exc
         projection[key] = flags(tokens, name=key)
     for name in _C_SEARCH_ENVIRONMENTS:
         if name not in env:
@@ -796,6 +835,7 @@ def _resolve_rust_flag_resources(
     *,
     root: Path,
     env: Mapping[str, str],
+    wasi_plan: WasiCAbiProjection | None,
 ) -> RustFlagResourcePlan:
     """Resolve resource selectors in dependency flags and final-crate flags.
 
@@ -806,6 +846,7 @@ def _resolve_rust_flag_resources(
     link_resources: list[CargoResourceRoot] = []
     logical_paths: list[tuple[str, Path]] = []
     linker: Path | None = None
+    managed_search = () if wasi_plan is None else wasi_plan.native_search_directories()
 
     def local_path(value: str, *, label: str, directory: bool) -> Path:
         if not value:
@@ -823,28 +864,40 @@ def _resolve_rust_flag_resources(
         tokens: Sequence[str], name: str, inherited_sysroot: Path | None
     ) -> tuple[tuple[str, ...], Path | None]:
         nonlocal linker
+        if any(token.startswith("@") for token in tokens):
+            raise ValueError(
+                "runtime Rust argument response files require parsed argument custody; linker response files use -C link-arg=@file"
+            )
         selected_sysroot = inherited_sysroot
+        if wasi_plan is not None and (tokens or name == "dependencies"):
+            tokens = wasi_external_libc_rustflags(
+                tokens,
+                plan=wasi_plan,
+                include_search=name == "dependencies",
+            )
         result: list[str] = []
+        managed_native_seen: set[Path] = set()
         entries: list[tuple[str, str, tuple[str, ...]]] = []
-        iterator = iter(tokens)
-        for token in iterator:
-            if token in {"--sysroot", "--extern", "-L", "-C", "-Z"}:
-                value = next(iterator, None)
-                if value is None or not value:
-                    raise ValueError(f"runtime Rust {token} requires an operand")
-                key, original = token, (token, value)
-            elif token.startswith(("--sysroot=", "--extern=")):
-                key, value = token.split("=", 1)
-                original = (token,)
-            elif token.startswith(("-L", "-C", "-Z")) and len(token) > 2:
-                key, value, original = token[:2], token[2:], (token,)
-            elif token.startswith("@"):
-                raise ValueError(
-                    "runtime Rust argument response files require parsed argument custody; linker response files use -C link-arg=@file"
-                )
+        for span in rust_flag_spans(tokens):
+            token = tokens[span.start]
+            original = tuple(tokens[span.start : span.stop])
+            if token == "--":
+                entries.append(("", "", original))
+                break
+            if span.codegen is not None:
+                key, value = "-C", span.codegen
+            elif span.option in {"--sysroot", "--extern", "-L", "-Z"}:
+                key, value = span.option, span.value
+                if not value:
+                    raise ValueError(f"runtime Rust {key} requires an operand")
+                if key == "-Z":
+                    value = canonical_rust_codegen_option(value)
             else:
-                entries.append(("", "", (token,)))
+                entries.append(("", "", original))
                 continue
+            if span.leading:
+                entries.append(("", "", span.leading))
+            original = (key, value)
             if key in {"-C", "-Z"}:
                 option, separator, operand = value.partition("=")
                 if option in {"link-arg", "link-args"} and "@" in operand:
@@ -899,13 +952,31 @@ def _resolve_rust_flag_resources(
                 result.extend(("--sysroot", os.fspath(selected_sysroot)))
             elif key == "-L":
                 kind, separator, operand = value.partition("=")
-                if not separator:
+                if not separator or kind not in {
+                    "dependency",
+                    "crate",
+                    "native",
+                    "framework",
+                    "all",
+                }:
                     kind, operand = "all", value
-                if kind not in {"dependency", "crate", "native", "framework", "all"}:
-                    raise ValueError(
-                        f"runtime Rust -L search kind is unsupported: {kind}"
+                path = Path(operand)
+                if path not in managed_search:
+                    path = local_path(operand, label="-L " + kind, directory=True)
+                    if kind in {"native", "all"} and managed_search:
+                        resolved = path.resolve()
+                        if resolved in managed_search:
+                            path = resolved
+                if kind in {"native", "all"} and path in managed_search:
+                    if kind == "native" and path in managed_native_seen:
+                        continue
+                    if kind == "native":
+                        managed_native_seen.add(path)
+                    logical_paths.append(
+                        (f"wasi/search/{managed_search.index(path)}", path)
                     )
-                path = local_path(operand, label="-L " + kind, directory=True)
+                    result.extend(("-L", kind + "=" + os.fspath(path)))
+                    continue
                 resources.append(CargoResourceRoot(label + "/search-" + kind, path))
                 logical_paths.append((label + "/search-" + kind, path))
                 result.extend(("-L", kind + "=" + os.fspath(path)))
@@ -992,15 +1063,6 @@ def _merge(
         else:
             result[key] = value
     return result
-
-
-def _get(document: Mapping[str, object], *keys: str) -> object | None:
-    value: object = document
-    for key in keys:
-        if not isinstance(value, Mapping) or key not in value:
-            return None
-        value = _table(value, label=key)[key]
-    return value
 
 
 def _environment_origins(
@@ -1144,24 +1206,6 @@ def _command_options(command: Sequence[str]) -> tuple[str | None, tuple[str, ...
     return target, tuple(configs)
 
 
-def _selected(
-    config: Mapping[str, object],
-    cli: Mapping[str, object],
-    env: Mapping[str, str],
-    keys: tuple[str, ...],
-    names: tuple[str, ...],
-    default: object = None,
-) -> object:
-    cli_value = _get(cli, *keys)
-    if cli_value is not None:
-        return cli_value
-    for name in names:
-        if name in env:
-            return env[name]
-    value = _get(config, *keys)
-    return default if value is None else value
-
-
 def _tool_path(value: object, *, root: Path, env: Mapping[str, str], role: str) -> Path:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"runtime {role} executable is not selected")
@@ -1187,6 +1231,43 @@ def _c_tool_environment_names(
     )
 
 
+def runtime_c_tool_selection(
+    role: str,
+    *,
+    root: Path,
+    env: Mapping[str, str],
+    target: str,
+    host_target: str,
+    allow_default: bool = True,
+) -> Path | None:
+    """One cc-rs selector precedence for Cargo and its development proof."""
+    names = _c_tool_environment_names(role, target=target, host_target=host_target)
+    value = next((env[name] for name in names if env.get(name)), None)
+    if value is None and allow_default and target == host_target:
+        value = next(
+            (
+                name
+                for name in _target_tool_defaults(target)[role]
+                if shutil.which(name, path=env.get("PATH"))
+            ),
+            None,
+        )
+    return None if value is None else _tool_path(value, root=root, env=env, role=role)
+
+
+def runtime_c_environment_name(name: str) -> bool:
+    """Selection, flag, and search controls shared by proof environment custody."""
+    if name in {*_C_FLAG_CONTROLS, *_C_SEARCH_ENVIRONMENTS}:
+        return True
+    prefixes = ("CC", "CXX", "AR", "RANLIB", *_C_FLAG_PREFIXES)
+    return any(
+        name == prefix
+        or name.startswith(prefix + "_")
+        or name in ("HOST_" + prefix, "TARGET_" + prefix)
+        for prefix in prefixes
+    )
+
+
 def _select_host_c_tools(
     tools: dict[str, Path],
     environment: _CargoEnvironment,
@@ -1208,12 +1289,16 @@ def _select_host_c_tools(
         names = _c_tool_environment_names(
             role, target=host_target, host_target=host_target
         )
-        value = next(
-            (environment[name] for name in names if environment.get(name)), None
+        path = runtime_c_tool_selection(
+            role,
+            root=root,
+            env=environment,
+            target=host_target,
+            host_target=host_target,
+            allow_default=False,
         )
-        if value is None:
+        if path is None:
             continue
-        path = _tool_path(value, root=root, env=environment, role="host " + role)
         tools["host_" + role] = path
         for name in names[:2]:
             environment[name] = os.fspath(path)
@@ -1278,7 +1363,7 @@ def _cargo_string_list(
 ) -> tuple[str, ...]:
     # Cargo StringList deserializes the merged file/CLI value, then appends
     # its config environment variable. This is not scalar selector precedence.
-    value = _get(_merge(configuration, cli), *keys)
+    value = cargo_configuration_value(_merge(configuration, cli), *keys)
     configured = _flags(value if value is not None else (), label=".".join(keys))
     return configured + (
         _flags(env[environment_name], label=environment_name)
@@ -1407,6 +1492,37 @@ class RuntimeCargoPlan:
     link_resources: CargoResourceCustody
     forced_environment: tuple[str, ...]
     c_environment: Mapping[str, tuple[str, ...]]
+    wasi_sdk: WasiSdkInstallation | None
+
+    @property
+    def wasi_c_abi(self) -> WasiCAbiProjection | None:
+        return None if self.wasi_sdk is None else wasi_c_abi_plan(self.wasi_sdk)
+
+    def managed_tool_identities(self) -> dict[str, dict[str, object]]:
+        if self.wasi_sdk is None:
+            return {}
+        result: dict[str, dict[str, object]] = {}
+        for role, sdk_role in (
+            ("cc", "clang"),
+            ("cxx", "clang++"),
+            ("ar", "llvm-ar"),
+            ("ranlib", "llvm-ranlib"),
+            ("linker", "wasm-ld"),
+            ("final_linker", "wasm-ld"),
+        ):
+            fact = self.wasi_sdk.tool_fact(sdk_role)
+            if self.tools.get(role) == self.wasi_sdk.sdk / fact["path"]:
+                result[role] = {
+                    "logical_name": role,
+                    **ExecutableIdentity(
+                        self.wasi_sdk.sdk / fact["path"],
+                        self.wasi_sdk.sdk / fact["content_path"],
+                        fact["size"],
+                        fact["sha256"],
+                        "",
+                    ).content_record(),
+                }
+        return result
 
     @property
     def cargo_profile(self) -> str:
@@ -1478,19 +1594,17 @@ class RuntimeCargoPlan:
                 before.append("--config=config:" + next(configurations))
             else:
                 before.append(token)
-        for token in command:
-            if token == "-C":
-                value = next(command, None)
-                if value is None:
-                    raise ValueError("runtime Cargo trailing -C has no value")
+        rust_arguments = tuple(command)
+        for span in rust_flag_spans(rust_arguments):
+            value = span.codegen
+            if value is None:
+                after.extend(rust_arguments[span.start : span.stop])
+            else:
+                after.extend(span.leading)
                 destination = (
                     linking if value.startswith(("link-arg=", "link-args=")) else after
                 )
-                destination.extend((token, value))
-            elif token.startswith(("-Clink-arg=", "-Clink-args=")):
-                linking.append(token)
-            else:
-                after.append(token)
+                destination.extend(("-C", value))
         return ("cargo", *before, *(("--", *after) if after else ())), tuple(linking)
 
     def configuration_arguments(self) -> tuple[str, ...]:
@@ -1544,7 +1658,12 @@ class RuntimeCargoPlan:
             self.command,
             root=self.project_root,
             env=self.environment,
+            wasi_plan=self.wasi_c_abi,
         )
+        if flag_plan.flags != self.rustflags or flag_plan.command != self.command:
+            raise ValueError(
+                "runtime Rust flags differ from their admitted target context"
+            )
         if (
             flag_plan.dependency_linker is not None
             and flag_plan.dependency_linker != self.tools.get("linker")
@@ -1561,7 +1680,11 @@ class RuntimeCargoPlan:
             )
         for item in self.configuration:
             verify_stable_regular_file_identity(item.identity, label=item.label)
-        expected_tools = {"tool/" + role: path for role, path in self.tools.items()}
+        expected_tools = {
+            "tool/" + role: path
+            for role, path in self.tools.items()
+            if role not in self.managed_tool_identities()
+        }
         expected_tools.update(
             {"wrapper/" + role: path for role, path in self.wrappers.items()}
         )
@@ -1596,6 +1719,11 @@ class RuntimeCargoPlan:
             raise ValueError(
                 "runtime C input custody differs from captured environment"
             )
+        if self.wasi_c_abi is not None:
+            if wasi_c_abi_projection(self.environment) != self.wasi_c_abi:
+                raise ValueError(
+                    "runtime WASI projection differs from captured selection"
+                )
         self.rust_resources.verify()
         self.link_resources.verify()
 
@@ -1612,7 +1740,7 @@ class RuntimeCargoPlan:
         A runtime build may additionally execute Python generators. The compiler
         build does not inherit those runtime-only inputs or interpreter probes.
         """
-        tools: dict[str, object] = {}
+        tools: dict[str, object] = dict(self.managed_tool_identities())
         wrappers: dict[str, object] = {}
         for item in self.executable_custody:
             group, role = item.label.split("/", 1)
@@ -1627,12 +1755,13 @@ class RuntimeCargoPlan:
             "cargo_configuration": self.configuration_identity(),
             "effective_target": self.target,
             "rust_resources": self.rust_resource_identity(),
-            "sysroots": {},
+            "sysroots": {}
+            if self.wasi_c_abi is None
+            else {"wasi": self.wasi_c_abi.content_identity()},
             "archives": [],
         }
 
     def configuration_identity(self) -> dict[str, object]:
-        self.verify()
         entries = [
             {
                 "label": item.label,
@@ -1664,7 +1793,7 @@ class RuntimeCargoPlan:
                 raise ValueError("runtime Cargo profile inheritance cycle")
             seen.add(profile)
             ancestry.append(profile)
-            parent = _selected(
+            parent = cargo_selected_value(
                 self.profile_configuration,
                 self.cli_configuration,
                 {},
@@ -1747,7 +1876,7 @@ class RuntimeCargoPlan:
         """Resolve Cargo profile inheritance and overrides, never name substrings."""
         ancestry = self.profile_ancestry(cargo_profile)
         for profile in ancestry:
-            value = _selected(
+            value = cargo_selected_value(
                 self.profile_configuration,
                 self.cli_configuration,
                 self.environment,
@@ -1786,10 +1915,6 @@ def resolve_runtime_cargo_plan(
     environment_transform: Callable[[Mapping[str, str]], Mapping[str, str]]
     | None = None,
     rustflags_transform: Callable[[tuple[str, ...]], tuple[str, ...]] | None = None,
-    capture_inputs: Callable[
-        [Mapping[str, str], Mapping[str, Path], tuple[CargoResourceRoot, ...]], None
-    ]
-    | None = None,
 ) -> RuntimeCargoPlan:
     root = project_root.resolve(strict=True)
     if not cargo_command or not all(
@@ -1856,7 +1981,7 @@ def resolve_runtime_cargo_plan(
         environment = _CargoEnvironment(
             environment_transform(MappingProxyType(environment))
         )
-    rustc_selector = _selected(
+    rustc_selector = cargo_selected_value(
         configuration,
         cli,
         environment,
@@ -1874,7 +1999,7 @@ def resolve_runtime_cargo_plan(
         ("RUSTC_WRAPPER", "rustc-wrapper"),
         ("RUSTC_WORKSPACE_WRAPPER", "rustc-workspace-wrapper"),
     ):
-        value = _selected(
+        value = cargo_selected_value(
             configuration,
             cli,
             environment,
@@ -1911,7 +2036,7 @@ def resolve_runtime_cargo_plan(
         if result.returncode != 0 or match is None:
             raise ValueError("runtime rustc host selection could not be proven")
         host_target = match.group(1)
-    configured_target = _selected(
+    configured_target = cargo_selected_value(
         configuration, cli, environment, ("build", "target"), ("CARGO_BUILD_TARGET",)
     )
     target = command_target or configured_target or host_target
@@ -1929,7 +2054,33 @@ def resolve_runtime_cargo_plan(
         )
     if requested_target is not None and requested_target != target:
         raise ValueError("runtime Cargo target differs from requested target")
+    wasi_plan = None
+    wasi_sdk = None
+    if target == "wasm32-wasip1" or (
+        target == "wasm32-unknown-unknown" and "MOLT_WASI_C_ABI_PLAN" in environment
+    ):
+        try:
+            wasi_sdk = selected_wasi_sdk_installation(
+                compiler_source_root(), environ=environment
+            )
+            if wasi_sdk is None:
+                raise ValueError(
+                    "the pinned WASI SDK is missing; run tools/provision_wasi_sdk.py"
+                )
+            apply_provisioned_wasm_toolchain(
+                compiler_source_root(),
+                environment,
+                installation=wasi_sdk,
+                rust_target=target,
+            )
+            wasi_plan = wasi_c_abi_plan(wasi_sdk)
+        except LlvmToolchainConfigError as exc:
+            raise ValueError(str(exc)) from exc
     cargo_target = target.upper().replace("-", "_")
+    if wasi_plan is not None:
+        environment.setdefault(
+            f"CARGO_TARGET_{cargo_target}_LINKER", str(wasi_plan.linker)
+        )
     configured_targets, cli_targets = (
         configuration.get("target", {}),
         cli.get("target", {}),
@@ -2002,7 +2153,11 @@ def resolve_runtime_cargo_plan(
         ):
             raise ValueError("runtime resolved Rust flag token is invalid")
         flag_plan = _resolve_rust_flag_resources(
-            transformed, cargo_command, root=root, env=environment
+            transformed,
+            cargo_command,
+            root=root,
+            env=environment,
+            wasi_plan=wasi_plan,
         )
         return flag_plan.flags
 
@@ -2022,7 +2177,7 @@ def resolve_runtime_cargo_plan(
     defaults = _target_tool_defaults(target)
     for role in ("cc", "cxx", "ar", "ranlib", "linker"):
         if role == "linker":
-            value = _selected(
+            value = cargo_selected_value(
                 configuration,
                 cli,
                 environment,
@@ -2046,10 +2201,11 @@ def resolve_runtime_cargo_plan(
             names = _c_tool_environment_names(
                 role, target=target, host_target=host_target
             )
-            value = next(
-                (environment[name] for name in names if environment.get(name)), None
+            selected_c_tool = runtime_c_tool_selection(
+                role, root=root, env=environment, target=target, host_target=host_target
             )
-        if value is None and target == host_target:
+            value = None if selected_c_tool is None else os.fspath(selected_c_tool)
+        if role == "linker" and value is None and target == host_target:
             value = next(
                 (
                     name
@@ -2059,6 +2215,8 @@ def resolve_runtime_cargo_plan(
                 None,
             )
         if value is None:
+            if target == "wasm32-unknown-unknown" and wasi_plan is None:
+                continue  # Pure freestanding Rust has no C-provider obligation.
             if role == "linker" and target.startswith("wasm32-"):
                 continue  # WASM final linker has a separate explicit invocation.
             selectors = (
@@ -2076,7 +2234,13 @@ def resolve_runtime_cargo_plan(
                     + " or ".join(selectors)
                 )
             continue  # Native Rust-only builds need no absent C tool.
-        tools[role] = _tool_path(value, root=root, env=environment, role=role)
+        selected_tool = (
+            _tool_path(value, root=root, env=environment, role=role)
+            if role == "linker"
+            else selected_c_tool
+        )
+        assert selected_tool is not None
+        tools[role] = selected_tool
         selected = os.fspath(tools[role])
         if role == "linker":
             environment[f"CARGO_TARGET_{cargo_target}_LINKER"] = selected
@@ -2093,6 +2257,14 @@ def resolve_runtime_cargo_plan(
         )
     if flag_plan.final_linker is not None:
         tools["final_linker"] = flag_plan.final_linker
+    if wasi_plan is not None:
+        selected_linker = wasi_plan.linker
+        if tools.get("linker") != selected_linker or (
+            "final_linker" in tools and tools["final_linker"] != selected_linker
+        ):
+            raise ValueError(
+                "WASI runtime linker differs from the selected SDK raw linker"
+            )
     environment["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(rustflags)
     environment["RUSTC"] = os.fspath(rustc)
     # Final explicit selectors win over earlier --config operands as well as
@@ -2107,6 +2279,15 @@ def resolve_runtime_cargo_plan(
             CargoExecutableCustody.capture("tool/" + role, path)
             for role, path in tools.items()
             if role != "rustc"
+            and not (
+                wasi_sdk is not None
+                and role in {"cc", "cxx", "ar", "ranlib", "linker", "final_linker"}
+                and any(
+                    path == wasi_sdk.sdk / fact["path"]
+                    for fact in wasi_sdk.facts["tools"].values()
+                    if fact is not None
+                )
+            )
         ),
         *wrapper_custody,
     )
@@ -2121,15 +2302,11 @@ def resolve_runtime_cargo_plan(
         target_argument=target_argument,
         metadata_probe=metadata_for,
     )
-    if capture_inputs is not None:
-        capture_inputs(
-            MappingProxyType(environment), MappingProxyType(tools), rust_roots
-        )
     c_resources = _resolve_c_build_resources(
         environment, target=target, host_target=host_target
     )
     resources = CargoResourceCustody.capture(
-        (*rust_roots, *flag_plan.roots, *environment_resources, *c_resources.roots)
+        (*rust_roots, *flag_plan.roots, *environment_resources, *c_resources.roots),
     )
     resource_paths = (
         *flag_plan.logical_paths,
@@ -2156,6 +2333,7 @@ def resolve_runtime_cargo_plan(
         CargoResourceCustody.capture(flag_plan.link_roots),
         forced_environment,
         c_resources.environment,
+        wasi_sdk,
     )
     plan.verify()
     return plan

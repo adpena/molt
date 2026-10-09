@@ -1,0 +1,11 @@
+schema=molt.wasi-c-abi.v2
+target=wasm32-wasip1
+variant=single
+linker_flavor=wasm-ld
+link_self_contained=no
+max_chars=32000
+max_member_bytes=8589934592
+max_version_chars=128
+max_path_chars=16000
+header=sdk_version,llvm_version,tree_sha256,sdk,sysroot,include,driver,linker
+members=libc,long_double,compiler_rt,crt_command,crt_reactor

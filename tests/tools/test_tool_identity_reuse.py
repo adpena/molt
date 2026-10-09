@@ -165,24 +165,40 @@ def test_revalidation_rejects_changed_bytes_and_foreign_fields(tmp_path: Path) -
         json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     current = command_identity._reused_identity_is_current(
-        "probe", material, cwd=tmp_path, env={}, command_argv=["probe"]
+        proof_plan.ToolchainPolicy("probe", {}),
+        material,
+        cwd=tmp_path,
+        env={},
+        command_argv=["probe"],
     )
     assert current
 
     foreign = {**material, "runtime": {"execPath": str(image)}}
     assert not command_identity._reused_identity_is_current(
-        "probe", foreign, cwd=tmp_path, env={}, command_argv=["probe"]
+        proof_plan.ToolchainPolicy("probe", {}),
+        foreign,
+        cwd=tmp_path,
+        env={},
+        command_argv=["probe"],
     )
 
     tampered = dict(material)
     tampered["version"] = "probe 2.0"
     assert not command_identity._reused_identity_is_current(
-        "probe", tampered, cwd=tmp_path, env={}, command_argv=["probe"]
+        proof_plan.ToolchainPolicy("probe", {}),
+        tampered,
+        cwd=tmp_path,
+        env={},
+        command_argv=["probe"],
     )
 
     image.write_bytes(b"#!/bin/sh\nexit 1\n")
     assert not command_identity._reused_identity_is_current(
-        "probe", material, cwd=tmp_path, env={}, command_argv=["probe"]
+        proof_plan.ToolchainPolicy("probe", {}),
+        material,
+        cwd=tmp_path,
+        env={},
+        command_argv=["probe"],
     )
 
 
@@ -355,6 +371,378 @@ def test_python_declaring_cargo_uses_path_independently_of_explicit_hook(
     assert identity == {"path": str(selected)}
 
 
+def test_wasi_compiler_identity_selects_sdk_before_outer_command_or_path(
+    tmp_path, monkeypatch
+):
+    from molt import llvm_toolchain
+
+    compiler = tmp_path / "sdk" / "clang"
+    compiler.parent.mkdir()
+    compiler.write_bytes(b"SDK image")
+    selected = []
+
+    def resolve(root, role, *, environ):
+        selected.append(role)
+        return compiler
+
+    monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", resolve)
+    monkeypatch.setattr(
+        command_identity,
+        "_resolve_outer_executable",
+        lambda *a, **k: pytest.fail("native outer compiler selected"),
+    )
+    monkeypatch.setattr(
+        command_identity,
+        "_which_in_command_environment",
+        lambda *a, **k: pytest.fail("native PATH selected"),
+    )
+    monkeypatch.setattr(
+        command_identity,
+        "_capture_tool_identity",
+        lambda *a, **k: {"path": str(k["path"])},
+    )
+    result = command_identity._tool_identity(
+        proof_plan.ProofPlan.load(),
+        "wasi-clang",
+        {},
+        ["clang", "example.c"],
+        cwd=tmp_path,
+        env={},
+    )
+    assert result["path"] == str(compiler)
+    assert selected == ["clang"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "header",
+        "new-header",
+        "compiler-rt",
+        "linker",
+        "missing-closure",
+        "empty-resources",
+        "missing-lib",
+        "missing-sysroot",
+        "substituted-resource",
+        "missing-helper",
+        "substituted-helper",
+        "malformed-helper",
+        "missing-receipt-key",
+        "substituted-receipt",
+        "substituted-sdk",
+        "substituted-selection",
+    ],
+)
+def test_sdk_identity_roundtrip_reuses_only_complete_current_closure(
+    tmp_path, monkeypatch, mutation
+):
+    import subprocess
+
+    from molt.llvm_toolchain import wasi_c_abi_plan
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        provisioned_wasi_sdk_fixture,
+    )
+
+    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    abi = wasi_c_abi_plan(installation)
+    plan = proof_plan.ProofPlan.load()
+    env = {"WASI_SDK_PATH": str(installation.sdk)}
+    probes = []
+
+    def version(argv, **kwargs):
+        # The fixture contains real image bytes but is not an executing SDK.
+        # Only the version process is substituted; selection/capture/cache/receiver are real.
+        probes.append(tuple(argv))
+        assert tuple(argv) == (str(abi.driver), "--version")
+        return subprocess.CompletedProcess(argv, 0, "clang version 23.1.0\n", "")
+
+    monkeypatch.setattr(command_identity, "_run_captured", version)
+
+    def capture():
+        telemetry = []
+        identity = command_identity._tool_identity(
+            plan,
+            "wasi-clang",
+            {},
+            ["clang", "input.c"],
+            cwd=tmp_path,
+            env=env,
+            reuse_root=tmp_path / "reuse",
+            reuse_telemetry=telemetry,
+        )
+        command_identity._validate_toolchain_identity(plan, "wasi-clang", identity)
+        return identity, telemetry
+
+    first, miss = capture()
+    second, hit = capture()
+    assert first == second
+    assert miss[0]["state"] == "miss"
+    assert hit[0]["state"] == "hit"
+    assert len(probes) == 1
+    record_path = Path(miss[0]["record"])
+    file_mutation = mutation in {"header", "new-header", "compiler-rt", "linker"}
+    if file_mutation:
+        path = {
+            "header": abi.include / "errno.h",
+            "new-header": abi.include / "added.h",
+            "compiler-rt": abi.path("compiler_rt"),
+            "linker": abi.linker,
+        }[mutation]
+        path.write_bytes((path.read_bytes() if path.exists() else b"") + b"changed")
+    else:
+        record = json.loads(record_path.read_text())
+        identity = record["identity"]
+        closure = identity["wasi_sdk"]
+        if mutation == "missing-closure":
+            del identity["wasi_sdk"]
+        elif mutation == "empty-resources":
+            closure["generation"]["facts"]["resources"] = {}
+        elif mutation == "missing-lib":
+            del closure["generation"]["facts"]["resources"]["lib"]
+        elif mutation == "missing-sysroot":
+            del closure["generation"]["facts"]["resources"]["share/wasi-sysroot"]
+        elif mutation == "substituted-resource":
+            unrelated = tmp_path / "unrelated"
+            unrelated.mkdir()
+            closure["generation"]["facts"]["resources"]["lib"] = (
+                command_identity._directory_manifest_identity(
+                    unrelated, label="independent resource"
+                )
+            )
+        elif mutation == "missing-helper":
+            identity["process_images"].pop()
+        elif mutation == "substituted-helper":
+            identity["process_images"][-1] = dict(
+                identity["process_images"][0], role="wasi-sdk-wasm-ld"
+            )
+        elif mutation == "malformed-helper":
+            identity["process_images"][-1]["role"] = []
+        elif mutation == "missing-receipt-key":
+            del closure["receipt"]["path"]
+        elif mutation == "substituted-receipt":
+            unrelated = tmp_path / "another-receipt.json"
+            unrelated.write_text("{}")
+            closure["receipt"] = command_identity._file_identity(unrelated)
+        elif mutation == "substituted-sdk":
+            closure["sdk"] = str(tmp_path / "foreign" / "sdk")
+        elif mutation == "substituted-selection":
+            identity["path"] = str(
+                installation.sdk / "bin" / ("clang++" + abi.driver.suffix)
+            )
+        else:
+            pytest.fail(f"unhandled independent mutation {mutation}")
+        identity.pop("identity_sha256")
+        identity["identity_sha256"] = command_identity.canonical_json_sha256(identity)
+        record_path.write_text(json.dumps(record))
+        with pytest.raises(ValueError, match="SDK"):
+            command_identity._validate_toolchain_identity(plan, "wasi-clang", identity)
+    if file_mutation:
+        from tools.proof_queue_pkg import toolchain_capture
+
+        if mutation == "linker":
+            with pytest.raises(ValueError, match="SDK helper"):
+                capture()
+        else:
+            third, reused = capture()
+            assert third == first and reused[0]["state"] == "hit"
+            with pytest.raises(ValueError, match="provisioned generation"):
+                toolchain_capture.capture_wasi_sdk_resources(third["wasi_sdk"])
+        return
+    third, repaired = capture()
+    assert repaired[0]["state"] == "miss"
+    assert repaired[0]["reason"] == (
+        "selection-drift"
+        if mutation == "substituted-selection"
+        else "revalidation-drift"
+    )
+    assert len(probes) == 2
+    assert (third == first) == (not file_mutation)
+
+
+def test_native_identity_rejects_extra_sdk_closure_even_with_valid_digest(tmp_path):
+    reuse_root = tmp_path / "reuse"
+    first, telemetry = _identity(tmp_path, reuse_root)
+    record_path = Path(telemetry[0]["record"])
+    record = json.loads(record_path.read_text())
+    identity = record["identity"]
+    identity["wasi_sdk"] = {}
+    identity.pop("identity_sha256")
+    identity["identity_sha256"] = command_identity.canonical_json_sha256(identity)
+    record_path.write_text(json.dumps(record))
+    with pytest.raises(ValueError, match="SDK closure differs"):
+        command_identity._validate_toolchain_identity(
+            proof_plan.ProofPlan.load(), "git", identity
+        )
+    second, telemetry = _identity(tmp_path, reuse_root)
+    assert telemetry[0]["state"] == "miss"
+    assert telemetry[0]["reason"] == "revalidation-drift"
+    assert second == first
+    assert "wasi_sdk" not in second
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "none",
+        "compiler",
+        "helper",
+        "archiver",
+        "selector",
+        "helper-shadow",
+        "missing-unit",
+    ],
+)
+def test_native_c_reuse_revalidates_actual_selection_and_images(
+    tmp_path, monkeypatch, mutation
+):
+    from tests.tools.test_toolchain_capture import _native_c_capture_fixture
+    from molt.exact_json import canonical_json_sha256
+    from tools.proof_queue_pkg import toolchain_capture
+
+    identity, tools, env, command, _calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch, armed=False
+    )
+    monkeypatch.setattr(
+        command_identity, "_tool_configuration_identities", lambda *args, **kwargs: []
+    )
+    if mutation in {"compiler", "helper", "archiver"}:
+        tools[
+            {"compiler": "selected-gcc", "helper": "cc1", "archiver": "selected-ar"}[
+                mutation
+            ]
+        ].write_bytes(b"changed")
+    elif mutation == "selector":
+        env["HOST_CC"] = str(tools["linker"])
+    elif mutation == "helper-shadow":
+        first = tmp_path / "earlier"
+        first.mkdir()
+        shadow = first / tools["as"].name
+        shadow.write_bytes(b"another assembler")
+        shadow.chmod(0o755)
+        env["PATH"] = str(first) + os.pathsep + env["PATH"]
+    elif mutation == "missing-unit":
+        identity["link_selection"]["native_c"] = []
+        material = {
+            key: value for key, value in identity.items() if key != "identity_sha256"
+        }
+        identity["identity_sha256"] = canonical_json_sha256(material)
+    monkeypatch.setattr(
+        toolchain_capture,
+        "_run_rust_link_probe",
+        lambda *args, **kwargs: pytest.fail("warm reuse executed a phase probe"),
+    )
+    assert command_identity._reused_identity_is_current(
+        proof_plan.ToolchainPolicy("rustc", {}),
+        identity,
+        cwd=tmp_path,
+        env=env,
+        command_argv=command,
+        native_c_units=["target"],
+    ) is (mutation == "none")
+
+
+@pytest.mark.parametrize("role", ["cargo", "rustc"])
+def test_rust_reuse_resolves_current_component_before_cache_without_phase_reprobe(
+    tmp_path, monkeypatch, role
+):
+    from molt import rust_toolchain
+    from tests.tools.test_toolchain_capture import _native_c_capture_fixture
+
+    _identity, tools, environment, command, phase_calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch, required=False
+    )
+    proxy_dir = tmp_path / "proxies"
+    proxy_dir.mkdir()
+    suffix = ".exe" if os.name == "nt" else ""
+    proxy = proxy_dir / (role + suffix)
+    rustup = proxy_dir / ("rustup" + suffix)
+    for path in (proxy, rustup):
+        path.write_bytes(b"same content-proven rustup proxy")
+        path.chmod(0o755)
+    selected = [tools[role]]
+    resolutions, versions = [], []
+
+    def which(argv, **kwargs):
+        assert argv == [str(rustup), "which", role]
+        resolutions.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, str(selected[0]) + "\n", "")
+
+    def version(argv, **kwargs):
+        assert argv[0] == str(selected[0])
+        versions.append(list(argv))
+        return subprocess.CompletedProcess(
+            argv, 0, f"{role} 1.99.0\nhost: x86_64-unknown-linux-gnu\n", ""
+        )
+
+    monkeypatch.setattr(rust_toolchain.process_guard, "run_completed_command", which)
+    monkeypatch.setattr(command_identity, "_run_captured", version)
+    monkeypatch.setattr(
+        command_identity, "_which_in_command_environment", lambda *args, **kwargs: proxy
+    )
+    monkeypatch.setattr(
+        command_identity, "_tool_configuration_identities", lambda *args, **kwargs: []
+    )
+    envelope = command_admission.envelope_for_command(command)
+    environment = (
+        {**environment, "CARGO": str(tools["cargo"])}
+        if role == "rustc"
+        else environment
+    )
+    plan = proof_plan.ProofPlan.load()
+
+    def capture():
+        telemetry = []
+        value = command_identity._tool_identity(
+            plan,
+            role,
+            envelope,
+            command,
+            cwd=tmp_path,
+            env=environment,
+            reuse_root=tmp_path / "reuse",
+            reuse_telemetry=telemetry,
+        )
+        return value, telemetry
+
+    # The declared Cargo command's outer token must resolve to the proxy too.
+    monkeypatch.setattr(
+        command_identity,
+        "_resolve_outer_executable",
+        lambda value, **kwargs: (
+            tools["cargo"] if value == str(tools["cargo"]) else proxy
+        ),
+    )
+    first, miss = capture()
+    phases = len(phase_calls)
+    second, hit = capture()
+    assert hit[0]["state"] == "hit" and second == first
+    assert len(resolutions) == 2 and len(versions) == 1 and len(phase_calls) == phases
+    replacement = tmp_path / (role + "-replacement" + suffix)
+    replacement.write_bytes(b"independent newly selected Rust component")
+    replacement.chmod(0o755)
+    selected[0] = replacement
+    third, changed = capture()
+    assert (
+        changed[0]["state"] == "miss"
+        and changed[0]["key_sha256"] != miss[0]["key_sha256"]
+    )
+    assert first["launcher_sha256"] == third["launcher_sha256"]
+    assert third["content_path"] == str(replacement)
+    assert first["executable_sha256"] != third["executable_sha256"]
+    assert len(resolutions) == 3 and len(versions) == 2
+    # Explicit physical tools do not invoke rustup, including a warm capture.
+    for _ in range(2):
+        assert (
+            rust_toolchain.resolve_rustup_proxy(
+                replacement, role=role, root=tmp_path, env=environment
+            )
+            == replacement
+        )
+    assert len(resolutions) == 3
+
+
 @pytest.mark.parametrize("primary", [False, True])
 def test_cargo_rustc_environment_selector_precedence(tmp_path, monkeypatch, primary):
     suffix = ".exe" if os.name == "nt" else ""
@@ -483,13 +871,32 @@ def test_python_rustc_metadata_dependency_has_independent_reuse_identity(
     def version(command, **kwargs):
         assert command[0] == str(primary)
         versions.append(command)
-        return subprocess.CompletedProcess(command, 0, "rustc 1.99.0", "")
+        return subprocess.CompletedProcess(
+            command, 0, "rustc 1.99.0\nhost: x86_64-unknown-linux-gnu\n", ""
+        )
 
     monkeypatch.setattr(rust_toolchain.process_guard, "run_completed_command", resolve)
     monkeypatch.setattr(command_identity, "_run_captured", version)
-    monkeypatch.setattr(
-        toolchain_capture, "capture_rust_link_process_images", lambda **kwargs: ([], {})
-    )
+    from types import SimpleNamespace
+    from tests.tools.test_toolchain_capture import _rust_metadata_probe
+
+    linker = tmp_path / ("retained-linker" + suffix)
+    linker.write_bytes(b"independent linker image")
+    linker.chmod(0o755)
+    phases = []
+
+    def phase(command, **kwargs):
+        phases.append(list(command))
+        metadata = _rust_metadata_probe(command, tmp_path)
+        if metadata is not None:
+            return metadata
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps(str(linker)) + "\n", ""
+        )
+
+    # Substitute compiler output only: the real v4 capture, structural receiver,
+    # image validation and warm-reuse accounting remain in the tested path.
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=phase))
     command = (
         [sys.executable, "-c", "pass"] if owner == "python" else ["cargo", "build"]
     )
@@ -511,11 +918,13 @@ def test_python_rustc_metadata_dependency_has_independent_reuse_identity(
             reuse_telemetry=telemetry,
         )
         assert identity["path"] == identity["content_path"] == str(primary)
-        assert identity["version"] == "rustc 1.99.0"
+        assert identity["version"] == "rustc 1.99.0\nhost: x86_64-unknown-linux-gnu"
         return identity, telemetry[0]
 
     initial, initial_event = capture()
+    cold_phases = len(phases)
     warm, warm_event = capture()
+    assert len(phases) == cold_phases
     assert warm == initial and warm_event["state"] == "hit"
     assert len(versions) == 1
     dependency_paths = {
@@ -537,3 +946,102 @@ def test_python_rustc_metadata_dependency_has_independent_reuse_identity(
             for row in changed["process_images"]
             if row["role"] == "rustc-path-metadata"
         } == {str(proxy), str(second)}
+
+
+def test_rust_reuse_binds_archive_claim_to_actual_producer_command(
+    tmp_path, monkeypatch
+):
+    import copy
+    from molt.exact_json import canonical_json_sha256
+    from tests.tools.test_toolchain_capture import _native_c_capture_fixture
+
+    identity, _tools, env, command, _calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch, required=False
+    )
+    policy = next(
+        row
+        for row in proof_plan.ProofPlan.load().toolchain_policies
+        if row.name == "rustc"
+    )
+    identity["configuration_files"] = command_identity._tool_configuration_identities(
+        "rustc", cwd=tmp_path, env=env, command_argv=command
+    )
+
+    def seal(value):
+        value.pop("identity_sha256", None)
+        value["identity_sha256"] = canonical_json_sha256(value)
+
+    seal(identity)
+    assert command_identity._reused_identity_is_current(
+        policy, identity, cwd=tmp_path, env=env, command_argv=command
+    )
+    forged = copy.deepcopy(identity)
+    selection = forged["link_selection"]
+    archive = ["cargo", "rustc", "--lib", "--crate-type", "staticlib"]
+    selection["admitted_command"] = archive
+    selection["producer_command"] = archive
+    selection["command_semantics_sha256"] = canonical_json_sha256(archive)
+    for unit in selection["units"]:
+        unit["command_semantics_sha256"] = canonical_json_sha256(archive)
+    target = selection["units"][0]
+    target.update(
+        artifact_selection={
+            "cargo_crate_types": ["staticlib"],
+            "manifest_crate_types": None,
+            "rustc_crate_types": [],
+            "link_required": False,
+        },
+        selected_process_count=0,
+        process_resolution=[],
+        process_image_refs=[],
+        link_argv_sha256=canonical_json_sha256([]),
+    )
+    # The host still owns the shared image; this is a coherent archive claim
+    # for a different command, not an accidentally incomplete image fixture.
+    command_identity.toolchain_capture.validate_rust_link_selection(
+        forged, command_argv=archive
+    )
+    seal(forged)
+    assert not command_identity._reused_identity_is_current(
+        policy, forged, cwd=tmp_path, env=env, command_argv=command
+    )
+    with pytest.raises(ValueError, match="actual admission"):
+        command_identity.toolchain_capture.revalidate_rust_link_process_images(
+            forged, target=None, command_argv=command
+        )
+
+
+@pytest.mark.parametrize("transport", ["venv", "uv-project"])
+def test_rust_receiver_binds_modeled_wrapper_to_its_exact_payload(
+    tmp_path, monkeypatch, transport
+):
+    from molt.exact_json import canonical_json_sha256
+    from tests.tools.test_toolchain_capture import _native_c_capture_fixture
+
+    identity, tools, _env, _command, _calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch, required=False
+    )
+    wrapper = "venv_exec.py" if transport == "venv" else "uv_project_env.py"
+    submitted = [
+        "python",
+        "tools/" + wrapper,
+        *(["--python", "3.12"] if transport == "uv-project" else []),
+        "cargo",
+        "build",
+    ]
+    envelope = command_admission.envelope_for_command(submitted)
+    assert envelope["argv"] == ["cargo", "build"]
+    producer = [str(tools["cargo"]), "build"]
+    selection = identity["link_selection"]
+    selection["admitted_command"] = submitted
+    selection["producer_command"] = producer
+    selection["command_semantics_sha256"] = canonical_json_sha256(producer)
+    for unit in selection["units"]:
+        unit["command_semantics_sha256"] = canonical_json_sha256(producer)
+    command_identity.toolchain_capture.validate_rust_link_selection(
+        identity, command_argv=producer
+    )
+    with pytest.raises(ValueError, match="actual admission"):
+        command_identity.toolchain_capture.validate_rust_link_selection(
+            identity, command_argv=[str(tools["cargo"]), "check"]
+        )

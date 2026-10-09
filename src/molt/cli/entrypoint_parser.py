@@ -866,6 +866,12 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     runtime_wasm_parser.add_argument(
+        "--runtime-feature",
+        action="append",
+        default=[],
+        help=argparse.SUPPRESS,
+    )
+    runtime_wasm_parser.add_argument(
         "--no-simd",
         action="store_true",
         help=argparse.SUPPRESS,

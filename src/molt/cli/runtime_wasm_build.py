@@ -155,7 +155,7 @@ def _reuse_target_runtime_wasm(
     )
     if ctx.reloc:
         started = time.perf_counter()
-        if ctx.spec.cargo_plan is None or ctx.spec.link_inputs is None:
+        if ctx.spec.cargo_plan is None:
             raise ValueError("runtime WASM finalizer lost its resolved toolchain plan")
         if not _link_runtime_staticlib_to_reloc_wasm(
             staticlib_path=artifact,
@@ -164,7 +164,6 @@ def _reuse_target_runtime_wasm(
             link_timeout=ctx.cargo_timeout,
             export_link_args=ctx.spec.runtime_exports,
             cargo_plan=ctx.spec.cargo_plan,
-            link_inputs=ctx.spec.link_inputs,
         ):
             return False
         _record_runtime_wasm_build_phase(

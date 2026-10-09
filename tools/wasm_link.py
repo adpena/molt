@@ -366,6 +366,10 @@ def _run_wasm_ld(
                     label="app-export-contract",
                     expected_sha256=expected_digest(app_export_contract_path),
                 )
+            # Admit lexical SDK ownership before private snapshots replace paths.
+            wasi_plan = _native_inputs.wasm_link_inputs.admit_wasi_provider_inputs(
+                tuple(Path(item.path) for item in native_link_requirements.inputs)
+            )
             native_snapshots: dict[Path, tuple[Path, str]] = {}
 
             def snapshot_native_input(
@@ -415,21 +419,24 @@ def _run_wasm_ld(
                 native_link_requirements,
                 snapshot_native_input,
             )
-            resolved_requirements = _native_inputs._resolve_native_link_requirements(
+            native_plan = _native_inputs._resolve_native_link_requirements(
                 snapshot_requirements,
+                wasi_plan=wasi_plan,
+                capture_input=snapshot_native_input,
                 facts_provider=facts_provider,
+                runtime_exports=(
+                    frozenset(
+                        facts_provider(runtime_snapshot.read_bytes()).function_exports
+                    )
+                    if snapshot_requirements.inputs
+                    else frozenset()
+                ),
                 source_paths={
                     snapshot: source
                     for source, (snapshot, _digest) in native_snapshots.items()
                 },
             )
-            admitted_inputs = set(snapshot_requirements.inputs)
-            snapshot_requirements = map_source_extension_link_inputs(
-                resolved_requirements,
-                lambda item: (
-                    item if item in admitted_inputs else snapshot_native_input(item)
-                ),
-            )
+            snapshot_requirements = native_plan.requirements
             deploy_runtime_snapshot = None
             if deploy_runtime is not None:
                 deploy_runtime_snapshot = _snapshot_link_input(
@@ -457,6 +464,9 @@ def _run_wasm_ld(
                 deploy_runtime_override=deploy_runtime_snapshot,
                 deploy_runtime_imports=deploy_runtime_imports,
                 native_link_requirements=snapshot_requirements,
+                provider_paths=native_plan.provider_paths,
+                provider_symbols=native_plan.provider_symbols,
+                host_provider_symbols=native_plan.host_symbols,
                 preserve_debug_sections=preserve_debug_sections,
                 phase_timings_ms=phase_timings_ms,
                 wasm_facts_scanner=wasm_facts_scanner,

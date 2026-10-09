@@ -10,6 +10,11 @@ from molt.cli import llvm_wasi_tools
 from molt.cli import source_extension_target
 from molt.cli import source_extension_toolchain
 from molt import llvm_toolchain
+from tests.runtime_build_identity_helper import (
+    RuntimeFixtureRoot,
+    provisioned_wasi_sdk_fixture,
+    runtime_wasi_c_abi_plan,
+)
 from tests.operation_probe import same_thread_probe
 from molt.toolchain_identity import resolve_explicit_tool_command
 from molt.llvm_linker_roles import LlvmLinkerRole, executable_selects_linker_role
@@ -353,21 +358,22 @@ def test_native_discovery_rejects_automatic_sdk_provenance(
 def test_relocated_sdk_selection_needs_no_path_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selector: str
 ) -> None:
-    root = tmp_path / "external-prefix" / "sdk"
-    sdk = _write_tool_family(root / "bin")
-    sysroot = root / "share" / "wasi-sysroot"
-    sysroot.mkdir(parents=True)
+    install = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    root, sysroot = install.sdk, install.sysroot
+    cc = root / "bin" / ("clang.exe" if os.name == "nt" else "clang")
     monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
     environment = {
         "PATH": str(root / "bin"),
         selector: str(sysroot if "SYSROOT" in selector else root),
         "NoDefaultCurrentDirectoryInExePath": "1",
     }
+    if "SYSROOT" in selector:
+        environment["WASI_SDK_PATH"] = str(root)
     assert llvm_wasi_tools.llvm_tool_candidates("cc", environment=environment) == ()
     environment["PATH"] = ""
     assert llvm_wasi_tools.llvm_tool_candidates(
         "cc", target_family="wasm", environment=environment
-    ) == (sdk["cc"],)
+    ) == (cc,)
     assert environment["PATH"] == ""
 
 
@@ -483,12 +489,14 @@ def test_native_source_extension_default_and_explicit_compiler_share_target_poli
 def test_sdk_source_compilers_disable_hidden_config_before_probe_and_materialization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requested: str, selection: str
 ) -> None:
-    root = tmp_path / "external-prefix" / "sdk"
-    sdk = _write_tool_family(root / "bin")
-    sysroot = root / "share" / "wasi-sysroot"
-    sysroot.mkdir(parents=True)
+    install = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    root, sysroot = install.sdk, install.sysroot
+    sdk = {
+        role: root / "bin" / (name + (".exe" if os.name == "nt" else ""))
+        for role, name in _TOOL_FILE_NAMES.items()
+    }
     (root / "bin" / "clang.cfg").write_text(
-        "--sysroot=<CFGDIR>/../share/wasi-sysroot\n", encoding="utf-8"
+        "--sysroot=<CFGDIR>/../unowned\n", encoding="utf-8"
     )
     compiler = sdk["cc"]
     if selection == "directory-alias":
@@ -518,12 +526,10 @@ def test_sdk_source_compilers_disable_hidden_config_before_probe_and_materializa
     monkeypatch.setattr(
         llvm_wasi_tools, "_tool_version", lambda _path, **_kw: "fixture"
     )
-    monkeypatch.setattr(
-        source_extension_toolchain, "_resolve_wasi_sysroot", lambda **_kw: sysroot
-    )
-    monkeypatch.setattr(
-        source_extension_toolchain, "normalize_wasi_sysroot", lambda path: Path(path)
-    )
+    if requested == "wasm":
+        environment = llvm_toolchain.project_wasm_toolchain_environment(
+            install, environ=environment
+        )
     probes = []
 
     def run(command, **kwargs):
@@ -535,6 +541,12 @@ def test_sdk_source_compilers_disable_hidden_config_before_probe_and_materializa
     plan = source_extension_target.resolve_source_extension_target_plan(
         requested, host_platform="linux", host_arch="x86_64"
     )
+    if requested == "wasm" and selection == "file-alias":
+        with pytest.raises(ValueError, match="admitted WASI SDK clang"):
+            source_extension_toolchain._resolve_source_extension_wasm_toolchain(
+                plan, environment=environment
+            )
+        return
     resolved = source_extension_toolchain._resolve_source_extension_wasm_toolchain(
         plan, environment=environment
     )
@@ -542,9 +554,11 @@ def test_sdk_source_compilers_disable_hidden_config_before_probe_and_materializa
     commands = source_extension_toolchain._source_extension_c_commands(
         toolchain=resolved, target_plan=plan, environment=environment
     )
-    assert len(probes) == 1
-    assert Path(probes[0][0]) == compiler
-    for command in (probes[0], commands["c"], commands["cpp"]):
+    assert len(probes) == (0 if requested == "wasm" else 1)
+    assert Path(commands["c"][0]) == compiler
+    if probes:
+        assert Path(probes[0][0]) == compiler
+    for command in (*probes, commands["c"], commands["cpp"]):
         assert command.count("--no-default-config") == 1
         assert command.count(plan.target_triple) == 1
         assert ("--sysroot" in command) is (requested == "wasm")
@@ -581,13 +595,13 @@ def test_worktree_resolver_reuses_common_checkout_managed_toolchain(
 def test_sdk_provenance_reuses_resolution_and_layout_across_roles_and_warm_hits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    sdk = _write_tool_family(tmp_path / "wasi-sdk" / "bin")
+    install = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    sdk = {role: _tool_path(install.sdk / "bin", role) for role in _TOOL_FILE_NAMES}
     native = _write_tool_family(tmp_path / "native" / "bin")
     for path in (*sdk.values(), *native.values()):
         path.chmod(0o755)
     monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
     environment = {
-        "WASI_SDK_PATH": str(sdk["cc"].parent.parent),
         "PATH": os.pathsep.join(map(str, (sdk["cc"].parent, native["cc"].parent))),
         "PATHEXT": ".EXE",
         "NoDefaultCurrentDirectoryInExePath": "1",
@@ -1005,7 +1019,12 @@ def test_captured_rust_tool_lookup_threads_actual_executable_and_environment(
     ]
 
 
-def test_source_commands_share_family_and_never_duplicate_target() -> None:
+def test_source_commands_share_family_and_never_duplicate_target(
+    tmp_path: Path,
+) -> None:
+    admitted = runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path))
+    cxx_path = admitted.driver.with_name("clang++" + admitted.driver.suffix)
+
     def tool(
         role: llvm_wasi_tools.LlvmToolRole,
         command: tuple[str, ...],
@@ -1019,8 +1038,25 @@ def test_source_commands_share_family_and_never_duplicate_target() -> None:
         )
 
     family = llvm_wasi_tools.LlvmWasiToolFamily(
-        cc=tool("cc", ("clang", "--target=wasm32-wasip1", "--sysroot", "sdk")),
-        cxx=tool("cxx", ("clang++", "-target", "wasm32-wasip1", "--sysroot", "sdk")),
+        cc=tool(
+            "cc",
+            (
+                str(admitted.driver),
+                "--target=wasm32-wasip1",
+                "--sysroot",
+                str(admitted.sysroot),
+            ),
+        ),
+        cxx=tool(
+            "cxx",
+            (
+                str(cxx_path),
+                "-target",
+                "wasm32-wasip1",
+                "--sysroot",
+                str(admitted.sysroot),
+            ),
+        ),
         wasm_ld=tool("wasm_ld", ("wasm-ld",)),
         ar=tool("ar", ("llvm-ar",)),
         ranlib=tool("ranlib", ("llvm-ranlib",)),
@@ -1028,10 +1064,11 @@ def test_source_commands_share_family_and_never_duplicate_target() -> None:
         strip=tool("strip", ("llvm-strip",)),
     )
     toolchain = source_extension_toolchain._SourceExtensionWasmToolchain(
+        wasi_c_abi=admitted,
         ok=True,
         compiler_kind="clang",
         tools=family,
-        wasi_sysroot=Path("sdk"),
+        wasi_sysroot=admitted.sysroot,
         detail="complete",
     )
 
@@ -1063,10 +1100,15 @@ def test_explicit_wasm_compiler_preserves_validated_sysroot_custody(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    sysroot = (tmp_path / "wasi-sysroot").resolve()
-    sysroot.mkdir()
+    admitted = runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path))
+    sysroot = admitted.sysroot
+    environment = {
+        "CC_wasm32-wasip1": str(admitted.driver),
+        "CXX_wasm32-wasip1": str(admitted.driver.parent / "clang++"),
+    }
     compiler = (
-        "/tools/clang",
+        str(admitted.driver),
+        "--no-default-config",
         "--target=wasm32-wasip1",
         "--sysroot",
         str(sysroot),
@@ -1109,11 +1151,6 @@ def test_explicit_wasm_compiler_preserves_validated_sysroot_custody(
     )
     monkeypatch.setattr(
         source_extension_toolchain,
-        "normalize_wasi_sysroot",
-        lambda raw: Path(raw).resolve(),
-    )
-    monkeypatch.setattr(
-        source_extension_toolchain,
         "resolve_llvm_wasi_tool_family",
         family,
     )
@@ -1129,9 +1166,11 @@ def test_explicit_wasm_compiler_preserves_validated_sysroot_custody(
     )
 
     resolved = source_extension_toolchain._resolve_env_wasm_compiler(
+        wasi_c_abi=admitted,
         env_name="MOLT_WASM_CC",
         raw_command="configured-clang",
         target_plan=target_plan,
+        environment=environment,
     )
 
     assert resolved.ok is True
@@ -1168,17 +1207,20 @@ def test_wasm_symbol_reader_consumes_only_verified_llvm_nm(
 ) -> None:
     native_symbol_inspection._cached_wasm_llvm_nm_verification.cache_clear()
     monkeypatch.delenv("MOLT_LLVM_NM", raising=False)
+    artifact = tmp_path / "libc.a"
+    artifact.write_bytes(static_archive_bytes())
     calls: list[list[str]] = []
     verified_nm = tmp_path / "llvm" / "bin" / "llvm-nm"
     verified_nm.parent.mkdir(parents=True)
     verified_nm.write_bytes(b"tool")
+    monkeypatch.setenv("MOLT_LLVM_NM", str(verified_nm))
     executable_identity = native_symbol_inspection.stable_regular_file_identity(
         verified_nm, label="test llvm-nm"
     )
     monkeypatch.setattr(
         native_symbol_inspection,
-        "verify_wasm_llvm_nm",
-        lambda _root, *, environ: llvm_toolchain.WasmLlvmNmVerification(
+        "verify_selected_wasm_llvm_nm",
+        lambda _path, *, expected_version: llvm_toolchain.WasmLlvmNmVerification(
             path=verified_nm,
             fact=llvm_toolchain.LlvmToolVersionFact(
                 "llvm-nm", "bin/llvm-nm", "22.1.8", 7, "a" * 64
@@ -1191,12 +1233,14 @@ def test_wasm_symbol_reader_consumes_only_verified_llvm_nm(
         "_run_completed_command",
         lambda argv, **_kwargs: (
             calls.append(argv)
-            or subprocess.CompletedProcess(argv, 0, "00000000 T provider\n", "")
+            or subprocess.CompletedProcess(
+                argv, 0, "object.o:\n00000000 T provider\n", ""
+            )
         ),
     )
 
     facts = native_symbol_inspection._read_native_global_symbol_facts(
-        Path("libc.a"), timeout=1, target_triple="wasm32-wasip1"
+        artifact, timeout=1, target_triple="wasm32-wasip1"
     )
     assert facts.defined == {"provider"}
     assert [call[0] for call in calls] == [str(verified_nm)]
@@ -1219,9 +1263,23 @@ def test_wasm_symbol_reader_warm_verification_recaptures_retargeted_alias(
     except OSError:
         pytest.skip("file symlinks are unavailable")
     calls: list[Path] = []
+    selections = []
+    resolve = native_symbol_inspection.resolve_wasi_sdk_tool
 
-    def verify(_root, *, environ):
-        del environ
+    def select(root, role, *, environ):
+        selections.append((role, dict(environ)))
+        return resolve(root, role, environ=environ)
+
+    monkeypatch.setattr(native_symbol_inspection, "resolve_wasi_sdk_tool", select)
+
+    def verify(path, *, expected_version):
+        assert path == alias
+        assert (
+            expected_version
+            == llvm_toolchain.wasi_sdk_host_asset(
+                native_symbol_inspection.compiler_source_root()
+            ).llvm_version
+        )
         identity = native_symbol_inspection.stable_regular_file_identity(
             alias.resolve(strict=True),
             label="test llvm-nm generation",
@@ -1239,9 +1297,14 @@ def test_wasm_symbol_reader_warm_verification_recaptures_retargeted_alias(
             executable_identity=identity,
         )
 
-    monkeypatch.setattr(native_symbol_inspection, "verify_wasm_llvm_nm", verify)
+    monkeypatch.setattr(
+        native_symbol_inspection, "verify_selected_wasm_llvm_nm", verify
+    )
     environment = {"MOLT_LLVM_NM": str(alias), "PATH": ""}
     initial = native_symbol_inspection._verified_wasm_llvm_nm(environment)
+    assert native_symbol_inspection._verified_wasm_llvm_nm(environment) is initial
+    assert calls == [first.absolute()]
+    assert len(selections) == 2, "cold and warm admission each select the role once"
 
     alias.unlink()
     alias.symlink_to(second)
@@ -1250,6 +1313,12 @@ def test_wasm_symbol_reader_warm_verification_recaptures_retargeted_alias(
     assert initial.executable_identity.path == first.absolute()
     assert refreshed.executable_identity.path == second.absolute()
     assert calls == [first.absolute(), second.absolute()]
+    assert len(selections) == 3
+    second.write_bytes(b"generation-c")
+    changed = native_symbol_inspection._verified_wasm_llvm_nm(environment)
+    assert changed.executable_identity.sha256 != refreshed.executable_identity.sha256
+    assert calls == [first.absolute(), second.absolute(), second.absolute()]
+    assert len(selections) == 4
     native_symbol_inspection._cached_wasm_llvm_nm_verification.cache_clear()
 
 
@@ -1264,6 +1333,7 @@ def test_wasm_archive_cache_identity_includes_verified_reader_attestation(
     verified_nm = tmp_path / "llvm" / "bin" / "llvm-nm"
     verified_nm.parent.mkdir(parents=True)
     verified_nm.write_bytes(b"tool")
+    monkeypatch.setenv("MOLT_LLVM_NM", str(verified_nm))
     executable_identity = native_symbol_inspection.stable_regular_file_identity(
         verified_nm, label="test llvm-nm"
     )
@@ -1272,7 +1342,7 @@ def test_wasm_archive_cache_identity_includes_verified_reader_attestation(
     )
     reader_digest = "a" * 64
 
-    def verify(_root, *, environ):
+    def verify(_path, *, expected_version):
         return llvm_toolchain.WasmLlvmNmVerification(
             path=verified_nm,
             fact=llvm_toolchain.LlvmToolVersionFact(
@@ -1281,7 +1351,9 @@ def test_wasm_archive_cache_identity_includes_verified_reader_attestation(
             executable_identity=executable_identity,
         )
 
-    monkeypatch.setattr(native_symbol_inspection, "verify_wasm_llvm_nm", verify)
+    monkeypatch.setattr(
+        native_symbol_inspection, "verify_selected_wasm_llvm_nm", verify
+    )
 
     def read_symbols(*_args, archive_members, **_kwargs):
         return single_member_archive_symbol_facts(
@@ -1299,10 +1371,10 @@ def test_wasm_archive_cache_identity_includes_verified_reader_attestation(
         artifact, target_triple="wasm32-wasip1"
     )
     first = next(iter(native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE))
-    assert first[8][-4:] == (
+    assert first.reader_identity[-4:] == (
         "22.1.8",
         "a" * 64,
-        "",
+        str(verified_nm),
         native_symbol_inspection.NativeSymbolRequirement().cache_identity(),
     )
 
@@ -1321,15 +1393,17 @@ def test_wasm_symbol_reader_rejects_tool_replacement_during_inspection(
 ) -> None:
     native_symbol_inspection._cached_wasm_llvm_nm_verification.cache_clear()
     monkeypatch.delenv("MOLT_LLVM_NM", raising=False)
+    (tmp_path / "libc.a").write_bytes(static_archive_bytes())
     verified_nm = tmp_path / "llvm-nm"
     verified_nm.write_bytes(b"generation-a")
+    monkeypatch.setenv("MOLT_LLVM_NM", str(verified_nm))
     executable_identity = native_symbol_inspection.stable_regular_file_identity(
         verified_nm, label="test llvm-nm"
     )
     monkeypatch.setattr(
         native_symbol_inspection,
-        "verify_wasm_llvm_nm",
-        lambda _root, *, environ: llvm_toolchain.WasmLlvmNmVerification(
+        "verify_selected_wasm_llvm_nm",
+        lambda _path, *, expected_version: llvm_toolchain.WasmLlvmNmVerification(
             path=verified_nm,
             fact=llvm_toolchain.LlvmToolVersionFact(
                 "llvm-nm", "external:llvm-nm", "22.1.8", 12, "a" * 64
@@ -1339,6 +1413,7 @@ def test_wasm_symbol_reader_rejects_tool_replacement_during_inspection(
     )
 
     def replace_reader(argv, **_kwargs):
+        assert str(tmp_path / "libc.a") in argv
         verified_nm.write_bytes(b"generation-b")
         return subprocess.CompletedProcess(argv, 0, "00000000 T provider\n", "")
 
@@ -1361,13 +1436,23 @@ def test_native_symbol_reader_rejects_tool_replacement_during_inspection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     native_symbol_inspection._cached_symbol_reader_entrypoint_identity.cache_clear()
+    (tmp_path / "native.a").write_bytes(static_archive_bytes())
     native_nm = tmp_path / "nm"
     native_nm.write_bytes(b"generation-a")
     monkeypatch.setattr(
         native_symbol_inspection, "_nm_candidate_binaries", lambda: [str(native_nm)]
     )
 
+    def version_reader(argv, **_kwargs):
+        assert argv == [str(native_nm), "--version"]
+        return subprocess.CompletedProcess(
+            argv, 0, "llvm-nm, compatible with GNU nm\nLLVM version 22.1.8\n", ""
+        )
+
+    monkeypatch.setattr(llvm_wasi_tools, "_run_completed_command", version_reader)
+
     def replace_reader(argv, **_kwargs):
+        assert str(tmp_path / "native.a") in argv
         native_nm.write_bytes(b"generation-b")
         return subprocess.CompletedProcess(argv, 0, "00000000 T provider\n", "")
 
@@ -1383,3 +1468,175 @@ def test_native_symbol_reader_rejects_tool_replacement_during_inspection(
             tmp_path / "native.a",
             timeout=1,
         )
+
+
+@pytest.mark.parametrize("ancestor_alias", [False, True])
+def test_managed_extension_family_uses_receipt_without_sdk_reads_or_probes(
+    tmp_path, monkeypatch, ancestor_alias
+):
+    from tests.runtime_build_identity_helper import provisioned_wasi_sdk_fixture
+    from molt.llvm_toolchain import project_wasm_toolchain_environment
+
+    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    environment = project_wasm_toolchain_environment(installation, environ={})
+    selected_compiler = (
+        installation.sdk
+        / "bin"
+        / installation.tool_fact("clang")["path"].split("/")[-1]
+    )
+    if ancestor_alias:
+        alias = tmp_path / "sdk-ancestor-alias"
+        try:
+            alias.symlink_to(installation.sdk.parent, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory aliases unavailable")
+        selected_compiler = alias / selected_compiler.relative_to(
+            installation.sdk.parent
+        )
+        environment["MOLT_WASM_CC"] = str(selected_compiler)
+    original_open = Path.open
+
+    def checked_open(path, *args, **kwargs):
+        assert not path.resolve(strict=False).is_relative_to(installation.sdk), (
+            "ordinary resolver read SDK content"
+        )
+        return original_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as io_scope:
+        io_scope.setattr(Path, "open", checked_open)
+        monkeypatch.setattr(
+            llvm_wasi_tools,
+            "_run_completed_command",
+            lambda *args, **kwargs: pytest.fail("ordinary resolver probed SDK tool"),
+        )
+        monkeypatch.setattr(
+            source_extension_toolchain,
+            "_probe_wasm_source_extension_compiler",
+            lambda *args, **kwargs: pytest.fail(
+                "ordinary resolver compiled a capability probe"
+            ),
+        )
+        target = source_extension_target.resolve_source_extension_target_plan("wasm")
+        resolved = source_extension_toolchain._resolve_source_extension_wasm_toolchain(
+            target, environment=environment
+        )
+        assert resolved.ok
+        for role, sdk_role in (
+            ("cc", "clang"),
+            ("cxx", "clang++"),
+            ("ar", "llvm-ar"),
+            ("ranlib", "llvm-ranlib"),
+            ("wasm_ld", "wasm-ld"),
+            ("nm", "llvm-nm"),
+            ("strip", "llvm-strip"),
+        ):
+            fact = installation.facts["tools"][sdk_role]
+            selected = getattr(resolved.tools, role)
+            assert selected.sha256 == fact["sha256"]
+            # Explicit C++ keeps its configured entrypoint. Unconfigured roles
+            # come from the selected C compiler's siblings, including aliases.
+            directory = (
+                installation.sdk / "bin" if role == "cxx" else selected_compiler.parent
+            )
+            assert selected.path == _tool_path(directory, role)
+            assert selected.command[0] == str(selected.path)
+            assert (
+                selected.path.parent.resolve(strict=True) / selected.path.name
+                == installation.sdk / fact["path"]
+            )
+
+
+def test_managed_symbol_reader_uses_receipt_and_preserves_archive_custody(
+    tmp_path, monkeypatch
+):
+    from tests.runtime_build_identity_helper import provisioned_wasi_sdk_fixture
+
+    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    monkeypatch.setenv("WASI_SDK_PATH", str(installation.sdk))
+    monkeypatch.setenv("MOLT_LLVM_NM", str(installation.llvm_nm))
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "_tool_version_fact_and_identity",
+        lambda *args, **kwargs: pytest.fail("managed reader version-probed"),
+    )
+    original_open = Path.open
+
+    def checked_open(path, *args, **kwargs):
+        assert not path.is_relative_to(installation.sdk), (
+            "managed reader content rehashed"
+        )
+        return original_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as io_scope:
+        io_scope.setattr(Path, "open", checked_open)
+        monkeypatch.setattr(
+            native_symbol_inspection,
+            "stable_executable_probe",
+            lambda *args, **kwargs: pytest.fail(
+                "managed reader used mutable executable custody"
+            ),
+        )
+        artifact = tmp_path / "input.a"
+        artifact.write_bytes(static_archive_bytes())
+        commands = []
+
+        def inspect(argv, **kwargs):
+            commands.append(argv)
+            return subprocess.CompletedProcess(
+                argv, 0, "object.o:\n00000000 T provider\n", ""
+            )
+
+        monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", inspect)
+        reader = native_symbol_inspection._native_symbol_reader(
+            nm_command=None, target_triple="wasm32-wasip1"
+        )
+        assert reader.candidates[0].executable_identity == installation
+        assert "managed-sdk:" + installation.tree_sha256 in reader.cache_identity
+        facts = native_symbol_inspection._read_native_global_symbol_facts(
+            artifact,
+            timeout=1,
+            target_triple="wasm32-wasip1",
+            _reader=reader,
+        )
+        assert facts.defined == {"provider"}
+        assert [command[0] for command in commands] == [str(installation.llvm_nm)]
+
+        def mutate_input(argv, **kwargs):
+            artifact.write_bytes(static_archive_bytes(b"changed object"))
+            return inspect(argv, **kwargs)
+
+        monkeypatch.setattr(
+            native_symbol_inspection, "_run_completed_command", mutate_input
+        )
+        with pytest.raises(native_symbol_inspection.NativeSymbolArtifactError):
+            native_symbol_inspection._read_native_global_symbol_facts(
+                artifact,
+                timeout=1,
+                target_triple="wasm32-wasip1",
+                _reader=reader,
+            )
+
+
+def test_managed_wasm_linker_ancestor_alias_uses_receipt_without_probe(
+    tmp_path, monkeypatch
+):
+    from molt.cli import wasm_toolchain
+    from tests.runtime_build_identity_helper import provisioned_wasi_sdk_fixture
+
+    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(installation.sdk.parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory aliases unavailable")
+    selected = alias / installation.wasm_ld.relative_to(installation.sdk.parent)
+    monkeypatch.setattr(
+        wasm_toolchain,
+        "_wasm_linker_binary_identity",
+        lambda *a, **kw: pytest.fail("managed alias probed"),
+    )
+    identity = wasm_toolchain.resolve_wasm_linker(
+        env={"WASI_SDK_PATH": str(installation.sdk), "MOLT_WASM_LD": str(selected)}
+    )
+    assert identity.path == selected
+    assert identity.sha256 == installation.tool_fact("wasm-ld")["sha256"]

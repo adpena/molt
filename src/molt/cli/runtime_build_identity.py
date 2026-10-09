@@ -39,9 +39,8 @@ from molt.toolchain_identity import (
     open_stable_regular_file,
     probe_executable,
     resolve_executable,
-    stable_regular_file_identity,
 )
-from molt.wasi_sysroot import resolve_wasi_sysroot_layout
+from molt.wasi_sdk_identity import WASI_C_ABI_PLAN_ENV, wasi_c_abi_projection
 
 _TREE_HASH_BUFFER_BYTES = 1024 * 1024
 _TREE_HASH_BYTES_PER_WORKER = 2 * 1024 * 1024
@@ -82,6 +81,7 @@ _RUNTIME_BUILD_TOOLING_RELPATHS = (
     "src/molt/cli/runtime_build_identity.py",
     "src/molt/cli/runtime_build_python.py",
     "src/molt/process_guard.py",
+    "src/molt/rust_toolchain.py",
     "tools/command_execution.py",
     "tools/import_file.py",
     "src/molt/cli/runtime_identity_schema.py",
@@ -117,6 +117,10 @@ _RUNTIME_BUILD_TOOLING_RELPATHS = (
     "src/molt/wasm_artifact.py",
     "src/molt/wasm_linking_symbols.py",
     "src/molt/wasi_sysroot.py",
+    "src/molt/wasi_sdk_identity.py",
+    "src/molt/wasi_c_abi_protocol.txt",
+    "src/molt/llvm_toolchain.py",
+    "runtime/build_support/wasi_sysroot.rs",
 )
 
 
@@ -558,19 +562,6 @@ def _python_identity(
         return owned.capture(env)
 
 
-def _archive_identity(logical_name: str, path: Path | None) -> dict[str, object]:
-    if path is None:
-        raise ValueError(f"required runtime archive {logical_name} is unresolved")
-    identity = stable_regular_file_identity(
-        path, label=f"runtime archive {logical_name}"
-    )
-    return {
-        "logical_name": logical_name,
-        "sha256": identity.sha256,
-        "size": identity.size,
-    }
-
-
 def _build_script_path(
     raw: str,
     *,
@@ -580,29 +571,6 @@ def _build_script_path(
     if not path.is_absolute():
         path = build_script_root / path
     return path
-
-
-def _build_script_file_environment_identity(
-    name: str,
-    env: Mapping[str, str],
-    *,
-    build_script_root: Path,
-) -> dict[str, object]:
-    raw = env.get(name)
-    if raw is None:
-        return {"state": "unset"}
-    value = raw.strip()
-    if not value:
-        return {"state": "empty"}
-    path = _build_script_path(value, build_script_root=build_script_root)
-    if not path.is_file():
-        # The Rust resolver treats an unresolved explicit path exactly like an
-        # absent path and continues to its content-attested sysroot fallback.
-        return {"state": "fallback"}
-    return {
-        "state": "resolved",
-        "content": _archive_identity(name.lower(), path),
-    }
 
 
 _C_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -676,39 +644,29 @@ def _runtime_build_script_environment_identity(
             "runtime build-script CPython ABI data exports are not a subset of "
             "the requested export set"
         )
-    build_script_root = project_root / "runtime" / "molt-runtime"
     wasm_target = target_triple.startswith("wasm32-")
     return {
-        "schema": "molt.runtime-build-script-environment.v2",
+        "schema": "molt.runtime-build-script-environment.v3",
         **_build_python_script_environment_identity(
-            env,
-            build_python_identity=build_python_identity,
+            env, build_python_identity=build_python_identity
         ),
-        "MOLT_WASM_CPYTHON_ABI_EXPORTS": (
-            list(function_exports) if wasm_target else "ignored-for-target"
-        ),
-        "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS": (
-            list(data_exports) if wasm_target else "ignored-for-target"
-        ),
-        "MOLT_WASM_LONGDOUBLE_ARCHIVE": (
-            _build_script_file_environment_identity(
-                "MOLT_WASM_LONGDOUBLE_ARCHIVE",
-                env,
-                build_script_root=build_script_root,
-            )
-            if wasm_target
-            else {"state": "ignored-for-target"}
-        ),
-        "MOLT_WASM_BUILTINS_ARCHIVE": (
-            _build_script_file_environment_identity(
-                "MOLT_WASM_BUILTINS_ARCHIVE",
-                env,
-                build_script_root=build_script_root,
-            )
-            if wasm_target
-            else {"state": "ignored-for-target"}
-        ),
+        "MOLT_WASM_CPYTHON_ABI_EXPORTS": list(function_exports)
+        if wasm_target
+        else "ignored-for-target",
+        "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS": list(data_exports)
+        if wasm_target
+        else "ignored-for-target",
+        WASI_C_ABI_PLAN_ENV: _wasi_c_abi_environment_identity(env, target_triple),
     }
+
+
+def _wasi_c_abi_environment_identity(
+    env: Mapping[str, str], target: str
+) -> dict[str, object]:
+    if target not in {"wasm32-wasip1", "wasm32-unknown-unknown"}:
+        return {"state": "ignored-for-target"}
+    plan = wasi_c_abi_projection(env)
+    return {"state": "selected", "content": plan.content_identity()}
 
 
 def _host_absolute_style(value: str) -> str | None:
@@ -923,6 +881,7 @@ def _capture_plan_toolchain(
     build_python = _python_identity(
         cargo_plan.environment, admission=build_python_admission
     )
+    cargo_plan.verify()
     result = cargo_plan.toolchain_identity()
     cast(dict[str, object], result["tools"])["build_python"] = build_python
     return result
@@ -932,35 +891,23 @@ def _verify_plan_toolchain_content(
     plan: RuntimeCargoPlan, content: Mapping[str, object]
 ) -> None:
     """Reconcile newly captured tools/resources with their live execution plan."""
-    tools = cast(Mapping[str, object], content["tools"])
-    wrappers = cast(Mapping[str, object], content["wrappers"])
-    if set(tools) - {"build_python", "wasm_linker"} != set(plan.tools) or set(
-        wrappers
-    ) != set(plan.wrappers):
-        raise ValueError(
-            "runtime toolchain manifest selected tools differ from Cargo plan"
-        )
-    for item in plan.executable_custody:
-        group, role = item.label.split("/", 1)
-        actual = tools[role] if group == "tool" else wrappers[role]
-        expected = {
-            "logical_name": role if group == "tool" else role.casefold(),
-            **item.content_record(),
-        }
-        if actual != expected:
-            raise ValueError(
-                f"runtime toolchain manifest {role} differs from captured Cargo plan"
-            )
+    expected = plan.toolchain_identity()
+    observed_tools = {
+        key: value
+        for key, value in cast(Mapping[str, object], content["tools"]).items()
+        if key not in {"build_python", "wasm_linker"}
+    }
     if (
-        content["effective_target"] != plan.target
+        observed_tools != expected["tools"]
+        or content["wrappers"] != expected["wrappers"]
+        or content["effective_target"] != expected["effective_target"]
         or _freeze_json(content["cargo_configuration"])
-        != _freeze_json(plan.configuration_identity())
+        != _freeze_json(expected["cargo_configuration"])
         or _freeze_json(content["rust_resources"])
-        != _freeze_json(plan.rust_resource_identity())
+        != _freeze_json(expected["rust_resources"])
+        or _freeze_json(content["sysroots"]) != _freeze_json(expected["sysroots"])
     ):
-        raise ValueError(
-            "runtime toolchain manifest configuration/resources differ from Cargo plan"
-        )
+        raise ValueError("runtime toolchain manifest differs from captured Cargo plan")
 
 
 def _verify_plan_toolchain_manifest(
@@ -1019,9 +966,11 @@ def _wasm_compile_toolchain_content(
     )
     if plan.target != target_triple:
         raise ValueError("runtime WASM toolchain plan target is invalid")
-    layout = resolve_wasi_sysroot_layout(wasi_sysroot)
-    if layout is None:
-        raise ValueError(f"runtime WASI sysroot layout is unresolved: {wasi_sysroot}")
+    c_abi = plan.wasi_c_abi
+    if c_abi is None or wasi_c_abi_projection(env) != c_abi:
+        raise ValueError("runtime WASI projection differs from captured Cargo plan")
+    if wasi_sysroot != c_abi.sysroot:
+        raise ValueError("runtime WASI sysroot differs from selected C ABI")
     content = _capture_plan_toolchain(
         plan, build_python_admission=build_python_admission
     )
@@ -1029,12 +978,6 @@ def _wasm_compile_toolchain_content(
     required = {"cc", "ar", "ranlib"} | ({"cxx"} if include_cxx else set())
     if not required.issubset(tools):
         raise ValueError("runtime WASM C/C++ archive toolchain is incomplete")
-    content["sysroots"] = {
-        "wasi": _tree_identity(
-            tuple((f"wasi/{label}", path) for label, path in layout.content_roots()),
-            require_all=False,
-        )
-    }
     return content
 
 
@@ -1043,32 +986,33 @@ def _wasm_runtime_toolchain_content(
     project_root: Path,
     env: Mapping[str, str],
     target_triple: str,
-    wasi_sysroot: Path,
-    wasm_linker: Path,
-    long_double_archive: Path,
-    builtins_archive: Path,
-    wasi_libc_archive: Path,
-    rust_builtins_archive: Path,
-    cargo_plan: RuntimeCargoPlan | None = None,
+    cargo_plan: RuntimeCargoPlan,
     build_python_admission: BuildPythonAdmission | None = None,
 ) -> dict[str, object]:
+    c_abi = cargo_plan.wasi_c_abi
+    if c_abi is None:
+        raise ValueError("runtime WASM requires the admitted C ABI")
     content = _wasm_compile_toolchain_content(
         build_python_admission=build_python_admission,
         project_root=project_root,
         env=env,
         target_triple=target_triple,
-        wasi_sysroot=wasi_sysroot,
+        wasi_sysroot=c_abi.sysroot,
         cargo_plan=cargo_plan,
     )
     tools = cast(dict[str, object], content["tools"])
-    tools["wasm_linker"] = _executable_identity(
-        "wasm_linker", os.fspath(wasm_linker), env=env
-    )
+    tools["wasm_linker"] = {
+        **cast(Mapping[str, object], tools["linker"]),
+        "logical_name": "wasm_linker",
+    }
+    members = {role: (size, digest) for role, _path, size, digest in c_abi.files}
     content["archives"] = [
-        _archive_identity("wasi-libc", wasi_libc_archive),
-        _archive_identity("rust-compiler-builtins", rust_builtins_archive),
-        _archive_identity("wasi-long-double", long_double_archive),
-        _archive_identity("clang-rt-builtins", builtins_archive),
+        {"logical_name": name, "size": members[role][0], "sha256": members[role][1]}
+        for name, role in (
+            ("wasi-libc", "libc"),
+            ("wasi-long-double", "long_double"),
+            ("clang-rt-builtins", "compiler_rt"),
+        )
     ]
     return content
 
@@ -1078,34 +1022,22 @@ def provision_wasm_runtime_toolchain_content_manifest(
     project_root: Path,
     env: Mapping[str, str],
     target_triple: str,
-    wasi_sysroot: Path,
-    wasm_linker: Path,
-    long_double_archive: Path,
-    builtins_archive: Path,
-    wasi_libc_archive: Path,
-    rust_builtins_archive: Path,
-    cargo_plan: RuntimeCargoPlan | None = None,
+    cargo_plan: RuntimeCargoPlan,
     build_python_admission: BuildPythonAdmission | None = None,
 ) -> RuntimeToolchainContentManifest:
-    """Produce the immutable content manifest consumed by normal identity reads."""
-
-    payload = {
-        "target_triple": target_triple,
-        "toolchain": _wasm_runtime_toolchain_content(
-            build_python_admission=build_python_admission,
-            project_root=project_root,
-            env=env,
-            target_triple=target_triple,
-            wasi_sysroot=wasi_sysroot,
-            cargo_plan=cargo_plan,
-            wasm_linker=wasm_linker,
-            long_double_archive=long_double_archive,
-            builtins_archive=builtins_archive,
-            wasi_libc_archive=wasi_libc_archive,
-            rust_builtins_archive=rust_builtins_archive,
-        ),
-    }
-    return RuntimeToolchainContentManifest.from_payload(payload)
+    """Project the already-admitted operation's finite runtime toolchain."""
+    return RuntimeToolchainContentManifest.from_payload(
+        {
+            "target_triple": target_triple,
+            "toolchain": _wasm_runtime_toolchain_content(
+                project_root=project_root,
+                env=env,
+                target_triple=target_triple,
+                cargo_plan=cargo_plan,
+                build_python_admission=build_python_admission,
+            ),
+        }
+    )
 
 
 def provision_wasm_cpython_abi_toolchain_content_manifest(
@@ -1398,7 +1330,10 @@ def resolve_wasm_cpython_abi_build_identity(
                 cargo_profile=cargo_profile,
             ),
             "build_script_environment": {
-                "schema": "molt.cpython-abi-build-script-environment.v2",
+                "schema": "molt.cpython-abi-build-script-environment.v3",
+                WASI_C_ABI_PLAN_ENV: _wasi_c_abi_environment_identity(
+                    env, target_triple
+                ),
                 **_build_python_script_environment_identity(
                     env,
                     build_python_identity=build_python_identity,
@@ -1422,12 +1357,6 @@ def resolve_wasm_runtime_build_family_identities(
     cargo_command: Sequence[str],
     producer_artifact_selection: RuntimeArtifactSelection,
     members: Sequence[RuntimeBuildMemberPlan],
-    wasi_sysroot: Path,
-    wasm_linker: Path,
-    long_double_archive: Path,
-    builtins_archive: Path,
-    wasi_libc_archive: Path,
-    rust_builtins_archive: Path,
     cargo_plan: RuntimeCargoPlan | None = None,
     build_python_admission: BuildPythonAdmission | None = None,
 ) -> tuple[RuntimeBuildIdentity, ...]:
@@ -1439,6 +1368,15 @@ def resolve_wasm_runtime_build_family_identities(
         target_triple=target_triple,
         cargo_plan=cargo_plan,
     )
+    c_abi = plan.wasi_c_abi
+    if c_abi is None:
+        raise ValueError("runtime WASM family has no admitted SDK")
+    wasi_sysroot, wasm_linker = c_abi.sysroot, c_abi.linker
+    long_double_archive, builtins_archive = (
+        c_abi.path("long_double"),
+        c_abi.path("compiler_rt"),
+    )
+    wasi_libc_archive = c_abi.path("libc")
     env = plan.environment
     cargo_command = plan.command
     source_roots = runtime_source_roots(root, runtime_features)
@@ -1449,12 +1387,6 @@ def resolve_wasm_runtime_build_family_identities(
         env=env,
         cargo_plan=plan,
         target_triple=target_triple,
-        wasi_sysroot=wasi_sysroot,
-        wasm_linker=wasm_linker,
-        long_double_archive=long_double_archive,
-        builtins_archive=builtins_archive,
-        wasi_libc_archive=wasi_libc_archive,
-        rust_builtins_archive=rust_builtins_archive,
     )
     _verify_plan_toolchain_manifest(plan, toolchain_manifest)
     build_python_identity = _runtime_toolchain_build_python(toolchain_manifest)
@@ -1466,7 +1398,6 @@ def resolve_wasm_runtime_build_family_identities(
             ("archive/wasi-long-double", long_double_archive),
             ("archive/clang-rt-builtins", builtins_archive),
             ("archive/wasi-libc", wasi_libc_archive),
-            ("archive/rust-compiler-builtins", rust_builtins_archive),
         ),
         cargo_plan=plan,
     )

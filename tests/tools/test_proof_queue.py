@@ -1183,6 +1183,44 @@ def test_registered_direct_toolchain_commands_cannot_fall_back_to_an_empty_kind(
     assert envelope["proof_plan_command_ids"] == []
 
 
+def test_native_toolchain_inference_and_declared_sdk_policy_coexist() -> None:
+    command_admission._proof_command_registry.cache_clear()
+    native = command_admission.envelope_for_command(["clang", "--version"])
+    assert native["toolchains"] == ["clang"]
+    plan = proof_plan.ProofPlan.load()
+    command = next(
+        item for item in plan.commands if item.id == "wasm.test.control-flow"
+    )
+    selected = command_admission.envelope_for_command(list(command.argv))
+    assert selected["kind"] == "proof-plan"
+    assert selected["proof_plan_command_ids"] == [command.id]
+    assert "wasi-clang" in selected["toolchains"]
+    assert selected["toolchains"] == list(plan.toolchain_closure(command.toolchains))
+
+
+def test_ordinary_duplicate_executable_policy_still_rejects(monkeypatch) -> None:
+    plan = proof_plan.ProofPlan.load()
+    clang = next(policy for policy in plan.toolchain_policies if policy.name == "clang")
+    ambiguous = replace(
+        plan,
+        toolchain_policies=(
+            *plan.toolchain_policies,
+            proof_plan.ToolchainPolicy("another-native-clang", dict(clang.data)),
+        ),
+    )
+    command_admission._proof_command_registry.cache_clear()
+    try:
+        monkeypatch.setattr(
+            proof_plan.ProofPlan, "load", classmethod(lambda cls: ambiguous)
+        )
+        with pytest.raises(
+            ValueError, match="executable 'clang' has ambiguous toolchain policies"
+        ):
+            command_admission.envelope_for_command(["git", "--version"])
+    finally:
+        command_admission._proof_command_registry.cache_clear()
+
+
 def test_execution_custody_session_arms_monitor_before_child_policy() -> None:
     lifecycle: list[str] = []
 
@@ -1673,8 +1711,9 @@ def test_node_tool_identity_binds_runtime_versions_configuration_and_global_path
     assert re.fullmatch(r"[0-9a-f]{64}", identity["runtime_sha256"])
 
 
+@pytest.mark.parametrize("mutation", ["content", "new-member"])
 def test_quint_tool_identity_binds_resolved_node_package_tree(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
 ) -> None:
     package = tmp_path / "node_modules" / "@informalsystems" / "quint"
     package.mkdir(parents=True)
@@ -1686,6 +1725,14 @@ def test_quint_tool_identity_binds_resolved_node_package_tree(
     )
     entry.write_text("console.log('quint')\n", encoding="utf-8")
     observed: list[str] = []
+    inventories = []
+    real_directory = command_identity._directory_manifest_identity
+
+    def directory(path, **kwargs):
+        inventories.append(path)
+        return real_directory(path, **kwargs)
+
+    monkeypatch.setattr(command_identity, "_directory_manifest_identity", directory)
 
     def fake_which(
         name: str,
@@ -1731,8 +1778,49 @@ def test_quint_tool_identity_binds_resolved_node_package_tree(
         env={},
     )
     assert observed == ["quint", "node"]
-    assert before["node_package"]["package"]["file_count"] == 2
-    entry.write_text("console.log('mutated')\n", encoding="utf-8")
+    assert before["node_package"]["package"] == {"root": str(package)}
+    assert inventories == []
+    with pytest.raises(ValueError, match="armed content inventory"):
+        toolchain_capture.publish_capture(tmp_path / "quint-cas", {"quint": before})
+    monkeypatch.setattr(
+        command_identity, "_python_identity", lambda *args, **kwargs: None
+    )
+
+    def armed_capture():
+        return execution_environment._capture_toolchains(
+            {"toolchains": ["quint"]},
+            [sys.executable],
+            cwd=tmp_path,
+            env={},
+            source_root=tmp_path,
+            hash_workers=1,
+            located_toolchains={"quint": before},
+        )
+
+    first_full = armed_capture()[1]["quint"]
+    assert first_full["node_package"]["package"]["file_count"] == 2
+    assert inventories == [package]
+    _, reference, _ = toolchain_capture.publish_capture(
+        tmp_path / "quint-cas", {"quint": first_full}
+    )
+    from tools.proof_queue_pkg import custody_cas
+
+    raw = custody_cas.read_ref(reference, expected_root=tmp_path / "quint-cas")
+    raw["toolchains"] = {"quint": before}
+    raw["files"] = [row.as_dict() for row in toolchain_capture.frozen_files(before)]
+    reduced = custody_cas.put_json(tmp_path / "quint-cas", raw).as_dict()
+    with pytest.raises(ValueError, match="armed content inventory"):
+        toolchain_capture.load_capture(reduced, cas_root=tmp_path / "quint-cas")
+    changed = entry if mutation == "content" else package / "new-module.js"
+    changed.write_text("console.log('mutated')\n", encoding="utf-8")
+    if mutation == "content":
+        with pytest.raises(ValueError, match="node package finite selection changed"):
+            armed_capture()
+    else:
+        full = armed_capture()[1]["quint"]
+        assert str(changed) in {
+            row.path for row in toolchain_capture.frozen_files(full)
+        }
     observed.clear()
     after = command_identity._tool_identity(
         plan,
@@ -1742,7 +1830,9 @@ def test_quint_tool_identity_binds_resolved_node_package_tree(
         cwd=tmp_path,
         env={},
     )
-    assert before["identity_sha256"] != after["identity_sha256"]
+    assert (before["identity_sha256"] != after["identity_sha256"]) == (
+        mutation == "content"
+    )
 
 
 def test_execution_environment_authority_covers_path_rust_and_wrapper_family() -> None:
@@ -2655,7 +2745,7 @@ def guarded_execution_authorities(
     # A Python-only locator does not invoke the supervisor. Reuse the production
     # selection contract so the cached capture cannot invent launcher authority.
     assert envelope["toolchains"] == ["python"]
-    _roots, selections, _telemetry = (
+    _roots, selections, _telemetry, _selected_environment = (
         execution_environment._locate_toolchain_watch_roots(
             envelope,
             command,
@@ -4124,13 +4214,32 @@ def test_rustup_role_content_resolution_tracks_physical_component_before_reuse(
     def version(argv, **kwargs):
         assert argv[0] == str(selected[0].resolve()) and kwargs["env"] == environment
         versions.append(list(argv))
-        return subprocess.CompletedProcess(argv, 0, f"{role} 1.99.0", "")
+        return subprocess.CompletedProcess(
+            argv, 0, f"{role} 1.99.0\nhost: x86_64-unknown-linux-gnu\n", ""
+        )
 
     monkeypatch.setattr(rust_toolchain.process_guard, "run_completed_command", resolve)
     monkeypatch.setattr(command_identity, "_run_captured", version)
-    monkeypatch.setattr(
-        toolchain_capture, "capture_rust_link_process_images", lambda **kwargs: ([], {})
-    )
+    from types import SimpleNamespace
+    from tests.tools.test_toolchain_capture import _rust_metadata_probe
+
+    linker = tmp_path / ("retained-linker" + suffix)
+    linker.write_bytes(b"independent linker image")
+    linker.chmod(0o755)
+    phases = []
+
+    def phase(command, **kwargs):
+        phases.append(list(command))
+        metadata = _rust_metadata_probe(command, tmp_path)
+        if metadata is not None:
+            return metadata
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps(str(linker)) + "\n", ""
+        )
+
+    # Substitute compiler output only: the real v4 capture, structural receiver,
+    # image validation and warm-reuse accounting remain in the tested path.
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=phase))
     command = [sys.executable, "-c", "pass"]
     envelope = command_admission.envelope_for_command(command)
     plan = proof_plan.ProofPlan.load()
@@ -4150,7 +4259,9 @@ def test_rustup_role_content_resolution_tracks_physical_component_before_reuse(
         return identity, telemetry
 
     initial, miss = capture()
+    cold_phases = len(phases)
     warm, hit = capture()
+    assert len(phases) == cold_phases
     assert initial == warm and hit[0]["state"] == "hit"
     assert len(resolutions) == 2 and len(versions) == 1
     if retarget:
@@ -16701,4 +16812,200 @@ def test_child_explicit_environment_without_path_does_not_inherit_parent_path(
     assert (
         execution_custody._resolve_child_executable(name, None, str(tmp_path))
         == decoy.resolve()
+    )
+
+
+def test_native_c_registration_is_canonical_and_persisted_envelope_cannot_drop_it():
+    from tools.proof_queue_pkg import command_admission
+    from tools import proof_plan
+
+    command = list(
+        next(
+            row.argv
+            for row in proof_plan.ProofPlan.load().commands
+            if row.id == "wasm.build.host"
+        )
+    )
+    envelope = command_admission.envelope_for_command(command)
+    assert envelope["cargo_native_c_units"] == ["target"]
+    command_admission.validate_envelope(envelope, command)
+    changed = dict(envelope)
+    changed["cargo_native_c_units"] = []
+    with pytest.raises(ValueError):
+        command_admission.validate_envelope(changed, command)
+
+
+@pytest.mark.parametrize("spelling", ["split", "equals"])
+@pytest.mark.parametrize(
+    "kinds,link_required",
+    [
+        ("lib", False),
+        ("rlib", False),
+        ("staticlib", False),
+        ("rlib,rlib", False),
+        ("cdylib,cdylib", True),
+        ("lib,rlib", False),
+        ("staticlib,cdylib", True),
+        ("cdylib", True),
+        ("proc-macro", True),
+    ],
+)
+def test_cargo_artifact_kind_projection_preserves_cargo_boundary(
+    spelling, kinds, link_required
+):
+    from tools.proof_queue_pkg import command_admission
+
+    selector = (
+        ["--crate-type", kinds] if spelling == "split" else ["--crate-type=" + kinds]
+    )
+    argv = ["cargo", "rustc", "--lib", *selector, "--", "-C", "panic=abort"]
+    invocation = command_admission.parse_cargo_invocation(argv)
+    assert invocation.crate_types == tuple(kinds.split(","))
+    assert invocation.forwarded == ("-C", "panic=abort")
+    assert command_admission.rust_link_artifact_selection(
+        argv,
+        cargo=True,
+        cargo_invocation=command_admission.parse_cargo_invocation(argv),
+        unit="target",
+    ) == {
+        "cargo_crate_types": kinds.split(","),
+        "rustc_crate_types": [],
+        "manifest_crate_types": None,
+        "link_required": link_required,
+    }
+    assert command_admission.rust_link_artifact_selection(
+        argv,
+        cargo=True,
+        cargo_invocation=command_admission.parse_cargo_invocation(argv),
+        unit="host-proc-macro",
+    ) == {
+        "cargo_crate_types": None,
+        "rustc_crate_types": ["proc-macro"],
+        "manifest_crate_types": None,
+        "link_required": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "arguments,expected",
+    [
+        (["--crate-type", "staticlib", "--crate-type=cdylib"], True),
+        (["--crate-type=lib", "--crate-type", "rlib"], False),
+    ],
+)
+def test_rust_artifact_projection_keeps_repeated_rustc_types_additive(
+    arguments, expected
+):
+    from tools.proof_queue_pkg import command_admission
+
+    cargo = ["cargo", "rustc", "--crate-type", "rlib", "--", *arguments]
+    invocation = command_admission.parse_cargo_invocation(cargo)
+    assert invocation.crate_types == ("rlib",)
+    selection = command_admission.rust_link_artifact_selection(
+        cargo, cargo=True, cargo_invocation=invocation, unit="target"
+    )
+    assert selection["rustc_crate_types"] == (
+        ["staticlib", "cdylib"] if expected else ["lib", "rlib"]
+    )
+    assert selection["link_required"] is expected
+    direct = command_admission.rust_link_artifact_selection(
+        ["rustc", *arguments], cargo=False, cargo_invocation=None, unit="target"
+    )
+    assert direct["cargo_crate_types"] is None
+    assert direct["link_required"] is expected
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["cargo", "rustc", "--crate-type"],
+        ["cargo", "rustc", "--crate-type", ""],
+        ["cargo", "rustc", "--crate-type", "bogus"],
+        ["cargo", "build", "--crate-type", "rlib"],
+    ],
+)
+def test_cargo_artifact_projection_refuses_invalid_selector(argv):
+    from tools.proof_queue_pkg import command_admission
+
+    with pytest.raises(ValueError, match="requires|require|invalid"):
+        command_admission.rust_link_artifact_selection(
+            argv,
+            cargo=True,
+            cargo_invocation=command_admission.parse_cargo_invocation(argv),
+            unit="target",
+        )
+
+
+@pytest.mark.parametrize("spelling", ["-C", "-Cjoined", "--codegen", "--codegen="])
+def test_rust_codegen_projection_preserves_observed_spelling_and_cargo_lane(spelling):
+    from tools.proof_queue_pkg import command_admission
+
+    value = "link-arg=--codegen=opaque=value with spaces"
+    option = (
+        (spelling, value)
+        if spelling in {"-C", "--codegen"}
+        else (("-C" if spelling == "-Cjoined" else spelling) + value,)
+    )
+    rust = (*option, "--crate-type", "cdylib", "--", "--codegen=linker=positional")
+    argv = [
+        "cargo",
+        "-C",
+        "working-directory",
+        "rustc",
+        "--crate-type",
+        "rlib",
+        "--",
+        *rust,
+    ]
+    invocation = command_admission.parse_cargo_invocation(argv)
+    assert invocation.forwarded == rust
+    assert command_admission.rust_link_arguments(invocation.forwarded) == (
+        *option,
+        "--crate-type",
+        "cdylib",
+    )
+    selection = command_admission.rust_link_artifact_selection(
+        argv,
+        cargo=True,
+        cargo_invocation=command_admission.parse_cargo_invocation(argv),
+        unit="target",
+    )
+    assert selection["rustc_crate_types"] == ["cdylib"] and selection["link_required"]
+
+
+@pytest.mark.parametrize("flags", [("--codegen",), ("--codegen=",), ("-C=linker=x",)])
+def test_rust_codegen_projection_refuses_malformed_lane(flags):
+    from tools.proof_queue_pkg import command_admission
+
+    with pytest.raises(ValueError, match="codegen option"):
+        command_admission.rust_link_arguments(flags)
+
+
+@pytest.mark.parametrize(
+    "operand", ["-Clinker=tools/root", "--codegen=linker=tools/root"]
+)
+def test_rust_proof_projection_retains_sysroot_operand_without_tool_reinterpretation(
+    operand,
+):
+    from tools.proof_queue_pkg import command_admission
+
+    arguments = ("--sysroot", operand, "--out-dir", operand, "--codegen=panic=abort")
+    assert command_admission.rust_link_arguments(arguments) == (
+        "--sysroot",
+        operand,
+        "--codegen=panic=abort",
+    )
+    assert command_admission.rustc_crate_types(arguments) == ()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [("-gClink_arg=--export=under_score",), ("-vC", "link_arg=--export=under_score")],
+)
+def test_rust_proof_projection_preserves_raw_cluster_and_key_spelling(arguments):
+    from tools.proof_queue_pkg import command_admission
+
+    assert command_admission.rust_link_arguments(arguments) == arguments
+    assert command_admission.rustc_crate_types((*arguments, "--crate-type=cdylib")) == (
+        "cdylib",
     )

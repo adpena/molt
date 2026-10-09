@@ -426,3 +426,87 @@ def test_forwarded_frontend_target_cannot_bypass_replay_target_validation():
             compiler_target="x86_64-pc-windows-msvc",
             compiler_command=("clang-cl",),
         )
+
+
+@pytest.mark.parametrize("driver", ["clang", "zig", "clang-cl"])
+@pytest.mark.parametrize("explicit_cpp", [False, True])
+def test_derived_cpp_preserves_common_options_without_c_language_policy(
+    monkeypatch, driver, explicit_cpp
+):
+    _mock_native_tools(monkeypatch)
+    windows = driver == "clang-cl"
+    target = "x86_64-pc-windows-msvc" if windows else "x86_64-unknown-linux-gnu"
+    c_command = ("zig", "cc") if driver == "zig" else (driver,)
+    c_options = (("--driver-mode=gcc",) if driver == "clang" else ()) + (
+        "-std=c17",
+        "-O2",
+        "-DROLE_SHARED=1",
+    )
+    monkeypatch.setenv("CC", shlex.join((*c_command, *c_options)))
+    cpp_command = (
+        ("zig", "c++") if driver == "zig" else ("clang-cl" if windows else "clang++",)
+    )
+    if explicit_cpp:
+        monkeypatch.setenv("CXX", shlex.join((*cpp_command, "-std=c++20", "-O3")))
+    plan = source_extension_target.resolve_source_extension_target_plan(
+        "native",
+        host_platform="win32" if windows else "linux",
+        host_arch="x86_64",
+    )
+    assert plan.target_triple == target
+    resolved = source_extension_toolchain._resolve_source_extension_native_toolchain(
+        plan
+    )
+    assert resolved.commands["c"] == (*c_command, *c_options)
+    assert resolved.commands["cpp"] == (
+        *cpp_command,
+        *(("-std=c++20", "-O3") if explicit_cpp else ("-O2", "-DROLE_SHARED=1")),
+    )
+
+
+def test_freestanding_cpp_derives_common_options_from_c_without_role_change(
+    monkeypatch,
+):
+    def tool(role, command):
+        return llvm_wasi_tools.ResolvedLlvmTool(
+            role, command, Path(command[0]), "fixture", "a" * 64
+        )
+
+    family = llvm_wasi_tools.LlvmWasiToolFamily(
+        cc=tool(
+            "cc", ("clang", "--driver-mode=gcc", "-std=c11", "-O2", "-DROLE_SHARED=1")
+        ),
+        cxx=tool("cxx", ("clang++",)),
+        wasm_ld=tool("wasm_ld", ("wasm-ld",)),
+        ar=tool("ar", ("llvm-ar",)),
+        ranlib=tool("ranlib", ("llvm-ranlib",)),
+        nm=tool("nm", ("llvm-nm",)),
+        strip=tool("strip", ("llvm-strip",)),
+    )
+    toolchain = source_extension_toolchain._SourceExtensionWasmToolchain(
+        ok=True,
+        compiler_kind="clang",
+        tools=family,
+        wasi_sysroot=None,
+        wasi_c_abi=None,
+        detail="fixture",
+    )
+    monkeypatch.setattr(
+        source_extension_toolchain, "llvm_tool_is_wasi_sdk", lambda *a, **k: False
+    )
+    commands = source_extension_toolchain._source_extension_c_commands(
+        toolchain=toolchain,
+        target_plan=source_extension_target.resolve_source_extension_target_plan(
+            "wasm-freestanding"
+        ),
+        environment={},
+    )
+    assert commands["cpp"] == (
+        "clang++",
+        "-O2",
+        "-DROLE_SHARED=1",
+        "-target",
+        "wasm32-unknown-unknown",
+    )
+    assert "-std=c11" in commands["c"]
+    assert "--driver-mode=gcc" in commands["c"]

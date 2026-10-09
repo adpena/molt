@@ -78,6 +78,7 @@ def revalidate_images(
     """Rehash captured images by exact path and reject any identity drift."""
 
     current_rows: list[dict[str, object]] = []
+    verified_paths: dict[str, dict[str, object]] = {}
     for raw in rows:
         if not isinstance(raw, Mapping):
             raise ValueError("process image row is malformed")
@@ -98,12 +99,28 @@ def revalidate_images(
             raise ValueError("process image has invalid root-exit disposition")
         if path_kind not in {"resolved", "selection"}:
             raise ValueError("process image has invalid path kind")
-        current = capture_image(
-            role,
-            Path(raw_path),
-            disposition,
-            preserve_path=path_kind == "selection",
+        actual_path = (
+            Path(os.path.abspath(raw_path))
+            if path_kind == "selection"
+            else Path(raw_path).resolve(strict=True)
         )
+        key = os.path.normcase(str(actual_path))
+        if key not in verified_paths:
+            verified_paths[key] = capture_image(
+                role, actual_path, disposition, preserve_path=path_kind == "selection"
+            )
+        captured = verified_paths[key]
+        current = {
+            "schema": PROCESS_IMAGE_SCHEMA,
+            "role": role,
+            "path": str(actual_path),
+            "sha256": captured["sha256"],
+            "size_bytes": captured["size_bytes"],
+        }
+        if disposition != "require-exit":
+            current["root_exit_disposition"] = disposition
+        if path_kind == "selection":
+            current["path_kind"] = path_kind
         if current != dict(raw):
             raise ValueError(
                 f"process image changed while live custody armed: {raw_path}"
@@ -117,7 +134,7 @@ def canonical_images(
 ) -> list[dict[str, object]]:
     """Validate and deterministically order one exact executable-image set."""
 
-    identities: dict[str, tuple[str, str]] = {}
+    identities: dict[str, tuple[str, str, int]] = {}
     canonical: dict[tuple[str, str], dict[str, object]] = {}
     for raw in rows:
         if not isinstance(raw, Mapping) or raw.get("schema") != PROCESS_IMAGE_SCHEMA:
@@ -147,7 +164,7 @@ def canonical_images(
         if not path.is_file():
             raise ValueError(f"process image is unavailable: {path}")
         normalized = _image_path_key(path)
-        identity = (digest, disposition)
+        identity = (digest, disposition, size)
         prior = identities.get(normalized)
         if prior is not None and prior != identity:
             raise ValueError(f"process image has conflicting identities: {path}")
@@ -186,6 +203,10 @@ def toolchain_images(
         )
 
         return family_process_images(identity)
+    if name == "rustc":
+        from tools.proof_queue_pkg.toolchain_capture import validate_rust_link_selection
+
+        validate_rust_link_selection(identity)
     raw_images = identity.get("process_images")
     if name == "python" and raw_images is None:
         raw_path = identity.get("executable")

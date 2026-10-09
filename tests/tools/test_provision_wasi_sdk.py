@@ -77,6 +77,18 @@ def _required_members(
             b"#define EINVAL 28\n",
         ),
         _file(f"{root}/share/wasi-sysroot/lib/wasm32-wasip1/libc.a", b"archive"),
+        *(
+            _file(f"{root}/share/wasi-sysroot/lib/wasm32-wasip1/{name}", name.encode())
+            for name in (
+                "libc-printscan-long-double.a",
+                "crt1-command.o",
+                "crt1-reactor.o",
+            )
+        ),
+        _file(
+            f"{root}/lib/clang/{asset.llvm_version.split('.')[0]}/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a",
+            b"compiler-rt",
+        ),
     ]
     return [member for member in members if member[0].name != f"{root}/{omit}"]
 
@@ -221,11 +233,39 @@ def test_provision_publishes_one_identity_addressed_verified_sdk(
     receipt = json.loads(
         (installed / INSTALL_RECEIPT_FILENAME).read_text(encoding="utf-8")
     )
-    assert receipt == {
-        "schema": INSTALL_RECEIPT_SCHEMA,
-        "asset": asdict(asset),
-        "tree": wasi_sdk_tree_identity(sdk).as_record(),
+    assert set(receipt) == {"schema", "asset", "tree", "facts"}
+    assert receipt["schema"] == INSTALL_RECEIPT_SCHEMA
+    assert receipt["asset"] == asdict(asset)
+    assert receipt["tree"] == wasi_sdk_tree_identity(sdk).as_record()
+    assert set(receipt["facts"]) == {"tools", "members", "resources"}
+    assert set(receipt["facts"]["tools"]) == {
+        "clang",
+        "clang++",
+        "llvm-ar",
+        "llvm-ranlib",
+        "wasm-ld",
+        "llvm-nm",
+        "llvm-strip",
     }
+    assert receipt["facts"]["tools"]["llvm-strip"] is None
+    assert set(receipt["facts"]["members"]) == {
+        "libc",
+        "long_double",
+        "compiler_rt",
+        "crt_command",
+        "crt_reactor",
+    }
+    for group in ("tools", "members"):
+        for fact in receipt["facts"][group].values():
+            if fact is None:
+                continue
+            actual = (sdk / fact["path"]).read_bytes()
+            assert fact["size"] == len(actual)
+            assert fact["sha256"] == hashlib.sha256(actual).hexdigest()
+            assert sdk / fact["content_path"] == (sdk / fact["path"]).resolve()
+    assert set(receipt["facts"]["resources"]) == {"lib", "share/wasi-sysroot"}
+    for relative, fact in receipt["facts"]["resources"].items():
+        assert fact == wasi_sdk_tree_identity(sdk / relative).as_record()
     cached = tmp_path / "downloads" / f"{asset.archive_root}-{asset.sha256}.tar.gz"
     assert cached.read_bytes() == archive_path.read_bytes()
     assert list(installed.parent.glob(".molt-*")) == []
@@ -303,6 +343,26 @@ def test_provision_never_repairs_a_modified_installation(
             "LLVM producer identity",
         ),
         (VERSION_TEXT, "share/wasi-sysroot/lib/wasm32-wasip1/libc.a", "missing"),
+        (
+            VERSION_TEXT,
+            "share/wasi-sysroot/lib/wasm32-wasip1/libc-printscan-long-double.a",
+            "missing",
+        ),
+        (
+            VERSION_TEXT,
+            "share/wasi-sysroot/lib/wasm32-wasip1/crt1-command.o",
+            "missing",
+        ),
+        (
+            VERSION_TEXT,
+            "share/wasi-sysroot/lib/wasm32-wasip1/crt1-reactor.o",
+            "missing",
+        ),
+        (
+            VERSION_TEXT,
+            f"lib/clang/{_WASI.llvm_version.split('.')[0]}/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a",
+            "missing",
+        ),
         (VERSION_TEXT, "bin/llvm-nm", "missing"),
         (VERSION_TEXT, "bin/clang", "missing"),
         (VERSION_TEXT, "bin/clang++", "missing"),
@@ -394,9 +454,10 @@ def test_sdk_tree_byte_limit_is_checked_before_file_content_is_read(
     def forbidden_hash(*_args, **_kwargs):
         pytest.fail("out-of-policy file content must not be read")
 
-    monkeypatch.setattr(wasi_sdk_identity.hashlib, "file_digest", forbidden_hash)
-    with pytest.raises(ValueError, match="total-byte policy"):
-        wasi_sdk_tree_identity(tmp_path)
+    with monkeypatch.context() as hashing:
+        hashing.setattr(wasi_sdk_identity.hashlib, "file_digest", forbidden_hash)
+        with pytest.raises(ValueError, match="total-byte policy"):
+            wasi_sdk_tree_identity(tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -408,3 +469,93 @@ def test_sdk_receipt_uses_bounded_exact_json(tmp_path: Path, contents: bytes) ->
     (tmp_path / INSTALL_RECEIPT_FILENAME).write_bytes(contents)
     with pytest.raises(ValueError, match="provision receipt is invalid"):
         wasi_sdk_identity.load_wasi_sdk_install_receipt(tmp_path)
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_v1_receipt_upgrade_verifies_once_and_preserves_sdk_payload(
+    tmp_path, monkeypatch, corrupt
+):
+    archive = tmp_path / "sdk.tar.gz"
+    _write_archive(archive, _required_members())
+    downloads = []
+    _install_asset(monkeypatch, archive, downloads)
+    custody = tmp_path / "custody"
+    prefix = provisioner.provision_wasi_sdk(custody, downloads=tmp_path / "downloads")
+    receipt_path = prefix / INSTALL_RECEIPT_FILENAME
+    original = json.loads(receipt_path.read_text())
+    legacy = {key: value for key, value in original.items() if key != "facts"}
+    legacy["schema"] = "molt.wasi-sdk-install.v1"
+    receipt_path.write_text(json.dumps(legacy))
+    legacy_bytes = receipt_path.read_bytes()
+    with pytest.raises(llvm_toolchain.LlvmToolchainConfigError, match="v2"):
+        llvm_toolchain.load_wasi_sdk_installation(
+            provisioner.ROOT, prefix, verify_tree=False
+        )
+    sdk = prefix / "sdk"
+    if corrupt:
+        (sdk / "share/wasi-sysroot/include/wasm32-wasip1/errno.h").write_bytes(
+            b"changed"
+        )
+    before = {
+        path.relative_to(sdk): (
+            path.read_bytes(),
+            path.stat().st_ino,
+            path.stat().st_mtime_ns,
+        )
+        for path in sdk.rglob("*")
+        if path.is_file()
+    }
+    observed = []
+    capture = wasi_sdk_identity.wasi_sdk_tree_identity
+
+    def once(path):
+        observed.append(path)
+        return capture(path)
+
+    monkeypatch.setattr(provisioner, "wasi_sdk_tree_identity", once)
+    monkeypatch.setattr(llvm_toolchain, "wasi_sdk_tree_identity", once)
+    if corrupt:
+        with pytest.raises(ValueError, match="tree changed"):
+            provisioner.provision_wasi_sdk(custody)
+        assert receipt_path.read_bytes() == legacy_bytes
+    else:
+        assert provisioner.provision_wasi_sdk(custody) == prefix
+        assert json.loads(receipt_path.read_text()) == original
+    assert observed == [sdk]
+    assert len(downloads) == 1
+    assert before == {
+        path.relative_to(sdk): (
+            path.read_bytes(),
+            path.stat().st_ino,
+            path.stat().st_mtime_ns,
+        )
+        for path in sdk.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_receipt_facts_use_captured_tree_without_reopening_members(
+    tmp_path, monkeypatch
+):
+    archive = tmp_path / "sdk.tar.gz"
+    _write_archive(archive, _required_members())
+    downloads = []
+    asset = _install_asset(monkeypatch, archive, downloads)
+    prefix = provisioner.provision_wasi_sdk(tmp_path / "custody")
+    sdk = prefix / "sdk"
+    captured = wasi_sdk_tree_identity(sdk)
+    expected = json.loads((prefix / INSTALL_RECEIPT_FILENAME).read_text())
+    (sdk / "bin" / executable_filename("clang", asset.id)).write_bytes(
+        b"different generation"
+    )
+    monkeypatch.setattr(
+        wasi_sdk_identity,
+        "open_stable_regular_file",
+        lambda *args, **kwargs: pytest.fail("receipt re-read a live member"),
+    )
+    assert (
+        json.loads(
+            wasi_sdk_identity.render_wasi_sdk_install_receipt(asdict(asset), captured)
+        )
+        == expected
+    )

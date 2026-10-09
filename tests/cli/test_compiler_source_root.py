@@ -354,11 +354,6 @@ def test_packaged_stdlib_and_policy_follow_live_source_identity(tmp_path, monkey
     [
         ("molt.tool_releases", "tool_releases_path", "config/tool_releases.toml"),
         ("molt.llvm_toolchain", "_repo_root", "."),
-        (
-            "molt.cli.wasm_link_inputs",
-            "wasm_builtins_vendor_dir",
-            "vendor/wasm-builtins",
-        ),
         ("molt.cli.external_native", "_molt_root_for_external_native_scan", "."),
         (
             "molt.scientific_stack_versions",

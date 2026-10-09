@@ -17,6 +17,8 @@ import sys
 from typing import TYPE_CHECKING, Any, cast
 import uuid
 
+from molt.rust_toolchain import rust_flag_spans
+
 from tools.memory_guard_core.common import utc_timestamp as _utc_timestamp
 
 
@@ -108,29 +110,28 @@ class CargoCompilerInvocation:
 
 def cargo_compiler_invocation(argv: tuple[str, ...]) -> CargoCompilerInvocation:
     """One argument authority for rustc, in-process Clippy and wrappers."""
-    response_file = any(arg.startswith("@") for arg in argv[1:])
+    response_file = any(argument.startswith("@") for argument in argv[1:])
+    incomplete = False
     incremental = None
-    for index, arg in enumerate(argv[1:], start=1):
-        if arg == "--":
-            break
-        option = (
-            argv[index + 1]
-            if arg in {"-C", "--codegen"} and index + 1 < len(argv)
-            else arg[2:]
-            if arg.startswith("-C")
-            else arg[len("--codegen=") :]
-            if arg.startswith("--codegen=")
-            else ""
-        )
-        if option.startswith("incremental="):
-            incremental = option[len("incremental=") :]
+    try:
+        for span in rust_flag_spans(argv[1:]):
+            argument = argv[span.start + 1]
+            if argument == "--":
+                break
+            if span.codegen is not None:
+                if span.codegen.startswith("incremental="):
+                    incremental = span.codegen[len("incremental=") :]
+                    incomplete |= not bool(incremental)
+    except ValueError:
+        # Interruption observes potentially truncated argv. Never upgrade a
+        # malformed observation to complete, or throw from cleanup inventory.
+        incomplete = True
+    known = _native_executable_name(argv[0]) in CARGO_COMPILER_EXECUTABLES
     return CargoCompilerInvocation(
-        _native_executable_name(argv[0]) in CARGO_COMPILER_EXECUTABLES
-        or incremental is not None
-        or response_file,
+        known or incremental is not None or response_file or incomplete,
         incremental,
-        not response_file,
-        _native_executable_name(argv[0]) in CARGO_COMPILER_EXECUTABLES,
+        not response_file and not incomplete,
+        known,
     )
 
 

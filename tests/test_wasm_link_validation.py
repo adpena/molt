@@ -1,4 +1,5 @@
 import ast
+from dataclasses import asdict
 import hashlib
 import importlib.util
 import json
@@ -25,6 +26,16 @@ from molt.cli.source_extension_link_requirements import (
     source_extension_link_file,
 )
 from tests.cli.native_link_test_support import static_archive_bytes
+from tests.runtime_build_identity_helper import (
+    RuntimeFixtureRoot,
+    runtime_wasi_c_abi_plan,
+    provisioned_wasi_sdk_fixture,
+)
+from molt import llvm_toolchain
+from molt.wasi_sdk_identity import (
+    render_wasi_sdk_install_receipt,
+    wasi_sdk_tree_identity,
+)
 from tests.executable_test_support import write_mock_executable
 from molt import wasm_artifact
 from molt._wasm_runtime_exports import (
@@ -49,6 +60,22 @@ from molt.wasm_linking_symbols import (
 )
 from molt.toolchain_identity import stable_regular_file_identity
 from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+
+def _compiler_rt_sdk_fixture(tmp_path: Path, *, libc: bytes | None = None):
+    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    paths = llvm_toolchain.wasi_c_abi_plan(installation)
+    paths.path("compiler_rt").write_bytes(_build_compiler_rt_provider_archive())
+    if libc is not None:
+        paths.path("libc").write_bytes(libc)
+    # Fixture setup publishes final member bytes before any consumer gets a plan.
+    (installation.prefix / ".molt-wasi-sdk.json").write_text(
+        render_wasi_sdk_install_receipt(
+            asdict(installation.asset), wasi_sdk_tree_identity(installation.sdk)
+        ),
+        encoding="utf-8",
+    )
+    return runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path))
 
 
 def _load_wasm_link():
@@ -5858,6 +5885,17 @@ def test_run_wasm_ld_links_rewritten_native_runtime_imports(
     native_object = tmp_path / "external_static_packages" / "ndimage_edt.molt.wasm"
     wasm_ld_inputs: list[str] = []
     rewritten_native_imports: list[list[tuple[str, str]]] = []
+    libc_snapshots: list[tuple[Path, bytes]] = []
+
+    libc_module = wasm_link_format._append_linking_function_symbols(
+        _build_exported_function_module("malloc"),
+        [("malloc", 0, FLAG_BINDING_GLOBAL | wasm_link_format.FLAG_EXPLICIT_NAME)],
+        facts_provider=_facts_provider,
+    )
+    assert libc_module is not None
+    libc_bytes = static_archive_bytes(libc_module)
+    sdk_plan = _compiler_rt_sdk_fixture(tmp_path, libc=libc_bytes)
+    libc_provider = sdk_plan.path("libc")
 
     runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
@@ -5874,12 +5912,18 @@ def test_run_wasm_ld_links_rewritten_native_runtime_imports(
                     rewritten_native_imports.append(
                         _function_import_pairs(path.read_bytes())
                     )
+                if path.name == libc_provider.name:
+                    libc_snapshots.append((path, path.read_bytes()))
         _write_wasm_ld_output(cmd, output_bytes)
 
         class Result:
             returncode = 0
             stderr = ""
-            stdout = ""
+            stdout = "\n".join(
+                str(Path(part).resolve())
+                for part in cmd[1:]
+                if not part.startswith("-") and Path(part).is_file()
+            )
 
         return Result()
 
@@ -5895,17 +5939,27 @@ def test_run_wasm_ld_links_rewritten_native_runtime_imports(
     monkeypatch.setattr(
         wasm_link_edit, "_restore_output_export_aliases", lambda data, **_kwargs: None
     )
+    monkeypatch.setattr(
+        wasm_link_native_inputs.wasm_link_inputs,
+        "resolve_wasi_c_abi_plan",
+        lambda **_kwargs: sdk_plan,
+    )
 
     rc = _run_wasm_ld_with_rust_facts(
         "wasm-ld",
         runtime,
         output,
         linked,
-        native_link_requirements=_native_link_requirements(*(native_object,)),
+        native_link_requirements=_native_link_requirements(
+            native_object, libc_provider
+        ),
     )
 
     assert rc == 0
     assert str(native_object) not in wasm_ld_inputs
+    assert len(libc_snapshots) == 1
+    assert libc_snapshots[0][0] != libc_provider
+    assert libc_snapshots[0][1] == libc_bytes
     assert rewritten_native_imports == [
         [
             ("molt_runtime", "molt_add"),
@@ -6467,9 +6521,17 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
             ]
         )
     )
-    compiler_rt_provider = tmp_path / "rustlib" / "libcompiler_builtins-x.rlib"
-    compiler_rt_provider.parent.mkdir()
-    compiler_rt_provider.write_bytes(_build_compiler_rt_provider_archive())
+    libc_module = wasm_link_format._append_linking_function_symbols(
+        _build_exported_function_module("malloc"),
+        [("malloc", 0, FLAG_BINDING_GLOBAL | wasm_link_format.FLAG_EXPLICIT_NAME)],
+        facts_provider=_facts_provider,
+    )
+    assert libc_module is not None
+    sdk_plan = _compiler_rt_sdk_fixture(
+        tmp_path, libc=static_archive_bytes(libc_module)
+    )
+    compiler_rt_provider = sdk_plan.path("compiler_rt")
+    libc_provider = sdk_plan.path("libc")
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
         del kwargs
@@ -6536,25 +6598,16 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     )
     monkeypatch.setattr(
         wasm_link_native_inputs.wasm_link_inputs,
-        "wasm_compiler_builtins_archive",
-        lambda: compiler_rt_provider,
+        "resolve_wasi_c_abi_plan",
+        lambda **_kwargs: sdk_plan,
         raising=True,
     )
 
     def provider_symbols(*, primitive_classes=None, **_kwargs):
-        symbols: set[str] = set()
-        if (
-            primitive_classes is None
-            or wasm_link_native_inputs.WASM_LIBC_LINK_IMPORT_CLASS in primitive_classes
-        ):
-            symbols.add("malloc")
-        if (
-            primitive_classes is None
-            or wasm_link_native_inputs.WASM_COMPILER_RT_LINK_IMPORT_CLASS
-            in primitive_classes
-        ):
-            symbols.add("__trunctfdf2")
-        return frozenset(symbols)
+        assert primitive_classes == frozenset(
+            {wasm_link_native_inputs.WASM_COMPILER_RT_LINK_IMPORT_CLASS}
+        )
+        return frozenset({"__trunctfdf2"})
 
     monkeypatch.setattr(
         wasm_link_native_inputs,
@@ -6571,7 +6624,9 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
         split_runtime=True,
         split_output_dir=split_dir,
         runtime_role="reloc",
-        native_link_requirements=_native_link_requirements(*(native_object,)),
+        native_link_requirements=_native_link_requirements(
+            native_object, libc_provider
+        ),
     )
 
     assert rc == 0
@@ -7578,6 +7633,7 @@ def test_split_app_finalization_routes_archive_runtime_imports() -> None:
     wasm_link_pipeline._normalize_split_app_runtime_imports(
         artifact,
         frozenset(),
+        frozenset({"__trunctfdf2"}),
     )
 
     assert _function_import_pairs(artifact.data) == [
@@ -9014,9 +9070,17 @@ def test_native_object_link_allowlist_includes_generated_external_imports(tmp_pa
         symbols = _parse_allowlist(composed)
         assert "fd_write" in symbols
         assert "__cpp_exception" in symbols
-        assert "malloc" in symbols
+        assert "malloc" not in symbols
         assert "__trunctfdf2" not in symbols
-        assert "__cpp_exception" not in _parse_allowlist(base)
+
+        with_provider = wasm_link_native_inputs._compose_wasm_ld_allowlist(
+            base_allowlist=base,
+            native_link_requirements=_native_link_requirements(native),
+            temp_dir=temp_dir,
+            provider_symbols=frozenset({"malloc"}),
+        )
+        assert _parse_allowlist(with_provider) == symbols | {"malloc"}
+        assert base.read_text(encoding="utf-8") == "fd_write\n"
 
 
 # --- Split-runtime CPython-ABI data-symbol aliasing ------------------------
@@ -10844,15 +10908,14 @@ def test_resolve_native_link_inputs_adds_compiler_rt_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     native = tmp_path / "native.molt.wasm"
-    provider = tmp_path / "rustlib" / "wasm32-wasip1" / "libcompiler_builtins-x.rlib"
+    sdk_plan = _compiler_rt_sdk_fixture(tmp_path)
+    provider = sdk_plan.path("compiler_rt")
     native.write_bytes(_build_env_function_import_module(["__trunctfdf2", "malloc"]))
-    provider.parent.mkdir(parents=True)
-    provider.write_bytes(_build_compiler_rt_provider_archive())
 
     monkeypatch.setattr(
         wasm_link_native_inputs.wasm_link_inputs,
-        "wasm_compiler_builtins_archive",
-        lambda: provider,
+        "resolve_wasi_c_abi_plan",
+        lambda **_kwargs: sdk_plan,
         raising=True,
     )
     monkeypatch.setattr(
@@ -10866,7 +10929,8 @@ def test_resolve_native_link_inputs_adds_compiler_rt_provider(
         _native_link_requirements(native),
         source_paths={native: native},
         facts_provider=_facts_provider,
-    )
+        capture_input=lambda item: item,
+    ).requirements
 
     assert tuple(Path(item.path) for item in requirements.inputs) == (native, provider)
     assert requirements.inputs[1].sha256 == source_extension_link_file(provider).sha256
@@ -10879,10 +10943,13 @@ def test_resolve_native_link_inputs_rejects_missing_compiler_rt_provider(
     native = tmp_path / "native.molt.wasm"
     native.write_bytes(_build_env_function_import_module(["__trunctfdf2"]))
 
+    def absent_sdk(**_kwargs):
+        raise ValueError("selected complete WASI SDK is unavailable")
+
     monkeypatch.setattr(
         wasm_link_native_inputs.wasm_link_inputs,
-        "wasm_compiler_builtins_archive",
-        lambda: None,
+        "resolve_wasi_c_abi_plan",
+        absent_sdk,
         raising=True,
     )
     monkeypatch.setattr(
@@ -10892,12 +10959,13 @@ def test_resolve_native_link_inputs_rejects_missing_compiler_rt_provider(
         raising=True,
     )
 
-    with pytest.raises(ValueError, match="wasm_compiler_rt_link_import"):
+    with pytest.raises(ValueError, match="selected complete WASI SDK is unavailable"):
         wasm_link_native_inputs._resolve_native_link_requirements(
             _native_link_requirements(native),
             source_paths={native: native},
             facts_provider=_facts_provider,
-        )
+            capture_input=lambda item: item,
+        ).requirements
 
 
 def test_wasm_archive_projection_preserves_duplicate_member_order_and_source_custody(
@@ -10937,6 +11005,58 @@ def test_wasm_archive_projection_preserves_duplicate_member_order_and_source_cus
     ] == [("same.o", second), ("same.o", first)]
 
 
+def test_lazy_archive_compiler_rt_candidates_retain_lazy_selected_sdk_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "lazy.a"
+    archive.write_bytes(
+        _build_wasm_archive(
+            ("dormant.o", _build_env_function_import_module(["__trunctfdf2"]))
+        )
+    )
+    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    sdk_plan = llvm_toolchain.wasi_c_abi_plan(installation)
+    provider = sdk_plan.path("compiler_rt")
+    provider.write_bytes(_build_compiler_rt_provider_archive())
+    (installation.prefix / ".molt-wasi-sdk.json").write_text(
+        render_wasi_sdk_install_receipt(
+            asdict(installation.asset), wasi_sdk_tree_identity(installation.sdk)
+        ),
+        encoding="utf-8",
+    )
+    for key in (
+        "WASI_SDK_PREFIX",
+        "MOLT_WASI_SYSROOT",
+        "WASI_SYSROOT",
+        "MOLT_WASI_C_ABI_PLAN",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("WASI_SDK_PATH", str(installation.sdk))
+    # Native symbol inspection is independent of installation and file custody.
+    # The actual selected-SDK readiness/plan readers remain in this operation.
+    monkeypatch.setattr(
+        wasm_link_native_inputs,
+        "wasm_external_link_provider_symbols",
+        lambda **_kwargs: frozenset({"__trunctfdf2"}),
+    )
+    original = _native_link_requirements(archive)
+    selected = wasm_link_native_inputs._resolve_native_link_requirements(
+        original,
+        source_paths={archive: archive},
+        facts_provider=_facts_provider,
+        capture_input=lambda item: item,
+    ).requirements
+    assert selected.inputs[0] == original.inputs[0]
+    assert tuple(Path(item.path) for item in selected.inputs) == (archive, provider)
+    assert (
+        selected.inputs[1].sha256 == hashlib.sha256(provider.read_bytes()).hexdigest()
+    )
+    assert all(
+        item.loading is SourceExtensionLinkLoadingPolicy.DEFAULT
+        for item in selected.inputs
+    )
+
+
 def test_lazy_archive_compiler_rt_candidates_do_not_require_an_unused_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -10946,24 +11066,30 @@ def test_lazy_archive_compiler_rt_candidates_do_not_require_an_unused_provider(
             ("dormant.o", _build_env_function_import_module(["__trunctfdf2"]))
         )
     )
-    monkeypatch.setattr(
-        wasm_link_native_inputs,
-        "_compiler_rt_link_imports",
-        lambda: frozenset({"__trunctfdf2"}),
-    )
+    # A residual in a dormant member defers acquisition; eager members require it.
     monkeypatch.setattr(
         wasm_link_native_inputs.wasm_link_inputs,
-        "wasm_compiler_builtins_archive",
-        lambda: None,
+        "resolve_wasi_sysroot",
+        lambda **_kwargs: None,
     )
-    requirements = _native_link_requirements(archive)
+
+    def unavailable_sdk(**_kwargs):
+        raise ValueError("selected complete WASI SDK is unavailable")
+
+    monkeypatch.setattr(
+        wasm_link_native_inputs.wasm_link_inputs,
+        "resolve_wasi_c_abi_plan",
+        unavailable_sdk,
+    )
+    original = _native_link_requirements(archive)
     assert (
         wasm_link_native_inputs._resolve_native_link_requirements(
-            requirements,
+            original,
             source_paths={archive: archive},
             facts_provider=_facts_provider,
-        )
-        == requirements
+            capture_input=lambda item: item,
+        ).requirements
+        == original
     )
     eager = SourceExtensionLinkRequirements(
         "wasm32-wasip1",
@@ -10973,23 +11099,55 @@ def test_lazy_archive_compiler_rt_candidates_do_not_require_an_unused_provider(
             ),
         ),
     )
-    with pytest.raises(ValueError, match="missing provider"):
+    with pytest.raises(ValueError, match="selected complete WASI SDK is unavailable"):
         wasm_link_native_inputs._resolve_native_link_requirements(
             eager,
             source_paths={archive: archive},
             facts_provider=_facts_provider,
+            capture_input=lambda item: item,
+        ).requirements
+
+
+def test_no_compiler_rt_candidates_never_selects_sdk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = tmp_path / "lazy-no-binary128.a"
+    archive.write_bytes(
+        _build_wasm_archive(
+            ("dormant.o", _build_env_function_import_module(["PyLong_FromLong"]))
         )
+    )
+    monkeypatch.setattr(
+        wasm_link_native_inputs.wasm_link_inputs,
+        "resolve_wasi_c_abi_plan",
+        lambda **_kwargs: pytest.fail("unused SDK selected"),
+    )
+    original = _native_link_requirements(archive)
+    assert (
+        wasm_link_native_inputs._resolve_native_link_requirements(
+            original,
+            source_paths={archive: archive},
+            facts_provider=_facts_provider,
+            capture_input=lambda item: item,
+        ).requirements
+        == original
+    )
 
 
 def test_lazy_archive_data_candidates_do_not_require_unused_runtime_addresses(
     tmp_path: Path,
 ) -> None:
     archive = tmp_path / "lazy-data.a"
-    archive.write_bytes(
-        _build_wasm_archive(
-            ("dormant.o", _build_undefined_data_symbol_object(["molt_PyLong_Type"]))
-        )
-    )
+    member_data = _build_undefined_data_symbol_object(["molt_PyLong_Type"])
+    archive.write_bytes(_build_wasm_archive(("dormant.o", member_data)))
+    member_scans = 0
+
+    def measured_facts(data):
+        nonlocal member_scans
+        if data == member_data:
+            member_scans += 1
+        return _facts_provider(data)
+
     runtime = tmp_path / "runtime.wasm"
     runtime.write_bytes(b"\0asm\x01\0\0\0")
     requirements = _native_link_requirements(archive)
@@ -11001,10 +11159,11 @@ def test_lazy_archive_data_candidates_do_not_require_unused_runtime_addresses(
                 deploy_runtime=runtime,
                 reloc_runtime=runtime,
                 temp_dir=temp_dir,
-                facts_provider=_facts_provider,
+                facts_provider=measured_facts,
             )
             is None
         )
+        assert member_scans == 1
         eager = SourceExtensionLinkRequirements(
             "wasm32-wasip1",
             (
@@ -11019,8 +11178,9 @@ def test_lazy_archive_data_candidates_do_not_require_unused_runtime_addresses(
                 deploy_runtime=runtime,
                 reloc_runtime=runtime,
                 temp_dir=temp_dir,
-                facts_provider=_facts_provider,
+                facts_provider=measured_facts,
             )
+        assert member_scans == 2
 
 
 def test_complete_generated_runtime_registry_is_validated_before_root_filtering() -> (
@@ -11148,3 +11308,187 @@ def test_scanner_expected_identity_is_checked_before_snapshot(tmp_path: Path) ->
             expected_sha256="0" * 64,
         )
     assert not scratch.exists()
+
+
+def test_locally_satisfied_native_imports_do_not_discover_sdk(tmp_path, monkeypatch):
+    imported = tmp_path / "import.o"
+    defined = tmp_path / "define.o"
+    imported.write_bytes(
+        _build_env_function_import_module(
+            ["ordinary_local_function", "PyLong_FromLong"]
+        )
+    )
+    defined.write_bytes(_build_exported_runtime_module("ordinary_local_function"))
+    monkeypatch.setattr(
+        wasm_link_native_inputs.wasm_link_inputs,
+        "resolve_wasi_c_abi_plan",
+        lambda **kwargs: pytest.fail("locally satisfied import selected SDK"),
+    )
+    monkeypatch.setattr(
+        wasm_link_native_inputs.wasm_link_inputs,
+        "resolve_wasi_sysroot",
+        lambda **kwargs: pytest.fail("locally satisfied import queried SDK"),
+    )
+    original = _native_link_requirements(imported, defined)
+    selected = wasm_link_native_inputs._resolve_native_link_requirements(
+        original,
+        source_paths={imported: imported, defined: defined},
+        facts_provider=_facts_provider,
+        capture_input=lambda item: item,
+    )
+    assert selected.requirements == original
+    assert not selected.provider_paths
+
+
+def test_native_provider_planning_scans_members_and_compiler_rt_once(
+    tmp_path, monkeypatch
+):
+    archive = tmp_path / "lazy.a"
+    archive.write_bytes(
+        _build_wasm_archive(
+            ("a.o", _build_env_function_import_module(["__trunctfdf2"])),
+            (
+                "b.o",
+                _build_env_function_import_module(["__trunctfdf2", "PyLong_FromLong"]),
+            ),
+        )
+    )
+    sdk = _compiler_rt_sdk_fixture(tmp_path)
+    monkeypatch.setattr(
+        wasm_link_native_inputs.wasm_link_inputs,
+        "resolve_wasi_sysroot",
+        lambda **kwargs: sdk.sysroot,
+    )
+    monkeypatch.setattr(
+        wasm_link_native_inputs.wasm_link_inputs,
+        "resolve_wasi_c_abi_plan",
+        lambda **kwargs: sdk,
+    )
+    queries = []
+
+    def provider(*, primitive_classes, plan, archive_paths):
+        assert archive_paths == {sdk.path("compiler_rt"): sdk.path("compiler_rt")}
+        queries.append(primitive_classes)
+        assert plan is sdk
+        return frozenset({"__trunctfdf2"})
+
+    monkeypatch.setattr(
+        wasm_link_native_inputs, "wasm_external_link_provider_symbols", provider
+    )
+    scanned = []
+
+    def facts(data):
+        scanned.append(data)
+        return _facts_provider(data)
+
+    selected = wasm_link_native_inputs._resolve_native_link_requirements(
+        _native_link_requirements(archive),
+        source_paths={archive: archive},
+        facts_provider=facts,
+        capture_input=lambda item: item,
+    )
+    assert len(scanned) == 2
+    assert queries == [
+        frozenset({wasm_link_native_inputs.WASM_COMPILER_RT_LINK_IMPORT_CLASS})
+    ]
+    assert selected.provider_paths["compiler_rt"] == sdk.path("compiler_rt")
+    assert all(
+        item.loading is SourceExtensionLinkLoadingPolicy.DEFAULT
+        for item in selected.requirements.inputs
+    )
+
+
+@pytest.mark.parametrize("tampered", (False, True))
+def test_admitted_sdk_provider_keeps_snapshot_generation(
+    tmp_path, monkeypatch, tampered
+):
+    plan = _compiler_rt_sdk_fixture(tmp_path)
+    original = plan.path("compiler_rt")
+    snapshot = tmp_path / "captured-provider.a"
+    snapshot.write_bytes(original.read_bytes())
+    if tampered:
+        snapshot.write_bytes(
+            _build_wasm_archive(
+                ("different.o", _build_exported_function_module("wrong"))
+            )
+        )
+    requirements = _native_link_requirements(snapshot)
+    # Admission already selected the original role and digest. Later live bytes
+    # cannot change either the symbol surface or final arguments of this link.
+    original.unlink()
+    monkeypatch.setattr(
+        wasm_link_native_inputs.wasm_link_inputs,
+        "admit_wasi_provider_inputs",
+        lambda paths: pytest.fail("captured provider was readmitted"),
+    )
+    monkeypatch.setattr(
+        wasm_link_native_inputs,
+        "wasm_external_link_provider_symbols",
+        lambda **kwargs: pytest.fail("captured member facts were rediscovered"),
+    )
+
+    def resolve():
+        return wasm_link_native_inputs._resolve_native_link_requirements(
+            requirements,
+            source_paths={snapshot: original},
+            wasi_plan=plan,
+            capture_input=lambda item: pytest.fail("existing capture repeated"),
+            facts_provider=_facts_provider,
+        )
+
+    if tampered:
+        with pytest.raises(ValueError, match="captured SDK provider differs"):
+            resolve()
+    else:
+        selected = resolve()
+        assert selected.requirements == requirements
+        assert selected.provider_paths == {"compiler_rt": snapshot}
+        assert selected.provider_symbols == frozenset({"__trunctfdf2"})
+
+
+def test_discovered_provider_is_captured_before_symbol_inspection(
+    tmp_path, monkeypatch
+):
+    plan = _compiler_rt_sdk_fixture(tmp_path)
+    original = plan.path("compiler_rt")
+    provider_bytes = original.read_bytes()
+    native = tmp_path / "native.o"
+    native.write_bytes(_build_env_function_import_module(["__trunctfdf2"]))
+    captured = tmp_path / "captured.a"
+    captures = []
+
+    def capture(item):
+        captures.append(item)
+        assert Path(item.path) == original
+        captured.write_bytes(provider_bytes)
+        original.write_bytes(b"live generation changed after capture")
+        return source_extension_link_file(captured)
+
+    def inspect(*, primitive_classes, plan, archive_paths):
+        assert primitive_classes == frozenset(
+            {wasm_link_native_inputs.WASM_COMPILER_RT_LINK_IMPORT_CLASS}
+        )
+        assert archive_paths == {original: captured}
+        return frozenset(
+            symbol
+            for member in wasm_archive.iter_wasm_object_members(archive_paths[original])
+            for symbol in _facts_provider(member.data).linking_symbols.defined_functions
+        )
+
+    monkeypatch.setattr(
+        wasm_link_native_inputs, "wasm_external_link_provider_symbols", inspect
+    )
+    selected = wasm_link_native_inputs._resolve_native_link_requirements(
+        _native_link_requirements(native),
+        source_paths={native: native},
+        wasi_plan=plan,
+        capture_input=capture,
+        facts_provider=_facts_provider,
+    )
+    assert len(captures) == 1
+    assert selected.provider_paths == {"compiler_rt": captured}
+    assert tuple(Path(item.path) for item in selected.requirements.inputs) == (
+        native,
+        captured,
+    )
+    assert selected.provider_symbols == frozenset({"__trunctfdf2"})

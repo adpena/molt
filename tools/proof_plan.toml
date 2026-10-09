@@ -174,6 +174,7 @@ authority_inputs = [
   "src/molt/file_locks.py",
   "src/molt/path_custody.py",
   "src/molt/toolchain_identity.py",
+  "src/molt/rust_toolchain.py",
   "src/molt/llvm_linker_roles.py",
   "src/molt/file_hashing.py",
   "src/molt/exact_json.py",
@@ -191,6 +192,7 @@ authority_inputs = [
   "src/molt/process_guard.py",
   "src/molt/llvm_toolchain.py",
   "src/molt/wasi_sdk_identity.py",
+  "src/molt/wasi_c_abi_protocol.txt",
   "tools/provision_wasi_sdk.py",
   "tools/nightly_prepare.py",
   "tools/nightly_profile_feedback.py",
@@ -417,7 +419,7 @@ setup_evidence = [".python-version::3.12.15", ".github/actions/setup-project/act
 [[toolchain_policy]]
 name = "source-extension"
 identity_provider = "source-extension"
-version_pattern = '^molt-source-extension-toolchain-v2$'
+version_pattern = '^molt-source-extension-toolchain-v4$'
 dependencies = ["git"]
 setup_evidence = [
   "src/molt/cli/source_extension_toolchain.py::_resolve_source_extension_toolchain",
@@ -516,6 +518,23 @@ version_args = ["--version"]
 version_pattern = 'clang version 22\.1\.8\b'
 setup_value = "22.1.8"
 setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1.8\""]
+
+[[toolchain_policy]]
+name = "ninja"
+executable = "ninja"
+version_args = ["--version"]
+version_pattern = '^1\.13\.0(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$'
+setup_value = "1.13.0"
+setup_evidence = ['pyproject.toml::"ninja==1.13.0"', 'uv.lock::version = "1.13.0"']
+
+[[toolchain_policy]]
+name = "wasi-clang"
+executable = "clang"
+wasi_sdk_tool = "clang"
+version_args = ["--version"]
+version_pattern = 'clang version 23\.1\.0\b'
+setup_value = "23.1.0"
+setup_evidence = ['config/llvm_toolchain_releases.toml::llvm_version = "23.1.0"']
 
 [[toolchain_policy]]
 name = "llvm-config"
@@ -1513,6 +1532,7 @@ toolchains = ["python", "uv"]
 
 [[command]]
 id = "portability.rust.macos.clippy-workspace"
+cargo_native_c_units = ["target"]
 family = "platform_portability"
 cell = "macos-arm64-py312-rust-native-dev"
 tiers = ["pr", "main"]
@@ -1530,6 +1550,7 @@ toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "portability.rust.linux-aarch64.clippy-workspace"
+cargo_native_c_units = ["target"]
 family = "platform_portability"
 cell = "linux-aarch64-py312-rust-native-dev"
 tiers = ["pr", "main"]
@@ -1852,6 +1873,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld"]
 
 [[command]]
 id = "wasm.build.host"
+cargo_native_c_units = ["target"]
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
@@ -1859,9 +1881,9 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.backend"]
+dependencies = []
 argv = ["cargo", "build", "--locked", "--profile", "dev-fast", "-p", "molt-wasm-host"]
-toolchains = ["rustc", "cargo", "ld.lld"]
+toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "wasm.build.shared-runtime"
@@ -1872,10 +1894,10 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.backend"]
+dependencies = []
 env = { RUSTC_WRAPPER = "" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-runtime-wasm-build", "--build-profile", "dev", "--kind", "shared", "--json"]
-toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
+toolchains = ["python", "uv", "rustc", "cargo", "wasm-ld", "wasm-tools", "wasi-clang"]
 
 [[command]]
 id = "wasm.build.split-runtime-release"
@@ -1886,9 +1908,9 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.backend"]
+dependencies = []
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-runtime-wasm-build", "--build-profile", "release", "--kind", "both", "--json"]
-toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
+toolchains = ["python", "uv", "rustc", "cargo", "wasm-ld", "wasm-tools", "wasi-clang"]
 
 [[command]]
 id = "wasm.compile.hello"
@@ -1899,7 +1921,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
+dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/hello.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/hello/hello.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
@@ -1927,7 +1949,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
+dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/comprehension_fail.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/comprehension/comprehension.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
@@ -1982,7 +2004,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
+dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/sieve_bench.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/sieve/sieve.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
@@ -2009,9 +2031,9 @@ resource_class = "compiler-build-resource"
 timeout_budget = "integration"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
-dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "tests/test_wasm_control_flow.py", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive", "-q"]
-toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-ar", "llvm-nm", "ld.lld", "wasm-ld", "wasm-tools"]
+dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "tests/test_wasm_control_flow.py", "tests/test_wasm_longdouble_printf_link.py", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive", "-q"]
+toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-ar", "llvm-nm", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "ninja"]
 
 [[command]]
 id = "wasm.integration.split-runtime"
@@ -2048,7 +2070,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "integration"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
-dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
+dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "pytest", "-q", "tests/test_wasm_freestanding.py::test_freestanding_produces_no_wasi_imports", "tests/test_wasm_freestanding.py::test_freestanding_binary_is_valid_wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
@@ -2061,7 +2083,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "integration"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
-dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
+dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "pytest", "-q", "tests/test_finally_pending_observer_parity.py::test_finally_pending_observer_native_wasm_parity"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-config", "ld.lld", "lld-link", "wasm-ld", "wasm-tools"]
 
@@ -2300,6 +2322,7 @@ toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "rust.test.default-truth"
+cargo_native_c_units = ["target"]
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
@@ -2372,6 +2395,7 @@ toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
 id = "rust.clippy.workspace-default"
+cargo_native_c_units = ["target"]
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]

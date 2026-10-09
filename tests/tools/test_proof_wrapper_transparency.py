@@ -126,7 +126,7 @@ def test_declared_python_cargo_driver_keeps_complete_output_policy(monkeypatch):
     monkeypatch.setattr(
         execution_environment,
         "_require_cargo_build_tool_environment_context",
-        lambda command, **kwargs: seen.append(command),
+        lambda admitted, **kwargs: seen.append(admitted),
     )
     monkeypatch.setattr(
         execution_environment.toolchain_capture,
@@ -136,7 +136,7 @@ def test_declared_python_cargo_driver_keeps_complete_output_policy(monkeypatch):
     selected, contract = execution_environment._bind_cargo_build_tool_environment(
         envelope, {}, {"override_names": []}, cwd=Path.cwd()
     )
-    assert seen == [["cargo"]]
+    assert seen == [envelope]
     assert selected["RUSTDOC"] == "bound-rustdoc"
     assert "RUSTDOC" in contract["passed_names"]
 

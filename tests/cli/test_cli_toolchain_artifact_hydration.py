@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_cargo_plan
 from typing import cast
@@ -449,11 +450,6 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         },
     )
     monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SUPPORT,
-        "_configure_wasm_toolchain_env",
-        lambda _env: None,
-    )
-    monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SUPPORT, "_build_slot", lambda: contextlib.nullcontext(None)
     )
     monkeypatch.setattr(
@@ -496,7 +492,7 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
 @pytest.mark.parametrize(
     "failure, expected_stage",
     [
-        ("no_sysroot", "effective-configuration"),
+        ("missing_sdk", "cargo-plan"),
         ("cargo_plan", "cargo-plan"),
         ("pre_identity", "pre-build-identity"),
         ("metadata_read", "metadata-admission"),
@@ -547,13 +543,12 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
         support, "_build_lock", lambda *_a, **_kw: contextlib.nullcontext()
     )
     monkeypatch.setattr(support, "_build_slot", lambda: contextlib.nullcontext())
-    monkeypatch.setattr(support, "_configure_wasm_toolchain_env", lambda _env: None)
     monkeypatch.setattr(
         support,
         "_cargo_build_env",
         lambda: (
             {}
-            if failure == "no_sysroot"
+            if failure == "missing_sdk"
             else {"MOLT_WASI_SYSROOT": str(tmp_path / "sysroot")}
         ),
     )
@@ -591,6 +586,24 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
     def reject(*_args, **_kwargs):
         raise OSError("injected filesystem rejection")
 
+    if failure == "missing_sdk":
+        from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
+
+        def missing_sdk_plan(root, *, env, **kwargs):
+            # Exercise the actual plan admission; no Cargo/rustc execution occurs.
+            return resolve_runtime_cargo_plan(
+                root,
+                env={
+                    **env,
+                    "RUSTC": sys.executable,
+                    "CARGO_HOME": str(tmp_path / "empty-cargo-home"),
+                    "WASI_SDK_PATH": str(tmp_path / "absent-sdk"),
+                },
+                host_target="x86_64-unknown-linux-gnu",
+                **kwargs,
+            )
+
+        monkeypatch.setattr(support, "resolve_runtime_cargo_plan", missing_sdk_plan)
     if failure == "cargo_plan":
         monkeypatch.setattr(support, "resolve_runtime_cargo_plan", reject)
     if failure == "metadata_read":
@@ -654,6 +667,8 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
         )
         is None
     )
+    if failure == "missing_sdk":
+        assert commands == [], "missing SDK admission must precede Cargo execution"
     paths = list((evidence_root / "build_failures").glob("runtime-wasm-*.json"))
     assert len(paths) == 1
     evidence = json.loads(paths[0].read_text(encoding="utf-8"))
@@ -873,7 +888,6 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
     from molt.cli.models import _RuntimeArtifactState
     from tests.runtime_build_identity_helper import (
         bind_runtime_wasm_specs,
-        runtime_wasm_link_inputs,
     )
 
     target = tmp_path / "target"
@@ -884,22 +898,10 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
         "_cargo_build_env",
         lambda: {"CARGO_TARGET_DIR": str(target)},
     )
-    for name in (
-        "_configure_wasm_toolchain_env",
-        "_configure_wasm_long_double_env",
-    ):
-        monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, name, lambda _env: None)
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SPEC,
         "resolve_runtime_cargo_plan",
         partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SPEC,
-        "resolve_runtime_wasm_link_inputs",
-        lambda **kwargs: runtime_wasm_link_inputs(
-            runtime_fixture_root, env=kwargs["env"]
-        ),
     )
     monkeypatch.setattr(RUNTIME_WASM_BUILD, "_build_state_root", lambda _root: state)
     monkeypatch.setattr(pair_build, "_build_state_root", lambda _root: state)

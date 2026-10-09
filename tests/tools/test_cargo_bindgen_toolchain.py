@@ -347,7 +347,7 @@ def test_config_owned_bindgen_driver_requires_actual_cargo_context(
     command = ["cargo", "--config", value if inline else str(config), "build"]
     with pytest.raises(ValueError, match=f"defines env.{key}") as raised:
         execution_environment._require_cargo_build_tool_environment_context(
-            command,
+            command_admission.envelope_for_command(command),
             outputs=_outputs(command),
             cwd=tmp_path,
             env={key: "existing-driver"},
@@ -367,14 +367,14 @@ def test_config_default_driver_is_not_silently_replaced(tmp_path, monkeypatch):
     )
     with pytest.raises(ValueError, match="defines env.CLANG_PATH"):
         execution_environment._require_cargo_build_tool_environment_context(
-            ["cargo", "build"],
+            command_admission.envelope_for_command(["cargo", "build"]),
             outputs=_outputs(["cargo", "build"]),
             cwd=tmp_path,
             env={},
         )
     # A non-forced default does not supersede an already explicit environment.
     execution_environment._require_cargo_build_tool_environment_context(
-        ["cargo", "build"],
+        command_admission.envelope_for_command(["cargo", "build"]),
         outputs=_outputs(["cargo", "build"]),
         cwd=tmp_path,
         env={"CLANG_PATH": "explicit-driver"},
@@ -398,12 +398,18 @@ def test_config_output_default_requires_known_effective_environment(
     env = {"CARGO_TARGET_DIR": str(tmp_path / "selected")} if inherited else {}
     if inherited:
         execution_environment._require_cargo_build_tool_environment_context(
-            command, outputs=_outputs(command), cwd=tmp_path, env=env
+            command_admission.envelope_for_command(command),
+            outputs=_outputs(command),
+            cwd=tmp_path,
+            env=env,
         )
     else:
         with pytest.raises(ValueError, match="defines env.CARGO_TARGET_DIR"):
             execution_environment._require_cargo_build_tool_environment_context(
-                command, outputs=_outputs(command), cwd=tmp_path, env=env
+                command_admission.envelope_for_command(command),
+                outputs=_outputs(command),
+                cwd=tmp_path,
+                env=env,
             )
 
 
@@ -418,7 +424,10 @@ def test_unrelated_cargo_environment_does_not_require_driver_context(
         lambda *_args, **_kwargs: [{"path": str(config)}],
     )
     execution_environment._require_cargo_build_tool_environment_context(
-        ["cargo", "build"], outputs=_outputs(["cargo", "build"]), cwd=tmp_path, env={}
+        command_admission.envelope_for_command(["cargo", "build"]),
+        outputs=_outputs(["cargo", "build"]),
+        cwd=tmp_path,
+        env={},
     )
 
 
@@ -432,14 +441,16 @@ def test_ignored_config_toml_is_not_mistaken_for_selected_cargo_context(
     ignored = home / "config.toml"
     ignored.write_text('env.CLANG_PATH = "ignored-driver"', encoding="utf-8")
     execution_environment._require_cargo_build_tool_environment_context(
-        ["cargo", "build"],
+        command_admission.envelope_for_command(["cargo", "build"]),
         outputs=_outputs(["cargo", "build"]),
         cwd=tmp_path,
         env={"CARGO_HOME": str(home)},
     )
     with pytest.raises(ValueError, match="defines env.CLANG_PATH"):
         execution_environment._require_cargo_build_tool_environment_context(
-            ["cargo", "--config", str(ignored), "build"],
+            command_admission.envelope_for_command(
+                ["cargo", "--config", str(ignored), "build"]
+            ),
             outputs=_outputs(["cargo", "--config", str(ignored), "build"]),
             cwd=tmp_path,
             env={"CARGO_HOME": str(home)},
@@ -513,7 +524,7 @@ def test_default_cargo_home_is_guarded(tmp_path):
     )
     with pytest.raises(ValueError, match="defines env.CLANG_PATH"):
         execution_environment._require_cargo_build_tool_environment_context(
-            ["cargo", "build"],
+            command_admission.envelope_for_command(["cargo", "build"]),
             outputs=_outputs(["cargo", "build"]),
             cwd=tmp_path,
             env={"USERPROFILE" if os.name == "nt" else "HOME": str(profile)},
@@ -837,10 +848,13 @@ def test_cargo_owned_compiler_config_requires_explicit_selection(
     for env in ({}, {f"CARGO_BUILD_{role.upper()}": "potentially-shadowed-tool"}):
         with pytest.raises(ValueError, match=f"defines build.{role}"):
             execution_environment._require_cargo_build_tool_environment_context(
-                command, outputs=_outputs(command), cwd=tmp_path, env=env
+                command_admission.envelope_for_command(command),
+                outputs=_outputs(command),
+                cwd=tmp_path,
+                env=env,
             )
     execution_environment._require_cargo_build_tool_environment_context(
-        command,
+        command_admission.envelope_for_command(command),
         outputs=_outputs(command),
         cwd=tmp_path,
         env={role.upper(): "explicit-tool"},
@@ -922,3 +936,281 @@ def test_unavailable_documenter_proxy_never_selects_an_alternate(
         )
         assert updates == {} and receipt["rustdoc_available"] is False
         assert receipt["probes"][0]["unit"] == "rustdoc"
+
+
+@pytest.mark.parametrize("unit", ["target", "host"])
+def test_native_c_selection_uses_exact_unit_precedence_without_probes(
+    tmp_path, monkeypatch, unit
+):
+    host, target = "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"
+    triple = target if unit == "target" else host
+    chosen = _tool(tmp_path / "selected", "cc")
+    archive = _tool(tmp_path / "independent", "ar")
+    other = _tool(tmp_path / "ambient", "cc")
+    _no_processes(monkeypatch)
+    env = {
+        "CC": str(other),
+        "TARGET_CC": str(other),
+        "HOST_CC": str(other),
+        "CC_" + triple: str(chosen),
+        "AR_" + triple: str(archive),
+        "CFLAGS": "-O1",
+        "CFLAGS_" + triple: "-O2",
+        "PATH": "",
+    }
+    rows = toolchain_capture.select_cargo_native_c_units(
+        required=[unit], target=target, host=host, cwd=tmp_path, env=env
+    )
+    assert rows == [
+        {
+            "units": [unit],
+            "target": triple,
+            "compiler": [str(chosen), "-O1", "-O2"],
+            "archiver": str(archive),
+            "resource_roots": [],
+        }
+    ]
+
+
+def test_native_c_selection_deduplicates_equal_target_host_and_skips_rust_only(
+    tmp_path, monkeypatch
+):
+    triple = "x86_64-unknown-linux-gnu"
+    cc, ar = _tool(tmp_path, "cc"), _tool(tmp_path, "ar")
+    _no_processes(monkeypatch)
+    rows = toolchain_capture.select_cargo_native_c_units(
+        required=["target", "host"],
+        target=triple,
+        host=triple,
+        cwd=tmp_path,
+        env={"CC": str(cc), "AR": str(ar)},
+    )
+    assert len(rows) == 1 and rows[0]["units"] == ["target", "host"]
+    assert (
+        toolchain_capture.select_cargo_native_c_units(
+            required=[], target="wasm32-wasip1", host=triple, cwd=tmp_path, env={}
+        )
+        == []
+    )
+    with pytest.raises(ValueError, match="not native C"):
+        toolchain_capture.select_cargo_native_c_units(
+            required=["target"],
+            target="wasm32-wasip1",
+            host=triple,
+            cwd=tmp_path,
+            env={},
+        )
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        '[env]\nHOST_CC={value="foreign",force=true}\n',
+        '[env]\nARFLAGS="--plugin=foreign"\n',
+        '[build]\ntarget="aarch64-unknown-linux-gnu"\n',
+    ],
+)
+def test_native_c_cargo_context_rejects_unresolved_selection_before_probe(
+    tmp_path, monkeypatch, entry
+):
+    config = tmp_path / "config.toml"
+    config.write_text(entry)
+    _no_processes(monkeypatch)
+    monkeypatch.setattr(
+        command_identity,
+        "_tool_configuration_identities",
+        lambda *args, **kwargs: [{"path": str(config)}],
+    )
+    with pytest.raises(ValueError, match="unsupported Cargo|explicit Cargo target"):
+        execution_environment._require_cargo_build_tool_environment_context(
+            command_admission.envelope_for_command(["cargo", "build"]),
+            outputs=_outputs(["cargo", "build"]),
+            cwd=tmp_path,
+            env={"HOST_CC": "selected"},
+            native_c_required=True,
+        )
+
+
+@pytest.mark.parametrize("kind", ["direct", "delegated", "python"])
+@pytest.mark.parametrize(
+    ("explicit", "inherited", "error"),
+    [
+        (None, None, "explicit Cargo target"),
+        ("aarch64-unknown-linux-gnu", None, None),
+        (None, "aarch64-unknown-linux-gnu", None),
+        ("aarch64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", None),
+        ("aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu", "ambiguous"),
+    ],
+)
+def test_native_c_context_uses_admitted_target_semantics(
+    tmp_path, monkeypatch, kind, explicit, inherited, error
+):
+    config = tmp_path / "config.toml"
+    config.write_text('[build]\ntarget="configured-unknown-target"\n')
+    _no_processes(monkeypatch)
+    if kind == "python":
+        # Real declared Cargo child: its --target wasm is a Molt alias.
+        command = [
+            "python3",
+            "tools/venv_exec.py",
+            "python3",
+            "-m",
+            "molt.cli",
+            "internal-backend-build",
+            "--target",
+            "wasm",
+            "--json",
+        ]
+        expected_error = "explicit Cargo target" if inherited is None else None
+    else:
+        command = ["cargo", "build"]
+        if explicit is not None:
+            command.extend(["--target", explicit])
+        if kind == "delegated":
+            command = [
+                "uv",
+                "run",
+                "--no-sync",
+                "python",
+                "tools/guarded_exec.py",
+                "--",
+                *command,
+            ]
+        expected_error = error
+    envelope = command_admission.envelope_for_command(command)
+    seen = []
+
+    def configurations(_name, *, cwd, env, command_argv):
+        seen.append(list(command_argv))
+        return [{"path": str(config)}]
+
+    monkeypatch.setattr(
+        command_identity, "_tool_configuration_identities", configurations
+    )
+    env = {} if inherited is None else {"CARGO_BUILD_TARGET": inherited}
+
+    def admit():
+        execution_environment._require_cargo_build_tool_environment_context(
+            envelope,
+            outputs=cargo_output_environment.CargoOutputEnvironment.for_envelope(
+                envelope
+            ),
+            cwd=tmp_path,
+            env=env,
+            native_c_required=True,
+        )
+
+    if expected_error is None:
+        admit()
+    else:
+        with pytest.raises(ValueError, match=expected_error):
+            admit()
+    expected_command = ["cargo", "build"]
+    if explicit is not None:
+        expected_command.extend(["--target", explicit])
+    assert seen == [["cargo"] if kind == "python" else expected_command]
+
+
+@pytest.mark.parametrize("delegated", [False, True])
+def test_cargo_context_keeps_admitted_inline_config_before_binding(
+    tmp_path, monkeypatch, delegated
+):
+    _no_processes(monkeypatch)
+    command = ["cargo", "--config", 'build.rustc="unresolved-compiler"', "build"]
+    if delegated:
+        command = [
+            "uv",
+            "run",
+            "--no-sync",
+            "python",
+            "tools/guarded_exec.py",
+            "--",
+            *command,
+        ]
+    envelope = command_admission.envelope_for_command(command)
+    # A selected physical tool may have any filename; it cannot replace the
+    # original admitted role/configuration coordinate.
+    cargo = _tool(tmp_path, "selected-compiler-driver")
+    with pytest.raises(ValueError, match="defines build.rustc"):
+        execution_environment._require_cargo_build_tool_environment_context(
+            envelope,
+            outputs=cargo_output_environment.CargoOutputEnvironment.for_envelope(
+                envelope
+            ),
+            cwd=tmp_path,
+            env={"CARGO": str(cargo)},
+            native_c_required=True,
+        )
+
+
+def test_cargo_and_native_c_environment_have_one_identity_authority():
+    env = {
+        "CARGO": "/selected/cargo",
+        "HOST_CC": "/selected/cc",
+        "TARGET_AR": "/selected/ar",
+        "HOST_CFLAGS": "-O2",
+        "ARFLAGS_aarch64_unknown_linux_gnu": "s",
+    }
+    assert execution_environment.environment_override_policy_error(env) is None
+    assert set(command_identity.compile_environment_selection(env)) == set(env)
+    assert (
+        execution_environment.environment_override_policy_error(
+            {"UNREGISTERED_TOOL": "x"}
+        )
+        is not None
+    )
+
+
+def test_locator_publishes_captured_physical_rust_and_native_c_selections(
+    tmp_path, monkeypatch
+):
+    import hashlib
+    import json
+    from tests.tools.test_toolchain_capture import _native_c_capture_fixture
+    from molt.exact_json import canonical_json_sha256
+    from tools.proof_queue_pkg import process_image_capture
+
+    identity, tools, env, command, _calls = _native_c_capture_fixture(
+        tmp_path, monkeypatch
+    )
+    observed = []
+
+    def capture(plan, name, _envelope, _exact, **kwargs):
+        observed.append((name, dict(kwargs["env"])))
+        policy = next(row for row in plan.toolchain_policies if row.name == name)
+        if name == "rustc":
+            result = dict(identity)
+        else:
+            image = process_image_capture.capture_image("cargo", tools["cargo"])
+            result = {
+                "path": str(tools["cargo"]),
+                "content_path": str(tools["cargo"]),
+                "launcher_sha256": image["sha256"],
+                "executable_sha256": image["sha256"],
+                "version": "cargo 1.99.0",
+                "probe_cwd": str(tmp_path),
+                "configuration_files": [],
+                "process_images": [image],
+            }
+        result["policy_sha256"] = hashlib.sha256(
+            json.dumps(policy.data, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        result.pop("identity_sha256", None)
+        result["identity_sha256"] = canonical_json_sha256(result)
+        return result
+
+    monkeypatch.setattr(command_identity, "_tool_identity", capture)
+    envelope = {
+        "argv": command,
+        "toolchains": ["cargo", "rustc"],
+        "cargo_native_c_units": ["target"],
+    }
+    _, _, _, updates = execution_environment._locate_toolchain_watch_roots(
+        envelope, command, cwd=tmp_path, env=env, supervisor_binary=tools["rustc"]
+    )
+    assert [name for name, _ in observed] == ["cargo", "rustc"]
+    assert observed[1][1]["CARGO"] == str(tools["cargo"])
+    assert updates["CC_x86_64_unknown_linux_gnu"] == str(tools["selected-gcc"])
+    assert updates["RUSTC"] == str(tools["rustc"])
+    assert updates["CARGO"] == str(tools["cargo"])
+    assert env.get("RUSTC") is None and env.get("CARGO") is None
