@@ -813,6 +813,9 @@ def audit_closed_domains(root: Path, manifest: Manifest, sa) -> list[Violation]:
         if not domains:
             return violations
 
+        # Test ownership projects every Rust file; fill the projection memo in
+        # parallel first, as the structural audit does.
+        sa._prewarm_rust_projections(root)
         # Single file-read pass: scan each .rs source file once for every domain whose
         # `Enum::` marker it contains (the Comprehensive Analysis Spine — one pass, not
         # one pass per domain).
