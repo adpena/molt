@@ -134,6 +134,61 @@ from molt.compiler_analysis.python_source_keys import (
     python_pattern_is_capture_only,
 )
 
+# Fixed identity masks as plain ints: hot paths test them per call, and
+# IntFlag arithmetic builds a pseudo-member on every composition.
+# Builtins that execute source code.
+_CODE_EXECUTION_CALL_IDENTITIES: Final = int(
+    PythonIdentity.BUILTIN_EVAL | PythonIdentity.BUILTIN_EXEC
+)
+# Callables that import a module named at run time.
+_DYNAMIC_IMPORT_CALL_IDENTITIES: Final = int(
+    PythonIdentity.BUILTINS_IMPORT | PythonIdentity.IMPORTLIB_IMPORT_MODULE
+)
+# Modules that own a dynamic import callable.
+_DYNAMIC_IMPORT_MODULE_IDENTITIES: Final = int(
+    PythonIdentity.BUILTINS_MODULE | PythonIdentity.IMPORTLIB_MODULE
+)
+# Values that read or expose a frame or module namespace.
+_FRAME_NAMESPACE_IDENTITIES: Final = int(
+    PythonIdentity.CURRENT_MODULE
+    | PythonIdentity.CURRENT_GLOBALS
+    | PythonIdentity.CURRENT_LOCALS
+    | PythonIdentity.CURRENT_FRAME
+    | PythonIdentity.BUILTIN_GLOBALS
+    | PythonIdentity.BUILTIN_LOCALS
+    | PythonIdentity.BUILTIN_VARS
+)
+# Callables that run the import machinery.
+_IMPORT_MACHINERY_CALL_IDENTITIES: Final = int(
+    PythonIdentity.BUILTINS_IMPORT
+    | PythonIdentity.IMPORTLIB_IMPORT_MODULE
+    | PythonIdentity.IMPORTLIB_FIND_SPEC
+)
+# Builtins that return the calling frame's locals.
+_LOCALS_READER_CALL_IDENTITIES: Final = int(
+    PythonIdentity.BUILTIN_LOCALS | PythonIdentity.BUILTIN_VARS
+)
+# The current module or an unknown value.
+_MODULE_OR_UNKNOWN_IDENTITIES: Final = int(
+    PythonIdentity.CURRENT_MODULE | PythonIdentity.OTHER
+)
+# Builtins that return a namespace mapping.
+_NAMESPACE_READER_CALL_IDENTITIES: Final = int(
+    PythonIdentity.BUILTIN_GLOBALS
+    | PythonIdentity.BUILTIN_LOCALS
+    | PythonIdentity.BUILTIN_VARS
+)
+# Facts whose release cannot run user code.
+_RELEASE_ROOTED_IDENTITIES: Final = int(
+    PythonIdentity.CURRENT_GLOBALS
+    | PythonIdentity.STATIC_FALSE
+    | PythonIdentity.UNBOUND
+)
+# Callables defined by user code.
+_USER_CALLABLE_IDENTITIES: Final = int(
+    PythonIdentity.USER_FUNCTION | PythonIdentity.USER_CLASS
+)
+
 
 _ANALYSIS_SCHEMA: Final = 54
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
@@ -260,12 +315,8 @@ def python_dynamic_import_facts_required(
     Default traversal includes the complete AST; a source dependency consumer
     may supply the canonical eager-region projection for module-only policy.
     """
-    call_identities = int(
-        PythonIdentity.BUILTINS_IMPORT | PythonIdentity.IMPORTLIB_IMPORT_MODULE
-    )
-    module_identities = int(
-        PythonIdentity.BUILTINS_MODULE | PythonIdentity.IMPORTLIB_MODULE
-    )
+    call_identities = _DYNAMIC_IMPORT_CALL_IDENTITIES
+    module_identities = _DYNAMIC_IMPORT_MODULE_IDENTITIES
     for node in ast.walk(tree) if nodes is None else nodes:
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             declaration = _BUILTIN_IDENTITIES.get(node.id)
@@ -1936,11 +1987,7 @@ def _identity_can_release(mask: IdentityMask) -> bool:
     # rooted by the executing function are intrinsically safe here. INERT_VALUE
     # is a value/truth class, not a retained-owner proof; result facts own its
     # release safety.
-    rooted = int(
-        PythonIdentity.CURRENT_GLOBALS
-        | PythonIdentity.STATIC_FALSE
-        | PythonIdentity.UNBOUND
-    )
+    rooted = _RELEASE_ROOTED_IDENTITIES
     return bool(mask & ~rooted)
 
 
@@ -3299,21 +3346,14 @@ class _Analyzer:
             # invalid arity still raises before publishing any result.
             effects |= ALLOCATES | RAISES
         elif (
-            callee
-            & int(
-                PythonIdentity.BUILTIN_GLOBALS
-                | PythonIdentity.BUILTIN_LOCALS
-                | PythonIdentity.BUILTIN_VARS
-            )
+            callee & _NAMESPACE_READER_CALL_IDENTITIES
             and not node.args
             and not node.keywords
         ):
             result = NO_IDENTITIES
             if callee & int(PythonIdentity.BUILTIN_GLOBALS) or scope.kind == "module":
                 result |= int(PythonIdentity.CURRENT_GLOBALS)
-            if scope.kind != "module" and callee & int(
-                PythonIdentity.BUILTIN_LOCALS | PythonIdentity.BUILTIN_VARS
-            ):
+            if scope.kind != "module" and callee & _LOCALS_READER_CALL_IDENTITIES:
                 result |= int(PythonIdentity.CURRENT_LOCALS)
             if not exact:
                 # Deferred/rebound activation lookup can still select the
@@ -3400,11 +3440,7 @@ class _Analyzer:
             ):
                 result |= OTHER_IDENTITY
             effects |= ALLOCATES | RAISES
-        elif callee & int(
-            PythonIdentity.IMPORTLIB_IMPORT_MODULE
-            | PythonIdentity.IMPORTLIB_FIND_SPEC
-            | PythonIdentity.BUILTINS_IMPORT
-        ):
+        elif callee & _IMPORT_MACHINERY_CALL_IDENTITIES:
             result = OTHER_IDENTITY
             effects |= (
                 EXECUTES_ARBITRARY_PYTHON | INVOKES_IMPORT_SYSTEM | ALLOCATES | RAISES
@@ -3422,13 +3458,13 @@ class _Analyzer:
                 member = _literal_string(node.args[1])
                 if member is not None:
                     state_id = self._invalidate_member_target(state_id, owner, member)
-                if owner & int(
-                    PythonIdentity.CURRENT_MODULE | PythonIdentity.OTHER
-                ) and (member is None or member in _METADATA_NAMES):
+                if owner & _MODULE_OR_UNKNOWN_IDENTITIES and (
+                    member is None or member in _METADATA_NAMES
+                ):
                     # A failed exact-owner proof cannot rule out sys.modules.get
                     # (or another lookup) returning this module.
                     effects |= WRITES_MODULE_METADATA | WRITES_GLOBAL_NAMESPACE
-        elif callee & int(PythonIdentity.BUILTIN_EVAL | PythonIdentity.BUILTIN_EXEC):
+        elif callee & _CODE_EXECUTION_CALL_IDENTITIES:
             effects |= UNKNOWN_EFFECTS
         else:
             effects |= UNKNOWN_EFFECTS
@@ -3714,12 +3750,7 @@ class _Analyzer:
             evaluation_effects |= argument_effects
             metadata_at_invocation = (
                 self._module_metadata_borrowing_snapshot(state_id, scope)
-                if callee_result.identities
-                & int(
-                    PythonIdentity.BUILTINS_IMPORT
-                    | PythonIdentity.IMPORTLIB_IMPORT_MODULE
-                    | PythonIdentity.IMPORTLIB_FIND_SPEC
-                )
+                if callee_result.identities & _IMPORT_MACHINERY_CALL_IDENTITIES
                 else NO_MODULE_METADATA_PROOF
             )
             receiver_result = (
@@ -3747,10 +3778,7 @@ class _Analyzer:
             )
             callee_fact = self.expressions.get(self._node_key(node.func))
             incomplete_module_callee = not callee_result.result.deferred_complete and (
-                bool(
-                    callee_result.identities
-                    & int(PythonIdentity.USER_FUNCTION | PythonIdentity.USER_CLASS)
-                )
+                bool(callee_result.identities & _USER_CALLABLE_IDENTITIES)
                 or bool(callee_result.result.deferred)
                 or callee_fact is not None
                 and callee_fact.binding_invalidated
@@ -3844,8 +3872,9 @@ class _Analyzer:
                     or bool(invocation_effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS)
                 )
             )
-            if namespace_escape or callee_result.identities & int(
-                PythonIdentity.BUILTIN_EXEC | PythonIdentity.BUILTIN_EVAL
+            if (
+                namespace_escape
+                or callee_result.identities & _CODE_EXECUTION_CALL_IDENTITIES
             ):
                 module_metadata_effects |= WRITES_MODULE_METADATA
             returned_deferred = frozenset(
@@ -4341,15 +4370,7 @@ class _Analyzer:
             )
             state_id = self._apply_effects(state_id, boundary)
             effects |= boundary
-        if identities & int(
-            PythonIdentity.CURRENT_MODULE
-            | PythonIdentity.CURRENT_GLOBALS
-            | PythonIdentity.CURRENT_LOCALS
-            | PythonIdentity.CURRENT_FRAME
-            | PythonIdentity.BUILTIN_GLOBALS
-            | PythonIdentity.BUILTIN_LOCALS
-            | PythonIdentity.BUILTIN_VARS
-        ):
+        if identities & _FRAME_NAMESPACE_IDENTITIES:
             self._namespace_observation_epoch += 1
         expression_result = self._record_expression(
             node,
