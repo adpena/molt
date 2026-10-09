@@ -261,6 +261,13 @@ guard limits must not inherit that state: it uses the shared
 `tests/conftest.py`. Hosted custody itself has its own cases in
 `tests/test_dx_run_context.py`.
 
+A host test that exercises Molt stdlib sources loads them by path, through
+`tests/stdlib_intrinsic_registry.py` or `tests/helpers/tinygrad_stdlib_loader.py`,
+or runs them in a child interpreter. It never puts `src/molt/stdlib` on the
+host `sys.path`: Molt's stdlib would then shadow CPython's (`asyncio`,
+`concurrent`, `datetime`) for every later test on the worker and every child it
+spawns. `tests/conftest.py` fails the module or test that leaves it there.
+
 ### Execution acceptance and deadline controls
 
 An execution with incomplete process custody or guard infrastructure failure
