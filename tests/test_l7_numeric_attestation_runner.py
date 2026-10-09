@@ -725,7 +725,10 @@ def test_aggregate_rejects_cached_integer_substitution_in_origin_case() -> None:
         "empty-cases",
     ],
 )
-def test_candidate_storage_capture_requires_actual_exact_completion(mutation):
+@pytest.mark.parametrize("payload_size", [0, 128_000])
+def test_candidate_storage_capture_requires_actual_exact_completion(
+    mutation, payload_size
+):
     from tools import run_candidate_runtime_costs as candidate
 
     name = "shared_hash_storage_performance_attestation"
@@ -736,7 +739,7 @@ def test_candidate_storage_capture_requires_actual_exact_completion(mutation):
         "profile": "release",
         "source": source,
         "affinity_mask": "0x1",
-        "cases": [{"name": "owned storage workload"}],
+        "cases": [{"name": "owned storage workload", "detail": "x" * payload_size}],
     }
     record = "SHARED_HASH_STORAGE_ATTESTATION=" + json.dumps(payload) + "\n"
     prefix = f"running 1 test\ntest {name} ... "

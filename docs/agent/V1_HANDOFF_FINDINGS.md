@@ -43,7 +43,42 @@ instances and missing qualification into the existing owning open requirement;
 retain the historical repair evidence without treating it as release acceptance.
 
 Current integration evidence (2026-10-09 UTC): draft PR119 is not merged into
-main. Published candidate `ce4426c3e` includes the portable custody, shared header
+main. Published candidate `05ecb011e` includes the consumer, startup and cost
+collection corrections below. CI `37898759470` passes Python static, Linux/macOS
+Python units, native integration, LLVM, Linux/macOS queue portability and formal
+checks. Windows reaches 772 passes, four failures and nine skips; the remaining
+failures are three resource-coordinate fixtures and compact-capture allocation.
+The local correction preserves SDK admission and the independent receiver,
+releases finished encoding buffers before verification, and avoids copying the
+owned decompression buffer. The owning suites pass 298 checks with 17 platform
+skips. A bounded macOS measurement reduces peak allocation from 39.55 MB to
+33.28 MB without a demonstrated timing change; actual Windows replay is required.
+Windows executes the real Cargo and positive Python-location controls before the
+combined 120-second envelope expires. Its cohort now budgets 180 seconds while
+retaining the Cargo test's own 120-second bound; other platforms retain their
+existing budgets. The owning plan and selection checks pass 331 tests with three
+skips. The stale generated proof-authority digest and sole unused numeric-fixture
+import are corrected locally; target recompilation remains required.
+
+The serial runtime cohort passes 776 tests with two ignored. The retained parallel
+release-output logs identify an obsolete sequence-export helper assertion and an
+async finalizer test that first returns an unexpected result, then leaves fixture
+state that causes another C callback to abort. The complete repair is in progress;
+these cells remain unqualified. WASM completes with a 1200.91-second host-export
+timeout and unresolved Cargo quarantine that stops the two remaining commands;
+the completed build and hello/comprehension/sieve cells do not qualify that family.
+Candidate-cost run `37898857945` reaches all three operation owners: L7 rejects timing, list refuses
+a non-quiescent host before measurement, and storage completes its native test but
+its receipt rejects the 122378-character attestation line. The shared bounded
+libtest reader now drains payloads while preserving the complete test prefix;
+truncated statuses, banners, summaries and delimiters cannot fabricate completion.
+Independent review exposed the boundary cases, and 359 owning checks pass with one
+skip after their correction. The old failed receipts remain failed; actual new
+collection is required. None of these tooling changes adds work to emitted Molt
+programs. Independently reviewed numeric byte projection and Context ownership,
+and the GPU dispatch migration, remain private and unqualified.
+
+Preceding candidate `ce4426c3e` includes the portable custody, shared header
 data, numeric declaring-type and fixture lifetime corrections below. CI run
 `37893822034` passes Python static, Linux/macOS Python units, native integration,
 LLVM, Linux/macOS queue portability and formal checks. Windows reaches 723 passes,

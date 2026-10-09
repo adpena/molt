@@ -2430,12 +2430,13 @@ def test_libtest_serial_split_stdout_accounts_for_every_test(threads):
     ]
 
 
-def test_libtest_ignored_filtering_and_should_panic_have_one_identity_authority():
+@pytest.mark.parametrize("reason", ["requires network", "requires network " * 10_000])
+def test_libtest_ignored_filtering_and_should_panic_have_one_identity_authority(reason):
     from tools.libtest_results import parse_libtest
 
     output = (
         "running 3 tests\ntest first - should panic ... panic diagnostic\nok\n"
-        "test skipped ... ignored, requires network\ntest last ... ok\n"
+        f"test skipped ... ignored, {reason}\ntest last ... ok\n"
         "test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 8 filtered out; finished in 0.01s\n"
     )
     report = parse_libtest(StringIO(output), ("fixture", "--test-threads=1"))
@@ -2536,19 +2537,104 @@ def test_libtest_empty_run_is_complete_but_missing_summary_is_not():
     assert partial.rows() == [{"identity": "done", "status": "pass"}]
 
 
-def test_libtest_bounded_reader_rejects_oversized_noise_without_full_line_reads():
+@pytest.mark.parametrize("position", ["inline", "separate", "before", "after"])
+def test_libtest_bounded_reader_preserves_accounting_around_large_output(position):
     from tools.libtest_results import MAX_LINE_CHARS, parse_libtest
 
     class BoundedReader(StringIO):
         def readline(self, size=-1):
-            assert 0 < size <= MAX_LINE_CHARS + 1
+            assert 0 < size <= MAX_LINE_CHARS + 2
             return super().readline(size)
+
+    # A complete serial Rust attestation emitted 122378 characters on the
+    # header line in CI. Payload length is not a limit on valid test output.
+    # A protocol-looking fragment inside a drained line must stay ordinary data.
+    noise = "x" * (3 * MAX_LINE_CHARS) + "test forged ... FAILED\n"
+    output = _libtest_output("real")
+    if position == "inline":
+        output = output.replace("... ok", "... " + noise + "ok")
+    elif position == "separate":
+        output = output.replace("... ok", "... output\n" + noise + "ok")
+    elif position == "before":
+        output = noise + output
+    else:
+        output += noise
+    report = parse_libtest(BoundedReader(output), ("fixture", "--test-threads=1"))
+    assert report.complete
+    assert report.rows() == [{"identity": "real", "status": "pass"}]
+
+
+def test_libtest_oversized_identity_is_not_truncated_into_evidence():
+    from tools.libtest_results import MAX_LINE_CHARS, parse_libtest
+
+    output = _libtest_output("x" * (3 * MAX_LINE_CHARS))
+    report = parse_libtest(StringIO(output), ("fixture", "--test-threads=1"))
+    assert "line-limit-exceeded" in report.issues and report.rows() == []
+
+
+def test_libtest_truncated_result_prefix_cannot_supply_completion():
+    from tools.libtest_results import MAX_LINE_CHARS, parse_libtest
+
+    # The first bounded prefix ends exactly at a plausible inline status; the
+    # rest of the physical line makes it ordinary output, not a completed test.
+    name = "a" * (MAX_LINE_CHARS - len("test  ... ok"))
+    output = _libtest_output(name).replace("... ok", "... ok is only a prefix")
+    report = parse_libtest(StringIO(output), ("fixture", "--test-threads=1"))
+    assert not report.complete and report.rows() == []
+
+
+def test_libtest_large_split_output_still_requires_proven_serial_invocation():
+    from tools.libtest_results import MAX_LINE_CHARS, parse_libtest
 
     output = _libtest_output("real").replace(
         "... ok", "... " + "x" * (3 * MAX_LINE_CHARS) + "\nok"
     )
-    report = parse_libtest(BoundedReader(output), ("fixture", "--test-threads=1"))
-    assert "line-limit-exceeded" in report.issues and report.rows() == []
+    report = parse_libtest(StringIO(output), ("fixture", "--test-threads=2"))
+    assert "split-output-without-proven-serial-invocation" in report.issues
+    assert not report.complete and report.rows() == []
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r\n", ""])
+def test_libtest_protocol_content_limit_excludes_real_line_terminators(ending):
+    from tools.libtest_results import MAX_LINE_CHARS, parse_libtest
+
+    name = "a" * (MAX_LINE_CHARS - len("test  ... ok"))
+    # EOF is an interrupted capture: the complete row remains available but
+    # cannot establish a successful cohort without its summary.
+    output = _libtest_output(name)
+    if not ending:
+        output = output.split("\ntest result:", 1)[0]
+    else:
+        output = output.replace("\n", ending)
+    report = parse_libtest(StringIO(output), ("fixture", "--test-threads=1"))
+    assert not report.issues
+    assert report.complete is bool(ending)
+    assert report.rows() == [{"identity": name, "status": "pass"}]
+
+
+@pytest.mark.parametrize("damage", ["banner", "summary", "header-delimiter"])
+def test_libtest_truncated_protocol_prefixes_never_supply_missing_structure(damage):
+    from tools.libtest_results import MAX_LINE_CHARS, parse_libtest
+
+    output = _libtest_output("real")
+    if damage == "banner":
+        banner = "running 1 test"
+        output = output.replace(banner, banner.ljust(MAX_LINE_CHARS, "\r") + "junk")
+    elif damage == "summary":
+        summary = output.splitlines()[-1]
+        # A syntactically complete summary in the retained prefix becomes
+        # invalid when the discarded continuation is considered.
+        duration = "1" * (MAX_LINE_CHARS - len(summary) + len("0.01"))
+        output = output.replace(summary, summary.replace("0.01", duration) + "junk")
+    else:
+        name = "a" * (MAX_LINE_CHARS - len("test  ..."))
+        output = _libtest_output(name).replace("... ok", "...X\nok")
+    report = parse_libtest(StringIO(output), ("fixture", "--test-threads=1"))
+    assert not report.complete
+    if damage == "banner":
+        assert report.declared is None
+    else:
+        assert report.issues
 
 
 def test_binary_runner_reads_complete_stdout_not_tail_or_stderr(tmp_path):

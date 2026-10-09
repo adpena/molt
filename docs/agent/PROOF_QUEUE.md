@@ -632,7 +632,10 @@ Success requires complete, consistent accounting as well as a successful guarded
 process. Split `--nocapture` results may be associated only when the invocation
 explicitly selects one test thread; ambiguous parallel output fails closed.
 Only stdout participates in parsing; separately captured stderr has no shared
-ordering. Raw streams remain available for diagnosis. Text accounting does not
+ordering. Bounded line prefixes retain test identities while the reader drains
+large payloads without storing them. A truncated success prefix cannot complete
+a test, and oversized identities remain an accounting error. Raw streams remain
+available for diagnosis. Text accounting does not
 authenticate test output against a test that deliberately impersonates libtest.
 Ignored tests are recorded but never count as execution coverage. Historical v1
 receipts remain immutable and require replay, not an acceptance fallback.

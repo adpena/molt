@@ -30,6 +30,17 @@ _SUMMARY = re.compile(
 _STATUS = {"ok": "pass", "FAILED": "fail", "ignored": "ignored"}
 
 
+def _result_status(text: str, *, truncated: bool) -> str | None:
+    if truncated:
+        # An ignored reason is arbitrary text. All other statuses must occupy
+        # the complete suffix; a bounded prefix ending in "ok" proves nothing.
+        return "ignored" if text.startswith("ignored, ") else None
+    result = _RESULT.fullmatch(text)
+    if result and (result[2] is None or result[1] == "ignored"):
+        return _STATUS[result[1]]
+    return None
+
+
 def serial_invocation(argv: tuple[str, ...]) -> bool:
     values: list[str] = []
     index = 1
@@ -96,7 +107,7 @@ class LibtestReport:
 
 
 def parse_libtest(stream: TextIO, argv: tuple[str, ...]) -> LibtestReport:
-    """Consume bounded lines; retain only bounded identities and diagnostics."""
+    """Consume bounded prefixes; drain arbitrary output without retaining it."""
     serial = serial_invocation(argv)
     declared: int | None = None
     summary: dict[str, object] | None = None
@@ -117,19 +128,27 @@ def parse_libtest(stream: TextIO, argv: tuple[str, ...]) -> LibtestReport:
             rows.append((pending, candidate))
             pending = candidate = None
 
-    while raw := stream.readline(MAX_LINE_CHARS + 1):
-        if len(raw) > MAX_LINE_CHARS:
-            issue("line-limit-exceeded")
+    while raw := stream.readline(MAX_LINE_CHARS + 2):
+        # Admit exactly MAX content characters with LF, CRLF, or EOF. Strip
+        # only an actual terminator, never CR bytes at a truncated boundary.
+        line = raw.removesuffix("\n")
+        if raw.endswith("\n"):
+            line = line.removesuffix("\r")
+        truncated = len(line) > MAX_LINE_CHARS
+        if truncated:
+            line = line[:MAX_LINE_CHARS]
             while not raw.endswith("\n"):
-                raw = stream.readline(MAX_LINE_CHARS + 1)
+                raw = stream.readline(MAX_LINE_CHARS + 2)
                 if not raw:
                     break
-            continue
-        line = raw.rstrip("\r\n")
-        start = _START.fullmatch(line)
-        terminal = _SUMMARY.fullmatch(line)
+        start = None if truncated else _START.fullmatch(line)
+        terminal = None if truncated else _SUMMARY.fullmatch(line)
         header = _HEADER.fullmatch(line)
-        result = _RESULT.fullmatch(line)
+        if truncated and header and header[2] is None:
+            # A delimiter at the read boundary needs its space witnessed;
+            # drained text could otherwise turn " ..." into " ...X".
+            header = None
+        result = _result_status(line, truncated=truncated)
         if start:
             if declared is not None or summary is not None:
                 issue("multiple-run-banners")
@@ -142,7 +161,7 @@ def parse_libtest(stream: TextIO, argv: tuple[str, ...]) -> LibtestReport:
             # Pre-run test-like output is not libtest evidence.
             continue
         if summary is not None:
-            if terminal or header or result:
+            if terminal or header or result or (truncated and line.startswith("test ")):
                 issue("protocol-output-after-summary")
             continue
         if terminal:
@@ -178,17 +197,22 @@ def parse_libtest(stream: TextIO, argv: tuple[str, ...]) -> LibtestReport:
             seen.add(identity)
             pending = identity
             suffix = header[2] or ""
-            inline = _RESULT.fullmatch(suffix)
-            if inline and (inline[2] is None or inline[1] == "ignored"):
-                candidate = _STATUS[inline[1]]
+            inline = _result_status(suffix, truncated=truncated)
+            if inline is not None:
+                candidate = inline
             elif not serial:
                 issue("split-output-without-proven-serial-invocation")
             continue
-        if result and (result[2] is None or result[1] == "ignored"):
+        if truncated and line.startswith("test "):
+            # A test header whose delimiter cannot fit in the bounded prefix
+            # cannot supply an identity. Ordinary large payloads are not names.
+            issue("line-limit-exceeded")
+            continue
+        if result is not None:
             if not serial or pending is None or candidate is not None:
                 issue("ambiguous-standalone-result")
             else:
-                candidate = _STATUS[result[1]]
+                candidate = result
         # All other stdout remains raw evidence, not parser state.
     finish_pending()
     if summary is not None:

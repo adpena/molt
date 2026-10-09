@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 from types import SimpleNamespace
 
@@ -227,11 +228,8 @@ def test_capture_records_family_and_frozen_inputs(tmp_path, monkeypatch, target)
         header = resolved.wasi_sysroot / "include" / "wasm32-wasip1" / "errno.h"
         assert process_image_capture._image_path_key(header) not in files
         full = toolchain_capture.capture_wasi_sdk_resources(identity["wasi_sdk"])
-        captured = {row.path: row for row in toolchain_capture.frozen_files(full)}
-        assert (
-            captured[process_image_capture._image_path_key(header)].size
-            == header.stat().st_size
-        )
+        captured = {Path(row.path): row for row in toolchain_capture.frozen_files(full)}
+        assert captured[header].size == header.stat().st_size
         archive = resolved.link_inputs.compiler_rt
         assert (
             files[process_image_capture._image_path_key(archive)].sha256
@@ -1126,8 +1124,8 @@ def test_shared_sdk_armed_capture_and_cas_preserve_exact_family(tmp_path, monkey
     (abi.include / "errno.h").write_bytes(b"changed under proof custody")
     checked = toolchain_capture.verify_capture(reference, workers=1, cas_root=cas)
     assert not checked["stable"]
-    assert process_image_capture._image_path_key(abi.include / "errno.h") in {
-        row["path"] for row in checked["mismatches"]
+    assert abi.include / "errno.h" in {
+        Path(row["path"]) for row in checked["mismatches"]
     }
 
 
@@ -1174,7 +1172,12 @@ def test_sdk_full_capture_receiver_rejects_resealed_omissions(
     elif mutation == "missing-resource":
         changed["wasi_sdk"]["resources"].pop()
     elif mutation == "foreign-root":
-        changed["wasi_sdk"]["resources"][0]["root"] = str(tmp_path)
+        # Keep every byte real so the independently resealed receiver reaches
+        # SDK ownership validation, including Windows image-coordinate lookup.
+        resource = changed["wasi_sdk"]["resources"][0]
+        foreign = tmp_path / "foreign-sdk-resource"
+        shutil.copytree(Path(resource["root"]), foreign)
+        resource["root"] = str(foreign)
     else:
         changed["process_images"].pop()
     _rehash(changed)
