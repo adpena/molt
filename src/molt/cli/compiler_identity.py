@@ -259,6 +259,7 @@ def backend_build_admission(
             }
         )
         result = BackendBuildAdmission(plan, resources, fingerprint)
+        result.verify()
         if transaction is not None:
             transaction.compiler_plans[key] = result
         return result

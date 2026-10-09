@@ -165,6 +165,7 @@
     "src/molt/file_locks.py",
     "src/molt/path_custody.py",
     "src/molt/toolchain_identity.py",
+    "src/molt/rust_toolchain.py",
     "src/molt/llvm_linker_roles.py",
     "src/molt/file_hashing.py",
     "src/molt/exact_json.py",
@@ -182,6 +183,7 @@
     "src/molt/process_guard.py",
     "src/molt/llvm_toolchain.py",
     "src/molt/wasi_sdk_identity.py",
+    "src/molt/wasi_c_abi_protocol.txt",
     "tools/provision_wasi_sdk.py",
     "tools/nightly_prepare.py",
     "tools/nightly_profile_feedback.py",
@@ -336,7 +338,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "68ac82296075d3a0b35c5158024c929176f06dbeb55f8692a92d4171e9087abc",
+  "authority_sha256": "b4fbf40aabd9830b7493fb9a243df501d4b9790177ffd4a07e1761fe0d1c8b76",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1674,6 +1676,9 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_c_units": [
+        "target"
+      ],
       "cell": "macos-arm64-py312-rust-native-dev",
       "dependencies": [],
       "family": "platform_portability",
@@ -1702,6 +1707,9 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_c_units": [
+        "target"
+      ],
       "cell": "linux-aarch64-py312-rust-native-dev",
       "dependencies": [],
       "family": "platform_portability",
@@ -2415,10 +2423,11 @@
         "molt-wasm-host"
       ],
       "cache_domain": "cargo-workspace",
-      "cell": "linux-x86_64-py312-wasm-dev",
-      "dependencies": [
-        "wasm.build.backend"
+      "cargo_native_c_units": [
+        "target"
       ],
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [],
       "family": "wasm",
       "id": "wasm.build.host",
       "resource_class": "compiler-build-resource",
@@ -2434,8 +2443,7 @@
       "timeout_seconds": 1200,
       "toolchains": [
         "rustc",
-        "cargo",
-        "ld.lld"
+        "cargo"
       ]
     },
     {
@@ -2454,9 +2462,7 @@
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
-      "dependencies": [
-        "wasm.build.backend"
-      ],
+      "dependencies": [],
       "env": {
         "RUSTC_WRAPPER": ""
       },
@@ -2478,9 +2484,9 @@
         "uv",
         "rustc",
         "cargo",
-        "ld.lld",
         "wasm-ld",
-        "wasm-tools"
+        "wasm-tools",
+        "wasi-clang"
       ]
     },
     {
@@ -2499,9 +2505,7 @@
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
-      "dependencies": [
-        "wasm.build.backend"
-      ],
+      "dependencies": [],
       "family": "wasm",
       "id": "wasm.build.split-runtime-release",
       "resource_class": "compiler-build-resource",
@@ -2520,9 +2524,9 @@
         "uv",
         "rustc",
         "cargo",
-        "ld.lld",
         "wasm-ld",
-        "wasm-tools"
+        "wasm-tools",
+        "wasi-clang"
       ]
     },
     {
@@ -2544,6 +2548,7 @@
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
+        "wasm.build.backend",
         "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
@@ -2623,6 +2628,7 @@
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
+        "wasm.build.backend",
         "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
@@ -2789,6 +2795,7 @@
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
+        "wasm.build.backend",
         "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
@@ -2854,12 +2861,14 @@
         "-m",
         "pytest",
         "tests/test_wasm_control_flow.py",
+        "tests/test_wasm_longdouble_printf_link.py",
         "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive",
         "-q"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
+        "wasm.build.backend",
         "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
@@ -2885,7 +2894,9 @@
         "llvm-nm",
         "ld.lld",
         "wasm-ld",
-        "wasm-tools"
+        "wasm-tools",
+        "wasi-clang",
+        "ninja"
       ]
     },
     {
@@ -2994,6 +3005,7 @@
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
+        "wasm.build.backend",
         "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
@@ -3038,6 +3050,7 @@
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
+        "wasm.build.backend",
         "wasm.build.host",
         "wasm.build.shared-runtime"
       ],
@@ -3840,6 +3853,9 @@
         "tools/run_cargo_test_truth.py"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_c_units": [
+        "target"
+      ],
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -4034,6 +4050,9 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_c_units": [
+        "target"
+      ],
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -4722,7 +4741,7 @@
       },
       "wasm": {
         "budget_seconds": 9600,
-        "critical_path_seconds": 3600,
+        "critical_path_seconds": 2400,
         "headroom_seconds": 0,
         "projected_makespan_seconds": 9600,
         "resource_capacity_floor_seconds": {
@@ -6391,7 +6410,7 @@
       "setup_evidence": [
         "src/molt/cli/source_extension_toolchain.py::_resolve_source_extension_toolchain"
       ],
-      "version_pattern": "^molt-source-extension-toolchain-v2$"
+      "version_pattern": "^molt-source-extension-toolchain-v4$"
     },
     {
       "executable": "uv",
@@ -6536,6 +6555,32 @@
         "--version"
       ],
       "version_pattern": "clang version 22\\.1\\.8\\b"
+    },
+    {
+      "executable": "ninja",
+      "name": "ninja",
+      "setup_evidence": [
+        "pyproject.toml::\"ninja==1.13.0\"",
+        "uv.lock::version = \"1.13.0\""
+      ],
+      "setup_value": "1.13.0",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "^1\\.13\\.0(?:\\.git(?:\\.kitware\\.jobserver-pipe-1)?)?$"
+    },
+    {
+      "executable": "clang",
+      "name": "wasi-clang",
+      "setup_evidence": [
+        "config/llvm_toolchain_releases.toml::llvm_version = \"23.1.0\""
+      ],
+      "setup_value": "23.1.0",
+      "version_args": [
+        "--version"
+      ],
+      "version_pattern": "clang version 23\\.1\\.0\\b",
+      "wasi_sdk_tool": "clang"
     },
     {
       "executable": "llvm-config",

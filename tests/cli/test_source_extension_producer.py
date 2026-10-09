@@ -8,7 +8,7 @@ import subprocess
 import sys
 import threading
 import zipfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -369,7 +369,7 @@ def _write_target_metadata(root: Path) -> dict[str, object]:
     }
     build_commands = {role: argv for role, argv in commands.items() if role != "ld"}
     target_plan = resolve_source_extension_target_plan("wasm")
-    compiler_builtins = "@toolchain/compiler-builtins.a"
+    compiler_rt = "@toolchain/compiler-rt.a"
     pkg_config_dir = "@target/pkgconfig"
     include_dirs = ["@molt/include"]
     meson_cross.write_bytes(
@@ -377,7 +377,7 @@ def _write_target_metadata(root: Path) -> dict[str, object]:
             target_plan=target_plan,
             pkg_config_dir=pkg_config_dir,
             commands={role: tuple(argv) for role, argv in commands.items()},
-            compiler_builtins=compiler_builtins,
+            compiler_rt=compiler_rt,
             include_dirs=tuple(include_dirs),
         ).encode("utf-8"),
     )
@@ -407,7 +407,7 @@ def _write_target_metadata(root: Path) -> dict[str, object]:
             "tools": tools,
             "commands": commands,
             "link_probe_archives": {
-                "compiler_builtins": {"path": compiler_builtins, "sha256": "d" * 64}
+                "compiler_rt": {"path": compiler_rt, "sha256": "d" * 64}
             },
         },
         "build_toolchain": {
@@ -2465,10 +2465,17 @@ def test_shared_preparation_rejects_changed_environment_address(
         )
 
 
+@pytest.mark.parametrize("returncode", (0, 1))
 def test_meson_setup_uses_typed_driver(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int
 ) -> None:
     calls: list[tuple[str, ...]] = []
+    source = tmp_path / "source"
+    build = tmp_path / "build"
+    source.mkdir()
+    build.mkdir()
+    authored_output = source / "a.out"
+    authored_output.write_bytes(b"authored source content")
 
     backend = producer._SourceNinjaDriver(
         image=_tool_image(tmp_path / "embedded tools" / "ninja"),
@@ -2477,30 +2484,45 @@ def test_meson_setup_uses_typed_driver(
     monkeypatch.setenv("NINJA", "unattested-ambient-ninja")
 
     def run_process(argv, *, cwd, env):
-        assert cwd == tmp_path / "source"
         assert env["NINJA"] == str(backend.image.path)
         calls.append(tuple(argv))
+        # Reproduce linker detection's transient output, including clobbering
+        # an existing a.out. A post-run existence check alone would miss this.
+        temporary = cwd / "a.out.tmp"
+        temporary.write_bytes(b"linker detection output")
+        temporary.replace(cwd / "a.out")
+        (cwd / "a.out").unlink()
+        (cwd / "setup-probe.log").write_bytes(b"retained setup diagnostics")
         return subprocess.CompletedProcess(
-            args=list(argv), returncode=0, stdout="", stderr=""
+            args=list(argv), returncode=returncode, stdout="", stderr="setup failed"
         )
 
     monkeypatch.setattr(producer, "_run_process", run_process)
 
-    producer._run_meson_setup(
-        source_root=tmp_path / "source",
-        build_root=tmp_path / "build",
-        meson_cross_files=(
-            tmp_path / "metadata/meson.cross",
-            tmp_path / "metadata/build-tools.cross",
-        ),
-        meson_native=tmp_path / "metadata/meson.native",
-        setup_args=("-Dblas=none",),
-        backend=backend,
-        driver=producer._SourceMesonDriver(
-            command=(sys.executable, "-m", "mesonbuild.mesonmain"),
-            manifest={"kind": "build-environment"},
-        ),
-    )
+    with (
+        pytest.raises(producer.SourceExtensionProducerError, match="setup failed")
+        if returncode
+        else nullcontext()
+    ):
+        producer._run_meson_setup(
+            source_root=source,
+            build_root=build,
+            meson_cross_files=(
+                tmp_path / "metadata/meson.cross",
+                tmp_path / "metadata/build-tools.cross",
+            ),
+            meson_native=tmp_path / "metadata/meson.native",
+            setup_args=("-Dblas=none",),
+            backend=backend,
+            driver=producer._SourceMesonDriver(
+                command=(sys.executable, "-m", "mesonbuild.mesonmain"),
+                manifest={"kind": "build-environment"},
+            ),
+        )
+
+    assert authored_output.read_bytes() == b"authored source content"
+    assert tuple(source.iterdir()) == (authored_output,)
+    assert (build / "setup-probe.log").read_bytes() == b"retained setup diagnostics"
 
     assert calls == [
         (
@@ -2549,6 +2571,8 @@ def test_generated_input_materialization_uses_one_upstream_meson_command(
     build = tmp_path / "build"
     source.mkdir()
     build.mkdir()
+    authored_output = source / "a.out"
+    authored_output.write_bytes(b"authored source content")
     version = build / "numpy/version.py"
     generated_c = build / "numpy/_core/loops.c"
     calls: list[tuple[str, ...]] = []
@@ -2564,7 +2588,7 @@ def test_generated_input_materialization_uses_one_upstream_meson_command(
     )
 
     def run_process(argv, *, cwd):
-        assert cwd == source
+        (cwd / "a.out").write_bytes(b"generator launcher output")
         calls.append(tuple(argv))
         version.parent.mkdir(parents=True)
         generated_c.parent.mkdir(parents=True)
@@ -2600,6 +2624,9 @@ def test_generated_input_materialization_uses_one_upstream_meson_command(
     )
 
     assert materialized == (generated_c, version)
+    assert authored_output.read_bytes() == b"authored source content"
+    assert tuple(source.iterdir()) == (authored_output,)
+    assert (build / "a.out").read_bytes() == b"generator launcher output"
     assert calls == [
         (
             str(backend.image.path),

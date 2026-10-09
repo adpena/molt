@@ -85,6 +85,7 @@ def _dispatch_entrypoint_command(
         return _runtime_build._prebuild_runtime_wasm(
             project_root=config_root,
             kind=cast(Literal["shared", "reloc", "both"], args.kind),
+            required_link_features=frozenset(args.runtime_feature),
             json_output=args.json,
             build_profile=cast(BuildProfile, args.build_profile),
             cargo_timeout=args.cargo_timeout,

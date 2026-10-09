@@ -38,14 +38,12 @@ from molt.portable_paths import (  # noqa: E402
 )
 from molt.tool_releases import DOWNLOADS_DIRNAME  # noqa: E402
 from molt.toolchain_identity import stable_file_sha256  # noqa: E402
+from molt.exact_json import read_exact  # noqa: E402
 from molt.wasi_sdk_identity import (  # noqa: E402
     INSTALL_RECEIPT_FILENAME,
     MAX_TREE_BYTES,
     MAX_TREE_ENTRIES,
     SDK_DIRNAME,
-    SDK_TOOL_NAMES,
-    executable_filename,
-    read_wasi_sdk_version_identity,
     render_wasi_sdk_install_receipt,
     wasi_sdk_tree_identity,
 )
@@ -213,29 +211,6 @@ def _stage_installation(
     sdk = staged / SDK_DIRNAME
     (extracted / asset.archive_root).replace(sdk)
     extracted.rmdir()
-    required = (
-        sdk / "VERSION",
-        *(sdk / "bin" / executable_filename(name, asset.id) for name in SDK_TOOL_NAMES),
-        sdk / "share" / "wasi-sysroot" / "include" / "wasm32-wasip1" / "errno.h",
-        sdk / "share" / "wasi-sysroot" / "lib" / "wasm32-wasip1" / "libc.a",
-    )
-    missing = [path for path in required if not path.is_file()]
-    if missing:
-        raise WasiSdkProvisionError(
-            "WASI SDK archive is missing required assets: "
-            + ", ".join(path.relative_to(sdk).as_posix() for path in missing)
-        )
-    version_identity = read_wasi_sdk_version_identity(sdk / "VERSION")
-    if version_identity.sdk_version != asset.sdk_version:
-        raise WasiSdkProvisionError(
-            "WASI SDK VERSION identity differs from the exact host asset: "
-            f"expected {asset.sdk_version!r}, found {version_identity.sdk_version!r}"
-        )
-    if version_identity.llvm_version != asset.llvm_version:
-        raise WasiSdkProvisionError(
-            "WASI SDK LLVM producer identity differs from the exact host asset: "
-            f"expected {asset.llvm_version!r}, found {version_identity.llvm_version!r}"
-        )
     tree_identity = wasi_sdk_tree_identity(sdk)
     (staged / INSTALL_RECEIPT_FILENAME).write_text(
         render_wasi_sdk_install_receipt(asdict(asset), tree_identity),
@@ -246,10 +221,44 @@ def _stage_installation(
 
 def _admit_existing(root: Path, prefix: Path) -> Path:
     try:
+        raw = read_exact(
+            prefix / INSTALL_RECEIPT_FILENAME,
+            max_bytes=64 * 1024,
+            label="WASI SDK receipt",
+        )
+        if isinstance(raw, dict) and raw.get("schema") == "molt.wasi-sdk-install.v1":
+            # One-way metadata migration: SDK files are never replaced or repaired.
+            asset = llvm_toolchain.wasi_sdk_host_asset(root)
+            if (
+                set(raw) != {"schema", "asset", "tree"}
+                or raw["asset"] != asdict(asset)
+                or prefix.name
+                != llvm_toolchain.wasi_sdk_install_prefix(prefix, asset).name
+                or prefix.is_symlink()
+                or prefix.is_junction()
+            ):
+                raise WasiSdkProvisionError(
+                    "legacy WASI SDK receipt differs from the selected asset"
+                )
+            tree = wasi_sdk_tree_identity(prefix / SDK_DIRNAME)
+            if raw["tree"] != tree.as_record():
+                raise WasiSdkProvisionError("legacy WASI SDK filesystem tree changed")
+            encoded = render_wasi_sdk_install_receipt(asdict(asset), tree)
+            receipt = prefix / INSTALL_RECEIPT_FILENAME
+            staged = staged_file_path(receipt, purpose="sdk-receipt-upgrade")
+            try:
+                staged.write_text(encoded, encoding="utf-8", newline="")
+                durable_replace(staged, receipt)
+            finally:
+                staged.unlink(missing_ok=True)
+            # The authenticated capture above is the verification for this call.
+            return llvm_toolchain.load_wasi_sdk_installation(
+                root, prefix, verify_tree=False
+            ).prefix
         return llvm_toolchain.load_wasi_sdk_installation(
             root, prefix, verify_tree=True
         ).prefix
-    except llvm_toolchain.LlvmToolchainConfigError as exc:
+    except (OSError, ValueError, llvm_toolchain.LlvmToolchainConfigError) as exc:
         raise WasiSdkProvisionError(
             "existing WASI SDK installation is not its exact provisioned identity: "
             f"{exc}; remove {prefix} explicitly before provisioning again"

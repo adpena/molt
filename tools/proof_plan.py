@@ -138,6 +138,21 @@ class MatrixCell:
     data: dict[str, str]
 
 
+def cargo_native_c_units(data: Mapping[str, Any]) -> tuple[str, ...]:
+    """The command declaration alone grants native C build-unit custody."""
+    raw = data.get("cargo_native_c_units", [])
+    if (
+        not isinstance(raw, list)
+        or any(value not in ("target", "host") for value in raw)
+        or len(set(raw)) != len(raw)
+    ):
+        raise ValueError("cargo_native_c_units must contain unique target/host units")
+    tools = data.get("toolchains", [])
+    if raw and (not isinstance(tools, list) or not {"cargo", "rustc"}.issubset(tools)):
+        raise ValueError("native C build units require cargo and rustc toolchains")
+    return tuple(unit for unit in ("target", "host") if unit in raw)
+
+
 @dataclass(frozen=True, slots=True)
 class ProofCommand:
     id: str
@@ -491,10 +506,14 @@ class ProofPlan:
             extra = (
                 set(lane.data)
                 - set(REQUIRED_NAMED_LANE_FIELDS)
-                - {"id", "cargo_output_lifetime"}
+                - {"id", "cargo_output_lifetime", "cargo_native_c_units"}
             )
             if extra:
                 errors.append(f"{lane.id}: unknown named lane fields {sorted(extra)!r}")
+            try:
+                cargo_native_c_units(lane.data)
+            except ValueError as exc:
+                errors.append(f"{lane.id}: {exc}")
             argv = lane.argv
             # Named recipes currently own Python payloads, whose downstream
             # Cargo consumers are not statically closed by this declaration.
@@ -630,6 +649,15 @@ class ProofPlan:
                         f"{policy.name}: target-derived identity_provider must be one of "
                         f"{sorted(TARGET_DERIVED_IDENTITY_PROVIDERS)!r}"
                     )
+            sdk_role = policy.data.get("wasi_sdk_tool")
+            if sdk_role is not None and (
+                identity_kind != "executable"
+                or sdk_role not in {"clang", "clang++"}
+                or policy.data.get("executable") != sdk_role
+            ):
+                errors.append(
+                    f"{policy.name}: wasi_sdk_tool requires the matching selected SDK compiler executable"
+                )
             probe_cwd = policy.data.get("probe_cwd", ".")
             if not isinstance(probe_cwd, str) or not probe_cwd:
                 errors.append(f"{policy.name}: probe_cwd must be a non-empty string")
@@ -1227,6 +1255,10 @@ class ProofPlan:
                 or not all(isinstance(part, str) and part for part in argv)
             ):
                 errors.append(f"{command.id}: argv must be a non-empty string list")
+            try:
+                cargo_native_c_units(command.data)
+            except ValueError as exc:
+                errors.append(f"{command.id}: {exc}")
             toolchains = command.data.get("toolchains")
             if (
                 not isinstance(toolchains, list)
@@ -2092,6 +2124,24 @@ def host_matrix_cell(plan: ProofPlan, family_name: str) -> str:
     )
 
 
+def _toolchain_fingerprint_digest(identity: Mapping[str, str]) -> str:
+    material = "\0".join(
+        identity[name]
+        for name in (
+            "path",
+            "launcher_path",
+            "launcher_sha256",
+            "content_path",
+            "executable_sha256",
+            "version",
+            "probe_cwd",
+        )
+    )
+    if "wasi_sdk_sha256" in identity:
+        material += "\0" + identity["wasi_sdk_sha256"]
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
 def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
     if policy.identity_kind != "executable":
         raise ValueError(
@@ -2100,13 +2150,36 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         )
     executable = str(policy.data["executable"])
     requested = sys.executable if executable == "{python}" else executable
-    if requested == "wasm-ld":
+    sdk_role = policy.data.get("wasi_sdk_tool")
+    if requested == "wasm-ld" or sdk_role is not None:
         from molt.llvm_toolchain import LlvmToolchainConfigError, resolve_wasi_sdk_tool
 
         try:
-            path = str(resolve_wasi_sdk_tool(ROOT, "wasm-ld", environ=dict(os.environ)))
+            path = str(
+                resolve_wasi_sdk_tool(
+                    ROOT, sdk_role or "wasm-ld", environ=dict(os.environ)
+                )
+            )
         except LlvmToolchainConfigError as exc:
-            raise ValueError(f"wasm-ld toolchain selection failed: {exc}") from exc
+            raise ValueError(
+                f"{policy.name} toolchain selection failed: {exc}"
+            ) from exc
+    elif policy.name in {"rustc", "cargo"}:
+        from molt.rust_toolchain import cargo_selected_value
+
+        requested = (
+            cargo_selected_value(
+                {},
+                {},
+                os.environ,
+                ("build", "rustc"),
+                ("RUSTC", "CARGO_BUILD_RUSTC"),
+                requested,
+            )
+            if policy.name == "rustc"
+            else os.environ.get("CARGO", requested)
+        )
+        path = shutil.which(requested)
     else:
         path = shutil.which(requested)
     if path is None:
@@ -2122,10 +2195,32 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         except OSError as exc:
             return f"unavailable:{type(exc).__name__}"
 
-    launcher_sha256 = content_hash(launcher_path)
+    sdk_closure = None
+    if sdk_role is not None:
+        from molt.llvm_toolchain import capture_wasi_sdk_selection
+        from molt.wasi_sdk_identity import capture_wasi_sdk_tool_files
+
+        sdk_closure = capture_wasi_sdk_selection(root=ROOT, env=os.environ)
+        images = capture_wasi_sdk_tool_files(sdk_closure)
+        launcher = next(
+            (row for row in images if row["path"] == str(command_path)), None
+        )
+        if launcher is None:
+            raise ValueError(
+                "WASI compiler selection differs from captured SDK helpers"
+            )
+        launcher_sha256 = str(launcher["sha256"])
+    else:
+        launcher_sha256 = content_hash(launcher_path)
     content_path = launcher_path
     content_path_command = policy.data.get("content_path_command")
-    if isinstance(content_path_command, list):
+    if policy.name in {"rustc", "cargo"}:
+        from molt.rust_toolchain import resolve_rustup_proxy
+
+        content_path = resolve_rustup_proxy(
+            command_path, role=policy.name, root=probe_directory, env=os.environ
+        )
+    elif isinstance(content_path_command, list):
         try:
             resolved = subprocess.run(
                 content_path_command,
@@ -2146,9 +2241,14 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
             )
         except (IndexError, OSError, ValueError, subprocess.TimeoutExpired):
             content_path = Path("unavailable")
-    executable_sha256 = content_hash(content_path)
+    executable_sha256 = (
+        launcher_sha256 if content_path == launcher_path else content_hash(content_path)
+    )
     try:
-        version_argv = [path, *policy.data["version_args"]]
+        version_argv = [
+            str(content_path) if policy.name in {"rustc", "cargo"} else path,
+            *policy.data["version_args"],
+        ]
         completed = subprocess.run(
             version_argv,
             cwd=probe_directory,
@@ -2163,11 +2263,16 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         version = completed.stdout.strip()
     except (OSError, subprocess.TimeoutExpired) as exc:
         version = f"unavailable:{type(exc).__name__}"
-    material = (
-        f"{command_path}\0{launcher_path}\0{launcher_sha256}\0{content_path}\0"
-        f"{executable_sha256}\0{version}\0{probe_cwd}"
-    ).encode()
-    return {
+    sdk_digest = ""
+    if sdk_closure is not None:
+        sdk_digest = hashlib.sha256(
+            json.dumps(
+                sdk_closure,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+    identity = {
         "path": str(command_path),
         "launcher_path": str(launcher_path),
         "launcher_sha256": launcher_sha256,
@@ -2176,8 +2281,11 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         "version_pattern": str(policy.data["version_pattern"]),
         "probe_cwd": probe_cwd,
         "executable_sha256": executable_sha256,
-        "identity_sha256": hashlib.sha256(material).hexdigest(),
     }
+    if sdk_closure is not None:
+        identity["wasi_sdk_sha256"] = sdk_digest
+    identity["identity_sha256"] = _toolchain_fingerprint_digest(identity)
+    return identity
 
 
 def toolchain_fingerprints(
@@ -3066,6 +3174,15 @@ def verify_receipts(
                         != policies[name].data["version_pattern"]
                         or identity.get("probe_cwd")
                         != policies[name].data.get("probe_cwd", ".")
+                        or (
+                            re.fullmatch(
+                                r"[0-9a-f]{64}",
+                                str(identity.get("wasi_sdk_sha256", "")),
+                            )
+                            is None
+                            if policies[name].data.get("wasi_sdk_tool") is not None
+                            else "wasi_sdk_sha256" in identity
+                        )
                     ):
                         errors.append(
                             f"{command_id}: invalid {name} toolchain identity"
@@ -3080,18 +3197,8 @@ def verify_receipts(
                         errors.append(
                             f"{command_id}: {name} version violates authority contract"
                         )
-                    elif (
-                        identity["identity_sha256"]
-                        != hashlib.sha256(
-                            (
-                                f"{identity['path']}\0{identity['launcher_path']}\0"
-                                f"{identity['launcher_sha256']}\0"
-                                f"{identity['content_path']}\0"
-                                f"{identity['executable_sha256']}\0"
-                                f"{identity['version']}\0"
-                                f"{identity['probe_cwd']}"
-                            ).encode()
-                        ).hexdigest()
+                    elif identity["identity_sha256"] != _toolchain_fingerprint_digest(
+                        identity
                     ):
                         errors.append(
                             f"{command_id}: {name} toolchain identity hash is invalid"

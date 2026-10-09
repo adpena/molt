@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.llvm_toolchain import capture_wasi_sdk_selection
+
 from collections.abc import Mapping
 import os
 from pathlib import Path
@@ -34,12 +36,12 @@ from molt.toolchain_identity import (
     native_executable_content_identity,
 )
 from tools import proof_plan
-from tools.proof_queue_pkg import process_image_capture
+from tools.proof_queue_pkg import process_image_capture, toolchain_capture
 
 
 SOURCE_EXTENSION_PROVIDER = "source-extension"
-SOURCE_EXTENSION_SCHEMA = "molt.proof-source-extension-toolchain.v2"
-SOURCE_EXTENSION_VERSION = "molt-source-extension-toolchain-v2"
+SOURCE_EXTENSION_SCHEMA = "molt.proof-source-extension-toolchain.v4"
+SOURCE_EXTENSION_VERSION = "molt-source-extension-toolchain-v4"
 _COMPILER_ROLES = frozenset(
     language.compiler_role for language in SourceExtensionLanguage
 )
@@ -117,16 +119,43 @@ def _tool_image_specs(
 
 
 def _tool_images(
-    tools: Mapping[str, object], *, target: SourceExtensionTargetPlan
+    tools: Mapping[str, object],
+    *,
+    target: SourceExtensionTargetPlan,
+    sdk_images: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     images: list[dict[str, object]] = []
+    content_images = (
+        {}
+        if sdk_images is None
+        else {
+            Path(str(image["path"])).resolve(strict=True): image for image in sdk_images
+        }
+    )
     for role, path, digest, selection in _tool_image_specs(tools, target=target):
-        fact = native_executable_content_identity(path, label=role)
-        if fact["sha256"] != digest:
-            raise ValueError(f"{role} executable content changed")
-        image = process_image_capture.capture_image(role, path, preserve_path=selection)
-        if image["sha256"] != digest or image["size_bytes"] != fact["size"]:
-            raise ValueError(f"{role} changed during image capture")
+        if sdk_images is not None:
+            content = path.resolve(strict=True)
+            if content not in content_images:
+                content_images[content] = process_image_capture.capture_image(
+                    role, content
+                )
+            image = {**content_images[content], "role": role, "path": str(path)}
+            image.pop("path_kind", None)
+            if selection:
+                image["path_kind"] = "selection"
+            if image["sha256"] != digest:
+                raise ValueError(f"{role} differs from its admitted SDK generation")
+        else:
+            fact = native_executable_content_identity(path, label=role)
+            if fact["sha256"] != digest:
+                raise ValueError(f"{role} executable content changed")
+            image = process_image_capture.capture_image(
+                role, path, preserve_path=selection
+            )
+            if image["sha256"] != digest or image["size_bytes"] != fact["size"]:
+                raise ValueError(
+                    f"{role} executable content changed during image capture"
+                )
         images.append(image)
     return process_image_capture.canonical_images(images)
 
@@ -134,8 +163,8 @@ def _tool_images(
 def family_process_images(identity: Mapping[str, object]) -> list[dict[str, object]]:
     """Project the recorded family, with no fabricated root executable or probes.
 
-    Cold validation rehashes these images through ``validate_identity``; this
-    projection only checks the exact family membership and selected entrypoints.
+    The armed proof boundary revalidates WASI images; this projection checks
+    exact family membership and selected entrypoints.
     """
     if (
         identity.get("schema") != SOURCE_EXTENSION_SCHEMA
@@ -154,9 +183,28 @@ def family_process_images(identity: Mapping[str, object]) -> list[dict[str, obje
         for role, path, digest, selection in _tool_image_specs(tools, target=target)
     }
     images = process_image_capture.canonical_images(raw_images)
+    phases, commands = identity.get("native_compiler_phases"), identity.get("commands")
+    if not isinstance(phases, Mapping) or not isinstance(commands, Mapping):
+        raise ValueError("source-extension native compiler phase capture is missing")
+    expected_roles = (
+        set() if triple == "wasm32-wasip1" else set(commands) & _COMPILER_ROLES
+    )
+    if set(phases) != expected_roles:
+        raise ValueError("source-extension native compiler phase roles are incomplete")
+    helper_roles = {"source-extension-phase:" + role for role in expected_roles}
+    for role in expected_roles:
+        toolchain_capture.validate_native_compiler_capture(
+            phases[role],
+            images,
+            command=commands[role],
+            language="c" if role == "c" else "c++",
+            target=triple,
+            role="source-extension-phase:" + role,
+        )
     observed = {
         (row["role"], row["path"], row["sha256"], row.get("path_kind") == "selection")
         for row in images
+        if row["role"] not in helper_roles
     }
     if observed != expected or any("root_exit_disposition" in row for row in images):
         raise ValueError("source-extension process images differ from compiler family")
@@ -219,19 +267,6 @@ def _validate_commands(
         raise ValueError("source-extension compiler sysroot differs from captured root")
 
 
-def _sysroot_custody(sysroot: object) -> dict[str, object] | None:
-    if sysroot is None:
-        return None
-    if not isinstance(sysroot, str):
-        raise ValueError("source-extension sysroot is malformed")
-    # This existing authority feeds frozen_files and queue live-directory custody.
-    from tools.proof_queue_pkg.command_identity import _directory_manifest_identity
-
-    return _directory_manifest_identity(
-        Path(sysroot), label="source-extension WASI sysroot", strict_owned=True
-    )
-
-
 def _require_policy(policy: proof_plan.ToolchainPolicy) -> None:
     if (
         policy.identity_kind != "target-derived"
@@ -279,8 +314,37 @@ def capture_identity(
         role: list(command) for role, command in sorted(resolved.commands.items())
     }
     sysroot = str(resolved.wasi_sysroot) if resolved.wasi_sysroot is not None else None
-    images = _tool_images(tools, target=target)
+    sdk = (
+        capture_wasi_sdk_selection(
+            root=proof_plan.ROOT, env=os.environ if environment is None else environment
+        )
+        if target.target_triple == "wasm32-wasip1"
+        else None
+    )
+    images = _tool_images(
+        tools,
+        target=target,
+        sdk_images=None
+        if sdk is None
+        else toolchain_capture.capture_wasi_sdk_images(sdk),
+    )
     _validate_commands(target, tools, commands, sysroot)
+    phases = {}
+    if sdk is None:
+        for role in sorted(set(commands) & _COMPILER_ROLES):
+            phase_images, capture = (
+                toolchain_capture.capture_native_compiler_process_images(
+                    commands[role],
+                    role="source-extension-phase:" + role,
+                    language="c" if role == "c" else "c++",
+                    target=target.target_triple,
+                    cwd=proof_plan.ROOT,
+                    env=os.environ if environment is None else environment,
+                    captured_images=images,
+                )
+            )
+            phases[role] = capture
+            images.extend(phase_images)
     material: dict[str, object] = {
         "schema": SOURCE_EXTENSION_SCHEMA,
         "identity_kind": "target-derived",
@@ -290,9 +354,10 @@ def capture_identity(
         "tools": tools,
         "commands": commands,
         "wasi_sysroot": sysroot,
-        "sysroot_custody": _sysroot_custody(sysroot),
+        "wasi_sdk": sdk,
         "link_inputs": resolved.link_inputs.metadata(),
-        "process_images": images,
+        "process_images": process_image_capture.canonical_images(images),
+        "native_compiler_phases": phases,
         "process_image_inventories": [],
         "tool_family_sha256": canonical_json_sha256(
             {"tools": tools, "commands": commands}
@@ -303,7 +368,10 @@ def capture_identity(
 
 
 def validate_identity(
-    policy: proof_plan.ToolchainPolicy, identity: Mapping[str, object]
+    policy: proof_plan.ToolchainPolicy,
+    identity: Mapping[str, object],
+    *,
+    full_capture: bool = False,
 ) -> None:
     _require_policy(policy)
     if set(identity) != {
@@ -316,9 +384,10 @@ def validate_identity(
         "tools",
         "commands",
         "wasi_sysroot",
-        "sysroot_custody",
+        "wasi_sdk",
         "link_inputs",
         "process_images",
+        "native_compiler_phases",
         "process_image_inventories",
         "tool_family_sha256",
     }:
@@ -343,12 +412,37 @@ def validate_identity(
         raise ValueError("source-extension tools/commands are malformed")
     if identity["process_image_inventories"] != []:
         raise ValueError("source-extension helper inventory is not admitted")
-    if identity["process_images"] != _tool_images(tools, target=target):
-        raise ValueError("source-extension process images differ from compiler family")
+    if triple == "wasm32-wasip1":
+        family_process_images(identity)
+        sdk = toolchain_capture.validate_wasi_sdk_closure(
+            identity, full_capture=full_capture
+        )
+        generation = sdk["generation"]
+        assert isinstance(generation, Mapping)
+        if identity["wasi_sysroot"] != str(
+            Path(str(sdk["sdk"])) / "share/wasi-sysroot"
+        ):
+            raise ValueError("source-extension sysroot differs from its admitted SDK")
+        from molt.wasi_sdk_identity import WasiCAbiProjection
+
+        plan = WasiCAbiProjection.from_facts(
+            Path(str(sdk["sdk"])),
+            sdk_version=generation["asset"]["sdk_version"],
+            llvm_version=generation["asset"]["llvm_version"],
+            tree_sha256=generation["tree"]["sha256"],
+            facts=generation["facts"],
+        )
+        validate_source_extension_link_inputs(
+            identity["link_inputs"], target_triple=triple
+        ).verify_c_abi(plan)
+    elif identity["wasi_sdk"] is not None:
+        raise ValueError("non-WASI source extension has unexpected SDK custody")
+    else:
+        images = family_process_images(identity)
+        if not full_capture:
+            process_image_capture.revalidate_images(images)
     _validate_commands(target, tools, commands, identity["wasi_sysroot"])
     if identity["tool_family_sha256"] != canonical_json_sha256(
         {"tools": dict(tools), "commands": dict(commands)}
     ):
         raise ValueError("source-extension tool-family digest is invalid")
-    if identity["sysroot_custody"] != _sysroot_custody(identity["wasi_sysroot"]):
-        raise ValueError("source-extension WASI sysroot content changed")

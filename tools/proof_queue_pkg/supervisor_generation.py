@@ -68,7 +68,7 @@ def _build_inputs(
         command.extend(("--target", target))
     envelope = admission.envelope_for_command(command)
     execution_environment._require_cargo_build_tool_environment_context(
-        command,
+        envelope,
         outputs=execution_environment.cargo_output_environment.CargoOutputEnvironment.for_envelope(
             envelope
         ),

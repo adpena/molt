@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 import json
+import hashlib
 import os
 import re
 import sys
@@ -115,6 +116,15 @@ def _write_wasi_sdk_installation(
     sysroot = sdk / "share" / "wasi-sysroot"
     _write(sysroot / "include/wasm32-wasip1/errno.h", "#define EINVAL 28\n")
     _write(sysroot / "lib/wasm32-wasip1/libc.a", "archive")
+    for name in ("libc-printscan-long-double.a", "crt1-command.o", "crt1-reactor.o"):
+        _write(sysroot / "lib/wasm32-wasip1" / name, "member:" + name)
+    _write(
+        sdk
+        / "lib/clang"
+        / asset.llvm_version.split(".")[0]
+        / "lib/wasm32-unknown-wasip1/libclang_rt.builtins.a",
+        "compiler-rt",
+    )
     _write(
         prefix / INSTALL_RECEIPT_FILENAME,
         render_wasi_sdk_install_receipt(asdict(asset), wasi_sdk_tree_identity(sdk)),
@@ -858,30 +868,32 @@ def test_apply_provisioned_wasm_toolchain_keeps_explicit_selectors_consistent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Local builds select WASM tools through the projection CI uses. An explicit
-    # selector wins under both of its spellings, everything else comes from the
-    # selected SDK, and native selectors stay untouched.
+    # selector must agree with the selected SDK under each spelling; native
+    # selectors stay untouched.
     prefix = _write_wasi_sdk_installation(tmp_path)
     monkeypatch.setattr(
         llvm_toolchain,
         "provisioned_wasi_sdk_prefix",
         lambda _root, *, environ=None: prefix,
     )
+    asset = llvm_toolchain.wasi_sdk_host_asset(ROOT)
+    sdk_bin = prefix.resolve() / SDK_DIRNAME / "bin"
+    selected_clang = str(sdk_bin / executable_filename("clang", asset.id))
+    selected_sysroot = str(prefix.resolve() / SDK_DIRNAME / "share/wasi-sysroot")
     env = {
         "PATH": "host-bin",
         "CC": "native-cc",
-        "CC_wasm32_wasip1": "explicit-clang",
-        "WASI_SYSROOT": "explicit-sysroot",
+        "CC_wasm32_wasip1": selected_clang,
+        "WASI_SYSROOT": selected_sysroot,
         "CFLAGS_wasm32-wasip1": "-O2",
     }
 
     managed = llvm_toolchain.apply_provisioned_wasm_toolchain(ROOT, env)
     assert {"CC_wasm32-wasip1", "AR_wasm32_wasip1", "MOLT_WASI_SYSROOT"} <= set(managed)
 
-    asset = llvm_toolchain.wasi_sdk_host_asset(ROOT)
-    sdk_bin = prefix.resolve() / SDK_DIRNAME / "bin"
     assert (env["PATH"], env["CC"]) == ("host-bin", "native-cc")
-    assert env["CC_wasm32-wasip1"] == env["CC_wasm32_wasip1"] == "explicit-clang"
-    assert env["MOLT_WASI_SYSROOT"] == env["WASI_SYSROOT"] == "explicit-sysroot"
+    assert env["CC_wasm32-wasip1"] == env["CC_wasm32_wasip1"] == selected_clang
+    assert env["MOLT_WASI_SYSROOT"] == env["WASI_SYSROOT"] == selected_sysroot
     for spelling in (
         "wasm32-wasip1",
         "wasm32_wasip1",
@@ -896,6 +908,35 @@ def test_apply_provisioned_wasm_toolchain_keeps_explicit_selectors_consistent(
     )
     assert env["CFLAGS_wasm32-wasip1"] == "-O2 --no-default-config"
     assert env["CFLAGS_wasm32_wasip1"] == "--no-default-config"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "CC_wasm32_wasip1",
+        "WASI_SYSROOT",
+        "MOLT_WASI_C_ABI_PLAN",
+        "CARGO_TARGET_WASM32_WASIP1_LINKER",
+    ],
+)
+def test_apply_wasi_projection_refuses_foreign_selector_atomically(
+    tmp_path: Path, key: str
+) -> None:
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        provisioned_wasi_sdk_fixture,
+    )
+
+    install = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    environment = {
+        "WASI_SDK_PATH": str(install.sdk),
+        key: "foreign",
+        "CFLAGS_wasm32-wasip1": "-O2",
+    }
+    original = dict(environment)
+    with pytest.raises(llvm_toolchain.LlvmToolchainConfigError, match="differs"):
+        llvm_toolchain.apply_provisioned_wasm_toolchain(ROOT, environment)
+    assert environment == original
 
 
 def test_apply_provisioned_wasm_toolchain_never_guesses_without_an_sdk(
@@ -915,21 +956,32 @@ def test_apply_provisioned_wasm_toolchain_never_guesses_without_an_sdk(
 @pytest.mark.parametrize(
     ("version_text", "include_llvm_nm", "message"),
     (
-        (f"{WASI_SDK_VERSION}\nllvm-version: 1.0.0\n", True, "VERSION identity"),
-        (f"{WASI_TAG - 1}.0\nllvm-version: {WASI_LLVM}\n", True, "VERSION identity"),
+        (f"{WASI_SDK_VERSION}\nllvm-version: 1.0.0\n", True, "filesystem tree differs"),
+        (
+            f"{WASI_TAG - 1}.0\nllvm-version: {WASI_LLVM}\n",
+            True,
+            "filesystem tree differs",
+        ),
         (
             f"{WASI_SDK_VERSION}\nllvm-version: {WASI_LLVM}\n",
             False,
-            "installation is incomplete",
+            "filesystem tree differs",
         ),
     ),
 )
 def test_wasm_ci_profile_rejects_mismatched_or_incomplete_sdk(
     tmp_path: Path, version_text: str, include_llvm_nm: bool, message: str
 ) -> None:
-    prefix = _write_wasi_sdk_installation(
-        tmp_path, version_text=version_text, include_llvm_nm=include_llvm_nm
-    )
+    prefix = _write_wasi_sdk_installation(tmp_path)
+    (prefix / "sdk/VERSION").write_text(version_text)
+    if not include_llvm_nm:
+        (
+            prefix
+            / "sdk/bin"
+            / executable_filename(
+                "llvm-nm", llvm_toolchain.wasi_sdk_host_asset(ROOT).id
+            )
+        ).unlink()
 
     with pytest.raises(LlvmToolchainConfigError, match=message):
         llvm_toolchain.verify_wasm_ci_toolchain(ROOT, prefix)
@@ -946,8 +998,12 @@ def test_wasm_ci_profile_rejects_tree_mutation_after_provision(
         llvm_toolchain.verify_wasm_ci_toolchain(ROOT, prefix)
 
 
+@pytest.mark.parametrize("rust_target", ["wasm32-wasip1", "wasm32-unknown-unknown"])
 def test_wasm_cli_exports_target_tools_without_replacing_native_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    rust_target: str,
 ) -> None:
     prefix = _write_wasi_sdk_installation(tmp_path)
     seen: list[tuple[str, Path, str, bool]] = []
@@ -963,6 +1019,8 @@ def test_wasm_cli_exports_target_tools_without_replacing_native_environment(
                 "--root",
                 str(ROOT),
                 "--verify-wasm",
+                "--wasi-rust-target",
+                rust_target,
                 "--wasi-sdk",
                 str(prefix),
                 "--format",
@@ -990,6 +1048,15 @@ def test_wasm_cli_exports_target_tools_without_replacing_native_environment(
     assert llvm_toolchain.resolve_wasi_sdk_tool(
         ROOT, "wasm-ld", environ={"WASI_SDK_PATH": str(prefix / "sdk")}
     ) == Path(exported["MOLT_WASM_LD"])
+
+    key = "CARGO_TARGET_" + rust_target.upper().replace("-", "_") + "_RUSTFLAGS"
+    flags = __import__("shlex").split(exported[key])
+    assert flags[:2] == [
+        "-L",
+        "native=" + str(prefix.resolve() / "sdk/share/wasi-sysroot/lib/wasm32-wasip1"),
+    ]
+    if rust_target == "wasm32-wasip1":
+        assert "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS" not in exported
 
 
 def test_wasm_ci_profile_rejects_receipt_asset_drift(tmp_path: Path) -> None:
@@ -1079,7 +1146,11 @@ def test_wasm_llvm_nm_defaults_to_the_custody_provisioned_sdk(
 
     llvm_nm = prefix.resolve() / "sdk" / "bin" / verification.path.name
     assert verification.path == llvm_nm
-    assert seen == [("llvm-nm", llvm_nm, WASI_LLVM, True)]
+    assert seen == []
+    assert isinstance(
+        verification.executable_identity, llvm_toolchain.WasiSdkInstallation
+    )
+    assert verification.fact.sha256 == hashlib.sha256(llvm_nm.read_bytes()).hexdigest()
 
 
 def test_wasm_llvm_nm_lookup_never_provisions(
@@ -2069,3 +2140,228 @@ def test_projection_hands_bindgen_the_selected_macos_sdk_only_on_darwin(
     else:
         assert "SDKROOT" not in projected and "DEVELOPER_DIR" not in projected
     assert "MACOSX_DEPLOYMENT_TARGET" not in projected
+
+
+def test_wasi_c_abi_projection_matches_independent_wire(tmp_path: Path) -> None:
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        runtime_wasi_c_abi_plan,
+    )
+    from molt.wasi_sdk_identity import WasiCAbiProjection
+
+    plan = runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path))
+    # Literal role/header order is an independent wire oracle also exercised by
+    # runtime/molt-runtime/tests/wasm_cdylib_exports.rs.
+    receipt = json.loads((plan.sdk.parent / INSTALL_RECEIPT_FILENAME).read_text())
+    fields = [
+        "molt.wasi-c-abi.v2",
+        "wasm32-wasip1",
+        "single",
+        WASI_SDK_VERSION,
+        WASI_LLVM,
+        receipt["tree"]["sha256"],
+        str(plan.sdk),
+        str(plan.sysroot),
+        str(plan.include),
+        str(plan.driver),
+        str(plan.linker),
+    ]
+    for role in ("libc", "long_double", "compiler_rt", "crt_command", "crt_reactor"):
+        path = plan.path(role)
+        fields.extend(
+            (
+                role,
+                str(path),
+                str(path.stat().st_size),
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+        )
+    expected = "\0".join(fields).encode("utf-8").hex()
+    assert plan.encode() == expected
+    assert WasiCAbiProjection.decode(expected) == plan
+    for index, invalid in (
+        (0, "molt.wasi-c-abi.v0"),
+        (1, "wasm32-wasip2"),
+        (2, "threads"),
+        (3, "３４.0"),
+        (4, "23.０.0"),
+        (11, "compiler_rt"),
+        (13, "01"),
+        (13, "true"),
+        (13, "8589934593"),
+        (14, "A" * 64),
+    ):
+        changed = fields.copy()
+        changed[index] = invalid
+        with pytest.raises(ValueError):
+            WasiCAbiProjection.decode("\0".join(changed).encode("utf-8").hex())
+    if os.name != "nt":
+        changed = fields.copy()
+        changed[6] = "/" + changed[6]
+        with pytest.raises(ValueError, match="canonical absolute"):
+            WasiCAbiProjection.decode("\0".join(changed).encode("utf-8").hex())
+    for invalid in (expected.upper(), expected + "00", "aa" * 16001, "zz", "00ff"):
+        with pytest.raises(ValueError):
+            WasiCAbiProjection.decode(invalid)
+
+
+def test_wasi_projection_rejects_shape_before_encoding(tmp_path: Path) -> None:
+    from dataclasses import replace
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        runtime_wasi_c_abi_plan,
+    )
+
+    plan = runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path))
+    role, path, size, digest = plan.files[0]
+    for invalid in (
+        replace(plan, files=plan.files * 2),
+        replace(plan, files=list(plan.files)),
+        replace(plan, files=((role, path, True, digest), *plan.files[1:])),
+        replace(plan, files=(plan.files[1], plan.files[0], *plan.files[2:])),
+        replace(plan, sdk_version="9" * 129 + ".0"),
+        replace(plan, sdk=Path("/" + "x" * 16001)),
+    ):
+        with pytest.raises(ValueError):
+            invalid.encode()
+
+
+def test_wasi_projection_declares_one_installed_protocol_source() -> None:
+    import tomllib
+
+    package = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert (
+        "wasi_c_abi_protocol.txt"
+        in package["tool"]["setuptools"]["package-data"]["molt"]
+    )
+    rust = (ROOT / "runtime/build_support/wasi_sysroot.rs").read_text(encoding="utf-8")
+    assert 'include_str!("../../src/molt/wasi_c_abi_protocol.txt")' in rust
+    assert (ROOT / "src/molt/wasi_c_abi_protocol.txt").read_text(
+        encoding="ascii"
+    ).splitlines() == [
+        "schema=molt.wasi-c-abi.v2",
+        "target=wasm32-wasip1",
+        "variant=single",
+        "linker_flavor=wasm-ld",
+        "link_self_contained=no",
+        "max_chars=32000",
+        "max_member_bytes=8589934592",
+        "max_version_chars=128",
+        "max_path_chars=16000",
+        "header=sdk_version,llvm_version,tree_sha256,sdk,sysroot,include,driver,linker",
+        "members=libc,long_double,compiler_rt,crt_command,crt_reactor",
+    ]
+
+
+@pytest.mark.parametrize(
+    "missing", ["libc", "long_double", "compiler_rt", "crt_command", "crt_reactor"]
+)
+def test_selected_wasi_generation_requires_complete_c_runtime_at_explicit_verification(
+    tmp_path: Path, missing: str
+) -> None:
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        provisioned_wasi_sdk_fixture,
+    )
+
+    install = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    plan = llvm_toolchain.wasi_c_abi_plan(install)
+    plan.path(missing).unlink()
+    environment = {"WASI_SDK_PATH": str(install.sdk), "UNRELATED": "preserved"}
+    llvm_toolchain.apply_provisioned_wasm_toolchain(ROOT, environment)
+    assert environment["UNRELATED"] == "preserved"
+    assert (
+        llvm_toolchain.wasi_c_abi_plan(
+            llvm_toolchain.load_wasi_sdk_installation(
+                ROOT, install.prefix, verify_tree=False
+            )
+        )
+        == plan
+    )
+    before_verification = dict(environment)
+    with pytest.raises(
+        llvm_toolchain.LlvmToolchainConfigError,
+        match="content identity|tree|incomplete",
+    ):
+        llvm_toolchain.load_wasi_sdk_installation(
+            ROOT, install.prefix, verify_tree=True
+        )
+    assert environment == before_verification
+
+
+def test_managed_nm_recognizes_canonical_install_under_ancestor_alias(
+    tmp_path, monkeypatch
+):
+    parent = tmp_path / "real"
+    parent.mkdir()
+    prefix = _write_wasi_sdk_installation(parent)
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory aliases unavailable")
+    lexical = alias / prefix.relative_to(parent)
+    monkeypatch.setattr(
+        llvm_toolchain, "provisioned_wasi_sdk_prefix", lambda _root, *, environ: lexical
+    )
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "_tool_version_fact_and_identity",
+        lambda *args, **kwargs: pytest.fail("managed alias entered external verifier"),
+    )
+    selected = llvm_toolchain.verify_wasm_llvm_nm(ROOT, environ={"PATH": ""})
+    assert isinstance(selected.executable_identity, llvm_toolchain.WasiSdkInstallation)
+    assert selected.executable_identity.prefix == prefix.resolve()
+
+
+@pytest.mark.parametrize("rust_target", ["wasm32-wasip1", "wasm32-unknown-unknown"])
+def test_projected_sdk_target_flags_have_complete_ordered_search_context(
+    tmp_path, rust_target
+):
+    import shlex
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        provisioned_wasi_sdk_fixture,
+    )
+
+    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    plan = llvm_toolchain.wasi_c_abi_plan(installation)
+    dirs = (plan.path("libc").parent, plan.path("compiler_rt").parent)
+    user = tmp_path / "user-libraries"
+    prior = {
+        "CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS": shlex.join(
+            ("-L", "native=" + str(user), "--cfg", "kept")
+        ),
+        "RUSTFLAGS": "--cfg native_unchanged",
+        "PATH": "native-path",
+    }
+    key = "CARGO_TARGET_" + rust_target.upper().replace("-", "_") + "_RUSTFLAGS"
+    prior[key] = prior.pop("CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS")
+    projected = llvm_toolchain.project_wasm_toolchain_environment(
+        installation, environ=prior, rust_target=rust_target
+    )
+    prefix = ("-L", "native=" + str(dirs[0]), "-L", "native=" + str(dirs[1]))
+    assert tuple(shlex.split(projected[key]))[:4] == prefix
+    assert projected[key.removesuffix("RUSTFLAGS") + "LINKER"] == str(plan.linker)
+    if rust_target == "wasm32-wasip1":
+        assert "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS" not in projected
+        assert "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER" not in projected
+    assert shlex.split(projected[key])[4:8] == [
+        "-L",
+        "native=" + str(user),
+        "--cfg",
+        "kept",
+    ]
+    assert projected["RUSTFLAGS"] == prior["RUSTFLAGS"]
+    assert projected["PATH"] == prior["PATH"]
+    assert (
+        llvm_toolchain.project_wasm_toolchain_environment(
+            installation, environ=projected, rust_target=rust_target
+        )
+        == projected
+    )
+    applied = dict(projected)
+    llvm_toolchain.apply_provisioned_wasm_toolchain(
+        ROOT, applied, installation=installation, rust_target=rust_target
+    )
+    assert applied == projected

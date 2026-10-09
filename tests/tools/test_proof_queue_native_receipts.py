@@ -20,8 +20,9 @@ from molt.toolchain_identity import find_executable
 pytestmark = pytest.mark.slow
 
 
+@pytest.mark.parametrize("native_c", [False, True])
 def test_rust_link_capture_owns_workspace_inside_owner_selected_scratch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_c: bool
 ) -> None:
     """Real Cargo must accept both probe crates below an enclosing workspace."""
     tmp_path = proof_queue_owned_roots.native_case_path(
@@ -40,15 +41,38 @@ def test_rust_link_capture_owns_workspace_inside_owner_selected_scratch(
     rustc = find_executable("rustc", environment=env)
     cargo = find_executable("cargo", environment=env)
     assert rustc is not None and cargo is not None, "native proof requires Rust tools"
+    from molt.rust_toolchain import resolve_rustup_proxy
 
+    rustc = resolve_rustup_proxy(rustc, role="rustc", root=workspace, env=env)
+    cargo = resolve_rustup_proxy(cargo, role="cargo", root=workspace, env=env)
+
+    from tools import proof_plan
+
+    command = (
+        list(
+            next(
+                row.argv
+                for row in proof_plan.ProofPlan.load().commands
+                if row.id == "wasm.build.host"
+            )
+        )
+        if native_c
+        else ["cargo", "build", "--release"]
+    )
     images, telemetry = toolchain_capture.capture_rust_link_process_images(
         rustc=rustc,
         cargo=cargo,
         cwd=workspace,
         env=env,
         target=None,
-        command_argv=["cargo", "build", "--release"],
+        command_argv=command,
+        admitted_command=command,
+        native_c_units=["target"] if native_c else [],
     )
+    toolchain_capture.validate_rust_link_selection(
+        {"process_images": images, "link_selection": telemetry}
+    )
+    assert bool(telemetry["native_c"]) is native_c
 
     assert {row["role"] for row in images} >= {"rust-linker"}
     assert [unit["unit"] for unit in telemetry["units"]] == [

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -18,7 +19,6 @@ from molt.cli import extension_commands as cli_commands
 from molt.cli import entrypoint_parser as cli_entrypoint_parser
 from molt.cli import llvm_wasi_tools as cli_llvm_wasi_tools
 from molt.cli import source_extension_target as cli_source_extension_target
-from molt.cli import source_extension_link_inputs as cli_source_extension_link_inputs
 from molt.cli import source_extensions as cli_source_extensions
 from molt.source_extension_link_inputs import SourceExtensionLinkInputs
 from molt.cli.extension_manifest import (
@@ -47,6 +47,13 @@ from molt.c_api_symbols import is_c_api_external_requirement
 import pytest
 
 from tests.cli.process_guard import run_cli_test_process
+from tests.runtime_build_identity_helper import (
+    RuntimeFixtureRoot,
+    provisioned_wasi_sdk_fixture,
+    runtime_wasi_c_abi_plan,
+)
+from molt import llvm_toolchain
+from molt.wasi_sysroot import normalize_wasi_sysroot
 from tests.cli.native_link_test_support import static_archive_bytes
 from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbol as _wasm_exporting_i64_unary_symbol,
@@ -98,6 +105,7 @@ def _stub_metadata_build_machine(monkeypatch: pytest.MonkeyPatch):
         strip=None,
     )
     host = cli_source_extension_toolchain._ResolvedSourceExtensionToolchain(
+        wasi_c_abi=None,
         target_plan=host_plan,
         compiler_kind="host",
         tools=tools,
@@ -218,7 +226,11 @@ def test_resolve_wasm_linker_rejects_wasi_sdk_release_mismatch(
     linker.write_bytes(b"linker")
     monkeypatch.setenv("MOLT_WASM_LD", str(linker))
     monkeypatch.setattr(
-        wasm_link_inputs, "resolve_wasi_sysroot", lambda **_kwargs: sysroot
+        wasm_link_inputs,
+        "resolve_wasi_c_abi_plan",
+        lambda **_kwargs: replace(
+            runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path)), llvm_version="22.1.0"
+        ),
     )
     monkeypatch.setattr(
         cli_wasm_toolchain, "_wasm_linker_version", lambda _path, **_kwargs: "21.1.8"
@@ -245,7 +257,11 @@ def test_resolve_wasm_linker_preserves_debian_role_alias(
         os.link(driver, alias)
     monkeypatch.setenv("MOLT_WASM_LD", str(alias))
     monkeypatch.setattr(
-        wasm_link_inputs, "resolve_wasi_sysroot", lambda **_kwargs: None
+        wasm_link_inputs,
+        "resolve_wasi_c_abi_plan",
+        lambda **_kwargs: replace(
+            runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path)), llvm_version="22.1.8"
+        ),
     )
     monkeypatch.setattr(
         cli_wasm_toolchain, "_wasm_linker_version", lambda _path, **_kwargs: "22.1.8"
@@ -266,7 +282,11 @@ def test_resolve_wasm_linker_rejects_generic_lld_override(
     driver.write_bytes(b"generic lld")
     monkeypatch.setenv("MOLT_WASM_LD", str(driver))
     monkeypatch.setattr(
-        wasm_link_inputs, "resolve_wasi_sysroot", lambda **_kwargs: None
+        wasm_link_inputs,
+        "resolve_wasi_c_abi_plan",
+        lambda **_kwargs: replace(
+            runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path)), llvm_version="22.1.8"
+        ),
     )
 
     with pytest.raises(
@@ -437,12 +457,25 @@ def _install_extension_object_symbol_facts(
     )
 
 
-def _write_fake_wasi_sysroot(root: Path) -> Path:
-    sysroot = root / "wasi-sysroot"
-    include_dir = sysroot / "include"
-    include_dir.mkdir(parents=True)
-    (include_dir / "errno.h").write_text("#define EINVAL 28\n", encoding="utf-8")
-    return sysroot
+def _select_test_wasi_sdk(root: Path, monkeypatch: pytest.MonkeyPatch):
+    """Admit a complete synthetic SDK; compiler outputs remain fixture-owned."""
+    install = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(root))
+    for key in (
+        "MOLT_WASI_SYSROOT",
+        "WASI_SYSROOT",
+        "MOLT_WASI_C_ABI_PLAN",
+        "MOLT_WASM_CC",
+        "MOLT_CROSS_CC",
+        "MOLT_WASM_LD",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("WASI_SDK_PATH", str(install.sdk))
+    monkeypatch.setattr(
+        cli_llvm_wasi_tools,
+        "_tool_version",
+        lambda _path, **_kw: install.asset.llvm_version,
+    )
+    return llvm_toolchain.wasi_c_abi_plan(install)
 
 
 def _finalize_test_extension_object_closure(
@@ -2441,24 +2474,36 @@ def test_direct_build_audits_and_reseals_extracted_wheel(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
-    sysroot = _write_fake_wasi_sysroot(tmp_path)
-    monkeypatch.setattr(cli_commands, "resolve_wasi_sysroot", lambda: sysroot)
+    admitted = _select_test_wasi_sdk(tmp_path, monkeypatch)
+    sysroot = admitted.sysroot
+    monkeypatch.setattr(cli_commands, "resolve_wasi_c_abi_plan", lambda: admitted)
     # This is a producer/wheel custody test, not a host compiler-discovery test.
     # Bind the same typed tool family the real producer consumes, then retain
     # the real target command construction and mocked compiler byte outputs.
     tools = cli_llvm_wasi_tools.LlvmWasiToolFamily(
-        cc=_resolved_llvm_tool("cc", (str(tmp_path / "toolchain/bin/clang"),)),
-        cxx=_resolved_llvm_tool("cxx", (str(tmp_path / "toolchain/bin/clang++"),)),
+        cc=_resolved_llvm_tool(
+            "cc", (str(admitted.driver.parent / ("clang" + admitted.driver.suffix)),)
+        ),
+        cxx=_resolved_llvm_tool(
+            "cxx", (str(admitted.driver.parent / ("clang++" + admitted.driver.suffix)),)
+        ),
         wasm_ld=_resolved_llvm_tool(
-            "wasm_ld", (str(tmp_path / "toolchain/bin/wasm-ld"),)
+            "wasm_ld",
+            (str(admitted.driver.parent / ("wasm-ld" + admitted.driver.suffix)),),
         ),
-        ar=_resolved_llvm_tool("ar", (str(tmp_path / "toolchain/bin/llvm-ar"),)),
+        ar=_resolved_llvm_tool(
+            "ar", (str(admitted.driver.parent / ("llvm-ar" + admitted.driver.suffix)),)
+        ),
         ranlib=_resolved_llvm_tool(
-            "ranlib", (str(tmp_path / "toolchain/bin/llvm-ranlib"),)
+            "ranlib",
+            (str(admitted.driver.parent / ("llvm-ranlib" + admitted.driver.suffix)),),
         ),
-        nm=_resolved_llvm_tool("nm", (str(tmp_path / "toolchain/bin/llvm-nm"),)),
+        nm=_resolved_llvm_tool(
+            "nm", (str(admitted.driver.parent / ("llvm-nm" + admitted.driver.suffix)),)
+        ),
         strip=_resolved_llvm_tool(
-            "strip", (str(tmp_path / "toolchain/bin/llvm-strip"),)
+            "strip",
+            (str(admitted.driver.parent / ("llvm-strip" + admitted.driver.suffix)),),
         ),
     )
     monkeypatch.setattr(
@@ -2466,6 +2511,7 @@ def test_direct_build_audits_and_reseals_extracted_wheel(
         "_resolve_source_extension_wasm_toolchain",
         lambda _target, *, environment: (
             cli_source_extension_toolchain._SourceExtensionWasmToolchain(
+                wasi_c_abi=admitted,
                 ok=True,
                 compiler_kind="clang",
                 tools=tools,
@@ -3260,6 +3306,9 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
     capsys,
 ) -> None:
     host = _stub_metadata_build_machine(monkeypatch)
+    admitted = _select_test_wasi_sdk(tmp_path, monkeypatch)
+    bindir = admitted.driver.parent
+    suffix = ".exe" if os.name == "nt" else ""
 
     def tool(
         role: cli_llvm_wasi_tools.LlvmToolRole,
@@ -3273,34 +3322,36 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
             sha256="a" * 64,
         )
 
-    zig_tools = cli_llvm_wasi_tools.LlvmWasiToolFamily(
-        cc=tool("cc", ("/usr/bin/zig", "cc")),
-        cxx=tool("cxx", ("/usr/bin/zig", "c++")),
-        wasm_ld=tool("wasm_ld", ("/usr/bin/wasm-ld",)),
-        ar=tool("ar", ("/usr/bin/zig", "ar")),
-        ranlib=tool("ranlib", ("/usr/bin/zig", "ranlib")),
-        nm=tool("nm", ("/usr/bin/llvm-nm",)),
-        strip=tool("strip", ("/usr/bin/zig", "strip")),
+    sdk_tools = cli_llvm_wasi_tools.LlvmWasiToolFamily(
+        cc=tool(
+            "cc",
+            (
+                str(admitted.driver),
+                "--no-default-config",
+                "--sysroot",
+                str(admitted.sysroot),
+            ),
+        ),
+        cxx=tool("cxx", (str(bindir / ("clang++" + suffix)),)),
+        wasm_ld=tool("wasm_ld", (str(bindir / ("wasm-ld" + suffix)),)),
+        ar=tool("ar", (str(bindir / ("llvm-ar" + suffix)),)),
+        ranlib=tool("ranlib", (str(bindir / ("llvm-ranlib" + suffix)),)),
+        nm=tool("nm", (str(bindir / ("llvm-nm" + suffix)),)),
+        strip=tool("strip", (str(bindir / ("llvm-strip" + suffix)),)),
     )
     monkeypatch.setattr(
         cli_source_extension_toolchain,
         "_resolve_source_extension_wasm_toolchain",
         lambda target_plan, *, environment: (
             cli_source_extension_toolchain._SourceExtensionWasmToolchain(
+                wasi_c_abi=admitted,
                 ok=True,
-                compiler_kind="zig",
-                tools=zig_tools,
-                wasi_sysroot=None,
-                detail="wasm-ld=/usr/bin/wasm-ld; zig=/usr/bin/zig",
+                compiler_kind="clang",
+                tools=sdk_tools,
+                wasi_sysroot=admitted.sysroot,
+                detail="selected SDK fixture family",
             )
         ),
-    )
-    compiler_builtins = tmp_path / "libclang_rt.builtins-wasm32.a"
-    compiler_builtins.write_bytes(b"compiler-builtins")
-    monkeypatch.setattr(
-        cli_source_extension_link_inputs.wasm_link_inputs,
-        "wasm_compiler_builtins_archive",
-        lambda _target, *, environment: compiler_builtins,
     )
     out_dir = tmp_path / "metadata"
     rc = cli_commands.extension_metadata(
@@ -3335,22 +3386,26 @@ def test_extension_metadata_materializes_meson_cross_and_python_pc(
     for option in ("c_args", "cpp_args", "c_link_args", "cpp_link_args"):
         assert f"{option} = []" in native_text
     assert payload["data"]["toolchain"]["tools"]["nm"] == {
-        "command": ["/usr/bin/llvm-nm"],
-        "path": str(Path("/usr/bin/llvm-nm")),
+        "command": [str(bindir / ("llvm-nm" + suffix))],
+        "path": str(bindir / ("llvm-nm" + suffix)),
         "sha256": "a" * 64,
         "version": "22.1.0",
     }
     assert payload["data"]["toolchain"]["commands"]["c"] == [
-        "/usr/bin/zig",
-        "cc",
+        str(admitted.driver),
+        "--no-default-config",
+        "--sysroot",
+        str(admitted.sysroot),
         "-target",
-        "wasm32-wasi",
+        "wasm32-wasip1",
     ]
     assert payload["data"]["toolchain"]["commands"]["cpp"] == [
-        "/usr/bin/zig",
-        "c++",
+        str(bindir / ("clang++" + suffix)),
+        "--no-default-config",
+        "--sysroot",
+        str(admitted.sysroot),
         "-target",
-        "wasm32-wasi",
+        "wasm32-wasip1",
     ]
     assert payload["data"]["paths"]["python_pc"] == str(
         out_dir / "pkgconfig" / "python3.pc"
@@ -3378,6 +3433,7 @@ def test_source_extension_metadata_materializes_host_native_tool_family(
         strip=None,
     )
     resolved = cli_source_extension_toolchain._ResolvedSourceExtensionToolchain(
+        wasi_c_abi=None,
         target_plan=target_plan,
         compiler_kind="host",
         tools=tools,
@@ -3492,6 +3548,7 @@ def test_native_target_metadata_commands_drive_real_extension_build(
         strip=None,
     )
     resolved = cli_source_extension_toolchain._ResolvedSourceExtensionToolchain(
+        wasi_c_abi=None,
         target_plan=target_plan,
         compiler_kind="host",
         tools=tools,
@@ -3628,7 +3685,6 @@ def test_source_extension_native_cross_toolchain_preserves_compiler_and_target(
     assert resolved.commands["c"] == expected_c
     assert resolved.commands["cpp"] == (
         "/tools/clang++",
-        "--driver-mode=gcc",
         "-target",
         "aarch64-apple-darwin",
     )
@@ -3659,8 +3715,10 @@ def test_source_extension_freestanding_metadata_needs_no_wasi_or_libc(
     )
     monkeypatch.setattr(
         cli_source_extension_toolchain,
-        "_resolve_wasi_sysroot",
-        lambda *, env: pytest.fail("freestanding resolution must not probe WASI"),
+        "apply_provisioned_wasm_toolchain",
+        lambda *args, **kwargs: pytest.fail(
+            "freestanding resolution must not probe WASI"
+        ),
     )
     probe_sources: list[str] = []
     probe_commands: list[list[str]] = []
@@ -3688,10 +3746,10 @@ def test_source_extension_freestanding_metadata_needs_no_wasi_or_libc(
         ),
     )
     monkeypatch.setattr(
-        cli_source_extension_link_inputs.wasm_link_inputs,
-        "wasm_compiler_builtins_archive",
-        lambda _target, *, environment: pytest.fail(
-            "freestanding metadata must not require compiler-builtins"
+        cli_source_extension_toolchain,
+        "apply_provisioned_wasm_toolchain",
+        lambda *_args, **_kwargs: pytest.fail(
+            "freestanding metadata must not require SDK compiler-rt"
         ),
     )
 
@@ -3742,6 +3800,7 @@ def test_freestanding_metadata_commands_drive_compile_and_relocatable_link(
         strip=_resolved_llvm_tool("strip", ("/tools/llvm-strip",)),
     )
     resolved = cli_source_extension_toolchain._ResolvedSourceExtensionToolchain(
+        wasi_c_abi=None,
         target_plan=target_plan,
         compiler_kind="clang",
         tools=tools,
@@ -3768,9 +3827,9 @@ def test_freestanding_metadata_commands_drive_compile_and_relocatable_link(
         ),
     )
     monkeypatch.setattr(
-        cli_source_extension_link_inputs.wasm_link_inputs,
-        "wasm_compiler_builtins_archive",
-        lambda _target, *, environment: pytest.fail(
+        cli_source_extension_toolchain,
+        "apply_provisioned_wasm_toolchain",
+        lambda *_args, **_kwargs: pytest.fail(
             "freestanding metadata needs no builtins"
         ),
     )
@@ -3820,7 +3879,7 @@ def test_freestanding_metadata_commands_drive_compile_and_relocatable_link(
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
     monkeypatch.setattr(
         cli_commands,
-        "resolve_wasi_sysroot",
+        "resolve_wasi_c_abi_plan",
         lambda: pytest.fail("freestanding build must not probe WASI"),
     )
     _install_extension_object_symbol_facts(
@@ -3863,195 +3922,76 @@ def test_freestanding_metadata_commands_drive_compile_and_relocatable_link(
     assert manifest["build"]["wasi_sysroot"] is None
 
 
-def test_source_extension_toolchain_rejects_wasm_cc_without_wasi_headers(
-    monkeypatch: pytest.MonkeyPatch,
+def test_source_extension_toolchain_rejects_sdk_probe_missing_headers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cli_llvm_wasi_tools, "_sha256_file", lambda _path: "a" * 64)
-    monkeypatch.setenv("MOLT_WASM_CC", "clang")
-    monkeypatch.delenv("MOLT_CROSS_CC", raising=False)
-    monkeypatch.setattr(
-        cli_llvm_wasi_tools,
-        "find_executable",
-        lambda tool, **_kwargs: {
-            "clang": "/tools/clang",
-            "clang++": "/tools/clang++",
-            "wasm-ld": "/tools/wasm-ld",
-            "llvm-ar": "/tools/llvm-ar",
-            "llvm-ranlib": "/tools/llvm-ranlib",
-            "llvm-nm": "/tools/llvm-nm",
-            "llvm-strip": "/tools/llvm-strip",
-        }.get(tool),
-    )
+    plan = _select_test_wasi_sdk(tmp_path, monkeypatch)
+    monkeypatch.setenv("MOLT_WASM_CC", '"' + str(plan.driver) + '"')
+    calls = []
 
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        del kwargs
+    def run(command, **kwargs):
+        calls.append(command)
         return subprocess.CompletedProcess(
-            cmd,
-            1,
-            "",
-            "fatal error: 'errno.h' file not found\n",
+            command, 1, "", "fatal error: 'errno.h' file not found\n"
         )
 
-    monkeypatch.setattr(
-        cli_source_extension_toolchain.subprocess,
-        "run",
-        fake_run,
-    )
-
-    toolchain = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain(
+    monkeypatch.setattr(cli_source_extension_toolchain.subprocess, "run", run)
+    resolved = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain(
         _source_extension_target_plan("wasm")
     )
-
-    assert toolchain.ok is False
-    assert toolchain.compiler_kind == "molt_wasm_cc"
-    assert "MOLT_WASM_CC cannot compile the WASI source-extension probe" in (
-        toolchain.detail
-    )
-    assert "errno.h" in toolchain.detail
-    assert "WASI_SYSROOT" in toolchain.detail
+    assert not resolved.ok
+    assert "errno.h" in resolved.detail
+    assert len(calls) == 1
+    assert calls[0][0] == str(plan.driver)
 
 
-def test_source_extension_toolchain_prefers_wasm_cc_and_probes_target(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_source_extension_toolchain_rejects_foreign_compiler_before_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cli_llvm_wasi_tools, "_sha256_file", lambda _path: "a" * 64)
-    seen_commands: list[list[str]] = []
-    monkeypatch.setenv("MOLT_WASM_CC", "clang-wasm")
-    monkeypatch.setenv("MOLT_CROSS_CC", "wrong-cross")
-    tool_root = tmp_path / "tools"
-    tool_root.mkdir()
-    tool_paths = {
-        name: tool_root / name
-        for name in (
-            "clang-wasm",
-            "wrong-cross",
-            "clang++",
-            "wasm-ld",
-            "llvm-ar",
-            "llvm-ranlib",
-            "llvm-nm",
-            "llvm-strip",
+    _select_test_wasi_sdk(tmp_path, monkeypatch)
+    foreign = RuntimeFixtureRoot(tmp_path).native_executable("foreign/clang")
+    monkeypatch.setenv("MOLT_WASM_CC", '"' + str(foreign) + '"')
+    monkeypatch.setattr(
+        cli_source_extension_toolchain,
+        "_probe_wasm_source_extension_compiler",
+        lambda *a, **kw: pytest.fail("foreign compiler must not run"),
+    )
+    with pytest.raises(ValueError, match="admitted WASI SDK clang"):
+        cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain(
+            _source_extension_target_plan("wasm")
         )
-    }
-    for path in tool_paths.values():
-        path.write_bytes(b"tool")
-        path.chmod(0o755)
-    monkeypatch.setenv("MOLT_WASM_CC", '"' + str(tool_paths["clang-wasm"]) + '"')
-    monkeypatch.setattr(
-        cli_llvm_wasi_tools,
-        "find_executable",
-        lambda tool, **_kwargs: str(tool_paths[tool]) if tool in tool_paths else None,
-    )
-
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        seen_commands.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
-
-    monkeypatch.setattr(
-        cli_source_extension_toolchain.subprocess,
-        "run",
-        fake_run,
-    )
-
-    toolchain = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain(
-        _source_extension_target_plan("wasm")
-    )
-
-    assert toolchain.ok is True
-    assert toolchain.compiler_kind == "molt_wasm_cc"
-    assert toolchain.tools.cc is not None
-    assert toolchain.tools.cc.command == (str(tool_paths["clang-wasm"].resolve()),)
-    assert "MOLT_WASM_CC=" in toolchain.detail
-    assert str(tool_paths["clang-wasm"].resolve()) in toolchain.detail
-    assert "wrong-cross" not in toolchain.detail
-    compile_commands = [command for command in seen_commands if "-c" in command]
-    assert compile_commands
-    assert compile_commands[0][:3] == [
-        str(tool_paths["clang-wasm"].resolve()),
-        "-target",
-        "wasm32-wasip1",
-    ]
 
 
-def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_source_extension_toolchain_accepts_selected_sdk_target_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cli_llvm_wasi_tools, "_sha256_file", lambda _path: "a" * 64)
-    sysroot = tmp_path / "wasi-sysroot-33.0+m"
-    include_dir = sysroot / "include" / "wasm32-wasip1"
-    include_dir.mkdir(parents=True)
-    (include_dir / "errno.h").write_text("#define EINVAL 28\n", encoding="utf-8")
-    wasm_link_inputs._resolve_wasi_sysroot_cached.cache_clear()
-    monkeypatch.setenv("WASI_SYSROOT", str(sysroot))
-    monkeypatch.delenv("MOLT_WASM_CC", raising=False)
-    monkeypatch.delenv("MOLT_CROSS_CC", raising=False)
-    tool_root = tmp_path / "tools"
-    tool_root.mkdir()
-    tool_paths = {
-        name: tool_root / name
-        for name in (
-            "clang",
-            "clang++",
-            "zig",
-            "wasm-ld",
-            "llvm-ar",
-            "llvm-ranlib",
-            "llvm-nm",
-            "llvm-strip",
-        )
-    }
-    for path in tool_paths.values():
-        path.write_bytes(b"tool")
-    monkeypatch.setattr(
-        cli_llvm_wasi_tools,
-        "find_executable",
-        lambda tool, **_kwargs: str(tool_paths[tool]) if tool in tool_paths else None,
-    )
-    seen_commands: list[list[str]] = []
+    plan = _select_test_wasi_sdk(tmp_path, monkeypatch)
+    calls = []
 
-    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        seen_commands.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+    def run(command, **kwargs):
+        calls.append(command)
+        assert kwargs["env"]["WASI_SDK_PATH"] == str(plan.sdk)
+        return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(
-        cli_source_extension_toolchain.subprocess,
-        "run",
-        fake_run,
-    )
-
-    toolchain = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain(
+    monkeypatch.setattr(cli_source_extension_toolchain.subprocess, "run", run)
+    resolved = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain(
         _source_extension_target_plan("wasm")
     )
-
-    assert toolchain.ok is True
-    assert toolchain.compiler_kind == "clang"
-    assert toolchain.tools.cc is not None
-    assert toolchain.tools.cc.command[-2:] == (
-        "--sysroot",
-        str(sysroot.resolve(strict=False)),
-    )
-    assert toolchain.wasi_sysroot == sysroot.resolve(strict=False)
-    compile_commands = [command for command in seen_commands if "-c" in command]
-    assert compile_commands
-    sysroot_index = compile_commands[0].index("--sysroot")
-    assert compile_commands[0][sysroot_index : sysroot_index + 5] == [
-        "--sysroot",
-        str(sysroot.resolve(strict=False)),
-        "-target",
-        "wasm32-wasip1",
-        "-c",
-    ]
+    assert resolved.ok, resolved.detail
+    assert resolved.wasi_sysroot == plan.sysroot
+    assert len(calls) == 1
+    assert calls[0][0] == str(plan.driver)
+    assert calls[0].count("--no-default-config") == 1
+    assert calls[0][calls[0].index("--sysroot") + 1] == str(plan.sysroot)
+    assert calls[0][calls[0].index("-target") + 1] == "wasm32-wasip1"
 
 
 def test_wasm_cxx_runtime_archives_resolve_matching_exception_variant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    sysroot = tmp_path / "wasi-sysroot"
+    plan = runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path))
+    sysroot = plan.sysroot
     library_root = sysroot / "lib" / "wasm32-wasip1" / "eh"
     library_root.mkdir(parents=True)
     libcxx = library_root / "libc++.a"
@@ -4062,8 +4002,8 @@ def test_wasm_cxx_runtime_archives_resolve_matching_exception_variant(
     libunwind.write_bytes(b"!<arch>\nlibunwind")
     monkeypatch.setattr(
         wasm_link_inputs,
-        "resolve_wasi_sysroot",
-        lambda: sysroot,
+        "resolve_wasi_c_abi_plan",
+        lambda **_kw: plan,
     )
 
     assert wasm_link_inputs.wasm_cxx_runtime_archives() == (
@@ -4077,7 +4017,8 @@ def test_wasm_cxx_runtime_archives_resolve_matching_no_exception_variant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    sysroot = tmp_path / "wasi-sysroot"
+    plan = runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path))
+    sysroot = plan.sysroot
     library_root = sysroot / "lib" / "wasm32-wasip1" / "noeh"
     library_root.mkdir(parents=True)
     libcxx = library_root / "libc++.a"
@@ -4086,8 +4027,8 @@ def test_wasm_cxx_runtime_archives_resolve_matching_no_exception_variant(
     libcxxabi.write_bytes(b"!<arch>\nlibcxxabi")
     monkeypatch.setattr(
         wasm_link_inputs,
-        "resolve_wasi_sysroot",
-        lambda: sysroot,
+        "resolve_wasi_c_abi_plan",
+        lambda **_kw: plan,
     )
 
     assert wasm_link_inputs.wasm_cxx_runtime_archives(exceptions=False) == (
@@ -4171,11 +4112,11 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
             ),
         },
     )
-    wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
+    _select_test_wasi_sdk(tmp_path, monkeypatch)
     monkeypatch.setattr(
         cli_commands,
-        "resolve_wasi_sysroot",
-        lambda: wasi_sysroot,
+        "resolve_wasi_c_abi_plan",
+        lambda: llvm_toolchain.selected_wasi_c_abi_plan(ROOT, environ=dict(os.environ)),
         raising=True,
     )
 
@@ -4352,11 +4293,11 @@ def test_extension_build_wasm_source_recompiled_package_requires_export_custody(
         ),
         encoding="utf-8",
     )
-    wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
+    _select_test_wasi_sdk(tmp_path, monkeypatch)
     monkeypatch.setattr(
         cli_commands,
-        "resolve_wasi_sysroot",
-        lambda: wasi_sysroot,
+        "resolve_wasi_c_abi_plan",
+        lambda: llvm_toolchain.selected_wasi_c_abi_plan(ROOT, environ=dict(os.environ)),
         raising=True,
     )
 
@@ -4409,11 +4350,11 @@ def test_extension_build_wasm_source_recompiled_package_accepts_cli_python_expor
         monkeypatch,
         default_init_symbol=init_symbol,
     )
-    wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
+    _select_test_wasi_sdk(tmp_path, monkeypatch)
     monkeypatch.setattr(
         cli_commands,
-        "resolve_wasi_sysroot",
-        lambda: wasi_sysroot,
+        "resolve_wasi_c_abi_plan",
+        lambda: llvm_toolchain.selected_wasi_c_abi_plan(ROOT, environ=dict(os.environ)),
         raising=True,
     )
 
@@ -4480,11 +4421,11 @@ def test_extension_build_wasm_target_rejects_missing_direct_symbol(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
-    wasi_sysroot = _write_fake_wasi_sysroot(tmp_path)
+    _select_test_wasi_sdk(tmp_path, monkeypatch)
     monkeypatch.setattr(
         cli_commands,
-        "resolve_wasi_sysroot",
-        lambda: wasi_sysroot,
+        "resolve_wasi_c_abi_plan",
+        lambda: llvm_toolchain.selected_wasi_c_abi_plan(ROOT, environ=dict(os.environ)),
         raising=True,
     )
 
@@ -4518,17 +4459,15 @@ def test_extension_build_wasm_target_requires_wasi_sysroot(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(cli_commands, "_run_completed_command", fake_run)
-    monkeypatch.setattr(
-        cli_commands,
-        "resolve_wasi_sysroot",
-        lambda: None,
-        raising=True,
-    )
+
+    def absent(**kwargs):
+        raise llvm_toolchain.LlvmToolchainConfigError("selected SDK is absent")
+
+    monkeypatch.setattr(cli_commands, "resolve_wasi_c_abi_plan", absent)
     monkeypatch.setattr(
         cli_source_extension_toolchain,
-        "_resolve_wasi_sysroot",
-        lambda *, env: None,
-        raising=True,
+        "apply_provisioned_wasm_toolchain",
+        lambda *a, **kw: (),
     )
 
     out_dir = project_root / "dist"
@@ -4554,12 +4493,8 @@ def test_wasi_sysroot_resolver_accepts_target_specific_include_layout(
     include_dir.mkdir(parents=True)
     (include_dir / "errno.h").write_text("#define EINVAL 28\n", encoding="utf-8")
 
-    assert wasm_link_inputs.normalize_wasi_sysroot(sysroot) == sysroot.resolve(
-        strict=False
-    )
-    assert wasm_link_inputs.normalize_wasi_sysroot(include_dir) == sysroot.resolve(
-        strict=False
-    )
+    assert normalize_wasi_sysroot(sysroot) == sysroot.resolve(strict=False)
+    assert normalize_wasi_sysroot(include_dir) == sysroot.resolve(strict=False)
 
 
 @pytest.mark.parametrize(
@@ -4599,6 +4534,7 @@ def test_extension_numpy_build_uses_compiled_link_closure_matrix(
             strip=None,
         )
         resolved = cli_source_extension_toolchain._ResolvedSourceExtensionToolchain(
+            wasi_c_abi=None,
             target_plan=target_plan,
             compiler_kind="zig",
             tools=tools,
@@ -8182,3 +8118,49 @@ def test_c_api_version_authority_rejects_invalid_compiled_layout(
     header.write_bytes(contents)
     with pytest.raises(ValueError, match="C-API version authority"):
         _default_molt_c_api_version(tmp_path)
+
+
+@pytest.mark.parametrize("foreign_role", ("c", "cpp"))
+def test_extension_build_direct_wasi_commands_reject_foreign_compiler_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    foreign_role: str,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    _write_extension_project(project)
+    plan = _select_test_wasi_sdk(tmp_path, monkeypatch)
+    foreign = RuntimeFixtureRoot(tmp_path).native_executable("foreign/clang")
+    commands = {
+        "c": (
+            str(plan.driver),
+            "--target=wasm32-wasip1",
+            "--sysroot",
+            str(plan.sysroot),
+        ),
+        "cpp": (
+            str(plan.driver.with_name("clang++" + plan.driver.suffix)),
+            "--target=wasm32-wasip1",
+            "--sysroot",
+            str(plan.sysroot),
+        ),
+    }
+    commands[foreign_role] = (str(foreign), *commands[foreign_role][1:])
+    monkeypatch.setattr(
+        cli_commands,
+        "_run_completed_command",
+        lambda *_args, **_kwargs: pytest.fail("foreign compiler executed"),
+    )
+    result = cli_commands.extension_build(
+        project=str(project),
+        out_dir=str(project / "dist"),
+        target="wasm",
+        deterministic=False,
+        json_output=False,
+        verbose=False,
+        tool_commands=commands,
+    )
+    assert result != 0
+    captured = capsys.readouterr()
+    assert "must select the admitted WASI SDK clang" in captured.err + captured.out

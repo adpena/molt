@@ -68,7 +68,7 @@ def test_provider_surface_owns_complete_archive_symbol_families(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     libc = tmp_path / "libc.a"
-    compiler_rt = tmp_path / "libcompiler_builtins.rlib"
+    compiler_rt = tmp_path / "libclang_rt.builtins.a"
     libcxx = tmp_path / "libc++.a"
     libcxxabi = tmp_path / "libc++abi.a"
     libunwind = tmp_path / "libunwind.a"
@@ -78,7 +78,7 @@ def test_provider_surface_owns_complete_archive_symbol_families(
     monkeypatch.setattr(
         providers,
         "_resolved_provider_archives",
-        lambda _target: (
+        lambda _target, _classes, _plan: (
             (providers.WASM_LIBC_LINK_IMPORT_CLASS, (libc,)),
             (providers.WASM_COMPILER_RT_LINK_IMPORT_CLASS, (compiler_rt,)),
             (
@@ -144,7 +144,7 @@ def test_unreadable_provider_family_fails_closed(
     monkeypatch.setattr(
         providers,
         "_resolved_provider_archives",
-        lambda _target: (
+        lambda _target, _classes, _plan: (
             (providers.WASM_LIBC_LINK_IMPORT_CLASS, (libc,)),
             (providers.WASM_COMPILER_RT_LINK_IMPORT_CLASS, ()),
             (providers.WASM_LIBCXX_LINK_IMPORT_CLASS, ()),
@@ -209,7 +209,7 @@ def test_provider_projection_admits_once_and_fences_native_cache_hits(
     monkeypatch.setattr(
         providers,
         "_resolved_provider_archives",
-        lambda target: (
+        lambda _target, _classes, _plan: (
             (providers.WASM_LIBC_LINK_IMPORT_CLASS, (archive,)),
             (providers.WASM_COMPILER_RT_LINK_IMPORT_CLASS, ()),
             (providers.WASM_LIBCXX_LINK_IMPORT_CLASS, ()),
@@ -302,3 +302,58 @@ def test_provider_projection_admits_once_and_fences_native_cache_hits(
         native_symbol_inspection.NativeSymbolInspectionError, match="changed"
     ):
         query()
+
+
+def test_resolved_c_provider_families_share_the_selected_sdk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        runtime_wasi_c_abi_plan,
+    )
+
+    plan = runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path))
+    cxx = plan.sysroot / "lib/wasm32-wasip1/eh"
+    cxx.mkdir()
+    archives = tuple(cxx / name for name in ("libc++.a", "libc++abi.a", "libunwind.a"))
+    for path in archives:
+        path.write_bytes(b"!<arch>\n")
+    monkeypatch.setattr(
+        providers.wasm_link_inputs, "resolve_wasi_c_abi_plan", lambda **kw: plan
+    )
+    assert providers._resolved_provider_archives("wasm32-wasip1", None, None) == (
+        (
+            providers.WASM_LIBC_LINK_IMPORT_CLASS,
+            (plan.path("long_double"), plan.path("libc")),
+        ),
+        (providers.WASM_COMPILER_RT_LINK_IMPORT_CLASS, (plan.path("compiler_rt"),)),
+        (providers.WASM_LIBCXX_LINK_IMPORT_CLASS, archives),
+    )
+    monkeypatch.setattr(
+        providers.wasm_link_inputs,
+        "resolve_wasi_c_abi_plan",
+        lambda **kw: pytest.fail("freestanding source extension must not select libc"),
+    )
+    assert all(
+        not paths
+        for _, paths in providers._resolved_provider_archives(
+            "wasm32-unknown-unknown", None, None
+        )
+    )
+
+
+def test_compiler_rt_discovery_does_not_resolve_unrequested_cxx(monkeypatch, tmp_path):
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        runtime_wasi_c_abi_plan,
+    )
+
+    plan = runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path))
+    monkeypatch.setattr(
+        providers.wasm_link_inputs,
+        "wasm_cxx_runtime_archives",
+        lambda **kwargs: pytest.fail("unrequested C++ family inspected"),
+    )
+    assert providers._resolved_provider_archives(
+        "wasm32-wasip1", frozenset({providers.WASM_COMPILER_RT_LINK_IMPORT_CLASS}), plan
+    ) == ((providers.WASM_COMPILER_RT_LINK_IMPORT_CLASS, (plan.path("compiler_rt"),)),)

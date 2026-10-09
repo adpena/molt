@@ -29,6 +29,125 @@
 - Cargo-hosted DX helpers: `wasm-tools`, `wasm-pack`, and `cargo-edit`
   (`cargo-upgrade`) for dependency sweeps.
 
+## WASI C and C++ ownership
+
+The pinned wasi-sdk supplies one complete C ABI: headers, libc, the binary128
+print/scan archive, compiler-rt, and command/reactor startup objects. The finite
+Python/Rust transport is declared in `src/molt/wasi_c_abi_protocol.txt`. Cargo
+uses the selected raw `wasm-ld` with stable `linker-flavor=wasm-ld` and
+`link-self-contained=no`. Library artifacts have no command or reactor CRT;
+the corresponding executable producer owns startup. C/C++ driver commands
+retain explicit target/sysroot and `--no-default-config`. C++ additionally
+retains its lexical `clang++` role or explicit `--driver-mode=g++`; shared
+compiler image bytes do not make C and C++ final-link defaults interchangeable.
+The shared protocol also declares Rust's link mode. Its Python producer is
+checked with the pinned stable rustc before the Rust build-script decoder;
+rustc's unstable `wasm-lld` spelling is not the stable `wasm-ld` option.
+
+`RuntimeCargoPlan` retains the selected managed SDK generation. Shared and
+relocatable specifications, link arguments, and fingerprints project its finite
+receipt facts; there is no separate link-input state or unused Rust-builtins
+archive input. Configuration and toolchain getters are pure. Mutable external
+Cargo configuration, native/Rust tools and resources retain admission and actual
+execution fences. Generated static libraries and export-response files retain
+capture, post-link checks, format validation, and atomic publication.
+Pure `wasm32-unknown-unknown` Rust requires no C SDK. Explicit C-provider builds
+carry the C ABI projection even when their final application is freestanding.
+
+The same retained C ABI projection supplies ordered native-library search roots
+for target Rust dependencies, before user search roots. The selected libc and
+compiler-rt directories therefore reach std linkage and proof capture as well
+as Molt build scripts. SDK roots retain managed receipt identity and portable
+path labels; they do not enter mutable recursive resource capture. User search
+roots keep their existing byte and membership fences. Build scripts validate
+this complete context and retain formatter-before-libc and whole-archive
+ordering; they do not introduce a second SDK search projection or global CRTs.
+The standalone unknown-target CPython ABI retains its own bundled libc obligation;
+it is not interchangeable with the runtime's unbundled downstream archive policy.
+
+The default DX environment exports WASI Rust flags only for `wasm32-wasip1`.
+An explicit unknown-target C-provider environment uses the existing
+`python -m molt.llvm_toolchain --verify-wasm --wasi-rust-target
+wasm32-unknown-unknown --github-env <path>` projection. Native flags are untouched.
+For direct Cargo, global `RUSTFLAGS` or `CARGO_ENCODED_RUSTFLAGS` override Cargo's
+target-specific flags; callers selecting those lanes must carry the complete
+projected WASI context. The shared Rust decoder rejects an incomplete effective
+context. A runtime Cargo plan instead completes its selected effective lane
+before capture and execution.
+
+Rust codegen options have one token authority in `molt.rust_toolchain`:
+`-C value`, `-Cvalue`, `--codegen value`, and `--codegen=value` share the
+same semantic projection. Short-option clusters retain preceding no-argument
+switches (for example `-gC...` and `-vC value`). Underscores and hyphens in
+codegen keys are equivalent; text after the first `=` remains opaque. Missing
+or empty codegen operands and `-C=value` are refused.
+The pinned Rust outer option arity consumes each raw value first, including
+paths that begin with `-C` or `--codegen`. Codegen operands retain their exact
+bytes; shell parsing belongs only to the
+existing textual environment boundary. Cargo's own options and its `--`
+delimiter remain separate from the forwarded Rust lane and Rust's end of options.
+Proof receipts retain the observed command and relative-tool argument spans.
+Runtime flags normalize spelling before resource custody and identity; aliases
+cannot select a linker, backend, or response file outside that custody. A `-L`
+value has an explicit kind only when its prefix names a known Rust search kind;
+otherwise the whole value, including `=`, is an `all` search path. Those literal
+paths receive the same capture and SDK-prefix ordering checks.
+Interrupted-process inventory marks malformed or truncated arguments incomplete.
+
+The runtime target coordinate appends its reference-types/SIMD directive only
+when it differs from the last actual target-feature directive. Later SDK search
+and external-libc options do not cause repeated policy growth. Re-resolving a
+plan's environment therefore preserves its recipe and identity across target,
+`RUSTFLAGS`, and `CARGO_ENCODED_RUSTFLAGS` selection. This policy does not parse or
+rewrite opaque linker arguments or add guest instrumentation.
+
+Development Rust link capture uses Cargo's admitted artifact selection.
+Cargo-level `--crate-type` replaces selected manifest kinds; forwarded rustc
+crate types add to them. Forwarded-only explicit kinds reuse the existing Cargo
+metadata selector: discovery locates the finite workspace/selected manifest and
+source inputs, then one authoritative query runs inside their generation fence.
+The final Cargo transcript and digest own the selected target kinds; receivers
+rederive that selection and reuse/armed custody verify the captured input bytes
+without invoking Cargo. This conditional second query is limited to ambiguous
+forwarded kinds; explicit Cargo overrides do not query manifest metadata. `lib`, `rlib`, and `staticlib` are archive-only;
+a successful probe for those kinds must print no linker command. Link-producing
+kinds require their own captured process images, independent of the host
+proc-macro unit. Unspecified Cargo output kinds retain the std capability probe.
+Telemetry v4 and unit v2 bind the exact producer command, artifact selection and
+per-unit image membership through reuse, armed capture and persisted receivers;
+these facts do not add guest code or change runtime content keys.
+
+Native-extension linking admits SDK roles against original paths, then carries
+those roles and content identities through private snapshots and import
+rewrites. Provider planning finishes before capture closes. A split app forces
+its captured formatter once before lazy libc; the combined link resolves it
+from the relocatable runtime. Object/member definitions and canonical runtime
+imports are subtracted before compiler-rt discovery. An unresolved dormant
+archive member can defer an absent SDK; an eager obligation requires it.
+Requested provider families are filtered before archive inspection.
+
+Source-extension Meson setup, build-tool probes and generator materialization
+use the existing fresh build directory as their working directory. It is
+disjoint from authored source and retained on failure: compiler detection may
+create or replace implicit linker outputs even during a version query.
+
+`wasm.test.control-flow` depends on the WASM host/shared runtime and executes independent binary128
+FILE/stdout/string witnesses and a real Meson C++ library/ABI witness. Its
+`wasi-clang` proof identity selects the SDK's compiler, helpers, and resources;
+native `clang` retains the backend's separate LLVM policy. Before live custody
+is armed, proof selection captures the finite receipt and actual helper images,
+and registers broad watches for SDK `lib` and `share/wasi-sysroot`. After arming,
+one resource capture per selected generation checks bytes and portable topology
+against the receipt. All admitted tool roles share that capture. The existing
+custody CAS stores its inventory once; receivers expand it and require its exact
+`FrozenFile` projection, required target/role membership and process-image
+closure. Closing byte checks and live mutation watches retain their existing
+semantics, including new directory members and transient changes. A tree digest
+alone does not replace them. Native identities retain their existing digest
+contract and carry no SDK field. These development captures and checks add no
+guest instrumentation. Required Cargo library,
+installed-package, and hosted-platform acceptance remain separate proof cells.
+
 ## CI toolchain admission
 
 `.github/actions/setup-project` is the shared CI provisioner on Linux, macOS,
@@ -57,7 +176,12 @@ partial installation cannot trigger competing repairs during proof fanout.
 Proof commands that build Rust declare both `rustc` and `cargo`, including the
 Python binding and runtime-artifact partitions. The existing proof executor
 fingerprints the union of declared tools before scheduling commands; Rust
-fingerprints share its serialized `rustup` domain. This developer setup has no
+fingerprints share its serialized `rustup` domain. Cargo configuration precedence
+is owned by `molt.rust_toolchain`; runtime plans, queued proofs, and standalone
+fingerprints consume it without importing the CLI. The core SDK/LLVM authorities
+likewise own finite receipt selection and helper-byte capture; guarded proofs
+project those facts into their process-image schema and armed resource custody.
+This developer setup has no
 emitted guest runtime cost. Archive availability, aliases, native binaries,
 and target libraries still require real cold-provision validation on each
 supported runner OS and architecture; simulated setup tests are not that proof.
@@ -120,10 +244,27 @@ identity-addressed installation,
 `<toolchain root>/toolchains/<archive root>-<asset record digest>`, atomically
 and only after the C/C++ compilers, archive tools, linker, `llvm-nm`, VERSION,
 headers, and libc are present.
-The receipt binds the exact host asset record to a digest over every SDK path,
-file byte, and link target. An existing installation is reused only while that
-digest still matches; it is never repaired or replaced in place. CI caches only
-the digest-keyed archive.
+The v2 receipt binds the exact host asset record to a digest over every SDK path,
+file byte, and link target. The same authenticated tree walk derives finite
+identities for the six required tools, optional `llvm-strip`, five C ABI members,
+and the two proof resource subtrees; role aliases resolve through its captured
+link graph. Rendering those facts never rereads live member bytes.
+
+The provisioner owns append-only managed generations. Ordinary compilation reads
+the finite receipt and does not rescan SDK contents or rerun SDK tools merely to
+project identity. Supported consumers must not edit or remove an active generation;
+this contract is not OS-enforced immutability or protection against its owner.
+Actual archive parsing, source snapshots and compilation still consume their
+required bytes. Provisioning and explicit verification detect SDK drift instead
+of silently adopting edited bytes as another valid release.
+
+Only the provisioner upgrades a v1 receipt: it verifies the existing tree once
+against the old aggregate and exact selected asset, derives v2 facts from that
+capture, and atomically replaces only the receipt. It does not redownload,
+reinstall, repair or rewrite SDK payload files. Ordinary consumers require v2
+and diagnose an old receipt with the provisioning command; there is no legacy
+consumer fallback. Provisioning reuse and `--verify-wasm` still verify the managed
+generation. CI caches only the digest-keyed archive.
 
 `--verify-wasm` recomputes the tree identity, proves the exact SDK `wasm-ld`
 and `llvm-nm` releases, and projects `MOLT_WASM_LD`, `MOLT_LLVM_NM`,
@@ -133,10 +274,13 @@ same SDK in place, preserving adjacent resources and libraries. Target C/C++
 flags disable implicit `clang.cfg` configuration; the admitted target and sysroot
 remain authoritative. Native PATH, compiler selectors, and flags are unchanged.
 WASM archive inspection consumes
-only the verified SDK `llvm-nm`, from `MOLT_LLVM_NM` or else the
-custody-provisioned SDK; its exact version/content receipt is part of
-persistent symbol-cache identity, with no Rust-toolchain or ambient native `nm`
-fallback. Build and readiness paths discover a provisioned SDK but never
+only an `llvm-nm` at the SDK's LLVM release, from `MOLT_LLVM_NM` or the
+custody-provisioned SDK. A reader in the selected managed generation retains
+that installation and its finite role fact; its generation and content bind the
+symbol cache without image rehashing or version probes. An explicit external
+reader retains actual executable capture, exact-version admission, alias and
+mutation fences. Object/archive byte custody, parsing and cache validation are
+unchanged. There is no Rust-toolchain or ambient native `nm` fallback. Build and readiness paths discover a provisioned SDK but never
 install one.
 
 Native archive inspection walks the managed `nm` ladder (`llvm-nm`, then
@@ -149,8 +293,8 @@ lists those IR symbols with a dash placeholder instead of an address, which is
 not a symbol-table row. GNU nm has no bitcode reader and takes no flag.
 
 `MOLT_LLVM_NM` selects one executable, not a shell command. A selected path or
-PATH-resolved name must pass lexical and resolved-content custody before probing;
-the captured executable generation is checked again at execution and cache reuse.
+PATH-resolved name must retain its lexical role. Mutable external readers pass
+resolved-content custody before probing and retain execution/cache-reuse checks.
 Quoted paths preserve spaces and native separators without admitting arguments.
 
 Optimized linked WASM builds require Binaryen from
@@ -634,3 +778,59 @@ verification requests, and closes on EOF. One-shot captures use the same
 capture context and verifier. Source, Cargo/tool configuration and artifact
 publication checks remain fresh at their existing boundaries; only successful
 live runtime verification permits reuse of the immutable semantic projection.
+
+### Native C processes in development proofs
+
+A proof command that builds native C units declares `cargo_native_c_units` in
+`tools/proof_plan.toml`: `target`, `host`, or both. This is an operation
+requirement, not a property of every Rust dependency. Equal target and host
+units share one capture. Runtime-only WASI builds use their existing managed
+SDK closure and do not acquire a native C obligation.
+
+The existing Cargo selector owns CC/AR precedence: target spelling, underscored
+target spelling, HOST_/TARGET_ spelling, then the unqualified variable. Native
+defaults come from the same target plan as ordinary Cargo; cross selections
+require explicit tools. Full Cargo native C proofs currently require the C unit
+target to equal the Rust compiler host: paths alone do not establish cc-rs's
+target-specific default flags. Host C units in cross Rust builds remain valid;
+source-extension commands retain their separate explicit target authority.
+The selected C compiler is independent of the Rust
+linker and bindgen's CLANG_PATH. Unresolved Cargo configuration overrides,
+package-relative resource paths and unsupported compiler wrappers fail before
+capture. Pre-arm binding publishes the captured physical RUSTC/CARGO paths and
+target-qualified C tools, so the payload does not reselect them through rustup
+or ambient defaults.
+
+The Rust capture records the actual C and preprocessed-assembly driver phases,
+independently selected archiver, mutable resource inputs, and helper images.
+GCC helpers may reside outside the driver's directory; their reported commands
+supply the image paths. The existing MSVC cl/lib policy retains its in-process
+C frontend. Native source-extension C/C++ roles use this same phase authority;
+freestanding WASM has a frontend phase but no GNU assembly unit. Managed WASI
+compiler roles keep their existing SDK image authority.
+
+Required units and helpers are validated through image projection, armed
+capture, persisted CAS receipts and reuse. Warm reuse checks current selection
+and bytes without rerunning driver phases. Rustup component selection is resolved
+before a cache lookup; unchanged proxy bytes do not pin an old override. Mutable
+C resource and Node package contents are inventoried once after watcher arming;
+discovery retains selected roots and finite resolver/manifest facts. New members
+between discovery and arming enter that complete inventory. Full receipts require
+the inventory, and live watches cover subsequent membership changes. It supplies
+the same boundary's file checks. The same captured files enter the
+Cargo cache key and live mutation guard. Build-script-specific flags may select
+additional children; they must satisfy actual child custody, never a guessed
+helper allowlist. These are development-proof costs and do not add checks or
+instrumentation to emitted guests. A resource-guarded benchmark alone does not
+claim this full process closure.
+
+### Compiler host hash seeds
+
+The CLI preserves normal CPython startup semantics and does not restart Python
+to select a hash seed. Compiler IR serialization and backend cache payload
+identities must be independent of the host seed. Installed CLI execution keeps
+Python `-I` isolation; ordinary `PYTHONHASHSEED` remains an interpreter-launch
+experiment control where CPython permits it. The former Molt seed override and
+restart sentinel are retired with explicit environment migration diagnostics.
+Wrapper build reuse still includes `PYTHONHASHSEED` in its broader environment
+identity; cross-seed wrapper reuse is not implied by backend payload determinism.

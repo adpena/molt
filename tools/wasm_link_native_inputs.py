@@ -6,7 +6,9 @@ from wasm_link_fact_provider import WasmFactsProvider
 
 from molt.wasm_artifact import skip_wasm_import_description as _parse_import_desc
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
+from types import MappingProxyType
 import json
 from pathlib import Path
 from molt.temporary_artifacts import OwnedTemporaryDirectory
@@ -17,18 +19,18 @@ from molt._wasm_abi_generated import (
 )
 from molt._wasm_runtime_exports import _CPYTHON_ABI_LINK_IMPORT_CLASS
 from molt.cli import wasm_link_inputs
+from molt.wasi_sdk_identity import WasiCAbiProjection
 from molt.cli.external_link_providers import (
     WASM_COMPILER_RT_LINK_IMPORT_CLASS,
-    WASM_LIBCXX_LINK_IMPORT_CLASS,
-    WASM_LIBC_LINK_IMPORT_CLASS,
     wasm_external_link_provider_symbols,
 )
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
+    SourceExtensionLinkCyclicGroup,
+    SourceExtensionLinkInput,
     SourceExtensionLinkLoadingPolicy,
     merge_source_extension_link_requirements,
     render_source_extension_link_arguments,
-    source_extension_link_file,
 )
 from wasm_link_export_contract import (
     _TRAP_FUNC_BODY,
@@ -52,38 +54,24 @@ def _read_link_allowlist_symbols(path: Path) -> list[str]:
     ]
 
 
-def _external_native_host_link_imports() -> tuple[str, ...]:
+def _external_native_host_link_imports(
+    provider_symbols: frozenset[str] = frozenset(),
+) -> tuple[str, ...]:
     generated = {
         symbol
         for symbol in WASM_EXTERNAL_NATIVE_LINK_IMPORTS
         if WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(symbol)
-        not in {
-            WASM_COMPILER_RT_LINK_IMPORT_CLASS,
-            _CPYTHON_ABI_LINK_IMPORT_CLASS,
-        }
+        not in {WASM_COMPILER_RT_LINK_IMPORT_CLASS, _CPYTHON_ABI_LINK_IMPORT_CLASS}
     }
-    provider_symbols = wasm_external_link_provider_symbols(
-        primitive_classes=frozenset(
-            {WASM_LIBC_LINK_IMPORT_CLASS, WASM_LIBCXX_LINK_IMPORT_CLASS}
-        )
-    )
     return tuple(sorted(generated | provider_symbols))
 
 
-def _compiler_rt_link_imports() -> frozenset[str]:
-    generated = {
-        symbol
-        for symbol, primitive_class in (
-            WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.items()
-        )
-        if primitive_class == WASM_COMPILER_RT_LINK_IMPORT_CLASS
-    }
-    return frozenset(
-        generated
-        | wasm_external_link_provider_symbols(
-            primitive_classes=frozenset({WASM_COMPILER_RT_LINK_IMPORT_CLASS})
-        )
-    )
+@dataclass(frozen=True)
+class ResolvedNativeLinkInputs:
+    requirements: SourceExtensionLinkRequirements
+    provider_paths: Mapping[str, Path]
+    provider_symbols: frozenset[str]
+    host_symbols: frozenset[str]
 
 
 def _compiler_rt_imports_from_wasm(
@@ -100,96 +88,150 @@ def _compiler_rt_imports_from_wasm(
     )
 
 
-def _compiler_rt_imports_required_by_native_objects(
-    native_objects: Sequence[Path],
-    *,
-    facts_provider: WasmFactsProvider,
-) -> frozenset[str]:
-    compiler_rt_imports = _compiler_rt_link_imports()
-    return frozenset(
-        sorted(
-            symbol
-            for native_object in native_objects
-            for symbol in _compiler_rt_imports_from_wasm(
-                native_object,
-                compiler_rt_imports,
-                facts_provider=facts_provider,
-            )
-        )
-    )
-
-
-def _eager_native_link_paths(
-    requirements: SourceExtensionLinkRequirements,
-) -> tuple[Path, ...]:
-    """Object files and whole archives are obligations before linker selection."""
-    eager = []
-    for item in requirements.inputs:
-        path = Path(item.path)
-        with path.open("rb") as stream:
-            archive = stream.read(len(AR_MAGIC)) == AR_MAGIC
-        if not archive or item.loading is SourceExtensionLinkLoadingPolicy.ALL_MEMBERS:
-            eager.append(path)
-    return tuple(dict.fromkeys(eager))
-
-
-def _compiler_rt_provider_inputs(
-    native_objects: Sequence[Path],
-    required_symbols: frozenset[str],
-    candidate_symbols: frozenset[str],
-) -> tuple[Path, ...]:
-    if not candidate_symbols:
-        return ()
-    provider = wasm_link_inputs.wasm_compiler_builtins_archive()
-    if provider is None:
-        if not required_symbols:
-            return ()
-        missing = ", ".join(sorted(required_symbols))
-        raise ValueError(
-            "wasm_compiler_rt_link_import symbols require Rust wasm32-wasip1 "
-            f"libcompiler_builtins provider; missing provider for: {missing}"
-        )
-    try:
-        provider = provider.resolve(strict=True)
-    except OSError as exc:
-        raise ValueError(
-            f"wasm_compiler_rt_link_import provider does not exist: {provider}"
-        ) from exc
-    for native_object in native_objects:
-        if native_object.expanduser().absolute() == provider:
-            return ()
-    return (provider,)
+def native_link_input_is_eager(item: SourceExtensionLinkInput) -> bool:
+    """An object is eager regardless of suffix; archives obey declared loading."""
+    with Path(item.path).open("rb") as stream:
+        archive = stream.read(len(AR_MAGIC)) == AR_MAGIC
+    return not archive or item.loading is SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
 
 
 def _resolve_native_link_requirements(
     requirements: SourceExtensionLinkRequirements,
     *,
     source_paths: Mapping[Path, Path],
+    capture_input: Callable[[SourceExtensionLinkInput], SourceExtensionLinkInput],
     facts_provider: WasmFactsProvider,
-) -> SourceExtensionLinkRequirements:
-    """Resolve providers from captured bytes and exact original input identities."""
-    native_inputs = tuple(Path(item.path) for item in requirements.inputs)
-    candidates = _compiler_rt_imports_required_by_native_objects(
-        native_inputs, facts_provider=facts_provider
+    runtime_exports: frozenset[str] = frozenset(),
+    wasi_plan: WasiCAbiProjection | None = None,
+) -> ResolvedNativeLinkInputs:
+    """Plan the complete provider closure before the snapshot transaction closes.
+
+    Object/member facts are scanned once. Only unresolved, noncanonical names
+    justify archive discovery; dormant lazy members alone never require an SDK.
+    Original paths admit SDK roles, while requirements retain captured bytes.
+    """
+    originals = tuple(source_paths[Path(item.path)] for item in requirements.inputs)
+    plan = wasi_plan or wasm_link_inputs.admit_wasi_provider_inputs(originals)
+    imported: set[str] = set()
+    eager_imported: set[str] = set()
+    defined: set[str] = set()
+    input_definitions: dict[Path, set[str]] = {}
+    for item in requirements.inputs:
+        path = Path(item.path)
+        eager = native_link_input_is_eager(item)
+        local_definitions = input_definitions.setdefault(path, set())
+        for member in iter_wasm_object_members(path):
+            facts = facts_provider(member.data)
+            names = {fact.name for fact in facts.imports if fact.kind == 0}
+            names.update(facts.linking_symbols.undefined_functions)
+            imported.update(names)
+            if eager:
+                eager_imported.update(names)
+            local_definitions.update(facts.linking_symbols.defined_functions)
+            imported_functions = sum(fact.kind == 0 for fact in facts.imports)
+            local_definitions.update(
+                name
+                for name, index in facts.function_exports.items()
+                if index >= imported_functions
+            )
+        defined.update(local_definitions)
+    resolved = defined | set(WASM_EXTERNAL_NATIVE_LINK_IMPORTS) | set(runtime_exports)
+    candidates = imported - resolved
+    required = eager_imported - resolved
+    if plan is None and candidates:
+        if required or wasm_link_inputs.resolve_wasi_sysroot() is not None:
+            plan = wasm_link_inputs.resolve_wasi_c_abi_plan()
+    if plan is None:
+        return ResolvedNativeLinkInputs(
+            requirements, MappingProxyType({}), frozenset(), frozenset()
+        )
+
+    member_digests = {path: digest for _role, path, _size, digest in plan.files}
+    for item, original in zip(requirements.inputs, originals, strict=True):
+        if original in member_digests and item.sha256 != member_digests[original]:
+            raise ValueError(
+                f"captured SDK provider differs from admitted C ABI member: {original}"
+            )
+    original_items = {
+        source_paths[Path(item.path)]: item for item in requirements.inputs
+    }
+    roles = {
+        role: path
+        for role, path, _size, _digest in plan.files
+        if role in {"libc", "long_double", "compiler_rt"} and path in original_items
+    }
+    if "libc" in roles or "long_double" in roles:
+        roles.update(
+            (role, plan.path(role)) for role in ("libc", "long_double", "compiler_rt")
+        )
+    captured: dict[Path, SourceExtensionLinkInput] = {}
+
+    def capture_provider(path: Path) -> SourceExtensionLinkInput:
+        if path not in captured:
+            captured[path] = original_items.get(path) or capture_input(
+                SourceExtensionLinkInput(str(path), member_digests[path])
+            )
+        return captured[path]
+
+    for path in roles.values():
+        capture_provider(path)
+    compiler_symbols = frozenset()
+    if candidates or "compiler_rt" in roles:
+        provider = plan.path("compiler_rt")
+        item = capture_provider(provider)
+        if provider in original_items:
+            compiler_symbols = frozenset(input_definitions[Path(item.path)])
+        else:
+            compiler_symbols = wasm_external_link_provider_symbols(
+                primitive_classes=frozenset({WASM_COMPILER_RT_LINK_IMPORT_CLASS}),
+                plan=plan,
+                archive_paths={provider: Path(item.path)},
+            )
+        if candidates & compiler_symbols:
+            roles["compiler_rt"] = provider
+    host_symbols: set[str] = set()
+    for original, item in original_items.items():
+        if original.name in {
+            "libc.a",
+            "libc-printscan-long-double.a",
+            "libc++.a",
+            "libc++abi.a",
+            "libunwind.a",
+        }:
+            host_symbols.update(input_definitions[Path(item.path)])
+    # Staged C providers use captured members once; no live provider can join
+    # after this plan. Originally supplied members already have symbol facts.
+    for role in ("libc", "long_double"):
+        path = roles.get(role)
+        if path is None or path in original_items:
+            continue
+        for member in iter_wasm_object_members(Path(captured[path].path)):
+            host_symbols.update(
+                facts_provider(member.data).linking_symbols.defined_functions
+            )
+    providers = tuple(
+        captured[path]
+        for path in dict.fromkeys(roles.values())
+        if path not in original_items
     )
-    required = _compiler_rt_imports_required_by_native_objects(
-        _eager_native_link_paths(requirements),
-        facts_provider=facts_provider,
-    )
-    providers = _compiler_rt_provider_inputs(
-        tuple(source_paths[path] for path in native_inputs), required, candidates
-    )
-    if not providers:
-        return requirements
-    return merge_source_extension_link_requirements(
-        (
-            requirements,
-            SourceExtensionLinkRequirements(
-                requirements.target_triple,
-                tuple(source_extension_link_file(path) for path in providers),
+    merged = (
+        merge_source_extension_link_requirements(
+            (
+                requirements,
+                SourceExtensionLinkRequirements(requirements.target_triple, providers),
             ),
+            target_triple=requirements.target_triple,
+        )
+        if providers
+        else requirements
+    )
+    return ResolvedNativeLinkInputs(
+        merged,
+        MappingProxyType(
+            {role: Path(captured[path].path) for role, path in roles.items()}
         ),
-        target_triple=requirements.target_triple,
+        frozenset(host_symbols) | compiler_symbols,
+        frozenset(host_symbols),
     )
 
 
@@ -219,40 +261,43 @@ def _sealed_native_init_symbols(native_objects: Sequence[Path]) -> tuple[str, ..
 
 def _split_app_native_link_args(
     requirements: SourceExtensionLinkRequirements,
+    *,
+    provider_paths: Mapping[str, Path],
 ) -> list[str]:
-    """wasm-ld args for the SPLIT app link, overriding wasi-libc's ``%L`` stub.
-
-    The split ``app.wasm`` statically links numpy/scipy + their own wasi-libc
-    ``libc.a`` but â€” unlike the combined ``output_linked.wasm`` â€” does NOT link
-    the reloc runtime object, so numpy's ``NumPyOS_ascii_formatl`` ->
-    ``snprintf("%Lg")`` binds ``libc.a``'s ``long_double_not_supported`` stub
-    (raw ``unreachable`` trap at ``_multiarray_umath`` import).
-
-    Applies the SINGLE long-double link authority
-    (:func:`wasm_link_inputs.resolve_long_double_link_policy` +
-    :func:`wasm_link_inputs.long_double_whole_archive_link_argv`) â€” the SAME policy
-    the reloc runtime and deploy cdylib links apply: whole-archive
-    ``libc-printscan-long-double.a`` ahead of ``libc.a`` so its real
-    ``vfprintf``/``__floatscan``/``strtold`` override the stub objects (they stay
-    lazy once defined), + the binary128 soft-float builtins. Scoped to the split
-    app ONLY: the combined link already carries these from the reloc runtime, so
-    whole-archiving there duplicate-symbols. Non-numpy builds (no ``libc.a``) get
-    the plain passthrough.
-    """
-    inputs = [Path(item.path) for item in requirements.inputs]
-    if not any(path.name == "libc.a" for path in inputs):
+    """Force the captured formatter once in the app; other providers stay lazy."""
+    formatter = provider_paths.get("long_double")
+    if formatter is None:
         return list(render_source_extension_link_arguments(requirements))
-    # libc.a present => numpy/scipy static tier: a missing formatter archive is a
-    # HARD ERROR (relinking the abort stub would trap at import).
-    policy = wasm_link_inputs.resolve_long_double_link_policy(required=True)
-    if policy.error is not None:
-        raise ValueError(policy.error)
-    return [
-        *wasm_link_inputs.long_double_whole_archive_link_argv(
-            policy, whole_archive=[], trailing=[]
+    formatter_items = tuple(
+        item for item in requirements.inputs if Path(item.path) == formatter
+    )
+    if len(formatter_items) != 1:
+        raise ValueError("split app formatter must be captured exactly once")
+
+    def retained(item):
+        return (
+            not isinstance(item, SourceExtensionLinkInput)
+            or Path(item.path) != formatter
+        )
+
+    rest = []
+    for item in requirements.items:
+        if isinstance(item, SourceExtensionLinkCyclicGroup):
+            members = tuple(member for member in item.members if retained(member))
+            if members:
+                rest.append(replace(item, members=members))
+        elif retained(item):
+            rest.append(item)
+    selected = replace(
+        requirements,
+        items=(
+            replace(
+                formatter_items[0], loading=SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
+            ),
+            *rest,
         ),
-        *render_source_extension_link_arguments(requirements),
-    ]
+    )
+    return list(render_source_extension_link_arguments(selected))
 
 
 def _required_native_direct_symbols(
@@ -354,6 +399,7 @@ def _compose_wasm_ld_allowlist(
     base_allowlist: Path,
     native_link_requirements: SourceExtensionLinkRequirements,
     temp_dir: OwnedTemporaryDirectory,
+    provider_symbols: frozenset[str] = frozenset(),
 ) -> Path:
     """Return the wasm-ld allowlist for this link transaction.
 
@@ -367,7 +413,7 @@ def _compose_wasm_ld_allowlist(
     symbols = sorted(
         {
             *_read_link_allowlist_symbols(base_allowlist),
-            *_external_native_host_link_imports(),
+            *_external_native_host_link_imports(provider_symbols),
         }
     )
     composed = Path(temp_dir.name) / "wasm_allowed_imports.external_native.txt"
@@ -391,6 +437,7 @@ def _compose_split_runtime_native_allowlist(
     native_link_requirements: SourceExtensionLinkRequirements,
     split_runtime_exports: set[str],
     temp_dir: OwnedTemporaryDirectory,
+    provider_symbols: frozenset[str] = frozenset(),
 ) -> Path:
     """Return the deployed split-app allowlist for static native extensions.
 
@@ -409,7 +456,7 @@ def _compose_split_runtime_native_allowlist(
     symbols = sorted(
         {
             *_read_link_allowlist_symbols(base_allowlist),
-            *_external_native_host_link_imports(),
+            *_external_native_host_link_imports(provider_symbols),
             *split_runtime_exports,
         }
     )

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.llvm_toolchain import capture_wasi_sdk_selection
+
 from dataclasses import replace
 import os
 from pathlib import Path
@@ -545,7 +547,21 @@ def test_target_derived_capture_receives_selected_environment(
     assert observed == [selected]
 
 
-def test_sysroot_directory_is_in_live_custody(tmp_path: Path) -> None:
+def test_sdk_resource_directories_are_in_live_custody(tmp_path: Path) -> None:
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        provisioned_wasi_sdk_fixture,
+    )
+
+    sdk = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    from tools import proof_plan
+
+    selection = capture_wasi_sdk_selection(
+        root=proof_plan.ROOT, env={"WASI_SDK_PATH": str(sdk.sdk)}
+    )
     assert execution_environment._broad_toolchain_roots(
-        {"source-extension": {"sysroot_custody": {"root": str(tmp_path)}}}
-    ) == [tmp_path.resolve()]
+        {"source-extension": {"wasi_sdk": selection}}
+    ) == [
+        sdk.sdk / "lib",
+        sdk.sysroot,
+    ]

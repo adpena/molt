@@ -14,7 +14,7 @@ Index mode executes the captured staged generator with its staged manifest, poli
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 334 |
+| Hashed executable authority inputs | 1 | 336 |
 | Local path rules | 35 | 43 |
 | Unique local commands | 73 | 98 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -104,7 +104,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | Toolchain | Identity kind | Provider | Required version | Probe cwd | Setup value | Setup evidence |
 |---|---|---|---|---|---|---:|
 | `python` | `executable` | — | `^Python 3\.12\.15$` | `.` | `3.12.15` | 2 |
-| `source-extension` | `target-derived` | `source-extension` | `^molt-source-extension-toolchain-v2$` | — | — | — |
+| `source-extension` | `target-derived` | `source-extension` | `^molt-source-extension-toolchain-v4$` | — | — | — |
 | `uv` | `executable` | — | `^uv 0\.12\.23\b` | `.` | `0.12.23` | 1 |
 | `node` | `executable` | — | `^v26\.10\.0$` | `.` | `26.10.0` | 3 |
 | `rustc` | `executable` | — | `^rustc 1\.99\.0\b` | `.` | `1.99.0` | 3 |
@@ -113,6 +113,8 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `git` | `executable` | — | `^git version 2\.` | `.` | `2.x` | 1 |
 | `rustfmt` | `executable` | — | `^rustfmt 1\.10\.0-stable\b` | `.` | `1.10.0` | 3 |
 | `clang` | `executable` | — | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
+| `ninja` | `executable` | — | `^1\.13\.0(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$` | `.` | `1.13.0` | 2 |
+| `wasi-clang` | `executable` | — | `clang version 23\.1\.0\b` | `.` | `23.1.0` | 1 |
 | `llvm-config` | `executable` | — | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
 | `mlir-opt` | `executable` | — | `version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `ld.lld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
@@ -196,22 +198,22 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.release-supply-chain` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 600 s | `repository-policy` | 5 |
 | `wasm.build.backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
-| `wasm.build.host` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
-| `wasm.build.shared-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
-| `wasm.build.split-runtime-release` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
-| `wasm.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
+| `wasm.build.host` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `wasm.build.shared-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `wasm.build.split-runtime-release` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `wasm.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 3 |
 | `wasm.run.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 1 |
-| `wasm.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
+| `wasm.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 3 |
 | `wasm.run.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 1 |
 | `luau.compile.hello` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
 | `luau.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
-| `wasm.compile.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
+| `wasm.compile.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 3 |
 | `wasm.run.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 1 |
-| `wasm.test.control-flow` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
+| `wasm.test.control-flow` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 3 |
 | `wasm.integration.split-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 3 |
 | `wasm.integration.host-exports` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 4 |
-| `wasm.test.freestanding-e2e` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
-| `wasm.test.finally-pending-observer-parity` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
+| `wasm.test.freestanding-e2e` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 3 |
+| `wasm.test.finally-pending-observer-parity` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 3 |
 | `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | `explicit` | 300 s | `python-static` | 0 |
 | `python.unit.harness` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.harness.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |

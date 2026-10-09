@@ -10,6 +10,10 @@ from typing import (
     Sequence,
 )
 
+from molt._runtime_feature_gates import (
+    LINK_AFFECTING_FEATURES,
+    link_affecting_features_unsupported_on_target,
+)
 from molt.cli.atomic_io import (
     _atomic_write_text,
 )
@@ -106,6 +110,7 @@ def _prebuild_runtime_wasm(
     freestanding: bool = False,
     stdlib_profile: str | None = DEFAULT_STDLIB_PROFILE,
     verbose: bool = False,
+    required_link_features: frozenset[str] = frozenset(),
 ) -> int:
     def fail(
         message: str,
@@ -129,6 +134,14 @@ def _prebuild_runtime_wasm(
             print(message, file=sys.stderr)
         return 1
 
+    invalid_features = required_link_features - (
+        LINK_AFFECTING_FEATURES
+        - link_affecting_features_unsupported_on_target("wasm32-wasip1")
+    )
+    if invalid_features:
+        return fail(
+            "Unsupported WASI runtime features: " + ", ".join(sorted(invalid_features))
+        )
     try:
         installed = installed_runtime_active(project_root)
     except ValueError as exc:
@@ -143,7 +156,7 @@ def _prebuild_runtime_wasm(
         return fail(profile_error)
     concrete_stdlib_profile = runtime_stdlib_profile_for_required_features(
         stdlib_profile,
-        frozenset(),
+        required_link_features,
         target_triple="wasm32-wasip1",
     )
     runtime_state = _initialize_runtime_artifact_state(
@@ -172,6 +185,7 @@ def _prebuild_runtime_wasm(
         simd_enabled=simd_enabled,
         freestanding=freestanding,
         stdlib_profile=concrete_stdlib_profile,
+        required_link_features=required_link_features,
         resolved_modules=None,
         required_exports=None,
     ):

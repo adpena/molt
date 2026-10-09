@@ -70,7 +70,7 @@ from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     mock_wasm_optimizer_cache_fact,
     mock_wasm_optimizer_publications,
-    runtime_wasm_link_inputs,
+    provisioned_wasi_sdk_fixture,
     bind_runtime_wasm_specs as _bind_specs,
     runtime_build_identity as make_runtime_build_identity,
     runtime_toolchain_content_manifest,
@@ -199,13 +199,6 @@ def _synthetic_cargo_plan(
         runtime_wasm_build_spec,
         "resolve_runtime_cargo_plan",
         partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
-    )
-    monkeypatch.setattr(
-        runtime_wasm_build_spec,
-        "resolve_runtime_wasm_link_inputs",
-        lambda **kwargs: runtime_wasm_link_inputs(
-            runtime_fixture_root, env=kwargs["env"]
-        ),
     )
 
 
@@ -423,12 +416,12 @@ def test_synthetic_tools_do_not_mutate_read_only_source_root(
         },
         cargo_command=("cargo", "rustc"),
     )
-    inputs = runtime_wasm_link_inputs(runtime_fixture_root)
+    sdk = provisioned_wasi_sdk_fixture(runtime_fixture_root)
     executable_digest = hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
-    assert inputs.linker.identity.sha256 == executable_digest
+    assert sdk.tool_fact("wasm-ld")["sha256"] == executable_digest
     if os.name == "posix":
         assert (
-            inputs.linker.entrypoint.stat().st_mode & 0o7777
+            sdk.wasm_ld.stat().st_mode & 0o7777
             == Path(sys.executable).stat().st_mode & 0o7777
         )
     assert len(plan.wrappers) == 2
@@ -450,9 +443,9 @@ def test_synthetic_tools_do_not_mutate_read_only_source_root(
         item.entrypoint.is_relative_to(runtime_fixture_root.path)
         for item in plan.rust_resources.files
     )
-    assert inputs.linker.entrypoint.is_relative_to(runtime_fixture_root.path)
+    assert sdk.wasm_ld.is_relative_to(runtime_fixture_root.path)
     assert (runtime_fixture_root.path / "test-rustlib").is_dir()
-    assert (runtime_fixture_root.path / "runtime-link-inputs").is_dir()
+    assert sdk.sdk.is_dir()
 
 
 @pytest.mark.parametrize(
@@ -486,7 +479,7 @@ def test_synthetic_runtime_writes_require_typed_fixture_ownership(
             tmp_path, fixture_root=unowned, env={}, cargo_command=("cargo",)
         )
     with pytest.raises(TypeError, match="pytest-owned runtime_fixture_root"):
-        runtime_wasm_link_inputs(unowned)
+        provisioned_wasi_sdk_fixture(unowned)
     assert not (tmp_path / "test-rustlib").exists()
     assert not (tmp_path / "runtime-link-inputs").exists()
 
@@ -533,18 +526,22 @@ def test_reloc_and_shared_specs_share_compile_but_differ_in_fingerprint() -> Non
         assert flag in shared.link_flags
 
 
-def test_reloc_linker_custody_tracks_exact_binary_bytes(
-    runtime_fixture_root: RuntimeFixtureRoot,
-) -> None:
-    inputs = runtime_wasm_link_inputs(runtime_fixture_root)
-    before = inputs.linker.identity.sha256
-    inputs.linker.entrypoint.write_bytes(
-        inputs.linker.entrypoint.read_bytes() + b"fixture-change"
+def test_explicit_sdk_verify_rejects_changed_linker(runtime_fixture_root):
+    from molt import llvm_toolchain
+
+    sdk = provisioned_wasi_sdk_fixture(runtime_fixture_root)
+    before = sdk.tool_fact("wasm-ld")["sha256"]
+    sdk.wasm_ld.write_bytes(sdk.wasm_ld.read_bytes() + b"fixture-change")
+    assert (
+        provisioned_wasi_sdk_fixture(runtime_fixture_root).tool_fact("wasm-ld")[
+            "sha256"
+        ]
+        == before
     )
-    after = runtime_wasm_link_inputs(runtime_fixture_root).linker.identity.sha256
-    assert before != after
-    with pytest.raises(ValueError, match="changed"):
-        inputs.verify()
+    with pytest.raises(llvm_toolchain.LlvmToolchainConfigError, match="tree differs"):
+        llvm_toolchain.load_wasi_sdk_installation(
+            _compiler_root(), sdk.prefix, verify_tree=True
+        )
 
 
 @pytest.mark.parametrize("freestanding", [False, True])

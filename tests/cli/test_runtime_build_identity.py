@@ -20,9 +20,20 @@ from molt.cli.runtime_artifact_selection import (
     RuntimeArtifactSelection,
 )
 from molt.exact_json import canonical_json_bytes, canonical_json_sha256
+from molt.source_root import compiler_source_root
 from molt.wasi_sysroot import resolve_wasi_sysroot_layout
 from tests.operation_probe import same_thread_probe
-from tests.runtime_build_identity_helper import build_python_identity_fixture
+from tests.runtime_build_identity_helper import (
+    build_python_identity_fixture,
+    RuntimeFixtureRoot,
+    provisioned_wasi_sdk_fixture,
+)
+from molt.llvm_toolchain import (
+    wasi_c_abi_plan,
+    project_wasm_toolchain_environment,
+    load_wasi_sdk_installation,
+    LlvmToolchainConfigError,
+)
 from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
 from molt.cli import runtime_cargo_plan as cargo_plans
 from molt.cli import runtime_identity_schema as schema
@@ -43,6 +54,14 @@ _TEST_HOST_TARGET = "test-host"
 @pytest.fixture(scope="module")
 def runtime_receipt() -> dict[str, object]:
     return runtime_identity_manifest()
+
+
+def _sdk(root: Path):
+    return provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(root))
+
+
+def _c_abi(root: Path):
+    return wasi_c_abi_plan(_sdk(root))
 
 
 def _test_plan(
@@ -72,7 +91,6 @@ def _test_plan(
 
 
 def _provision_toolchain(root: Path) -> schema.RuntimeToolchainContentManifest:
-    archive_root = root / "archives"
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env.update(
@@ -80,27 +98,18 @@ def _provision_toolchain(root: Path) -> schema.RuntimeToolchainContentManifest:
             "RUSTC": sys.executable,
             "CARGO": sys.executable,
             "MOLT_BUILD_PYTHON": sys.executable,
-            "CC_wasm32-wasip1": sys.executable,
-            "CXX_wasm32-wasip1": sys.executable,
-            "AR_wasm32-wasip1": sys.executable,
-            "RANLIB_wasm32-wasip1": sys.executable,
             "CARGO_HOME": str(root / "test-cargo-home"),
             "RUSTC_WRAPPER": "",
             "RUSTC_WORKSPACE_WRAPPER": "",
         }
     )
+    env.update(project_wasm_toolchain_environment(_sdk(root), environ={}))
     plan = _test_plan(root, env)
     return identity.provision_wasm_runtime_toolchain_content_manifest(
         project_root=root,
         env=plan.environment,
         cargo_plan=plan,
         target_triple="wasm32-wasip1",
-        wasi_sysroot=root / "wasi-sysroot",
-        wasm_linker=Path(sys.executable),
-        long_double_archive=archive_root / "libc-printscan-long-double.a",
-        builtins_archive=archive_root / "libclang_rt.builtins-wasm32.a",
-        wasi_libc_archive=archive_root / "libc.a",
-        rust_builtins_archive=archive_root / "libcompiler_builtins.rlib",
     )
 
 
@@ -116,14 +125,6 @@ def _resolve(
     artifact_selection: RuntimeArtifactSelection = RUNTIME_WASM_COMBINED_ARTIFACTS,
     runtime_features: tuple[str, ...] = ("stdlib_micro",),
 ) -> schema.RuntimeBuildIdentity:
-    archive_root = root / "archives"
-    sysroot = root / "wasi-sysroot"
-    archives = [
-        archive_root / "libc.a",
-        archive_root / "libcompiler_builtins.rlib",
-        archive_root / "libc-printscan-long-double.a",
-        archive_root / "libclang_rt.builtins-wasm32.a",
-    ]
     target = None if kind == "native" else "wasm32-wasip1"
     ambient = cargo_plans._CargoEnvironment(os.environ)
     # Ambient cc-rs inputs (the RunContext exports CFLAGS_<wasm target>, and
@@ -143,10 +144,6 @@ def _resolve(
             "RUSTC": sys.executable,
             "CARGO": sys.executable,
             "MOLT_BUILD_PYTHON": sys.executable,
-            "CC_wasm32-wasip1": sys.executable,
-            "CXX_wasm32-wasip1": sys.executable,
-            "AR_wasm32-wasip1": sys.executable,
-            "RANLIB_wasm32-wasip1": sys.executable,
             "CARGO_HOME": str(root / "test-cargo-home"),
             "RUSTC_WRAPPER": "",
             "RUSTC_WORKSPACE_WRAPPER": "",
@@ -159,6 +156,8 @@ def _resolve(
                 for name in ("CC", "CXX", "AR", "RANLIB")
             }
         )
+    if kind != "native":
+        env.update(project_wasm_toolchain_environment(_sdk(root), environ={}))
     env.update(extra_env or {})
     env["RUSTFLAGS"] = base_rustflags
     plan = _test_plan(root, env, response_path=response_path, target_triple=target)
@@ -173,6 +172,7 @@ def _resolve(
             cargo_command=plan.command,
         )
     if kind == "cpython-abi":
+        assert plan.wasi_c_abi is not None
         return identity.resolve_wasm_cpython_abi_build_identity(
             root,
             env=plan.environment,
@@ -182,7 +182,7 @@ def _resolve(
             rustflags=base_rustflags,
             cargo_command=plan.command,
             artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
-            wasi_sysroot=sysroot,
+            wasi_sysroot=plan.wasi_c_abi.sysroot,
         )
     shared, reloc = identity.resolve_wasm_runtime_build_family_identities(
         root,
@@ -219,12 +219,6 @@ def _resolve(
                 link_args=("--export=reloc",),
             ),
         ),
-        wasi_sysroot=sysroot,
-        wasm_linker=Path(sys.executable),
-        long_double_archive=archives[2],
-        builtins_archive=archives[3],
-        wasi_libc_archive=archives[0],
-        rust_builtins_archive=archives[1],
     )
     return shared if kind == "shared" else reloc
 
@@ -260,28 +254,12 @@ def identity_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "runtime_build_tooling_paths",
         lambda root: (root / "runtime-planner.py",),
     )
-    sysroot = tmp_path / "wasi-sysroot"
-    (sysroot / "include").mkdir(parents=True)
-    (sysroot / "include" / "errno.h").write_text(
-        "#define WASI_ERRNO 1\n", encoding="utf-8"
-    )
-    (sysroot / "include" / "stddef.h").write_text(
-        "typedef int size_t;\n", encoding="utf-8"
-    )
-    (sysroot / "lib" / "wasm32-wasip1").mkdir(parents=True)
-    (sysroot / "lib" / "wasm32-wasip1" / "libwasi-emulated-signal.a").write_bytes(
-        b"signal"
-    )
-    (sysroot / "VERSION").write_text("33\n", encoding="utf-8")
+    _sdk(tmp_path)
     archive_root = tmp_path / "archives"
     archive_root.mkdir()
-    for name in (
-        "libc.a",
-        "libcompiler_builtins.rlib",
-        "libc-printscan-long-double.a",
-        "libclang_rt.builtins-wasm32.a",
-    ):
-        (archive_root / name).write_bytes(name.encode("ascii"))
+    (archive_root / "libcompiler_builtins.rlib").write_bytes(b"rust compiler builtins")
+    # This separate directory is a Rust --sysroot flag resource in relocation tests.
+    (tmp_path / "wasi-sysroot").mkdir()
     monkeypatch.setattr(
         identity,
         "runtime_source_paths",
@@ -390,7 +368,7 @@ def test_runtime_features_change_exact_compile_and_member_identity(
     assert expanded.digest != baseline.digest
 
 
-def test_identity_observes_source_and_sysroot_mutation_without_cache(
+def test_identity_observes_mutable_source_and_retains_managed_sdk_generation(
     identity_root: Path,
 ) -> None:
     before = _resolve(
@@ -409,7 +387,11 @@ def test_identity_observes_source_and_sysroot_mutation_without_cache(
     assert after_source.digest != before.digest
     assert after_source.family_digest != before.family_digest
 
-    (identity_root / "wasi-sysroot" / "include" / "stddef.h").write_text(
+    installation = _sdk(identity_root)
+    load_wasi_sdk_installation(
+        compiler_source_root(), installation.prefix, verify_tree=True
+    )
+    (_c_abi(identity_root).include / "stddef.h").write_text(
         "typedef unsigned size_t;\n", encoding="utf-8"
     )
     after_header = _resolve(
@@ -417,8 +399,12 @@ def test_identity_observes_source_and_sysroot_mutation_without_cache(
         kind="shared",
         publication="strip-final-link-metadata-v1",
     )
-    assert after_header.digest != after_source.digest
-    assert after_header.family_digest != after_source.family_digest
+    assert after_header.digest == after_source.digest
+    assert after_header.family_digest == after_source.family_digest
+    with pytest.raises(LlvmToolchainConfigError, match="filesystem tree differs"):
+        load_wasi_sdk_installation(
+            compiler_source_root(), installation.prefix, verify_tree=True
+        )
 
 
 def test_canonical_profile_and_publication_transform_are_identity_inputs(
@@ -643,7 +629,8 @@ def test_runtime_tooling_authority_excludes_orthogonal_cli_files(
     _, before = identity._capture_runtime_build_trees(tmp_path, ())
     unrelated.write_text("# unrelated 2\n", encoding="utf-8")
     _, after_unrelated = identity._capture_runtime_build_trees(tmp_path, ())
-    owned = tmp_path / identity._RUNTIME_BUILD_TOOLING_RELPATHS[0]
+    assert "src/molt/rust_toolchain.py" in authority_paths
+    owned = tmp_path / "src/molt/rust_toolchain.py"
     owned.write_text("# runtime authority changed\n", encoding="utf-8")
     _, after_owned = identity._capture_runtime_build_trees(tmp_path, ())
 
@@ -690,14 +677,24 @@ def test_ambient_c_and_cxx_flags_are_family_identity_inputs(
     )
 
     assert baseline.family_digest != changed.family_digest
-    assert baseline.payload["family"]["compile"]["common_config"][
-        "ambient_c_build_environment"
-    ] == {
-        cargo_plans._CargoEnvironment({}).canonical_key("CFLAGS_wasm32-wasip1"): (
-            "-O1",
-        ),
-        "CXXFLAGS": ("-fno-rtti",),
-    }
+    expected = {"CXXFLAGS": ("-fno-rtti",)}
+    for name in (
+        "CFLAGS_wasm32-wasip1",
+        "CFLAGS_wasm32_wasip1",
+        "CXXFLAGS_wasm32-wasip1",
+        "CXXFLAGS_wasm32_wasip1",
+    ):
+        expected[cargo_plans._CargoEnvironment({}).canonical_key(name)] = (
+            ("-O1", "--no-default-config")
+            if name == "CFLAGS_wasm32-wasip1"
+            else ("--no-default-config",)
+        )
+    assert (
+        baseline.payload["family"]["compile"]["common_config"][
+            "ambient_c_build_environment"
+        ]
+        == expected
+    )
 
 
 def test_build_script_environment_is_semantic_content_identity(
@@ -708,12 +705,9 @@ def test_build_script_environment_is_semantic_content_identity(
     (pythonpath / "helper.py").write_text("VERSION = 1\n", encoding="utf-8")
     relocated = identity_root / "relocated-pythonpath"
     shutil.copytree(pythonpath, relocated)
-    archives = identity_root / "archives"
     common = {
         "MOLT_WASM_CPYTHON_ABI_EXPORTS": "Py_False, PyLong_Type; Py_False",
         "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS": "Py_False",
-        "MOLT_WASM_LONGDOUBLE_ARCHIVE": str(archives / "libc-printscan-long-double.a"),
-        "MOLT_WASM_BUILTINS_ARCHIVE": str(archives / "libclang_rt.builtins-wasm32.a"),
     }
     baseline = _resolve(
         identity_root,
@@ -741,8 +735,14 @@ def test_build_script_environment_is_semantic_content_identity(
         "Py_False",
     )
     assert build_script["MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS"] == ("Py_False",)
-    assert build_script["MOLT_WASM_LONGDOUBLE_ARCHIVE"]["state"] == "resolved"
-    assert build_script["MOLT_WASM_BUILTINS_ARCHIVE"]["state"] == "resolved"
+    assert build_script["MOLT_WASI_C_ABI_PLAN"]["state"] == "selected"
+    assert set(build_script["MOLT_WASI_C_ABI_PLAN"]["content"]["members"]) == {
+        "libc",
+        "long_double",
+        "compiler_rt",
+        "crt_command",
+        "crt_reactor",
+    }
     assert str(identity_root) not in json.dumps(baseline.to_dict(), sort_keys=True)
 
     (relocated / "helper.py").write_text("VERSION = 2\n", encoding="utf-8")
@@ -801,7 +801,7 @@ def test_build_script_identity_rejects_retired_import_authority_and_policy_drift
 ) -> None:
     build_python = build_python_identity_fixture()
     payload = {
-        "schema": script_schema + ".v2",
+        "schema": script_schema + ".v3",
         **identity._build_python_script_environment_identity(
             {}, build_python_identity=build_python
         ),
@@ -811,10 +811,9 @@ def test_build_script_identity_rejects_retired_import_authority_and_policy_drift
             {
                 "MOLT_WASM_CPYTHON_ABI_EXPORTS": "ignored-for-target",
                 "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS": "ignored-for-target",
-                "MOLT_WASM_LONGDOUBLE_ARCHIVE": {"state": "ignored-for-target"},
-                "MOLT_WASM_BUILTINS_ARCHIVE": {"state": "ignored-for-target"},
             }
         )
+    payload["MOLT_WASI_C_ABI_PLAN"] = {"state": "ignored-for-target"}
     schema._validated_build_script_environment(
         payload, target="x86_64-test-native", build_python=build_python
     )
@@ -1491,9 +1490,9 @@ def test_portable_manifest_is_evidence_not_live_capture_authority(
     restored = schema.RuntimeToolchainContentManifest.read(manifest_path)
     assert restored == before.toolchain_manifest
     if resource == "archive":
-        (identity_root / "archives" / "libc.a").write_bytes(b"changed")
+        (_c_abi(identity_root).path("libc")).write_bytes(b"changed")
     elif resource == "sysroot":
-        (identity_root / "wasi-sysroot" / "include" / "errno.h").write_text(
+        (_c_abi(identity_root).include / "errno.h").write_text(
             "#define WASI_ERRNO 2\\n", encoding="utf-8"
         )
     else:
@@ -1508,21 +1507,33 @@ def test_portable_manifest_is_evidence_not_live_capture_authority(
     after = _resolve(
         identity_root, kind="shared", publication="strip-final-link-metadata-v1"
     )
-    assert after.toolchain_manifest != restored
-    assert after.compile_digest != before.compile_digest
+    if resource == "python":
+        assert after.toolchain_manifest != restored
+        assert after.compile_digest != before.compile_digest
+    else:
+        assert after.toolchain_manifest == restored
+        assert after.compile_digest == before.compile_digest
+        with pytest.raises(LlvmToolchainConfigError, match="filesystem tree differs"):
+            load_wasi_sdk_installation(
+                compiler_source_root(), _sdk(identity_root).prefix, verify_tree=True
+            )
 
 
-def test_exact_toolchain_manifest_observes_changed_archive_byte(
+def test_managed_manifest_keeps_provisioned_generation_until_explicit_verification(
     identity_root: Path,
 ) -> None:
     before = _provision_toolchain(identity_root)
-    archive = identity_root / "archives" / "libc.a"
+    archive = _c_abi(identity_root).path("libc")
     original = archive.read_bytes()
     archive.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
 
     after = _provision_toolchain(identity_root)
 
-    assert after.digest != before.digest
+    assert after.digest == before.digest
+    with pytest.raises(LlvmToolchainConfigError, match="filesystem tree differs"):
+        load_wasi_sdk_installation(
+            compiler_source_root(), _sdk(identity_root).prefix, verify_tree=True
+        )
 
 
 def test_toolchain_manifest_is_relocatable_and_rejects_tampering(
@@ -1533,6 +1544,9 @@ def test_toolchain_manifest_is_relocatable_and_rejects_tampering(
     first = _provision_toolchain(identity_root)
     second = _provision_toolchain(relocated)
     assert first == second
+    portable = json.dumps(first.to_dict(), sort_keys=True)
+    assert str(identity_root) not in portable
+    assert str(relocated) not in portable
 
     value = first.to_dict()
     value["payload"]["target_triple"] = "wasm32-poison"
@@ -1569,12 +1583,17 @@ def test_toolchain_manifest_rejects_nested_mutation_at_consumption(
 
 
 def test_toolchain_manifest_concurrent_publication_is_atomic(
-    identity_root: Path, tmp_path: Path
+    identity_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first = _provision_toolchain(identity_root)
-    archive = identity_root / "archives" / "libc.a"
-    archive.write_bytes(b"different-libc")
+    python = build_python_identity_fixture()
+    python["selected_executable"]["sha256"] = "1" * 64
+    python["identity_sha256"] = canonical_json_sha256(
+        {key: value for key, value in python.items() if key != "identity_sha256"}
+    )
+    monkeypatch.setattr(identity, "_python_identity", lambda _env, **_kwargs: python)
     second = _provision_toolchain(identity_root)
+    assert first.digest != second.digest
     path = tmp_path / "runtime-toolchain.json"
     barrier = threading.Barrier(2)
     errors: list[BaseException] = []

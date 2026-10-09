@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -9,31 +10,30 @@ from molt import source_extension_link_inputs as link_inputs_contract
 from molt.cli import source_extension_link_inputs as link_inputs_resolver
 from molt.cli import wasm_link_inputs
 from tools.proof_queue_pkg import execution_environment, toolchain_capture
+from tests.runtime_build_identity_helper import (
+    RuntimeFixtureRoot,
+    runtime_wasi_c_abi_plan,
+)
 
 
 def test_bound_archive_is_consumed_without_rediscovery(tmp_path, monkeypatch):
-    archive = tmp_path / "libcompiler_builtins-fixture.rlib"
-    archive.write_bytes(b"!<arch>\nselected")
+    plan = runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path))
+    archive = plan.path("compiler_rt")
     selected = {"PATH": str(tmp_path)}
 
-    def discover(target, *, environment):
-        assert target == "wasm32-wasip1" and environment == selected
-        return archive
-
-    monkeypatch.setattr(wasm_link_inputs, "wasm_compiler_builtins_archive", discover)
     captured = link_inputs_resolver.resolve_source_extension_link_inputs(
-        "wasm32-wasip1", environment=selected
+        "wasm32-wasip1", wasi_c_abi=plan, environment=selected
     )
     payload = captured.metadata()
     bound = {link_inputs_contract.SOURCE_EXTENSION_LINK_INPUTS_ENV: json.dumps(payload)}
     monkeypatch.setattr(
         wasm_link_inputs,
-        "wasm_compiler_builtins_archive",
+        "resolve_wasi_c_abi_plan",
         lambda *a, **kw: pytest.fail("bound input rediscovered"),
     )
     assert (
         link_inputs_resolver.resolve_source_extension_link_inputs(
-            "wasm32-wasip1", environment=bound
+            "wasm32-wasip1", wasi_c_abi=plan, environment=bound
         )
         == captured
     )
@@ -45,28 +45,37 @@ def test_bound_archive_is_consumed_without_rediscovery(tmp_path, monkeypatch):
     ]
     assert execution_environment._broad_toolchain_roots(
         {"source-extension": {"link_inputs": payload}}
-    ) == [tmp_path]
+    ) == [archive.parent]
+    cas = tmp_path / "cas"
+    _, reference, _ = toolchain_capture.publish_capture(
+        cas, {"fixture": {"link_inputs": payload}}
+    )
     archive.write_bytes(b"!<arch>\nmutated!")
-    with pytest.raises(ValueError, match="content changed"):
+    assert (
         link_inputs_resolver.resolve_source_extension_link_inputs(
-            "wasm32-wasip1", environment=bound
+            "wasm32-wasip1", wasi_c_abi=plan, environment=bound
         )
+        == captured
+    )
+    verified = toolchain_capture.verify_capture(reference, workers=1, cas_root=cas)
+    assert not verified["stable"]
+    assert [row["path"] for row in verified["mismatches"]] == [str(archive)]
 
 
 @pytest.mark.parametrize(
     "target",
     ["x86_64-pc-windows-msvc", "aarch64-apple-darwin", "wasm32-unknown-unknown"],
 )
-def test_non_wasi_does_not_discover_rust_archive(target, monkeypatch):
+def test_non_wasi_does_not_discover_sdk_archive(target, monkeypatch):
     monkeypatch.setattr(
         wasm_link_inputs,
-        "wasm_compiler_builtins_archive",
-        lambda *a, **kw: pytest.fail("unexpected Rust input"),
+        "resolve_wasi_c_abi_plan",
+        lambda *a, **kw: pytest.fail("unexpected SDK input"),
     )
     assert (
         link_inputs_resolver.resolve_source_extension_link_inputs(
-            target, environment={}
-        ).compiler_builtins
+            target, wasi_c_abi=None, environment={}
+        ).compiler_rt
         is None
     )
 
@@ -77,12 +86,13 @@ def test_non_wasi_does_not_discover_rust_archive(target, monkeypatch):
 def test_malformed_bound_input_fails_without_discovery(raw, monkeypatch):
     monkeypatch.setattr(
         wasm_link_inputs,
-        "wasm_compiler_builtins_archive",
+        "resolve_wasi_c_abi_plan",
         lambda *a, **kw: pytest.fail("invalid binding fell back"),
     )
     with pytest.raises(ValueError):
         link_inputs_resolver.resolve_source_extension_link_inputs(
             "wasm32-wasip1",
+            wasi_c_abi=None,
             environment={link_inputs_contract.SOURCE_EXTENSION_LINK_INPUTS_ENV: raw},
         )
 
@@ -161,3 +171,57 @@ def test_rust_target_libdir_cache_owns_environment_and_compiler_generation(
         == second
     )
     assert calls == [selected, changed, changed]
+
+
+@pytest.mark.parametrize(
+    "kind", ("old-schema", "old-field", "foreign-archive", "size", "digest")
+)
+def test_captured_c_runtime_binding_rejects_obsolete_or_different_plan(tmp_path, kind):
+    plan = runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path))
+    captured = link_inputs_resolver.resolve_source_extension_link_inputs(
+        "wasm32-wasip1",
+        wasi_c_abi=plan,
+        environment={},
+    )
+    payload = captured.metadata()
+    if kind == "old-schema":
+        payload["schema"] = "molt.source-extension-link-inputs.v1"
+    elif kind == "old-field":
+        payload["compiler_builtins"] = payload.pop("compiler_rt")
+    elif kind == "foreign-archive":
+        copy = tmp_path / "foreign.a"
+        copy.write_bytes(plan.path("compiler_rt").read_bytes())
+        payload["compiler_rt"]["path"] = str(copy)
+    elif kind == "size":
+        payload["compiler_rt"]["size"] += 1
+    else:
+        payload["compiler_rt"]["sha256"] = "0" * 64
+    with pytest.raises(ValueError):
+        link_inputs_resolver.resolve_source_extension_link_inputs(
+            "wasm32-wasip1",
+            wasi_c_abi=plan,
+            environment={
+                link_inputs_contract.SOURCE_EXTENSION_LINK_INPUTS_ENV: json.dumps(
+                    payload
+                )
+            },
+        )
+
+
+def test_managed_link_input_projection_does_not_adopt_manual_sdk_edits(tmp_path):
+    plan = runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path))
+    plan.path("compiler_rt").write_bytes(b"!<arch>\nnew generation")
+    selected = link_inputs_resolver.resolve_source_extension_link_inputs(
+        "wasm32-wasip1",
+        wasi_c_abi=plan,
+        environment={},
+    )
+    assert selected.sha256 == next(
+        row[3] for row in plan.files if row[0] == "compiler_rt"
+    )
+    from molt.llvm_toolchain import load_wasi_sdk_installation, LlvmToolchainConfigError
+
+    with pytest.raises(LlvmToolchainConfigError, match="identity|changed|drift"):
+        load_wasi_sdk_installation(
+            Path(__file__).resolve().parents[2], plan.sdk.parent, verify_tree=True
+        )

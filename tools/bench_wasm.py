@@ -28,18 +28,13 @@ import bench_suites  # noqa: E402
 import harness_memory_guard  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.node_runtime import resolve_node_runtime  # noqa: E402
-from molt._wasm_runtime_exports import wasm_runtime_export_link_args  # noqa: E402
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
     ensure_molt_conformance_dirs,
 )
 from molt._runtime_profile_schema import is_process_profile, is_profile_epoch  # noqa: E402
+from molt.exact_json import loads_exact  # noqa: E402
 from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
-from molt.cli.runtime_features import (  # noqa: E402
-    _runtime_builtin_features_for_profile,
-    _runtime_cargo_features,
-)
-from molt.cli.wasm_link_args import wasm_link_args_response_file  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
     _read_wasm_import_metrics,
     _read_wasm_table_min,
@@ -424,44 +419,6 @@ def _parse_env_float(name: str, *, default: float | None = None) -> float | None
     return parsed
 
 
-def _dedupe_preserve_order(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        out.append(item)
-    return out
-
-
-def _runtime_wasm_feature_args() -> list[str]:
-    profile = os.environ.get("MOLT_STDLIB_PROFILE", "micro").strip() or "micro"
-    gpu_raw = os.environ.get("MOLT_WASM_RUNTIME_GPU_PRIMITIVES", "").strip().lower()
-    base_features = list(_runtime_cargo_features("wasm32-wasip1")) + (
-        ["molt_gpu_primitives"] if gpu_raw in {"1", "true", "yes", "on"} else []
-    )
-    profile_features = [
-        feature
-        for feature in sorted(
-            _runtime_builtin_features_for_profile(
-                profile,
-                target_triple="wasm32-wasip1",
-            )
-        )
-        if feature != "molt_gpu_primitives"
-    ]
-    if profile == "micro":
-        features = _dedupe_preserve_order(
-            base_features + profile_features + ["stdlib_micro"]
-        )
-    elif profile == "full":
-        features = _dedupe_preserve_order(base_features + profile_features)
-    else:
-        raise RuntimeError("MOLT_STDLIB_PROFILE must be 'micro' or 'full'")
-    return ["--no-default-features", "--features", ",".join(features)]
-
-
 def build_runtime_wasm(
     *,
     reloc: bool,
@@ -480,143 +437,64 @@ def build_runtime_wasm(
             _repo_root(), _wasm_session_id(env)
         )
     env["CARGO_TARGET_DIR"] = str(target_root)
-    if reloc:
-        base_flags = (
-            "-C link-arg=--relocatable -C link-arg=--no-gc-sections"
-            " -C relocation-model=pic"
-        )
-    else:
-        base_flags = (
-            "-C link-arg=--import-memory -C link-arg=--import-table"
-            " -C link-arg=--growable-table" + wasm_runtime_export_link_args()
-        )
-    response_path = wasm_link_args_response_file(
-        _repo_root(),
-        label=f"bench-runtime-{'reloc' if reloc else 'shared'}",
-        link_flags=base_flags,
-    )
+    kind = "reloc" if reloc else "shared"
     resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
     build_cmd = [
-        "cargo",
-        "rustc",
-        "--release",
-        "--package",
-        "molt-runtime",
-        "--lib",
-        "--target",
-        "wasm32-wasip1",
-        *_runtime_wasm_feature_args(),
+        sys.executable,
+        "-m",
+        "molt.cli",
+        "internal-runtime-wasm-build",
+        "--build-profile",
+        "release",
+        "--kind",
+        kind,
+        "--stdlib-profile",
+        os.environ.get("MOLT_STDLIB_PROFILE", "micro"),
+        "--cargo-timeout",
+        str(runtime_build_timeout),
+        "--json",
     ]
-    if response_path is not None:
-        build_cmd.extend(["--", "-C", f"link-arg=@{response_path}"])
+    if env.get("MOLT_WASM_RUNTIME_GPU_PRIMITIVES", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        build_cmd.extend(("--runtime-feature", "molt_gpu_primitives"))
     res = _run_cmd(
         build_cmd,
         env=env,
-        capture=not tty,
+        capture=True,
         tty=tty,
         log=log,
         timeout_s=runtime_build_timeout,
         limits=resolved_limits,
     )
-    if res.timed_out:
+    if res.timed_out or res.returncode != 0:
         print(
-            f"WASM runtime build timed out after {runtime_build_timeout:.1f}s.",
+            f"WASM runtime build failed: {res.stderr or res.stdout or 'no diagnostic'}",
             file=sys.stderr,
         )
         return False
-    if res.returncode != 0:
-        if res.stderr or res.stdout:
-            err = (res.stderr or res.stdout).strip()
-            if err:
-                print(f"WASM runtime build failed: {err}", file=sys.stderr)
-        else:
-            print("WASM runtime build failed.", file=sys.stderr)
+    try:
+        payload = loads_exact(res.stdout)
+        artifacts = payload["artifacts"]
+        if payload["status"] != "ok" or set(artifacts) != {kind, "generation"}:
+            raise ValueError("runtime build returned the wrong artifact family")
+        src = Path(artifacts[kind])
+        generation = Path(artifacts["generation"])
+        if not src.is_absolute() or not generation.is_absolute():
+            raise ValueError("runtime build returned relative artifact paths")
+        # This is the result of the owned compiler command above. The runtime
+        # producer validates its complete generation before issuing these paths;
+        # a benchmark must not invent another permissive receipt decoder.
+        if not generation.is_file():
+            raise ValueError("runtime build returned no generation receipt")
+        if not _is_valid_wasm(src):
+            raise ValueError("runtime build returned an invalid WASM artifact")
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        print(f"WASM runtime build result refused: {exc}", file=sys.stderr)
         return False
-    src = target_root / "wasm32-wasip1" / "release" / "molt_runtime.wasm"
-    if not src.exists():
-        print("WASM runtime build succeeded but artifact is missing.", file=sys.stderr)
-        return False
-    if not _is_valid_wasm(src):
-        print(
-            "WASM runtime artifact is invalid; forcing clean rebuild.",
-            file=sys.stderr,
-        )
-        try:
-            src.unlink(missing_ok=True)
-        except OSError:
-            pass
-        clean_res = _run_cmd(
-            [
-                "cargo",
-                "clean",
-                "--target",
-                "wasm32-wasip1",
-            ],
-            env=env,
-            capture=not tty,
-            tty=tty,
-            log=log,
-            timeout_s=runtime_build_timeout,
-            limits=resolved_limits,
-        )
-        if clean_res.returncode != 0:
-            err = (clean_res.stderr or clean_res.stdout).strip()
-            if err:
-                print(f"WASM runtime clean failed: {err}", file=sys.stderr)
-            return False
-        res = _run_cmd(
-            build_cmd,
-            env=env,
-            capture=not tty,
-            tty=tty,
-            log=log,
-            timeout_s=runtime_build_timeout,
-            limits=resolved_limits,
-        )
-        if res.timed_out:
-            print(
-                f"WASM runtime rebuild timed out after {runtime_build_timeout:.1f}s.",
-                file=sys.stderr,
-            )
-            return False
-        if res.returncode != 0:
-            err = (res.stderr or res.stdout).strip()
-            if err:
-                print(f"WASM runtime rebuild failed: {err}", file=sys.stderr)
-            return False
-        if not src.exists() or not _is_valid_wasm(src):
-            # One more attempt: remove the artifact and rebuild from scratch.
-            try:
-                src.unlink(missing_ok=True)
-            except OSError:
-                pass
-            res = _run_cmd(
-                build_cmd,
-                env=env,
-                capture=not tty,
-                tty=tty,
-                log=log,
-                timeout_s=runtime_build_timeout,
-                limits=resolved_limits,
-            )
-            if res.timed_out:
-                print(
-                    "WASM runtime second rebuild timed out after "
-                    f"{runtime_build_timeout:.1f}s.",
-                    file=sys.stderr,
-                )
-                return False
-            if res.returncode != 0:
-                err = (res.stderr or res.stdout).strip()
-                if err:
-                    print(f"WASM runtime second rebuild failed: {err}", file=sys.stderr)
-                return False
-            if not src.exists() or not _is_valid_wasm(src):
-                print(
-                    "WASM runtime rebuild completed but artifact is still invalid.",
-                    file=sys.stderr,
-                )
-                return False
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, output)
     if not _is_valid_wasm(output):

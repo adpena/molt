@@ -57,6 +57,7 @@ jobs:
           cache-namespace: wasm-ci
           sync: "true"
           sync-frozen: "true"
+          sync-groups: source-build-numpy
 
       # setup-project placed CARGO_TARGET_DIR under RUNNER_TEMP, outside the
       # checkout; the WASM parity tests build into the same cached target.

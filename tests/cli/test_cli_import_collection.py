@@ -21811,16 +21811,7 @@ def test_runtime_compile_key_is_stable_across_user_import_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SPEC,
-        "_cargo_build_env",
-        lambda: {"CARGO_TARGET_DIR": str(tmp_path / "target")},
-    )
-    for name in (
-        "_configure_wasm_toolchain_env",
-        "_configure_wasm_long_double_env",
-    ):
-        monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, name, lambda _env: None)
+    monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, "_cargo_build_env", lambda: {})
     common = dict(
         reloc=False,
         cargo_profile="dev-fast",
@@ -21898,16 +21889,7 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SPEC,
-        "_cargo_build_env",
-        lambda: {"CARGO_TARGET_DIR": str(tmp_path / "target")},
-    )
-    for name in (
-        "_configure_wasm_toolchain_env",
-        "_configure_wasm_long_double_env",
-    ):
-        monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, name, lambda _env: None)
+    monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, "_cargo_build_env", lambda: {})
     spec = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
         tmp_path,
         tmp_path / "runtime_reloc.wasm",
@@ -21938,6 +21920,20 @@ def _install_fake_wasm_link_runner(
     # This child is mocked, but its scanner remains a real content input.
     # The shared native-image fixture proves custody, not scanner behavior.
     scanner = fixture_root.native_executable("molt-backend")
+    # This same fixture owns the substituted link process and its file-backed
+    # selected image. The bytes prove input custody, not execution of a real SDK.
+    linker = fixture_root.native_executable("mock-tools/wasm-ld")
+    linker_identity = cli_non_native_output.wasm_toolchain.WasmLinkerIdentity(
+        linker,
+        "fixture-selected-linker",
+        "fixture-selected-linker",
+        hashlib.sha256(linker.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        cli_non_native_output.wasm_toolchain,
+        "resolve_wasm_linker",
+        lambda: linker_identity,
+    )
     optimizer_fact = mock_wasm_optimizer_cache_fact(fixture_root)
     monkeypatch.setattr(
         cli_non_native_output, "wasm_optimizer_cache_fact", lambda: optimizer_fact
@@ -21967,6 +21963,7 @@ def _install_fake_wasm_link_runner(
             if argument == "--expected-input"
         ]
         assert scanner.resolve() in {path for path, _digest in expected_inputs}
+        assert (linker.resolve(), linker_identity.sha256) in expected_inputs
         for path, digest in expected_inputs:
             assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
         if link_calls is not None:
@@ -23163,6 +23160,17 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     output_wasm = tmp_path / "out" / "output.wasm"
     output_wasm.parent.mkdir(parents=True, exist_ok=True)
     output_wasm.write_bytes(b"\0asm\x01\0\0\0")
+
+    def validate_empty_app(path):
+        # Link-plan wiring fixture: the production structural validator has its
+        # own attested-tool tests; this boundary admits only our exact empty module.
+        assert path == output_wasm
+        assert path.read_bytes() == b"\0asm\x01\0\0\0"
+        return None
+
+    monkeypatch.setattr(
+        cli_non_native_output, "_validate_wasm_structural", validate_empty_app
+    )
     linked_wasm = tmp_path / "out" / "output_linked.wasm"
     runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
@@ -23180,11 +23188,11 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     cpython_abi_provider = tmp_path / "target" / "libmolt_cpython_abi.a"
     cpython_abi_provider.parent.mkdir(parents=True)
     cpython_abi_provider.write_bytes(static_archive_bytes(b"provider"))
-    libc_provider = tmp_path / "rustlib" / "self-contained" / "libc.a"
-    libc_provider.parent.mkdir(parents=True)
-    libc_provider.write_bytes(static_archive_bytes(b"libc"))
-    compiler_rt_provider = tmp_path / "rustlib" / "libcompiler_builtins-x.rlib"
-    compiler_rt_provider.write_bytes(static_archive_bytes(b"compiler-rt"))
+    from tests.runtime_build_identity_helper import runtime_wasi_c_abi_plan
+
+    c_abi_plan = runtime_wasi_c_abi_plan(runtime_fixture_root)
+    libc_provider = c_abi_plan.path("libc")
+    compiler_rt_provider = c_abi_plan.path("compiler_rt")
     libcxx_provider = tmp_path / "wasi-sysroot" / "eh" / "libc++.a"
     libcxxabi_provider = tmp_path / "wasi-sysroot" / "eh" / "libc++abi.a"
     libunwind_provider = tmp_path / "wasi-sysroot" / "eh" / "libunwind.a"
@@ -23257,22 +23265,21 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
         lambda _path, _module_name: set(),
     )
 
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "wasm_wasi_libc_archive",
-        lambda: libc_provider,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "wasm_compiler_builtins_archive",
-        lambda: compiler_rt_provider,
-        raising=True,
-    )
+    sdk_selections = []
+
+    def selected_sdk():
+        sdk_selections.append(c_abi_plan)
+        return c_abi_plan
+
+    def selected_cxx(*, plan):
+        assert plan is c_abi_plan
+        return (libcxx_provider, libcxxabi_provider, libunwind_provider)
+
+    monkeypatch.setattr(wasm_link_inputs, "resolve_wasi_c_abi_plan", selected_sdk)
     monkeypatch.setattr(
         wasm_link_inputs,
         "wasm_cxx_runtime_archives",
-        lambda: (libcxx_provider, libcxxabi_provider, libunwind_provider),
+        selected_cxx,
         raising=True,
     )
 
@@ -23301,6 +23308,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     )
 
     assert err is None
+    assert sdk_selections == [c_abi_plan]
     assert prepared is not None
     assert len(link_calls) == 1
     link_cmd = link_calls[0]
@@ -23331,6 +23339,17 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     output_wasm = tmp_path / "out" / "output.wasm"
     output_wasm.parent.mkdir(parents=True, exist_ok=True)
     output_wasm.write_bytes(b"\0asm\x01\0\0\0")
+
+    def validate_empty_app(path):
+        # Link-plan wiring fixture: the production structural validator has its
+        # own attested-tool tests; this boundary admits only our exact empty module.
+        assert path == output_wasm
+        assert path.read_bytes() == b"\0asm\x01\0\0\0"
+        return None
+
+    monkeypatch.setattr(
+        cli_non_native_output, "_validate_wasm_structural", validate_empty_app
+    )
     linked_wasm = tmp_path / "out" / "output_linked.wasm"
     runtime_wasm = tmp_path / "runtime" / "molt_runtime.wasm"
     runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
@@ -23349,11 +23368,11 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     cpython_abi_provider = tmp_path / "target" / "libmolt_cpython_abi.a"
     cpython_abi_provider.parent.mkdir(parents=True)
     cpython_abi_provider.write_bytes(static_archive_bytes(b"provider"))
-    libc_provider = tmp_path / "rustlib" / "self-contained" / "libc.a"
-    libc_provider.parent.mkdir(parents=True)
-    libc_provider.write_bytes(static_archive_bytes(b"libc"))
-    compiler_rt_provider = tmp_path / "rustlib" / "libcompiler_builtins-x.rlib"
-    compiler_rt_provider.write_bytes(static_archive_bytes(b"compiler-rt"))
+    from tests.runtime_build_identity_helper import runtime_wasi_c_abi_plan
+
+    c_abi_plan = runtime_wasi_c_abi_plan(runtime_fixture_root)
+    libc_provider = c_abi_plan.path("libc")
+    compiler_rt_provider = c_abi_plan.path("compiler_rt")
     native_artifact_plan = _ExternalPackageNativeArtifactPlan(
         artifacts=(
             _ExternalPackageNativeArtifact(
@@ -23414,16 +23433,7 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     )
 
     monkeypatch.setattr(
-        wasm_link_inputs,
-        "wasm_wasi_libc_archive",
-        lambda: libc_provider,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "wasm_compiler_builtins_archive",
-        lambda: compiler_rt_provider,
-        raising=True,
+        wasm_link_inputs, "resolve_wasi_c_abi_plan", lambda **kw: c_abi_plan
     )
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(

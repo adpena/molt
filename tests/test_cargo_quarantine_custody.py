@@ -2049,3 +2049,83 @@ def test_diagnostic_normalizes_builtin_name_str_subclass_without_callbacks():
         cargo._exception_diagnostic(Error("primitive detail"))
         == "NamedError: primitive detail"
     )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("-C", "incremental=cache dir=a"),
+        ("-Cincremental=cache dir=a",),
+        ("--codegen", "incremental=cache dir=a"),
+        ("--codegen=incremental=cache dir=a",),
+    ],
+)
+def test_compiler_inventory_uses_exact_codegen_operands(arguments):
+    from tools.memory_guard_core.cargo_quarantine import cargo_compiler_invocation
+
+    observed = cargo_compiler_invocation(
+        ("rustc", *arguments, "-C", "link-arg=@link.rsp")
+    )
+    assert (
+        observed.is_compiler
+        and observed.arguments_complete
+        and observed.implementation_known
+    )
+    assert observed.incremental_dir == "cache dir=a"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("--codegen",),
+        ("-C",),
+        ("--codegen=",),
+        ("-C=incremental=cache",),
+        ("--codegen", ""),
+        ("--codegen=incremental=",),
+        ("@rust.rsp",),
+    ],
+)
+def test_malformed_compiler_inventory_is_incomplete_without_throwing(arguments):
+    from tools.memory_guard_core.cargo_quarantine import cargo_compiler_invocation
+
+    for executable in ("rustc", "renamed-compiler"):
+        observed = cargo_compiler_invocation((executable, *arguments))
+        assert observed.is_compiler and not observed.arguments_complete
+        assert observed.implementation_known is (executable == "rustc")
+
+
+@pytest.mark.parametrize(
+    "switch", ["--sysroot", "-L", "-o", "--out-dir", "--remap-path-prefix"]
+)
+def test_compiler_inventory_does_not_observe_incremental_from_opaque_operand(switch):
+    from tools.memory_guard_core.cargo_quarantine import cargo_compiler_invocation
+
+    observed = cargo_compiler_invocation(
+        ("rustc", switch, "--codegen=incremental=foreign")
+    )
+    assert observed.is_compiler and observed.arguments_complete
+    assert observed.incremental_dir is None
+
+
+@pytest.mark.parametrize("prefix", [("--",), ("-o",), ()])
+def test_compiler_inventory_never_claims_raw_response_arguments_complete(prefix):
+    from tools.memory_guard_core.cargo_quarantine import cargo_compiler_invocation
+
+    observed = cargo_compiler_invocation(("rustc", *prefix, "@unparsed.rsp"))
+    assert observed.is_compiler and not observed.arguments_complete
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [("-gCincremental=cache_under_score",), ("-vC", "incremental=cache_under_score")],
+)
+def test_compiler_inventory_preserves_clustered_incremental_selection(arguments):
+    from tools.memory_guard_core.cargo_quarantine import cargo_compiler_invocation
+
+    observed = cargo_compiler_invocation(("rustc", *arguments))
+    assert (
+        observed.arguments_complete and observed.incremental_dir == "cache_under_score"
+    )
+    opaque = cargo_compiler_invocation(("rustc", "-gL", "-Cincremental=not_selected"))
+    assert opaque.arguments_complete and opaque.incremental_dir is None

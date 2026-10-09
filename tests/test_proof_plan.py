@@ -32,6 +32,14 @@ from tools.proof_queue_pkg import evidence as proof_queue_evidence
 from tests.process_guard_common import run_guarded_test_process
 
 
+@pytest.fixture(autouse=True)
+def isolated_fingerprint_subprocess(monkeypatch):
+    """Patch the fingerprint boundary without mutating the sampler's stdlib."""
+    import subprocess
+
+    monkeypatch.setattr(proof_plan, "subprocess", SimpleNamespace(**vars(subprocess)))
+
+
 PLAN = proof_plan.ProofPlan.load()
 _LEAN_PIN = next(
     policy.data["setup_value"]
@@ -85,6 +93,9 @@ def test_execution_authority_covers_its_transitive_python_imports() -> None:
                         pending.append(candidate.relative_to(root).as_posix())
                         break
     assert seen <= set(PLAN.authority_inputs), sorted(seen - set(PLAN.authority_inputs))
+    # Fingerprint selection belongs to core toolchain authorities. Importing a
+    # CLI helper executes the facade and pulls the compiler/frontend into proofs.
+    assert not any(path.startswith("src/molt/cli/") for path in seen)
 
 
 def test_python_capture_source_closure_is_proof_authority(
@@ -3876,3 +3887,436 @@ def test_cli_process_exit_preserves_autonomous_guard_and_eventual_closure(tmp_pa
         finally:
             release.write_text("release", encoding="utf-8")
             process.wait(timeout=30)
+
+
+def test_wasi_c_abi_witness_is_required_and_selects_sdk_compiler():
+    policies = {policy.name: policy for policy in PLAN.toolchain_policies}
+    command = next(
+        command for command in PLAN.commands if command.id == "wasm.test.control-flow"
+    )
+    assert "wasm.build.host" in command.dependencies
+    assert "wasi-clang" in command.toolchains
+    assert "tests/test_wasm_longdouble_printf_link.py" in command.argv
+    assert command.argv[:3] == ("python3", "tools/venv_exec.py", "python3")
+    assert "wasm.build.shared-runtime" in command.dependencies
+    assert command.data["timeout_budget"] == "integration"
+    assert "main" in command.data["tiers"]
+    assert all(item.id != "wasm.execute.c-abi" for item in PLAN.commands)
+    workflow = (
+        Path(__file__).resolve().parents[1] / ".github/workflows/molt-wasm-ci.yml"
+    ).read_text()
+    steps = workflow.split("      - ")
+    setup_index = next(
+        index
+        for index, step in enumerate(steps)
+        if "uses: ./.github/actions/setup-project\n" in step
+    )
+    run_index = next(
+        index
+        for index, step in enumerate(steps)
+        if "tools/proof_plan.py --run-family wasm" in step
+    )
+    assert setup_index < run_index
+    assert 'sync-frozen: "true"' in steps[setup_index]
+    assert "sync-groups: source-build-numpy" in steps[setup_index]
+    assert policies["wasi-clang"].data["wasi_sdk_tool"] == "clang"
+    assert policies["wasi-clang"].identity_kind == "executable"
+    assert policies["clang"].data["setup_value"] == "22.1.8"
+
+
+def test_wasi_compiler_fingerprint_bypasses_native_path_and_binds_helpers(
+    tmp_path, monkeypatch
+):
+    from molt import llvm_toolchain, wasi_sdk_identity
+
+    compiler = tmp_path / "clang"
+    compiler.write_bytes(b"selected SDK compiler")
+    policy = next(
+        policy for policy in PLAN.toolchain_policies if policy.name == "wasi-clang"
+    )
+    selected = []
+
+    def resolve(root, role, *, environ):
+        selected.append(role)
+        return compiler
+
+    monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", resolve)
+    monkeypatch.setattr(
+        proof_plan.shutil, "which", lambda name: pytest.fail("native PATH consulted")
+    )
+    monkeypatch.setattr(
+        proof_plan.subprocess,
+        "run",
+        lambda argv, **kwargs: proof_plan.subprocess.CompletedProcess(
+            argv, 0, "clang version 23.1.0", ""
+        ),
+    )
+    closure = {
+        "resources": "first",
+        "process_images": [
+            {
+                "path": str(compiler),
+                "sha256": hashlib.sha256(compiler.read_bytes()).hexdigest(),
+            },
+        ],
+    }
+    monkeypatch.setattr(
+        llvm_toolchain, "capture_wasi_sdk_selection", lambda **kwargs: closure
+    )
+    monkeypatch.setattr(
+        wasi_sdk_identity,
+        "capture_wasi_sdk_tool_files",
+        lambda selected: selected["process_images"],
+    )
+    open_file = Path.open
+
+    def no_duplicate_image_read(path, *args, **kwargs):
+        assert path != compiler, "SDK capture's compiler identity was hashed again"
+        return open_file(path, *args, **kwargs)
+
+    with monkeypatch.context() as io_scope:
+        io_scope.setattr(Path, "open", no_duplicate_image_read)
+        first = proof_plan._version_fingerprint(policy)
+        closure["resources"] = "changed helper"
+        second = proof_plan._version_fingerprint(policy)
+        assert first["path"] == str(compiler) == second["path"]
+        assert first["identity_sha256"] != second["identity_sha256"]
+        assert selected == ["clang", "clang"]
+
+
+def test_ninja_identity_binds_locked_release_and_observed_distribution_banner(
+    tmp_path, monkeypatch
+):
+    import tomllib
+
+    policy = next(
+        policy for policy in PLAN.toolchain_policies if policy.name == "ninja"
+    )
+    root = Path(__file__).resolve().parents[1]
+    package = next(
+        item
+        for item in tomllib.loads((root / "uv.lock").read_text())["package"]
+        if item["name"] == "ninja"
+    )
+    assert package["version"] == policy.data["setup_value"] == "1.13.0"
+    assert any(
+        wheel["hash"]
+        == "sha256:fa2a8bfc62e31b08f83127d1613d10821775a0eb334197154c4d6067b7068ff1"
+        for wheel in package["wheels"]
+    )
+    pattern = str(policy.data["version_pattern"])
+    observed = "1.13.0.git.kitware.jobserver-pipe-1"
+    assert re.fullmatch(pattern, observed)
+    for rejected in (
+        "1.13.1.git.kitware.jobserver-pipe-1",
+        "1.13.01",
+        "1.13.0.git.unowned",
+        "1.13.0.git.kitware.jobserver-pipe-2",
+    ):
+        assert not re.fullmatch(pattern, rejected)
+    executable = tmp_path / "ninja"
+    executable.write_bytes(b"pinned ninja distribution image")
+    monkeypatch.setattr(proof_plan.shutil, "which", lambda name: str(executable))
+    monkeypatch.setattr(
+        proof_plan.subprocess,
+        "run",
+        lambda argv, **kwargs: proof_plan.subprocess.CompletedProcess(
+            argv, 0, observed + "\n", ""
+        ),
+    )
+    fingerprint = proof_plan._version_fingerprint(policy)
+    assert fingerprint["version"] == observed
+    assert (
+        fingerprint["executable_sha256"]
+        == hashlib.sha256(executable.read_bytes()).hexdigest()
+    )
+
+
+def test_receipt_verdict_binds_sdk_closure_without_changing_native_hashes(tmp_path):
+    command = next(item for item in PLAN.commands if item.id == "python.static.ty")
+    receipt = _receipt_for(command, tmp_path)
+    policy = next(item for item in PLAN.toolchain_policies if item.name == "wasi-clang")
+    sdk = {
+        "path": "/sdk/bin/clang",
+        "launcher_path": "/sdk/bin/clang-23",
+        "launcher_sha256": "1" * 64,
+        "content_path": "/sdk/bin/clang-23",
+        "executable_sha256": "1" * 64,
+        "version": "clang version 23.1.0",
+        "probe_cwd": ".",
+        "version_pattern": policy.data["version_pattern"],
+        "wasi_sdk_sha256": "2" * 64,
+    }
+    # Independent wire oracle: native identities retain their old seven fields;
+    # this selected SDK role binds its complete captured closure as field eight.
+    sdk["identity_sha256"] = hashlib.sha256(
+        (
+            "/sdk/bin/clang\0/sdk/bin/clang-23\0"
+            + "1" * 64
+            + "\0/sdk/bin/clang-23\0"
+            + "1" * 64
+            + "\0clang version 23.1.0\0.\0"
+            + "2" * 64
+        ).encode()
+    ).hexdigest()
+    receipt["toolchains"]["wasi-clang"] = sdk
+    path = tmp_path / "sdk.json"
+    path.write_text(json.dumps(receipt))
+    assert proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path) == []
+    sdk["wasi_sdk_sha256"] = "3" * 64
+    path.write_text(json.dumps(receipt))
+    assert any(
+        "wasi-clang toolchain identity hash is invalid" in error
+        for error in proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+    )
+    del sdk["wasi_sdk_sha256"]
+    path.write_text(json.dumps(receipt))
+    assert any(
+        "invalid wasi-clang toolchain identity" in error
+        for error in proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+    )
+
+
+def test_selected_sdk_fingerprint_roundtrips_through_actual_receipt_receiver(
+    tmp_path, monkeypatch
+):
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        provisioned_wasi_sdk_fixture,
+    )
+
+    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    with monkeypatch.context() as selected:
+        selected.setenv("WASI_SDK_PATH", str(installation.sdk))
+        selected.setattr(
+            proof_plan.subprocess,
+            "run",
+            lambda argv, **kwargs: proof_plan.subprocess.CompletedProcess(
+                argv, 0, "clang version 23.1.0", ""
+            ),
+        )
+        sdk = proof_plan.toolchain_fingerprints(PLAN, ("wasi-clang",))["wasi-clang"]
+    command = next(item for item in PLAN.commands if item.id == "python.static.ty")
+    receipt_root = tmp_path / "receipts"
+    receipt_root.mkdir()
+    receipt = _receipt_for(command, receipt_root)
+    receipt["toolchains"]["wasi-clang"] = sdk
+    path = receipt_root / "sdk.json"
+    path.write_text(json.dumps(receipt))
+    assert proof_plan.verify_receipts(PLAN, ["python_static"], receipt_root) == []
+    native_name = next(name for name in receipt["toolchains"] if name != "wasi-clang")
+    native = receipt["toolchains"][native_name]
+    native["wasi_sdk_sha256"] = sdk["wasi_sdk_sha256"]
+    # Even a correctly sealed extended digest must not change the native contract.
+    native["identity_sha256"] = hashlib.sha256(
+        "\0".join(
+            str(native[key])
+            for key in (
+                "path",
+                "launcher_path",
+                "launcher_sha256",
+                "content_path",
+                "executable_sha256",
+                "version",
+                "probe_cwd",
+                "wasi_sdk_sha256",
+            )
+        ).encode()
+    ).hexdigest()
+    path.write_text(json.dumps(receipt))
+    assert any(
+        f"invalid {native_name} toolchain identity" in error
+        for error in proof_plan.verify_receipts(PLAN, ["python_static"], receipt_root)
+    )
+
+
+def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
+    commands = {command.id: command for command in PLAN.commands}
+    for name in ("wasm.build.shared-runtime", "wasm.build.split-runtime-release"):
+        command = commands[name]
+        assert command.dependencies == ()
+        assert set(command.toolchains) == {
+            "python",
+            "uv",
+            "rustc",
+            "cargo",
+            "wasm-ld",
+            "wasm-tools",
+            "wasi-clang",
+        }
+    assert commands["wasm.build.host"].dependencies == ()
+    assert set(commands["wasm.build.host"].toolchains) == {"rustc", "cargo"}
+    for name in (
+        "wasm.compile.hello",
+        "wasm.compile.comprehension",
+        "wasm.compile.sieve",
+        "wasm.test.control-flow",
+        "wasm.test.freestanding-e2e",
+        "wasm.test.finally-pending-observer-parity",
+        "wasm.integration.split-runtime",
+        "wasm.integration.host-exports",
+    ):
+        assert "wasm.build.backend" in commands[name].dependencies
+
+
+def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
+    plan = proof_plan.ProofPlan.load()
+    declared = {
+        row.id for row in plan.commands if proof_plan.cargo_native_c_units(row.data)
+    }
+    assert declared == {
+        "wasm.build.host",
+        "rust.clippy.workspace-default",
+        "portability.rust.linux-aarch64.clippy-workspace",
+        "portability.rust.macos.clippy-workspace",
+        "rust.test.default-truth",
+    }
+    for name in ("wasm.build.shared-runtime", "wasm.build.split-runtime-release"):
+        row = next(row for row in plan.commands if row.id == name)
+        assert proof_plan.cargo_native_c_units(row.data) == ()
+
+
+@pytest.mark.parametrize(
+    "units,tools",
+    [
+        (["target", "target"], ["cargo", "rustc"]),
+        (["everything"], ["cargo", "rustc"]),
+        (["target"], ["rustc"]),
+        (["host"], ["cargo"]),
+    ],
+)
+def test_native_c_declaration_rejects_unbound_or_duplicate_units(units, tools):
+    with pytest.raises(ValueError, match="native C|cargo_native_c_units"):
+        proof_plan.cargo_native_c_units(
+            {"cargo_native_c_units": units, "toolchains": tools}
+        )
+
+
+@pytest.mark.parametrize("name", ["rustc", "cargo"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_rust_fingerprint_keeps_selected_physical_tool_without_rustup(
+    tmp_path, monkeypatch, name, explicit
+):
+    from molt import rust_toolchain
+
+    selected = tmp_path / name
+    selected.write_bytes(b"independent physical Rust component")
+    selected.chmod(0o755)
+    (tmp_path / ("rustup.exe" if os.name == "nt" else "rustup")).write_bytes(
+        b"different rustup image"
+    )
+    for key in ("RUSTC", "CARGO", "CARGO_BUILD_RUSTC"):
+        monkeypatch.delenv(key, raising=False)
+    if explicit:
+        monkeypatch.setenv(
+            "CARGO_BUILD_RUSTC" if name == "rustc" else "CARGO", str(selected)
+        )
+    requests, commands = [], []
+
+    def which(requested):
+        requests.append(requested)
+        assert requested == (str(selected) if explicit else name)
+        return str(selected)
+
+    def run(command, **kwargs):
+        commands.append(command)
+        assert command[0] == str(selected)
+        return proof_plan.subprocess.CompletedProcess(command, 0, name + " 1.99.0", "")
+
+    monkeypatch.setattr(proof_plan.shutil, "which", which)
+    monkeypatch.setattr(proof_plan.subprocess, "run", run)
+    monkeypatch.setattr(
+        rust_toolchain.process_guard,
+        "run_completed_command",
+        lambda *args, **kwargs: pytest.fail("physical component invoked rustup"),
+    )
+    policy = next(row for row in PLAN.toolchain_policies if row.name == name)
+    result = proof_plan._version_fingerprint(policy)
+    assert result["content_path"] == str(selected)
+    assert (
+        result["executable_sha256"] == hashlib.sha256(selected.read_bytes()).hexdigest()
+    )
+    assert len(commands) == len(requests) == 1
+
+
+@pytest.mark.parametrize("role", ["clang", "llvm-ar", "wasm-ld"])
+def test_sdk_fingerprint_refuses_changed_helper_before_version_probe(
+    tmp_path, monkeypatch, role
+):
+    from tests.runtime_build_identity_helper import (
+        RuntimeFixtureRoot,
+        provisioned_wasi_sdk_fixture,
+    )
+
+    installation = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    fact = installation.tool_fact(role)
+    content = installation.sdk / str(fact["content_path"])
+    content.write_bytes(content.read_bytes() + b"changed after provisioning")
+    monkeypatch.setenv("WASI_SDK_PATH", str(installation.sdk))
+    monkeypatch.setattr(
+        proof_plan.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail(
+            "changed SDK helper reached a version probe"
+        ),
+    )
+    with pytest.raises(
+        ValueError, match="helper differs from its provisioned generation"
+    ):
+        proof_plan.toolchain_fingerprints(PLAN, ("wasi-clang",))
+
+
+@pytest.mark.parametrize(
+    "cli,environment,configured,expected",
+    [
+        ({"build": {"rustc": "cli"}}, {"RUSTC": "env"}, "config", "cli"),
+        ({}, {"RUSTC": "env", "CARGO_BUILD_RUSTC": "cargo-env"}, "config", "env"),
+        ({}, {"CARGO_BUILD_RUSTC": "cargo-env"}, "config", "cargo-env"),
+        ({}, {"RUSTC": ""}, "config", ""),
+        ({}, {}, "config", "config"),
+        ({}, {}, None, "default"),
+    ],
+)
+def test_core_cargo_selection_preserves_declared_precedence(
+    cli, environment, configured, expected
+):
+    from molt.rust_toolchain import cargo_selected_value
+
+    assert (
+        cargo_selected_value(
+            {"build": {"rustc": configured}},
+            cli,
+            environment,
+            ("build", "rustc"),
+            ("RUSTC", "CARGO_BUILD_RUSTC"),
+            "default",
+        )
+        == expected
+    )
+    with pytest.raises(ValueError, match="string-keyed table"):
+        cargo_selected_value(
+            {"build": {"rustc": "value", 1: "invalid"}},
+            {},
+            {},
+            ("build", "rustc"),
+            (),
+            "default",
+        )
+
+
+def test_fingerprint_mock_preserves_unrelated_process_sampler_boundary(monkeypatch):
+    from tests.process_guard_common import run_custody_subject_process
+
+    monkeypatch.setattr(
+        proof_plan.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("fingerprint probe must remain unused"),
+    )
+    result = run_custody_subject_process(
+        [sys.executable, "-c", "print('independent-process-boundary')"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "independent-process-boundary"

@@ -12,9 +12,6 @@ import tomllib
 from molt.cli import wasm_link_inputs
 from molt.cli.command_runtime import _run_completed_command
 from molt.toolchain_identity import stable_executable_probe
-from molt.wasi_sysroot import (
-    wasi_sysroot_llvm_version,
-)
 
 
 _REQUIRED_WASM_RUST_TARGETS = ("wasm32-wasip1",)
@@ -203,11 +200,6 @@ def _wasm_linker_binary_identity(
         return version, identity.sha256
 
 
-def _llvm_release_line(version: str) -> tuple[int, int]:
-    major, minor, *_ = version.split(".")
-    return int(major), int(minor)
-
-
 def resolve_wasm_linker(
     *, env: Mapping[str, str] | None = None, cwd: Path | None = None
 ) -> WasmLinkerIdentity:
@@ -219,7 +211,11 @@ def resolve_wasm_linker(
     installs a linker; an unavailable one fails with the exact provisioning
     command or selector to set.
     """
-    from molt.llvm_toolchain import LlvmToolchainConfigError, resolve_wasi_sdk_tool
+    from molt.llvm_toolchain import (
+        LlvmToolchainConfigError,
+        resolve_wasi_sdk_tool,
+        selected_wasi_sdk_installation,
+    )
     from molt.source_root import compiler_source_root
 
     environment = dict(os.environ if env is None else env)
@@ -229,20 +225,26 @@ def resolve_wasm_linker(
         )
     except LlvmToolchainConfigError as exc:
         raise WasmLinkerContractError(str(exc)) from exc
-    version, sha256 = _wasm_linker_binary_identity(
-        linker, env=environment, cwd=cwd or Path.cwd()
+    try:
+        installation = selected_wasi_sdk_installation(
+            compiler_source_root(), environ=environment
+        )
+        if installation is None:
+            raise ValueError("the selected WASI SDK is not provisioned")
+    except (OSError, ValueError) as exc:
+        raise WasmLinkerContractError(f"WASI SDK refused: {exc}") from exc
+    fact = installation.tool_fact("wasm-ld")
+    version, sha256 = (
+        (installation.asset.llvm_version, str(fact["sha256"]))
+        if linker.parent.resolve(strict=True) / linker.name
+        == installation.sdk / fact["path"]
+        else _wasm_linker_binary_identity(
+            linker, env=environment, cwd=cwd or Path.cwd()
+        )
     )
-    expected = None
-    sysroot = wasm_link_inputs.resolve_wasi_sysroot(env=environment)
-    if sysroot is not None:
-        expected = wasi_sysroot_llvm_version(sysroot)
-        if expected is not None and _llvm_release_line(version) != _llvm_release_line(
-            expected
-        ):
-            raise WasmLinkerContractError(
-                "wasm linker/toolchain mismatch: "
-                f"{linker} reports {version}, but {sysroot / 'VERSION'} requires "
-                f"LLVM {expected}; select the matching wasi-sdk with WASI_SDK_PATH "
-                "or its bin/wasm-ld with MOLT_WASM_LD"
-            )
+    expected = installation.asset.llvm_version
+    if version != expected:
+        raise WasmLinkerContractError(
+            f"WASM linker reports {version}, but selected SDK requires LLVM {expected}"
+        )
     return WasmLinkerIdentity(linker, version, expected, sha256)

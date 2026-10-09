@@ -300,6 +300,13 @@ _REGISTRY_JSON = r"""{
       "retired": "2026-10-06"
     },
     {
+      "name": "MOLT_WASM_BUILTINS_ARCHIVE",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_WASI_C_ABI_PLAN",
+      "retired": "2026-10-07"
+    },
+    {
       "name": "MOLT_WASM_DB_EXPORTS",
       "note": "",
       "rejected_by": [],
@@ -312,6 +319,13 @@ _REGISTRY_JSON = r"""{
       "rejected_by": [],
       "replacement": "MOLT_WORKER_CMD",
       "retired": "2026-10-06"
+    },
+    {
+      "name": "MOLT_WASM_LONGDOUBLE_ARCHIVE",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_WASI_C_ABI_PLAN",
+      "retired": "2026-10-07"
     },
     {
       "name": "MOLT_WASM_PRECOMPILED_WRITE",
@@ -4872,7 +4886,7 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_PROOF_SOURCE_EXTENSION_LINK_INPUTS",
       "owner": "src/molt/source_extension_link_inputs.py",
-      "summary": "JSON record (schema molt.source-extension-link-inputs.v1) of the captured source-extension link inputs for a target triple; the guarded proof runner sets it for typed producer commands, the CLI validates and uses it instead of capturing the inputs itself, and the execution environment refuses user-supplied values.",
+      "summary": "JSON record (schema molt.source-extension-link-inputs.v2) of the captured source-extension link inputs for a target triple; the guarded proof runner sets it for typed producer commands, the CLI validates and uses it instead of capturing the inputs itself, and the execution environment refuses user-supplied values.",
       "values": []
     },
     {
@@ -7121,6 +7135,15 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "",
+      "kind": "string",
+      "name": "MOLT_WASI_C_ABI_PLAN",
+      "owner": "src/molt/wasi_sdk_identity.py",
+      "summary": "Bounded versioned projection of the manifest-selected WASI SDK C runtime, shared by Python consumers and Rust build scripts. Contains the exact single-thread wasip1 target, SDK roots and libc/long-double/compiler-rt/CRT content identities. Missing, malformed or conflicting projections refuse C-runtime builds; environment text is not native content-use attestation.",
+      "values": []
+    },
+    {
       "audience": "user",
       "default": "",
       "kind": "path",
@@ -7172,15 +7195,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_WASM_BUILD_TIMEOUT_SEC",
       "owner": "tools/bench_wasm.py",
       "summary": "Wall-clock limit in seconds for each molt build --target wasm that tools/bench_wasm.py runs; non-numeric or non-positive values raise RuntimeError; blank or unset means 90.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "path",
-      "name": "MOLT_WASM_BUILTINS_ARCHIVE",
-      "owner": "src/molt/cli/wasm_link_inputs.py",
-      "summary": "Path to the compiler-rt libclang_rt.builtins-wasm32.a archive that wasm32 runtime links need for binary128 soft-float; molt resolves it from the WASI sysroot multilib, a wasi-sdk resource dir or the vendored copy, exports it to the molt-runtime build script, and that script falls back to the WASI sysroot when the value is unset, blank or not a file.",
       "values": []
     },
     {
@@ -7455,15 +7469,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_WASM_LOG",
       "owner": "tools/bench_wasm.py",
       "summary": "Path of a file to which tools/bench_wasm.py appends subprocess output when --log-file is not given; unset means no log file.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "path",
-      "name": "MOLT_WASM_LONGDOUBLE_ARCHIVE",
-      "owner": "src/molt/cli/wasm_link_inputs.py",
-      "summary": "Path of wasi-libc's libc-printscan-long-double.a that wasm links place ahead of libc.a to override the long_double_not_supported stub; the Python resolver honors it as an override and otherwise finds the archive in the WASI sysroot lib/wasm32-wasip1 (or lib/wasm32-wasi) directory or the vendored vendor/wasm-builtins copy, then exports the resolved path to the molt-runtime build script, which ignores a value that is not a regular file.",
       "values": []
     },
     {

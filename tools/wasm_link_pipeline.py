@@ -101,6 +101,7 @@ class _SplitAppLinkPlan:
     public_export_map: Mapping[str, str]
     required_native_direct_symbols: tuple[str, ...]
     runtime_exports: frozenset[str]
+    provider_symbols: frozenset[str]
     data_alias_plan: _runtime_data.SplitRuntimeDataAliasPlan | None
     got_runtime_addresses: Mapping[str, int]
     failure_artifact: Path
@@ -194,6 +195,8 @@ class _LinkCommandInputs:
     rewritten_requirements: SourceExtensionLinkRequirements
     native_objects: tuple[Path, ...]
     native_link_requirements: SourceExtensionLinkRequirements
+    provider_paths: Mapping[str, Path]
+    host_provider_symbols: frozenset[str]
     link_outputs: Mapping[str, Path]
     runtime_exports: frozenset[str]
     output_data: bytes
@@ -787,6 +790,8 @@ def _prepare_link_inputs_stage(
     app_call_abi: Mapping[str, object],
     callable_entry_export_names: tuple[str, ...],
     native_link_requirements: SourceExtensionLinkRequirements,
+    provider_symbols: frozenset[str],
+    host_provider_symbols: frozenset[str],
     split_runtime: bool,
     allowlist_override: Path | None,
     temp_dir: OwnedTemporaryDirectory,
@@ -909,6 +914,7 @@ def _prepare_link_inputs_stage(
         set(runtime_exports),
         temp_dir,
         split_runtime=split_runtime,
+        provider_symbols=provider_symbols,
     )
     force_exports.extend(native_force_exports)
     rewritten_by_source = {
@@ -941,6 +947,7 @@ def _prepare_link_inputs_stage(
         base_allowlist=base_allowlist,
         native_link_requirements=native_link_requirements,
         temp_dir=temp_dir,
+        provider_symbols=host_provider_symbols,
     )
     linked_rewritten_path = rewritten_path
     linked_requirements = rewritten_requirements
@@ -952,6 +959,7 @@ def _prepare_link_inputs_stage(
             runtime_exports=set(runtime_exports),
             temp_dir=temp_dir,
             filename="output_linked_runtime_imports.wasm",
+            provider_symbols=provider_symbols,
         )
         if linked_rewrite is None:
             return None
@@ -1108,13 +1116,14 @@ def _plan_link_commands_stage(
     split_allowlist = _native_inputs._compose_split_runtime_native_allowlist(
         base_allowlist=inputs.base_allowlist,
         native_link_requirements=split_requirements,
+        provider_symbols=inputs.host_provider_symbols,
         split_runtime_exports=set(facts_provider(deploy_runtime_data).function_exports),
         temp_dir=inputs.temp_dir,
     )
     try:
         data_base = _runtime_data._split_app_global_base(inputs.output_data)
         split_app_link_args = _native_inputs._split_app_native_link_args(
-            split_requirements
+            split_requirements, provider_paths=inputs.provider_paths
         )
     except ValueError as exc:
         print(f"WASM split app link plan is invalid: {exc}", file=sys.stderr)
@@ -1419,7 +1428,9 @@ def _link_split_app_stage(
                 description="split app linked",
             )
         )
-        _normalize_split_app_runtime_imports(artifact, plan.runtime_exports)
+        _normalize_split_app_runtime_imports(
+            artifact, plan.runtime_exports, plan.provider_symbols
+        )
         raw_entries = artifact.facts().get("callable_table_entries")
         entry_plan = _callable_table._resolve_callable_table_entry_plan(
             artifact.data,
@@ -1515,6 +1526,7 @@ def _link_split_app_stage(
 def _normalize_split_app_runtime_imports(
     artifact: WasmArtifactState,
     runtime_exports: frozenset[str],
+    provider_symbols: frozenset[str],
 ) -> None:
     """Route every final native/runtime ABI edge through one split namespace."""
 
@@ -1524,6 +1536,7 @@ def _normalize_split_app_runtime_imports(
         target_module="molt_runtime",
         runtime_exports=set(runtime_exports),
         split_runtime=True,
+        provider_symbols=provider_symbols,
     )
     if rewritten is not None:
         artifact.replace(rewritten)
@@ -1722,6 +1735,9 @@ def run_wasm_ld_with_custodied_inputs(
     deploy_runtime_override: Path | None = None,
     deploy_runtime_imports: Sequence[str] | None = None,
     native_link_requirements: SourceExtensionLinkRequirements | None = None,
+    provider_paths: Mapping[str, Path] | None = None,
+    provider_symbols: frozenset[str] = frozenset(),
+    host_provider_symbols: frozenset[str] = frozenset(),
     preserve_debug_sections: bool = False,
     phase_timings_ms: dict[str, float] | None = None,
     wasm_facts_scanner: Path,
@@ -1845,6 +1861,8 @@ def run_wasm_ld_with_custodied_inputs(
             app_call_abi=app_call_abi,
             callable_entry_export_names=callable_entry_export_names,
             native_link_requirements=native_link_requirements,
+            provider_symbols=provider_symbols,
+            host_provider_symbols=host_provider_symbols,
             split_runtime=split_runtime,
             allowlist_override=allowlist_override,
             temp_dir=temp_dir,
@@ -1919,6 +1937,8 @@ def run_wasm_ld_with_custodied_inputs(
                 rewritten_requirements=rewritten_requirements,
                 native_objects=native_objects,
                 native_link_requirements=native_link_requirements,
+                provider_paths=provider_paths or {},
+                host_provider_symbols=host_provider_symbols,
                 link_outputs=link_outputs,
                 runtime_exports=runtime_exports,
                 output_data=output_data,
@@ -2025,6 +2045,7 @@ def run_wasm_ld_with_custodied_inputs(
                     public_export_map=public_export_map,
                     required_native_direct_symbols=required_native_direct_symbols,
                     runtime_exports=frozenset(runtime_exports),
+                    provider_symbols=provider_symbols,
                     data_alias_plan=split_link.data_alias_plan,
                     got_runtime_addresses=split_link.got_runtime_addresses,
                     failure_artifact=linked.with_name(

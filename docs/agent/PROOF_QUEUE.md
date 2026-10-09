@@ -61,18 +61,24 @@ Both prepared build modes validate the active locked environment and the pinned
 source/submodules before destination mutation or publication locking. Git
 inspection disables optional index writes. Missing or stale prerequisites fail
 without repair under proof custody. One typed invocation owns CLI
-options, locked re-execution, and queue argv. Envelope v4 declares Python, Git,
+options, locked re-execution, and queue argv. Envelope v6 declares Python, Git,
 and the target-derived compiler family; ordinary Python proofs remain leaves.
 Persisted command envelopes, execution requests and supervisor policies/receipts
 use the exact-JSON codec end to end; duplicate keys and non-finite numbers are
 rejected before admission or evidence interpretation, not collapsed by a decoder.
-Provider v2 records lexical compiler entrypoints, content images, target commands,
-the WASI sysroot manifest and the selected compiler-builtins archive. Capture
+Provider v4 records lexical compiler entrypoints, content images, target commands,
+the managed WASI SDK generation and the selected SDK compiler-rt archive.
+Native and freestanding C/C++ roles also retain their required compiler-phase
+helpers through the shared [development tool capture authority](../spec/areas/tooling/0001-toolchains.md#native-c-processes-in-development-proofs). Capture
 uses the explicit selected environment; validation consumes recorded identities.
 The child consumes the captured archive through the queue-owned link-input
-contract instead of rediscovering it. The typed link-input contract lives in
-`molt.source_extension_link_inputs`; its CLI resolver alone selects tools and
-archives. Both enter source custody, while ordinary proof-cache imports do not
+contract instead of rediscovering it. The strict v2 link-input contract lives in
+`molt.source_extension_link_inputs`. The CLI selects the immutable SDK C-ABI plan
+for the resolved toolchain; captured `compiler_rt` path, digest and extent must
+match that same plan before configure, metadata or publication effects. WASI
+C/C++ commands use the selected SDK driver and sysroot defaults. Rust
+compiler_builtins belongs to Rust linkage and is not this C-runtime provider.
+The selected inputs enter source custody, while ordinary proof-cache imports do not
 load the CLI or frontend. Preconfigured compiler arguments share a
 positive grammar: unknown or external-input/helper selectors fail before probes.
 Response-file and un-inventoried launcher forms fail explicitly. Tool-family identity alone does not replace
@@ -82,9 +88,26 @@ The queue publishes `MOLT_PROOF_SOURCE_ROOT` only from its validated Git snapsho
 Users cannot override it. The Python bootstrap exposes that same checkout's
 `src` only to the typed Molt module payload, including under `-P`; unrelated
 module, script, directory/ZIP, command and stdin import behavior is unchanged.
-Source, sysroot, compiler-builtins and executable inputs enter live custody
+Source, sysroot, SDK compiler-rt and executable inputs enter live custody
 before execution. Native requests preserve host CC/CXX selection separately
 from their recorded effective target triple.
+
+WASI Cargo library links use the selected SDK's raw linker with Rust's
+self-contained C runtime disabled. C and C++ compilation retain their selected
+driver roles and driver argument grammar. Command and reactor startup objects
+belong only to their respective executable producers; runtime libraries do not
+receive a startup object. Proof-tool selection binds the SDK compiler and its
+resource generation separately from the native LLVM compiler. Selection,
+resource capture, identity checks and proof instrumentation run in development
+and compiler tooling, outside emitted guest execution.
+
+Cargo proofs bind the captured physical Rust compiler and Cargo executable
+before launch. Only commands declaring native C compilation acquire its
+compiler-phase and independently selected archiver capture; runtime-only WASI
+builds retain their managed SDK closure without native C probing.
+Native C resources and Quint packages retain finite selection facts and roots
+before watching starts. Their complete resource trees are captured once after
+the watchers are armed; persisted full receipts require those inventories.
 
 The executable is intentionally only a stable source-checkout entrypoint. The
 canonical implementation lives in `tools/proof_queue_pkg/`: `state` owns the

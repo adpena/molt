@@ -348,9 +348,8 @@ def execute_guarded_request(request_path: Path) -> int:
         if output_layout.declaration is not None:
             output_layout.validate_environment(inherited_env)
             if "cargo" in envelope.get("toolchains", []):
-                cargo_command = admission._nested_command(command) or command
                 environment._require_cargo_build_tool_environment_context(
-                    cargo_command,
+                    envelope,
                     outputs=cargo_output_environment.CargoOutputEnvironment.for_envelope(
                         envelope
                     ),
@@ -520,17 +519,22 @@ def execute_guarded_request(request_path: Path) -> int:
         pre_source = environment._git_snapshot(effective_cwd, execution_env)
         environment.validate_typed_source_root(envelope, pre_source)
         plan = proof_plan.ProofPlan.load()
-        located_roots, policy_identities, location_telemetry = (
-            environment._locate_toolchain_watch_roots(
-                envelope,
-                exact,
-                cwd=cwd,
-                env=execution_env,
-                supervisor_binary=supervisor_binary,
-                reuse_root=output_layout.supervisor_store
-                / supervisor_generation.TOOL_IDENTITY_REUSE_DIRNAME,
-            )
+        (
+            located_roots,
+            policy_identities,
+            location_telemetry,
+            selected_tool_environment,
+        ) = environment._locate_toolchain_watch_roots(
+            envelope,
+            exact,
+            cwd=cwd,
+            env=execution_env,
+            supervisor_binary=supervisor_binary,
+            reuse_root=output_layout.supervisor_store
+            / supervisor_generation.TOOL_IDENTITY_REUSE_DIRNAME,
         )
+        execution_env.update(selected_tool_environment)
+        environment_contract["passed_names"] = sorted(execution_env, key=str.casefold)
         if output_layout.declaration is not None:
             output_layout.validate(protected_roots=located_roots)
         python_authority = envelope.get("python")
@@ -703,10 +707,9 @@ def execute_guarded_request(request_path: Path) -> int:
         if platform_process_images_armed != platform_process_images_pre:
             raise ValueError("platform process-image custody changed while arming")
 
-        # Python's mutable package inventory is captured once after custody is
-        # armed. Non-Python selection ran exactly once pre-arm so its complete
-        # executable/config closure could itself be watched; only exact-path
-        # content revalidation is permitted here.
+        # Selection names executable/config inputs and broad resource roots before
+        # arming. Python and managed SDK resource inventories are captured once
+        # here, inside live custody, then frozen for the closing verification.
         pre_source = environment._git_snapshot(effective_cwd, execution_env)
         if pre_source.get("root") != source_root_raw:
             raise ValueError("proof source root changed while live custody armed")
@@ -735,7 +738,9 @@ def execute_guarded_request(request_path: Path) -> int:
         )
         for name, identity in toolchains_full.items():
             assert isinstance(identity, Mapping)
-            command_identity._validate_toolchain_identity(plan, name, identity)
+            command_identity._validate_toolchain_identity(
+                plan, name, identity, full_capture=True
+            )
         toolchains, capture_ref, capture_telemetry = toolchain_capture.publish_capture(
             result_path.parent / "custody-cas", toolchains_full
         )

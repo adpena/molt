@@ -7,6 +7,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from molt.cli import wasm_link_inputs
+from molt.wasi_sdk_identity import WasiCAbiProjection
 from molt.cli.native_symbol_inspection import (
     _native_symbol_facts_admission,
 )
@@ -36,35 +37,37 @@ class ExternalLinkProviderSurface:
 
 def _resolved_provider_archives(
     target_triple: str,
+    primitive_classes: frozenset[str] | None,
+    plan: WasiCAbiProjection | None,
 ) -> tuple[tuple[str, tuple[Path, ...]], ...]:
-    if target_triple == "wasm32-wasip1":
-        libc = wasm_link_inputs.wasm_wasi_libc_archive()
-        compiler_rt = wasm_link_inputs.wasm_compiler_builtins_archive()
-        libcxx = wasm_link_inputs.wasm_cxx_runtime_archives()
-    else:
-        libc = wasm_link_inputs.wasm_wasi_libc_archive(target_triple)
-        compiler_rt = wasm_link_inputs.wasm_compiler_builtins_archive(target_triple)
-        libcxx = wasm_link_inputs.wasm_cxx_runtime_archives(target_triple)
-    return (
-        (
-            WASM_LIBC_LINK_IMPORT_CLASS,
-            () if libc is None else (libc.resolve(strict=False),),
-        ),
-        (
-            WASM_COMPILER_RT_LINK_IMPORT_CLASS,
-            () if compiler_rt is None else (compiler_rt.resolve(strict=False),),
-        ),
-        (
-            WASM_LIBCXX_LINK_IMPORT_CLASS,
-            ()
-            if libcxx is None
-            else tuple(path.resolve(strict=False) for path in libcxx),
-        ),
+    requested = tuple(
+        name
+        for name in _PROVIDER_CLASS_PRECEDENCE
+        if primitive_classes is None or name in primitive_classes
     )
+    if target_triple == "wasm32-unknown-unknown" or not requested:
+        return tuple((name, ()) for name in requested)
+    if target_triple != "wasm32-wasip1":
+        raise ValueError(f"unsupported WASM provider target: {target_triple}")
+    plan = plan or wasm_link_inputs.resolve_wasi_c_abi_plan()
+    archives = []
+    for name in requested:
+        if name == WASM_LIBC_LINK_IMPORT_CLASS:
+            paths = (plan.path("long_double"), plan.path("libc"))
+        elif name == WASM_COMPILER_RT_LINK_IMPORT_CLASS:
+            paths = (plan.path("compiler_rt"),)
+        else:
+            paths = wasm_link_inputs.wasm_cxx_runtime_archives(plan=plan)
+        archives.append((name, paths))
+    return tuple(archives)
 
 
 def wasm_external_link_provider_surfaces(
     target_triple: str = "wasm32-wasip1",
+    *,
+    primitive_classes: frozenset[str] | None = None,
+    plan: WasiCAbiProjection | None = None,
+    archive_paths: Mapping[Path, Path] | None = None,
 ) -> tuple[ExternalLinkProviderSurface, ...]:
     """Project current provider facts under one owned admission per archive.
 
@@ -74,7 +77,11 @@ def wasm_external_link_provider_surfaces(
     """
     surfaces: list[ExternalLinkProviderSurface] = []
     with ExitStack() as owned:
-        for primitive_class, archives in _resolved_provider_archives(target_triple):
+        for primitive_class, archives in _resolved_provider_archives(
+            target_triple, primitive_classes, plan
+        ):
+            if archive_paths is not None:
+                archives = tuple(archive_paths[path] for path in archives)
             symbols: set[str] = set()
             for archive in archives:
                 _opened, _identity, facts = owned.enter_context(
@@ -114,10 +121,16 @@ def wasm_external_link_provider_symbols(
     *,
     primitive_classes: frozenset[str] | None = None,
     target_triple: str = "wasm32-wasip1",
+    plan: WasiCAbiProjection | None = None,
+    archive_paths: Mapping[Path, Path] | None = None,
 ) -> frozenset[str]:
     return frozenset(
         symbol
-        for surface in wasm_external_link_provider_surfaces(target_triple)
-        if primitive_classes is None or surface.primitive_class in primitive_classes
+        for surface in wasm_external_link_provider_surfaces(
+            target_triple,
+            primitive_classes=primitive_classes,
+            plan=plan,
+            archive_paths=archive_paths,
+        )
         for symbol in surface.symbols
     )

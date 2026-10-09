@@ -498,17 +498,67 @@ def test_wasm_receipts_must_carry_distribution_semantics(bundle):
 
 @pytest.mark.parametrize("simd", [True, False])
 @pytest.mark.parametrize("freestanding", [True, False])
-def test_simd_reader_agrees_with_the_codegen_flag_policy(simd, freestanding):
-    for base in (
+@pytest.mark.parametrize(
+    "base",
+    [
         (),
-        ("-C", "target-feature=+bulk-memory"),
-        ("-Ctarget-feature=+simd128",),
-    ):
-        flags = _wasm_runtime_codegen_flags(
-            base, simd_enabled=simd, freestanding=freestanding
-        )
-        expected = simd if not base else "+simd128" in "".join(base)
-        assert wasm_runtime_simd_enabled(flags) is expected
+        ("-C", "target-feature=-reference-types"),  # Checked-in Cargo policy.
+        ("-Ctarget-feature=+simd128,+bulk-memory", "--cfg", 'label="a b"'),
+        (
+            "-C",
+            "target-feature=-simd128,+reference-types",
+            "-Ctarget-feature=+bulk-memory",
+        ),
+        ("--codegen", "target-feature=+simd128", "--codegen=target-feature=-simd128"),
+        ("-Ctarget-cpu=bleeding-edge", "-Ctarget-feature=+relaxed-simd"),
+    ],
+)
+def test_runtime_codegen_policy_owns_requested_simd_and_preserves_inputs(
+    base, simd, freestanding
+):
+    flags = _wasm_runtime_codegen_flags(
+        base, simd_enabled=simd, freestanding=freestanding
+    )
+    marker = ("--cfg", 'getrandom_backend="unsupported"') if freestanding else ()
+    feature = (
+        "target-feature=-reference-types,+simd128"
+        if simd
+        else "target-feature=-reference-types,-simd128"
+    )
+    assert flags == (*base, *marker, "-C", feature)
+    assert wasm_runtime_simd_enabled(flags) is simd
+    assert (
+        _wasm_runtime_codegen_flags(flags, simd_enabled=simd, freestanding=freestanding)
+        == flags
+    )
+
+
+def test_runtime_codegen_preserves_explicit_freestanding_backend():
+    base = ("--cfg", 'getrandom_backend="custom"')
+    assert _wasm_runtime_codegen_flags(base, simd_enabled=False, freestanding=True) == (
+        *base,
+        "-C",
+        "target-feature=-reference-types,-simd128",
+    )
+
+
+@pytest.mark.parametrize(
+    "flags, expected",
+    [
+        (("-Ctarget-feature=+simd128", "-C", "target-feature=-reference-types"), True),
+        (("-Ctarget-feature=+simd128,-simd128",), False),
+        (("--codegen", "target-feature=+simd128"), True),
+        (("--codegen=target-feature=+simd128",), True),
+        (("--codegen=target-feature=+simd128", "-Ctarget-feature=-simd128"), False),
+        (("-Ctarget-feature=-simd128", "--codegen", "target-feature=+simd128"), True),
+        (
+            ("-C", "link-arg=target-feature=+simd128", "--cfg", 'label="+simd128"'),
+            False,
+        ),
+    ],
+)
+def test_simd_reader_matches_rustc_explicit_toggle_precedence(flags, expected):
+    assert wasm_runtime_simd_enabled(flags) is expected
 
 
 def test_distribution_export_surface_is_the_complete_canonical_selector():
@@ -1287,10 +1337,13 @@ def _distribution_wasm_identities(key, **facts):
         cargo_profile=facts.get("cargo_profile", key["cargo_profile"]),
         runtime_features=facts.get("runtime_features", list(key["runtime_features"])),
         base_rustflags=list(
-            _wasm_runtime_codegen_flags(
-                (),
-                simd_enabled=facts.get("simd", key["simd"]),
-                freestanding=key["freestanding"],
+            facts.get(
+                "base_rustflags",
+                _wasm_runtime_codegen_flags(
+                    (),
+                    simd_enabled=facts.get("simd", key["simd"]),
+                    freestanding=key["freestanding"],
+                ),
             )
         ),
     )
@@ -1320,6 +1373,37 @@ def _distribution_wasm_identities(key, **facts):
             for kind in ("shared", "reloc")
         ),
     )
+
+
+@pytest.mark.parametrize("simd", [True, False])
+def test_runtime_policy_receipts_match_installed_simd_key(bundle, simd):
+    installed = distribution.installed_compiler(bundle / "source")
+    assert installed is not None
+    key = installed_runtime.wasm_runtime_cell_key(
+        **{**_INSTALLED_WASM_REQUEST, "simd_enabled": simd}
+    )
+    flags = _wasm_runtime_codegen_flags(
+        ("-C", "target-feature=-reference-types"),
+        simd_enabled=simd,
+        freestanding=False,
+    )
+    identities = _distribution_wasm_identities(key, base_rustflags=flags)
+    for required in (simd, not simd):
+        record = {
+            "id": "0" * 64,
+            "kind": distribution.WASM_RUNTIME_CELL,
+            "key": {**key, "simd": required},
+            "files": [],
+        }
+        cell = installed_runtime.InstalledRuntimeCell(
+            installed, record, installed.runtime_root / record["id"]
+        )
+        for identity in identities:
+            if required == simd:
+                installed_runtime._require_wasm_semantics(cell, identity)
+            else:
+                with pytest.raises(InstalledRuntimeError, match="SIMD"):
+                    installed_runtime._require_wasm_semantics(cell, identity)
 
 
 def _ship_installed_wasm_cell(bundle: Path, tmp_path: Path, **facts) -> dict:
@@ -1810,3 +1894,111 @@ def test_installed_admission_contract_has_one_defining_authority():
     assert InstalledRuntimeError.__module__ == "molt.cli.installed_runtime_contract"
     assert not hasattr(installed_runtime, "InstalledNativeAdmission")
     assert not hasattr(installed_runtime, "InstalledRuntimeError")
+
+
+@pytest.mark.parametrize("simd", [False, True])
+@pytest.mark.parametrize(
+    "trailing",
+    [
+        ("-C", "link-self-contained=no", "-C", "linker-flavor=wasm-ld"),
+        ("--codegen=opt-level=2", "-L", "native=opaque dir"),
+    ],
+)
+def test_runtime_feature_policy_is_stable_after_other_codegen_options(simd, trailing):
+    from molt.cli.runtime_wasm_build_support import (
+        _wasm_runtime_codegen_flags,
+        wasm_runtime_simd_enabled,
+    )
+
+    policy = "target-feature=-reference-types," + ("+simd128" if simd else "-simd128")
+    flags = ("--codegen", policy, *trailing)
+    assert (
+        _wasm_runtime_codegen_flags(flags, simd_enabled=simd, freestanding=False)
+        == flags
+    )
+    assert wasm_runtime_simd_enabled(flags) is simd
+    opposite = (
+        *flags,
+        "--codegen=target-feature=" + ("-simd128" if simd else "+simd128"),
+    )
+    repaired = _wasm_runtime_codegen_flags(
+        opposite, simd_enabled=simd, freestanding=False
+    )
+    assert repaired == (*opposite, "-C", policy)
+    assert wasm_runtime_simd_enabled(repaired) is simd
+    assert (
+        _wasm_runtime_codegen_flags(repaired, simd_enabled=simd, freestanding=False)
+        == repaired
+    )
+    positional = (
+        *flags,
+        "--",
+        "--codegen=target-feature=" + ("-simd128" if simd else "+simd128"),
+    )
+    assert wasm_runtime_simd_enabled(positional) is simd
+    assert (
+        _wasm_runtime_codegen_flags(positional, simd_enabled=simd, freestanding=False)
+        == positional
+    )
+
+
+@pytest.mark.parametrize(
+    "switch", ["--sysroot", "-L", "-o", "--out-dir", "--remap-path-prefix"]
+)
+def test_runtime_policy_does_not_read_features_from_opaque_operands(switch):
+    base = (switch, "--codegen=target-feature=+simd128")
+    assert not wasm_runtime_simd_enabled(base)
+    expected = (
+        *base,
+        "--cfg",
+        'getrandom_backend="unsupported"',
+        "-C",
+        "target-feature=-reference-types,-simd128",
+    )
+    assert (
+        _wasm_runtime_codegen_flags(base, simd_enabled=False, freestanding=True)
+        == expected
+    )
+    assert (
+        _wasm_runtime_codegen_flags(expected, simd_enabled=False, freestanding=True)
+        == expected
+    )
+
+
+def test_freestanding_backend_is_selected_only_by_actual_cfg():
+    base = ("-C", "link-arg=getrandom_backend=custom")
+    assert _wasm_runtime_codegen_flags(base, simd_enabled=False, freestanding=True) == (
+        *base,
+        "--cfg",
+        'getrandom_backend="unsupported"',
+        "-C",
+        "target-feature=-reference-types,-simd128",
+    )
+
+
+@pytest.mark.parametrize(
+    "flags,expected",
+    [
+        (("-gCtarget_feature=+simd128",), True),
+        (
+            ("-vC", "target_feature=+simd128", "--codegen=target-feature=-simd128"),
+            False,
+        ),
+        (("-OCtarget-feature=-simd128", "--codegen", "target_feature=+simd128"), True),
+        (("-gL", "--codegen=target_feature=+simd128"), False),
+    ],
+)
+def test_runtime_feature_reader_uses_cluster_and_key_semantics(flags, expected):
+    assert wasm_runtime_simd_enabled(flags) is expected
+    for simd in (False, True):
+        policy = "target-feature=-reference-types," + (
+            "+simd128" if simd else "-simd128"
+        )
+        resolved = _wasm_runtime_codegen_flags(
+            flags, simd_enabled=simd, freestanding=False
+        )
+        assert resolved == (*flags, "-C", policy)
+        assert wasm_runtime_simd_enabled(resolved) is simd
+        assert _wasm_runtime_codegen_flags(
+            (*resolved, "-gCopt_level=2"), simd_enabled=simd, freestanding=False
+        ) == (*resolved, "-gCopt_level=2")

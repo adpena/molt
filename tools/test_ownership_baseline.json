@@ -656,7 +656,6 @@
   "tests/test_wasm_linked_runner_node_flags.py",
   "tests/test_wasm_linking_symbols.py",
   "tests/test_wasm_list_dict_ops.py",
-  "tests/test_wasm_longdouble_printf_link.py",
   "tests/test_wasm_memoryview_ops.py",
   "tests/test_wasm_optimization.py",
   "tests/test_wasm_optimization_policy.py",

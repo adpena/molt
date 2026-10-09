@@ -5,6 +5,9 @@ use std::process::Command;
 
 use serde_json::Value as JsonValue;
 
+#[path = "../../build_support/wasi_sysroot.rs"]
+mod wasi_c_abi;
+
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -237,13 +240,42 @@ fn reported_runtime_cdylib(stdout: &str, target_dir: &Path) -> PathBuf {
     reported.into_iter().next().expect("one reported cdylib")
 }
 
+// Keep effective Cargo flags as argument tokens throughout construction. SDK
+// paths can contain spaces; only Cargo's unit separator encodes this vector.
+fn wasi_cargo_rustflags(plan: &wasi_c_abi::WasiCAbiPlan) -> Vec<String> {
+    let mut flags = Vec::new();
+    for directory in plan.native_search_directories() {
+        flags.push("-L".to_owned());
+        flags.push(format!(
+            "native={}",
+            directory.to_str().expect("validated UTF-8 SDK path")
+        ));
+    }
+    flags.extend(
+        [
+            "-C",
+            "link-self-contained=no",
+            "-C",
+            "linker-flavor=wasm-ld",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    );
+    flags
+}
+
 #[test]
 fn cargo_cdylib_selection_reports_runtime_wasm_with_fixed_abi_surface() {
     let root = workspace_root();
-    let target_dir = root.join("target/wasm-cdylib-exports-test");
-    let tmp_dir = root.join("tmp");
-    fs::create_dir_all(&target_dir).expect("create target dir");
-    fs::create_dir_all(&tmp_dir).expect("create tmp dir");
+    let projection = std::env::var(wasi_c_abi::PLAN_ENV)
+        .expect("project-owned complete WASI C ABI plan is required before nested Cargo");
+    let plan =
+        wasi_c_abi::WasiCAbiPlan::decode(&projection).expect("selected WASI C ABI projection");
+    let target_dir = PathBuf::from(
+        std::env::var_os("CARGO_TARGET_DIR").expect("selected Cargo target directory is required"),
+    )
+    .join("wasm-cdylib-exports-test");
+    fs::create_dir_all(&target_dir).expect("create selected target dir");
     let runtime_features = [
         "stdlib_micro",
         "builtin_set",
@@ -261,26 +293,33 @@ fn cargo_cdylib_selection_reports_runtime_wasm_with_fixed_abi_surface() {
         .join("\n");
     let cpython_abi_requested_data_exports =
         requested_data_exports(&expected_cpython_abi).join("\n");
-    let cpython_abi_export_flags = expected_cpython_abi
-        .iter()
-        .map(|name| format!("-C link-arg=--export-if-defined={name}"))
-        .collect::<Vec<_>>();
-    let mut rustflags = [
-        "-C link-arg=--import-memory",
-        "-C link-arg=--import-table",
-        "-C link-arg=--growable-table",
-        "-C link-arg=--export-dynamic",
-        "-C target-feature=-reference-types,+simd128",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect::<Vec<_>>();
-    rustflags.extend(cpython_abi_export_flags);
-    let rustflags = rustflags.join(" ");
+    let mut rustflags = wasi_cargo_rustflags(&plan);
+    rustflags.extend(
+        [
+            "-C",
+            "link-arg=--import-memory",
+            "-C",
+            "link-arg=--import-table",
+            "-C",
+            "link-arg=--growable-table",
+            "-C",
+            "link-arg=--export-dynamic",
+            "-C",
+            "target-feature=-reference-types,+simd128",
+        ]
+        .into_iter()
+        .map(str::to_owned),
+    );
+    for name in &expected_cpython_abi {
+        rustflags.extend([
+            "-C".to_owned(),
+            format!("link-arg=--export-if-defined={name}"),
+        ]);
+    }
+    let encoded_flags = rustflags.join("\x1f");
     let output = Command::new("cargo")
         .current_dir(&root)
         .env("CARGO_TARGET_DIR", &target_dir)
-        .env("TMPDIR", &tmp_dir)
         .env("MOLT_SESSION_ID", "test-wasm-cdylib-exports")
         .env(
             "MOLT_WASM_CPYTHON_ABI_EXPORTS",
@@ -291,7 +330,9 @@ fn cargo_cdylib_selection_reports_runtime_wasm_with_fixed_abi_surface() {
             cpython_abi_requested_data_exports,
         )
         .env("CARGO_INCREMENTAL", "0")
-        .env("RUSTFLAGS", rustflags)
+        .env_remove("RUSTFLAGS")
+        .env("CARGO_ENCODED_RUSTFLAGS", encoded_flags)
+        .env("CARGO_TARGET_WASM32_WASIP1_LINKER", &plan.linker)
         .args([
             "rustc",
             "--package",
@@ -335,4 +376,220 @@ fn cargo_cdylib_selection_reports_runtime_wasm_with_fixed_abi_surface() {
         missing_cpython_abi.is_empty(),
         "missing requested CPython ABI wasm exports: {missing_cpython_abi:?}"
     );
+}
+
+#[test]
+fn wasi_c_abi_wire_refuses_obsolete_and_non_ascii_coordinates() {
+    fn encode(fields: &[String]) -> String {
+        fields
+            .join("\0")
+            .bytes()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+    // Independently authored legal language coordinates, not producer output.
+    let mut fields = vec![
+        "molt.wasi-c-abi.v2",
+        "wasm32-wasip1",
+        "single",
+        "34.0",
+        "23.0.0",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "/sdk",
+        "/sdk/share/wasi-sysroot",
+        "/sdk/share/wasi-sysroot/include/wasm32-wasip1",
+        "/sdk/bin/clang",
+        "/sdk/bin/wasm-ld",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    for role in [
+        "libc",
+        "long_double",
+        "compiler_rt",
+        "crt_command",
+        "crt_reactor",
+    ] {
+        fields.extend([
+            role.to_owned(),
+            format!("/sdk/{role}"),
+            "0".into(),
+            "a".repeat(64),
+        ]);
+    }
+    for (index, value) in [
+        (0, "molt.wasi-c-abi.v0"),
+        (1, "wasm32-wasip2"),
+        (2, "threads"),
+        (3, "３４.0"),
+        (4, "23.０.0"),
+    ] {
+        let mut invalid = fields.clone();
+        invalid[index] = value.into();
+        assert!(wasi_c_abi::WasiCAbiPlan::decode(&encode(&invalid)).is_err());
+    }
+    assert!(wasi_c_abi::WasiCAbiPlan::decode(&"a".repeat(32_001)).is_err());
+    assert!(wasi_c_abi::WasiCAbiPlan::decode("AA").is_err());
+}
+
+#[test]
+fn wasi_c_abi_wire_admits_native_paths_and_rejects_member_drift() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let sdk = std::env::temp_dir().join(format!("molt c abi wire {}-{nonce}", std::process::id()));
+    std::fs::create_dir(&sdk).expect("exclusive fixture root");
+    let root = sdk.join("sysroot");
+    let include = root.join("include");
+    let native_lib = root.join("lib/wasm32-wasip1");
+    let compiler_rt_lib = sdk.join("lib/clang/23/lib/wasi");
+    let driver = sdk.join("clang");
+    let linker = sdk.join("wasm-ld");
+    std::fs::create_dir_all(&include).expect("fixture headers");
+    std::fs::create_dir_all(&native_lib).expect("fixture libc directory");
+    std::fs::create_dir_all(&compiler_rt_lib).expect("fixture compiler-rt directory");
+    std::fs::write(&driver, b"driver fixture, never executed").expect("fixture driver");
+    let mut fields: Vec<String> = [
+        "molt.wasi-c-abi.v2",
+        "wasm32-wasip1",
+        "single",
+        "34.0",
+        "23.0.0",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    fields.push("a".repeat(64));
+    fields.extend(
+        [&sdk, &root, &include, &driver, &linker]
+            .map(|path| path.to_str().expect("native UTF-8 path").to_owned()),
+    );
+    for role in [
+        "libc",
+        "long_double",
+        "compiler_rt",
+        "crt_command",
+        "crt_reactor",
+    ] {
+        let directory = if role == "compiler_rt" {
+            &compiler_rt_lib
+        } else {
+            &native_lib
+        };
+        let path = directory.join(role);
+        std::fs::write(&path, b"fixture").expect("fixture member");
+        fields.extend([
+            role.to_owned(),
+            path.to_str().expect("path").to_owned(),
+            "7".to_owned(),
+            "a".repeat(64),
+        ]);
+    }
+    let encode = |input: &[String]| {
+        input
+            .join("\0")
+            .bytes()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    // A declared hash is structurally checked here, not authenticated by Rust.
+    let admitted =
+        wasi_c_abi::WasiCAbiPlan::decode(&encode(&fields)).expect("independent legal wire");
+    assert_eq!(admitted.libc(), native_lib.join("libc"));
+    assert_eq!(admitted.driver, driver);
+    // Independent literal order: the four sysroot members share one directory,
+    // while compiler-rt owns a second. The projection preserves first occurrence.
+    assert_eq!(
+        admitted.native_search_directories(),
+        vec![native_lib.as_path(), compiler_rt_lib.as_path()]
+    );
+    let expected = vec![
+        "-L".to_owned(),
+        format!("native={}", native_lib.to_str().expect("libc path")),
+        "-L".to_owned(),
+        format!(
+            "native={}",
+            compiler_rt_lib.to_str().expect("compiler-rt path")
+        ),
+        "-C".to_owned(),
+        "link-self-contained=no".to_owned(),
+        "-C".to_owned(),
+        "linker-flavor=wasm-ld".to_owned(),
+    ];
+    let flags = wasi_cargo_rustflags(&admitted);
+    assert_eq!(flags, expected);
+    let encoded = flags.join("\x1f");
+    assert_eq!(
+        encoded.split('\x1f').collect::<Vec<_>>(),
+        expected.iter().map(String::as_str).collect::<Vec<_>>()
+    );
+    let missing_search = expected[4..].to_vec();
+    let missing_compiler_rt = [expected[..2].to_vec(), expected[4..].to_vec()].concat();
+    let reversed_search = [
+        expected[2..4].to_vec(),
+        expected[..2].to_vec(),
+        expected[4..].to_vec(),
+    ]
+    .concat();
+    // Reproduce the retired encoder as an independent rejected mutation.
+    let whitespace_split = expected
+        .join(" ")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let mut invalid_flags = vec![
+        missing_search,
+        missing_compiler_rt,
+        reversed_search,
+        whitespace_split,
+    ];
+    for kind in ["native", "all"] {
+        let mut foreign_first = vec![
+            "-L".to_owned(),
+            format!(
+                "{kind}={}",
+                sdk.join("foreign").to_str().expect("foreign path")
+            ),
+        ];
+        foreign_first.extend(expected.iter().cloned());
+        invalid_flags.push(foreign_first);
+    }
+    for target in ["wasm32-wasip1", "wasm32-unknown-unknown"] {
+        admitted
+            .validate_cargo_mode(target, linker.to_str().expect("linker"), &encoded)
+            .expect("complete SDK-first target context");
+        for invalid in &invalid_flags {
+            assert!(
+                admitted
+                    .validate_cargo_mode(
+                        target,
+                        linker.to_str().expect("linker"),
+                        &invalid.join("\x1f")
+                    )
+                    .is_err(),
+                "invalid SDK search context accepted: {invalid:?}"
+            );
+        }
+    }
+    for (index, value) in [
+        (11, "compiler_rt"),
+        (13, "01"),
+        (13, "true"),
+        (13, "8589934593"),
+    ] {
+        let mut invalid = fields.clone();
+        invalid[index] = value.into();
+        assert!(wasi_c_abi::WasiCAbiPlan::decode(&encode(&invalid)).is_err());
+    }
+    #[cfg(unix)]
+    {
+        let mut invalid = fields.clone();
+        invalid[6] = format!("/{}", invalid[6]);
+        assert!(wasi_c_abi::WasiCAbiPlan::decode(&encode(&invalid)).is_err());
+    }
+    std::fs::write(native_lib.join("libc"), b"changed extent").expect("mutate owned fixture");
+    assert!(wasi_c_abi::WasiCAbiPlan::decode(&encode(&fields)).is_err());
+    std::fs::remove_dir_all(sdk).expect("remove owned fixture");
 }

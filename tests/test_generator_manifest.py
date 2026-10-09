@@ -161,22 +161,81 @@ def test_manifest_generators_implement_the_generator_io_contract() -> None:
     assert violations == []
 
 
-def test_release_matrix_generator_imports_as_canonical_package() -> None:
+def _observe_release_matrix_import(root: Path) -> None:
+    # Editable site startup imports Molt's guard, binding the installed molt
+    # package before -c. Reimport only this observer's package/dependency from
+    # the requested source; retain every guard module and installed hook.
     code = (
         "import sys\n"
         "from pathlib import Path\n"
-        "root = Path(sys.argv[1])\n"
-        "sys.path.insert(0, str(root))\n"
-        "from tools import gen_release_matrix\n"
+        "root = Path(sys.argv[1]).resolve()\n"
+        "sys.path[:0] = [str(root), str(root / 'src')]\n"
+        "sys.modules.pop('molt.target_python', None)\n"
+        "sys.modules.pop('molt', None)\n"
+        "from tools import gen_release_matrix, generator_io\n"
+        "import molt\n"
+        "from molt import target_python\n"
         "assert gen_release_matrix.generator_main.__module__ == "
-        "'tools.generator_io'\n"
+        "'tools.generator_io', gen_release_matrix.generator_main.__module__\n"
+        "for module, relative in ("
+        "(gen_release_matrix, 'tools/gen_release_matrix.py'),"
+        "(generator_io, 'tools/generator_io.py'),"
+        "(molt, 'src/molt/__init__.py'),"
+        "(target_python, 'src/molt/target_python.py')):\n"
+        "    actual = Path(module.__file__).resolve()\n"
+        "    expected = root / relative\n"
+        "    assert actual == expected, (module.__name__, str(actual), str(expected))\n"
     )
-    check_output_guarded_test_process(
-        [sys.executable, "-I", "-c", code, str(ROOT)],
-        cwd=ROOT,
+    result = run_guarded_test_process(
+        # Isolation ignores environment bytecode controls, so the read-only
+        # observer carries its no-write policy in the interpreter argv.
+        [sys.executable, "-B", "-I", "-c", code, str(root)],
+        cwd=root,
+        capture_output=True,
+        check=False,
         text=True,
         encoding="utf-8",
     )
+    assert result.returncode == 0, (
+        f"source observer exited {result.returncode}:\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+
+def test_release_matrix_generator_imports_as_canonical_package() -> None:
+    _observe_release_matrix_import(ROOT)
+
+
+def test_release_matrix_import_preserves_fresh_source_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    disposable = tmp_path / "source"
+    # Minimal real import closure: no generated outputs or whole-checkout copy.
+    for relative in (
+        "tools/gen_release_matrix.py",
+        "tools/generator_io.py",
+        "src/molt/__init__.py",
+        "src/molt/target_python.py",
+    ):
+        destination = disposable / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((ROOT / relative).read_bytes())
+
+    def snapshot():
+        return {
+            path.relative_to(disposable).as_posix(): (
+                None if path.is_dir() else path.read_bytes()
+            )
+            for path in disposable.rglob("*")
+        }
+
+    before = snapshot()
+    assert not list(disposable.rglob("__pycache__"))
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    monkeypatch.setenv("PYTHONPYCACHEPREFIX", str(tmp_path / "external-pycache"))
+    _observe_release_matrix_import(disposable)
+    assert snapshot() == before
+    assert not list(disposable.rglob("__pycache__"))
 
 
 def test_live_gate_has_no_gating_violations():
