@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from tools import nightly_prepare
 
 
@@ -112,3 +114,36 @@ def test_main_bundles_from_the_dx_resolved_target(tmp_path: Path, monkeypatch) -
         == 0
     )
     assert seen["build_env"]["CARGO_TARGET_DIR"] == str(override.resolve())
+
+
+def test_prepare_reports_why_packing_failed(tmp_path: Path, monkeypatch) -> None:
+    source = SimpleNamespace(revision="b" * 40)
+    monkeypatch.setattr(
+        nightly_prepare.cpython_regrtest,
+        "load_cpython_sources",
+        lambda: {"3.12": source},
+    )
+    monkeypatch.setattr(
+        nightly_prepare.cpython_regrtest,
+        "ensure_cpython_checkout",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fake_run(argv, **kwargs):
+        if "pack" in argv:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="nightly-runtime-bundle: no backend compiler admitted\n",
+            )
+        Path(argv[argv.index("--output") + 1]).write_bytes(b"native-smoke")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(nightly_prepare, "COMMANDS", SimpleNamespace(run=fake_run))
+    with pytest.raises(RuntimeError, match="(?s)exit 1.*no backend compiler admitted"):
+        nightly_prepare.prepare(
+            output_root=tmp_path / "out",
+            cpython_dir=tmp_path / "cpython",
+            build_env={"CARGO_TARGET_DIR": str(tmp_path / "target")},
+            github_output=None,
+        )
