@@ -28,6 +28,8 @@ jobs:
       MOLT_HOME: /tmp/molt-ext
       MOLT_WASM_RUNTIME_DIR: /tmp/molt-ext/wasm
       MOLT_WASM_TEST_USE_EXTERNAL: "1"
+      MOLT_PREFER_EXTERNAL_ARTIFACTS: "1"
+      MOLT_GUARD_PROFILE: all
       MOLT_WASM_TEST_KEEPALIVE_SEC: "20"
       MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC: "2"
       MOLT_SESSION_ID: wasm-ci-${{ github.run_id }}-${{ github.run_attempt }}
@@ -82,6 +84,7 @@ jobs:
 
       - name: Resolve build-control evidence custody
         id: build-control
+        shell: bash
         run: |
           uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"
 
@@ -101,6 +104,20 @@ jobs:
             ${{ steps.build-control.outputs.root }}/runtime_wasm_generations/*.json
             /tmp/molt-ext/wasm/*.json
           if-no-files-found: error
+          include-hidden-files: true
+
+      - name: Upload WASM command diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-diagnostics-wasm
+          path: |
+            proof-receipts/wasm.json
+            ${{ steps.build-control.outputs.profile_log }}
+            ${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}
+            ${{ steps.build-control.outputs.guard_state_root != '' && format('{0}/commands/**/*.json', steps.build-control.outputs.guard_state_root) || '' }}
+            ${{ steps.build-control.outputs.pytest_guard_root != '' && format('{0}/**/*.json', steps.build-control.outputs.pytest_guard_root) || '' }}
+          if-no-files-found: warn
           include-hidden-files: true
 
       - name: Summarize guarded command hotspots
