@@ -956,6 +956,23 @@ package tree, and environment-selected compiler/linker/wrapper executables are
 content-hashed. All toolchains are re-captured after the command; a missing,
 empty, changed, or extra closure cannot become evidence.
 
+Selected-image comparisons use `process_image_capture` and the shared lexical
+path owner in `molt.llvm_linker_roles`. Windows spelling equivalence follows
+actual directory entries; distinct hardlink or symlink names remain distinct
+even when their content and inode agree. Capture, unit membership, frozen-file
+storage, child selection and input watches use that same identity. Alias
+ancestors remain watched. A missing event coordinate is a mutation, not evidence
+that the input stayed unchanged.
+
+Proof custody refuses unsupported coordinates before hashing or launching a
+probe: lexical parent traversal, verbatim trailing-dot/space components,
+non-DOS/non-UNC or malformed verbatim namespaces, and ambiguous or unavailable
+entry spelling. Admitted Windows extended-prefix projections must retain the
+original entry. These are proof-custody capability limits; ordinary compiler
+selection preserves its selected path and traversal. Optional driver spelling
+normalization cannot turn a valid product path into a proof-admission failure.
+Native Windows execution and lookup cost require their own qualification.
+
 Cargo build-script header discovery is independent of Rust linker selection.
 The queue pins a selected Clang driver through `CLANG_PATH` and independently
 binds available `llvm-config` through `LLVM_CONFIG_PATH` before capturing the

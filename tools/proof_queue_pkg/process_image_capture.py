@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import os
 from pathlib import Path
 import re
 import sys
 from typing import Mapping, Sequence
+
+from molt.llvm_linker_roles import lexical_path_identity
 
 
 PROCESS_IMAGE_SCHEMA = "molt.proof-process-image-capture.v1"
@@ -15,20 +16,26 @@ _ROOT_EXIT_DISPOSITIONS = frozenset({"require-exit", "terminate"})
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
-def _filesystem_path(path: Path) -> Path:
-    """Normalize kernel-reported Windows device paths without deriving layout."""
+def require_custody_coordinate(path: Path) -> None:
+    """Refuse unsupported traversal before any executable probe or file hash."""
+    if ".." in path.parts:
+        raise ValueError(
+            "proof path custody does not support parent traversal; select an explicit entrypoint"
+        )
+    if sys.platform == "win32" and str(path).startswith("\\\\?\\"):
+        # Probe-only callers need the same namespace refusal as image capture.
+        # Reuse the sole lexical owner rather than copying its prefix grammar.
+        lexical_path_identity(path)
 
-    raw = os.fspath(path)
-    if os.name == "nt" and raw.startswith("\\\\?\\UNC\\"):
-        return Path("\\\\" + raw[8:])
-    if os.name == "nt" and raw.startswith("\\\\?\\"):
-        return Path(raw[4:])
-    return path
+
+def custody_path(path: Path) -> Path:
+    """Admit a lexical coordinate that current image/watch custody can retain."""
+    require_custody_coordinate(path)
+    return lexical_path_identity(path)
 
 
 def _image_path_key(path: Path) -> str:
-    """Compare OS-equivalent spellings without resolving selection aliases."""
-    return os.path.normcase(os.path.abspath(_filesystem_path(path)))
+    return str(custody_path(path))
 
 
 def capture_image(
@@ -47,12 +54,8 @@ def capture_image(
             "process image has invalid root-exit disposition: "
             f"{root_exit_disposition!r}"
         )
-    selected = _filesystem_path(path)
-    resolved = (
-        Path(os.path.abspath(selected))
-        if preserve_path
-        else selected.resolve(strict=True)
-    )
+    selected = custody_path(path)
+    resolved = selected if preserve_path else selected.resolve(strict=True)
     if not resolved.is_file():
         raise ValueError(f"process image is not a file: {resolved}")
     file_stat = resolved.stat()
@@ -100,11 +103,11 @@ def revalidate_images(
         if path_kind not in {"resolved", "selection"}:
             raise ValueError("process image has invalid path kind")
         actual_path = (
-            Path(os.path.abspath(raw_path))
+            custody_path(Path(raw_path))
             if path_kind == "selection"
-            else Path(raw_path).resolve(strict=True)
+            else custody_path(Path(raw_path)).resolve(strict=True)
         )
-        key = os.path.normcase(str(actual_path))
+        key = _image_path_key(actual_path)
         if key not in verified_paths:
             verified_paths[key] = capture_image(
                 role, actual_path, disposition, preserve_path=path_kind == "selection"
@@ -160,7 +163,7 @@ def canonical_images(
             raise ValueError("process image has invalid root-exit disposition")
         if path_kind not in {"resolved", "selection"}:
             raise ValueError("process image has invalid path kind")
-        path = Path(raw_path)
+        path = custody_path(Path(raw_path))
         if not path.is_file():
             raise ValueError(f"process image is unavailable: {path}")
         normalized = _image_path_key(path)

@@ -26,6 +26,10 @@ TRAP_CHILD = "call::function::tests::assert_no_pending_on_success_child"
 COLD = (
     "wasm_abi_exports::tests::scratch_alloc_cold_resource_denial_is_null_and_nounwind"
 )
+TRANSACTION = "test_support::runtime_test_transactions_preserve_terminal_failures"
+LIFECYCLE = (
+    "state::runtime_state::tests::lifecycle_ffi_panics_fail_closed_without_unwinding"
+)
 TRACE_CALLARGS = "trace_callargs_emits_builder_lifecycle_logs"
 TRACE_BIND_IC = "trace_call_bind_ic_emits_hit_log"
 TRACE_BIND_META = "trace_function_bind_meta_emits_summary"
@@ -34,11 +38,10 @@ ABORT = {
     "posix": {"kind": "signal", "signal": 6},
     "nt": {"kind": "windows-exception", "code": 0xC0000409},
 }
-EXIT_ZERO = {"kind": "exit", "code": 0}
 SERIAL = ["--nocapture", "--test-threads=1"]
 
 # (owner, mode) -> role, exact child argv after the image, child stdout/stderr
-# and whether the child aborts. Mirrors the Rust call sites and their children.
+# and the exact exit or abort plus completion. Independent Rust call-site oracle.
 CONTRACT: dict[tuple[str, str], dict[str, Any]] = {
     (EXIT, mode): {
         "role": "process-exit-callbacks",
@@ -46,10 +49,11 @@ CONTRACT: dict[tuple[str, str], dict[str, Any]] = {
         "args": ["--exact", EXIT, "--ignored", *SERIAL],
         "stdout": (
             f"\nrunning 1 test\ntest {EXIT} ... "
-            "shutdown callbacks verified before process exit\n"
+            f"shutdown callbacks verified before process exit: {mode}\n"
         ),
         "stderr": "",
-        "aborts": False,
+        "exit_code": 0,
+        "completes": False,
     }
     for mode in ("no-lease", "lease")
 }
@@ -59,7 +63,8 @@ CONTRACT[(TRAP, "stale-exception")] = {
     "args": ["--exact", TRAP_CHILD, *SERIAL],
     "stdout": f"\nrunning 1 test\ntest {TRAP_CHILD} ... ",
     "stderr": "pending exception on success path: call_function_obj0 result=0x7\n",
-    "aborts": True,
+    "exit_code": None,
+    "completes": False,
 }
 CONTRACT[(COLD, "cold")] = {
     "role": "cold-resource-denial",
@@ -70,7 +75,8 @@ CONTRACT[(COLD, "cold")] = {
         "0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 0.00s\n\n"
     ),
     "stderr": "",
-    "aborts": False,
+    "exit_code": 0,
+    "completes": True,
 }
 for _owner, _child, _stderr in (
     (
@@ -91,7 +97,53 @@ for _owner, _child, _stderr in (
         "args": ["--exact", _child, *SERIAL],
         "stdout": f"\nrunning 1 test\ntest {_child} ... ",
         "stderr": _stderr,
-        "aborts": False,
+        "exit_code": 0,
+        "completes": False,
+    }
+for _mode in (
+    "prior",
+    "cleanup",
+    "both",
+    "cold-both",
+    "body-only",
+    "ordinary",
+    "ordinary-return",
+    "reentry",
+    "healthy",
+):
+    CONTRACT[(TRANSACTION, _mode)] = {
+        "role": "runtime-test-transaction",
+        "child": TRANSACTION,
+        "args": ["--exact", TRANSACTION, *SERIAL],
+        "stdout": (
+            f"\nrunning 1 test\ntest {TRANSACTION} ... "
+            f"transaction outcome and custody verified: {_mode}\n"
+            "ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; "
+            "0 measured; 41 filtered out; finished in 0.00s\n\n"
+        ),
+        "stderr": "",
+        "exit_code": 0,
+        "completes": True,
+    }
+for _mode, _exit, _cause in (
+    ("init", 0, "injected unpublished runtime init panic"),
+    ("shutdown", 0, "injected shutdown drain C extension cleanup panic"),
+    ("exit", 1, "injected shutdown drain C extension cleanup panic"),
+):
+    CONTRACT[(LIFECYCLE, _mode)] = {
+        "role": "lifecycle-ffi",
+        "child": LIFECYCLE,
+        "args": ["--exact", LIFECYCLE, *SERIAL],
+        "stdout": f"\nrunning 1 test\ntest {LIFECYCLE} ... "
+        + (
+            "ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; "
+            "0 measured; 41 filtered out; finished in 0.00s\n\n"
+            if _mode != "exit"
+            else ""
+        ),
+        "stderr": f"molt runtime lifecycle failed: {_cause}\n",
+        "exit_code": _exit,
+        "completes": _mode != "exit",
     }
 MODES: dict[str, list[str]] = {}
 for _owner, _mode in CONTRACT:
@@ -134,8 +186,8 @@ def descendant_record(
     (directory / "artifact-label.txt").write_bytes(b"runtime-descendant")
     termination = (
         ABORT[os.name if platform is None else platform]
-        if contract["aborts"]
-        else EXIT_ZERO
+        if contract["exit_code"] is None
+        else {"kind": "exit", "code": contract["exit_code"]}
     )
     return {
         "schema": "molt.runtime-descendant.v1",

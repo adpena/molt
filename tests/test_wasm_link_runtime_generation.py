@@ -82,7 +82,6 @@ def test_complete_link_output_family_cannot_alias_inputs(
         tmp_path / "runtime",
         tmp_path / "app",
         linked,
-        runtime_role="reloc",
         wasm_facts_scanner=selection if role == "scanner" else tmp_path / "scanner",
         native_link_requirements=SourceExtensionLinkRequirements(
             "wasm32-wasip1", (source_extension_link_file(native),)

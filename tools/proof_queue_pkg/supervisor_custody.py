@@ -354,7 +354,7 @@ def _supervisor_fixed_images(
     execution_command: Sequence[str],
     platform_process_images: Sequence[Mapping[str, object]] = (),
 ) -> tuple[str, list[dict[str, str]]]:
-    root = os.path.normcase(os.path.abspath(execution_command[0]))
+    root = process_image_capture._image_path_key(Path(execution_command[0]))
     identities: dict[str, tuple[str, str]] = {}
     images: dict[tuple[str, str], dict[str, str]] = {}
 
@@ -371,7 +371,7 @@ def _supervisor_fixed_images(
         path = Path(raw_path)
         if not path.is_absolute() or not path.is_file():
             return
-        key = os.path.normcase(os.path.abspath(path))
+        key = process_image_capture._image_path_key(path)
         disposition = (
             str(raw_root_exit_disposition)
             if raw_root_exit_disposition is not None
@@ -395,7 +395,7 @@ def _supervisor_fixed_images(
         identities[key] = identity
         images[(key, role)] = row
 
-    root_path = Path(os.path.abspath(execution_command[0]))
+    root_path = process_image_capture.custody_path(Path(execution_command[0]))
     if not root_path.is_file():
         raise ValueError("supervisor root executable is unavailable")
     add("root-command", str(root_path), command_identity._hash_file(root_path))
@@ -605,14 +605,14 @@ def capture_process_image_inventory(
         isinstance(value, str) and value for value in probe_args
     ):
         raise ValueError("process-image probe arguments must be non-empty strings")
+    launcher = process_image_capture.capture_image(
+        f"{role}-launcher", executable, preserve_path=True
+    )
     required_environment = required_execution_environment(
         binary=binary, mode="inventory-tree", cwd=cwd, env=env
     )
     env = bind_required_environment(env, required_environment)
-    launcher = process_image_capture.capture_image(
-        f"{role}-launcher", executable, preserve_path=True
-    )
-    command = [str(executable.resolve(strict=True)), *probe_args]
+    command = [str(launcher["path"]), *probe_args]
     with tempfile.TemporaryDirectory(prefix="molt-process-image-inventory-") as raw:
         root = Path(raw).resolve()
         policy_path = root / "policy.json"

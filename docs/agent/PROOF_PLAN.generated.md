@@ -209,6 +209,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `luau.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
 | `wasm.compile.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 3 |
 | `wasm.run.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 1 |
+| `wasm.test.linker-admission` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 120 s | `python-tests` | 0 |
 | `wasm.test.control-flow` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 3 |
 | `wasm.integration.split-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 3 |
 | `wasm.integration.host-exports` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 4 |

@@ -1640,3 +1640,82 @@ def test_managed_wasm_linker_ancestor_alias_uses_receipt_without_probe(
     )
     assert identity.path == selected
     assert identity.sha256 == installation.tool_fact("wasm-ld")["sha256"]
+
+
+def test_lexical_compiler_selection_preserves_parent_traversal(tmp_path):
+    from molt.llvm_linker_roles import lexical_executable_path
+
+    selected = tmp_path / "selected"
+    foreign = tmp_path / "foreign"
+    selected.mkdir()
+    (foreign / "deep").mkdir(parents=True)
+    ordinary = selected / "clang++"
+    ordinary.write_bytes(b"ordinary")
+    actual = foreign / "clang++"
+    actual.write_bytes(b"actual")
+    hop = selected / "hop"
+    try:
+        hop.symlink_to(foreign / "deep", target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink capability unavailable: {exc}")
+    requested = hop / ".." / "clang++"
+    admitted = lexical_executable_path(requested)
+    assert ".." in admitted.parts
+    assert admitted.name == "clang++"
+    assert admitted.samefile(actual) and not admitted.samefile(ordinary)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows short-name semantics")
+def test_lexical_compiler_short_ancestor_keeps_valid_product_coordinate(tmp_path):
+    import ctypes
+    from ctypes import wintypes
+    from molt.llvm_linker_roles import lexical_executable_path
+
+    directory = tmp_path / "A long compiler tool directory"
+    directory.mkdir()
+    executable = directory / "CLANG.EXE"
+    executable.write_bytes(b"compiler image")
+    short_path = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+    short_path.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+    short_path.restype = wintypes.DWORD
+    required = short_path(str(directory), None, 0)
+    if not required:
+        raise ctypes.WinError(ctypes.get_last_error())
+    buffer = ctypes.create_unicode_buffer(required)
+    written = short_path(str(directory), buffer, required)
+    if not written or written >= required:
+        raise ctypes.WinError(ctypes.get_last_error())
+    selected = Path(buffer.value) / executable.name
+    if selected.parent.name == directory.name:
+        pytest.skip("filesystem does not publish an 8.3 name for the fixture directory")
+    assert selected.samefile(executable)
+    assert str(lexical_executable_path(selected)) == str(selected)
+    assert lexical_executable_path(selected).read_bytes() == executable.read_bytes()
+
+
+def test_lexical_compiler_ordinary_relative_selection_is_absolute(tmp_path):
+    from molt.llvm_linker_roles import lexical_executable_path, lexical_path_identity
+
+    tool_directory = tmp_path / "tools"
+    tool_directory.mkdir()
+    executable = tool_directory / "clang++"
+    executable.write_bytes(b"selected compiler")
+    original_cwd = Path.cwd()
+    drive_cwd = Path(os.path.abspath(tmp_path.drive)) if os.name == "nt" else None
+    try:
+        os.chdir(tmp_path)
+        requested = Path("tools") / executable.name
+        assert requested.samefile(executable)
+        for selected in (
+            lexical_executable_path(requested),
+            lexical_path_identity(requested),
+        ):
+            assert selected.is_absolute()
+            assert selected.name == executable.name
+            assert selected.samefile(executable)
+    finally:
+        try:
+            if drive_cwd is not None:
+                os.chdir(drive_cwd)
+        finally:
+            os.chdir(original_cwd)

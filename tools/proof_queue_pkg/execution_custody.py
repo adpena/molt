@@ -37,7 +37,7 @@ from tools.proof_queue_pkg.python_child_custody import (
 
 
 def _norm(path: Path | str) -> str:
-    return os.path.normcase(os.path.abspath(os.fspath(path)))
+    return process_image_capture._image_path_key(Path(path))
 
 
 @dataclass(frozen=True)
@@ -48,7 +48,12 @@ class WatchSpec:
     def owns(self, candidate: Path) -> bool:
         if self.paths is None:
             return True
-        normalized = _norm(candidate)
+        try:
+            normalized = _norm(candidate)
+        except (OSError, ValueError):
+            # A vanished/replaced entry cannot establish exclusion from this
+            # watch. Retain its event as an input mutation, never as admission.
+            return True
         if normalized in self.paths:
             return True
         prefix = normalized.rstrip(os.sep) + os.sep
@@ -78,8 +83,22 @@ def classify_apparatus_event(root: Path, path: Path, action: str) -> str | None:
     write (HEAD, refs, objects, a rewritten index) stays an input mutation.
     """
     try:
-        relative = Path(_norm(path)).relative_to(Path(_norm(root)))
-    except ValueError:
+        root_key = _norm(root)
+        # This event classifier may observe an already removed index.lock.
+        # Its exact event basename is bookkeeping under a still-existing,
+        # independently canonicalized directory. This does not admit a file
+        # identity or recover a missing executable coordinate.
+        path_key = (
+            str(Path(_norm(path.parent)) / path.name)
+            if path.name == "index.lock" and not path.exists()
+            else _norm(path)
+        )
+        if path_key != root_key and not path_key.startswith(
+            root_key.rstrip(os.sep) + os.sep
+        ):
+            return None
+        relative = Path(path_key[len(root_key) :].lstrip(os.sep))
+    except (OSError, ValueError):
         return None
     parts = relative.parts
     if ".git" not in parts:
@@ -132,12 +151,12 @@ def _compact_specs(specs: Iterable[WatchSpec]) -> list[WatchSpec]:
         WatchSpec(root, None if paths is None else frozenset(paths))
         for root, paths in merged.values()
     ]
-    broad_roots = tuple(spec.root for spec in compact if spec.paths is None)
+    broad_roots = tuple(_norm(spec.root) for spec in compact if spec.paths is None)
     return [
         spec
         for spec in compact
         if not any(
-            spec.root != broad and spec.root.is_relative_to(broad)
+            _norm(spec.root).startswith(broad.rstrip(os.sep) + os.sep)
             for broad in broad_roots
         )
     ]
@@ -732,7 +751,7 @@ class LiveCustodyMonitor:
 
 def _identity_paths(payload: object, *, broad_roots: Sequence[Path] = ()) -> list[Path]:
     paths: list[Path] = []
-    broad = tuple(root.resolve(strict=True) for root in broad_roots)
+    broad = tuple(_norm(root.resolve(strict=True)) for root in broad_roots)
     path_keys = {
         "path",
         "resolved_path",
@@ -749,7 +768,9 @@ def _identity_paths(payload: object, *, broad_roots: Sequence[Path] = ()) -> lis
             if isinstance(owner_root, str):
                 owner = Path(owner_root)
                 if owner.is_absolute() and any(
-                    owner == root or owner.is_relative_to(root) for root in broad
+                    _norm(owner) == root
+                    or _norm(owner).startswith(root.rstrip(os.sep) + os.sep)
+                    for root in broad
                 ):
                     return
             for nested_key, nested in value.items():
@@ -765,19 +786,23 @@ def _identity_paths(payload: object, *, broad_roots: Sequence[Path] = ()) -> lis
             for nested in value:
                 visit(nested, key)
         elif key in path_keys and isinstance(value, str):
-            candidate = Path(value)
+            candidate = process_image_capture.custody_path(Path(value))
             try:
                 if candidate.is_file():
-                    paths.append(
-                        candidate
-                        if key == "resolved_path" and candidate.is_absolute()
-                        else candidate.resolve(strict=True)
-                    )
+                    paths.append(candidate)
+                    resolved = candidate.resolve(strict=True)
+                    if _norm(resolved) != _norm(candidate):
+                        paths.append(resolved)
+                    # Keep every retargetable lexical ancestor, as well as the
+                    # content coordinate; resolving alone loses alias events.
+                    for entry in (candidate, *candidate.parents):
+                        if entry.is_symlink() or entry.is_junction():
+                            paths.append(entry)
             except OSError:
                 pass
 
     visit(payload)
-    return list(dict.fromkeys(paths))
+    return list({_norm(path): path for path in paths}.values())
 
 
 def watch_specs(
@@ -799,12 +824,11 @@ def watch_specs(
         if root.is_dir():
             specs.append(WatchSpec(root.resolve(strict=True), None))
     by_parent: dict[str, tuple[Path, set[str]]] = {}
+    source_key = _norm(source_root)
     for path in _identity_paths(list(identities), broad_roots=broad_roots):
-        try:
-            path.relative_to(source_root)
+        key = _norm(path)
+        if key == source_key or key.startswith(source_key.rstrip(os.sep) + os.sep):
             continue
-        except ValueError:
-            pass
         parent = path.parent.resolve(strict=True)
         key = _norm(parent)
         if key not in by_parent:
@@ -1107,11 +1131,20 @@ class ChildCustodyEventServer:
             else None
         )
         child_cwd = intent.get("cwd")
-        path = _resolve_child_executable(
-            token,
-            child_env,
-            child_cwd if isinstance(child_cwd, str) else None,
-        )
+        try:
+            path = _resolve_child_executable(
+                token,
+                child_env,
+                child_cwd if isinstance(child_cwd, str) else None,
+            )
+        except (OSError, ValueError) as exc:
+            return {
+                "event": "child-process",
+                "requested": str(token),
+                "resolved": None,
+                "admitted": False,
+                "reason": f"identity-unavailable:{exc}",
+            }
         decision: dict[str, object] = {
             "event": "child-process",
             "requested": str(token),
@@ -1151,11 +1184,11 @@ class ChildCustodyEventServer:
         except OSError as exc:
             decision["reason"] = f"identity-unavailable:{type(exc).__name__}"
             return decision
-        normalized = _norm(path)
         try:
+            normalized = _norm(path)
             with path.open("rb") as handle:
                 digest = hashlib.file_digest(handle, "sha256").hexdigest()
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             decision["reason"] = f"identity-unavailable:{type(exc).__name__}"
             return decision
         for authority in self.policy.get("allowed", []):
@@ -1398,7 +1431,7 @@ def _resolve_child_executable(
         else Path.cwd()
     )
     if candidate.is_absolute() or any(separator in token for separator in "/\\"):
-        return Path(os.path.abspath(cwd / candidate))
+        return process_image_capture.custody_path(cwd / candidate)
     path_entries = os.get_exec_path(
         child_env if isinstance(child_env, Mapping) else None
     )
@@ -1423,5 +1456,5 @@ def _resolve_child_executable(
         for extension in extensions:
             resolved = directory / f"{token}{extension}"
             if resolved.is_file() and os.access(resolved, os.X_OK):
-                return resolved.resolve(strict=True)
+                return process_image_capture.custody_path(resolved)
     return None

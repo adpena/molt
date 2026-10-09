@@ -52,7 +52,6 @@ _RECORD_FIELDS = frozenset(
         "stderr",
     }
 )
-_EXIT_ZERO = {"kind": "exit", "code": 0}
 # std::process::abort: SIGABRT on POSIX; fast-fail STATUS_STACK_BUFFER_OVERRUN
 # on Windows. Neither is an ordinary exit code, and neither admits the other.
 _ABORT = {
@@ -66,17 +65,23 @@ class DescendantEvidenceError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class Outcome:
+    # None admits only the existing OS-specific abort, never an arbitrary signal.
+    exit_code: int | None = 0
+    completes: bool = False
+    stdout_markers: tuple[str, ...] = ()
+    stderr_markers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class Owner:
     """One owning test and the exact children it must have run."""
 
     role: str
     child: str
-    modes: tuple[str, ...]
+    # Each real mode owns both its exact termination and libtest completion.
+    modes: Mapping[str, Outcome]
     ignored: bool = False
-    aborts: bool = False
-    # Children that exit or abort inside the selected test never reach a
-    # libtest summary; the cold child must complete its one exact test.
-    completes: bool = False
     stdout_markers: tuple[str, ...] = ()
     stderr_markers: tuple[str, ...] = ()
 
@@ -98,26 +103,83 @@ TRAP = "call::function::tests::assert_no_pending_on_success_traps_stale_exceptio
 COLD = (
     "wasm_abi_exports::tests::scratch_alloc_cold_resource_denial_is_null_and_nounwind"
 )
+TRANSACTION = "test_support::runtime_test_transactions_preserve_terminal_failures"
+LIFECYCLE = (
+    "state::runtime_state::tests::lifecycle_ffi_panics_fail_closed_without_unwinding"
+)
 OWNERS: Mapping[str, Owner] = {
+    TRANSACTION: Owner(
+        "runtime-test-transaction",
+        TRANSACTION,
+        {
+            mode: Outcome(
+                0,
+                True,
+                stdout_markers=(f"transaction outcome and custody verified: {mode}\n",),
+            )
+            for mode in (
+                "prior",
+                "cleanup",
+                "both",
+                "cold-both",
+                "body-only",
+                "ordinary",
+                "ordinary-return",
+                "reentry",
+                "healthy",
+            )
+        },
+    ),
+    LIFECYCLE: Owner(
+        "lifecycle-ffi",
+        LIFECYCLE,
+        {
+            "init": Outcome(
+                0,
+                True,
+                stderr_markers=(
+                    "molt runtime lifecycle failed: injected unpublished runtime init panic\n",
+                ),
+            ),
+            "shutdown": Outcome(
+                0,
+                True,
+                stderr_markers=(
+                    "molt runtime lifecycle failed: injected shutdown drain C extension cleanup panic\n",
+                ),
+            ),
+            "exit": Outcome(
+                1,
+                stderr_markers=(
+                    "molt runtime lifecycle failed: injected shutdown drain C extension cleanup panic\n",
+                ),
+            ),
+        },
+    ),
     EXIT: Owner(
         "process-exit-callbacks",
         EXIT,
-        ("no-lease", "lease"),
+        {
+            mode: Outcome(
+                stdout_markers=(
+                    f"shutdown callbacks verified before process exit: {mode}\n",
+                )
+            )
+            for mode in ("no-lease", "lease")
+        },
         ignored=True,
-        stdout_markers=("shutdown callbacks verified before process exit",),
     ),
     TRAP: Owner(
         "pending-success-trap",
         "call::function::tests::assert_no_pending_on_success_child",
-        ("stale-exception",),
-        aborts=True,
+        {"stale-exception": Outcome(None)},
         stderr_markers=("pending exception on success path",),
     ),
-    COLD: Owner("cold-resource-denial", COLD, ("cold",), completes=True),
+    COLD: Owner("cold-resource-denial", COLD, {"cold": Outcome(0, True)}),
     "trace_callargs_emits_builder_lifecycle_logs": Owner(
         "trace-call-binding",
         "trace_callargs_child",
-        ("trace_callargs_child",),
+        {"trace_callargs_child": Outcome()},
         stderr_markers=(
             "[molt callargs] new",
             "[molt callargs] push_pos",
@@ -127,13 +189,13 @@ OWNERS: Mapping[str, Owner] = {
     "trace_call_bind_ic_emits_hit_log": Owner(
         "trace-call-binding",
         "trace_call_bind_ic_child",
-        ("trace_call_bind_ic_child",),
+        {"trace_call_bind_ic_child": Outcome()},
         stderr_markers=("[molt call_bind_ic] hit",),
     ),
     "trace_function_bind_meta_emits_summary": Owner(
         "trace-call-binding",
         "trace_function_bind_meta_child",
-        ("trace_function_bind_meta_child",),
+        {"trace_function_bind_meta_child": Outcome()},
         stderr_markers=("[molt bind_meta]", "total_pos=0", "kwonly=1"),
     ),
 }
@@ -329,7 +391,12 @@ def _verify_record(
         or record["child_test"] != owner.child
     ):
         raise DescendantEvidenceError(f"{parent}: wrong descendant role or exact argv")
-    expected = _ABORT.get(platform) if owner.aborts else _EXIT_ZERO
+    outcome = owner.modes[record["mode"]]
+    expected = (
+        _ABORT.get(platform)
+        if outcome.exit_code is None
+        else {"kind": "exit", "code": outcome.exit_code}
+    )
     if expected is None:
         raise DescendantEvidenceError(
             f"{parent}: no typed abort termination for platform {platform!r}"
@@ -348,7 +415,7 @@ def _verify_record(
     if not _same_path(stdout_owner, stderr_owner):
         raise DescendantEvidenceError(f"{parent}: descendant streams have two owners")
     report = parse_libtest(StringIO(stdout), tuple(argv))
-    if owner.completes:
+    if outcome.completes:
         if not report.complete or report.rows() != [
             {"identity": owner.child, "status": "pass"}
         ]:
@@ -367,8 +434,8 @@ def _verify_record(
             "before terminating inside it"
         )
     for markers, text, stream in (
-        (owner.stdout_markers, stdout, "stdout"),
-        (owner.stderr_markers, stderr, "stderr"),
+        (owner.stdout_markers + outcome.stdout_markers, stdout, "stdout"),
+        (owner.stderr_markers + outcome.stderr_markers, stderr, "stderr"),
     ):
         missing = [marker for marker in markers if marker not in text]
         if missing:

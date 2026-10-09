@@ -1,5 +1,5 @@
 import ast
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import hashlib
 import importlib.util
 import json
@@ -9,6 +9,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from molt.cli.source_extension_link_requirements import (
@@ -743,6 +744,31 @@ def _rust_facts_fixture(data: bytes) -> dict[str, object]:
         index for kind, index in export_kinds.values() if kind == 1
     )
     app_base = table_min or 0
+    fixture_layout = {
+        "fixed_prefix_base": 0,
+        "fixed_prefix_len": 0,
+        "finalized_app_base": app_base,
+        "app_entry_count": 0,
+    }
+    layout_payloads = [
+        custom
+        for section_id, payload in sections
+        if section_id == 0
+        for name, custom in [wasm_link_format._parse_custom_section(payload)]
+        if name == "molt.callable_table.layout"
+    ]
+    active_slots: dict[int, int] = {}
+    if layout_payloads:
+        assert len(layout_payloads) == 1
+        payload = layout_payloads[0]
+        version, cursor = wasm_link_format._read_varuint(payload, 0)
+        assert version == 1
+        for key in fixture_layout:
+            fixture_layout[key], cursor = wasm_link_format._read_varuint(
+                payload, cursor
+            )
+        assert cursor == len(payload)
+        active_slots = wasm_artifact._collect_wasm_active_table_function_slots(data)
     table_facts = (
         []
         if table_min is None
@@ -799,15 +825,15 @@ def _rust_facts_fixture(data: bytes) -> dict[str, object]:
         ],
         "function_type_indices": indexed_function_types,
         "active_element_segments": [],
-        "active_function_elements": [],
-        "callable_table_entries": [],
+        "active_function_elements": [
+            [0, slot, index] for slot, index in sorted(active_slots.items())
+        ],
+        "callable_table_entries": [
+            [slot, index, indexed_function_types[index], 0]
+            for slot, index in sorted(active_slots.items())
+        ],
         "callable_table_attestation_present": True,
-        "callable_table_layout": {
-            "fixed_prefix_base": 0,
-            "fixed_prefix_len": 0,
-            "finalized_app_base": app_base,
-            "app_entry_count": 0,
-        },
+        "callable_table_layout": fixture_layout,
         "table_mutations": [],
         "reachable_table_mutations": [],
         "forbidden_callable_alias_exports": [],
@@ -915,7 +941,7 @@ def _rust_facts_authority_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
         _scratch_root,
         metrics=None,
         *,
-        evidence_root=None,
+        evidence_root,
         expected_sha256=None,
     ):  # type: ignore[no-untyped-def]
         if metrics is not None:
@@ -944,7 +970,6 @@ _REAL_RUN_WASM_LD = wasm_link._run_wasm_ld
 
 def _run_wasm_ld_with_rust_facts(*args, **kwargs):  # type: ignore[no-untyped-def]
     kwargs.setdefault("wasm_facts_scanner", Path("rust-facts-fixture"))
-    kwargs.setdefault("runtime_role", "shared")
     if kwargs.get("app_export_contract_path") is None:
         contract_path = Path(args[2]).with_name(
             f".{Path(args[2]).name}.test-app-export-contract.json"
@@ -955,69 +980,7 @@ def _run_wasm_ld_with_rust_facts(*args, **kwargs):  # type: ignore[no-untyped-de
             source="",
             symbols=[],
         )
-    if kwargs.get("split_runtime"):
-        kwargs.setdefault("deploy_runtime_override", Path(args[1]))
-    if not kwargs.get("split_runtime"):
-        return _REAL_RUN_WASM_LD(*args, **kwargs)
-
-    # These linker unit fixtures intentionally use minimal synthetic modules.
-    # Bind their executable-runtime layout authority to the synthetic app facts
-    # so the tests exercise linker behavior without weakening the production
-    # reader's fail-closed WASM validation.
-    output_layout = wasm_link_callable_table._callable_layout_from_wasm_facts(
-        _rust_facts_fixture(Path(args[2]).read_bytes()),
-        artifact_role="plan",
-    )
-    assert output_layout is not None
-    runtime_layout = wasm_artifact.WasmSplitRuntimeCallableLayout(
-        runtime_callable_base=output_layout.fixed_prefix_base,
-        runtime_occupied_end=(
-            output_layout.fixed_prefix_base + output_layout.fixed_prefix_len
-        ),
-        runtime_table_min=output_layout.finalized_app_base,
-        fixed_prefix_len=output_layout.fixed_prefix_len,
-    )
-    real_split_app_global_base = wasm_link_runtime_data._split_app_global_base
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(
-            wasm_link_pipeline,
-            "read_wasm_split_runtime_callable_layout",
-            lambda _path: runtime_layout,
-        )
-        patch.setattr(
-            wasm_link_runtime_data,
-            "_split_app_global_base",
-            lambda output_data: (
-                real_split_app_global_base(output_data)
-                if wasm_link_runtime_data._active_data_segment_intervals(output_data)
-                else 64 * 1024 * 1024
-            ),
-        )
-        patch.setattr(
-            wasm_link_runtime_data,
-            "_validate_split_app_data_layout",
-            lambda output_data, _linked_data, *, planned_base: (
-                wasm_link_runtime_data._active_data_segment_intervals(output_data)
-                or ((planned_base - 1, planned_base),),
-                ((planned_base, planned_base + 1),),
-            ),
-        )
-        # The synthetic runtime's own build ABI: every generated import whose
-        # split export it actually defines.
-        runtime_exports = set(
-            wasm_link_format._collect_function_exports(Path(args[1]).read_bytes())
-        )
-        registry = wasm_link_runtime_data._runtime_exports
-        kwargs.setdefault(
-            "deploy_runtime_imports",
-            tuple(
-                name
-                for name in registry.wasm_runtime_import_names()
-                if registry.wasm_split_runtime_export_name_for_import(name)
-                in runtime_exports
-            ),
-        )
-        return _REAL_RUN_WASM_LD(*args, **kwargs)
+    return _REAL_RUN_WASM_LD(*args, **kwargs)
 
 
 class _FixtureWasmFactsProvider:
@@ -1173,6 +1136,7 @@ def test_rust_facts_publication_is_admitted_through_artifact_state(
     provider = _REAL_MAKE_RUST_WASM_FACTS_PROVIDER(
         scanner,
         tmp_path / "facts-scratch",
+        evidence_root=tmp_path / "evidence",
     )
     state = wasm_link_transaction.WasmArtifactState.from_bytes(
         path,
@@ -1190,7 +1154,7 @@ def test_rust_facts_publication_is_admitted_through_artifact_state(
     )
     publication_paths: list[Path] = []
 
-    def fake_run(_executor, command, **_kwargs):  # type: ignore[no-untyped-def]
+    def fake_run(command, **_kwargs):  # type: ignore[no-untyped-def]
         assert Path(command[0]) == provider.scanner_identity.path
         assert command[1:3] == ["--publish-wasm-link-facts", str(path)]
         output = Path(command[4])
@@ -1201,7 +1165,9 @@ def test_rust_facts_publication_is_admitted_through_artifact_state(
         publication_paths.append(output)
         return subprocess.CompletedProcess(command, 0, payload, "")
 
-    monkeypatch.setattr(wasm_link_fact_provider.CommandExecutor, "run", fake_run)
+    monkeypatch.setattr(
+        wasm_link_fact_provider, "_COMMANDS", SimpleNamespace(run=fake_run)
+    )
 
     facts = state.apply_atomic_facts_publication(
         lambda artifact: provider.publish_in_place(artifact)
@@ -1233,7 +1199,7 @@ def test_rust_facts_provider_attests_scan_cost_and_content_cache(
     calls = 0
     invoked_scanners: list[Path] = []
 
-    def fake_run(_executor, command, **_kwargs):
+    def fake_run(command, **_kwargs):
         nonlocal calls
         calls += 1
         invoked_scanners.append(Path(command[0]))
@@ -1245,9 +1211,13 @@ def test_rust_facts_provider_attests_scan_cost_and_content_cache(
 
         return Result()
 
-    monkeypatch.setattr(wasm_link_fact_provider.CommandExecutor, "run", fake_run)
+    monkeypatch.setattr(
+        wasm_link_fact_provider, "_COMMANDS", SimpleNamespace(run=fake_run)
+    )
     metrics: dict[str, float] = {}
-    provider = _REAL_MAKE_RUST_WASM_FACTS_PROVIDER(scanner, tmp_path, metrics)
+    provider = _REAL_MAKE_RUST_WASM_FACTS_PROVIDER(
+        scanner, tmp_path, metrics, evidence_root=tmp_path / "evidence"
+    )
     scanner.write_bytes(b"mutated-after-sealing")
 
     first = provider(b"representative-wasm")
@@ -1782,7 +1752,7 @@ def test_output_export_symbol_map_accepts_shared_export_index_with_one_symbol() 
     }
 
 
-def test_add_symtab_alias_uses_exact_parsed_symbol_identity() -> None:
+def test_append_linking_symbols_uses_exact_parsed_symbol_identity() -> None:
     module = _build_exported_runtime_module("target")
     module = wasm_link_format._append_linking_function_symbols(
         module,
@@ -1791,11 +1761,9 @@ def test_add_symtab_alias_uses_exact_parsed_symbol_identity() -> None:
     )
     assert module is not None
 
-    updated = wasm_link_edit._add_symtab_alias(
+    updated = wasm_link_format._append_linking_function_symbols(
         module,
-        "alias",
-        0,
-        FLAG_BINDING_GLOBAL,
+        [("alias", 0, FLAG_BINDING_GLOBAL)],
         facts_provider=_facts_provider,
     )
 
@@ -2393,6 +2361,318 @@ def _build_exported_runtime_module(export_name: str) -> bytes:
     return _build_exported_runtime_module_many([export_name])
 
 
+@dataclass(frozen=True)
+class _SplitLinkFixture:
+    reloc: bytes
+    shared: bytes
+    app: bytes
+    linked: bytes
+    split_app: bytes
+    deploy_imports: tuple[str, ...]
+
+
+def _build_split_link_fixture(
+    runtime_names: list[str],
+    *,
+    app_imports: tuple[str, ...] = (),
+    native_imports: tuple[str, ...] = (),
+    app_names: tuple[str, ...] = ("molt_main",),
+    native_names: tuple[str, ...] = (),
+    symbol_names: dict[str, str] | None = None,
+    memory_min: int = 1,
+    table_min: int = 8192,
+    data_offset: int = 0,
+    data_symbols: dict[str, int] | None = None,
+    debug: bool = False,
+) -> _SplitLinkFixture:
+    """Declare separate primary, deployed, compiler, and final-link modules.
+
+    Layouts are encoded in the artifacts. No dispatch wrapper replaces layout
+    admission or rewrites an arbitrary input into a purported runtime object.
+    """
+    u32 = wasm_link_format._write_varuint
+    string = wasm_link_format._write_string
+    reserved = wasm_link_callable_table.WASM_RESERVED_RUNTIME_CALLABLES
+    prefix_base = wasm_link_callable_table.WASM_RESERVED_RUNTIME_CALLABLE_BASE
+    prefix_len = prefix_base + 2 * len(reserved)
+    assert table_min >= prefix_len + 1
+    reserved_names = [
+        name
+        for _index, name, _import, _arity, dispatch in reserved
+        if dispatch == "direct"
+    ]
+    slot_names = [f"fixture_callable_{slot}" for slot in range(prefix_len)]
+    for index, name, _import, _arity, dispatch in reserved:
+        if dispatch == "direct":
+            slot_names[prefix_base + index] = name
+
+    def module(
+        names: list[str],
+        *,
+        imports: tuple[str, ...] = (),
+        native: tuple[str, ...] = (),
+        defined_memory: bool = False,
+        active_prefix: bool = False,
+        at: int = 0,
+        linking: bool = False,
+        bindings: dict[str, str] | None = None,
+    ) -> bytes:
+        functions = list(dict.fromkeys([*names, *reserved_names, *slot_names]))
+        import_edges = [("molt_runtime", name) for name in imports] + [
+            ("molt_native", name) for name in native
+        ]
+        imported_names = [name for _module, name in import_edges]
+        import_count = len(import_edges)
+        signatures = [
+            _test_wasm_function_signature(
+                name,
+                default=(
+                    (),
+                    ("i32",) if name in {*native_imports, *native_names} else ("i64",),
+                ),
+            )
+            for name in [*imported_names, *functions]
+        ]
+        types = bytearray(u32(len(signatures)))
+        for signature in signatures:
+            _append_test_wasm_function_type(types, signature)
+        import_bytes = bytearray(u32(import_count + 1 + int(not defined_memory)))
+        for index, (namespace, name) in enumerate(import_edges):
+            import_bytes.extend(string(namespace) + string(name) + b"\x00" + u32(index))
+        import_bytes.extend(
+            string("env")
+            + string("__indirect_function_table")
+            + b"\x01\x70\x00"
+            + u32(table_min)
+        )
+        pages = max(memory_min, (at + 1 + 65535) // 65536)
+        if not defined_memory:
+            import_bytes.extend(
+                string("env") + string("memory") + b"\x02\x00" + u32(pages)
+            )
+        sections = [
+            (1, bytes(types)),
+            (2, bytes(import_bytes)),
+            (
+                3,
+                u32(len(functions))
+                + b"".join(
+                    u32(import_count + index) for index in range(len(functions))
+                ),
+            ),
+        ]
+        if defined_memory:
+            sections.append((5, b"\x01\x00" + u32(pages)))
+        indices = {name: import_count + index for index, name in enumerate(functions)}
+        exports = [(name, 0, indices[name]) for name in functions]
+        exports.extend(
+            (f"molt.callable_table.layout.entry.{slot}", 0, indices[name])
+            for slot, name in enumerate(slot_names)
+        )
+        for name, symbol in (bindings or {}).items():
+            if name != symbol:
+                exports.append((symbol, 0, indices[name]))
+        exports.extend([("molt_table", 1, 0), ("molt_memory", 2, 0)])
+        sections.append(
+            (
+                7,
+                u32(len(exports))
+                + b"".join(
+                    string(name) + bytes([kind]) + u32(index)
+                    for name, kind, index in exports
+                ),
+            )
+        )
+        elements = b"\x00"
+        if active_prefix:
+            elements = (
+                b"\x01\x00\x41\x01\x0b"
+                + u32(prefix_len)
+                + b"".join(u32(indices[name]) for name in slot_names)
+            )
+        sections.append((9, elements))
+        bodies = [
+            _test_wasm_zero_result_body(results)
+            for _params, results in signatures[import_count:]
+        ]
+        sections.append(
+            (10, u32(len(bodies)) + b"".join(u32(len(body)) + body for body in bodies))
+        )
+        sections.append((11, b"\x01\x00\x41" + _write_varsint32(at) + b"\x0b\x01x"))
+        sections.append(
+            (
+                0,
+                wasm_link_format._build_custom_section(
+                    "molt.callable_table.layout",
+                    b"".join(u32(value) for value in (1, 1, prefix_len, table_min, 0)),
+                ),
+            )
+        )
+        if linking:
+            entries = [
+                _function_symbol_entry(
+                    name=(bindings or {}).get(name, name),
+                    index=indices[name],
+                    flags=FLAG_BINDING_GLOBAL | wasm_link_format.FLAG_EXPLICIT_NAME,
+                )
+                for name in functions
+            ]
+            entries.extend(
+                _function_symbol_entry(
+                    name=name,
+                    index=index,
+                    flags=wasm_link_format.FLAG_UNDEFINED
+                    | wasm_link_format.FLAG_EXPLICIT_NAME,
+                )
+                for index, name in enumerate(imported_names)
+            )
+            sections.append(
+                (
+                    0,
+                    wasm_link_format._build_custom_section(
+                        "linking",
+                        wasm_link_format._build_linking_payload(
+                            2,
+                            [
+                                (
+                                    SYMTAB_SUBSECTION_ID,
+                                    _build_symbol_subsection(entries),
+                                ),
+                                # One named active data segment, matching the emitted byte.
+                                (5, b"\x01" + string("fixture.data") + b"\x00\x00"),
+                            ],
+                        ),
+                    ),
+                )
+            )
+        if debug:
+            sections.extend(
+                [
+                    (
+                        0,
+                        wasm_link_format._build_custom_section(".debug_info", b"debug"),
+                    ),
+                    (0, wasm_link_format._build_custom_section("name", b"")),
+                ]
+            )
+        return wasm_link_operations.build_sections(sections)
+
+    shared_names = list(dict.fromkeys([*runtime_names, *reserved_names, *slot_names]))
+    shared = module(runtime_names, defined_memory=True, active_prefix=True)
+    if data_symbols:
+        shared = _add_data_address_global_exports(
+            shared, {name: 4096 for name in data_symbols}
+        )
+    reloc = _build_reloc_runtime_module_many(runtime_names, data_symbols=data_symbols)
+    all_app_names = list(dict.fromkeys([*app_names, *native_names]))
+    app = module(
+        list(app_names),
+        imports=app_imports,
+        native=native_imports,
+        at=data_offset,
+        linking=True,
+        bindings=symbol_names,
+    )
+    linked = module(
+        all_app_names, defined_memory=True, at=data_offset, bindings=symbol_names
+    )
+    split_app = module(
+        all_app_names,
+        imports=app_imports,
+        at=(data_offset + 16) & ~15,
+        linking=True,
+        bindings=symbol_names,
+    )
+    registry = wasm_link_runtime_data._runtime_exports
+    deploy_imports = tuple(
+        name
+        for name in registry.wasm_runtime_import_names()
+        if registry.wasm_split_runtime_export_name_for_import(name) in shared_names
+    )
+    return _SplitLinkFixture(reloc, shared, app, linked, split_app, deploy_imports)
+
+
+def _build_reloc_runtime_module(export_name: str) -> bytes:
+    return _build_reloc_runtime_module_many([export_name])
+
+
+def _fixture_reloc_preflight(
+    command: list[str],
+) -> subprocess.CompletedProcess[str] | None:
+    """Model only the external -r transport; real LLVM qualification is separate."""
+    if "-r" not in command:
+        return None
+    assert len(command) == 5 and command[1:3] == ["-r", "-o"]
+    data = Path(command[4]).read_bytes()
+    assert parse_wasm_linking_symbols(data).defined_names
+    Path(command[3]).write_bytes(data)
+    return subprocess.CompletedProcess(command, 0, "", "")
+
+
+def _write_split_fixture_output(command: list[str], fixture: _SplitLinkFixture) -> None:
+    assert "-r" not in command
+    _write_wasm_ld_output(
+        command, fixture.split_app if "--emit-relocs" in command else fixture.linked
+    )
+
+
+def _build_reloc_runtime_module_many(
+    export_names: list[str], *, data_symbols: dict[str, int] | None = None
+) -> bytes:
+    """Object producer: declared constant bodies and explicit definition indices."""
+    module = _build_exported_runtime_module_many(export_names)
+    definitions = [
+        _function_symbol_entry(
+            flags=FLAG_BINDING_GLOBAL | wasm_link_format.FLAG_EXPLICIT_NAME,
+            index=index,
+            name=name,
+        )
+        for index, name in enumerate(export_names)
+    ]
+    sections = wasm_link_operations.parse_sections(module)
+    subsections: list[tuple[int, bytes]] = []
+    if data_symbols:
+        total_bytes = sum(data_symbols.values())
+        sections.insert(
+            2,
+            (
+                5,
+                b"\x01\x00"
+                + wasm_link_format._write_varuint((total_bytes + 65535) // 65536),
+            ),
+        )
+        data = bytearray(wasm_link_format._write_varuint(len(data_symbols)))
+        info = bytearray(wasm_link_format._write_varuint(len(data_symbols)))
+        offset = 0
+        for index, (name, size) in enumerate(data_symbols.items()):
+            data.extend(b"\x00\x41" + _write_varsint32(offset) + b"\x0b")
+            data.extend(wasm_link_format._write_varuint(size) + b"\0" * size)
+            info.extend(wasm_link_format._write_string(name) + b"\x00\x00")
+            definitions.append(
+                _data_symbol_entry(
+                    flags=wasm_link_format.FLAG_EXPLICIT_NAME,
+                    name=name,
+                    segment_index=index,
+                    offset=0,
+                    size=size,
+                )
+            )
+            offset += size
+        sections.append((11, bytes(data)))
+        subsections.append((5, bytes(info)))
+    subsections.append((SYMTAB_SUBSECTION_ID, _build_symbol_subsection(definitions)))
+    linking = wasm_link_format._build_linking_payload(
+        2,
+        subsections,
+    )
+    return wasm_link_operations.build_sections(
+        [
+            *sections,
+            (0, wasm_link_format._build_custom_section("linking", linking)),
+        ]
+    )
+
+
 _TEST_WASM_VALUE_TYPES = {
     "i32": 0x7F,
     "i64": 0x7E,
@@ -2497,7 +2777,7 @@ def test_link_pipeline_requires_frontend_app_export_contract(
         runtime,
         output,
         linked,
-        runtime_role="shared",
+        failure_evidence_dir=tmp_path / "evidence",
         wasm_facts_scanner=Path("unused-rust-facts-scanner"),
         app_export_contract_path=None,  # type: ignore[arg-type]
     )
@@ -4254,7 +4534,7 @@ def test_restore_split_runtime_contract_exports_scans_contract_once(
     stripped = _strip_export(_strip_export(app, "molt_memory"), "molt_table")
     parse_calls = 0
 
-    def scan(_executor, command, **_kwargs):  # type: ignore[no-untyped-def]
+    def scan(command, **_kwargs):  # type: ignore[no-untyped-def]
         nonlocal parse_calls
         parse_calls += 1
         data = Path(command[-1]).read_bytes()
@@ -4269,8 +4549,10 @@ def test_restore_split_runtime_contract_exports_scans_contract_once(
 
     scanner = tmp_path / "scanner"
     scanner.write_bytes(b"scanner")
-    monkeypatch.setattr(wasm_link_fact_provider.CommandExecutor, "run", scan)
-    provider = _REAL_MAKE_RUST_WASM_FACTS_PROVIDER(scanner, tmp_path)
+    monkeypatch.setattr(wasm_link_fact_provider, "_COMMANDS", SimpleNamespace(run=scan))
+    provider = _REAL_MAKE_RUST_WASM_FACTS_PROVIDER(
+        scanner, tmp_path, evidence_root=tmp_path / "evidence"
+    )
 
     restored = wasm_link_export_contract._restore_split_runtime_contract_exports(
         stripped,
@@ -5502,7 +5784,7 @@ def test_link_transaction_cleans_owned_resources_when_command_planning_fails(
         tmp_path / "runtime.wasm",
         output,
         linked,
-        runtime_role="shared",
+        failure_evidence_dir=tmp_path / "evidence",
         phase_timings_ms=timings,
         wasm_facts_scanner=tmp_path / "facts-scanner",
         app_export_contract_path=tmp_path / "app-export-contract.json",
@@ -5521,8 +5803,9 @@ def test_run_wasm_ld_split_runtime_uses_explicit_deploy_runtime_over_stale_env(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    output_bytes = _build_split_runtime_app_module([])
-    runtime_bytes = _build_exported_runtime_module("molt_exception_pending")
+    fixture = _build_split_link_fixture(["molt_exception_pending"])
+    output_bytes = fixture.app
+    runtime_bytes = fixture.shared
     runtime = tmp_path / "runtime.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
@@ -5532,15 +5815,20 @@ def test_run_wasm_ld_split_runtime_uses_explicit_deploy_runtime_over_stale_env(
     timings_path = tmp_path / "phase_timings.json"
     stale_runtime = tmp_path / "missing-runtime.wasm"
 
-    runtime.write_bytes(runtime_bytes)
+    runtime.write_bytes(fixture.reloc)
+    deploy_runtime = tmp_path / "fixture-shared.wasm"
+    deploy_runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
     wasm_ld_commands: list[list[str]] = []
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
         del kwargs
         if cmd and cmd[0] == "wasm-ld":
             wasm_ld_commands.append(list(cmd))
-        _write_wasm_ld_output(cmd, output_bytes)
+        _write_split_fixture_output(cmd, fixture)
 
         class Result:
             returncode = 0
@@ -5551,11 +5839,6 @@ def test_run_wasm_ld_split_runtime_uses_explicit_deploy_runtime_over_stale_env(
 
     monkeypatch.setenv("MOLT_WASM_DEPLOY_RUNTIME", str(stale_runtime))
     monkeypatch.setattr(wasm_link_command, "_run_external_tool", fake_run)
-    monkeypatch.setattr(
-        wasm_link_validation,
-        "_validate_linked",
-        lambda _p, **_kwargs: True,
-    )
     monkeypatch.setattr(
         wasm_link_optimizer_policy, "_post_link_optimize", lambda data, **_kwargs: data
     )
@@ -5571,8 +5854,9 @@ def test_run_wasm_ld_split_runtime_uses_explicit_deploy_runtime_over_stale_env(
         output,
         linked,
         split_runtime=True,
+        deploy_runtime_override=deploy_runtime,
+        deploy_runtime_imports=fixture.deploy_imports,
         split_output_dir=split_dir,
-        deploy_runtime_override=runtime,
         phase_timings_file=timings_path,
     )
     first_link_commands = list(wasm_ld_commands)
@@ -5582,8 +5866,9 @@ def test_run_wasm_ld_split_runtime_uses_explicit_deploy_runtime_over_stale_env(
         output,
         control_linked,
         split_runtime=True,
+        deploy_runtime_override=deploy_runtime,
+        deploy_runtime_imports=fixture.deploy_imports,
         split_output_dir=control_split_dir,
-        deploy_runtime_override=runtime,
     )
 
     assert rc == 0
@@ -5595,7 +5880,7 @@ def test_run_wasm_ld_split_runtime_uses_explicit_deploy_runtime_over_stale_env(
     assert all("--no-entry" in cmd for cmd in first_link_commands)
     expected_runtime = _with_test_link_facts(
         wasm_link_operations.strip_publication_sections(
-            runtime.read_bytes(), final_artifact=True, preserve_debug=False
+            deploy_runtime.read_bytes(), final_artifact=True, preserve_debug=False
         ),
         role="runtime",
     )
@@ -5699,7 +5984,7 @@ def test_split_callable_layout_rejects_final_runtime_overlap() -> None:
         )
 
 
-def test_run_wasm_ld_honors_explicit_reloc_role_for_immutable_generation_member(
+def test_run_wasm_ld_admits_relocatable_member_independent_of_filename(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -5725,6 +6010,9 @@ def test_run_wasm_ld_honors_explicit_reloc_role_for_immutable_generation_member(
     output.write_bytes(output_bytes)
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
         del kwargs
         if cmd and cmd[0] == "wasm-ld":
             wasm_ld_inputs.extend(cmd)
@@ -5755,7 +6043,6 @@ def test_run_wasm_ld_honors_explicit_reloc_role_for_immutable_generation_member(
         runtime,
         output,
         linked,
-        runtime_role="reloc",
         runtime_identity=stable_regular_file_identity(
             runtime,
             label="test immutable runtime member",
@@ -5766,12 +6053,148 @@ def test_run_wasm_ld_honors_explicit_reloc_role_for_immutable_generation_member(
     assert any(Path(part).name == runtime.name for part in wasm_ld_inputs)
 
 
+@pytest.mark.slow
+@pytest.mark.parametrize("with_data", (False, True))
+def test_primary_runtime_fixture_passes_actual_relocatable_admission(
+    tmp_path: Path, with_data: bool
+) -> None:
+    from molt.cli import wasm_toolchain
+
+    runtime = tmp_path / "opaque.runtime-wasm-member"
+    runtime.write_bytes(
+        _build_reloc_runtime_module_many(
+            ["runtime_anchor"],
+            data_symbols={"runtime_data": 208} if with_data else None,
+        )
+    )
+    linker = wasm_toolchain.resolve_wasm_linker().path
+    assert (
+        wasm_link_command._preflight_relocatable_runtime(str(linker), runtime, tmp_path)
+        is None
+    )
+
+
+@pytest.mark.slow
+def test_run_wasm_ld_rejects_shared_primary_before_publication(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from molt.cli import wasm_toolchain
+
+    runtime = tmp_path / "molt_runtime.wasm"
+    app = tmp_path / "app.wasm"
+    linked = tmp_path / "linked.wasm"
+    shared = _build_exported_runtime_module("runtime_anchor")
+    runtime.write_bytes(shared)
+    app.write_bytes(_build_minimal_module(b""))
+    linked.write_bytes(b"previous accepted artifact")
+    linker = wasm_toolchain.resolve_wasm_linker().path
+
+    assert _run_wasm_ld_with_rust_facts(str(linker), runtime, app, linked) == 1
+    assert "relocatable runtime preflight failed" in capsys.readouterr().err
+    assert runtime.read_bytes() == shared
+    assert linked.read_bytes() == b"previous accepted artifact"
+
+
+@pytest.mark.parametrize("defined", (False, True))
+def test_native_provider_planning_uses_primary_linking_definitions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    defined: bool,
+) -> None:
+    name = "runtime_private_helper"
+    runtime = tmp_path / "primary.wasm"
+    app = tmp_path / "app.wasm"
+    linked = tmp_path / "linked.wasm"
+    native = tmp_path / "native.o"
+    if defined:
+        # A genuine definition needs no public export to satisfy an object.
+        runtime_data = _strip_export(_build_reloc_runtime_module(name), name)
+    else:
+        # Re-exporting an import cannot make it a provider definition. The
+        # separate anchor keeps this a nonempty relocatable object.
+        string = wasm_link_format._write_string
+        entries = [
+            _function_symbol_entry(
+                name=name,
+                index=0,
+                flags=wasm_link_format.FLAG_UNDEFINED
+                | wasm_link_format.FLAG_EXPLICIT_NAME,
+            ),
+            _function_symbol_entry(
+                name="runtime_anchor",
+                index=1,
+                flags=FLAG_BINDING_GLOBAL | wasm_link_format.FLAG_EXPLICIT_NAME,
+            ),
+        ]
+        runtime_data = wasm_link_operations.build_sections(
+            [
+                *wasm_link_operations.parse_sections(
+                    _build_env_function_import_module([name])
+                ),
+                (3, b"\x01\x00"),
+                (7, b"\x01" + string(name) + b"\x00\x00"),
+                (10, b"\x01\x02\x00\x0b"),
+                (
+                    0,
+                    wasm_link_format._build_custom_section(
+                        "linking",
+                        wasm_link_format._build_linking_payload(
+                            2,
+                            [(SYMTAB_SUBSECTION_ID, _build_symbol_subsection(entries))],
+                        ),
+                    ),
+                ),
+            ]
+        )
+    runtime.write_bytes(runtime_data)
+    app.write_bytes(_build_minimal_module(b""))
+    native.write_bytes(_build_env_function_import_module([name]))
+    linked.write_bytes(b"previous accepted artifact")
+    final_commands: list[list[str]] = []
+    sdk_requests: list[bool] = []
+
+    def missing_provider(**_kwargs):
+        sdk_requests.append(True)
+        raise ValueError("unresolved runtime import requires a provider")
+
+    def link(command, **_kwargs):
+        preflight = _fixture_reloc_preflight(command)
+        if preflight is not None:
+            return preflight
+        final_commands.append(command)
+        return subprocess.CompletedProcess(command, 7, "", "final-link sentinel")
+
+    monkeypatch.setattr(
+        wasm_link_native_inputs.wasm_link_inputs,
+        "resolve_wasi_c_abi_plan",
+        missing_provider,
+    )
+    monkeypatch.setattr(wasm_link_command, "_run_external_tool", link)
+    result = _run_wasm_ld_with_rust_facts(
+        "wasm-ld",
+        runtime,
+        app,
+        linked,
+        native_link_requirements=_native_link_requirements(native),
+    )
+    assert result == (7 if defined else 1)
+    assert len(final_commands) == int(defined)
+    assert len(sdk_requests) == int(not defined)
+    assert (
+        "final-link sentinel"
+        if defined
+        else "unresolved runtime import requires a provider"
+    ) in capsys.readouterr().err
+    assert linked.read_bytes() == b"previous accepted artifact"
+
+
 def test_run_wasm_ld_links_staged_native_objects(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     output_bytes = _build_minimal_module(b"")
-    runtime_bytes = _build_exported_runtime_module("molt_exception_pending")
+    runtime_bytes = _build_reloc_runtime_module("molt_exception_pending")
     runtime = tmp_path / "molt_runtime.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
@@ -5784,6 +6207,9 @@ def test_run_wasm_ld_links_staged_native_objects(
     native_object.write_bytes(_module_with_linking_symbols([]))
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
         del kwargs
         if cmd and cmd[0] == "wasm-ld":
             wasm_ld_inputs.extend(cmd)
@@ -5843,7 +6269,7 @@ def test_run_wasm_ld_rejects_signature_mismatch_warning(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     output_bytes = _build_minimal_module(b"")
-    runtime_bytes = _build_exported_runtime_module("molt_exception_pending")
+    runtime_bytes = _build_reloc_runtime_module("molt_exception_pending")
     runtime = tmp_path / "molt_runtime.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
@@ -5852,6 +6278,9 @@ def test_run_wasm_ld_rejects_signature_mismatch_warning(
     output.write_bytes(output_bytes)
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
         del kwargs
         if cmd and cmd[0] == "wasm-ld":
             _write_wasm_ld_output(cmd, output_bytes)
@@ -5878,7 +6307,7 @@ def test_run_wasm_ld_links_rewritten_native_runtime_imports(
     monkeypatch,
 ) -> None:
     output_bytes = _build_minimal_module(b"")
-    runtime_bytes = _build_exported_runtime_module("molt_add")
+    runtime_bytes = _build_reloc_runtime_module("molt_add")
     runtime = tmp_path / "molt_runtime.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
@@ -5903,6 +6332,9 @@ def test_run_wasm_ld_links_rewritten_native_runtime_imports(
     native_object.write_bytes(_build_env_function_import_module(["molt_add", "malloc"]))
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
         del kwargs
         if cmd and cmd[0] == "wasm-ld":
             wasm_ld_inputs.extend(cmd)
@@ -5983,13 +6415,18 @@ def test_run_wasm_ld_rejects_missing_native_object(
     requirements = _native_link_requirements(missing_native_object)
     missing_native_object.unlink()
 
-    runtime.write_bytes(_build_exported_runtime_module("molt_exception_pending"))
+    runtime.write_bytes(_build_reloc_runtime_module("molt_exception_pending"))
     output.write_bytes(_build_minimal_module(b""))
     monkeypatch.setattr(
         wasm_link_command,
         "_run_external_tool",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("wasm-ld must not run without staged native input")
+        lambda cmd, **_kwargs: (
+            _fixture_reloc_preflight(cmd)
+            or (
+                (_ for _ in ()).throw(
+                    AssertionError("wasm-ld must not run without staged native input")
+                )
+            )
         ),
     )
 
@@ -6013,54 +6450,32 @@ def test_run_wasm_ld_rejects_missing_native_object(
 def test_split_native_app_uses_unique_molt_main_restoration_alias(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runtime_bytes = _build_exported_runtime_module_many(["molt_main"])
-    output_bytes = _build_exported_runtime_module("molt_main")
-    output_bytes = wasm_link_format._append_linking_function_symbols(
-        output_bytes,
-        [
-            (
-                "__molt_output_export_0",
-                0,
-                FLAG_BINDING_GLOBAL
-                | wasm_link_format.FLAG_EXPLICIT_NAME
-                | FLAG_EXPORTED
-                | FLAG_NO_STRIP,
-            )
-        ],
-        facts_provider=_facts_provider,
+    fixture = _build_split_link_fixture(
+        ["molt_main"], symbol_names={"molt_main": "__molt_output_export_0"}
     )
-    assert output_bytes is not None
+    runtime_bytes = fixture.shared
+    output_bytes = fixture.app
     runtime = tmp_path / "molt_runtime_reloc.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
     native_object = tmp_path / "native.molt.wasm"
-    runtime.write_bytes(runtime_bytes)
+    runtime.write_bytes(fixture.reloc)
+    deploy_runtime = tmp_path / "fixture-shared.wasm"
+    deploy_runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
     native_object.write_bytes(_module_with_linking_symbols([]))
     commands: list[list[str]] = []
 
     def fake_run(cmd, **_kwargs):
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
         if cmd and cmd[0] == "wasm-ld" and "-r" not in cmd:
             commands.append(list(cmd))
-        _write_wasm_ld_output(cmd, output_bytes)
+        _write_split_fixture_output(cmd, fixture)
         return wasm_link_command.subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(wasm_link_command, "_run_external_tool", fake_run)
-    monkeypatch.setattr(
-        wasm_link_validation,
-        "_validate_linked",
-        lambda _path, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        wasm_link_validation,
-        "_validate_split_runtime_outputs",
-        lambda *_a, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        wasm_link_export_contract,
-        "_restore_split_runtime_contract_exports",
-        lambda data, **_kwargs: data,
-    )
     monkeypatch.setattr(
         wasm_link_optimizer_policy,
         "_tree_shake_runtime",
@@ -6074,6 +6489,8 @@ def test_split_native_app_uses_unique_molt_main_restoration_alias(
             output,
             linked,
             split_runtime=True,
+            deploy_runtime_override=deploy_runtime,
+            deploy_runtime_imports=fixture.deploy_imports,
             split_output_dir=tmp_path / "split",
             native_link_requirements=_native_link_requirements(*(native_object,)),
         )
@@ -6088,31 +6505,38 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    runtime_bytes = _build_exported_runtime_module("molt_err_pending")
     app_data_offset = 2 * 65536
     app_table_base = 4096
-    output_bytes = _build_runtime_import_data_module(
-        [], memory_min=37, data_offset=app_data_offset, table_min=app_table_base
+    fixture = _build_split_link_fixture(
+        ["molt_err_pending"],
+        memory_min=37,
+        table_min=app_table_base,
+        data_offset=app_data_offset,
     )
+    runtime_bytes = fixture.shared
+    output_bytes = fixture.app
     runtime = tmp_path / "molt_runtime_reloc.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
     split_dir = tmp_path / "split"
     native_object = tmp_path / "external_static_packages" / "ndimage_edt.o"
     link_calls: list[list[str]] = []
-    app_link_bytes = _build_split_runtime_app_module([], memory_min=2)
 
-    runtime.write_bytes(runtime_bytes)
+    runtime.write_bytes(fixture.reloc)
+    deploy_runtime = tmp_path / "fixture-shared.wasm"
+    deploy_runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
     native_object.parent.mkdir()
     native_object.write_bytes(_module_with_linking_symbols([]))
 
     def fake_run(cmd, **kwargs):
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
         del kwargs
         if cmd and cmd[0] == "wasm-ld" and "-r" not in cmd:
             link_calls.append(list(cmd))
-        link_output = app_link_bytes if len(link_calls) == 2 else output_bytes
-        _write_wasm_ld_output(cmd, link_output)
+        _write_split_fixture_output(cmd, fixture)
 
         class Result:
             returncode = 0
@@ -6122,27 +6546,6 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
         return Result()
 
     monkeypatch.setattr(wasm_link_command, "_run_external_tool", fake_run)
-    monkeypatch.setattr(
-        wasm_link_validation,
-        "_validate_linked",
-        lambda _p, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        wasm_link_validation,
-        "_validate_split_runtime_outputs",
-        lambda *_a, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        wasm_link_export_contract,
-        "_restore_split_runtime_contract_exports",
-        lambda data, **_kwargs: data,
-    )
-    monkeypatch.setattr(
-        wasm_link_format, "_ensure_table_export", lambda data, **_kwargs: None
-    )
-    monkeypatch.setattr(
-        wasm_link_edit, "_restore_output_export_aliases", lambda data, **_kwargs: None
-    )
     monkeypatch.setattr(
         wasm_link_optimizer_policy, "_optimize_split_app_module", lambda data, **_: data
     )
@@ -6158,6 +6561,8 @@ def test_run_wasm_ld_split_runtime_links_native_objects_into_app(
         output,
         linked,
         split_runtime=True,
+        deploy_runtime_override=deploy_runtime,
+        deploy_runtime_imports=fixture.deploy_imports,
         split_output_dir=split_dir,
         native_link_requirements=merge_source_extension_link_requirements(
             (
@@ -6203,8 +6608,11 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
 ) -> None:
     symbol = "PyInit__demo"
     sealed_symbol = "PyInit__sealed_only"
-    runtime_bytes = _build_exported_runtime_module_many(["molt_main"])
-    output_bytes = _build_native_direct_import_module(symbol)
+    fixture = _build_split_link_fixture(
+        ["molt_main"], native_imports=(symbol,), native_names=(symbol, sealed_symbol)
+    )
+    runtime_bytes = fixture.shared
+    output_bytes = fixture.app
     runtime = tmp_path / "molt_runtime_reloc.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
@@ -6212,7 +6620,9 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
     native_object = tmp_path / "external_static_packages" / "_demo.molt.wasm"
     link_calls: list[list[str]] = []
 
-    runtime.write_bytes(runtime_bytes)
+    runtime.write_bytes(fixture.reloc)
+    deploy_runtime = tmp_path / "fixture-shared.wasm"
+    deploy_runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
     native_object.parent.mkdir()
     native_object.write_bytes(_module_with_linking_symbols([]))
@@ -6227,6 +6637,9 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
     )
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
         del kwargs
         if cmd and cmd[0] == "wasm-ld" and "-r" not in cmd:
             link_calls.append(list(cmd))
@@ -6238,10 +6651,7 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
             }
             assert ("env", symbol) in function_imports
             assert ("molt_native", symbol) not in function_imports
-        _write_wasm_ld_output(
-            cmd,
-            _build_exported_runtime_module_many([symbol, sealed_symbol]),
-        )
+        _write_split_fixture_output(cmd, fixture)
 
         class Result:
             returncode = 0
@@ -6251,27 +6661,6 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
         return Result()
 
     monkeypatch.setattr(wasm_link_command, "_run_external_tool", fake_run)
-    monkeypatch.setattr(
-        wasm_link_validation,
-        "_validate_linked",
-        lambda _p, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        wasm_link_validation,
-        "_validate_split_runtime_outputs",
-        lambda *_a, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        wasm_link_export_contract,
-        "_restore_split_runtime_contract_exports",
-        lambda data, **_kwargs: data,
-    )
-    monkeypatch.setattr(
-        wasm_link_format, "_ensure_table_export", lambda data, **_kwargs: None
-    )
-    monkeypatch.setattr(
-        wasm_link_edit, "_restore_output_export_aliases", lambda data, **_kwargs: None
-    )
     monkeypatch.setattr(
         wasm_link_optimizer_policy, "_optimize_split_app_module", lambda data, **_: data
     )
@@ -6287,6 +6676,8 @@ def test_run_wasm_ld_split_runtime_forces_native_direct_symbols(
         output,
         linked,
         split_runtime=True,
+        deploy_runtime_override=deploy_runtime,
+        deploy_runtime_imports=fixture.deploy_imports,
         split_output_dir=split_dir,
         native_link_requirements=_native_link_requirements(*(native_object,)),
     )
@@ -6426,50 +6817,14 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    runtime_bytes = wasm_link_operations.build_sections(
-        [
-            *wasm_link_operations.parse_sections(
-                _add_data_address_global_exports(
-                    _build_exported_runtime_module_many(["molt_err_pending"]),
-                    {"PyLong_Type": 4096},
-                )
-            ),
-            (
-                0,
-                wasm_link_format._build_custom_section(
-                    "linking",
-                    wasm_link_format._build_linking_payload(
-                        2,
-                        [
-                            (
-                                SYMTAB_SUBSECTION_ID,
-                                _build_symbol_subsection(
-                                    [
-                                        _function_symbol_entry(
-                                            flags=(
-                                                FLAG_BINDING_GLOBAL
-                                                | wasm_link_format.FLAG_EXPLICIT_NAME
-                                            ),
-                                            index=0,
-                                            name="molt_err_pending",
-                                        ),
-                                        _data_symbol_entry(
-                                            flags=wasm_link_format.FLAG_EXPLICIT_NAME,
-                                            name="PyLong_Type",
-                                            segment_index=0,
-                                            offset=4096,
-                                            size=208,
-                                        ),
-                                    ]
-                                ),
-                            )
-                        ],
-                    ),
-                ),
-            ),
-        ]
+    fixture = _build_split_link_fixture(
+        ["molt_err_pending"],
+        app_imports=("molt_err_pending",),
+        data_offset=64 * 1024 * 1024 - 1,
+        data_symbols={"PyLong_Type": 208},
     )
-    output_bytes = _build_runtime_import_module(["molt_err_pending"])
+    runtime_bytes = fixture.shared
+    output_bytes = fixture.app
     runtime = tmp_path / "molt_runtime_reloc.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
@@ -6482,7 +6837,9 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     allowlists: list[set[str]] = []
     compiler_rt_snapshots: list[tuple[str, bytes]] = []
 
-    runtime.write_bytes(runtime_bytes)
+    runtime.write_bytes(fixture.reloc)
+    deploy_runtime = tmp_path / "fixture-shared.wasm"
+    deploy_runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
     native_object.parent.mkdir()
     native_object.write_bytes(
@@ -6534,6 +6891,9 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     libc_provider = sdk_plan.path("libc")
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
         del kwargs
         if cmd and cmd[0] == "wasm-ld" and "-r" not in cmd:
             link_calls.append(list(cmd))
@@ -6553,7 +6913,7 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
                     compiler_rt_snapshots.append((str(path), path.read_bytes()))
                 if part.startswith("--allow-undefined-file="):
                     allowlists.append(_parse_allowlist(Path(part.split("=", 1)[1])))
-        _write_wasm_ld_output(cmd, output_bytes)
+        _write_split_fixture_output(cmd, fixture)
 
         class Result:
             returncode = 0
@@ -6567,27 +6927,6 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
         return Result()
 
     monkeypatch.setattr(wasm_link_command, "_run_external_tool", fake_run)
-    monkeypatch.setattr(
-        wasm_link_validation,
-        "_validate_linked",
-        lambda _p, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        wasm_link_validation,
-        "_validate_split_runtime_outputs",
-        lambda *_a, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        wasm_link_export_contract,
-        "_restore_split_runtime_contract_exports",
-        lambda data, **_kwargs: data,
-    )
-    monkeypatch.setattr(
-        wasm_link_format, "_ensure_table_export", lambda data, **_kwargs: None
-    )
-    monkeypatch.setattr(
-        wasm_link_edit, "_restore_output_export_aliases", lambda data, **_kwargs: None
-    )
     monkeypatch.setattr(
         wasm_link_optimizer_policy, "_optimize_split_app_module", lambda data, **_: data
     )
@@ -6622,8 +6961,9 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
         output,
         linked,
         split_runtime=True,
+        deploy_runtime_override=deploy_runtime,
+        deploy_runtime_imports=fixture.deploy_imports,
         split_output_dir=split_dir,
-        runtime_role="reloc",
         native_link_requirements=_native_link_requirements(
             native_object, libc_provider
         ),
@@ -7865,13 +8205,16 @@ def test_run_wasm_ld_preserves_runtime_entrypoint_without_prelink_alias_object(
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
     runtime.write_bytes(
-        _build_exported_runtime_module_many(["molt_main", "molt_isolate_import"])
+        _build_reloc_runtime_module_many(["molt_main", "molt_isolate_import"])
     )
     output.write_bytes(wasm_link_operations.build_sections(sections))
 
     captured_cmds: list[list[str]] = []
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
         del kwargs
         captured_cmds.append(list(cmd))
         if cmd and cmd[0] == "wasm-ld":
@@ -8013,7 +8356,7 @@ def test_run_wasm_ld_force_exports_user_module_exports(
     runtime = tmp_path / "runtime.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
-    runtime.write_bytes(_build_exported_runtime_module("runtime_only"))
+    runtime.write_bytes(_build_reloc_runtime_module("runtime_only"))
     output.write_bytes(output_bytes)
     contract_path = _write_app_export_contract(
         tmp_path / "app_export_contract.json",
@@ -8033,6 +8376,9 @@ def test_run_wasm_ld_force_exports_user_module_exports(
     captured_cmds: list[list[str]] = []
 
     def fake_run(cmd, **kwargs):
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
         captured_cmds.append(list(cmd))
         emitted = output_bytes
         if cmd and cmd[0] == "wasm-ld":
@@ -8157,6 +8503,9 @@ def test_run_wasm_ld_repairs_linked_host_init_export(
     output.write_bytes(output_bytes)
 
     def fake_run(cmd, **_kwargs):
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
         _write_wasm_ld_output(cmd, linked_without_host_init)
 
         class Result:
@@ -8183,78 +8532,20 @@ def test_run_wasm_ld_repairs_linked_host_init_export(
     assert "molt_host_init" in exports
 
 
-def test_call_indirect_symbol_discovery_does_not_require_wasm_tools(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    runtime = tmp_path / "runtime_reloc.wasm"
-    runtime.write_bytes(
-        _module_with_linking_symbols(
-            [
-                _function_symbol_entry(
-                    flags=wasm_link_format.FLAG_UNDEFINED
-                    | wasm_link_format.FLAG_EXPLICIT_NAME,
-                    index=3,
-                    name="_ZN4molt19molt_call_indirect1317hfeedfaceE",
-                ),
-                _function_symbol_entry(
-                    flags=wasm_link_format.FLAG_UNDEFINED
-                    | wasm_link_format.FLAG_EXPLICIT_NAME,
-                    index=4,
-                    name="_ZN4molt19molt_call_indirect9917hfeedfaceE",
-                ),
-            ]
-        )
-    )
-    output = tmp_path / "output.wasm"
-    output.write_bytes(
-        _module_with_linking_symbols(
-            [
-                _function_symbol_entry(
-                    flags=FLAG_BINDING_GLOBAL
-                    | wasm_link_format.FLAG_EXPLICIT_NAME
-                    | FLAG_EXPORTED,
-                    index=41,
-                    name="molt_call_indirect13",
-                ),
-                _function_symbol_entry(
-                    flags=FLAG_BINDING_GLOBAL
-                    | wasm_link_format.FLAG_EXPLICIT_NAME
-                    | FLAG_EXPORTED,
-                    index=42,
-                    name="molt_call_indirect99",
-                ),
-            ]
-        )
-    )
-    mangled = wasm_link_command._find_call_indirect_mangled(
-        runtime, facts_provider=_facts_provider
-    )
-    output_symbols = wasm_link_command._find_output_call_indirect_symbol(
-        output, facts_provider=_facts_provider
-    )
-
-    assert mangled == {
-        "molt_call_indirect13": "_ZN4molt19molt_call_indirect1317hfeedfaceE"
-    }
-    assert "molt_call_indirect99" not in output_symbols
-    assert output_symbols["molt_call_indirect13"] == (
-        41,
-        FLAG_BINDING_GLOBAL | wasm_link_format.FLAG_EXPLICIT_NAME | FLAG_EXPORTED,
-    )
-
-
 def test_run_wasm_ld_split_runtime_preserves_old_outputs_if_linked_validation_fails(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    runtime_bytes = _build_exported_runtime_module("molt_err_pending")
-    output_bytes = _module_with_linking_symbols([])
+    fixture = _build_split_link_fixture(["molt_err_pending"])
+    runtime_bytes = fixture.shared
+    output_bytes = fixture.app
     runtime = tmp_path / "molt_runtime_reloc.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
     split_dir = tmp_path / "split"
-    runtime.write_bytes(runtime_bytes)
+    runtime.write_bytes(fixture.reloc)
+    deploy_runtime = tmp_path / "fixture-shared.wasm"
+    deploy_runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
     split_dir.mkdir()
     linked.write_bytes(b"old-linked")
@@ -8262,7 +8553,10 @@ def test_run_wasm_ld_split_runtime_preserves_old_outputs_if_linked_validation_fa
     (split_dir / "molt_runtime.wasm").write_bytes(b"old-runtime")
 
     def fake_run(cmd, **kwargs):
-        _write_wasm_ld_output(cmd, output_bytes)
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
+        _write_split_fixture_output(cmd, fixture)
 
         class Result:
             returncode = 0
@@ -8276,12 +8570,6 @@ def test_run_wasm_ld_split_runtime_preserves_old_outputs_if_linked_validation_fa
         wasm_link_validation,
         "_validate_linked",
         lambda _p, **_kwargs: False,
-    )
-    monkeypatch.setattr(
-        wasm_link_format, "_ensure_table_export", lambda data, **_kwargs: None
-    )
-    monkeypatch.setattr(
-        wasm_link_edit, "_restore_output_export_aliases", lambda data, **_kwargs: None
     )
     monkeypatch.setattr(
         wasm_link_optimizer_policy, "_optimize_split_app_module", lambda data, **_: data
@@ -8298,6 +8586,8 @@ def test_run_wasm_ld_split_runtime_preserves_old_outputs_if_linked_validation_fa
         output,
         linked,
         split_runtime=True,
+        deploy_runtime_override=deploy_runtime,
+        deploy_runtime_imports=fixture.deploy_imports,
         split_output_dir=split_dir,
     )
 
@@ -8305,13 +8595,17 @@ def test_run_wasm_ld_split_runtime_preserves_old_outputs_if_linked_validation_fa
     assert linked.read_bytes() == b"old-linked"
     assert (split_dir / "app.wasm").read_bytes() == b"old-app"
     assert (split_dir / "molt_runtime.wasm").read_bytes() == b"old-runtime"
+    evidence = list(
+        (linked.parent / "wasm-link-evidence").glob("linked-validation-*.wasm.rejected")
+    )
+    assert len(evidence) == 1 and evidence[0].read_bytes().startswith(b"\0asm")
 
 
 def test_run_wasm_ld_preserves_old_output_if_linked_validation_fails(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    runtime_bytes = _build_exported_runtime_module("molt_err_pending")
+    runtime_bytes = _build_reloc_runtime_module("molt_err_pending")
     output_bytes = _module_with_linking_symbols([])
     runtime = tmp_path / "molt_runtime_reloc.wasm"
     output = tmp_path / "output.wasm"
@@ -8321,6 +8615,9 @@ def test_run_wasm_ld_preserves_old_output_if_linked_validation_fails(
     linked.write_bytes(b"old-linked")
 
     def fake_run(cmd, **kwargs):
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
         _write_wasm_ld_output(cmd, output_bytes)
 
         class Result:
@@ -8347,13 +8644,17 @@ def test_run_wasm_ld_preserves_old_output_if_linked_validation_fails(
 
     assert rc == 1
     assert linked.read_bytes() == b"old-linked"
+    evidence = list(
+        (linked.parent / "wasm-link-evidence").glob("linked-validation-*.wasm.rejected")
+    )
+    assert len(evidence) == 1 and evidence[0].read_bytes().startswith(b"\0asm")
 
 
 def test_run_wasm_ld_enabled_then_disabled_retires_optimizer_attestation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime_bytes = _build_exported_runtime_module("molt_err_pending")
+    runtime_bytes = _build_reloc_runtime_module("molt_err_pending")
     output_bytes = _module_with_linking_symbols([])
     runtime = tmp_path / "molt_runtime_reloc.wasm"
     output = tmp_path / "output.wasm"
@@ -8368,6 +8669,9 @@ def test_run_wasm_ld_enabled_then_disabled_retires_optimizer_attestation(
     optimizer.write_bytes(b"optimizer")
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
         _write_wasm_ld_output(cmd, output_bytes)
 
         class Result:
@@ -8443,29 +8747,16 @@ def test_run_wasm_ld_split_runtime_reuses_one_optimizer_identity_and_publishes_a
     monkeypatch,
     preserve_debug_sections: bool,
 ) -> None:
-    debug_sections = [
-        (0, wasm_link_format._build_custom_section(".debug_info", b"debug")),
-        (0, wasm_link_format._build_custom_section("name", b"names")),
-    ]
-    runtime_bytes = wasm_link_operations.build_sections(
-        [
-            *wasm_link_operations.parse_sections(
-                _build_exported_runtime_module("molt_err_pending")
-            ),
-            *debug_sections,
-        ]
-    )
-    output_bytes = wasm_link_operations.build_sections(
-        [
-            *wasm_link_operations.parse_sections(_module_with_linking_symbols([])),
-            *debug_sections,
-        ]
-    )
+    fixture = _build_split_link_fixture(["molt_err_pending"], debug=True)
+    runtime_bytes = fixture.shared
+    output_bytes = fixture.app
     runtime = tmp_path / "molt_runtime_reloc.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
     split_dir = tmp_path / "split"
-    runtime.write_bytes(runtime_bytes)
+    runtime.write_bytes(fixture.reloc)
+    deploy_runtime = tmp_path / "fixture-shared.wasm"
+    deploy_runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
     split_dir.mkdir()
     linked.write_bytes(b"old-linked")
@@ -8518,7 +8809,10 @@ def test_run_wasm_ld_split_runtime_reuses_one_optimizer_identity_and_publishes_a
         return True
 
     def fake_run(cmd, **kwargs):
-        _write_wasm_ld_output(cmd, output_bytes)
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
+        _write_split_fixture_output(cmd, fixture)
 
         class Result:
             returncode = 0
@@ -8527,13 +8821,16 @@ def test_run_wasm_ld_split_runtime_reuses_one_optimizer_identity_and_publishes_a
 
         return Result()
 
+    real_validate_linked = wasm_link_validation._validate_linked
+    real_validate_split = wasm_link_validation._validate_split_runtime_outputs
+
     def validate_linked(path: Path, **_kwargs) -> bool:
         validate_seen.append(path)
         assert path != linked
         assert linked.read_bytes() == b"old-linked"
         assert app_wasm.read_bytes() == b"old-app"
         assert rt_wasm.read_bytes() == b"old-runtime"
-        return True
+        return real_validate_linked(path, **_kwargs)
 
     def validate_split(app_stage: Path, rt_stage: Path, **_kwargs) -> bool:
         split_validate_seen.append((app_stage, rt_stage))
@@ -8541,23 +8838,12 @@ def test_run_wasm_ld_split_runtime_reuses_one_optimizer_identity_and_publishes_a
         assert rt_stage != rt_wasm
         assert app_wasm.read_bytes() == b"old-app"
         assert rt_wasm.read_bytes() == b"old-runtime"
-        return True
+        return real_validate_split(app_stage, rt_stage, **_kwargs)
 
     monkeypatch.setattr(wasm_link_command, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link_validation, "_validate_linked", validate_linked)
     monkeypatch.setattr(
         wasm_link_validation, "_validate_split_runtime_outputs", validate_split
-    )
-    monkeypatch.setattr(
-        wasm_link_export_contract,
-        "_restore_split_runtime_contract_exports",
-        lambda data, **_kwargs: data,
-    )
-    monkeypatch.setattr(
-        wasm_link_format, "_ensure_table_export", lambda data, **_kwargs: None
-    )
-    monkeypatch.setattr(
-        wasm_link_edit, "_restore_output_export_aliases", lambda data, **_kwargs: None
     )
     monkeypatch.setattr(
         wasm_link_optimizer_policy, "_post_link_optimize", lambda data, **_: data
@@ -8600,6 +8886,8 @@ def test_run_wasm_ld_split_runtime_reuses_one_optimizer_identity_and_publishes_a
         linked,
         optimize=True,
         split_runtime=True,
+        deploy_runtime_override=deploy_runtime,
+        deploy_runtime_imports=fixture.deploy_imports,
         split_output_dir=split_dir,
         preserve_debug_sections=preserve_debug_sections,
         phase_timings_file=tmp_path / "phase_timings.json",
@@ -8619,7 +8907,7 @@ def test_run_wasm_ld_split_runtime_reuses_one_optimizer_identity_and_publishes_a
     assert linked.read_bytes() != b"old-linked"
     expected_app = _with_test_link_facts(
         wasm_link_operations.strip_publication_sections(
-            output_bytes,
+            fixture.split_app,
             final_artifact=True,
             preserve_debug=preserve_debug_sections,
         ),
@@ -9158,7 +9446,7 @@ def _build_single_data_export_shape(
 def _add_data_address_global_exports(module: bytes, addresses: dict[str, int]) -> bytes:
     """Return *module* with an added i32 global (init = address) exported under
     each name â€” the wasm-ld shape for --export-if-defined of a defined data
-    symbol. Appends to any existing global/export sections."""
+    symbol. Extends existing sections or inserts them in canonical order."""
     write_varuint = wasm_link_format._write_varuint
     sections = wasm_link_operations.parse_sections(module)
 
@@ -9174,7 +9462,9 @@ def _add_data_address_global_exports(module: bytes, addresses: dict[str, int]) -
         new_globals.append(0x7F)  # i32
         new_globals.append(0x00)  # immutable
         new_globals.append(0x41)  # i32.const
-        new_globals.extend(write_varuint(addresses[name]))
+        address = addresses[name]
+        signed_address = address if address < 0x8000_0000 else address - 0x1_0000_0000
+        new_globals.extend(wasm_link_runtime_data._write_sleb128(signed_address))
         new_globals.append(0x0B)  # end
 
     new_export_entries = bytearray()
@@ -9209,13 +9499,88 @@ def _add_data_address_global_exports(module: bytes, addresses: dict[str, int]) -
         global_section = bytearray()
         global_section.extend(write_varuint(len(names)))
         global_section.extend(new_globals)
-        rebuilt.append((6, bytes(global_section)))
+        rebuilt = wasm_link_format._insert_standard_section(
+            rebuilt, 6, bytes(global_section)
+        )
     if not saw_export:
         export_section = bytearray()
         export_section.extend(write_varuint(len(names)))
         export_section.extend(new_export_entries)
-        rebuilt.append((7, bytes(export_section)))
+        rebuilt = wasm_link_format._insert_standard_section(
+            rebuilt, 7, bytes(export_section)
+        )
     return wasm_link_operations.build_sections(rebuilt)
+
+
+@pytest.mark.parametrize(
+    "has_global, has_export",
+    ((False, False), (False, True), (True, False), (True, True)),
+)
+def test_data_address_fixture_extends_canonical_sections(
+    has_global: bool, has_export: bool
+) -> None:
+    string = wasm_link_format._write_string
+    sections = [
+        (1, b"\x01\x60\x00\x00"),
+        (3, b"\x01\x00"),
+        (5, b"\x01\x00\x01"),
+        (13, b"\x01\x00\x00"),  # Tag precedes Global despite its numeric id.
+    ]
+    previous_global = b"\x7f\x00\x41\x20\x0b"
+    if has_global:
+        sections.append((6, b"\x01" + previous_global))
+    if has_export:
+        sections.append((7, b"\x01" + string("entry") + b"\x00\x00"))
+    sections.extend(
+        [
+            (10, b"\x01\x02\x00\x0b"),
+            (11, b"\x01\x00\x41\x00\x0b\x01x"),
+            (0, wasm_link_format._build_custom_section("fixture-tail", b"kept")),
+        ]
+    )
+    original = wasm_link_operations.build_sections(sections)
+    updated = _add_data_address_global_exports(original, {"PyLong_Type": 64})
+    actual = wasm_link_operations.parse_sections(updated)
+    assert [section_id for section_id, _ in actual] == [1, 3, 5, 13, 6, 7, 10, 11, 0]
+    assert wasm_link_edit._standard_section_order_error(updated) is None
+    assert [(kind, payload) for kind, payload in actual if kind not in (6, 7)] == [
+        (kind, payload) for kind, payload in sections if kind not in (6, 7)
+    ]
+    # Literal +64 is signed LEB c0 00; unsigned 40 would encode -64.
+    expected_global = bytes([1 + int(has_global)])
+    if has_global:
+        expected_global += previous_global
+    expected_global += b"\x7f\x00\x41\xc0\x00\x0b"
+    assert dict(actual)[6] == expected_global
+    assert _fixture_export_kinds(updated) == {
+        **({"entry": (0, 0)} if has_export else {}),
+        "PyLong_Type": (3, int(has_global)),
+    }
+    assert wasm_link_runtime_data._runtime_exported_data_symbol_addresses(
+        updated, facts_provider=_facts_provider
+    ) == {"PyLong_Type": 64}
+
+
+@pytest.mark.parametrize(
+    "address, encoded",
+    (
+        (0x7FFF_FFFF, b"\xff\xff\xff\xff\x07"),
+        (0x8000_0000, b"\x80\x80\x80\x80\x78"),
+        (0xFFFF_FFFF, b"\x7f"),
+    ),
+)
+def test_data_address_fixture_preserves_unsigned_address_bits(
+    address: int, encoded: bytes
+) -> None:
+    # The upper half of wasm32 addresses uses negative signed i32 constants.
+    original = wasm_link_operations.build_sections([(5, b"\x01\x00\x80\x80\x04")])
+    updated = _add_data_address_global_exports(original, {"PyLong_Type": address})
+    assert dict(wasm_link_operations.parse_sections(updated))[6] == (
+        b"\x01\x7f\x00\x41" + encoded + b"\x0b"
+    )
+    assert wasm_link_runtime_data._runtime_exported_data_symbol_addresses(
+        updated, facts_provider=_facts_provider
+    ) == {"PyLong_Type": address}
 
 
 def _build_undefined_data_symbol_object(names: list[str]) -> bytes:
@@ -9561,7 +9926,6 @@ def test_final_link_rejects_original_path_aliases_before_custody(
         runtime,
         app,
         linked,
-        runtime_role="reloc",
         split_runtime=collision in {"split-role", "deploy-input"},
         split_output_dir=tmp_path,
         deploy_runtime_override=deploy,
@@ -9712,7 +10076,6 @@ def test_relocatable_input_has_one_admission_and_retains_failure_timings(
         runtime,
         app,
         linked,
-        runtime_role="reloc",
         phase_timings_file=timings,
     )
     assert result == (1 if failure_stage == "preflight" else 7)
@@ -9729,14 +10092,15 @@ def test_relocatable_input_has_one_admission_and_retains_failure_timings(
     assert failure_stage + " sentinel" in capsys.readouterr().err
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("relocatable", [False, True])
 def test_wasm_module_identity_survives_distinct_staging_paths(
     tmp_path: Path, relocatable: bool
 ) -> None:
     """Exercise lld's name emission, including the output-name negative control."""
-    from tests.wasm_linked_runner import selected_wasm_ld
+    from molt.cli import wasm_toolchain
 
-    linker = selected_wasm_ld()
+    linker = wasm_toolchain.resolve_wasm_linker().path
     source = tmp_path / "input.o"
     data = wasm_link_format._append_linking_function_symbols(
         _build_exported_runtime_module("user_entry"),
@@ -10324,7 +10688,7 @@ def test_run_wasm_ld_preserves_ordered_staged_native_plan(
     monkeypatch,
 ) -> None:
     output_bytes = _build_minimal_module(b"")
-    runtime_bytes = _build_exported_runtime_module("molt_exception_pending")
+    runtime_bytes = _build_reloc_runtime_module("molt_exception_pending")
     runtime = tmp_path / "molt_runtime.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
@@ -10339,6 +10703,9 @@ def test_run_wasm_ld_preserves_ordered_staged_native_plan(
     lazy_archive.write_bytes(b"!<arch>\n")
 
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
         del kwargs
         if cmd and cmd[0] == "wasm-ld":
             wasm_ld_inputs.extend(cmd)
@@ -10416,7 +10783,7 @@ def test_run_wasm_ld_rejects_native_plan_for_wrong_wasm_target(
     runtime = tmp_path / "molt_runtime.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
-    runtime.write_bytes(_build_exported_runtime_module("molt_exception_pending"))
+    runtime.write_bytes(_build_reloc_runtime_module("molt_exception_pending"))
     output.write_bytes(_build_minimal_module(b""))
     monkeypatch.setattr(
         wasm_link_command,
@@ -10451,7 +10818,7 @@ def test_run_wasm_ld_rejects_conflicting_repeated_input_digests(
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
     native = tmp_path / "native.o"
-    runtime.write_bytes(_build_exported_runtime_module("molt_exception_pending"))
+    runtime.write_bytes(_build_reloc_runtime_module("molt_exception_pending"))
     output.write_bytes(_build_minimal_module(b""))
     native.write_bytes(b"\0asm\x01\0\0\0native")
     admitted = source_extension_link_file(native)
@@ -10464,8 +10831,13 @@ def test_run_wasm_ld_rejects_conflicting_repeated_input_digests(
     monkeypatch.setattr(
         wasm_link_command,
         "_run_external_tool",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("wasm-ld must not run with contradictory digests")
+        lambda cmd, **_kwargs: (
+            _fixture_reloc_preflight(cmd)
+            or (
+                (_ for _ in ()).throw(
+                    AssertionError("wasm-ld must not run with contradictory digests")
+                )
+            )
         ),
     )
 
@@ -10770,13 +11142,16 @@ def test_run_wasm_ld_publishes_receipt_with_validated_candidates(
     monkeypatch,
     split: bool,
 ) -> None:
-    runtime_bytes = _build_exported_runtime_module("molt_err_pending")
-    output_bytes = _module_with_linking_symbols([])
+    fixture = _build_split_link_fixture(["molt_err_pending"])
+    runtime_bytes = fixture.shared
+    output_bytes = fixture.app
     runtime = tmp_path / "molt_runtime_reloc.wasm"
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
     split_dir = tmp_path / "split"
-    runtime.write_bytes(runtime_bytes)
+    runtime.write_bytes(fixture.reloc)
+    deploy_runtime = tmp_path / "fixture-shared.wasm"
+    deploy_runtime.write_bytes(runtime_bytes)
     output.write_bytes(output_bytes)
     split_dir.mkdir()
     linked.write_bytes(b"old-linked")
@@ -10788,7 +11163,10 @@ def test_run_wasm_ld_publishes_receipt_with_validated_candidates(
     split_validate_seen: list[tuple[Path, Path]] = []
 
     def fake_run(cmd, **kwargs):
-        _write_wasm_ld_output(cmd, output_bytes)
+        preflight = _fixture_reloc_preflight(cmd)
+        if preflight is not None:
+            return preflight
+        _write_split_fixture_output(cmd, fixture)
 
         class Result:
             returncode = 0
@@ -10797,6 +11175,9 @@ def test_run_wasm_ld_publishes_receipt_with_validated_candidates(
 
         return Result()
 
+    real_validate_linked = wasm_link_validation._validate_linked
+    real_validate_split = wasm_link_validation._validate_split_runtime_outputs
+
     def validate_linked(path: Path, *, facts_provider) -> bool:
         assert facts_provider is not None
         validate_seen.append(path)
@@ -10804,7 +11185,7 @@ def test_run_wasm_ld_publishes_receipt_with_validated_candidates(
         assert linked.read_bytes() == b"old-linked"
         assert app_wasm.read_bytes() == b"old-app"
         assert rt_wasm.read_bytes() == b"old-runtime"
-        return True
+        return real_validate_linked(path, facts_provider=facts_provider)
 
     def validate_split(app_stage: Path, rt_stage: Path, *, facts_provider) -> bool:
         assert facts_provider is not None
@@ -10813,23 +11194,12 @@ def test_run_wasm_ld_publishes_receipt_with_validated_candidates(
         assert rt_stage != rt_wasm
         assert app_wasm.read_bytes() == b"old-app"
         assert rt_wasm.read_bytes() == b"old-runtime"
-        return True
+        return real_validate_split(app_stage, rt_stage, facts_provider=facts_provider)
 
     monkeypatch.setattr(wasm_link_command, "_run_external_tool", fake_run)
     monkeypatch.setattr(wasm_link_validation, "_validate_linked", validate_linked)
     monkeypatch.setattr(
         wasm_link_validation, "_validate_split_runtime_outputs", validate_split
-    )
-    monkeypatch.setattr(
-        wasm_link_export_contract,
-        "_restore_split_runtime_contract_exports",
-        lambda data, **_kwargs: data,
-    )
-    monkeypatch.setattr(
-        wasm_link_format, "_ensure_table_export", lambda data, **_kwargs: None
-    )
-    monkeypatch.setattr(
-        wasm_link_edit, "_restore_output_export_aliases", lambda data, **_kwargs: None
     )
     monkeypatch.setattr(
         wasm_link_optimizer_policy, "_optimize_split_app_module", lambda data, **_: data
@@ -10839,7 +11209,6 @@ def test_run_wasm_ld_publishes_receipt_with_validated_candidates(
         "_tree_shake_runtime",
         lambda *_args, **_kwargs: runtime_bytes,
     )
-    monkeypatch.setattr(wasm_link_format, "_collect_custom_names", lambda _data: [])
 
     fingerprint = link_fingerprints._link_fingerprint(
         project_root=tmp_path, inputs=[runtime, output], link_cmd=["fixture-wasm-ld"]
@@ -10851,6 +11220,8 @@ def test_run_wasm_ld_publishes_receipt_with_validated_candidates(
         output,
         linked,
         split_runtime=split,
+        deploy_runtime_override=deploy_runtime,
+        deploy_runtime_imports=fixture.deploy_imports,
         split_output_dir=split_dir,
         link_receipt=link_fingerprints.FinalLinkReceiptRequest.from_fingerprint(
             sidecar, fingerprint
@@ -10875,7 +11246,7 @@ def test_run_wasm_ld_publishes_receipt_with_validated_candidates(
         return
     expected_app = _with_test_link_facts(
         wasm_link_operations.strip_publication_sections(
-            output_bytes,
+            fixture.split_app,
             final_artifact=True,
             preserve_debug=False,
         ),
@@ -11492,3 +11863,345 @@ def test_discovered_provider_is_captured_before_symbol_inspection(
         captured,
     )
     assert selected.provider_symbols == frozenset({"__trunctfdf2"})
+
+
+def _indirect_alias_module(
+    *,
+    imported: bool,
+    symbols: list[tuple[str, int, int]],
+    namespace: str = "env",
+    param_delta: int = 0,
+) -> bytes:
+    """Independent object fixture: fourteen i64 trampolines, with index offsets."""
+    u32 = wasm_link_format._write_varuint
+    string = wasm_link_format._write_string
+    types = bytearray(u32(14))
+    for arity in range(14):
+        types.extend(b"\x60" + u32(arity + 1 + param_delta))
+        types.extend(b"\x7e" * (arity + 1 + param_delta) + b"\x01\x7e")
+    prefix_count = 3 if imported else 1
+    imports = bytearray(u32(prefix_count + (14 if imported else 0)))
+    for index in range(prefix_count):
+        imports.extend(string("foreign") + string(f"prefix_{index}") + b"\x00\x00")
+    if imported:
+        for arity in range(14):
+            imports.extend(string(namespace) + string(f"molt_call_indirect{arity}"))
+            imports.extend(b"\x00" + u32(arity))
+    sections = [(1, bytes(types)), (2, bytes(imports))]
+    if not imported:
+        sections.append((3, u32(14) + b"".join(u32(i) for i in range(14))))
+        exports = bytearray(u32(14))
+        for arity in range(14):
+            exports.extend(
+                string(f"molt_call_indirect{arity}") + b"\x00" + u32(arity + 1)
+            )
+        sections.append((7, bytes(exports)))
+        sections.append((10, u32(14) + b"\x04\x00\x42\x00\x0b" * 14))
+        # Empty code relocation table and opaque debug data must survive edits.
+        sections.append(
+            (0, wasm_link_format._build_custom_section("reloc.CODE", b"\x04\x00"))
+        )
+        sections.append(
+            (0, wasm_link_format._build_custom_section(".debug_info", b"unchanged"))
+        )
+    linking = wasm_link_format._build_linking_payload(
+        2,
+        [
+            (
+                SYMTAB_SUBSECTION_ID,
+                _build_symbol_subsection(
+                    [
+                        _function_symbol_entry(name=name, index=index, flags=flags)
+                        for name, index, flags in symbols
+                    ]
+                ),
+            )
+        ],
+    )
+    sections.append((0, wasm_link_format._build_custom_section("linking", linking)))
+    return wasm_link_operations.build_sections(sections)
+
+
+def _indirect_app_symbols() -> list[tuple[str, int, int]]:
+    # Independent literal ABI and original production definition flags (0xa0).
+    return [(f"molt_call_indirect{i}", i + 1, 0xA0) for i in range(14)]
+
+
+@pytest.mark.parametrize("spelling", ["canonical", "legacy", "v0", "opaque"])
+def test_call_indirect_aliases_join_indices_and_batch_all_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
+) -> None:
+    def alias(arity: int) -> str:
+        return {
+            "canonical": f"molt_call_indirect{arity}",
+            "legacy": f"_ZN4molt19molt_call_indirect{arity}17hfeedfaceE",
+            "v0": f"_RNvCsgrakSpcflzr_12molt_runtime{19 if arity < 10 else 20}molt_call_indirect{arity}",
+            "opaque": f"opaque.runtime.{arity}",
+        }[spelling]
+
+    runtime_symbols = [(alias(i), i + 3, 0x50) for i in range(14)]
+    runtime_symbols.extend([("another.runtime.alias", 6, 0x50), (alias(3), 6, 0x50)])
+    app_bytes = _indirect_alias_module(imported=False, symbols=_indirect_app_symbols())
+    output = tmp_path / "output.wasm"
+    runtime = tmp_path / "runtime.wasm"
+    output.write_bytes(app_bytes)
+    original_symbols = parse_wasm_linking_symbols(app_bytes).symbols
+    original_sections = wasm_link_operations.parse_sections(app_bytes)
+    publications: list[bytes] = []
+    real_append = wasm_link_format._append_linking_function_symbols
+    calls: list[list[tuple[str, int, int]]] = []
+
+    def batch(data, entries, **kwargs):
+        calls.append(list(entries))
+        return real_append(data, entries, **kwargs)
+
+    monkeypatch.setattr(wasm_link_command, "_append_linking_function_symbols", batch)
+    for ordered in (runtime_symbols, list(reversed(runtime_symbols))):
+        runtime.write_bytes(_indirect_alias_module(imported=True, symbols=ordered))
+        temporary = OwnedTemporaryDirectory(prefix="molt-alias-test-")
+        with temporary:
+            result = wasm_link_command._inject_call_indirect_alias(
+                output, runtime, temporary, facts_provider=_facts_provider
+            )
+            publications.append(result.read_bytes())
+    assert publications[0] == publications[1]
+    assert (
+        wasm_link_command._call_indirect_alias_entries(
+            _facts_provider(publications[0]), _facts_provider(runtime.read_bytes())
+        )
+        == []
+    )
+    expected = sorted(
+        {
+            (name, index - 2, 0xC0)
+            for name, index, _ in runtime_symbols
+            if name not in {name for name, _, _ in _indirect_app_symbols()}
+        },
+        key=lambda item: (item[1], item[0]),
+    )
+    assert calls == [expected, expected]  # One edit for each complete alias set.
+    updated_symbols = parse_wasm_linking_symbols(publications[0]).symbols
+    assert updated_symbols[: len(original_symbols)] == original_symbols
+    assert [
+        (s.name, s.index, s.flags) for s in updated_symbols[len(original_symbols) :]
+    ] == expected
+    for before, after in zip(
+        original_sections,
+        wasm_link_operations.parse_sections(publications[0]),
+        strict=True,
+    ):
+        if (
+            before[0] == 0
+            and wasm_link_format._parse_custom_section(before[1])[0] == "linking"
+        ):
+            continue
+        assert before == after
+    assert output.read_bytes() == app_bytes
+
+
+@pytest.mark.parametrize(
+    "defect, message",
+    [
+        ("missing-runtime-symbol", "no undefined linker symbol"),
+        ("missing-app-definition", "no unambiguous linkable definition"),
+        ("local-app-definition", "no unambiguous linkable definition"),
+        ("wrong-app-definition-index", "no unambiguous linkable definition"),
+        ("runtime-type", "runtime call_indirect ABI type mismatch"),
+        ("app-type", "app/runtime call_indirect type mismatch"),
+        ("alias-wrong-index", "conflicts with app symbol"),
+        ("alias-undefined", "conflicts with app symbol"),
+        ("alias-local", "conflicts with app symbol"),
+        ("alias-weak-canonical-strong", "conflicts with app symbol"),
+        ("alias-strong-canonical-weak", "must have global binding"),
+        ("alias-weak-canonical-weak", "must have global binding"),
+        ("conflicting-runtime-alias", "conflicting targets"),
+    ],
+)
+def test_call_indirect_aliases_refuse_incomplete_or_conflicting_edges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str, message: str
+) -> None:
+    runtime_symbols = [(f"opaque.{i}", i + 3, 0x50) for i in range(14)]
+    app_symbols = _indirect_app_symbols()
+    if defect == "missing-runtime-symbol":
+        runtime_symbols.pop(0)
+    elif defect == "missing-app-definition":
+        app_symbols.pop(0)
+    elif defect == "local-app-definition":
+        app_symbols[0] = (app_symbols[0][0], 1, 0x82)
+    elif defect == "wrong-app-definition-index":
+        app_symbols[0] = (app_symbols[0][0], 2, 0xA0)
+    elif defect == "alias-wrong-index":
+        app_symbols.append(("opaque.0", 2, 0xC0))
+    elif defect == "alias-undefined":
+        app_symbols.append(("opaque.0", 0, 0x50))
+    elif defect == "alias-local":
+        app_symbols.append(("opaque.0", 1, 0xC2))
+    elif defect == "alias-weak-canonical-strong":
+        app_symbols.append(("opaque.0", 1, 0xC1))
+    elif defect == "alias-strong-canonical-weak":
+        app_symbols[0] = (app_symbols[0][0], 1, 0xA1)
+        app_symbols.append(("opaque.0", 1, 0xC0))
+    elif defect == "alias-weak-canonical-weak":
+        app_symbols[0] = (app_symbols[0][0], 1, 0xA1)
+        app_symbols.append(("opaque.0", 1, 0xC1))
+    elif defect == "conflicting-runtime-alias":
+        runtime_symbols[1] = ("opaque.0", 4, 0x50)
+    output = tmp_path / "output.wasm"
+    runtime = tmp_path / "runtime.wasm"
+    app_bytes = _indirect_alias_module(
+        imported=False, symbols=app_symbols, param_delta=int(defect == "app-type")
+    )
+    output.write_bytes(app_bytes)
+    runtime.write_bytes(
+        _indirect_alias_module(
+            imported=True,
+            symbols=runtime_symbols,
+            param_delta=int(defect == "runtime-type"),
+        )
+    )
+
+    def unexpected_edit(*_args, **_kwargs):
+        raise AssertionError("alias admission must complete before any edit")
+
+    monkeypatch.setattr(
+        wasm_link_command, "_append_linking_function_symbols", unexpected_edit
+    )
+    temporary = OwnedTemporaryDirectory(prefix="molt-alias-refusal-")
+    with temporary:
+        with pytest.raises(ValueError, match=message):
+            wasm_link_command._inject_call_indirect_alias(
+                output, runtime, temporary, facts_provider=_facts_provider
+            )
+        assert not list(Path(temporary.name).iterdir())
+    assert output.read_bytes() == app_bytes
+
+
+@pytest.mark.parametrize("canonical_name", [False, True], ids=["opaque", "canonical"])
+def test_call_indirect_aliases_accept_matching_existing_binding(
+    canonical_name: bool,
+) -> None:
+    # Only the binding bits agree: canonical definitions retain EXPORTED, while
+    # opaque aliases carry EXPLICIT_NAME. Full flag equality would be incorrect.
+    app_symbols = [(f"molt_call_indirect{i}", i + 1, 0xA0) for i in range(14)]
+    names = [
+        f"molt_call_indirect{i}" if canonical_name else f"opaque.{i}" for i in range(14)
+    ]
+    if not canonical_name:
+        app_symbols.extend((name, i + 1, 0xC0) for i, name in enumerate(names))
+    app = _facts_provider(_indirect_alias_module(imported=False, symbols=app_symbols))
+    runtime = _facts_provider(
+        _indirect_alias_module(
+            imported=True,
+            symbols=[(name, i + 3, 0x50) for i, name in enumerate(names)],
+        )
+    )
+    assert wasm_link_command._call_indirect_alias_entries(app, runtime) == []
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("canonical_binding", "alias_binding"),
+    [(0, 0), (0, 1), (1, 1)],
+    ids=["global-global", "global-weak", "weak-weak"],
+)
+def test_existing_alias_binding_controls_actual_llvm_resolution(
+    tmp_path: Path, canonical_binding: int, alias_binding: int
+) -> None:
+    """A pre-link index join cannot substitute for agreeing symbol bindings."""
+    from molt.cli import wasm_toolchain
+
+    linker = wasm_toolchain.resolve_wasm_linker().path
+    app = tmp_path / "app.o"
+    competitor = tmp_path / "competing-definition.o"
+    linked = tmp_path / "linked.wasm"
+    app_bytes = wasm_link_format._append_linking_function_symbols(
+        _build_exported_function_module("canonical_trampoline"),
+        [
+            ("canonical_trampoline", 0, 0x40 | canonical_binding),
+            ("opaque_alias", 0, 0x40 | alias_binding),
+        ],
+        facts_provider=_facts_provider,
+    )
+    competitor_bytes = wasm_link_format._append_linking_function_symbols(
+        _build_exported_function_module("opaque_alias", trap_body=True),
+        [("opaque_alias", 0, 0x40)],
+        facts_provider=_facts_provider,
+    )
+    assert app_bytes is not None and competitor_bytes is not None
+    app.write_bytes(app_bytes)
+    competitor.write_bytes(competitor_bytes)
+    result = wasm_link_command._run_external_tool(
+        [
+            str(linker),
+            "--no-entry",
+            "--export=canonical_trampoline",
+            "--export=opaque_alias",
+            "-o",
+            str(linked),
+            str(app),
+            str(competitor),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert app.read_bytes() == app_bytes
+    assert competitor.read_bytes() == competitor_bytes
+    if alias_binding == 0:
+        assert result.returncode != 0
+        assert "duplicate symbol: opaque_alias" in result.stderr
+        assert not linked.exists()
+        return
+
+    assert result.returncode == 0, result.stderr
+    data = linked.read_bytes()
+    assert parse_wasm_imports(data) == []
+    exports = {item.name: item for item in parse_wasm_exports(data)}
+    canonical_kind = exports["canonical_trampoline"].kind
+    canonical_index = exports["canonical_trampoline"].index
+    alias_kind = exports["opaque_alias"].kind
+    alias_index = exports["opaque_alias"].index
+    assert canonical_kind == alias_kind == 0
+    assert canonical_index != alias_index
+    bodies = _defined_function_bodies(data)
+    # Independent raw Wasm oracles: canonical returns i32.const 1; the selected
+    # competing alias traps. Both names shared app function index0 before link.
+    assert bodies[canonical_index] == b"\x00\x41\x01\x0b"
+    assert bodies[alias_index] == b"\x00\x00\x0b"
+
+
+def test_call_indirect_aliases_leave_foreign_namespace_and_unrelated_symbols_alone() -> (
+    None
+):
+    app = _facts_provider(
+        _indirect_alias_module(imported=False, symbols=_indirect_app_symbols())
+    )
+    runtime = _facts_provider(
+        _indirect_alias_module(
+            imported=True,
+            namespace="foreign_runtime",
+            symbols=[
+                ("_RNvCsgrakSpcflzr_12molt_runtime19molt_call_indirect0", 3, 0x50)
+            ],
+        )
+    )
+    assert wasm_link_command._call_indirect_alias_entries(app, runtime) == []
+    assert (
+        wasm_link_command._call_indirect_alias_entries(
+            app, _facts_provider(b"\0asm\x01\0\0\0")
+        )
+        == []
+    )
+
+
+def test_call_indirect_aliases_do_not_infer_unsupported_arity_from_symbols() -> None:
+    app = _facts_provider(
+        _indirect_alias_module(imported=False, symbols=_indirect_app_symbols()[:-1])
+    )
+    runtime_bytes = _indirect_alias_module(
+        imported=True,
+        symbols=[(f"opaque.{i}", i + 3, 0x50) for i in range(14)],
+    ).replace(b"molt_call_indirect13", b"molt_call_indirect99")
+    entries = wasm_link_command._call_indirect_alias_entries(
+        app, _facts_provider(runtime_bytes)
+    )
+    assert entries == [(f"opaque.{i}", i + 1, 0xC0) for i in range(13)]

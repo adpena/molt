@@ -38,22 +38,35 @@ def test_validator_roster_matches_the_owning_rust_call_sites() -> None:
                 *(["--ignored"] if spec.ignored else []),
                 *support.SERIAL,
             ],
-            spec.aborts,
+            spec.modes[mode].exit_code,
+            spec.modes[mode].completes,
         )
         for owner, spec in descendants.OWNERS.items()
         for mode in spec.modes
     }
     assert roster == {
-        key: (value["role"], value["args"], value["aborts"])
+        key: (value["role"], value["args"], value["exit_code"], value["completes"])
         for key, value in support.CONTRACT.items()
     }
-    assert len(roster) == 7
+    assert len(roster) == 19
 
 
 @pytest.mark.parametrize(
     ("owners", "children"),
-    [(LIB_OWNERS, 2), ([support.EXIT], 2), (TRACE_OWNERS, 3)],
-    ids=["parallel-trap-cold", "isolated-exit-both-leases", "trace-image"],
+    [
+        (LIB_OWNERS, 2),
+        ([support.EXIT], 2),
+        (TRACE_OWNERS, 3),
+        ([support.TRANSACTION], 9),
+        ([support.LIFECYCLE], 3),
+    ],
+    ids=[
+        "parallel-trap-cold",
+        "isolated-exit-both-leases",
+        "trace-image",
+        "terminal-transaction",
+        "lifecycle-ffi",
+    ],
 )
 def test_completed_owners_with_bound_children_verify(tmp_path, owners, children):
     receipt, _ = lib_receipt(tmp_path, owners)
@@ -75,9 +88,15 @@ def test_unrelated_binary_is_not_engaged_even_without_evidence(tmp_path):
     assert verify(fake) is None
 
 
-@pytest.mark.parametrize("index", range(7))
+@pytest.mark.parametrize("index", range(19))
 def test_every_mandatory_child_is_derived_from_completed_owner_rows(tmp_path, index):
-    owners = [support.EXIT, *LIB_OWNERS, *TRACE_OWNERS]
+    owners = [
+        support.EXIT,
+        *LIB_OWNERS,
+        *TRACE_OWNERS,
+        support.TRANSACTION,
+        support.LIFECYCLE,
+    ]
     image = support.make_image(tmp_path)
     records = support.family_records(image, owners)
     removed = records.pop(index)
@@ -233,6 +252,14 @@ def test_foreign_or_mutated_child_record_is_rejected(tmp_path, change, message):
 def test_both_shutdown_modes_need_their_own_retained_streams(tmp_path):
     image = support.make_image(tmp_path)
     no_lease, lease = support.family_records(image, [support.EXIT])
+    # Supply both literal proof markers so this control reaches the independent
+    # shared-stream-owner check rather than failing mode binding first.
+    stdout_path = Path(no_lease["stdout"]["path"])
+    no_lease["stdout"] = support.publish(
+        stdout_path,
+        stdout_path.read_text()
+        + "shutdown callbacks verified before process exit: lease\n",
+    )
     lease["stdout"] = deepcopy(no_lease["stdout"])
     lease["stderr"] = deepcopy(no_lease["stderr"])
     receipt = support.binary_receipt(
@@ -444,3 +471,134 @@ def test_windows_verbatim_producer_paths_bind_the_same_image(tmp_path):
         record["stderr"]["path"] = "\\\\?\\" + record["stderr"]["path"]
     support.republish(receipt, "stderr", support.records_text(records))
     assert verify(receipt)["children"] == 2
+
+
+@pytest.mark.parametrize(
+    ("mode", "termination"),
+    [
+        ("init", {"kind": "exit", "code": 1}),
+        ("shutdown", {"kind": "exit", "code": 1}),
+        ("exit", {"kind": "exit", "code": 0}),
+        ("exit", {"kind": "exit", "code": True}),
+        ("exit", {"kind": "exit", "code": 1.0}),
+        ("exit", {"kind": "signal", "signal": 6}),
+        ("exit", {"kind": "windows-exception", "code": 0xC0000409}),
+    ],
+)
+def test_lifecycle_modes_require_exact_typed_termination(tmp_path, mode, termination):
+    receipt, records = lib_receipt(tmp_path, owners=[support.LIFECYCLE])
+    next(row for row in records if row["mode"] == mode)["termination"] = termination
+    support.republish(receipt, "stderr", support.records_text(records))
+    with pytest.raises(descendants.DescendantEvidenceError, match="termination"):
+        verify(receipt)
+
+
+@pytest.mark.parametrize("mode", ["init", "shutdown", "exit"])
+def test_lifecycle_modes_keep_their_actual_completion_contract(tmp_path, mode):
+    receipt, records = lib_receipt(tmp_path, owners=[support.LIFECYCLE])
+    row = next(record for record in records if record["mode"] == mode)
+    prefix = f"\nrunning 1 test\ntest {support.LIFECYCLE} ... "
+    text = prefix if mode != "exit" else support.transcript([support.LIFECYCLE])
+    row["stdout"] = support.publish(Path(row["stdout"]["path"]), text)
+    support.republish(receipt, "stderr", support.records_text(records))
+    with pytest.raises(
+        descendants.DescendantEvidenceError,
+        match="one-test completion|before terminating inside it",
+    ):
+        verify(receipt)
+
+
+@pytest.mark.parametrize(
+    ("owner", "left", "right", "stream"),
+    [
+        (support.TRANSACTION, "prior", "cleanup", "stdout"),
+        (support.TRANSACTION, "ordinary", "ordinary-return", "stdout"),
+        (support.LIFECYCLE, "init", "shutdown", "stderr"),
+        (support.EXIT, "no-lease", "lease", "stdout"),
+    ],
+)
+def test_same_child_modes_cannot_exchange_valid_retained_output(
+    tmp_path, owner, left, right, stream
+):
+    image = support.make_image(tmp_path)
+    records = support.family_records(image, [owner])
+    by_mode = {record["mode"]: record for record in records}
+    # Keep both genuine streams, their hashes, owners, complete roster, exact
+    # child argv and equal termination. Only the claimed mode is exchanged.
+    by_mode[left]["mode"], by_mode[right]["mode"] = right, left
+    receipt = support.binary_receipt(tmp_path / "receipts", image, [owner], records)
+    with pytest.raises(
+        descendants.DescendantEvidenceError, match=f"descendant {stream} lacks"
+    ):
+        verify(receipt)
+
+
+def test_mode_specific_proof_matches_each_literal_child_contract():
+    expected = {
+        (support.TRANSACTION, mode): (
+            (f"transaction outcome and custody verified: {mode}\n",),
+            (),
+        )
+        for mode in (
+            "prior",
+            "cleanup",
+            "both",
+            "cold-both",
+            "body-only",
+            "ordinary",
+            "ordinary-return",
+            "reentry",
+            "healthy",
+        )
+    }
+    expected.update(
+        {
+            (support.EXIT, "no-lease"): (
+                ("shutdown callbacks verified before process exit: no-lease\n",),
+                (),
+            ),
+            (support.EXIT, "lease"): (
+                ("shutdown callbacks verified before process exit: lease\n",),
+                (),
+            ),
+            (support.LIFECYCLE, "init"): (
+                (),
+                (
+                    "molt runtime lifecycle failed: injected unpublished runtime init panic\n",
+                ),
+            ),
+            (support.LIFECYCLE, "shutdown"): (
+                (),
+                (
+                    "molt runtime lifecycle failed: injected shutdown drain C extension cleanup panic\n",
+                ),
+            ),
+            (support.LIFECYCLE, "exit"): (
+                (),
+                (
+                    "molt runtime lifecycle failed: injected shutdown drain C extension cleanup panic\n",
+                ),
+            ),
+        }
+    )
+    for (owner, mode), contract in support.CONTRACT.items():
+        stdout, stderr = expected.get((owner, mode), ((), ()))
+        actual = descendants.OWNERS[owner].modes[mode]
+        assert (actual.stdout_markers, actual.stderr_markers) == (stdout, stderr)
+        assert all(marker in contract["stdout"] for marker in stdout)
+        assert all(marker in contract["stderr"] for marker in stderr)
+
+
+def test_transaction_mode_prefix_is_not_complete_mode_evidence(tmp_path):
+    image = support.make_image(tmp_path)
+    records = support.family_records(image, [support.TRANSACTION])
+    ordinary = next(row for row in records if row["mode"] == "ordinary")
+    ordinary["stdout"] = support.publish(
+        Path(ordinary["stdout"]["path"]),
+        support.CONTRACT[(support.TRANSACTION, "ordinary-return")]["stdout"],
+    )
+    receipt = support.binary_receipt(
+        tmp_path / "receipts", image, [support.TRANSACTION], records
+    )
+    with pytest.raises(descendants.DescendantEvidenceError, match="stdout lacks"):
+        verify(receipt)
