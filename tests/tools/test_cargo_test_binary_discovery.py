@@ -92,7 +92,12 @@ def test_cargo_artifact_inventory_retains_early_artifact_outside_tail(
             return 0
 
     monkeypatch.setattr(
-        truth, "_COMMANDS", SimpleNamespace(start_guarded=lambda *a, **k: Process())
+        truth,
+        "_COMMANDS",
+        SimpleNamespace(
+            start_guarded=lambda *a, **k: Process(),
+            wait_owned=lambda process, *, timeout: process.wait(),
+        ),
     )
     result = truth.run_streamed(
         ("cargo", "test"),
