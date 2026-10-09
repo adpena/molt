@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "7d06bbfcead09c8270e4283b938349ef3dab1a71187f08d994b1392eed51a678",
+  "authority_sha256": "4c5d3e53399547895fc8c0f6aed1ed1fe33d8a69763fa2fddfb6f5017262e164",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -3944,7 +3944,9 @@
         "tests/cli/test_cli_target_python.py",
         "tests/cli/test_cli_commands_authority.py",
         "tests/cli/test_app_export_contract.py",
-        "tests/cli/test_fail_closed_gate.py"
+        "tests/cli/test_fail_closed_gate.py",
+        "tests/cli/test_cli_progress.py",
+        "tests/cli/test_cli_wasm_codegen_layout.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -4083,7 +4085,9 @@
         "tests/cli/test_cli_target_python.py",
         "tests/cli/test_cli_commands_authority.py",
         "tests/cli/test_app_export_contract.py",
-        "tests/cli/test_fail_closed_gate.py"
+        "tests/cli/test_fail_closed_gate.py",
+        "tests/cli/test_cli_progress.py",
+        "tests/cli/test_cli_wasm_codegen_layout.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
@@ -4445,7 +4449,10 @@
         "tests/e2e/test_falcon_ocr_parity.py",
         "tests/e2e/test_falcon_ocr_micro.py",
         "tests/e2e/test_binary_size.py",
-        "tests/e2e/test_gpu_quality.py"
+        "tests/e2e/test_gpu_quality.py",
+        "tests/cloudflare/test_deploy_verify.py",
+        "tests/cloudflare/test_live_verifier.py",
+        "tests/determinism/test_entropy_audit.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -4807,7 +4814,10 @@
         "tests/e2e/test_falcon_ocr_parity.py",
         "tests/e2e/test_falcon_ocr_micro.py",
         "tests/e2e/test_binary_size.py",
-        "tests/e2e/test_gpu_quality.py"
+        "tests/e2e/test_gpu_quality.py",
+        "tests/cloudflare/test_deploy_verify.py",
+        "tests/cloudflare/test_live_verifier.py",
+        "tests/determinism/test_entropy_audit.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
