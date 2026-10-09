@@ -180,6 +180,13 @@ def test_both_cargo_callers_bind_stats_to_the_actual_build_environment(
         expected_environment = dict(environment)
         if outcome != "no_wrapper":
             expected_environment["CARGO_INCREMENTAL"] = "0"
+            # An sccache client may start the shared server, which keeps its
+            # temporary directory: the durable one beside the selected cache.
+            expected_environment.update(
+                dict.fromkeys(
+                    ("TMPDIR", "TMP", "TEMP"), str(tmp_path / "selected-cache-tmp")
+                )
+            )
     terminal = _completed(
         command,
         7 if outcome == "cargo_failure" else 0,
@@ -285,7 +292,16 @@ def test_retry_stats_preserves_wrapped_attempt_context_and_direct_retry_policy(
         tempfile_runner=build,
     )
     assert len(builds) == 2
-    assert builds[0] == (tmp_path, {**environment, "CARGO_INCREMENTAL": "0"})
+    assert builds[0] == (
+        tmp_path,
+        {
+            **environment,
+            "CARGO_INCREMENTAL": "0",
+            **dict.fromkeys(
+                ("TMPDIR", "TMP", "TEMP"), str(tmp_path / "selected-cache-tmp")
+            ),
+        },
+    )
     assert builds[1] == (
         tmp_path,
         {key: value for key, value in environment.items() if key != "RUSTC_WRAPPER"},

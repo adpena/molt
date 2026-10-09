@@ -309,11 +309,16 @@ def test_github_env_carries_the_guard_caps(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("physical_gb", "available_gb", "cpus"),
-    [(7.0, 3.22, 3), (16.0, 14.25, 4)],
+    ("physical_gb", "available_gb", "cpus", "workers_expected"),
+    # be612afe9 calibrated the queue suites' budgets on 2 macOS and 4 Linux workers.
+    [(7.0, 3.22, 3, 2), (16.0, 14.25, 4, 4)],
 )
 def test_github_env_sizes_pytest_auto_workers_from_the_plan(
-    tmp_path: Path, physical_gb: float, available_gb: float, cpus: int
+    tmp_path: Path,
+    physical_gb: float,
+    available_gb: float,
+    cpus: int,
+    workers_expected: int,
 ) -> None:
     # `pytest -n auto` reads this variable, so one plan sizes test workers.
     module = _load_ci_resource_env()
@@ -330,8 +335,14 @@ def test_github_env_sizes_pytest_auto_workers_from_the_plan(
         line.split("=", 1) for line in env_file.read_text(encoding="utf-8").splitlines()
     )
     workers = int(lines["PYTEST_XDIST_AUTO_NUM_WORKERS"])
-    assert workers == plan.resource_plan.diff_max_jobs
+    assert workers == plan.python_test_workers == workers_expected
     assert 1 <= workers <= cpus
+    # Differential jobs fit the tree budget; light pytest workers may exceed it.
+    resource = plan.resource_plan
+    assert (
+        resource.diff_max_jobs * resource.diff_scheduler_per_job_gb
+        <= resource.diff_tree_gb
+    )
 
 
 def test_darwin_breakdown_names_every_page_class_and_the_counted_ones() -> None:

@@ -148,9 +148,19 @@ def plan_ci_resources(
         resource_plan=pressure_plan,
         guard_max_process_rss_gb=process_cap,
         guard_max_total_rss_gb=total_cap,
-        # Python test processes share the differential scheduler's memory and
-        # CPU sizing; `pytest -n auto` reads it from the exported variable.
-        python_test_workers=pressure_plan.diff_max_jobs,
+        # `pytest -n auto` reads this count from the exported variable. Workers
+        # use the differential scheduler's per-job estimate within the global
+        # budget, the count the queue suites' budgets were calibrated against
+        # (be612afe9: 2 on the 7 GB macOS runner, 4 on Linux). Differential
+        # jobs, which build and run compiled programs, are bounded by the tree
+        # budget instead (diff_max_jobs, HF-105).
+        python_test_workers=max(
+            1,
+            int(
+                pressure_plan.diff_global_gb
+                // max(0.001, pressure_plan.diff_scheduler_per_job_gb)
+            ),
+        ),
     )
 
 

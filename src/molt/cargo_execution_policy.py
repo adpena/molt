@@ -15,6 +15,8 @@ from .source_root import compiler_source_root
 
 CI_CARGO_POLICY_SCHEMA = "molt.ci-resource-policy.v2"
 SCCACHE_INCREMENTAL_POLICY = "sccache-disables-incremental"
+SCCACHE_SERVER_TEMP_POLICY = "sccache-server-temp-dir"
+TEMPORARY_DIRECTORY_ENV_NAMES = ("TMPDIR", "TMP", "TEMP")
 DIRECT_RUSTC_INCREMENTAL_POLICY = "direct-rustc-enables-incremental"
 CARGO_WRAPPER_ENV_NAMES = (
     "RUSTC_WRAPPER",
@@ -69,6 +71,61 @@ def sccache_compiler_wrappers(
     )
 
 
+def sccache_server_temp_dir(environ: Mapping[str, str]) -> Path | None:
+    """Return the temporary directory of the sccache server for ``SCCACHE_DIR``.
+
+    The pinned sccache (0.18.0) has no temporary-directory setting. Its server
+    takes ``std::env::temp_dir()`` (``TMPDIR``; ``TMP``/``TEMP`` on Windows)
+    from whichever client process starts it, and it outlives that client. It
+    writes each rustc dep-info probe below that directory. A client whose
+    ``TMPDIR`` is one run's scratch therefore leaves a shared server whose
+    temporary directory disappears with the scratch, and every later compile
+    on the host fails with "Failed to create temp dir". All clients of one
+    cache use this one durable directory beside the cache instead, so the
+    server gets it whichever client starts it. It is not inside the cache:
+    sccache's disk cache counts and evicts every file under ``SCCACHE_DIR``.
+
+    Molt sets ``SCCACHE_DIR`` wherever it selects sccache; without it the
+    cache, and its server, are not Molt's to configure.
+    """
+
+    raw = environ.get("SCCACHE_DIR", "").strip()
+    if not raw:
+        return None
+    cache = Path(os.path.abspath(Path(raw).expanduser()))
+    if not cache.name:
+        raise ValueError(f"SCCACHE_DIR must name a directory below a root: {raw!r}")
+    return cache.with_name(f"{cache.name}-tmp")
+
+
+def sccache_client_environment(
+    environ: Mapping[str, str],
+) -> tuple[dict[str, str], bool]:
+    """Return ``environ`` with the sccache server temp dir in every temp variable.
+
+    Every process that may start the shared server (a Cargo child whose
+    compiler wrapper is sccache, or an sccache probe) runs with this
+    environment. The second value says whether the directory was pinned.
+    """
+
+    child = dict(environ)
+    temporary = sccache_server_temp_dir(child)
+    if temporary is None:
+        return child, False
+    for name in TEMPORARY_DIRECTORY_ENV_NAMES:
+        child[name] = str(temporary)
+    return child, True
+
+
+def sccache_client_launch_environment(environ: Mapping[str, str]) -> dict[str, str]:
+    """Pin the server temp dir and create it, just before an sccache client starts."""
+
+    child, pinned = sccache_client_environment(environ)
+    if pinned:
+        Path(child["TMPDIR"]).mkdir(parents=True, exist_ok=True)
+    return child
+
+
 def normalize_cargo_environment(
     environ: Mapping[str, str] | None,
     *,
@@ -80,12 +137,18 @@ def normalize_cargo_environment(
     ``build.*`` configuration environment variables.  Every subprocess boundary
     must inspect the complete family: checking only ``RUSTC_WRAPPER`` leaves
     probes and workspace wrappers able to inherit the invalid
-    sccache-plus-incremental combination.
+    sccache-plus-incremental combination, or a caller's scratch ``TMPDIR`` that
+    a server it starts would keep (see ``sccache_server_temp_dir``). This
+    function only computes the environment; ``cargo_subprocess_environment``
+    also creates the server temp dir at the launch boundary.
     """
 
     child = dict(os.environ) if environ is None else dict(environ)
     if sccache_compiler_wrappers(child):
         child["CARGO_INCREMENTAL"] = "0"
+        child, pinned = sccache_client_environment(child)
+        if pinned:
+            return child, (SCCACHE_INCREMENTAL_POLICY, SCCACHE_SERVER_TEMP_POLICY)
         return child, (SCCACHE_INCREMENTAL_POLICY,)
     if default_incremental is not None and "CARGO_INCREMENTAL" not in child:
         child["CARGO_INCREMENTAL"] = default_incremental
@@ -125,10 +188,13 @@ def cargo_subprocess_environment(
 ) -> tuple[Mapping[str, str] | None, tuple[str, ...]]:
     if not is_cargo_command(command):
         return environ, ()
-    return normalize_cargo_environment(
+    child, applied = normalize_cargo_environment(
         environ,
         default_incremental=default_incremental,
     )
+    if SCCACHE_SERVER_TEMP_POLICY in applied:
+        child = sccache_client_launch_environment(child)
+    return child, applied
 
 
 def proof_command_timeout_seconds(

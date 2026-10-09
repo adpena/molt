@@ -10,7 +10,12 @@ regresses, the cache silently turned off again or Molt installed a tool unasked.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import subprocess
+
+import pytest
+
 from tests.process_guard_common import install_module_os_view
 
 import molt.dx as dx
@@ -148,12 +153,135 @@ def test_maybe_enable_sccache_forces_incremental_off(monkeypatch):
     import molt.cli.cargo_execution as ce
 
     monkeypatch.setattr(ce, "pinned_sccache", lambda env: "/opt/sccache")
-    monkeypatch.setattr(ce, "_sccache_server_responsive", lambda p: True)
+    monkeypatch.setattr(ce, "_sccache_server_responsive", lambda _sccache, _env: True)
     monkeypatch.setattr(ce, "_SCCACHE_DIAG_EMITTED", True, raising=False)
     env = {"MOLT_USE_SCCACHE": "1"}  # forced on
     ce._maybe_enable_sccache(env)
     assert env.get("RUSTC_WRAPPER", "").endswith("sccache")
     assert env["CARGO_INCREMENTAL"] == "0"
+
+
+# HF-105: the shared sccache server takes its temporary directory from the
+# environment of the client that starts it and outlives that client. A build
+# whose TMPDIR is one run's scratch (tests/molt_diff.py, guard scratch) must
+# still start it with the durable directory beside the cache.
+
+
+def _scratch_cargo_env(tmp_path: Path, **extra: str) -> dict[str, str]:
+    scratch = tmp_path / "artifacts" / "tmp" / "molt_diff_run" / "tmp"
+    scratch.mkdir(parents=True)
+    return {
+        "SCCACHE_DIR": str(tmp_path / "artifacts" / ".sccache"),
+        "TMPDIR": str(scratch),
+        "TMP": str(scratch),
+        "TEMP": str(scratch),
+        **extra,
+    }
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell fakes stand in for tools")
+def test_sccache_client_under_cargo_gets_the_durable_server_temp_dir(tmp_path):
+    from molt import process_guard
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    record = tmp_path / "client-temp.txt"
+    # Cargo runs the compiler wrapper with Cargo's own environment; an sccache
+    # client with no server running starts one that inherits that environment.
+    for name, body in (
+        ("cargo", 'exec "$RUSTC_WRAPPER" rustc -vV'),
+        (
+            "sccache",
+            '[ -d "$TMPDIR" ] || exit 3\n'
+            'printf "%s\\n%s\\n%s\\n" "$TMPDIR" "$TMP" "$TEMP" > "$CLIENT_RECORD"',
+        ),
+    ):
+        script = bin_dir / name
+        script.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+        script.chmod(0o755)
+    env = _scratch_cargo_env(
+        tmp_path,
+        PATH=f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin",
+        RUSTC_WRAPPER=str(bin_dir / "sccache"),
+        CLIENT_RECORD=str(record),
+    )
+
+    result = process_guard.run_completed_command(
+        [str(bin_dir / "cargo"), "build"],
+        env=env,
+        memory_guard_prefix=None,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    server_temp = tmp_path / "artifacts" / ".sccache-tmp"
+    assert record.read_text(encoding="utf-8").splitlines() == [str(server_temp)] * 3
+    assert server_temp.is_dir()
+
+
+def test_cli_sccache_probe_starts_a_server_with_the_durable_temp_dir(
+    tmp_path, monkeypatch
+):
+    import molt.cli.cargo_execution as ce
+
+    probes: list[dict[str, str]] = []
+
+    def run(command, **kwargs):
+        assert command == ["/opt/sccache", "--show-stats"]
+        probes.append(dict(kwargs["env"]))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(ce, "pinned_sccache", lambda env: "/opt/sccache")
+    monkeypatch.setattr(ce, "_run_completed_command", run)
+    monkeypatch.setattr(ce, "_SCCACHE_DIAG_EMITTED", True, raising=False)
+    env = _scratch_cargo_env(
+        tmp_path,
+        MOLT_USE_SCCACHE="1",
+        MOLT_EXT_ROOT=str(tmp_path / "artifacts"),
+    )
+    del env["SCCACHE_DIR"]  # the CLI selects the cache beside its artifacts
+
+    ce._maybe_enable_sccache(env)
+
+    server_temp = str((tmp_path / "artifacts").resolve() / ".sccache-tmp")
+    assert [
+        {name: probe[name] for name in ("TMPDIR", "TMP", "TEMP")} for probe in probes
+    ] == [{"TMPDIR": server_temp, "TMP": server_temp, "TEMP": server_temp}]
+    assert Path(server_temp).is_dir()
+    assert env["RUSTC_WRAPPER"] == "/opt/sccache"
+    assert env["TMPDIR"] == server_temp
+
+
+def test_cargo_environment_pins_only_a_configured_sccache_cache(tmp_path):
+    from molt.cargo_execution_policy import (
+        SCCACHE_INCREMENTAL_POLICY,
+        SCCACHE_SERVER_TEMP_POLICY,
+        normalize_cargo_environment,
+    )
+
+    scratch_env = _scratch_cargo_env(tmp_path, RUSTC_WRAPPER="/opt/sccache")
+    scratch = scratch_env["TMPDIR"]
+    server_temp = tmp_path / "artifacts" / ".sccache-tmp"
+
+    pinned, applied = normalize_cargo_environment(scratch_env)
+    assert applied == (SCCACHE_INCREMENTAL_POLICY, SCCACHE_SERVER_TEMP_POLICY)
+    assert {pinned[name] for name in ("TMPDIR", "TMP", "TEMP")} == {str(server_temp)}
+    assert scratch_env["TMPDIR"] == scratch  # the caller's mapping is unchanged
+    assert not server_temp.exists()  # computing an environment creates nothing
+
+    unconfigured = {**scratch_env}
+    del unconfigured["SCCACHE_DIR"]
+    kept, applied = normalize_cargo_environment(unconfigured)
+    assert applied == (SCCACHE_INCREMENTAL_POLICY,)
+    assert kept["TMPDIR"] == scratch
+
+    direct = {**scratch_env}
+    del direct["RUSTC_WRAPPER"]
+    kept, applied = normalize_cargo_environment(direct)
+    assert applied == ()
+    assert kept["TMPDIR"] == scratch
 
 
 def test_lld_link_enabled_on_windows_when_available(monkeypatch):
