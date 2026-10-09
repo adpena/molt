@@ -25,7 +25,7 @@ def _load_generator():
 
 def test_generated_stringprep_tables_are_in_sync() -> None:
     gen = _load_generator()
-    rendered = gen._rustfmt_text(gen.render())
+    rendered = gen.generated_outputs()[OUT]
     checked_in = OUT.read_text(encoding="utf-8")
 
     assert checked_in == rendered, (

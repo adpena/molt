@@ -4,10 +4,9 @@
 from __future__ import annotations
 
 import stringprep
-import subprocess
 from pathlib import Path
 
-from generator_io import generator_main
+from generator_io import generator_main, rustfmt_source
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "runtime/molt-runtime-stringprep/src/tables.rs"
@@ -36,38 +35,33 @@ MAP_FUNCS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _ranges_for(func_name: str) -> list[tuple[int, int]]:
+_LAST_CODE_POINT = 0x10FFFF
+
+
+def _ranges_for(func_name: str, chars: list[str]) -> list[tuple[int, int]]:
+    """Maximal runs of consecutive code points the table function accepts."""
     func = getattr(stringprep, func_name)
     ranges: list[tuple[int, int]] = []
     start: int | None = None
-    prev: int | None = None
-    for cp in range(0x110000):
-        matched = bool(func(chr(cp)))
+    for cp, matched in enumerate(map(func, chars)):
         if matched:
             if start is None:
-                start = prev = cp
-            elif prev is not None and cp == prev + 1:
-                prev = cp
-            else:
-                ranges.append((start, prev if prev is not None else start))
-                start = prev = cp
+                start = cp
         elif start is not None:
-            ranges.append((start, prev if prev is not None else start))
-            start = prev = None
+            ranges.append((start, cp - 1))
+            start = None
     if start is not None:
-        ranges.append((start, prev if prev is not None else start))
+        ranges.append((start, _LAST_CODE_POINT))
     return ranges
 
 
-def _mappings_for(func_name: str) -> list[tuple[int, str]]:
+def _mappings_for(func_name: str, chars: list[str]) -> list[tuple[int, str]]:
     func = getattr(stringprep, func_name)
-    mappings: list[tuple[int, str]] = []
-    for cp in range(0x110000):
-        ch = chr(cp)
-        mapped = func(ch)
-        if mapped != ch:
-            mappings.append((cp, mapped))
-    return mappings
+    return [
+        (cp, mapped)
+        for cp, (ch, mapped) in enumerate(zip(chars, map(func, chars)))
+        if mapped != ch
+    ]
 
 
 def _rust_str_literal(value: str) -> str:
@@ -115,41 +109,17 @@ def render() -> str:
         "// StringPrep. The generated data is runtime-native and has no host-Python\n",
         "// dependency in compiled binaries.\n\n",
     ]
+    chars = list(map(chr, range(_LAST_CODE_POINT + 1)))
     for rust_name, func_name in TABLE_FUNCS:
-        lines.extend(_render_ranges(rust_name, _ranges_for(func_name)))
+        lines.extend(_render_ranges(rust_name, _ranges_for(func_name, chars)))
     for rust_name, func_name in MAP_FUNCS:
-        lines.extend(_render_mappings(rust_name, _mappings_for(func_name)))
+        lines.extend(_render_mappings(rust_name, _mappings_for(func_name, chars)))
     return "".join(lines)
-
-
-def _rustfmt_text(text: str) -> str:
-    tmp_dir = ROOT / "tmp"
-    tmp_dir.mkdir(exist_ok=True)
-    tmp = tmp_dir / "stringprep_tables.generated.rs"
-    tmp.write_text(text, encoding="utf-8")
-    try:
-        result = subprocess.run(
-            ["rustfmt", str(tmp)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=60.0,
-            encoding="utf-8",
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                "rustfmt failed while formatting generated stringprep tables:\n"
-                f"stdout:\n{result.stdout}\n"
-                f"stderr:\n{result.stderr}"
-            )
-        return tmp.read_text(encoding="utf-8")
-    finally:
-        tmp.unlink(missing_ok=True)
 
 
 def generated_outputs() -> dict[Path, str]:
     """Each output path mapped to its exact generated text."""
-    return {OUT: _rustfmt_text(render())}
+    return {OUT: rustfmt_source(render(), label="stringprep tables")}
 
 
 def main(argv: list[str] | None = None) -> int:
