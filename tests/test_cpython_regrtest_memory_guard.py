@@ -131,6 +131,7 @@ def test_run_command_uses_memory_guard_and_preserves_log(monkeypatch) -> None:
     assert "stderr" in text
 
 
+@pytest.mark.usefixtures("no_hosted_checkout_custody")
 def test_build_env_canonicalizes_repo_local_artifact_roots(
     tmp_path: Path,
     monkeypatch,

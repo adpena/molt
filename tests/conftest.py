@@ -34,6 +34,44 @@ def _restore_process_environment() -> Iterator[None]:
         os.environ.update(snapshot)
 
 
+# Process-global names the intrinsic loader (src/_intrinsics.py) reads.
+_INTRINSIC_BUILTINS = (
+    "_molt_intrinsics",
+    "_molt_intrinsic_lookup",
+    "_molt_intrinsics_strict",
+    "_molt_runtime",
+)
+
+
+@pytest.fixture(autouse=True)
+def _restore_intrinsic_registry() -> Iterator[None]:
+    """Every test ends with the intrinsic registry it started with.
+
+    Stub-surface tests install fake intrinsic tables on ``builtins`` to run a
+    stdlib module on the host interpreter, and some add entries in place. A
+    leaked table answers ``molt_capabilities_has`` and friends for every later
+    test on the same worker, so the restore covers both the binding and the
+    dictionary contents.
+    """
+    import builtins
+
+    missing = object()
+    saved = {name: getattr(builtins, name, missing) for name in _INTRINSIC_BUILTINS}
+    contents = {
+        name: dict(value) for name, value in saved.items() if isinstance(value, dict)
+    }
+    yield
+    for name, value in saved.items():
+        if value is missing:
+            if hasattr(builtins, name):
+                delattr(builtins, name)
+            continue
+        setattr(builtins, name, value)
+        if name in contents and value != contents[name]:
+            value.clear()
+            value.update(contents[name])
+
+
 # Guard caps a CI job plan or an outer guard exports to its children.
 AMBIENT_GUARD_CAP_KEYS = (
     "MOLT_MAX_PROCESS_RSS_GB",
