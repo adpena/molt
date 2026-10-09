@@ -501,6 +501,33 @@ def _rust_item_projection(text: str) -> _RustItemProjection:
     return _memoized("items", None, text, lambda: _compute_rust_item_projection(text))
 
 
+def prewarm_rust_item_projections(texts: Iterable[str], *, workers: int) -> None:
+    """Compute the active scan's missing item projections in parallel.
+
+    Each projection is a pure function of its text, so workers compute them in
+    any order and this thread stores them in the scan memo, where every later
+    consumer reads them. With one worker, consumers compute them lazily.
+    """
+    memo = getattr(_SCAN_STATE, "memo", None)
+    if memo is None:
+        raise RuntimeError("prewarming item projections needs an active scan_memo()")
+    missing = [
+        text for text in dict.fromkeys(texts) if ("items", None, text) not in memo
+    ]
+    if workers <= 1 or not missing:
+        return
+    from concurrent.futures import ProcessPoolExecutor
+
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        projections = pool.map(
+            _compute_rust_item_projection,
+            missing,
+            chunksize=max(1, len(missing) // (workers * 4)),
+        )
+        for text, projection in zip(missing, projections, strict=True):
+            memo[("items", None, text)] = projection
+
+
 def _compute_rust_item_projection(text: str) -> _RustItemProjection:
     spans = tuple(_non_code_spans(text))
     code = (

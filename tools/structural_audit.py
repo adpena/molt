@@ -64,6 +64,7 @@ from molt.rust_source_scan import (  # noqa: E402
     mask_rust_test_items,
     rust_test_only_source_files,
     project_rust_source,
+    prewarm_rust_item_projections,
     scan_memo,
 )
 from tools import release_criterion_receipt as release_receipt  # noqa: E402
@@ -2868,9 +2869,45 @@ PROBES = (
 )
 
 
+# A worker costs about 0.2 s to start; a file costs a few ms to project. At 128
+# files a worker, start-up stays under a third of its work.
+_PROJECTION_FILES_PER_WORKER = 128
+# One worker holds a slice of the Rust sources and their projections.
+_PROJECTION_BYTES_PER_WORKER = 256 * 1024 * 1024
+_PROJECTION_MEMORY_HEADROOM_BYTES = 1024 * 1024 * 1024
+
+
+def _prewarm_rust_projections(root: Path) -> None:
+    """Project every Rust source in parallel before the probes read them.
+
+    The probes project every Rust file under the source roots (test ownership
+    ignores a --path selection), so the whole set is warmed once.
+    """
+    from molt.dx import _memory_bounded_worker_count
+
+    paths = [
+        path
+        for sub in _SOURCE_ROOTS
+        if (root / sub).is_dir()
+        for path in _iter_pruned_files(root / sub, root, (".rs",))
+    ]
+    workers = min(
+        len(paths) // _PROJECTION_FILES_PER_WORKER,
+        _memory_bounded_worker_count(
+            bytes_per_worker=_PROJECTION_BYTES_PER_WORKER,
+            headroom_bytes=_PROJECTION_MEMORY_HEADROOM_BYTES,
+        ),
+    )
+    if workers > 1:
+        prewarm_rust_item_projections(
+            (_source_text(path) for path in paths), workers=workers
+        )
+
+
 def run_all(root: Path, path_scope: frozenset[str] | None = None) -> list[Finding]:
     findings: list[Finding] = []
     with audit_operation(root, path_scope):
+        _prewarm_rust_projections(root)
         for probe in PROBES:
             if path_scope is not None and probe is probe_registry_reconciliation:
                 continue
