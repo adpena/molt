@@ -317,12 +317,13 @@ def _prepopulate_combined_runtime_wasm_target(
             timeout_error=exc,
         )
     if build.returncode != 0:
+        # A guard timeout raised TimeoutExpired above; Cargo's own exit status
+        # is never read as one.
         return ctx.fail(
             "combined-cargo",
             "Runtime wasm combined build failed",
             build=build,
             command=tuple(cmd),
-            timed_out=build.returncode == 124,
         )
     _record_runtime_wasm_build_phase(
         "cargo_compile",

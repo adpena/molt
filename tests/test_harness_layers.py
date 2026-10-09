@@ -146,6 +146,63 @@ def test_run_cmd_uses_harness_memory_guard(
     )
 
 
+@pytest.mark.parametrize("child_returncode", [0, 1])
+def test_run_cmd_raises_guard_failure_instead_of_a_layer_status(
+    monkeypatch, tmp_path: Path, generous_host_memory, child_returncode: int
+):
+    """The guard's 125 is not the layer command's result (HF-29)."""
+    import molt.harness_layers as harness_layers
+    from molt.process_guard import GuardInfrastructureError
+    from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+
+    def fake_guarded_completed_process(args, **_kwargs):
+        return harness_layers.harness_memory_guard.GuardedCompletedProcess(
+            args,
+            125 if child_returncode == 0 else child_returncode,
+            "",
+            "memory_guard: temporary artifact custody incomplete\n",
+            elapsed_s=0.01,
+            child_returncode=child_returncode,
+            infrastructure_failure=GuardInfrastructureFailure(
+                phase="temporary_artifact_custody", details=("scratch busy",)
+            ),
+        )
+
+    monkeypatch.setattr(
+        harness_layers.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    with pytest.raises(GuardInfrastructureError) as raised:
+        harness_layers._run_cmd(["cargo", "check"], cwd=tmp_path, timeout_s=12)
+
+    assert raised.value.child_returncode == child_returncode
+    assert "scratch busy" in str(raised.value)
+
+
+def test_run_cmd_reports_a_guard_timeout_as_its_timeout_result(
+    monkeypatch, tmp_path: Path, generous_host_memory
+):
+    import molt.harness_layers as harness_layers
+
+    def fake_guarded_completed_process(args, **_kwargs):
+        return harness_layers.harness_memory_guard.GuardedCompletedProcess(
+            args, 124, "", "", elapsed_s=12.0, timed_out=True
+        )
+
+    monkeypatch.setattr(
+        harness_layers.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    proc = harness_layers._run_cmd(["cargo", "check"], cwd=tmp_path, timeout_s=12)
+
+    assert proc.returncode == 124
+    assert proc.stderr == "command timed out after 12s"
+
+
 def test_harness_repo_sentinel_uses_canonical_artifact_root(
     monkeypatch, tmp_path: Path
 ):

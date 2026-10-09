@@ -72,24 +72,23 @@ def test_cargo_lock_check_uses_build_memory_guard(
     assert captured["kwargs"]["cwd"] == tmp_path
 
 
-def test_native_link_command_uses_build_memory_guard(monkeypatch) -> None:
+@pytest.mark.parametrize("linker_returncode", [0, 124])
+def test_native_link_command_uses_build_memory_guard(
+    monkeypatch, linker_returncode: int
+) -> None:
+    """The linker's own status is its result; only the guard raises a timeout.
+
+    A linker that exits 124 failed to link. The old caller compared returncode
+    with the guard's timeout code and reported a timeout instead.
+    """
     captured: dict[str, Any] = {}
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured["cmd"] = cmd
         captured["kwargs"] = kwargs
-        return subprocess.CompletedProcess(cmd, 0, "out", "err")
-
-    class FakeMemoryGuard:
-        TIMEOUT_RETURN_CODE = 124
-
-    class FakeHarness:
-        memory_guard = FakeMemoryGuard()
+        return subprocess.CompletedProcess(cmd, linker_returncode, "out", "err")
 
     monkeypatch.setattr(cli_link_pipeline, "_run_completed_command", fake_run)
-    monkeypatch.setattr(
-        cli_link_pipeline, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
-    )
 
     result = cli_link_pipeline._run_native_link_command(
         link_cmd=["cc", "main.o"],
@@ -97,7 +96,7 @@ def test_native_link_command_uses_build_memory_guard(monkeypatch) -> None:
         link_timeout=12.0,
     )
 
-    assert result.returncode == 0
+    assert result.returncode == linker_returncode
     assert captured["cmd"] == ["cc", "main.o"]
     assert captured["kwargs"]["memory_guard_prefix"] == "MOLT_BUILD"
     assert captured["kwargs"]["timeout"] == 12.0

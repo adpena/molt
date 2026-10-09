@@ -213,14 +213,15 @@ def _run_debug_eval_command(
         return evaluation
     stdout = proc.stdout or ""
     stderr = proc.stderr or ""
-    timed_out = proc.returncode == 124 and "memory_guard: timeout" in stderr
+    # A guard timeout raised TimeoutExpired above; this is the evaluator's own
+    # exit status, even when it is 124.
     evaluation.update(
         {
             "classification": "nonzero_exit" if proc.returncode else "zero_exit",
             "stdout": stdout,
             "stderr": stderr,
             "returncode": proc.returncode,
-            "timed_out": timed_out,
+            "timed_out": False,
         }
     )
     parsed_stdout: dict[str, Any] | None = None

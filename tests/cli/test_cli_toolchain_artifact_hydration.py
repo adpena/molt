@@ -679,7 +679,7 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
         assert evidence["stdout"]
         assert (
             evidence["details"]["cargo_execution"]["schema"]
-            == "molt.cargo-execution.v1"
+            == "molt.cargo-execution.v2"
         )
         assert evidence["returncode"] == (7 if failure == "build_failure" else 0)
     output = capsys.readouterr()

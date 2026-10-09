@@ -124,3 +124,48 @@ def test_harness_module_importable():
     assert callable(run_harness)
     assert callable(main)
     assert callable(_run_profile)
+
+
+def test_run_profile_records_a_guard_failure_as_the_layer_diagnosis():
+    """A guard failure fails the layer with the guard's message (HF-29)."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from molt.harness import _run_profile
+    from molt.harness_layers import HarnessConfig, LayerDef
+    from molt.process_guard import GuardInfrastructureError
+    from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+
+    error = GuardInfrastructureError(
+        ["cargo", "check"],
+        SimpleNamespace(
+            child_returncode=0,
+            infrastructure_failure=GuardInfrastructureFailure(
+                phase="temporary_artifact_custody", details=("scratch busy",)
+            ),
+        ),
+    )
+    calls = []
+
+    def guarded_layer(config):
+        calls.append("guarded")
+        raise error
+
+    def later_layer(config):
+        calls.append("later")
+        return LayerResult(name="later", status=LayerStatus.PASS, duration_s=0.1)
+
+    report = _run_profile(
+        [
+            LayerDef("guarded", "quick", guarded_layer),
+            LayerDef("later", "quick", later_layer),
+        ],
+        HarnessConfig(project_root=Path("."), fail_fast=True),
+    )
+
+    assert calls == ["guarded"]
+    assert report.results[0].name == "guarded"
+    assert report.results[0].status == LayerStatus.FAIL
+    assert report.results[0].details == str(error)
+    assert "the child exited with 0" in report.results[0].details
+    assert report.results[1].status == LayerStatus.SKIP
