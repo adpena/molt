@@ -467,8 +467,8 @@ impl Drop for RuntimeTestTransaction {
             // runtime until process exit, as its production lifecycle requires.
             // This is bounded by this transaction; no new owner registry exists.
             std::mem::forget(self.pending_exceptions.take());
-            drop(self.interpreter_sys.take());
-            drop(self.gc.take());
+            self.interpreter_sys = None;
+            self.gc = None;
             self.pending_calls.reset();
             assert!(
                 std::thread::panicking(),

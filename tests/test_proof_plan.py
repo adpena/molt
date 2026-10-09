@@ -3534,6 +3534,10 @@ def test_pull_requests_skip_main_only_commands_but_keep_their_dependencies() -> 
         command = next(c for c in PLAN.commands if c.id == command_id)
         assert command.data["cell"] == cell
         assert selector in command.data["argv"]
+        assert (
+            "tests/tools/test_proof_queue.py::"
+            "test_python_selection_location_join_preserves_coordinate_and_content"
+        ) in command.data["argv"]
         assert command.data["timeout_seconds"] == 120
         assert {"python", "uv", "rustc", "cargo"} <= set(command.toolchains)
         main_command = next(

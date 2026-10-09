@@ -2773,6 +2773,128 @@ def guarded_execution_authorities(
     )
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param(
+            "selected-drive-case",
+            marks=pytest.mark.skipif(
+                os.name != "nt", reason="Windows drive coordinate"
+            ),
+        ),
+        "executable-hardlink",
+        "base_executable-hardlink",
+        "executable-copy",
+        "base_executable-copy",
+        "executable-hash",
+        "base_executable-hash",
+    ],
+)
+def test_python_selection_location_join_preserves_coordinate_and_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    guarded_execution_authorities: GuardedExecutionAuthorities,
+    mutation: str,
+) -> None:
+    authorities = guarded_execution_authorities
+    captured = authorities.current()
+    selection = copy.deepcopy(dict(authorities.selection))
+    location = selection["location"]
+    assert isinstance(location, dict)
+    if mutation == "selected-drive-case":
+        selected = Path(str(selection["executable"]))
+        if len(selected.drive) != 2 or selected.drive[1] != ":":
+            pytest.skip("selected interpreter has no DOS drive coordinate")
+        # An actual Windows coordinate, not an emulated platform or a mocked
+        # normalizer: drive spelling changes no selected directory entry.
+        reported = selected.drive.upper() + str(selected)[len(selected.drive) :]
+        assert reported != str(selected)
+        assert Path(reported).samefile(selected)
+        location["selected_executable"] = reported
+        location.pop("identity_sha256")
+        location["identity_sha256"] = canonical_json_sha256(location)
+    else:
+        field, change = mutation.rsplit("-", 1)
+        original = Path(str(selection[field]))
+        if change == "hash":
+            digest = str(selection[f"{field}_sha256"])
+            selection[f"{field}_sha256"] = ("0" if digest[0] != "0" else "1") + digest[
+                1:
+            ]
+        else:
+            replacement = tmp_path / f"other-{field}{original.suffix}"
+            if change == "hardlink":
+                try:
+                    replacement.hardlink_to(original.resolve(strict=True))
+                except OSError as exc:
+                    pytest.skip(f"same-file alias fixture unavailable: {exc}")
+                assert replacement.samefile(original)
+            else:
+                shutil.copyfile(original, replacement)
+                assert not replacement.samefile(original)
+            assert str(replacement) != str(original)
+            selection[field] = str(replacement)
+            with replacement.open("rb") as stream:
+                selection[f"{field}_sha256"] = hashlib.file_digest(
+                    stream, "sha256"
+                ).hexdigest()
+            assert (
+                selection[f"{field}_sha256"] == authorities.selection[f"{field}_sha256"]
+            )
+
+    # Reuse the module's real, rehashed environment capture. Only transport is
+    # replayed; the location, capture and launcher receivers remain production
+    # code and validate the complete receipt and current executable bytes.
+    payload = {
+        "schema": python_environment_identity.PYTHON_CAPTURE_SCHEMA,
+        "identity": captured["environment"],
+        "file_custody": captured["file_custody"],
+        "node_custody": captured["node_custody"],
+        "inventory_profile": captured["inventory_profile"],
+    }
+    probes = []
+
+    def replay(command, **_kwargs):
+        probes.append(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(command_identity, "_run_captured", replay)
+    location_before = copy.deepcopy(location)
+
+    def receive():
+        return command_identity._python_identity(
+            authorities.envelope,
+            authorities.command,
+            cwd=state.ROOT,
+            env=os.environ,
+            source_root=Path(str(captured["source_root"])),
+            selection=selection,
+            hash_workers=proof_plan.ProofPlan.load().inventory_hash_workers,
+        )
+
+    if mutation == "selected-drive-case":
+        identity = receive()
+        assert identity is not None
+        assert identity["location"] == location_before
+        selected_images = [
+            image
+            for image in identity["process_images"]
+            if image["role"] == "selected-interpreter"
+        ]
+        assert len(selected_images) == 1
+        assert selected_images[0]["path"] == authorities.selection["executable"]
+        assert (
+            selected_images[0]["sha256"] == authorities.selection["executable_sha256"]
+        )
+    else:
+        with pytest.raises(
+            ValueError, match="selection differs from its location receipt"
+        ):
+            receive()
+    assert len(probes) == 1
+    assert location == location_before
+
+
 def _rebind_cached_python_identity(
     captured: dict[str, object], *, source_root: Path, selection: Mapping[str, object]
 ) -> dict[str, object]:

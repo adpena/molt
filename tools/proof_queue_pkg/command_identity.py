@@ -699,8 +699,21 @@ def _python_identity(
     assert isinstance(base_executable_raw, str)
     if (
         prefix_raw != location.get("prefix")
-        or executable_raw != location.get("selected_executable")
-        or base_executable_raw != location.get("base_executable")
+        # The locator preserves the reported launcher coordinate in its hashed
+        # receipt. Selection uses the proof image owner's lexical coordinate;
+        # compare that same projection without resolving selected role aliases.
+        or executable_raw
+        != str(
+            process_image_capture.custody_path(
+                Path(str(location["selected_executable"]))
+            )
+        )
+        or base_executable_raw
+        != str(
+            process_image_capture.custody_path(
+                Path(str(location["base_executable"]))
+            ).resolve(strict=True)
+        )
         or selection.get("executable_sha256") != _hash_file(Path(executable_raw))
         or selection.get("base_executable_sha256")
         != _hash_file(Path(base_executable_raw))

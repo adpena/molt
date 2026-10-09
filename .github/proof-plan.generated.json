@@ -338,7 +338,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "e1700c74e643a4525e9bc3fc898110f7bfe312f9f532ac959a6bc15d88cd18ba",
+  "authority_sha256": "0495e9b99bf6dde073c12662e8b1ee748f8b1975cf04b27e0d7bfa4b6cbf70b6",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1515,7 +1515,8 @@
         "-m",
         "pytest",
         "-v",
-        "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"
+        "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
+        "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-queue-portability",
@@ -1547,7 +1548,8 @@
         "-m",
         "pytest",
         "-v",
-        "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"
+        "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
+        "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-queue-portability",
@@ -1579,7 +1581,8 @@
         "-m",
         "pytest",
         "-v",
-        "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"
+        "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
+        "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content"
       ],
       "cache_domain": "pytest",
       "cell": "windows-x86_64-py312-queue-portability",
