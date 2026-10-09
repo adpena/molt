@@ -3,27 +3,32 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
+from tests.stdlib_intrinsic_registry import intrinsic_registry
+
 
 ROOT = Path(__file__).resolve().parents[1]
-TOKENIZER_PATH = ROOT / "src" / "molt" / "stdlib" / "tinygrad" / "tokenizer.py"
+TOKENIZER_PATH = ROOT / "demos" / "tinygrad" / "tokenizer.py"
 
 
 def _load_tokenizer_module(monkeypatch: pytest.MonkeyPatch):
-    fake_intrinsics = SimpleNamespace(require_intrinsic=lambda _name: object())
-    monkeypatch.setitem(sys.modules, "_intrinsics", fake_intrinsics)
     module_name = "_molt_test_tinygrad_tokenizer_contract"
-    sys.modules.pop(module_name, None)
     spec = importlib.util.spec_from_file_location(module_name, TOKENIZER_PATH)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    monkeypatch.setitem(sys.modules, module_name, module)
+    # The module binds its GPU device intrinsic at import; the BPE paths under
+    # test must never call it.
+    with intrinsic_registry({"molt_gpu_prim_device": _device_unused}):
+        spec.loader.exec_module(module)
     return module
+
+
+def _device_unused(*_args: object) -> object:
+    pytest.fail("the BPE tokenizer called the GPU device intrinsic")
 
 
 def test_tokenizer_decode_rejects_unknown_token_id(monkeypatch: pytest.MonkeyPatch):

@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "fb56e9d4fcc5ed20d7b7823654f94c0cef805450b3a91b3d421a2e76b1180e95",
+  "authority_sha256": "435469cf26a431f3640ad4e201656d7d0605df236fd8f83fd150c208d185b79c",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -4505,7 +4505,10 @@
         "tests/e2e/test_gpu_quality.py",
         "tests/cloudflare/test_deploy_verify.py",
         "tests/cloudflare/test_live_verifier.py",
-        "tests/determinism/test_entropy_audit.py"
+        "tests/determinism/test_entropy_audit.py",
+        "tests/test_generate_worker.py",
+        "tests/test_tinygrad_tokenizer_contract.py",
+        "tests/test_nemotron_ocr_boundaries.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -4870,7 +4873,10 @@
         "tests/e2e/test_gpu_quality.py",
         "tests/cloudflare/test_deploy_verify.py",
         "tests/cloudflare/test_live_verifier.py",
-        "tests/determinism/test_entropy_audit.py"
+        "tests/determinism/test_entropy_audit.py",
+        "tests/test_generate_worker.py",
+        "tests/test_tinygrad_tokenizer_contract.py",
+        "tests/test_nemotron_ocr_boundaries.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
