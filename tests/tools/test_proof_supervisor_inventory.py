@@ -135,7 +135,7 @@ def test_supervisor_admits_exact_platform_image_without_directory_authority(
     assert [row for row in images if row["role"] == "windows-console-broker"] == [
         {
             "role": "windows-console-broker",
-            "path": str(broker),
+            "path": platform_image["path"],
             "sha256": platform_image["sha256"],
             "root_exit_disposition": "terminate",
         }
@@ -589,7 +589,13 @@ def test_proof_image_admission_refuses_parent_traversal_before_custody(
     except OSError as exc:
         pytest.skip(f"directory symlink capability unavailable: {exc}")
     witness = hop / ".." / "tool"
-    assert witness.samefile(other) and not witness.samefile(selected)
+    assert hop.samefile(foreign / "deep")
+    # Win32 resolves the lexical parent component before following the link;
+    # POSIX traverses the link first. Both forms must be refused before custody.
+    expected, excluded = (
+        (selected, other) if sys.platform == "win32" else (other, selected)
+    )
+    assert witness.samefile(expected) and not witness.samefile(excluded)
     row = process_image_capture.capture_image("tool", selected, preserve_path=True)
     changed = {**row, "path": str(witness)}
     monkeypatch.setattr(

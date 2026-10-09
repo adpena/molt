@@ -1662,7 +1662,10 @@ def test_lexical_compiler_selection_preserves_parent_traversal(tmp_path):
     admitted = lexical_executable_path(requested)
     assert ".." in admitted.parts
     assert admitted.name == "clang++"
-    assert admitted.samefile(actual) and not admitted.samefile(ordinary)
+    # Preserve the operating system's traversal rather than replacing it with
+    # POSIX resolution on Windows: Win32 normalizes the parent before the link.
+    expected, excluded = (ordinary, actual) if os.name == "nt" else (actual, ordinary)
+    assert admitted.samefile(expected) and not admitted.samefile(excluded)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="native Windows short-name semantics")

@@ -17,7 +17,6 @@ def test_project_environment_path_uses_dx_root_and_versioned_session(
         repo_root=tmp_path,
         env={
             "MOLT_EXT_ROOT": str(artifact_root),
-            "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
         },
     )
 
@@ -36,7 +35,6 @@ def test_uv_project_env_sets_project_environment(tmp_path: Path) -> None:
         env={
             "PATH": "x",
             "MOLT_EXT_ROOT": str(tmp_path),
-            "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
         },
         repo_root=tmp_path,
     )
@@ -58,7 +56,6 @@ def test_uv_project_env_uses_external_artifact_root(tmp_path: Path) -> None:
         purpose="audit",
         env={
             "MOLT_EXT_ROOT": str(artifact_root),
-            "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
         },
         repo_root=repo_root,
     )
@@ -79,7 +76,6 @@ def test_uv_project_env_accepts_explicit_relative_path(tmp_path: Path) -> None:
         purpose="ignored",
         env={
             "MOLT_EXT_ROOT": str(tmp_path),
-            "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
         },
         repo_root=tmp_path,
         explicit="tmp/custom-env",

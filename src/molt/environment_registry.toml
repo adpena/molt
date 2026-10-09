@@ -81,14 +81,6 @@ owner = "tools/agent_coordination.py"
 summary = "Agent identity written into a coordination task record when no --agent argument is given; unset falls back to MOLT_SESSION_ID, then to agent-<task>-<pid>."
 
 [[variable]]
-name = "MOLT_ALLOW_C_DRIVE_ARTIFACTS"
-audience = "user"
-kind = "bool"
-default = "0"
-owner = "src/molt/dx.py"
-summary = "Lets the dx RunContext keep build artifacts on the Windows C: drive even when MOLT_REQUIRE_EXTERNAL_ARTIFACTS asks for an external root; 1/true/yes/on enable, and RunContext sets it to 1 for child processes once it has accepted a C: artifact root."
-
-[[variable]]
 name = "MOLT_ARCH"
 audience = "user"
 kind = "string"
@@ -3507,14 +3499,6 @@ owner = "src/molt/dx.py"
 summary = "Set to 1, true, yes, or on to keep inherited TMPDIR, TMP, and TEMP values that point at system temp roots (/tmp, /var/tmp, /var/folders) when an external artifact root is preferred; default off, which drops them so temp files land under the artifact root."
 
 [[variable]]
-name = "MOLT_PRESERVE_TARGET_ROOT"
-audience = "developer"
-kind = "bool"
-default = "0"
-owner = "src/molt/dx.py"
-summary = "Windows only; set to 1, true, yes, or on to keep an inherited toolchain target root on a different drive from the artifact root instead of treating it as a custody conflict; a D: root is always rejected; default off."
-
-[[variable]]
 name = "MOLT_PROCESS_PIPE_MAX_QUEUED_BYTES"
 audience = "user"
 kind = "int"
@@ -3896,7 +3880,7 @@ audience = "developer"
 kind = "bool"
 default = "0"
 owner = "src/molt/dx.py"
-summary = "Set to 1, true, yes, or on to fail closed when no healthy external artifact root is available instead of falling back to repo-local roots; MOLT_ALLOW_C_DRIVE_ARTIFACTS=1 cancels it, and tools/dev.py defaults it to 1 on a Windows C: checkout; default off."
+summary = "Set to 1, true, yes, or on to fail closed when no healthy external artifact root is available instead of falling back to repo-local roots; explicit artifact paths must also remain outside the checkout on every platform; this does not require another physical device; default off."
 
 [[variable]]
 name = "MOLT_REQUIRE_SIGNATURE"
@@ -6863,6 +6847,11 @@ summary = "One per proof-supervisor workspace crate (upper-cased name): the SHA-
 # ---------------------------------------------------------------------------
 
 [[retired]]
+name = "MOLT_ALLOW_C_DRIVE_ARTIFACTS"
+replacement = "MOLT_EXT_ROOT"
+retired = 2026-10-09
+
+[[retired]]
 name = "MOLT_BACKEND_TIR_CACHE_DISK_BYTES"
 replacement = "MOLT_BACKEND_TIR_CACHE_DISK_MB"
 retired = 2026-10-06
@@ -6953,6 +6942,11 @@ retired = 2026-10-06
 name = "MOLT_NATIVE_ARCH_PERF"
 replacement = "MOLT_PERF_PROFILE"
 retired = 2026-10-06
+
+[[retired]]
+name = "MOLT_PRESERVE_TARGET_ROOT"
+replacement = "MOLT_TARGET_ROOT"
+retired = 2026-10-09
 
 [[retired]]
 name = "MOLT_SUBPROCESS_KEEPALIVE_SECS"

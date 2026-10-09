@@ -23,7 +23,6 @@ from molt.cli.source_extension_target import (
     source_extension_recorded_target_plan,
 )
 from molt.cli.source_extension_toolchain import _resolve_source_extension_toolchain
-from molt.dx import _reject_onedrive
 from molt.exact_json import canonical_json_sha256
 from molt.source_extension_link_inputs import validate_source_extension_link_inputs
 from molt.llvm_linker_roles import (
@@ -67,9 +66,7 @@ def _entrypoint(value: object, *, role: str) -> Path:
     path = lexical_executable_path(Path(value))
     if str(path) != value:
         raise ValueError(f"source-extension {role} entrypoint is not canonical")
-    _reject_onedrive(path, f"source-extension {role} entrypoint")
-    content = executable_content_path(path, label=f"source-extension {role}")
-    _reject_onedrive(content, f"source-extension {role} content")
+    executable_content_path(path, label=f"source-extension {role}")
     return path
 
 
@@ -262,7 +259,6 @@ def _validate_commands(
     if not isinstance(sysroot, str) or not Path(sysroot).is_absolute():
         raise ValueError("source-extension WASI target requires an explicit sysroot")
     root = Path(sysroot)
-    _reject_onedrive(root, "source-extension WASI sysroot")
     if not root.is_dir() or str(root.resolve(strict=True)) != sysroot:
         raise ValueError("source-extension WASI sysroot is not a canonical directory")
     if any(root != sysroot for root in compiler_sysroots):

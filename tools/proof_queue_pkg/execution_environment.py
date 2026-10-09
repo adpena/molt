@@ -785,7 +785,6 @@ def _locate_toolchain_watch_roots(
             raise ValueError(
                 f"proof Python toolchain locator is invalid: {exc}"
             ) from exc
-        command_identity._reject_python_location_onedrive(located)
         executable_raw = located.get("selected_executable")
         base_executable_raw = located.get("base_executable")
         prefix_raw = located.get("prefix")

@@ -577,7 +577,6 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch) -> None:
         env={
             "PATH": "/usr/bin",
             "MOLT_EXT_ROOT": str(module.ROOT),
-            "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
         },
     )
 
@@ -645,7 +644,6 @@ def test_dev_py_run_uv_preserves_explicit_canonical_roots(
             "MOLT_EXT_ROOT": str(explicit_root),
             "MOLT_CACHE": str(explicit_cache),
             "MOLT_SESSION_ID": "caller-session",
-            "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
         },
     )
 
@@ -727,7 +725,6 @@ def test_dev_py_uv_no_sync_version_probe_uses_memory_guard(monkeypatch) -> None:
         {
             "PATH": "/usr/bin",
             "MOLT_EXT_ROOT": str(module.ROOT),
-            "MOLT_ALLOW_C_DRIVE_ARTIFACTS": "1",
         },
     )
 

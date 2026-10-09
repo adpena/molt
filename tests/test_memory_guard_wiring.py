@@ -936,7 +936,6 @@ def test_windows_pytest_cache_dir_arg_uses_canonical_tmp_cache(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
-    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
     args = ["tests/test_one.py", "-q"]
 
     assert pytest_memory_guard_bootstrap.install_windows_pytest_cache_dir_arg(args)
@@ -1073,7 +1072,6 @@ def test_windows_pytest_custody_roots_prepare_readable_defaults(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
-    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
     monkeypatch.delenv("PYTEST_DEBUG_TEMPROOT", raising=False)
 
     assert pytest_memory_guard_bootstrap.install_pytest_custody_roots()
@@ -1141,7 +1139,6 @@ def test_windows_pytest_custody_roots_preserve_explicit_temproot(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
-    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
     explicit = tmp_path / "explicit-temproot"
     monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(explicit))
 

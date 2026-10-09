@@ -736,7 +736,6 @@
   "tests/tools/test_fact_graph_dump.py",
   "tests/tools/test_ff_land.py",
   "tests/tools/test_findings_registry.py",
-  "tests/tools/test_forbidden_checkout_guard.py",
   "tests/tools/test_formal_correspondence_truth.py",
   "tests/tools/test_frontend_hot_pass_profile.py",
   "tests/tools/test_fs_delete.py",

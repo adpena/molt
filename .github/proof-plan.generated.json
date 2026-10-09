@@ -338,7 +338,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "0377a8fe8cae587259788859932f1e8b0d662fbd8d2d9bf7ea5e661b0668b3b7",
+  "authority_sha256": "208dcd4464f911a7911ae0aaa15c6083a1e3243abe4f695e04860a56f2c3ddd3",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -5091,7 +5091,7 @@
       "local.apparatus-hooks.0": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_hooks_bash_guard.py tests/tools/test_hooks_landing_gate.py tests/tools/test_hooks_session_digest.py tests/tools/test_hooks_fail_open.py tests/tools/test_hooks_waivers.py tests/tools/test_check_gate_flips.py tests/tools/test_check_gate_liveness.py",
       "local.apparatus-hooks.1": "python3 tools/venv_exec.py python tools/check_gate_liveness.py --check",
       "local.apparatus-hooks.2": "python3 tools/venv_exec.py python tools/check_gate_flips.py --check",
-      "local.apparatus-learning-protection.0": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_forbidden_checkout_guard.py tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
+      "local.apparatus-learning-protection.0": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
       "local.apparatus-learning-protection.1": "python3 tools/venv_exec.py python tools/apparatus_agent_safety.py --check",
       "local.apparatus-learning-protection.2": "python3 tools/venv_exec.py python tools/anti_recurrence_gate.py --check",
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib",
@@ -6068,24 +6068,21 @@
           "local.apparatus-learning-protection.1",
           "local.apparatus-learning-protection.2"
         ],
-        "description": "Recurring-harm registry, forbidden-checkout policy, no-agent-termination meta-gate, anti-recurrence advisory, and Stop-session learning persistence.",
+        "description": "Recurring-harm registry, no-agent-termination meta-gate, anti-recurrence advisory, and Stop-session learning persistence.",
         "gates": [
-          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_forbidden_checkout_guard.py tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_apparatus_agent_safety.py tests/tools/test_anti_recurrence_gate.py tests/tools/test_hooks_session_learning.py tests/tools/test_check_gate_liveness.py tests/tools/test_memory_graph.py",
           "python3 tools/venv_exec.py python tools/apparatus_agent_safety.py --check",
           "python3 tools/venv_exec.py python tools/anti_recurrence_gate.py --check"
         ],
         "globs": [
           ".claude/settings.json",
-          "tools/forbidden_checkout_guard.py",
           "tools/apparatus_agent_safety.py",
           "tools/anti_recurrence_gate.py",
           "tools/recurring_harms.toml",
-          "tools/hooks/path_guard.py",
           "tools/hooks/session_learning.py",
           "tools/hooks/stop_gates.py",
           "tools/memory_graph.py",
           "tools/check_gate_liveness.py",
-          "tests/tools/test_forbidden_checkout_guard.py",
           "tests/tools/test_apparatus_agent_safety.py",
           "tests/tools/test_anti_recurrence_gate.py",
           "tests/tools/test_hooks_session_learning.py",

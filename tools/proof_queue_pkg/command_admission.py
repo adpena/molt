@@ -1330,7 +1330,6 @@ def _locked_python_environment_root(executable: str) -> Path:
         SOURCE_BUILD_ENVIRONMENT_MANIFEST,
     )
     from molt.cli.source_build_environment import _source_build_custody_root
-    from molt.dx import _reject_onedrive
 
     selected = Path(executable)
     if not selected.is_absolute() or not selected.is_file():
@@ -1349,10 +1348,6 @@ def _locked_python_environment_root(executable: str) -> Path:
         raise ValueError(
             "prepared proof requires a content-addressed locked source-build interpreter"
         )
-    _reject_onedrive(selected, "prepared proof interpreter")
-    _reject_onedrive(
-        selected.resolve(strict=True), "prepared proof interpreter content"
-    )
     return environment_root
 
 
@@ -1420,7 +1415,6 @@ def _typed_python_command_family(
         source_extension_set_expected_identity,
     )
     from molt.cli.source_extension_target import resolve_source_extension_target_plan
-    from molt.dx import _reject_onedrive
     from molt.target_python import _parse_target_python_version
 
     producer = SourceExtensionSetInvocation.from_arguments(invocation.arguments)
@@ -1462,9 +1456,7 @@ def _typed_python_command_family(
         path = Path(value)
         if not path.is_absolute():
             raise ValueError(f"source-extension producer {label} must be absolute")
-        _reject_onedrive(path, f"source-extension {label}")
         resolved = path.resolve(strict=label == "source")
-        _reject_onedrive(resolved, f"source-extension resolved {label}")
         if path != resolved:
             raise ValueError(
                 f"source-extension producer {label} must use its canonical path, not an alias"

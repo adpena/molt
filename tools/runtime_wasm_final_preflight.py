@@ -29,9 +29,8 @@ from molt.cli.runtime_wasm_build_spec import (
     _runtime_wasm_toolchain_manifest_path,
 )
 from molt.cli.runtime_wasm_generation import runtime_wasm_generation_path
-from molt.dx import CheckoutCustody, checkout_custody, development_artifact_env
+from molt.dx import checkout_custody, development_artifact_env
 from molt.path_custody import (
-    CustodyPathRole,
     PathCustodyError,
     canonical_host_path,
     host_path_is_within,
@@ -239,7 +238,6 @@ def _worktree_roots(
     project_root: Path,
     *,
     custody_root: Path,
-    source_role: CustodyPathRole,
 ) -> tuple[Path, ...]:
     roots: list[Path] = []
     for line in _git_bytes(
@@ -250,7 +248,6 @@ def _worktree_roots(
         rendered = line.removeprefix(b"worktree ").decode("utf-8", "surrogateescape")
         root = canonical_host_path(
             rendered,
-            source_role,
             authority="Molt worktree source root",
             require_exists=True,
         )
@@ -265,8 +262,6 @@ def _worktree_roots(
 def _marker_directories(
     project_root: Path,
     custody_root: Path,
-    *,
-    source_role: CustodyPathRole,
 ) -> tuple[Path, ...]:
     candidates = {
         project_root / "tmp/memory_guard/active",
@@ -277,7 +272,6 @@ def _marker_directories(
         for root in _worktree_roots(
             project_root,
             custody_root=custody_root,
-            source_role=source_role,
         )
     )
     return tuple(sorted(candidates, key=os.fspath))
@@ -422,14 +416,6 @@ def _revalidate_launch_custody(context: RuntimeWasmPreflightContext) -> None:
         )
 
 
-def _custody_roles(custody: CheckoutCustody) -> tuple[CustodyPathRole, CustodyPathRole]:
-    if custody.kind == "github-actions-ephemeral":
-        return CustodyPathRole.HOSTED_SOURCE, CustodyPathRole.HOSTED_EXECUTION
-    if custody.kind == "explicit-scratch":
-        return CustodyPathRole.EXPLICIT_SCRATCH, CustodyPathRole.EXPLICIT_SCRATCH
-    return CustodyPathRole.DURABLE_AUTHORITY, CustodyPathRole.DURABLE_AUTHORITY
-
-
 def _resolve_preflight_context(
     project_root: Path, env: Mapping[str, str]
 ) -> RuntimeWasmPreflightContext:
@@ -443,10 +429,8 @@ def _resolve_preflight_context(
         raise RuntimeWasmPreflightError("proof queue run id and database are required")
 
     custody = checkout_custody(project_root, env, require_exists=True)
-    source_role, execution_role = _custody_roles(custody)
     canonical_project = canonical_host_path(
         project_root,
-        source_role,
         authority="runtime-WASM source root",
         require_exists=True,
     )
@@ -464,30 +448,25 @@ def _resolve_preflight_context(
         )
     canonical_custody = canonical_host_path(
         custody.custody_root,
-        execution_role,
         authority="runtime-WASM custody root",
         require_exists=True,
     )
     target = canonical_host_path(
         build_env["CARGO_TARGET_DIR"],
-        execution_role,
         authority="runtime-WASM target root",
     )
     cache = canonical_host_path(
         build_env["MOLT_CACHE"],
-        execution_role,
         authority="runtime-WASM cache root",
     )
     runtime = canonical_host_path(
         _runtime_wasm_artifact_path_from_env(
             canonical_project, "molt_runtime.wasm", build_env
         ).parent,
-        execution_role,
         authority="runtime-WASM publication root",
     )
     proof_queue_db = canonical_host_path(
         db_raw,
-        execution_role,
         authority="runtime-WASM proof queue database",
         require_exists=True,
     )
@@ -511,7 +490,6 @@ def _resolve_preflight_context(
         marker_dirs=_marker_directories(
             canonical_project,
             canonical_custody,
-            source_role=source_role,
         ),
     )
     claim = _proof_queue_claim(proof_queue_db, run_id)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 from tests.process_guard_common import run_guarded_test_process
 
-from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 import json
@@ -1182,67 +1181,89 @@ def test_wasm_llvm_nm_rejects_generic_native_reader(
         )
 
 
-@pytest.mark.parametrize(
-    "configured",
-    [
-        r"C:\Users\operator\OneDrive\tools\llvm-nm.exe",
-        r'"C:\Users\operator\OneDrive - Example Org\tools\llvm-nm.exe"',
-    ],
-)
-def test_wasm_llvm_nm_rejects_onedrive_custody(configured: str) -> None:
-    with pytest.raises(LlvmToolchainConfigError, match="OneDrive custody"):
-        llvm_toolchain.verify_wasm_llvm_nm(
-            ROOT,
-            environ={"MOLT_LLVM_NM": configured, "PATH": ""},
-        )
-
-
 @pytest.mark.parametrize("selection", ["bare", "unquoted_path", "quoted_path"])
 def test_wasm_llvm_nm_checks_resolved_entrypoint_and_content_custody(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     selection: str,
 ) -> None:
-    selected = tmp_path / "selected tools" / "llvm-nm"
+    selected = (
+        tmp_path
+        / "OneDrive - selected tools"
+        / ("llvm-nm.exe" if os.name == "nt" else "llvm-nm")
+    )
     _write(selected, "reader")
     raw = {
-        "bare": "llvm-nm",
+        "bare": selected.name,
         "unquoted_path": str(selected),
         "quoted_path": f'"{selected}"',
     }[selection]
     if selection == "bare":
         monkeypatch.setattr(
-            llvm_toolchain,
-            "find_executable",
-            lambda command, *, environment: selected,
+            llvm_toolchain, "find_executable", lambda command, *, environment: selected
         )
-    checked: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        llvm_toolchain,
-        "reject_poison_toolchain_path",
-        lambda value, *, authority: checked.append((str(value), authority)),
-    )
+    commands = []
 
-    def verify(prefix_arg, role, path, *, expected_version, exact_version):
-        return (
-            llvm_toolchain.LlvmToolVersionFact(
-                role, f"external:{path}", expected_version, 6, "1" * 64
-            ),
-            stable_regular_file_identity(path, label="test LLVM tool"),
+    def run(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(
+            returncode=0, stdout=f"LLVM version {_WASI.llvm_version}", stderr=""
         )
 
-    monkeypatch.setattr(llvm_toolchain, "_tool_version_fact_and_identity", verify)
+    monkeypatch.setattr(llvm_toolchain.subprocess, "run", run)
     verification = llvm_toolchain.verify_wasm_llvm_nm(
         ROOT,
         environ={"MOLT_LLVM_NM": raw, "PATH": str(selected.parent)},
     )
+    assert verification.path.samefile(selected)
+    assert commands == [[str(selected.absolute()), "--version"]]
+    assert (
+        verification.executable_identity.sha256 == hashlib.sha256(b"reader").hexdigest()
+    )
 
-    assert verification.path == selected
-    assert checked == [
-        (raw, "MOLT_LLVM_NM"),
-        (str(selected.absolute()), "selected llvm-nm entrypoint"),
-        (str(selected.resolve()), "selected llvm-nm content"),
-    ]
+
+@pytest.mark.parametrize("damage", ["content", "retarget"])
+def test_tool_version_preserves_live_content_and_alias_custody(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    content = (
+        tmp_path
+        / "OneDrive - content"
+        / ("llvm-nm.exe" if os.name == "nt" else "llvm-nm")
+    )
+    _write(content, "reader")
+    selected = content
+    if damage == "retarget":
+        selected = tmp_path / ("llvm-nm.exe" if os.name == "nt" else "llvm-nm")
+        try:
+            selected.symlink_to(content)
+        except OSError as exc:
+            pytest.skip(f"file symlink capability unavailable: {exc}")
+    replacement = tmp_path / "replacement"
+    _write(replacement, "reader")  # Equal content is not equal entrypoint identity.
+
+    def run(command, **kwargs):
+        assert command == [str(selected.absolute()), "--version"]
+        if damage == "content":
+            content.write_bytes(b"edited")
+        else:
+            selected.unlink()
+            selected.symlink_to(replacement)
+        return SimpleNamespace(
+            returncode=0, stdout=f"LLVM version {_WASI.llvm_version}", stderr=""
+        )
+
+    monkeypatch.setattr(llvm_toolchain.subprocess, "run", run)
+    with pytest.raises(LlvmToolchainConfigError, match="changed"):
+        llvm_toolchain._tool_version_fact_and_identity(
+            tmp_path,
+            "llvm-nm",
+            selected,
+            expected_version=_WASI.llvm_version,
+            exact_version=True,
+        )
 
 
 @pytest.mark.parametrize(
@@ -1269,119 +1290,6 @@ def test_wasm_llvm_nm_rejects_invalid_executable_selections(
             selector="MOLT_LLVM_NM",
             environment={"PATH": str(selected.parent)},
         )
-
-
-def test_tool_version_rejects_captured_poison_content_before_execution(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    selected = tmp_path / "canonical-alias" / "llvm-nm"
-    captured_content = tmp_path / "poison-content" / "llvm-nm"
-    _write(captured_content, "reader")
-    captured_identity = stable_regular_file_identity(
-        captured_content,
-        label="retargeted LLVM tool",
-    )
-
-    @contextmanager
-    def probe(_path: Path, *, label: str):
-        assert label == "LLVM tool llvm-nm"
-        yield selected, captured_identity
-
-    checked: list[tuple[Path, str]] = []
-
-    def reject(value, *, authority):
-        checked.append((Path(value), authority))
-        if authority == "captured LLVM tool llvm-nm content":
-            raise LlvmToolchainConfigError("retargeted to retired custody")
-
-    monkeypatch.setattr(llvm_toolchain, "stable_executable_probe", probe)
-    monkeypatch.setattr(llvm_toolchain, "reject_poison_toolchain_path", reject)
-    monkeypatch.setattr(
-        llvm_toolchain.subprocess,
-        "run",
-        lambda *_args, **_kwargs: pytest.fail("poison content was executed"),
-    )
-
-    with pytest.raises(LlvmToolchainConfigError, match="retargeted"):
-        llvm_toolchain._tool_version_fact_and_identity(
-            tmp_path / "llvm",
-            "llvm-nm",
-            selected,
-            expected_version="22.1.8",
-            exact_version=True,
-        )
-
-    assert checked == [
-        (selected.absolute(), "captured LLVM tool llvm-nm entrypoint"),
-        (captured_content.absolute(), "captured LLVM tool llvm-nm content"),
-    ]
-
-
-def test_tool_version_rejects_captured_onedrive_alias_before_execution(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    selected = tmp_path / "OneDrive - Example Org" / "llvm-nm"
-    canonical_content = tmp_path / "canonical-tools" / "llvm-nm"
-    _write(canonical_content, "reader")
-    captured_identity = stable_regular_file_identity(
-        canonical_content,
-        label="canonical LLVM tool",
-    )
-
-    @contextmanager
-    def probe(_path: Path, *, label: str):
-        assert label == "LLVM tool llvm-nm"
-        yield selected, captured_identity
-
-    monkeypatch.setattr(llvm_toolchain, "stable_executable_probe", probe)
-    monkeypatch.setattr(
-        llvm_toolchain.subprocess,
-        "run",
-        lambda *_args, **_kwargs: pytest.fail("OneDrive alias was executed"),
-    )
-
-    with pytest.raises(LlvmToolchainConfigError, match="OneDrive custody"):
-        llvm_toolchain._tool_version_fact_and_identity(
-            tmp_path / "llvm",
-            "llvm-nm",
-            selected,
-            expected_version="22.1.8",
-            exact_version=True,
-        )
-
-
-def test_wasm_llvm_nm_rejects_lexical_alias_to_poison_content(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    content = tmp_path / "poison-content" / "llvm-nm"
-    alias = tmp_path / "canonical-alias" / "llvm-nm"
-    _write(content, "reader")
-    alias.parent.mkdir(parents=True)
-    try:
-        alias.symlink_to(content)
-    except OSError:
-        pytest.skip("file symlinks are unavailable")
-    checked: list[tuple[Path, str]] = []
-
-    def reject(value, *, authority):
-        checked.append((Path(value), authority))
-        if authority == "selected llvm-nm content":
-            raise LlvmToolchainConfigError("retired D: canonical custody")
-
-    monkeypatch.setattr(llvm_toolchain, "reject_poison_toolchain_path", reject)
-
-    with pytest.raises(LlvmToolchainConfigError, match="retired D: canonical custody"):
-        llvm_toolchain.verify_wasm_llvm_nm(
-            ROOT,
-            environ={"MOLT_LLVM_NM": str(alias), "PATH": ""},
-        )
-
-    assert checked[-2:] == [
-        (alias.absolute(), "selected llvm-nm entrypoint"),
-        (content.resolve(), "selected llvm-nm content"),
-    ]
 
 
 def test_cli_projects_verified_sdk_identity_to_github_environment(
@@ -1881,49 +1789,6 @@ def test_canonical_prefix_accepts_supported_target_superset(
     )
 
     assert verification.targets == ("AArch64", "WebAssembly", "X86")
-
-
-def test_all_explicit_prefix_authorities_reject_retired_d_drive() -> None:
-    pin = required_llvm_backend_pin(ROOT)
-    assert pin is not None
-    names = (
-        "MOLT_LLVM_PREFIX",
-        pin.env_var,
-        mlir_sys_prefix_env_var(pin.major),
-        tablegen_prefix_env_var(pin.major),
-        "MOLT_TARGET_ROOT",
-        "LLVM_CONFIG_PATH",
-    )
-    for name in names:
-        for poisoned in (r"D:\poison", r"d:/poison", r"\\?\D:\poison"):
-            with pytest.raises(
-                LlvmToolchainConfigError, match="retired D: canonical custody"
-            ):
-                resolve_llvm_toolchain_prefix(ROOT, environ={name: poisoned})
-
-
-def test_path_discovery_rejects_retired_d_drive_before_execution(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_facade(tmp_path, '"molt-backend-native/llvm"')
-    _write_native(tmp_path, '"llvm22-1"', "221.0.1")
-    monkeypatch.setattr(
-        llvm_toolchain,
-        "managed_llvm_prefix",
-        lambda *_args, **_kwargs: tmp_path / "missing",
-    )
-    monkeypatch.setattr(
-        llvm_toolchain.shutil,
-        "which",
-        lambda name, **_kwargs: (
-            r"D:\poison\llvm-config-22.exe"
-            if name.startswith("llvm-config-22")
-            else None
-        ),
-    )
-    with pytest.raises(LlvmToolchainConfigError, match="retired D: canonical custody"):
-        llvm_toolchain.discover_llvm_toolchain(tmp_path, environ={"PATH": r"D:\poison"})
 
 
 def test_managed_attestation_rejects_live_asset_drift(

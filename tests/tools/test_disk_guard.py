@@ -696,3 +696,20 @@ def test_completed_lane_event_respects_live_guard_marker(tmp_path):
     assert result.reclaimed == []
     assert result.skipped == [{"path": str(target.resolve()), "reason": "lane-active"}]
     assert target.exists()
+
+
+@pytest.mark.parametrize("name", ["ordinary", "OneDrive - selected artifacts"])
+def test_root_selection_requires_explicit_custody(tmp_path, name):
+    selected = tmp_path / name
+    selected.mkdir()
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    assert (
+        dg.resolve_root(selected, env={dg.ENV_ROOT: str(unrelated)})
+        == selected.resolve()
+    )
+    assert dg.resolve_root(env={dg.ENV_ROOT: str(selected)}) == selected.resolve()
+    with pytest.raises(SystemExit, match="could not resolve the artifact root"):
+        dg.resolve_root(env={})
+    with pytest.raises(SystemExit):
+        dg.resolve_root(Path(tmp_path.anchor), env={})
