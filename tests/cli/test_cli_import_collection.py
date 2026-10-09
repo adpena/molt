@@ -14565,7 +14565,10 @@ def test_cargo_target_root_uses_canonical_session_subdir_when_unset(
 
     target_root = cli._cargo_target_root(tmp_path)
 
-    assert target_root == tmp_path / "target" / "sessions" / "alpha_session_beta"
+    assert (
+        target_root
+        == tmp_path / "target" / "sessions" / "alpha_session_b-575cb2aec94ffa27"
+    )
 
 
 def test_build_state_root_is_cached(
@@ -14601,7 +14604,11 @@ def test_build_state_root_uses_canonical_session_target_when_unset(
     state_root = cli._build_state_root(tmp_path)
 
     assert state_root == (
-        tmp_path / "target" / "sessions" / "alpha_session_beta" / ".molt_state"
+        tmp_path
+        / "target"
+        / "sessions"
+        / "alpha_session_b-575cb2aec94ffa27"
+        / ".molt_state"
     )
 
 
