@@ -1227,7 +1227,7 @@ def test_status_abi_is_validated_before_application_execution(
     source = (ROOT / f"wasm/{host}.js").read_text(encoding="utf-8")
     start = source.index("const runtimeLifetimes =")
     delimiter = (
-        "let activeReservedRuntimeCallables ="
+        "let activeRuntimeCallableLayout ="
         if host == "run_wasm"
         else "let browserVfsModulePromise"
     )

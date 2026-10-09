@@ -1932,10 +1932,12 @@ env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-backend-build", "--target", "wasm", "--json"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld"]
 
-# The Node runner and loader bridge against synthetic WAT modules: table
-# bases, callable tables, split-runtime import conversion. Each fixture
-# publishes its link facts with the backend wasm.build.backend selects and
-# builds, so the command follows that build and never compiles a second one.
+# The Node runner, browser host and loader bridge: table bases, callable
+# tables and split-runtime import conversion against synthetic WAT modules,
+# and startup and status-ABI failures against the hosts' own boundaries. Each
+# WAT fixture publishes its link facts with the backend wasm.build.backend
+# selects and builds, so the command follows that build and never compiles a
+# second one.
 [[command]]
 id = "wasm.host.runner-fixtures"
 family = "wasm"
@@ -1946,7 +1948,7 @@ timeout_seconds = 600
 timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "pytest"
 dependencies = ["wasm.build.backend"]
-argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "pytest", "-q", "-n", "auto", "tests/test_wasm_runner_table_base.py"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "pytest", "-q", "-n", "auto", "tests/test_wasm_runner_table_base.py", "tests/test_wasm_startup_failures.py"]
 toolchains = ["python", "uv", "node", "wasm-tools", "rustc", "cargo"]
 
 [[command]]

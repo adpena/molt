@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "3650dca6fc6a3e8cce754d2eedc55019ccc7ddf28281fa15dc92f859b891abf6",
+  "authority_sha256": "4341af87974639534644438d090eb007af1dbad93694a0ae13fa2cdd94273eb2",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2714,7 +2714,8 @@
         "-q",
         "-n",
         "auto",
-        "tests/test_wasm_runner_table_base.py"
+        "tests/test_wasm_runner_table_base.py",
+        "tests/test_wasm_startup_failures.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-wasm-dev",
