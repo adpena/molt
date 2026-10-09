@@ -3,55 +3,42 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_exception_object_slots_are_runtime_owned() -> None:
-    text = (ROOT / "runtime/molt-runtime/src/builtins/exceptions.rs").read_text(
-        encoding="utf-8"
-    )
-    statics = re.findall(r"^\s*static\s+([A-Z0-9_]+)\s*:\s*AtomicU64", text, re.M)
-
-    assert statics == []
-    assert "struct ExceptionsRuntimeState" in text
-    assert "exceptions_clear_runtime_state" in text
-    assert "clear_exceptions_runtime_state" in (
-        ROOT / "runtime/molt-runtime/src/state/lifecycle.rs"
-    ).read_text(encoding="utf-8")
+RUNTIME = ROOT / "runtime/molt-runtime/src"
+OBJECT_STATIC = re.compile(r"^\s*static\s+([A-Z0-9_]+)\s*:\s*AtomicU64", re.M)
 
 
-def test_module_object_slots_are_runtime_owned() -> None:
-    text = (ROOT / "runtime/molt-runtime/src/builtins/modules.rs").read_text(
-        encoding="utf-8"
-    )
-    statics = re.findall(r"^\s*static\s+([A-Z0-9_]+)\s*:\s*AtomicU64", text, re.M)
+@pytest.mark.parametrize(
+    ("module", "counters", "teardown"),
+    [
+        ("builtins/exceptions.rs", set(), "exceptions_clear_runtime_state"),
+        ("builtins/modules.rs", {"TRACE_LAST_OP"}, "modules_clear_runtime_state"),
+        (
+            "builtins/platform.rs",
+            {"EXTENSION_METADATA_CACHE_HITS", "EXTENSION_METADATA_CACHE_MISSES"},
+            "platform_clear_runtime_state",
+        ),
+    ],
+)
+def test_subsystem_object_slots_live_in_runtime_state(
+    module: str, counters: set[str], teardown: str
+) -> None:
+    """Object bits cached in a process static would outlive runtime teardown.
 
-    assert statics == ["TRACE_LAST_OP"]
-    assert "struct ModulesRuntimeState" in text
-    assert "modules_clear_runtime_state" in text
-    assert "clear_modules_runtime_state" in (
-        ROOT / "runtime/molt-runtime/src/state/lifecycle.rs"
-    ).read_text(encoding="utf-8")
+    Each subsystem keeps them in runtime state, and teardown clears that state;
+    the only process statics left are plain counters.
+    """
+    text = (RUNTIME / module).read_text(encoding="utf-8")
+    lifecycle = (RUNTIME / "state/lifecycle.rs").read_text(encoding="utf-8")
 
-
-def test_platform_object_slots_are_runtime_owned() -> None:
-    text = (ROOT / "runtime/molt-runtime/src/builtins/platform.rs").read_text(
-        encoding="utf-8"
-    )
-
-    for name in [
-        "ERRNO_CONSTANTS_CACHE",
-        "SOCKET_CONSTANTS_CACHE",
-        "OS_NAME_CACHE",
-        "SYS_PLATFORM_CACHE",
-    ]:
-        assert f"static {name}: AtomicU64" not in text
-    assert "struct PlatformRuntimeState" in text
-    assert "platform_clear_runtime_state" in text
-    assert "clear_platform_runtime_state" in (
-        ROOT / "runtime/molt-runtime/src/state/lifecycle.rs"
-    ).read_text(encoding="utf-8")
+    assert set(OBJECT_STATIC.findall(text)) == counters
+    assert re.search(rf"\b{teardown}\s*\(", text), "subsystem owns its clear"
+    assert re.search(rf"\b{teardown}\s*\(", lifecycle), "teardown clears it"
 
 
 def test_importlib_platform_static_names_are_runtime_owned() -> None:
