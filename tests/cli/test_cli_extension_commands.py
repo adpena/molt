@@ -1,32 +1,40 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
 import hashlib
 import json
 import os
 import shutil
 import subprocess
 import zipfile
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
-from molt.cli import wasm_link_inputs
+import pytest
+
 import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
-from molt.cli import extension_commands as cli_commands
+from molt.c_api_symbols import is_c_api_external_requirement
 from molt.cli import entrypoint_parser as cli_entrypoint_parser
+from molt.cli import extension_commands as cli_commands
 from molt.cli import llvm_wasi_tools as cli_llvm_wasi_tools
-from molt.cli import source_extension_target as cli_source_extension_target
 from molt.cli import source_extension_link_inputs as cli_source_extension_link_inputs
+from molt.cli import source_extension_target as cli_source_extension_target
+from molt.cli import source_extension_toolchain as cli_source_extension_toolchain
 from molt.cli import source_extensions as cli_source_extensions
-from molt.source_extension_link_inputs import SourceExtensionLinkInputs
+from molt.cli import wasm_link_inputs
+from molt.cli import wasm_toolchain as cli_wasm_toolchain
 from molt.cli.extension_manifest import (
     _default_molt_c_api_version,
     _manifest_support_file_payloads,
 )
 from molt.cli.source_extension_input_custody import (
     resolve_source_extension_manifest_input,
+)
+from molt.cli.source_extension_manifest_codec import (
+    _compact_source_extension_manifest,
+    _manifest_sequence,
 )
 from molt.cli.source_extension_object_closure import (
     finalize_source_extension_object_closure,
@@ -37,22 +45,16 @@ from molt.cli.source_extension_object_closure_schema import (
     SOURCE_EXTENSION_OBJECT_CLOSURE_SCHEMA_VERSION,
     SOURCE_EXTENSION_WASM_SYMBOL_AUTHORITY,
 )
-from molt.cli.source_extension_manifest_codec import (
-    _compact_source_extension_manifest,
-    _manifest_sequence,
-)
-from molt.cli import source_extension_toolchain as cli_source_extension_toolchain
-from molt.cli import wasm_toolchain as cli_wasm_toolchain
-from molt.c_api_symbols import is_c_api_external_requirement
-import pytest
-
-from tests.cli.process_guard import run_cli_test_process
+from molt.source_extension_link_inputs import SourceExtensionLinkInputs
 from tests.cli.native_link_test_support import static_archive_bytes
+from tests.cli.process_guard import run_cli_test_process
+from tests.subprocess_view import patch_module_subprocess
 from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbol as _wasm_exporting_i64_unary_symbol,
+)
+from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbols as _wasm_exporting_i64_unary_symbols,
 )
-
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -3672,11 +3674,7 @@ def test_source_extension_freestanding_metadata_needs_no_wasi_or_libc(
         probe_sources.append(source.read_text(encoding="ascii"))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(
-        cli_source_extension_toolchain.subprocess,
-        "run",
-        fake_run,
-    )
+    patch_module_subprocess(monkeypatch, cli_source_extension_toolchain, run=fake_run)
     resolved = cli_source_extension_toolchain._resolve_source_extension_toolchain(
         target_plan
     )
@@ -3892,11 +3890,7 @@ def test_source_extension_toolchain_rejects_wasm_cc_without_wasi_headers(
             "fatal error: 'errno.h' file not found\n",
         )
 
-    monkeypatch.setattr(
-        cli_source_extension_toolchain.subprocess,
-        "run",
-        fake_run,
-    )
+    patch_module_subprocess(monkeypatch, cli_source_extension_toolchain, run=fake_run)
 
     toolchain = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain(
         _source_extension_target_plan("wasm")
@@ -3949,11 +3943,7 @@ def test_source_extension_toolchain_prefers_wasm_cc_and_probes_target(
         seen_commands.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(
-        cli_source_extension_toolchain.subprocess,
-        "run",
-        fake_run,
-    )
+    patch_module_subprocess(monkeypatch, cli_source_extension_toolchain, run=fake_run)
 
     toolchain = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain(
         _source_extension_target_plan("wasm")
@@ -4017,11 +4007,7 @@ def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
         seen_commands.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(
-        cli_source_extension_toolchain.subprocess,
-        "run",
-        fake_run,
-    )
+    patch_module_subprocess(monkeypatch, cli_source_extension_toolchain, run=fake_run)
 
     toolchain = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain(
         _source_extension_target_plan("wasm")

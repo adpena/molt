@@ -16,6 +16,7 @@ from tests.process_guard_common import install_module_os_view
 from types import SimpleNamespace
 
 import pytest
+from tests.subprocess_view import patch_module_subprocess
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for _p in (REPO_ROOT / "tools", REPO_ROOT / "src"):
@@ -1994,7 +1995,7 @@ def test_profiling_popen_uses_benchmark_process_group(monkeypatch) -> None:
         "batch_process_group_kwargs",
         _fake_process_group_kwargs,
     )
-    monkeypatch.setattr(ps.subprocess, "Popen", _FakePopen)
+    patch_module_subprocess(monkeypatch, ps, Popen=_FakePopen)
 
     proc = ps._profiling_popen(["sample", "target"], env={"K": "V"})
 

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools import command_execution
+from tests.subprocess_view import patch_module_subprocess
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -136,7 +137,7 @@ def test_owned_cargo_process_normalizes_wrapper_incremental_conflict(
             captured["command"] = command
             captured["kwargs"] = kwargs
 
-    monkeypatch.setattr(command_execution.subprocess, "Popen", FakePopen)
+    patch_module_subprocess(monkeypatch, command_execution, Popen=FakePopen)
     executor = command_execution.CommandExecutor.for_file(__file__)
 
     executor.start_owned(

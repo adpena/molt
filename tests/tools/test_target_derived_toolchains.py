@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import hashlib
 import os
-from pathlib import Path
 import subprocess
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +18,7 @@ from molt.cli.source_extension_set_validation_target import (
 from molt.cli.source_extension_target import resolve_source_extension_target_plan
 from molt.exact_json import canonical_json_sha256
 from molt.source_extension_link_inputs import SourceExtensionLinkInputs
+from tests.subprocess_view import patch_module_subprocess
 from tools import proof_plan
 from tools.proof_queue_pkg import process_image_capture, toolchain_capture
 from tools.proof_queue_pkg import target_derived_toolchains as provider
@@ -236,7 +237,7 @@ def test_validation_never_rediscovers_native_target_or_probes(tmp_path, monkeypa
 
     monkeypatch.setattr(provider, "resolve_source_extension_target_plan", forbidden)
     monkeypatch.setattr(provider, "_resolve_source_extension_toolchain", forbidden)
-    monkeypatch.setattr(source_extension_toolchain.subprocess, "run", forbidden)
+    patch_module_subprocess(monkeypatch, source_extension_toolchain, run=forbidden)
     provider.validate_identity(_policy(), identity)
 
 
@@ -506,7 +507,7 @@ def test_compiler_probe_subprocess_receives_exact_environment(tmp_path, monkeypa
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(source_extension_toolchain.subprocess, "run", run)
+    patch_module_subprocess(monkeypatch, source_extension_toolchain, run=run)
     assert (
         source_extension_toolchain._probe_wasm_source_extension_compiler(
             (str(tmp_path / "clang"),), target_plan=target, environment=selected
