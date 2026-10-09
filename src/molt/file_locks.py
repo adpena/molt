@@ -36,6 +36,9 @@ _IN_PROCESS_LOCK_REGISTRY_GUARD = threading.Lock()
 _FILE_LOCK_LIFECYCLE_GUARD = threading.Lock()
 _FILE_LOCK_LIFECYCLE_CONDITION = threading.Condition(_FILE_LOCK_LIFECYCLE_GUARD)
 _LIVE_FILE_LOCK_HANDLES: dict[int, _FileLockHandle] = {}
+# Handles between their release decision and the completed unlock. A
+# concurrent release of the same handle returns only after it leaves here.
+_RELEASING_FILE_LOCK_HANDLES: dict[int, _FileLockHandle] = {}
 _FILE_LOCK_DESCRIPTOR_ACTIONS: dict[int, int] = {}
 _FILE_LOCK_ATOMIC_LOCAL = threading.local()
 _FILE_LOCK_AUDIT_INSTALL_TOKEN = object()
@@ -154,6 +157,7 @@ def _after_file_lock_fork_parent() -> None:
 def _reset_in_process_lock_registry_after_fork() -> None:
     global _IN_PROCESS_LOCK_REGISTRY, _IN_PROCESS_LOCK_REGISTRY_GUARD
     global _FILE_LOCK_LIFECYCLE_GUARD, _LIVE_FILE_LOCK_HANDLES
+    global _RELEASING_FILE_LOCK_HANDLES
     global _FILE_LOCK_LIFECYCLE_CONDITION, _FILE_LOCK_DESCRIPTOR_ACTIONS
     global _FILE_LOCK_ATOMIC_LOCAL, _FILE_LOCK_FORK_CLEANUP_ERROR
     # Every descriptor transition drained before fork. Close inherited stream
@@ -175,6 +179,7 @@ def _reset_in_process_lock_registry_after_fork() -> None:
         if not handle.file.closed:
             cleanup_errors.append("inherited stream remains open")
     _LIVE_FILE_LOCK_HANDLES = {}
+    _RELEASING_FILE_LOCK_HANDLES = {}
     _IN_PROCESS_LOCK_REGISTRY = {}
     _IN_PROCESS_LOCK_REGISTRY_GUARD = threading.Lock()
     _FILE_LOCK_LIFECYCLE_GUARD = threading.Lock()
@@ -368,7 +373,19 @@ def _file_lock_owned_operation(handle: _FileLockHandle, *, expected_lock_path: P
             _FILE_LOCK_LIFECYCLE_CONDITION.notify_all()
 
 
+def _await_concurrent_release(handle: _FileLockHandle) -> None:
+    """Return once another thread's release of ``handle`` has freed the lock.
+
+    Call with the lifecycle condition held. A copy of a handle is never the
+    one in flight, so it does not wait.
+    """
+    _FILE_LOCK_LIFECYCLE_CONDITION.wait_for(
+        lambda: _RELEASING_FILE_LOCK_HANDLES.get(id(handle)) is not handle
+    )
+
+
 def _release_file_lock(handle: _FileLockHandle) -> None:
+    """Release ``handle``; on return the lock is free, whichever thread freed it."""
     _require_file_lock_operation_admission()
     if handle.owner_process_id != os.getpid():
         return
@@ -376,6 +393,7 @@ def _release_file_lock(handle: _FileLockHandle) -> None:
     # owner may perform nested descriptor work to complete that pin.
     with _FILE_LOCK_LIFECYCLE_CONDITION:
         if handle.released or _LIVE_FILE_LOCK_HANDLES.get(id(handle)) is not handle:
+            _await_concurrent_release(handle)
             return
         if threading.get_ident() in handle.operation_owners:
             raise RuntimeError("cannot release file lock during its owned operation")
@@ -384,13 +402,16 @@ def _release_file_lock(handle: _FileLockHandle) -> None:
         while handle.operation_owners:
             _FILE_LOCK_LIFECYCLE_CONDITION.wait()
             if handle.released or _LIVE_FILE_LOCK_HANDLES.get(id(handle)) is not handle:
+                _await_concurrent_release(handle)
                 return
     with _file_lock_descriptor_action():
         with _FILE_LOCK_LIFECYCLE_CONDITION:
             if handle.released or _LIVE_FILE_LOCK_HANDLES.get(id(handle)) is not handle:
+                _await_concurrent_release(handle)
                 return
             handle.released = True
             del _LIVE_FILE_LOCK_HANDLES[id(handle)]
+            _RELEASING_FILE_LOCK_HANDLES[id(handle)] = handle
         try:
             if not handle.file.closed:
                 _unlock_file_handle(handle.file)
@@ -398,8 +419,13 @@ def _release_file_lock(handle: _FileLockHandle) -> None:
             try:
                 handle.file.close()
             finally:
-                handle.entry.mutex.release()
-                _in_process_lock_drop(handle.registry_key, handle.entry)
+                try:
+                    handle.entry.mutex.release()
+                    _in_process_lock_drop(handle.registry_key, handle.entry)
+                finally:
+                    with _FILE_LOCK_LIFECYCLE_CONDITION:
+                        del _RELEASING_FILE_LOCK_HANDLES[id(handle)]
+                        _FILE_LOCK_LIFECYCLE_CONDITION.notify_all()
 
 
 def _parse_lock_timeout(raw: str, *, default_s: float | None) -> float | None:
