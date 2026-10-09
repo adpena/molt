@@ -14,21 +14,28 @@ import sys
 import time
 from typing import Any
 
-from molt.cli.source_build_environment import source_build_environment
-from molt.cli.source_extension_set_registry import SourceExtensionVariant
-from molt.cli.source_extension_target import resolve_source_extension_target_plan
-from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json
-from molt.cli.json_contract import _wrapper_build_payload_data
-from molt.exact_json import loads_exact
-from molt.dx import proof_scratch_root
-from molt.scientific_stack_versions import (
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
+
+bind_repository_imports(__file__)
+
+from molt.cli.source_build_environment import source_build_environment  # noqa: E402
+from molt.cli.source_extension_set_registry import SourceExtensionVariant  # noqa: E402
+from molt.cli.source_extension_target import resolve_source_extension_target_plan  # noqa: E402
+from molt.cli.atomic_io import _atomic_copy_file, _atomic_write_json  # noqa: E402
+from molt.cli.json_contract import _wrapper_build_payload_data  # noqa: E402
+from molt.exact_json import loads_exact  # noqa: E402
+from molt.dx import proof_scratch_root  # noqa: E402
+from molt.scientific_stack_versions import (  # noqa: E402
     PACT_WITNESS_DEPENDENCY_GROUP,
     ValidatedScientificExtensionSeals,
     validate_scientific_extension_seals,
 )
-from molt.node_runtime import NodeRuntimeError, resolve_node_runtime
-from molt.wasm_artifact import wasm_runtime_manifest_entry_path
-from tools import pact_witness_receipt
+from molt.node_runtime import NodeRuntimeError, resolve_node_runtime  # noqa: E402
+from molt.wasm_artifact import wasm_runtime_manifest_entry_path  # noqa: E402
+from tools import pact_witness_receipt  # noqa: E402
 
 try:
     from tools.command_execution import CommandExecutor
