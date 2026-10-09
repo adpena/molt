@@ -1,7 +1,24 @@
+# Pinned CPython sources: one row per supported target-Python version
+# (src/molt/target_python.py), each an exact tag and its commit.
+# tools/cpython_regrtest.py clones a row for regrtest; its default is the first
+# row. tools/gen_stdlib_module_union.py derives the stdlib union from every row;
+# after a pin changes, run its --refresh-sources mode and then --write.
 schema = "molt.cpython-regrtest-sources.v1"
 
 [[source]]
 python = "3.12"
 revision = "3bb231a6a5dc02b95658877318bf61501a7209e9"
 tag = "v3.12.13"
+git_url = "https://github.com/python/cpython.git"
+
+[[source]]
+python = "3.13"
+revision = "cbc944f4bc59639a444dd971c737788ba2283a91"
+tag = "v3.13.16"
+git_url = "https://github.com/python/cpython.git"
+
+[[source]]
+python = "3.14"
+revision = "8e6e75d9102e39bed2a2b279203a396741180f12"
+tag = "v3.14.8"
 git_url = "https://github.com/python/cpython.git"
