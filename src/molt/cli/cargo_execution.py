@@ -16,6 +16,7 @@ from molt.cargo_execution_policy import (
     _wrapper_is_sccache,
     cargo_compiler_wrappers,
     normalize_cargo_environment,
+    sccache_client_launch_environment,
     sccache_compiler_wrappers,
     without_sccache_compiler_wrappers,
 )
@@ -288,15 +289,16 @@ def _sccache_diag(msg: str) -> None:
     print(f"[molt sccache] {msg}", file=sys.stderr, flush=True)
 
 
-def _sccache_server_responsive(sccache: str) -> bool:
+def _sccache_server_responsive(sccache: str, env: Mapping[str, str]) -> bool:
     """Fast healthcheck: does the sccache server answer at all? Catches a dead
     server. A server that answers --show-stats but crashes mid-compile is caught
-    by the retry-degrade in `_run_cargo_with_sccache_retry`."""
+    by the retry-degrade in `_run_cargo_with_sccache_retry`. With no server
+    running the probe starts one, so it runs as the build's sccache clients do."""
     try:
         result = _run_completed_command(
             [sccache, "--show-stats"],
             cwd=Path.cwd(),
-            env=os.environ.copy(),
+            env=sccache_client_launch_environment(env),
             capture_output=True,
             memory_guard_prefix="MOLT_BUILD",
             timeout=15,
@@ -334,17 +336,19 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
             "set MOLT_USE_SCCACHE=1 to force. Using direct rustc."
         )
         return
-    if not _sccache_server_responsive(sccache):
-        _sccache_diag(
-            "server healthcheck failed; using direct rustc (set MOLT_USE_SCCACHE=0 to silence)."
-        )
-        return
     root = compiler_source_root()
     ext_root = Path(env.get("MOLT_EXT_ROOT", root)).expanduser()
     if not ext_root.is_absolute():
         ext_root = root / ext_root
-    env.setdefault("SCCACHE_DIR", str((ext_root / ".sccache").resolve()))
-    env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
+    cache_env = dict(env)
+    cache_env.setdefault("SCCACHE_DIR", str((ext_root / ".sccache").resolve()))
+    cache_env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
+    if not _sccache_server_responsive(sccache, cache_env):
+        _sccache_diag(
+            "server healthcheck failed; using direct rustc (set MOLT_USE_SCCACHE=0 to silence)."
+        )
+        return
+    env.update(cache_env)
     env["RUSTC_WRAPPER"] = sccache
     normalized, _applied = normalize_cargo_environment(env)
     env.update(normalized)

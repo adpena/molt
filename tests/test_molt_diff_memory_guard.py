@@ -253,7 +253,9 @@ def test_memory_guard_clamps_parallel_jobs(tmp_path: Path, monkeypatch) -> None:
         global_gb=0.07,
     )
 
-    assert module._constrain_jobs_for_memory_guard(16, config=config, log=False) == 2
+    # One 0.03 GB job fills the 0.03 GB tree; dividing the 0.07 GB global
+    # budget instead admitted two jobs whose budgets overflow the tree.
+    assert module._constrain_jobs_for_memory_guard(16, config=config, log=False) == 1
 
 
 def test_memory_guard_jsonl_rotation_preserves_recent_file(
@@ -383,12 +385,14 @@ def test_diff_scheduler_uses_memory_scaled_job_budget(monkeypatch) -> None:
 
     config = module._diff_memory_guard_config()
 
+    # 7 jobs x 7.1392 GB = 49.97 GB fits the 51.40 GB tree; 8 would not.
+    assert config.max_tree_gb == pytest.approx(51.40224)
     assert module._memory_guard_scheduler_per_job_gb(config) == pytest.approx(7.1392)
-    assert module._memory_guard_max_jobs(config) == 12
-    assert module._default_jobs() == 12
+    assert module._memory_guard_max_jobs(config) == 7
+    assert module._default_jobs() == 7
     payload = module._config_payload(config)
     assert payload["resource_pressure"]["schema"] == "molt.resource_pressure.v2"
-    assert payload["resource_pressure"]["diff"]["max_jobs"] == 12
+    assert payload["resource_pressure"]["diff"]["max_jobs"] == 7
 
 
 def test_diff_default_jobs_use_guard_budget_under_memory_pressure(
@@ -403,9 +407,41 @@ def test_diff_default_jobs_use_guard_budget_under_memory_pressure(
     config = module._diff_memory_guard_config()
 
     assert config.global_gb == pytest.approx(23.5904)
+    assert config.max_tree_gb == pytest.approx(14.15424)
     assert module._memory_guard_scheduler_per_job_gb(config) == pytest.approx(1.0)
-    assert module._memory_guard_max_jobs(config) == 23
-    assert module._default_jobs() == 23
+    assert module._memory_guard_max_jobs(config) == 14
+    assert module._default_jobs() == 14
+
+
+def test_diff_jobs_fit_the_tree_budget_of_the_guard_that_wraps_the_suite(
+    monkeypatch,
+) -> None:
+    # HF-105: a guard whose tree budget was 37.7 GB wrapped a differential run
+    # that sized its parallelism from the global budget; the guard killed the
+    # whole tree at 37.7 GB. The wrapping guard and the suite read the shared
+    # limits, so the suite's jobs must fit that same tree.
+    module = _load_diff_module()
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "96")
+    for name in ("PROCESS", "TOTAL", "GLOBAL"):
+        monkeypatch.delenv(f"MOLT_DIFF_MAX_{name}_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MEM_PER_JOB_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_JOBS", raising=False)
+    monkeypatch.setenv("MOLT_MAX_PROCESS_RSS_GB", "30")
+    monkeypatch.setenv("MOLT_MAX_TOTAL_RSS_GB", "37.7")
+    monkeypatch.setenv("MOLT_MAX_GLOBAL_RSS_GB", "63")
+    install_module_view(monkeypatch, "os", os, module, cpu_count=lambda: 18)
+    outer = module.harness_memory_guard.limits_from_env("MOLT_HARNESS", os.environ)
+
+    config = module._diff_memory_guard_config()
+    jobs = module._default_jobs()
+    per_job = module._memory_guard_scheduler_per_job_gb(config)
+
+    assert outer.max_total_rss_gb == pytest.approx(37.7)
+    assert config.max_tree_gb == pytest.approx(outer.max_total_rss_gb)
+    assert per_job == pytest.approx(3.5)  # 63 GB global over 18 CPUs
+    assert jobs * per_job <= outer.max_total_rss_gb
+    assert jobs == 10  # the global division admitted 18 (63 GB) jobs
 
 
 def test_diff_memory_guard_inherits_shared_parent_overrides(monkeypatch) -> None:
