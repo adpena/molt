@@ -83,11 +83,13 @@ Required constraints:
 Any PR that worsens the scoreboard must include explicit exception sign-off and rollback plan.
 
 ## Update Workflow (Python Release Advance or Major Sweep)
-1. `python3 tools/gen_stdlib_module_union.py --write`
-2. `python3 tools/gen_stdlib_stubs.py --write`
-3. `python3 tools/check_stdlib_intrinsics.py --update-doc`
-4. `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
-5. sync rollup docs:
+1. Pin the new CPython tag and commit in `config/cpython_regrtest_sources.toml`,
+   then `python3 tools/gen_stdlib_module_union.py --refresh-sources`
+2. `python3 tools/gen_stdlib_module_union.py --write`
+3. `python3 tools/gen_stdlib_stubs.py --write`
+4. `python3 tools/check_stdlib_intrinsics.py --update-doc`
+5. `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
+6. sync rollup docs:
    - `docs/spec/STATUS.md`
    - `ROADMAP.md`
    - `docs/OPERATIONS.md`

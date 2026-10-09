@@ -468,18 +468,13 @@ outputs = [
   "tools/stdlib_module_union_3_13.py",
   "tools/stdlib_module_union_3_14.py",
 ]
-source = "sys.stdlib_module_names (CPython 3.12/3.13/3.14, live) + tools/generator_io.py"
+source = "config/cpython_stdlib_snapshot.json (Python/stdlib_module_names.h and the Lib tree at the CPython revisions pinned in config/cpython_regrtest_sources.toml, with receipts) + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_stdlib_module_union.py --check"
-# Requires THREE live CPython interpreters (3.12/3.13/3.14) on PATH; a vanilla
-# docs-gates CI job has only the .python-version interpreter, so a hard CI
-# --check would skip/false-fail. The baseline is an upstream-CPython snapshot
-# regenerated when a Python minor version is added, not a render of in-repo
-# source — so its freshness is interpreter-gated, not CI-gated.
-ci_checkable = false
-ci_skip_reason = "needs live CPython 3.12/3.13/3.14 interpreters absent from the docs-gates CI job; baseline is an upstream snapshot, not in-repo source"
+# --check reads only the committed snapshot; --refresh-sources is the one
+# network mode and fails closed on a receipt mismatch.
 idempotent = true
-sync_test_reason = "interpreter-gated upstream snapshot; --check runs only where all three CPython interpreters are present"
+sync_test = "tests/tools/test_gen_stdlib_module_union_memory_guard.py"
 closed_domains = []
 discovery_only = false
 
