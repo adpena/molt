@@ -39,36 +39,36 @@ Installed Python custody uses 12 bounded hash workers over deterministic coarse 
 | `scheduled-suite` | 4 |
 | `wasm-runtime` | 2 |
 
-GitHub job budgets are validated against a deterministic worst-case DAG schedule in which every admitted command consumes its full declared timeout. The projection accounts for dependencies, the global worker ceiling, and per-resource capacity. A `github-matrix` job runs one cell, so its budget binds each cell's schedule separately.
+GitHub job budgets cover the deterministic command-deadline DAG projection plus each family's positive operational reserve. The projection accounts for dependencies, the global worker ceiling, and per-resource capacity. A `github-matrix` job runs one cell, so its budget binds each cell separately. Reserve covers setup, identity capture, guard finalization, and artifact transport outside command deadlines; headroom is what remains after this reserve. Observed minimum allowances and declared scheduled allowances are not hard upper bounds on provisioning or OS process cleanup.
 
-| Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Selection parents | Admission | Inputs |
-|---|---|---:|---|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2100 s | 1500 s | `repository-policy` | none | `docs-gates` needs none | 1 |
-| `wasm` | pr, main | yes | `github-job` | 240 min | 14400 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 20 |
-| `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
-| `python_unit` | pre-push, pr, main | yes | `github-matrix` | 20 min | 1200 s per cell | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
-| `native_integration` | pr, main | yes | `github-job` | 40 min | 2400 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 19 |
-| `rust` | pre-push, pr, main | yes | `github-job` | 250 min | 15000 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
-| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 25 |
-| `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
-| `rust_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
-| `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 180 min | 10800 s per cell | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 119 |
+| Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
+|---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2100 s | 120 s | 1380 s | `repository-policy` | none | `docs-gates` needs none | 1 |
+| `wasm` | pr, main | yes | `github-job` | 263 min | 15600 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 24 |
+| `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 60 s | 540 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
+| `python_unit` | pre-push, pr, main | yes | `github-matrix` | 21 min | 1200 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
+| `native_integration` | pr, main | yes | `github-job` | 43 min | 2400 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 19 |
+| `rust` | pre-push, pr, main | yes | `github-job` | 254 min | 15000 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
+| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 38 |
+| `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 60 s | 240 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
+| `rust_security` | pr, main, scheduled | yes | `github-job` | 21 min | 900 s | 360 s | 0 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
+| `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 182 min | 10800 s per cell | 120 s | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 119 |
 
 ## Scheduled families
 
 Scheduled workflows consume the same typed command DAG and receipt executor without entering changed-path CI admission.
 
-| Family | Workflow job | Timeout | Projected | Headroom | Resource | Commands |
-|---|---|---:|---:|---:|---|---:|
-| `nightly_shard_prepare` | `nightly-prepare` | 3600 s | 3300 s | 300 s | `scheduled-suite` | 1 |
-| `nightly_conformance` | `conformance-aggregate` | 900 s | 600 s | 300 s | `scheduled-suite` | 1 |
-| `nightly_differential` | `differential-aggregate` | 900 s | 600 s | 300 s | `scheduled-suite` | 1 |
-| `nightly_regrtest` | `regrtest-aggregate` | 900 s | 600 s | 300 s | `scheduled-suite` | 1 |
-| `nightly_shard_profile_feedback` | `shard-profile-feedback` | 600 s | 300 s | 300 s | `scheduled-suite` | 1 |
-| `nightly_determinism` | `determinism-sweep` | 3600 s | 3300 s | 300 s | `scheduled-suite` | 3 |
-| `nightly_verification_t3` | `verification-gate-t3` | 5400 s | 4800 s | 600 s | `scheduled-suite` | 6 |
-| `runtime_candidate_costs` | `candidate-runtime-costs` | 10800 s | 9000 s | 1800 s | `compiler-build-resource` | 1 |
+| Family | Workflow job | Timeout | Commands | Reserve | Headroom | Resource | Partitions |
+|---|---|---:|---:|---:|---:|---|---:|
+| `nightly_shard_prepare` | `nightly-prepare` | 3600 s | 3300 s | 300 s | 0 s | `scheduled-suite` | 1 |
+| `nightly_conformance` | `conformance-aggregate` | 900 s | 600 s | 300 s | 0 s | `scheduled-suite` | 1 |
+| `nightly_differential` | `differential-aggregate` | 900 s | 600 s | 300 s | 0 s | `scheduled-suite` | 1 |
+| `nightly_regrtest` | `regrtest-aggregate` | 900 s | 600 s | 300 s | 0 s | `scheduled-suite` | 1 |
+| `nightly_shard_profile_feedback` | `shard-profile-feedback` | 600 s | 300 s | 300 s | 0 s | `scheduled-suite` | 1 |
+| `nightly_determinism` | `determinism-sweep` | 3600 s | 3300 s | 300 s | 0 s | `scheduled-suite` | 3 |
+| `nightly_verification_t3` | `verification-gate-t3` | 5400 s | 4800 s | 600 s | 0 s | `scheduled-suite` | 6 |
+| `runtime_candidate_costs` | `candidate-runtime-costs` | 10800 s | 9000 s | 1800 s | 0 s | `compiler-build-resource` | 1 |
 
 ## Matrix cells
 
@@ -227,6 +227,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `wasm.integration.host-exports.tensor-row-ops` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
 | `wasm.test.freestanding-e2e` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
 | `wasm.test.finally-pending-observer-parity` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 3 |
+| `wasm.test.import-from-codec-parity` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 2 |
 | `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | `explicit` | 300 s | `python-static` | 0 |
 | `python.unit.harness` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.harness.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |

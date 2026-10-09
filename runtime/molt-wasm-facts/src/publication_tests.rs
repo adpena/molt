@@ -168,7 +168,90 @@ fn runtime_publication_accepts_owned_entries_beyond_required_fixed_prefix() {
     .expect("publish complete runtime ownership region");
 
     assert_eq!(facts.callable_table_entries.len(), 4);
-    assert_eq!(facts.callable_table_layout, Some(layout));
+    assert_eq!(
+        facts.callable_table_layout,
+        Some(CallableTableLayout {
+            app_entry_count: 0,
+            ..layout
+        })
+    );
+}
+
+#[test]
+fn split_runtime_publication_is_independent_of_final_app_entry_count() {
+    let runtime = module_with_callable_slots(&[10, 11, 12, 19]);
+    let plan = CallableTableLayout {
+        fixed_prefix_base: 10,
+        fixed_prefix_len: 2,
+        finalized_app_base: 20,
+        app_entry_count: 1,
+    };
+    let mut apps = Vec::new();
+    let mut runtimes = Vec::new();
+    for (slots, expected_count) in [(vec![20, 21], 2), (vec![20, 21, 22, 23], 4)] {
+        let mut app = Vec::new();
+        scan_and_write_callable_table_attestation(
+            &module_with_callable_slots(&slots),
+            Some(plan),
+            CallableTableArtifactRole::App,
+            &mut app,
+        )
+        .expect("publish independently encoded app elements");
+        let app_facts = scan_wasm_link_facts(&app).expect("validate final app attestation");
+        assert!(app_facts.callable_table_attestation_present);
+        assert_eq!(
+            app_facts
+                .callable_table_entries
+                .iter()
+                .map(|entry| entry.slot)
+                .collect::<Vec<_>>(),
+            slots
+        );
+        assert_eq!(
+            app_facts.callable_table_layout,
+            Some(CallableTableLayout {
+                app_entry_count: expected_count,
+                ..plan
+            })
+        );
+
+        let mut published_runtime = Vec::new();
+        scan_and_write_callable_table_attestation(
+            &runtime,
+            app_facts.callable_table_layout,
+            CallableTableArtifactRole::Runtime,
+            &mut published_runtime,
+        )
+        .expect("publish runtime with the final app layout");
+        let runtime_facts =
+            scan_wasm_link_facts(&published_runtime).expect("validate final runtime attestation");
+        assert!(runtime_facts.callable_table_attestation_present);
+        assert_eq!(
+            runtime_facts
+                .callable_table_entries
+                .iter()
+                .map(|entry| entry.slot)
+                .collect::<Vec<_>>(),
+            vec![10, 11, 12, 19]
+        );
+        assert_eq!(
+            runtime_facts.callable_table_layout,
+            Some(CallableTableLayout {
+                app_entry_count: 0,
+                ..plan
+            })
+        );
+        apps.push(app);
+        runtimes.push(published_runtime);
+    }
+    assert_ne!(
+        apps[0], apps[1],
+        "different apps must retain their own entries"
+    );
+    assert_eq!(
+        runtimes[0], runtimes[1],
+        "shared runtime bytes must be app-independent"
+    );
 }
 
 #[test]

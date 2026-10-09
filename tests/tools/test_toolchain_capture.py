@@ -3,7 +3,6 @@ from __future__ import annotations
 from molt.llvm_toolchain import capture_wasi_sdk_selection
 
 from concurrent.futures import ThreadPoolExecutor
-import gc
 import gzip
 import hashlib
 import json
@@ -12,10 +11,11 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
-import tracemalloc
 from types import SimpleNamespace
 
 import pytest
+
+from tests.process_guard_common import run_isolated_python_probe
 
 from molt.exact_json import canonical_json_sha256
 from tools.proof_queue_pkg import (
@@ -284,40 +284,80 @@ def test_toolchain_capture_compact_receipt_allocation_benchmark(tmp_path: Path) 
     owned = tmp_path / "owned.py"
     owned.write_text("owned\n", encoding="utf-8")
     identity = _identity(owned, rows=5_000)
-    legacy = {
-        "toolchains": identity,
-        "toolchain_custody": {
-            "prelaunch": identity,
-            "postcompletion": identity,
-        },
-    }
-    tracemalloc.start()
-    legacy_bytes = json.dumps(legacy, sort_keys=True).encode()
-    _legacy_current, legacy_peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-    legacy_size = len(legacy_bytes)
-    del legacy_bytes, legacy
-    gc.collect()
-    tracemalloc.start()
-    summaries, reference, telemetry = toolchain_capture.publish_capture(
-        tmp_path / "cas", identity
+    measured = run_isolated_python_probe(
+        """
+        import gc
+        import json
+        from pathlib import Path
+        import sys
+        import tracemalloc
+        from tools.proof_queue_pkg import toolchain_capture
+        # Load publish_capture's lazy policy module before the measured work.
+        import tools.proof_plan
+
+        identity = json.load(sys.stdin)
+        cas = Path(sys.argv[1])
+        legacy = {
+            "toolchains": identity,
+            "toolchain_custody": {"prelaunch": identity, "postcompletion": identity},
+        }
+        if tracemalloc.is_tracing():
+            raise RuntimeError("probe requires exclusive allocation tracing")
+        gc.collect()
+        tracemalloc.start()
+        try:
+            legacy_bytes = json.dumps(legacy, sort_keys=True).encode()
+            _, legacy_peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        legacy_size = len(legacy_bytes)
+        del legacy_bytes, legacy
+        gc.collect()
+        tracemalloc.start()
+        try:
+            summaries, reference, telemetry = toolchain_capture.publish_capture(cas, identity)
+            compact = {
+                "toolchains": summaries,
+                "toolchain_custody": {
+                    "prelaunch": summaries,
+                    "postcompletion": summaries,
+                    "identical": True,
+                },
+                "toolchain_capture": {"artifact": reference, "telemetry": telemetry},
+            }
+            compact_bytes = json.dumps(compact, sort_keys=True).encode()
+            _, compact_peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        print(json.dumps({
+            "legacy_size": legacy_size,
+            "legacy_peak": legacy_peak,
+            "compact_size": len(compact_bytes),
+            "compact_peak": compact_peak,
+            "compact": compact,
+        }))
+        """,
+        args=[tmp_path / "cas"],
+        payload=identity,
     )
-    compact = {
-        "toolchains": summaries,
-        "toolchain_custody": {
-            "prelaunch": summaries,
-            "postcompletion": summaries,
-            "identical": True,
-        },
-        "toolchain_capture": {"artifact": reference, "telemetry": telemetry},
+    compact = measured["compact"]
+    reference = compact["toolchain_capture"]["artifact"]
+    assert len(json.dumps(compact, sort_keys=True).encode()) == measured["compact_size"]
+    assert compact["toolchain_custody"] == {
+        "prelaunch": compact["toolchains"],
+        "postcompletion": compact["toolchains"],
+        "identical": True,
     }
-    compact_bytes = json.dumps(compact, sort_keys=True).encode()
-    _compact_current, compact_peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-    assert len(compact_bytes) < legacy_size // 100
-    assert len(compact_bytes) < 64 * 1024
+    assert measured["compact_size"] < measured["legacy_size"] // 100
+    assert measured["compact_size"] < 64 * 1024
     assert reference["compressed_bytes"] < reference["uncompressed_bytes"] // 10
-    assert compact_peak < legacy_peak
+    assert measured["compact_peak"] < measured["legacy_peak"]
+    captured = toolchain_capture.load_capture(reference, cas_root=tmp_path / "cas")
+    assert captured["toolchains"] == identity
+    assert (
+        toolchain_capture.compact_toolchains(captured["toolchains"])
+        == compact["toolchains"]
+    )
 
 
 @pytest.mark.parametrize("image_count", [0, 48, 2_000])
@@ -450,8 +490,7 @@ def test_compact_python_package_count_does_not_expand_receipt_or_allocation(
         "record_sha256": "f" * 64,
         "external_source": {"root": "external-root-0", "path": "src"},
     }
-    peaks: list[int] = []
-    sizes: list[int] = []
+    identities = []
     for package_count in (0, 2_000):
         identity = _identity(owned)
         bindings = [
@@ -481,24 +520,50 @@ def test_compact_python_package_count_does_not_expand_receipt_or_allocation(
         environment["external_roots"] = [
             {"id": "external-root-0", "path": str(tmp_path)}
         ]
-        gc.collect()
-        tracemalloc.start()
-        try:
-            summaries = toolchain_capture.compact_toolchains(identity)
-            receipt = {
-                "toolchains": summaries,
-                "toolchain_custody": {
-                    "prelaunch": summaries,
-                    "postcompletion": summaries,
-                    "identical": True,
-                },
-            }
-            encoded = json.dumps(receipt, sort_keys=True).encode()
-            _current, peak = tracemalloc.get_traced_memory()
-        finally:
-            tracemalloc.stop()
-        peaks.append(peak)
-        sizes.append(len(encoded))
+        identities.append(identity)
+    measurements = run_isolated_python_probe(
+        """
+        import gc
+        import json
+        import sys
+        import tracemalloc
+        from tools.proof_queue_pkg import toolchain_capture
+
+        identities = json.load(sys.stdin)
+        measurements = []
+        if tracemalloc.is_tracing():
+            raise RuntimeError("probe requires exclusive allocation tracing")
+        for identity in identities:
+            gc.collect()
+            tracemalloc.start()
+            try:
+                summaries = toolchain_capture.compact_toolchains(identity)
+                receipt = {
+                    "toolchains": summaries,
+                    "toolchain_custody": {
+                        "prelaunch": summaries,
+                        "postcompletion": summaries,
+                        "identical": True,
+                    },
+                }
+                encoded = json.dumps(receipt, sort_keys=True).encode()
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            measurements.append({"summaries": summaries, "size": len(encoded), "peak": peak})
+        print(json.dumps(measurements))
+        """,
+        payload=identities,
+    )
+    peaks = [row["peak"] for row in measurements]
+    sizes = [row["size"] for row in measurements]
+    for package_count, identity, measured in zip(
+        (0, 2_000), identities, measurements, strict=True
+    ):
+        summaries = measured["summaries"]
+        environment = identity["python"]["environment"]
+        distributions = environment["distributions"]
+        bindings = identity["python"]["node_custody"]
         compact_environment = summaries["python"]["environment"]
         assert "node_custody" not in summaries["python"]
         assert compact_environment["distributions"] == [editable]

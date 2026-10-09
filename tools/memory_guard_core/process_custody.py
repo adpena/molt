@@ -138,6 +138,7 @@ class GuardResult:
     peak_total: RssViolation | None
     stdout: str | bytes
     stderr: str | bytes
+    child_stderr: str | bytes | None
     timed_out: bool = False
     # Wall duration includes descendant closure and scratch retirement.
     elapsed_s: float | None = None

@@ -108,7 +108,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.platform_portability == 'true'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
+    timeout-minutes: 182
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.classify-changes.outputs.platform_portability_matrix) }}
@@ -252,7 +252,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.python_unit == 'true'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 21
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.classify-changes.outputs.python_unit_matrix) }}
@@ -287,7 +287,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.native_integration == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 43
     env:
       MOLT_GUARD_PROFILE: all
     steps:
@@ -345,7 +345,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 250
+    timeout-minutes: 254
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

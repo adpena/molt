@@ -255,7 +255,7 @@ def test_lean_cache_is_ignored_untracked_build_state() -> None:
 
 def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     projection = json.loads(gen_proof_plan._json_projection(PLAN))
-    assert projection["schema"] == "molt.proof-plan-projection.v6"
+    assert projection["schema"] == "molt.proof-plan-projection.v7"
     assert projection["receipt_schema"] == "molt.proof-receipt.v4"
     assert projection["authority_inputs"] == list(PLAN.authority_inputs)
     assert projection["authority_sha256"] == proof_plan._authority_sha256(PLAN)
@@ -316,12 +316,17 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         for family in families:
             envelope = PLAN.timeout_envelope(family.name)
             budget = int(family.data["timeout_minutes"]) * 60
+            reserve = int(family.data["job_reserve_seconds"])
             assert projected_envelopes[family.name] == {
                 "budget_seconds": budget,
                 "projected_makespan_seconds": envelope.projected_makespan_seconds,
                 "critical_path_seconds": envelope.critical_path_seconds,
                 "resource_capacity_floor_seconds": envelope.resource_capacity_floor_seconds,
-                "headroom_seconds": budget - envelope.projected_makespan_seconds,
+                "job_reserve_seconds": reserve,
+                "required_job_seconds": envelope.projected_makespan_seconds + reserve,
+                "headroom_seconds": budget
+                - envelope.projected_makespan_seconds
+                - reserve,
             }
     matrix_envelopes = projection["executor"]["github_matrix_timeout_envelopes"]
     matrix_families = tuple(
@@ -337,6 +342,14 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
             assert (
                 projected["projected_makespan_seconds"]
                 == envelope.projected_makespan_seconds
+            )
+            reserve = int(family.data["job_reserve_seconds"])
+            assert projected["job_reserve_seconds"] == reserve
+            assert projected["required_job_seconds"] == (
+                envelope.projected_makespan_seconds + reserve
+            )
+            assert projected["headroom_seconds"] == (
+                budget - envelope.projected_makespan_seconds - reserve
             )
             assert projected["headroom_seconds"] >= 0
     local = projection["local"]
@@ -681,8 +694,39 @@ def test_llvm_control_plane_changes_run_llvm_stack() -> None:
         "config/llvm_toolchain_arches.toml",
         ".github/actions/setup-llvm/action.yml",
         "tools/bootstrap_llvm.py",
+        "config/release_acceptance_matrix.toml",
+        "src/molt/release_lanes.py",
+        "src/molt/cli/compiler_identity.py",
+        "src/molt/cli/installed_runtime.py",
+        "tools/release/native_build.py",
+        "vendor/llvm/LICENSE.TXT",
     ):
         assert _classes(path)["llvm"] is True, path
+
+
+def test_release_lane_changes_exercise_installed_and_source_consumers() -> None:
+    commands = {command.id: command for command in PLAN.commands}
+    for path in ("src/molt/release_lanes.py", "tools/release/native_build.py"):
+        classes = _classes(path)
+        assert classes["repository_policy"] and classes["python_unit"]
+    for selector in (
+        "tests/test_release_lanes.py",
+        "tests/tools/test_release_native_build.py",
+        "tests/tools/test_release_installed_distribution.py",
+        "tests/tools/test_release_exit_gate.py",
+    ):
+        assert commands["repository.release-supply-chain"].argv.count(selector) == 1
+    for suffix in ("", ".macos"):
+        argv = commands[f"python.unit.runtime-artifacts{suffix}"].argv
+        for selector in (
+            "tests/test_llvm_toolchain.py",
+            "tests/cli/test_compiler_identity.py",
+            "tests/cli/test_installed_compiler.py",
+            "tests/cli/test_installed_runtime.py",
+            "tests/cli/test_cli_backend_output_pipeline_authority.py",
+            "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction",
+        ):
+            assert argv.count(selector) == 1
 
 
 def test_selected_family_does_not_pull_unrelated_proof_families() -> None:
@@ -868,18 +912,104 @@ def test_matrix_job_must_consume_its_own_family_matrix(tmp_path) -> None:
 
 def test_matrix_family_budget_binds_each_cell() -> None:
     commands = tuple(
-        replace(command, data={**command.data, "timeout_seconds": 1201})
+        replace(command, data={**command.data, "timeout_seconds": 1100})
         if command.id == "python.unit.harness.macos"
         else command
         for command in PLAN.commands
     )
     errors = replace(PLAN, commands=commands).validate()
-    # Harness (1201 s) runs beside the other four partitions: a 1320 s makespan.
-    # The Linux job is unchanged, so only the macOS cell exceeds its budget.
+    # The 1100 s harness followed by the 120 s library row gives 1220 s.
+    # Commands alone fit 1260 s; the 60 s reserve makes only macOS over budget.
     assert [error for error in errors if "timeout envelope" in error] == [
-        "python_unit: projected resource-aware timeout envelope 1320s in matrix "
-        "cell macos-arm64-py312-unit exceeds GitHub job budget 1200s"
+        "python_unit: projected resource-aware timeout envelope 1220s in matrix "
+        "cell macos-arm64-py312-unit plus job reserve 60s exceeds "
+        "GitHub job budget 1260s"
     ]
+
+
+@pytest.mark.parametrize(
+    ("family_name", "reserve"),
+    [
+        ("wasm", None),
+        ("wasm", True),
+        ("python_unit", 0),
+        ("python_unit", -1),
+        ("nightly_determinism", 1.5),
+        ("nightly_determinism", "60"),
+    ],
+)
+def test_job_reserve_requires_an_explicit_positive_integer(
+    family_name, reserve
+) -> None:
+    def alter(family):
+        if family.name != family_name:
+            return family
+        data = dict(family.data)
+        if reserve is None:
+            del data["job_reserve_seconds"]
+        else:
+            data["job_reserve_seconds"] = reserve
+        return replace(family, data=data)
+
+    plan = replace(
+        PLAN,
+        families=tuple(alter(family) for family in PLAN.families),
+        scheduled_families=tuple(alter(family) for family in PLAN.scheduled_families),
+    )
+    assert (
+        f"{family_name}: job_reserve_seconds must be a positive integer"
+        in plan.validate()
+    )
+
+
+def test_job_reserve_is_not_a_workflow_wide_budget() -> None:
+    families = tuple(
+        replace(family, data={**family.data, "job_reserve_seconds": 60})
+        if family.name == "formal"
+        else family
+        for family in PLAN.families
+    )
+    assert (
+        "formal: job_reserve_seconds requires a modeled job"
+        in replace(PLAN, families=families).validate()
+    )
+
+
+@pytest.mark.parametrize(
+    ("command_id", "deadline", "expected_error"),
+    [
+        (
+            "python.static.ty",
+            840,
+            "python_static: projected resource-aware timeout envelope 841s "
+            "plus job reserve 60s exceeds GitHub job budget 900s",
+        ),
+        (
+            "nightly.shards.profile-feedback",
+            300,
+            "nightly_shard_profile_feedback: projected resource-aware timeout "
+            "envelope 301s plus job reserve 300s exceeds scheduled job budget 600s",
+        ),
+    ],
+)
+def test_command_schedule_cannot_consume_the_job_reserve(
+    command_id, deadline, expected_error
+) -> None:
+    def at_deadline(value):
+        return replace(
+            PLAN,
+            commands=tuple(
+                replace(command, data={**command.data, "timeout_seconds": value})
+                if command.id == command_id
+                else command
+                for command in PLAN.commands
+            ),
+        )
+
+    # A single command plus reserve exactly fills the real workflow cap.
+    # One more second still fits the job on its own, but consumes reserved time.
+    assert at_deadline(deadline).validate() == []
+    assert at_deadline(deadline + 1).validate() == [expected_error]
 
 
 def test_github_job_timeout_covers_resource_aware_dag_envelope() -> None:
@@ -888,7 +1018,11 @@ def test_github_job_timeout_covers_resource_aware_dag_envelope() -> None:
             continue
         envelope = PLAN.timeout_envelope(family.name)
         budget = int(family.data["timeout_minutes"]) * 60
-        assert envelope.projected_makespan_seconds <= budget
+        assert (
+            envelope.projected_makespan_seconds
+            + int(family.data["job_reserve_seconds"])
+            <= budget
+        )
         assert envelope.critical_path_seconds <= envelope.projected_makespan_seconds
         assert max(envelope.resource_capacity_floor_seconds.values()) <= (
             envelope.projected_makespan_seconds
@@ -1195,7 +1329,9 @@ def test_wasm_host_export_applications_have_independent_cold_partitions() -> Non
         == compiler_seconds
     )
     family = next(family for family in PLAN.families if family.name == "wasm")
-    assert int(family.data["timeout_minutes"]) * 60 >= compiler_seconds
+    assert int(family.data["timeout_minutes"]) * 60 >= (
+        compiler_seconds + int(family.data["job_reserve_seconds"])
+    )
 
 
 def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
@@ -1206,12 +1342,15 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
         "tests/test_generate_worker.py",
         "tests/test_browser_asset_closure.py",
         "tests/test_wasm_reserved_callable_arity.py",
+        "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication",
     }
     assert {"pr", "main"} <= set(startup.data["tiers"])
     assert "node" in PLAN.required_toolchains(startup)
     assert not startup.dependencies
     for path in startup.argv[6:]:
-        assert "wasm" in {family.name for family in PLAN.select([path]).selected}
+        assert "wasm" in {
+            family.name for family in PLAN.select([path.split("::", 1)[0]]).selected
+        }
     split = rows["wasm.integration.split-runtime"]
     assert set(split.argv[6:]) == {
         "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts",
@@ -1221,10 +1360,78 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
         "tests/test_browser_vfs.py",
     }
     assert "node" in PLAN.required_toolchains(split)
+    assert split.evidence_outputs == ("proof-receipts/evidence/split-runtime",)
+    assert any(
+        "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication"
+        in command.argv
+        for command in PLAN.commands
+        if command.id == "wasm.test.startup-lifecycle"
+    )
     assert {"pr", "main"} <= set(split.data["tiers"])
     assert "wasm.build.host" not in {
         row.id for row in proof_plan._topological_commands(PLAN, command_id=split.id)
     }
+
+
+def test_import_from_codec_receivers_execute_both_targets() -> None:
+    from tools.compat import test_policy
+
+    row = next(
+        row for row in PLAN.commands if row.id == "wasm.test.import-from-codec-parity"
+    )
+    receivers = (
+        "tests/differential/basic/from_import_missing_name.py",
+        "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_oem_87baaa74.py",
+        "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py",
+    )
+    assert row.argv[:4] == (
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "tests/molt_diff.py",
+    )
+    assert row.argv[-3:] == receivers
+    assert row.evidence_outputs == ("proof-receipts/evidence/import-from-codec",)
+    for option, value in (
+        ("--target", "native,wasm"),
+        ("--jobs", "1"),
+        ("--build-profile", "dev"),
+        ("--stdlib-profile", "full"),
+        ("--python-version", "3.12"),
+        ("--molt-target-python", "3.12"),
+    ):
+        assert row.argv[row.argv.index(option) + 1] == value
+    assert "--no-retry-oom" in row.argv
+    assert "--warm-cache" not in row.argv
+    assert set(row.dependencies) == {"wasm.build.backend", "wasm.build.shared-runtime"}
+    assert {"node", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"} <= set(
+        PLAN.required_toolchains(row)
+    )
+    assert {"pr", "main"} <= set(row.data["tiers"])
+    assert row.data["resource_class"] == "compiler-build-resource"
+    assert row.data["timeout_budget"] == "cold"
+    family = next(family for family in PLAN.families if family.name == "wasm")
+    for receiver in receivers:
+        assert receiver in family.inputs
+        assert "wasm" in {family.name for family in PLAN.select([receiver]).selected}
+        metadata = test_policy.parse_metadata(
+            Path(__file__).resolve().parents[1] / receiver
+        )
+        # The runner's ordinary expectation policy cannot turn one of these
+        # required semantic failures into xfail, skip, or approximate stdout.
+        assert not metadata.expect_molt_fail
+        assert metadata.stdout_mode == "exact"
+        for backend in ("native", "wasm"):
+            assert (
+                test_policy.exclusion_reason(
+                    metadata,
+                    python_version=(3, 12),
+                    platform_tags={"linux", "posix"},
+                    architecture="x86_64",
+                    backend=backend,
+                )
+                is None
+            )
 
 
 def test_wasm_e2e_commands_bind_complete_child_toolchain_closure() -> None:
@@ -1956,6 +2163,14 @@ def test_generated_matrix_records_selection_reason() -> None:
     assert by_name["rust"]["selected_by"] == ["Cargo.lock"]
     assert by_name["rust"]["resource_class"] == "compiler-build-resource"
     assert by_name["rust"]["dependencies"] == []
+    for family in selection.selected:
+        if family.name not in by_name:
+            continue
+        record = by_name[family.name]
+        if family.data["executor"] in {"github-job", "github-matrix"}:
+            assert record["job_reserve_seconds"] == family.data["job_reserve_seconds"]
+        else:
+            assert "job_reserve_seconds" not in record
     assert by_name["rust"]["admission_job"] == "rust-build-unit-smoke"
     assert by_name["rust"]["admission_needs"] == ["classify-changes"]
     assert "rust.test.default-truth" in by_name["rust"]["command_ids"]
@@ -2640,6 +2855,18 @@ def test_timeout_envelope_models_dependencies_and_resource_capacity() -> None:
     assert envelope.resource_capacity_floor_seconds == {
         "resource-a": 30,
         "resource-b": 10,
+    }
+    projected = gen_proof_plan._envelope_record(
+        plan, "synthetic", 60, job_reserve_seconds=10
+    )
+    assert projected == {
+        "budget_seconds": 60,
+        "projected_makespan_seconds": 30,
+        "critical_path_seconds": 20,
+        "resource_capacity_floor_seconds": {"resource-a": 30, "resource-b": 10},
+        "job_reserve_seconds": 10,
+        "required_job_seconds": 40,
+        "headroom_seconds": 20,
     }
 
 

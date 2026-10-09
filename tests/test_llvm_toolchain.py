@@ -479,9 +479,13 @@ def _mock_llvm_config(
             return version
         if arguments == ("--targets-built",):
             return targets
-        if arguments == ("--link-static", "--libs", "core", "support"):
+        if arguments == ("--libdir",):
+            return str(prefix / "lib")
+        if arguments == ("--includedir",):
+            return str(prefix / "include")
+        if arguments == ("--libnames", "--link-static"):
             return str(prefix / "lib" / "LLVMCore.lib")
-        if arguments == ("--system-libs",):
+        if arguments == ("--system-libs", "--link-static"):
             return "kernel32.lib"
         raise AssertionError(arguments)
 
@@ -1674,9 +1678,13 @@ def test_windows_style_llvm_config_link_closure_resolves_dot_lib(
     _write(library, "library")
 
     def run(_executable: Path, *arguments: str) -> str:
-        if arguments == ("--link-static", "--libs", "core", "support"):
-            return "-lLLVMCore"
-        if arguments == ("--system-libs",):
+        if arguments == ("--libdir",):
+            return str(prefix / "lib")
+        if arguments == ("--includedir",):
+            return str(prefix / "include")
+        if arguments == ("--libnames", "--link-static"):
+            return "LLVMCore.lib"
+        if arguments == ("--system-libs", "--link-static"):
             return ""
         raise AssertionError(arguments)
 
@@ -1697,9 +1705,13 @@ def test_windows_llvm_config_link_closure_preserves_quoted_absolute_paths(
     _write(library, "library")
 
     def run(_executable: Path, *arguments: str) -> str:
-        if arguments == ("--link-static", "--libs", "core", "support"):
+        if arguments == ("--libdir",):
+            return str(prefix / "lib")
+        if arguments == ("--includedir",):
+            return str(prefix / "include")
+        if arguments == ("--libnames", "--link-static"):
             return f'"{library}"'
-        if arguments == ("--system-libs",):
+        if arguments == ("--system-libs", "--link-static"):
             return '"C:\\Program Files\\Windows Kits\\kernel32.lib"'
         raise AssertionError(arguments)
 
@@ -2233,3 +2245,133 @@ def test_projected_sdk_target_flags_have_complete_ordered_search_context(
         ROOT, applied, installation=installation, rust_target=rust_target
     )
     assert applied == projected
+
+
+def test_production_llvm_feature_keeps_pin_and_forces_static():
+    import tomllib
+    from molt.compiler_distribution import PRODUCTION_COMPILER_FEATURES
+
+    manifest = tomllib.loads(
+        (ROOT / "runtime/molt-backend-native/Cargo.toml").read_text("utf-8")
+    )
+    assert "llvm22-1" in manifest["dependencies"]["inkwell"]["features"]
+    assert "inkwell/llvm22-1-force-static" in manifest["features"]["llvm"]
+    assert required_llvm_backend_pin(ROOT).default_release == "22.1.8"
+    assert PRODUCTION_COMPILER_FEATURES == (
+        "llvm",
+        "luau-backend",
+        "native-backend",
+        "rust-backend",
+        "wasm-backend",
+    )
+
+
+def test_sdk_link_closure_captures_codegen_archives_and_static_system_flags(
+    tmp_path, monkeypatch
+):
+    prefix = tmp_path / "sdk"
+    libraries = ("libLLVMCore.a", "libLLVMX86CodeGen.a", "libLLVMAArch64CodeGen.a")
+    for name in libraries:
+        _write(prefix / "lib" / name, "archive")
+    calls = []
+
+    def query(_executable, *arguments):
+        calls.append(arguments)
+        if arguments == ("--libdir",):
+            return str(prefix / "lib")
+        if arguments == ("--includedir",):
+            return str(prefix / "include")
+        if arguments == ("--libnames", "--link-static"):
+            return " ".join(libraries)
+        if arguments == ("--system-libs", "--link-static"):
+            return "-lm -lpthread"
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(llvm_toolchain, "_run_llvm_config", query)
+    rendered, paths = llvm_toolchain._llvm_link_closure(
+        prefix, prefix / "bin/llvm-config"
+    )
+    assert rendered == (
+        "lib/libLLVMCore.a",
+        "lib/libLLVMX86CodeGen.a",
+        "lib/libLLVMAArch64CodeGen.a",
+        "system:-lm",
+        "system:-lpthread",
+    )
+    assert paths == tuple((prefix / "lib" / name).resolve() for name in libraries)
+    assert calls == [
+        ("--libnames", "--link-static"),
+        ("--system-libs", "--link-static"),
+        ("--libdir",),
+        ("--includedir",),
+    ]
+
+
+@pytest.mark.parametrize(
+    "library", ["-lLLVMCore", "libLLVM.so", "libLLVM.dylib", "missing.a"]
+)
+def test_sdk_static_admission_never_substitutes_shared_library(
+    tmp_path, monkeypatch, library
+):
+    prefix = tmp_path / "sdk"
+    _write(prefix / "lib/libLLVM.so", "shared")
+    _write(prefix / "lib/libLLVM.dylib", "shared")
+
+    def query(_path, *args):
+        if args == ("--libnames", "--link-static"):
+            return library
+        if args == ("--libdir",):
+            return str(prefix / "lib")
+        if args == ("--includedir",):
+            return str(prefix / "include")
+        return ""
+
+    monkeypatch.setattr(llvm_toolchain, "_run_llvm_config", query)
+    with pytest.raises(LlvmToolchainConfigError, match="non-archive|missing library"):
+        llvm_toolchain._llvm_link_closure(prefix, prefix / "bin/llvm-config")
+
+
+def test_sdk_verification_keeps_one_config_image_across_all_answers(
+    tmp_path, monkeypatch
+):
+    prefix = tmp_path / "sdk"
+    _write_complete_llvm_prefix(prefix)
+    _mock_tool_process_versions(monkeypatch)
+    _mock_llvm_config(prefix, monkeypatch)
+    original = llvm_toolchain._run_llvm_config
+
+    def replace_after_version(path, *args):
+        result = original(path, *args)
+        if args == ("--version",):
+            path.write_bytes(b"different executable with same reported version")
+        return result
+
+    monkeypatch.setattr(llvm_toolchain, "_run_llvm_config", replace_after_version)
+    with pytest.raises(ValueError, match="changed"):
+        verify_llvm_toolchain_prefix(
+            ROOT, prefix, expected_targets=("X86", "WebAssembly")
+        )
+
+
+@pytest.mark.parametrize("option", ["--libdir", "--includedir"])
+def test_sdk_config_must_select_the_captured_library_and_header_roots(
+    tmp_path, monkeypatch, option
+):
+    prefix = tmp_path / "sdk"
+    _write(prefix / "lib/libLLVMCore.a", "archive")
+
+    def query(_path, *args):
+        if args == (option,):
+            return str(tmp_path / "uncaptured")
+        return {
+            ("--libnames", "--link-static"): "libLLVMCore.a",
+            ("--system-libs", "--link-static"): "",
+            ("--libdir",): str(prefix / "lib"),
+            ("--includedir",): str(prefix / "include"),
+        }[args]
+
+    monkeypatch.setattr(llvm_toolchain, "_run_llvm_config", query)
+    with pytest.raises(
+        LlvmToolchainConfigError, match="escapes the admitted SDK layout"
+    ):
+        llvm_toolchain._llvm_link_closure(prefix, prefix / "bin/llvm-config")

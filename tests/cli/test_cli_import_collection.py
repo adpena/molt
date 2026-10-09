@@ -21734,6 +21734,7 @@ def test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair(
         runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
     )
     prepared_backend_setup = cli._PreparedBackendSetup(
+        backend="native",
         runtime_state=runtime_state,
         backend_bin=tmp_path / "molt-backend",
         cache_setup=cli._BackendCacheSetup(
@@ -21832,6 +21833,7 @@ def test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest(
         cache_hit_tier=None,
     )
     prepared_backend_setup = cli._PreparedBackendSetup(
+        backend="native",
         runtime_state=runtime_state,
         backend_bin=tmp_path / "molt-backend",
         cache_setup=cache_setup,
@@ -21892,6 +21894,7 @@ def test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_d
         cache_hit_tier=None,
     )
     prepared_backend_setup = cli._PreparedBackendSetup(
+        backend="native",
         runtime_state=runtime_state,
         backend_bin=tmp_path / "molt-backend",
         cache_setup=cache_setup,
@@ -24351,6 +24354,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         )
         return (
             cli._PreparedBackendSetup(
+                backend="native",
                 runtime_state=runtime_state,
                 backend_bin=tmp_path / "molt-backend",
                 cache_setup=cache_setup,

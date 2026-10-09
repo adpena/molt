@@ -1383,6 +1383,7 @@ def test_cli_cargo_deferral_guidance_preserves_evidence(tmp_path):
         timed_out=True,
         elapsed_s=1.0,
         cargo_incremental_quarantine=receipt,
+        child_stderr="",
     )
     reporting.emit_terminal_report(
         result,

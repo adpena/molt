@@ -56,9 +56,11 @@ defines test selection, source-change checks, and the exact cross-target pass la
 
 ## What Molt Supports Today
 
-- Native AOT compilation through Cranelift by default. LLVM is an opt-in
-  source-checkout build; the current prebuilt compiler feature set omits it.
-  The experimental Rust source emitter is a separate backend.
+- Native AOT compilation through Cranelift by default, with opt-in LLVM code
+  generation. The production compiler build includes the pinned static LLVM
+  feature; installed use requires an admitted compiler and runtime cell.
+  Host/backend release qualification remains subject to the verified support
+  matrix. The experimental Rust source emitter is a separate backend.
 - Standalone binary workflows with no runtime dependency on local CPython.
 - A growing Rust-first stdlib lowering program with generated audit surfaces.
 - Differential testing against CPython as a core validation path.
@@ -135,8 +137,10 @@ or colliding archive names fail with a diagnostic before replacing prior output.
 
 These profiles select optimization of **your program**, not the compiler itself.
 Release bundles, package-manager installs and platform wheels ship a
-production-optimized compiler and prebuilt runtimes for both profiles; installed
-compilation never builds Rust. Compiler developers can opt
+production-optimized compiler and prebuilt runtimes for the required
+[release lanes](config/release_acceptance_matrix.toml). Native and LLVM share
+physical runtime cells while retaining distinct compiled products. Installed
+compilation never builds Rust or provisions an LLVM SDK. Compiler developers can opt
 into a development host build with `MOLT_BACKEND_PROFILE=dev` in a source checkout.
 `--diagnostics` reports the compiler identity/profile separately from the program
 and runtime profiles, together with build-phase and cache information.

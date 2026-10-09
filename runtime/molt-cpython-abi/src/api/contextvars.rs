@@ -170,7 +170,9 @@ pub unsafe extern "C" fn PyContextVar_Reset(var: *mut PyObject, token: *mut PyOb
     if status < 0 { status_error() } else { status }
 }
 unsafe fn exact(value: *mut PyObject, ty: *mut PyTypeObject) -> c_int {
-    c_int::from(!value.is_null() && unsafe { (*value).ob_type == ty })
+    // Public CheckExact follows Py_TYPE identity. The generic bridge carrier
+    // describes physical storage and is not the Context object's Python class.
+    unsafe { crate::bridge::is_exact_semantic_type(value, ty) as c_int }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyContext_CheckExact(value: *mut PyObject) -> c_int {

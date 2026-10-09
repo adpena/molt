@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 from pathlib import Path
@@ -398,6 +399,17 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(
         lambda root, **kw: SimpleNamespace(
             prefix=prefix,
             llvm_config=llvm_config,
+            link_closure=("lib/libLLVM.a",),
+            tool_versions=(
+                llvm_toolchain.LlvmToolVersionFact(
+                    "llvm-config",
+                    "bin/llvm-config",
+                    "22.1.8",
+                    len(b"llvm-config"),
+                    hashlib.sha256(b"llvm-config").hexdigest(),
+                ),
+            ),
+            content_facts=(),
             library_facts=(
                 llvm_toolchain.LlvmLibraryFact(
                     path="lib/libLLVM.a", size=8, mtime_ns=0

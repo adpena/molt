@@ -1103,7 +1103,7 @@ fn importlib_reader_lookup_callable(
     Ok(Some(attr_bits))
 }
 
-fn getattr_optional_bits(
+pub(crate) fn getattr_optional_bits(
     _py: &PyToken<'_>,
     target_bits: u64,
     name_bits: u64,

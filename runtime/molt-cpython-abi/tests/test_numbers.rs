@@ -226,20 +226,20 @@ unsafe extern "C" fn protocol_runtime_class(
     bits: u64,
 ) -> molt_cpython_abi::hooks::BorrowedHandleResult {
     NUMERIC_CLASS_CALLS.with(|value| value.set(value.get() + 1));
-    if let Some((object, error)) = CLASS_CALLBACK_ERROR.with(Cell::get) {
-        if object == bits {
-            unsafe {
-                molt_cpython_abi::api::errors::PyErr_SetRaisedException(
-                    molt_cpython_abi::api::object::Py_NewRef(error as *mut PyObject),
-                )
-            };
-            return molt_cpython_abi::hooks::BorrowedHandleResult::error();
-        }
+    if let Some((object, error)) = CLASS_CALLBACK_ERROR.with(Cell::get)
+        && object == bits
+    {
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetRaisedException(
+                molt_cpython_abi::api::object::Py_NewRef(error as *mut PyObject),
+            )
+        };
+        return molt_cpython_abi::hooks::BorrowedHandleResult::error();
     }
-    if let Some((object, class)) = PROTOCOL_CLASS.with(Cell::get) {
-        if object == bits {
-            return molt_cpython_abi::hooks::BorrowedHandleResult::ok(class);
-        }
+    if let Some((object, class)) = PROTOCOL_CLASS.with(Cell::get)
+        && object == bits
+    {
+        return molt_cpython_abi::hooks::BorrowedHandleResult::ok(class);
     }
     unsafe { support::fake_runtime::runtime_class_borrowed(bits) }
 }
@@ -2035,9 +2035,13 @@ fn private_index_consumers_extract_wide_subtypes_without_exact_materialization()
         // Transfer the slot's sole reference; its destructor must run once and
         // must not replace the overflow found while that result was alive.
         subtype.tp_dealloc = Some(index_result_finalizer);
-        slots.nb_index = owned_index_slot_result as *const () as *mut c_void;
+        // Mutate the published table that foreign conversion reads through
+        // object.ob_type, keeping the stack slot storage in place.
+        (*class.tp_as_number.cast::<PyNumberMethods>()).nb_index =
+            owned_index_slot_result as *const () as *mut c_void;
         INDEX_RESULT_FINALIZERS.with(|count| count.set(0));
         assert_eq!(numbers::PyLong_AsLongLong(object_ptr), -1);
+        assert_eq!(SLOT_RESULT.with(Cell::get), 0);
         assert_eq!(INDEX_RESULT_FINALIZERS.with(Cell::get), 1);
         assert_eq!(
             errors::PyErr_ExceptionMatches(
@@ -2047,7 +2051,6 @@ fn private_index_consumers_extract_wide_subtypes_without_exact_materialization()
         );
         assert_eq!(result.ob_base.ob_refcnt, 0);
         errors::PyErr_Clear();
-        drop(bound);
         drop(args);
         assert_eq!(object.ob_refcnt, 1);
     });

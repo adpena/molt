@@ -80,5 +80,5 @@ native-backend = [
     "molt-ir/native-backend",
     "molt-tir/native-backend",
 ]
-llvm = ["dep:inkwell", "molt-ir/llvm", "molt-tir/llvm"]
+llvm = ["dep:inkwell", "inkwell/llvm22-1-force-static", "molt-ir/llvm", "molt-tir/llvm"]
 polly = ["llvm", "dep:llvm-sys"]

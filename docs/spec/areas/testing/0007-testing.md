@@ -289,6 +289,18 @@ on actual cleanup; observation expiry reports unresolved closure, not cleanup
 failure. An eventual close does not retroactively turn the failed proof into a
 successful receipt.
 
+The canonical proof plan separately declares `job_reserve_seconds` for each CI
+job, matrix family and scheduled job. Admission requires its resource-aware
+command-deadline schedule plus that positive reserve to fit the workflow cap;
+each matrix runner must fit independently. The reserve covers setup, identity
+capture, guard finalization and artifact transport outside command deadlines.
+Observed allowances rounded upward to whole minutes and retained declared
+scheduled allowances are minimum planning allocations, not hard bounds on
+network provisioning or OS cleanup. Generated headroom subtracts both command
+work and reserve. Job allowance never extends a child's deadline or turns
+unresolved closure into success. Workflow-wide families retain their separate
+job topology and do not pretend to have one modeled execution budget.
+
 Global cancellation covers unsafe memory pressure, missing or invalid guard
 metrics, unresolved guard or Cargo-quarantine ownership, uncertain descendant
 closure, source changes, guard or child signals and host exceptions, lost

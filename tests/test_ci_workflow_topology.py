@@ -699,6 +699,14 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
     assert paths == (
         [
             f"proof-receipts/{family}.json",
+            *(
+                [
+                    "proof-receipts/evidence/import-from-codec/",
+                    "proof-receipts/evidence/split-runtime/",
+                ]
+                if wasm
+                else []
+            ),
             *common_profiles,
             "${{ steps.build-control.outputs.guard_state_root != '' && format('{0}/commands/**/*.json', steps.build-control.outputs.guard_state_root) || '' }}",
             "${{ steps.build-control.outputs.pytest_guard_root != '' && format('{0}/**/*.json', steps.build-control.outputs.pytest_guard_root) || '' }}",
@@ -745,6 +753,18 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             custody / "tmp/memory_guard/commands/current" / name
             for name in ("custody.json", "startup.json", "guard.json")
         ]
+        if wasm:
+            retained_files += [
+                workspace / "proof-receipts/evidence/import-from-codec" / name
+                for name in ("results.jsonl", "summary.json", "output.log")
+            ]
+            retained_files += [
+                workspace / "proof-receipts/evidence/split-runtime" / name
+                for name in (
+                    "files/sha256/data/ab/cd/molt_runtime.wasm",
+                    "blobs/sha256/ef/failure.json.gz",
+                )
+            ]
     else:
         retained_files += [
             workspace / "proof-receipts/evidence/runtime-gate-runs/run/aggregate.json",
@@ -778,6 +798,14 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             candidate.is_relative_to(custody)
             or candidate == workspace / rendered[0]
             or candidate == workspace / "proof-receipts/evidence/runtime-gate-runs"
+            or (
+                wasm
+                and candidate
+                in {
+                    workspace / "proof-receipts/evidence/import-from-codec",
+                    workspace / "proof-receipts/evidence/split-runtime",
+                }
+            )
         )
         for found in glob.glob(str(candidate), recursive=True, include_hidden=True):
             path = Path(found)
@@ -941,8 +969,11 @@ def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
     # Host packages serve only the Linux full SDK. Every WebAssembly tool comes
     # from the one manifest-owned wasi-sdk provisioner on every host.
     apt_step = steps["Provision full LLVM SDK packages"]
-    assert apt_step["if"] == "inputs.profile == 'full'"
-    assert 'if [ "$RUNNER_OS" != "Linux" ]' in apt_step["run"]
+    assert apt_step["if"] == "inputs.profile == 'full' && runner.os == 'Linux'"
+    source_step = steps["Provision full LLVM SDK from pinned source"]
+    assert source_step["if"] == "inputs.profile == 'full' && runner.os != 'Linux'"
+    assert "python -m tools.bootstrap_llvm" in source_step["run"]
+    assert "curl" not in source_step["run"]
     assert sum("apt-get" in str(step.get("run", "")) for step in action_steps) == 1
     assert "lld-$LLVM_MAJOR" not in action_text
     cache = steps["Restore verified wasi-sdk archive"]
@@ -1007,7 +1038,7 @@ def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
         if step.get("uses") == "./.github/actions/setup-llvm"
     ]
     assert [release_steps[index]["with"] for index in release_llvm] == [
-        {"profile": "wasm", "wasi": "true"}
+        {"profile": "full", "wasi": "true"}
     ]
     identity_index = next(
         index
@@ -1015,6 +1046,17 @@ def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
         if step.get("name") == "Verify candidate toolchain identity"
     )
     assert release_llvm[0] < identity_index
+    semantic = yaml.safe_load(_read(".github/workflows/verified-subset.yml"))["jobs"]
+    semantic_sdk = [
+        step
+        for job in semantic.values()
+        for step in job.get("steps", [])
+        if step.get("uses") == "./.github/actions/setup-llvm"
+    ]
+    assert {(step["if"], step["with"]["profile"]) for step in semantic_sdk} == {
+        ("matrix.backend == 'llvm'", "full"),
+        ("matrix.backend == 'wasm'", "wasm"),
+    }
     assert '"$MOLT_WASM_LD" --version' in release_steps[identity_index]["run"]
     assert "grep -oE" not in ci_text
     assert "grep -oE" not in perf_text
@@ -1964,6 +2006,25 @@ def test_node_toolchain_consumers_provision_the_canonical_version() -> None:
         assert len(setup_steps) == 1, family
         assert setup_steps[0].get("with", {}).get("node-version") == "pinned", family
 
+        if family in {"repository_policy", "wasm"}:
+            steps = jobs[job_name]["steps"]
+            setup_index = steps.index(setup_steps[0])
+            parser_indices = [
+                index
+                for index, step in enumerate(steps)
+                if "tools/bootstrap_browser_asset_graph.py" in step.get("run", "")
+            ]
+            partition_index = next(
+                index
+                for index, step in enumerate(steps)
+                if f"--run-family {family}" in step.get("run", "")
+            )
+            assert len(parser_indices) == 1, family
+            assert setup_index < parser_indices[0] < partition_index, family
+            assert setup_steps[0]["with"]["node-cache-dependency-path"] == (
+                "tools/browser_asset_graph/package-lock.json"
+            )
+
 
 def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     wasm_text = _read(".github/workflows/molt-wasm-ci.yml")
@@ -2034,6 +2095,10 @@ def test_wasm_ci_guarded_steps_have_github_timeout_backstops() -> None:
     )
 
     assert f"timeout-minutes: {wasm_family['timeout_minutes']}" in wasm_text
+    # The reserve is family policy, never an override of nested command bounds.
+    assert type(wasm_family["job_reserve_seconds"]) is int
+    assert wasm_family["job_reserve_seconds"] > 0
+    assert "job_reserve_seconds" not in wasm_text
     assert "--timeout" not in wasm_text
     assert "MOLT_CARGO_TIMEOUT:" not in wasm_text
     assert "MOLT_WASM_TEST_TIMEOUT_SEC:" not in wasm_text

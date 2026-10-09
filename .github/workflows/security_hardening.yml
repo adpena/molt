@@ -65,7 +65,7 @@ jobs:
   rust-security:
     if: github.event_name == 'schedule' || inputs.rust_security
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 21
     env:
       MOLT_SESSION_ID: rust-security-${{ github.run_id }}-${{ github.run_attempt }}
     steps:

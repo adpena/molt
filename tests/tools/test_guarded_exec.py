@@ -55,7 +55,13 @@ def _install_fake_context(module, monkeypatch, result=None):
                 result
                 if result is not None
                 else module.harness_memory_guard.GuardedCompletedProcess(
-                    command, 0, "", "", elapsed_s=0, descendants_closed=True
+                    command,
+                    0,
+                    "",
+                    "",
+                    elapsed_s=0,
+                    descendants_closed=True,
+                    child_stderr="",
                 )
             )
 
@@ -86,6 +92,7 @@ def test_guarded_exec_metrics_preserve_child_and_infrastructure_outcomes(
         child_returncode=0,
         infrastructure_failure=failure,
         temporary_artifacts=artifacts,
+        child_stderr="",
     )
     _install_fake_context(module, monkeypatch, result)
     metrics = tmp_path / "metrics.json"
@@ -109,7 +116,13 @@ def test_guarded_exec_signal_metrics_drive_executor_failure_scope(
     module = _load_guarded_exec()
     for returncode, expected in ((128, "partition"), (143, "global")):
         result = module.harness_memory_guard.GuardedCompletedProcess(
-            ["fixture"], returncode, "", "", elapsed_s=0, descendants_closed=True
+            ["fixture"],
+            returncode,
+            "",
+            "",
+            elapsed_s=0,
+            descendants_closed=True,
+            child_stderr="",
         )
         _install_fake_context(module, monkeypatch, result)
         metrics = tmp_path / f"metrics-{returncode}.json"
@@ -330,6 +343,7 @@ def test_guarded_exec_metrics_preserve_deadline_and_cargo_ownership(
         timed_out=True,
         guard_signal=15,
         cargo_incremental_quarantine=quarantine,
+        child_stderr="",
     )
     _install_fake_context(module, monkeypatch, result)
     output = tmp_path / "metrics.json"

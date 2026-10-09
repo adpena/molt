@@ -561,7 +561,7 @@ def _planned_pair(
     if state_override := build_env.get("MOLT_BUILD_STATE_DIR"):
         required_env["MOLT_BUILD_STATE_DIR"] = state_override
     with _exact_build_environment(build_env):
-        cargo_profile, error = _resolve_cargo_profile_name(build_profile)  # type: ignore[arg-type]
+        cargo_profile, error = _resolve_cargo_profile_name(build_profile, wasm=True)  # type: ignore[arg-type]
         if error is not None:
             raise ValueError(error)
         shared = runtime_dir / "molt_runtime.wasm"
@@ -606,7 +606,7 @@ def _planned_pair(
         raise ValueError("planned runtime identities do not form one pair")
     return {
         "required_env": required_env,
-        "cargo_profile": cargo_profile,
+        "cargo_profile": shared_spec.cargo_profile,
         "toolchain_manifest": os.fspath(manifest_path),
         "toolchain_digest": toolchain_manifest.digest,
         "family_digest": shared_identity.family_digest,

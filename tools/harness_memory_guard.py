@@ -129,7 +129,9 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         temporary_artifacts: Mapping[str, object] | None = None,
         child_returncode: int | None = None,
         infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None,
-        child_stderr: Output | None = None,
+        child_stderr: Output | None,
+        sampling_telemetry: memory_guard.GuardSamplingTelemetry | None = None,
+        sampling_interval_s: float | None = None,
         cancelled: bool = False,
         descendants_closed: bool = False,
     ) -> None:
@@ -158,7 +160,9 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         self.child_returncode = child_returncode
         self.infrastructure_failure = infrastructure_failure
         # Child diagnostics and guard/reproduction context have different authority.
-        self.child_stderr = stderr if child_stderr is None else child_stderr
+        self.child_stderr = child_stderr
+        self.sampling_telemetry = sampling_telemetry
+        self.sampling_interval_s = sampling_interval_s
 
 
 def _claim_terminated_pgid(pgid: int) -> bool:
@@ -1492,7 +1496,9 @@ def guarded_completed_process(
         temporary_artifacts=guarded.temporary_artifacts,
         child_returncode=guarded.child_returncode,
         infrastructure_failure=guarded.infrastructure_failure,
-        child_stderr=guarded.stderr or ("" if text else b""),
+        child_stderr=guarded.child_stderr,
+        sampling_telemetry=guarded.sampling_telemetry,
+        sampling_interval_s=resolved_limits.poll_interval,
         cancelled=guarded.cancelled,
         descendants_closed=guarded.descendants_closed,
     )
@@ -1744,7 +1750,13 @@ def guarded_completed_process_to_tempfiles(
         temporary_artifacts=guarded.temporary_artifacts,
         child_returncode=guarded.child_returncode,
         infrastructure_failure=guarded.infrastructure_failure,
-        child_stderr=_guard_output_bytes(guarded.stderr),
+        child_stderr=(
+            None
+            if guarded.child_stderr is None
+            else _guard_output_bytes(guarded.child_stderr)
+        ),
+        sampling_telemetry=guarded.sampling_telemetry,
+        sampling_interval_s=resolved_limits.poll_interval,
         cancelled=guarded.cancelled,
         descendants_closed=guarded.descendants_closed,
     )

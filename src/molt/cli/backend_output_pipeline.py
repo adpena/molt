@@ -72,6 +72,7 @@ def _emit_backend_pipeline_outputs(
     from molt.cli.runtime_wasm_build_policy import _resolve_wasm_cargo_profile
 
     selected_profiles = {
+        "backend": prepared_backend_setup.backend,
         "guest_profile": profile,
         "compiler_profile": prepared_build_config.backend_cargo_profile,
         "runtime_profile": (
@@ -113,11 +114,7 @@ def _emit_backend_pipeline_outputs(
                 "cargo_profile": prepared_build_config.backend_cargo_profile,
                 "fingerprint": prepared_backend_runtime_context.backend_compiler_fingerprint,
             }
-            diagnostics_payload["program"] = {
-                "profile": profile,
-                "runtime_cargo_profile": prepared_build_config.runtime_cargo_profile,
-                "target": target,
-            }
+            diagnostics_payload["program"] = dict(selected_profiles)
         return diagnostics_payload, diagnostics_path
 
     def return_after_build_diagnostics(result: int) -> int:

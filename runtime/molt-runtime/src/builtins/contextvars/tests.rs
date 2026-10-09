@@ -313,10 +313,14 @@ fn nested_enter_restores_previous_and_same_context_reentry_fails() {
 #[test]
 fn public_c_api_shares_runtime_identity_defaults_tokens_and_snapshots() {
     fixture(|py| unsafe {
+        use molt_cpython_abi::api::refcount::OwnedPyObject;
         clear_thread_context(py);
-        let default = numbers::PyLong_FromLong(10);
-        let caller = numbers::PyLong_FromLong(20);
-        let var = c::PyContextVar_New(c"".as_ptr(), default);
+        let default_owner = OwnedPyObject::from_owned(numbers::PyLong_FromLong(10));
+        let default = default_owner.as_ptr();
+        let caller_owner = OwnedPyObject::from_owned(numbers::PyLong_FromLong(20));
+        let caller = caller_owner.as_ptr();
+        let var_owner = OwnedPyObject::from_owned(c::PyContextVar_New(c"".as_ptr(), default));
+        let var = var_owner.as_ptr();
         assert!(!var.is_null(), "empty names are legal");
         assert_eq!(c::PyContextVar_CheckExact(var), 1);
         let bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
@@ -325,16 +329,72 @@ fn public_c_api_shares_runtime_identity_defaults_tokens_and_snapshots() {
             .bits();
         assert_eq!(get_variable(py, bits, None), Some(Some(integer(10))));
         let mut out: *mut PyObject = ptr::null_mut();
-        assert_eq!(c::PyContextVar_Get(var, caller, &mut out), 0);
+        let status = c::PyContextVar_Get(var, caller, &mut out);
+        let output_owner = OwnedPyObject::from_owned(out);
+        assert_eq!(status, 0);
         assert_eq!(out, caller);
-        refcount::Py_DECREF(out);
-        let token = c::PyContextVar_Set(var, caller);
+        drop(output_owner);
+        let token_owner = OwnedPyObject::from_owned(c::PyContextVar_Set(var, caller));
+        let token = token_owner.as_ptr();
         assert!(!token.is_null());
         assert_ne!(token, caller);
         assert_eq!(c::PyContextToken_CheckExact(token), 1);
         assert_eq!(get_variable(py, bits, None), Some(Some(integer(20))));
-        let copied = c::PyContext_CopyCurrent();
+        let copied_owner = OwnedPyObject::from_owned(c::PyContext_CopyCurrent());
+        let copied = copied_owner.as_ptr();
         assert_eq!(c::PyContext_CheckExact(copied), 1);
+        {
+            use molt_cpython_abi::abi_types::{
+                MoltManaged_Type, PyContext_Type, PyContextToken_Type, PyContextVar_Type,
+            };
+            use molt_cpython_abi::api::typeobj::_Py_TYPE;
+            use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+            let types = [
+                &raw mut PyContext_Type,
+                &raw mut PyContextVar_Type,
+                &raw mut PyContextToken_Type,
+            ];
+            let predicates: [unsafe extern "C" fn(*mut PyObject) -> std::ffi::c_int; 3] = [
+                c::PyContext_CheckExact,
+                c::PyContextVar_CheckExact,
+                c::PyContextToken_CheckExact,
+            ];
+            // Constructor identity is the independent oracle. Every positive
+            // still has an honest generic physical view; the three public
+            // predicates and Py_TYPE must agree on its distinct Python class.
+            for (object, expected) in [(copied, 0), (var, 1), (token, 2)] {
+                assert_eq!((*object).ob_type, &raw mut MoltManaged_Type);
+                assert_eq!(_Py_TYPE(object), types[expected]);
+                for (index, predicate) in predicates.iter().enumerate() {
+                    assert_eq!(predicate(object), i32::from(index == expected));
+                }
+            }
+            let copied_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(copied).unwrap().bits();
+            let iterator = OwnedPyObject::from_owned(
+                GLOBAL_BRIDGE.owned_handle_to_pyobj(molt_contextvars_keys(copied_bits)),
+            );
+            let token_missing =
+                OwnedPyObject::from_owned(molt_cpython_abi::api::object::PyObject_GetAttrString(
+                    types[2].cast(),
+                    c"MISSING".as_ptr(),
+                ));
+            assert!(!iterator.as_ptr().is_null() && !token_missing.as_ptr().is_null());
+            // Nearby Context iterators and Token.MISSING use the same generic
+            // carrier but are not any of the three public Context classes.
+            for object in [iterator.as_ptr(), token_missing.as_ptr()] {
+                assert_eq!((*object).ob_type, &raw mut MoltManaged_Type);
+                assert!(!types.contains(&_Py_TYPE(object)));
+                for predicate in predicates {
+                    assert_eq!(predicate(object), 0);
+                }
+            }
+            for object in [caller, types[0].cast(), ptr::null_mut()] {
+                for predicate in predicates {
+                    assert_eq!(predicate(object), 0);
+                }
+            }
+            assert!(errors::PyErr_Occurred().is_null());
+        }
         assert_eq!(c::PyContext_Enter(copied), 0);
         assert_eq!(c::PyContextVar_Reset(var, token), -1);
         assert!(!errors::PyErr_Occurred().is_null());
@@ -343,7 +403,9 @@ fn public_c_api_shares_runtime_identity_defaults_tokens_and_snapshots() {
         assert_eq!(c::PyContextVar_Reset(var, token), 0);
         assert_eq!(c::PyContextVar_Reset(var, token), -1);
         errors::PyErr_Clear();
-        let missing = c::PyContextVar_New(c"missing".as_ptr(), ptr::null_mut());
+        let missing_owner =
+            OwnedPyObject::from_owned(c::PyContextVar_New(c"missing".as_ptr(), ptr::null_mut()));
+        let missing = missing_owner.as_ptr();
         out = usize::MAX as *mut PyObject;
         assert_eq!(c::PyContextVar_Get(missing, ptr::null_mut(), &mut out), 0);
         assert!(out.is_null());
@@ -352,9 +414,14 @@ fn public_c_api_shares_runtime_identity_defaults_tokens_and_snapshots() {
         assert!(out.is_null());
         assert!(!errors::PyErr_Occurred().is_null());
         errors::PyErr_Clear();
-        for object in [default, caller, var, token, copied, missing] {
-            refcount::Py_DECREF(object);
-        }
+        drop((
+            default_owner,
+            caller_owner,
+            var_owner,
+            token_owner,
+            copied_owner,
+            missing_owner,
+        ));
         clear_thread_context(py);
     });
 }

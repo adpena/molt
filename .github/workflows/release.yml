@@ -174,10 +174,10 @@ jobs:
           sync: "true"
           sync-frozen: "true"
 
-      - name: Setup canonical WebAssembly SDK
+      - name: Setup canonical compiler and WebAssembly SDKs
         uses: ./.github/actions/setup-llvm
         with:
-          profile: wasm
+          profile: full
           wasi: "true"
 
       - name: Verify candidate toolchain identity

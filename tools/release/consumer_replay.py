@@ -1,4 +1,4 @@
-"""One sealed post-uninstall replay and retained-evidence contract for v7."""
+"""One sealed post-uninstall replay and retained-evidence contract for logical release lanes."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from molt.exact_json import (
     read_exact,
 )
 from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+from molt.release_lanes import ReleaseLane, capture_release_lanes
 from molt.toolchain_identity import (
     capture_stable_regular_file,
     verify_stable_regular_file_identity,
@@ -37,7 +38,7 @@ from . import execution_root
 from .archive import extract_zip_strict, write_reproducible_zip, same_regular_file_bytes
 from .release_model import ROOT, validate_artifact_record, write_json
 
-SCHEMA = "molt.release-consumer-replay.v1"
+SCHEMA = "molt.release-consumer-replay.v2"
 ENVIRONMENT = {"PATH": "/absent", "HOME": "/absent", "LANG": "C", "LC_ALL": "C"}
 
 
@@ -48,50 +49,53 @@ def provision_verifier() -> tuple[Path, dict[str, object]]:
     return binary, generation
 
 
-def _cell_id(owner: str, minor: str, target: str, profile: str) -> str:
-    if (
-        owner not in {"bundle", "pip"}
-        or minor not in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
-        or target not in {"native", "wasm"}
-        or profile not in {"dev", "release"}
-    ):
-        raise ValueError("consumer replay coordinate is invalid")
-    return f"{owner}-{minor}-{target}-{profile}"
-
-
 def expected_runs(
     proofs: list[dict[str, Any]], pip_proof: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    rows = [
-        {
-            "id": _cell_id("bundle", proof["python"], cell["target"], cell["profile"]),
-            "owner": "bundle",
-            "python": proof["python"],
-            "target": cell["target"],
-            "profile": cell["profile"],
-            "artifact": cell["artifact"],
-            "manifest": cell["manifest"],
-        }
-        for proof in proofs
-        for cell in proof["cells"]
-    ]
-    rows.append(
-        {
-            "id": _cell_id("pip", pip_proof["python"], "native", "release"),
-            "owner": "pip",
-            "python": pip_proof["python"],
-            "target": "native",
-            "profile": "release",
-            "artifact": pip_proof["artifact"],
-            "manifest": None,
-        }
-    )
+    lanes = {lane.id: lane for lane in capture_release_lanes(ROOT).lanes}
+    rows = []
+    for owner, proof in [*(("bundle", proof) for proof in proofs), ("pip", pip_proof)]:
+        if proof["python"] not in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS:
+            raise ValueError("consumer replay Python coordinate is invalid")
+        cells = proof.get("cells")
+        if not isinstance(cells, list) or len(cells) != len(lanes):
+            raise ValueError("consumer replay omits a required logical product")
+        for expected_lane, cell in zip(lanes.values(), cells, strict=True):
+            record = cell.get("lane") if isinstance(cell, dict) else None
+            if (
+                not isinstance(record, dict)
+                or set(record)
+                != {
+                    "backend",
+                    "target",
+                    "guest_profile",
+                    "runtime_profile",
+                    "compiler_profile",
+                }
+                or any(not isinstance(value, str) for value in record.values())
+            ):
+                raise ValueError("consumer replay lane is invalid")
+            lane = ReleaseLane(**record)
+            if lanes.get(lane.id) != lane or lane != expected_lane:
+                raise ValueError("consumer replay lane is outside release inventory")
+            rows.append(
+                {
+                    "id": f"{owner}-{proof['python']}-{lane.id}",
+                    "owner": owner,
+                    "python": proof["python"],
+                    "lane": lane.as_record(),
+                    "artifact": cell["artifact"],
+                    "manifest": cell["manifest"],
+                }
+            )
+    if len({row["id"] for row in rows}) != len(rows):
+        raise ValueError("consumer replay repeats a logical product")
     return rows
 
 
 def guest_command(row: dict[str, Any], argv: tuple[str, ...]) -> list[str]:
     prefix = f"/app/{row['id']}"
-    if row["target"] == "native":
+    if row["lane"]["target"] == "native":
         return [prefix + "/program", *argv]
     return ["/bin/node", "/app/wasm/run_wasm.js", prefix + "/manifest.json", *argv]
 
@@ -268,7 +272,7 @@ def prepare(
     executable_paths = ["bin/node", "bin/molt-proof-supervisor"]
     for row in rows:
         prefix = f"app/{row['id']}/"
-        if row["target"] == "native":
+        if row["lane"]["target"] == "native":
             actual = execution_root.stage_file(
                 rootfs,
                 prefix + "program",
@@ -590,7 +594,7 @@ def validate(
         ):
             raise ValueError("standalone replay command/policy binding differs")
         nonces.add(row["nonce"])
-        if wanted["target"] == "native":
+        if wanted["lane"]["target"] == "native":
             name = f"app/{wanted['id']}/program"
             _equal_artifact(
                 execution_root.file_identity(rootfs / name), wanted["artifact"]

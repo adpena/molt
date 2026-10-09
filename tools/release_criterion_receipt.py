@@ -801,7 +801,11 @@ def _validate_verified_subset_facts(
             not isinstance(profiles, dict)
             or not isinstance(profiles.get("build"), str)
             or profiles.get("build") not in {"dev", "release"}
-            or profiles != verified.execution_profiles(profiles["build"])
+            or expected_coordinate is None
+            or profiles
+            != verified.execution_profiles(
+                profiles["build"], backend=expected_coordinate.backend
+            )
             or (
                 expected_coordinate is not None
                 and profiles["build"] != expected_coordinate.build_profile
