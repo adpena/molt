@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntFlag
 from typing import Any, Protocol, Sequence
 
@@ -48,7 +48,25 @@ class CFGGraph:
     edge_kinds: dict[tuple[int, int], CFGEdgeKind]
     predecessors: dict[int, list[int]]
     reachable: set[int]
-    dominators: dict[int, set[int]]
+    # Immediate dominator of each reachable block; the entry maps to itself.
+    idom: dict[int, int]
+    _dominance_span: dict[int, tuple[int, int]] = field(
+        init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_dominance_span", _dominator_tree_spans(self.idom))
+
+    def dominates(self, dominator: int, block: int) -> bool:
+        """Whether every entry path to ``block`` passes through ``dominator``.
+
+        An unreachable block is dominated only by itself.
+        """
+        inner = self._dominance_span.get(block)
+        if inner is None:
+            return dominator == block
+        outer = self._dominance_span.get(dominator)
+        return outer is not None and outer[0] <= inner[0] and inner[1] <= outer[1]
 
 
 def _collect_control_maps(ops: Sequence[OpLike]) -> ControlMaps:
@@ -355,39 +373,90 @@ def _reachable_blocks(successors: dict[int, list[int]]) -> set[int]:
     return seen
 
 
-def _compute_dominators(
+def _compute_immediate_dominators(
     *,
-    block_count: int,
+    successors: dict[int, list[int]],
     predecessors: dict[int, list[int]],
-    reachable: set[int],
-) -> dict[int, set[int]]:
-    dominators: dict[int, set[int]] = {}
-    all_blocks = set(range(block_count))
-    for block_id in range(block_count):
-        if block_id == 0:
-            dominators[block_id] = {0}
-        elif block_id in reachable:
-            dominators[block_id] = all_blocks.copy()
+) -> dict[int, int]:
+    """Immediate dominators of the blocks reachable from the entry block 0.
+
+    Cooper, Harvey and Kennedy, "A Simple, Fast Dominance Algorithm" (2001):
+    iterate over reverse postorder, intersecting predecessor paths in the
+    dominator tree. It keeps one entry per block; a full dominator set per
+    block grows quadratically and took 5 GB for a 12,000-op module body.
+    """
+    if not successors:
+        return {}
+    postorder: list[int] = []
+    seen = {0}
+    stack = [(0, iter(successors.get(0, ())))]
+    while stack:
+        block, pending = stack[-1]
+        for successor in pending:
+            if successor not in seen:
+                seen.add(successor)
+                stack.append((successor, iter(successors.get(successor, ()))))
+                break
         else:
-            dominators[block_id] = {block_id}
+            stack.pop()
+            postorder.append(block)
+    order = postorder[::-1]
+    position = {block: index for index, block in enumerate(order)}
+    idom = {0: 0}
+
+    def intersect(left: int, right: int) -> int:
+        while left != right:
+            while position[left] > position[right]:
+                left = idom[left]
+            while position[right] > position[left]:
+                right = idom[right]
+        return left
 
     changed = True
     while changed:
         changed = False
-        for block_id in range(1, block_count):
-            if block_id not in reachable:
-                continue
-            preds = [p for p in predecessors.get(block_id, []) if p in reachable]
-            if not preds:
-                new_dom = {block_id}
-            else:
-                pred_sets = [dominators[p] for p in preds]
-                new_dom = set.intersection(*pred_sets)
-                new_dom.add(block_id)
-            if new_dom != dominators[block_id]:
-                dominators[block_id] = new_dom
+        for block in order[1:]:
+            chosen: int | None = None
+            for predecessor in predecessors.get(block, ()):
+                if predecessor in idom:
+                    chosen = (
+                        predecessor
+                        if chosen is None
+                        else intersect(predecessor, chosen)
+                    )
+            if chosen is not None and idom.get(block) != chosen:
+                idom[block] = chosen
                 changed = True
-    return dominators
+    return idom
+
+
+def _dominator_tree_spans(idom: dict[int, int]) -> dict[int, tuple[int, int]]:
+    """Pre/post visit numbers in the dominator tree, for O(1) dominance tests."""
+    children: dict[int, list[int]] = {}
+    roots: list[int] = []
+    for block, parent in idom.items():
+        if block == parent:
+            roots.append(block)
+        else:
+            children.setdefault(parent, []).append(block)
+    spans: dict[int, tuple[int, int]] = {}
+    counter = 0
+    for root in sorted(roots):
+        entry: dict[int, int] = {root: counter}
+        counter += 1
+        stack = [(root, iter(sorted(children.get(root, ()))))]
+        while stack:
+            block, pending = stack[-1]
+            child = next(pending, None)
+            if child is None:
+                stack.pop()
+                spans[block] = (entry[block], counter)
+                counter += 1
+            else:
+                entry[child] = counter
+                counter += 1
+                stack.append((child, iter(sorted(children.get(child, ())))))
+    return spans
 
 
 def build_cfg(ops: Sequence[OpLike]) -> CFGGraph:
@@ -404,10 +473,8 @@ def build_cfg(ops: Sequence[OpLike]) -> CFGGraph:
     )
     predecessors = _compute_predecessors(successors)
     reachable = _reachable_blocks(successors)
-    dominators = _compute_dominators(
-        block_count=len(blocks),
-        predecessors=predecessors,
-        reachable=reachable,
+    idom = _compute_immediate_dominators(
+        successors=successors, predecessors=predecessors
     )
     return CFGGraph(
         blocks=blocks,
@@ -419,5 +486,5 @@ def build_cfg(ops: Sequence[OpLike]) -> CFGGraph:
         edge_kinds=edge_kinds,
         predecessors=predecessors,
         reachable=reachable,
-        dominators=dominators,
+        idom=idom,
     )
