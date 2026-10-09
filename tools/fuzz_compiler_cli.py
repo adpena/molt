@@ -14,7 +14,7 @@ from tools.fuzz_compiler_driver import (
     run_reject_fuzzer,
     run_safe_fuzzer,
 )
-from tools.fuzz_compiler_execution import _build_env
+from tools.fuzz_compiler_execution import fuzz_build_env
 from tools.fuzz_compiler_reporting import _log
 from tools.fuzz_compiler_shrink import _shrink_program
 from tools.fuzz_compiler_types import FuzzSummary
@@ -270,7 +270,7 @@ def main() -> int:
 
         # Shrink failures if requested.
         if args.shrink and summary.failures:
-            env = _build_env()
+            env = fuzz_build_env()
             ext_tmp = os.environ.get("MOLT_DIFF_TMPDIR") or os.environ.get("TMPDIR")
             tmpdir_base = (
                 ext_tmp if ext_tmp and Path(ext_tmp).is_dir() else tempfile.gettempdir()

@@ -6,7 +6,7 @@ from pathlib import Path
 from random import Random
 
 from tools.fuzz_compiler_core import fuzz_one_reject, fuzz_one_safe
-from tools.fuzz_compiler_execution import _build_env
+from tools.fuzz_compiler_execution import fuzz_build_env
 from tools.fuzz_compiler_reporting import _log, _print_diff_snippet, _save_failure
 from tools.fuzz_compiler_safe import SafeProgramGenerator
 from tools.fuzz_compiler_shrink import _validate_syntax
@@ -58,7 +58,7 @@ def run_safe_fuzzer(
     verbose: bool,
 ) -> FuzzSummary:
     summary = FuzzSummary()
-    env = _build_env()
+    env = fuzz_build_env()
 
     ext_tmp = os.environ.get("MOLT_DIFF_TMPDIR") or os.environ.get("TMPDIR")
     tmpdir_base = (
@@ -138,7 +138,7 @@ def run_reject_fuzzer(
     verbose: bool,
 ) -> FuzzSummary:
     summary = FuzzSummary()
-    env = _build_env()
+    env = fuzz_build_env()
 
     ext_tmp = os.environ.get("MOLT_DIFF_TMPDIR") or os.environ.get("TMPDIR")
     tmpdir_base = (
