@@ -14,12 +14,15 @@ from molt.compiler_analysis.python_lexical_scope import (
 
 import ast
 from molt.python_private_names import python_definition_name
-import bisect
 from collections.abc import Sequence
 from typing import (
     Any,
 )
 
+from molt.frontend.cfg_analysis import build_cfg
+from molt.frontend.lowering.op_kinds_generated import (
+    SIMPLEIR_FIRST_TRAILING_RESULT_ARG,
+)
 from molt.frontend._types import (
     GEN_CONTROL_SIZE,
     GEN_SEND_OFFSET,
@@ -44,6 +47,92 @@ from molt.frontend.sema import (
     stateful_function_frame_plan,
 )
 from molt.frontend._mixin_base import GeneratorMixinBase
+
+
+# Names that are frame state rather than SSA values.
+_RESUME_LIVENESS_EXEMPT = frozenset({"self", "none", ""})
+
+
+class _ResumeLiveness:
+    """SSA value liveness of one stateful poll, over the frontend CFG.
+
+    The CFG gives STATE_SWITCH a resume edge to every STATE_LABEL, and gives
+    loops their back edges and checks their exception edges, so a value is live
+    into a label exactly when some path from the label uses it before any op
+    defines it again. Bit ``i`` of a block's live set is name ``i``.
+    """
+
+    def __init__(self, ops: Sequence[MoltOp]) -> None:
+        self.cfg = build_cfg(ops)
+        self.names: list[str] = []
+        self.def_sites: dict[str, list[int]] = {}
+        self.type_hints: dict[str, str] = {}
+        index: dict[str, int] = {}
+
+        def bit(value: MoltValue) -> int:
+            position = index.get(value.name)
+            if position is None:
+                position = index[value.name] = len(self.names)
+                self.names.append(value.name)
+            if value.type_hint:
+                self.type_hints.setdefault(value.name, value.type_hint)
+            return 1 << position
+
+        blocks = self.cfg.blocks
+        uses = [0] * len(blocks)
+        defs = [0] * len(blocks)
+        for block in blocks:
+            used = defined = 0
+            for idx in range(block.start, block.end):
+                op = ops[idx]
+                # The generated field authority names the ops whose trailing
+                # args are outputs (UNPACK_SEQUENCE's targets), not operands.
+                first_output = SIMPLEIR_FIRST_TRAILING_RESULT_ARG.get(
+                    op.kind.lower(), len(op.args)
+                )
+                for arg in op.args[:first_output]:
+                    if (
+                        isinstance(arg, MoltValue)
+                        and arg.name not in _RESUME_LIVENESS_EXEMPT
+                    ):
+                        mask = bit(arg)
+                        if not defined & mask:
+                            used |= mask
+                outputs = [op.result, *op.args[first_output:]]
+                for output in outputs:
+                    if (
+                        isinstance(output, MoltValue)
+                        and output.name not in _RESUME_LIVENESS_EXEMPT
+                    ):
+                        defined |= bit(output)
+                        self.def_sites.setdefault(output.name, []).append(idx)
+            uses[block.id] = used
+            defs[block.id] = defined
+        live_in = [0] * len(blocks)
+        # Reverse op order visits most successors first; iterate to a fixpoint.
+        order = sorted(self.cfg.reachable, reverse=True)
+        changed = True
+        while changed:
+            changed = False
+            for block_id in order:
+                live_out = 0
+                for successor in self.cfg.successors[block_id]:
+                    live_out |= live_in[successor]
+                updated = uses[block_id] | (live_out & ~defs[block_id])
+                if updated != live_in[block_id]:
+                    live_in[block_id] = updated
+                    changed = True
+        self._live_in = live_in
+
+    def live_into(self, op_index: int) -> list[str]:
+        """The names live on entry to the block that starts at ``op_index``."""
+        mask = self._live_in[self.cfg.index_to_block[op_index]]
+        names: list[str] = []
+        while mask:
+            lowest = mask & -mask
+            names.append(self.names[lowest.bit_length() - 1])
+            mask ^= lowest
+        return names
 
 
 class AsyncGenVisitorMixin(GeneratorMixinBase):
@@ -1194,147 +1283,113 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         return res
 
     def _spill_async_temporaries(self) -> None:
-        label_indices = [
-            idx for idx, op in enumerate(self.current_ops) if op.kind == "STATE_LABEL"
-        ]
-        if not label_indices:
+        """Keep in the frame every value that a resume needs.
+
+        A resume enters the poll at STATE_SWITCH and jumps to a STATE_LABEL,
+        skipping every op between them. An SSA value that is live into a label
+        is therefore lost unless the frame holds it. Liveness comes from the
+        frontend CFG, so it follows every resume, exception and loop back edge:
+        a value defined before a loop and used in it is live into each label
+        inside the loop, whatever the op order says.
+
+        The pass stores each such value into its slot where the value is
+        defined, and reloads it after each label it is live into. A store at
+        the definition keeps the slot current on the fall-through into a label
+        as well as on a resume. A value of the activation prologue (defined
+        before STATE_SWITCH) is stored once, on the initial entry: every resume
+        re-runs the prologue, but the frame keeps its first activation's value,
+        so the exception-stack baselines restore the depth the frame entered at.
+        """
+        ops = self.current_ops
+        switch_idx = next(
+            (idx for idx, op in enumerate(ops) if op.kind == "STATE_SWITCH"), None
+        )
+        label_indices = [idx for idx, op in enumerate(ops) if op.kind == "STATE_LABEL"]
+        if switch_idx is None or not label_indices:
+            # Only STATE_SWITCH resumes into a label.
             return
-        state_label_indices: dict[int, int] = {}
-        for idx in label_indices:
-            op = self.current_ops[idx]
-            if op.args and isinstance(op.args[0], int):
-                state_label_indices[op.args[0]] = idx
-        params = set(self.funcs_map[self.current_func_name]["params"])
-        spillable: set[str] = set(self.async_locals)
-        spillable.update(self.scope_assigned)
-        spillable.update(params)
-        spillable.update(self.closure_locals)
-        free_vars = getattr(self, "free_vars", None)
-        if free_vars:
-            spillable.update(free_vars)
-        type_hints: dict[str, str] = {}
-        for op in self.current_ops:
-            for arg in op.args:
-                if not isinstance(arg, MoltValue):
-                    continue
-                name = arg.name
-                if name in {"self", "none"}:
-                    continue
-                spillable.add(name)
-                if arg.type_hint:
-                    type_hints.setdefault(name, arg.type_hint)
-            out_name = op.result.name
-            if out_name != "none":
-                spillable.add(out_name)
-                if op.result.type_hint:
-                    type_hints.setdefault(out_name, op.result.type_hint)
-        last_def: dict[str, int] = {name: -1 for name in spillable}
-        label_spills: dict[int, set[str]] = {idx: set() for idx in label_indices}
+        live = _ResumeLiveness(ops)
+        prologue_names: set[str] = set()
+        body_names: set[str] = set()
+        for name, sites in live.def_sites.items():
+            if any(site < switch_idx for site in sites):
+                prologue_names.add(name)
+            if any(site > switch_idx for site in sites):
+                body_names.add(name)
+        # One slot cannot hold both the frame's first-activation value and a
+        # value the body redefines. No lowering defines one name on both
+        # sides of the switch; fail closed if one ever does.
+        both_sides = prologue_names & body_names
+        label_spills: dict[int, list[str]] = {}
         spill_names: set[str] = set()
-        for idx, op in enumerate(self.current_ops):
-            for arg in op.args:
-                if not isinstance(arg, MoltValue):
-                    continue
-                name = arg.name
-                if name in {"self", "none"} or name not in spillable:
-                    continue
-                def_idx = last_def.get(name)
-                if def_idx is None:
-                    continue
-                start = bisect.bisect_right(label_indices, def_idx)
-                end = bisect.bisect_left(label_indices, idx)
-                if start >= end:
-                    continue
-                for label_idx in label_indices[start:end]:
-                    label_spills[label_idx].add(name)
-                spill_names.add(name)
-            out_name = op.result.name
-            if out_name != "none" and out_name in spillable:
-                last_def[out_name] = idx
+        for label_idx in label_indices:
+            names = sorted(
+                name
+                for name in live.live_into(label_idx)
+                if name in prologue_names or name in body_names
+            )
+            mixed = [name for name in names if name in both_sides]
+            if mixed:
+                raise FrontendRejection(
+                    Diagnostic.INTERNAL_INVARIANT,
+                    f"{self.current_func_name}: values {mixed} are defined both "
+                    "before and after STATE_SWITCH and live into a resume label",
+                )
+            label_spills[label_idx] = names
+            spill_names.update(names)
         if not spill_names:
             return
-        # Spill discovery is set-based and therefore hash-seed dependent. The
-        # canonical ordered frame-slot allocator appends each newly discovered
-        # typed INTERNAL slot, so allocate spill slots in the same sorted order
-        # used by the store/load rewrite below.
+        # The canonical ordered frame-slot allocator appends each newly
+        # discovered typed INTERNAL slot; allocate spill slots in sorted order.
         for name in sorted(spill_names):
             self._async_spill_slot(name)
-            hint = type_hints.get(name)
+            hint = live.type_hints.get(name)
             if hint is not None:
                 self.async_spill_hints.setdefault(name, hint)
 
-        new_ops: list[MoltOp] = []
+        def after_exception_check(idx: int) -> int:
+            # A store must not run while its definition's exception is pending.
+            if idx + 1 < len(ops) and ops[idx + 1].kind == "CHECK_EXCEPTION":
+                return idx + 1
+            return idx
 
-        def _emit_store_for_label(label_idx: int) -> None:
-            for name in sorted(label_spills.get(label_idx, set())):
-                offset = self._async_spill_slot(name).offset
-                hint = type_hints.get(name, "Unknown")
+        stores_after: dict[int, list[str]] = {}
+        for name in sorted(spill_names):
+            if name in prologue_names:
+                anchors = [after_exception_check(switch_idx)]
+            else:
+                anchors = [after_exception_check(site) for site in live.def_sites[name]]
+            for anchor in anchors:
+                stores_after.setdefault(anchor, []).append(name)
+        loads_after: dict[int, list[str]] = {}
+        for label_idx, names in label_spills.items():
+            anchor = label_idx
+            # A generator resume re-enters its try regions before any load.
+            while anchor + 1 < len(ops) and ops[anchor + 1].kind == "TRY_START":
+                anchor += 1
+            loads_after.setdefault(anchor, []).extend(names)
+
+        def slot_value(name: str) -> tuple[int, MoltValue]:
+            hint = live.type_hints.get(name, "Unknown")
+            return self._async_spill_slot(name).offset, MoltValue(name, type_hint=hint)
+
+        new_ops: list[MoltOp] = []
+        for idx, op in enumerate(ops):
+            new_ops.append(op)
+            for name in loads_after.get(idx, ()):
+                offset, value = slot_value(name)
+                new_ops.append(
+                    MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=value)
+                )
+            for name in stores_after.get(idx, ()):
+                offset, value = slot_value(name)
                 new_ops.append(
                     MoltOp(
                         kind="STORE_CLOSURE",
-                        args=["self", offset, MoltValue(name, type_hint=hint)],
+                        args=["self", offset, value],
                         result=MoltValue("none"),
                     )
                 )
-
-        def _emit_loads_for_label(label_idx: int) -> None:
-            for name in sorted(label_spills.get(label_idx, set())):
-                offset = self._async_spill_slot(name).offset
-                hint = type_hints.get(name, "Unknown")
-                new_ops.append(
-                    MoltOp(
-                        kind="LOAD_CLOSURE",
-                        args=["self", offset],
-                        result=MoltValue(name, type_hint=hint),
-                    )
-                )
-
-        def _state_label_before_try_start_run(end_idx: int) -> int | None:
-            cursor = end_idx
-            while cursor >= 0 and self.current_ops[cursor].kind == "TRY_START":
-                cursor -= 1
-            if cursor >= 0 and self.current_ops[cursor].kind == "STATE_LABEL":
-                return cursor
-            return None
-
-        for idx, op in enumerate(self.current_ops):
-            if op.kind in {"STATE_TRANSITION", "STATE_YIELD"}:
-                label_idx = None
-                if op.kind == "STATE_TRANSITION":
-                    pending_arg = op.args[1] if len(op.args) == 2 else op.args[2]
-                    pending_state = None
-                    if isinstance(pending_arg, MoltValue):
-                        pending_state = self.const_ints.get(pending_arg.name)
-                    elif isinstance(pending_arg, int):
-                        pending_state = pending_arg
-                    if pending_state is not None:
-                        label_idx = state_label_indices.get(pending_state)
-                else:
-                    pending_arg = op.args[1] if len(op.args) > 1 else None
-                    if isinstance(pending_arg, int):
-                        label_idx = state_label_indices.get(pending_arg)
-                if label_idx is not None:
-                    _emit_store_for_label(label_idx)
-            new_ops.append(op)
-            if op.kind == "STATE_LABEL":
-                next_op = (
-                    self.current_ops[idx + 1]
-                    if idx + 1 < len(self.current_ops)
-                    else None
-                )
-                if next_op is None or next_op.kind != "TRY_START":
-                    _emit_loads_for_label(idx)
-                continue
-            if op.kind == "TRY_START":
-                next_op = (
-                    self.current_ops[idx + 1]
-                    if idx + 1 < len(self.current_ops)
-                    else None
-                )
-                if next_op is None or next_op.kind != "TRY_START":
-                    label_idx = _state_label_before_try_start_run(idx)
-                    if label_idx is not None:
-                        _emit_loads_for_label(label_idx)
         self.current_ops[:] = new_ops
 
     def _emit_await_anext(
