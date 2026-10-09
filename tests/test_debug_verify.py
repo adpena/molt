@@ -107,36 +107,76 @@ def test_verify_result_payload_includes_function_pass_and_artifact_references() 
 
 def test_semantic_assertions_pass_on_repo_sources() -> None:
     module = _load_verify_module()
-    _, frontend_text, native_text, wasm_text = module._read_backend_texts()
+    _, native_text, wasm_text = module._read_backend_texts()
 
+    assert module.check_frontend_lowering_lanes() == []
     failures = module.check_semantic_assertions(
-        frontend_text=frontend_text,
         native_backend_text=native_text,
         wasm_backend_text=wasm_text,
     )
     assert failures == []
 
 
-def test_semantic_assertions_detect_regression_signal() -> None:
+def test_frontend_lowering_lanes_detect_a_regressed_lane() -> None:
     module = _load_verify_module()
-    _, frontend_text, native_text, wasm_text = module._read_backend_texts()
+    real = module._serialized_frontend_kinds
 
-    regressed_frontend = frontend_text.replace(
-        '"kind": "call_indirect"',
-        '"kind": "call_bind"',
-        1,
-    )
+    def regressed(kind: str) -> list[str]:
+        return ["call_bind"] if kind == "CALL_INDIRECT" else real(kind)
 
-    failures = module.check_semantic_assertions(
-        frontend_text=regressed_frontend,
-        native_backend_text=native_text,
-        wasm_backend_text=wasm_text,
-    )
+    failures = module.check_frontend_lowering_lanes(regressed)
 
-    assert failures
-    assert any(
-        "CALL_INDIRECT lowers to dedicated lane" in failure for failure in failures
-    )
+    assert failures == [
+        "[frontend] CALL_INDIRECT must lower to call_indirect, got ['call_bind']"
+    ]
+
+
+def test_spec_parser_reads_each_category_listing_and_skips_prose() -> None:
+    module = _load_verify_module()
+    spec = """
+## Instruction categories (minimum set)
+- **Calls**: `Call`, `InvokeFFI` (with `declared` effects).
+- **Modules**: `Import`,
+  `ModuleCacheSet`. Passes keep `NotAnOp` effects.
+  - Nested `AlsoNotAnOp` prose.
+- **Vector**: `VecSum` (result (a, `count`, more) and `x(y)`.)
+## Invariants
+"""
+    assert module._parse_spec_ops(spec) == [
+        "Call",
+        "InvokeFFI",
+        "Import",
+        "ModuleCacheSet",
+        "VecSum",
+    ]
+
+
+def test_ir_inventory_matches_the_registry_for_the_repo_spec() -> None:
+    from molt.frontend.lowering.op_kinds_generated import FRONTEND_REGISTERED_KINDS
+
+    module = _load_verify_module()
+    spec_ops = module._parse_spec_ops(module._read_backend_texts()[0])
+
+    assert {"ModuleCacheSet", "ModuleDelGlobal", "VecSum"} <= set(spec_ops)
+    assert "count" not in spec_ops
+    assert module.check_ir_inventory(spec_ops, FRONTEND_REGISTERED_KINDS) == []
+
+
+def test_ir_inventory_detects_unregistered_ops_and_stale_aliases() -> None:
+    from molt.frontend.lowering.op_kinds_generated import FRONTEND_REGISTERED_KINDS
+
+    module = _load_verify_module()
+    spec_ops = [op for op in module.SPEC_OP_KIND_ALIASES if op != "Return"]
+    registered = (FRONTEND_REGISTERED_KINDS - {"RAISE"}) | {"BRANCH"}
+
+    failures = module.check_ir_inventory([*spec_ops, "MadeUpOp"], registered)
+
+    assert failures == [
+        "alias for Branch repeats its registered default spelling",
+        "alias names no spec op: Return",
+        "alias for Throw names an unregistered kind: RAISE",
+        "IR op has no registered frontend kind: MadeUpOp (MADE_UP_OP)",
+    ]
 
 
 def test_scan_backend_kinds_parses_alternating_match_arms() -> None:
@@ -170,7 +210,6 @@ def test_semantic_assertions_detect_each_release_contract_regression(
     ).read_text(encoding="utf-8")
     assert removed in source
     failures = module.check_semantic_assertions(
-        frontend_text="",
         native_backend_text="",
         wasm_backend_text=source.replace(removed, "broken_contract"),
     )
@@ -186,7 +225,7 @@ def test_required_diff_probes_exist_in_repo() -> None:
 def test_required_diff_probes_detect_missing_entries() -> None:
     module = _load_verify_module()
     missing = module.check_required_diff_probes(
-        root=module.ROOT,
+        root=module.compiler_source_root(),
         required_probes=("tests/differential/basic/__missing_probe__.py",),
     )
     assert missing == ["tests/differential/basic/__missing_probe__.py"]

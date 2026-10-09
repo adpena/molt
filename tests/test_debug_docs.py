@@ -11,12 +11,6 @@ PUBLIC_DEBUG_DOCS = (
     ROOT / "tests" / "translation_validation" / "README.md",
     ROOT / "docs" / "spec" / "areas" / "testing" / "0008_MINIMUM_MUST_PASS_MATRIX.md",
     ROOT / "docs" / "spec" / "areas" / "compiler" / "0100_MOLT_IR.md",
-    ROOT
-    / "docs"
-    / "spec"
-    / "areas"
-    / "compiler"
-    / "0100_MOLT_IR_IMPLEMENTATION_COVERAGE_2026-02-11.md",
 )
 
 LEGACY_WRAPPERS = (
