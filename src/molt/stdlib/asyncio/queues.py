@@ -22,19 +22,19 @@ from asyncio import (
     _asyncio_waiters_remove,
     _is_cancelled_exc,
     _require_asyncio_intrinsic,
-    molt_asyncio_queue_drop,
-    molt_asyncio_queue_empty,
-    molt_asyncio_queue_full,
-    molt_asyncio_queue_get_nowait,
-    molt_asyncio_queue_is_shutdown,
-    molt_asyncio_queue_maxsize,
-    molt_asyncio_queue_new,
-    molt_asyncio_queue_put_nowait,
-    molt_asyncio_queue_qsize,
-    molt_asyncio_queue_shutdown,
-    molt_asyncio_queue_task_done,
-    molt_asyncio_queue_unfinished_tasks,
-    molt_generic_alias_new,
+    _molt_asyncio_queue_drop,
+    _molt_asyncio_queue_empty,
+    _molt_asyncio_queue_full,
+    _molt_asyncio_queue_get_nowait,
+    _molt_asyncio_queue_is_shutdown,
+    _molt_asyncio_queue_maxsize,
+    _molt_asyncio_queue_new,
+    _molt_asyncio_queue_put_nowait,
+    _molt_asyncio_queue_qsize,
+    _molt_asyncio_queue_shutdown,
+    _molt_asyncio_queue_task_done,
+    _molt_asyncio_queue_unfinished_tasks,
+    _molt_generic_alias_new,
 )
 
 GenericAlias = _types.GenericAlias
@@ -63,7 +63,7 @@ class Queue:
         if maxsize < 0:
             raise ValueError("maxsize must be >= 0")
         self._maxsize = maxsize
-        self._q_handle: int = molt_asyncio_queue_new(maxsize, self._Q_TYPE)
+        self._q_handle: int = _molt_asyncio_queue_new(maxsize, self._Q_TYPE)
         self._getters: _deque[Future] = _deque()
         self._putters: _deque[Future] = _deque()
         self._finished = Event()
@@ -79,19 +79,19 @@ class Queue:
         self._queue: Any = _deque()
 
     def qsize(self) -> int:
-        return int(molt_asyncio_queue_qsize(self._q_handle))
+        return int(_molt_asyncio_queue_qsize(self._q_handle))
 
     def _handle_maxsize(self) -> int:
-        return int(molt_asyncio_queue_maxsize(self._q_handle))
+        return int(_molt_asyncio_queue_maxsize(self._q_handle))
 
     def empty(self) -> bool:
-        return bool(molt_asyncio_queue_empty(self._q_handle))
+        return bool(_molt_asyncio_queue_empty(self._q_handle))
 
     def full(self) -> bool:
-        return bool(molt_asyncio_queue_full(self._q_handle))
+        return bool(_molt_asyncio_queue_full(self._q_handle))
 
     async def put(self, item: Any) -> None:
-        if molt_asyncio_queue_is_shutdown(self._q_handle):
+        if _molt_asyncio_queue_is_shutdown(self._q_handle):
             raise _QueueShutDown
         while self.full():
             fut = Future()
@@ -102,23 +102,23 @@ class Queue:
                 if _is_cancelled_exc(exc):
                     _asyncio_waiters_remove(self._putters, fut)
                 raise
-            if molt_asyncio_queue_is_shutdown(self._q_handle):
+            if _molt_asyncio_queue_is_shutdown(self._q_handle):
                 raise _QueueShutDown
         self._put_nowait(item)
 
     def put_nowait(self, item: Any) -> None:
-        if molt_asyncio_queue_is_shutdown(self._q_handle):
+        if _molt_asyncio_queue_is_shutdown(self._q_handle):
             raise _QueueShutDown
         if self.full():
             raise QueueFull
         self._put_nowait(item)
 
     def _put_nowait(self, item: Any) -> None:
-        molt_asyncio_queue_put_nowait(self._q_handle, item)
+        _molt_asyncio_queue_put_nowait(self._q_handle, item)
         if self._finished.is_set():
             self._finished.clear()
         if self._getters:
-            delivered = molt_asyncio_queue_get_nowait(self._q_handle)
+            delivered = _molt_asyncio_queue_get_nowait(self._q_handle)
             if not self._wakeup_next(self._getters, delivered):
                 self._put(delivered)
         else:
@@ -128,9 +128,9 @@ class Queue:
         self._queue.append(item)
 
     async def get(self) -> Any:
-        if not molt_asyncio_queue_empty(self._q_handle):
+        if not _molt_asyncio_queue_empty(self._q_handle):
             return self._get_nowait()
-        if molt_asyncio_queue_is_shutdown(self._q_handle):
+        if _molt_asyncio_queue_is_shutdown(self._q_handle):
             raise _QueueShutDown
         fut = Future()
         self._getters.append(fut)
@@ -142,15 +142,15 @@ class Queue:
             raise
 
     def get_nowait(self) -> Any:
-        if not molt_asyncio_queue_empty(self._q_handle):
+        if not _molt_asyncio_queue_empty(self._q_handle):
             return self._get_nowait()
-        if molt_asyncio_queue_is_shutdown(self._q_handle):
+        if _molt_asyncio_queue_is_shutdown(self._q_handle):
             raise _QueueShutDown
         raise QueueEmpty
 
     def _get_nowait(self) -> Any:
         item = self._get()
-        molt_asyncio_queue_get_nowait(self._q_handle)
+        _molt_asyncio_queue_get_nowait(self._q_handle)
         if self._putters:
             self._wakeup_next(self._putters, None)
         return item
@@ -173,8 +173,8 @@ class Queue:
                 fut.set_exception(exc)
 
     def task_done(self) -> None:
-        molt_asyncio_queue_task_done(self._q_handle)
-        if int(molt_asyncio_queue_unfinished_tasks(self._q_handle)) == 0:
+        _molt_asyncio_queue_task_done(self._q_handle)
+        if int(_molt_asyncio_queue_unfinished_tasks(self._q_handle)) == 0:
             self._finished.set()
 
     async def join(self) -> None:
@@ -184,7 +184,7 @@ class Queue:
 
         def shutdown(self) -> None:
             self._shutdown = True
-            molt_asyncio_queue_shutdown(self._q_handle, False)
+            _molt_asyncio_queue_shutdown(self._q_handle, False)
             exc = _QueueShutDown()
             self._wakeup_all_exception(self._getters, exc)
             self._wakeup_all_exception(self._putters, exc)
@@ -198,14 +198,14 @@ class Queue:
 
     @classmethod
     def __class_getitem__(cls, item: Any) -> Any:
-        return _require_asyncio_intrinsic(molt_generic_alias_new, "generic_alias_new")(
+        return _require_asyncio_intrinsic(_molt_generic_alias_new, "generic_alias_new")(
             cls, item
         )
 
     def __del__(self) -> None:
         handle = getattr(self, "_q_handle", None)
         if handle is not None:
-            molt_asyncio_queue_drop(handle)
+            _molt_asyncio_queue_drop(handle)
 
 
 class PriorityQueue(Queue):
