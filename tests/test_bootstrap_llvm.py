@@ -1,5 +1,5 @@
 from __future__ import annotations
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import install_module_view, run_guarded_test_process
 
 import hashlib
 import io
@@ -15,6 +15,7 @@ import time
 from types import SimpleNamespace
 import tomllib
 import uuid
+import platform
 
 import pytest
 from tests.process_guard_common import start_owned_test_process
@@ -97,7 +98,9 @@ def test_default_llvm_targets_fail_closed_for_unknown_architecture() -> None:
 def test_explicit_targets_parse_before_unknown_host_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(bootstrap_llvm.platform, "machine", lambda: "mystery-cpu")
+    install_module_view(
+        monkeypatch, "platform", platform, bootstrap_llvm, machine=lambda: "mystery-cpu"
+    )
     monkeypatch.setattr(
         bootstrap_llvm,
         "verify_llvm_toolchain_prefix",

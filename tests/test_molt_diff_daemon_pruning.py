@@ -10,6 +10,7 @@ import sys
 from molt import backend_daemon_custody as custody
 from molt.dx import session_artifact_component
 import subprocess
+import os
 
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
@@ -236,13 +237,11 @@ def test_molt_diff_build_helper_pruning_preserves_codex_protected_group(
         reason="stale_diff_build_helper",
     )
 
-    monkeypatch.setattr(module.memory_guard.os, "getpid", lambda: 999)
+    install_module_view(monkeypatch, "os", os, module.memory_guard, getpid=lambda: 999)
     monkeypatch.setattr(module.memory_guard, "_safe_getpgrp", lambda: None)
     monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
     monkeypatch.setattr(
-        module.memory_guard.os,
-        "kill",
-        lambda pid, sig: sent.append((pid, sig)),
+        module.memory_guard.os, "kill", lambda pid, sig: sent.append((pid, sig))
     )
 
     def capture_event(process, actions):

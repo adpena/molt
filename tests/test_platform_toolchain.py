@@ -6,10 +6,12 @@ import hashlib
 import os
 from pathlib import Path
 from types import SimpleNamespace
+import platform
 
 import pytest
 
 from molt import platform_toolchain as platform_tools
+from tests.process_guard_common import install_module_view
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,7 +50,9 @@ def test_msvc_activation_owns_installation_and_search_roots_without_atl(
     script.write_text("", encoding="utf-8")
     (install / "VC").mkdir()
     calls = []
-    monkeypatch.setattr(platform_tools.platform, "system", lambda: "Windows")
+    install_module_view(
+        monkeypatch, "platform", platform, platform_tools, system=lambda: "Windows"
+    )
     monkeypatch.setattr(
         platform_tools, "visual_studio_installation", lambda *_: install
     )

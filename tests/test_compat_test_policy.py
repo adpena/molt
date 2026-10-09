@@ -12,6 +12,7 @@ import pytest
 
 from tools import verified_subset
 from tools.compat import test_policy
+from tests.process_guard_common import install_module_view
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -274,7 +275,7 @@ def test_inventory_reads_each_source_once_and_enumerates_each_suite_once(
         return scandir(path)
 
     monkeypatch.setattr(test_policy, "capture_stable_regular_file", counted_capture)
-    monkeypatch.setattr(test_policy.os, "scandir", counted_scandir)
+    install_module_view(monkeypatch, "os", os, test_policy, scandir=counted_scandir)
     inventory = test_policy.load_test_inventory((("suite", False),), repo_root=root)
     inventory.verify_unchanged()
     assert read_paths == [first, second]
@@ -500,7 +501,7 @@ def test_physical_collection_reuses_one_nofollow_entry_stat_without_leaf_queries
         assert path != source, "collector followed a leaf with stat"
         return file_stat(path, **kwargs)
 
-    monkeypatch.setattr(test_policy.os, "scandir", cached_entries)
+    install_module_view(monkeypatch, "os", os, test_policy, scandir=cached_entries)
     monkeypatch.setattr(Path, "lstat", no_leaf_lstat)
     monkeypatch.setattr(Path, "stat", no_leaf_stat)
     assert test_policy.collect_physical_test_files(
@@ -538,7 +539,7 @@ def test_physical_collection_rejects_unsafe_nofollow_entry_metadata(
             )
         ]
 
-    monkeypatch.setattr(test_policy.os, "scandir", unsafe_entries)
+    install_module_view(monkeypatch, "os", os, test_policy, scandir=unsafe_entries)
     with pytest.raises(ValueError, match="link or reparse point|special entry"):
         test_policy.collect_physical_test_files((("suite", False),), repo_root=root)
 

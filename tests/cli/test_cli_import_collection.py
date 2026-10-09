@@ -8194,7 +8194,7 @@ def test_case_exact_file_refreshes_stale_directory_cache(
         return original_stat(path, *args, **kwargs)
 
     cli_module_resolution._case_exact_dir_entries_cached.cache_clear()
-    monkeypatch.setattr(cli_module_resolution.os, "stat", fake_stat)
+    install_module_view(monkeypatch, "os", os, cli_module_resolution, stat=fake_stat)
 
     assert not cli_module_resolution._case_exact_file(staged)
     staged.write_bytes(b"wasm artifact")
@@ -24470,10 +24470,12 @@ def test_ensure_backend_binary_rebuild_does_not_signal_verified_daemons(
         cli_backend_binary, "_backend_fingerprint", lambda *args, **kwargs: fingerprint
     )
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fake_run_cargo)
-    monkeypatch.setattr(
-        cli.os,
-        "kill",
-        lambda pid, sig: (_ for _ in ()).throw(
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        cli,
+        kill=lambda pid, sig: (_ for _ in ()).throw(
             AssertionError("backend rebuild must not signal live daemons")
         ),
     )

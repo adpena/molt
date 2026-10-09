@@ -16,6 +16,7 @@ from tools import memory_guard
 
 from tests.process_guard_common import (
     install_module_os_view,
+    install_module_view,
     run_custody_subject_process,
 )
 
@@ -334,7 +335,7 @@ def test_fork_descriptor_cleanup_closes_both_pipe_ends_without_unlock(monkeypatc
     closed = []
     monkeypatch.setattr(suite, "_LEASE_PIPE_FDS", {17, 19})
     monkeypatch.setattr(suite, "_LEASE_DESCRIPTOR_MUTEX", threading.Lock())
-    monkeypatch.setattr(suite.os, "close", closed.append)
+    install_module_view(monkeypatch, "os", os, suite, close=closed.append)
     monkeypatch.setattr(
         suite, "_release_file_lock", lambda _lock: pytest.fail("parent lease unlocked")
     )
@@ -354,8 +355,12 @@ def test_inherited_python_lease_cannot_teardown_parent(tmp_path, monkeypatch):
         17,
         cast(subprocess.Popen, object()),
     )
-    monkeypatch.setattr(
-        suite.os, "close", lambda _fd: pytest.fail("parent pipe closed")
+    install_module_view(
+        monkeypatch,
+        "os",
+        os,
+        suite,
+        close=lambda _fd: pytest.fail("parent pipe closed"),
     )
     active.close()
     assert active.write_fd == 17
@@ -848,7 +853,7 @@ def test_child_pipe_cleanup_marks_protocol_and_restores(monkeypatch):
             sys.audit("os.fork")
         closed.append(fd)
 
-    monkeypatch.setattr(suite.os, "close", close)
+    install_module_view(monkeypatch, "os", os, suite, close=close)
     suite._close_inherited_lease_descriptors()
     assert sorted(closed) == [17, 19]
     assert suite._LEASE_PIPE_FDS == set()
@@ -874,7 +879,7 @@ def test_child_pipe_exception_attempts_all_copies_and_fails_custody_closed(
         if fd == 17:
             raise error_type("injected inherited pipe close failure")
 
-    monkeypatch.setattr(suite.os, "close", close)
+    install_module_view(monkeypatch, "os", os, suite, close=close)
     suite._close_inherited_lease_descriptors()
     assert sorted(attempts) == [17, 19]
     assert suite._LEASE_PIPE_FDS == set()
@@ -941,7 +946,7 @@ def test_dead_leader_uses_real_individual_birth_gate_never_group_signal(
         signals.append((pid, sig))
         samples.pop(pid)
 
-    monkeypatch.setattr(process_custody.os, "kill", kill)
+    install_module_view(monkeypatch, "os", os, process_custody, kill=kill)
     monkeypatch.setattr(
         process_custody.os,
         "killpg",

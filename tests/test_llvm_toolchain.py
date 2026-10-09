@@ -190,7 +190,7 @@ def test_mlir_environment_projects_one_prefix_to_every_binding(
     monkeypatch,
 ) -> None:
     # Prefix mapping only; the darwin SDK projection has its own test.
-    monkeypatch.setattr(llvm_toolchain.sys, "platform", "linux")
+    install_module_view(monkeypatch, "sys", sys, llvm_toolchain, platform="linux")
     _write_facade(tmp_path, '"molt-backend-native/llvm"')
     _write_native(tmp_path, '"llvm22-1"', "221.0.1")
     prefix = tmp_path / "llvm 22"
@@ -550,7 +550,7 @@ def test_prefix_verifier_preserves_external_llvm_config_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Prefix identity only; the darwin SDK projection has its own test.
-    monkeypatch.setattr(llvm_toolchain.sys, "platform", "linux")
+    install_module_view(monkeypatch, "sys", sys, llvm_toolchain, platform="linux")
     prefix = tmp_path / "usr" / "lib" / "llvm-22"
     llvm_config = tmp_path / "usr" / "bin" / "llvm-config-22"
     _write_complete_llvm_prefix(prefix)
@@ -2044,7 +2044,7 @@ def test_projection_hands_bindgen_the_selected_macos_sdk_only_on_darwin(
                 "MACOSX_DEPLOYMENT_TARGET": "26.5",
             }
 
-    monkeypatch.setattr(llvm_toolchain.sys, "platform", platform)
+    install_module_view(monkeypatch, "sys", sys, llvm_toolchain, platform=platform)
     monkeypatch.setattr(
         platform_toolchain, "select_darwin_toolchain", lambda _env: Selected()
     )

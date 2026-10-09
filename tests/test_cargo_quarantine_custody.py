@@ -15,6 +15,7 @@ import contextlib
 import ctypes
 import sys
 from unittest.mock import patch
+import platform
 
 import pytest
 
@@ -26,6 +27,7 @@ from tests.process_guard_common import (
     close_owned_test_process,
     current_thread_only,
     install_module_os_view,
+    install_module_view,
     run_custody_subject_process,
     start_owned_test_process,
 )
@@ -68,7 +70,9 @@ def test_darwin_filesystem_authority_model(
             result.f_fstypename = kind
             return rc
 
-    monkeypatch.setattr(cargo.platform, "machine", lambda: machine)
+    install_module_view(
+        monkeypatch, "platform", platform, cargo, machine=lambda: machine
+    )
     monkeypatch.setattr(
         cargo.ctypes, "CDLL", lambda *a, **kw: SimpleNamespace(**{symbol: Probe()})
     )
@@ -76,7 +80,9 @@ def test_darwin_filesystem_authority_model(
 
 
 def test_darwin_filesystem_missing_authority_model(monkeypatch, tmp_path):
-    monkeypatch.setattr(cargo.platform, "machine", lambda: "arm64")
+    install_module_view(
+        monkeypatch, "platform", platform, cargo, machine=lambda: "arm64"
+    )
     monkeypatch.setattr(cargo.ctypes, "CDLL", lambda *a, **kw: SimpleNamespace())
     assert not cargo._darwin_local_cargo_lock_filesystem(tmp_path)
     monkeypatch.setattr(cargo.platform, "machine", lambda: "unsupported")
@@ -1136,7 +1142,7 @@ def test_missing_sampler_row_requires_positive_process_closure(
 
 @pytest.mark.parametrize("error", [PermissionError("denied"), OSError("unknown")])
 def test_posix_omitted_pid_probe_errors_remain_unknown(monkeypatch, error):
-    monkeypatch.setattr(cargo.os, "name", "posix")
+    install_module_os_view(monkeypatch, cargo, name="posix")
 
     def probe(pid, signal):
         assert pid == 90051 and signal == 0
@@ -1147,7 +1153,7 @@ def test_posix_omitted_pid_probe_errors_remain_unknown(monkeypatch, error):
 
 
 def test_posix_pid_probe_requires_esrch_not_snapshot_absence(monkeypatch):
-    monkeypatch.setattr(cargo.os, "name", "posix")
+    install_module_os_view(monkeypatch, cargo, name="posix")
     monkeypatch.setattr(cargo.os, "kill", lambda pid, signal: None)
     assert not cargo._observed_pid_is_definitely_closed(90051)
 
@@ -1160,7 +1166,7 @@ def test_posix_pid_probe_requires_esrch_not_snapshot_absence(monkeypatch):
 
 @pytest.mark.parametrize("pid", [0, -1, True, 0x100000000])
 def test_invalid_windows_pid_cannot_prove_absence(monkeypatch, pid):
-    monkeypatch.setattr(cargo.os, "name", "nt")
+    install_module_os_view(monkeypatch, cargo, name="nt")
     assert not cargo._observed_pid_is_definitely_closed(pid)
 
 
@@ -1213,14 +1219,14 @@ def test_windows_complete_pid_enumeration_is_required(
         process_next=next_entry,
         close_handle=lambda handle: calls.append(handle) or close_ok,
     )
-    monkeypatch.setattr(cargo.os, "name", "nt")
+    install_module_os_view(monkeypatch, cargo, name="nt")
     monkeypatch.setattr(windows_snapshot, "_windows_snapshot_api", lambda: api)
     assert cargo._observed_pid_is_definitely_closed(90051) == expected
     assert calls[-1] == 111
 
 
 def test_posix_oversize_pid_cannot_escape_structured_deferral(monkeypatch):
-    monkeypatch.setattr(cargo.os, "name", "posix")
+    install_module_os_view(monkeypatch, cargo, name="posix")
 
     def forbidden(*args):
         raise AssertionError("invalid PID reached native API")
@@ -1260,7 +1266,7 @@ def test_windows_ambiguous_snapshot_cannot_authorize_absence(monkeypatch, mode):
         process_next=next_entry,
         close_handle=lambda handle: calls.append(handle) or True,
     )
-    monkeypatch.setattr(cargo.os, "name", "nt")
+    install_module_os_view(monkeypatch, cargo, name="nt")
     monkeypatch.setattr(windows_snapshot, "_windows_snapshot_api", lambda: api)
     assert not cargo._observed_pid_is_definitely_closed(90051)
     assert calls == ([] if mode == "invalid_snapshot" else [111])
@@ -1865,7 +1871,7 @@ def test_darwin_sampler_to_cargo_observer_preserves_native_authority(
                 raise PermissionError("ordinary native argv denied")
             return argv[pid]
 
-    monkeypatch.setattr(model.sys, "platform", "darwin")
+    install_module_view(monkeypatch, "sys", sys, model, platform="darwin")
     monkeypatch.setattr(model, "_darwin_process_authority_cache", Authority())
     monkeypatch.setattr(model, "_darwin_proc_metadata", birth)
     monkeypatch.setattr(model, "_darwin_proc_table", lambda: {100: 64, 101: 64})

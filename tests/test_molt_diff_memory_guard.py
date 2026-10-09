@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.process_guard_common import install_module_view
 
 # These tests fake process data the session sentinel also reads, and resolve
 # guard limits the CI plan's exported caps would otherwise decide.
@@ -377,7 +378,7 @@ def test_diff_scheduler_uses_memory_scaled_job_budget(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
     monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "96")
     monkeypatch.delenv("MOLT_DIFF_MEM_PER_JOB_GB", raising=False)
-    monkeypatch.setattr(module.os, "cpu_count", lambda: 12)
+    install_module_view(monkeypatch, "os", os, module, cpu_count=lambda: 12)
 
     config = module._diff_memory_guard_config()
 
@@ -396,7 +397,7 @@ def test_diff_default_jobs_use_guard_budget_under_memory_pressure(
     monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
     monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "32")
     monkeypatch.delenv("MOLT_DIFF_MEM_PER_JOB_GB", raising=False)
-    monkeypatch.setattr(module.os, "cpu_count", lambda: 64)
+    install_module_view(monkeypatch, "os", os, module, cpu_count=lambda: 64)
 
     config = module._diff_memory_guard_config()
 

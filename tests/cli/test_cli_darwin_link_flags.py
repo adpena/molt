@@ -4,6 +4,7 @@ from molt.cli.native_link_plan import resolve_native_target_spec
 
 import json
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -16,6 +17,7 @@ from tests.cli.native_link_test_support import (
 )
 from tests.cli.process_guard import run_cli_test_process
 from tests.runtime_build_identity_helper import native_runtime_staticlib_identity
+from tests.process_guard_common import install_module_view
 
 
 def _cargo_output(message: str, native_arguments: str = "") -> str:
@@ -38,7 +40,7 @@ def _cargo_output(message: str, native_arguments: str = "") -> str:
 def test_append_darwin_runtime_frameworks_for_host_darwin(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    install_module_view(monkeypatch, "sys", sys, cli, platform="darwin")
     monkeypatch.delenv("MOLT_RUNTIME_GPU_METAL", raising=False)
     args = ["clang", "-lc++"]
     cli._append_darwin_runtime_frameworks(args, target=resolve_native_target_spec(None))
@@ -78,7 +80,7 @@ def test_append_darwin_runtime_frameworks_adds_metal_when_enabled(
 def test_append_darwin_runtime_frameworks_adds_webgpu_when_enabled(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(cli.sys, "platform", "darwin")
+    install_module_view(monkeypatch, "sys", sys, cli, platform="darwin")
     monkeypatch.setenv("MOLT_RUNTIME_GPU_WEBGPU", "1")
     monkeypatch.delenv("MOLT_RUNTIME_GPU_METAL", raising=False)
     args = ["clang", "-lc++"]

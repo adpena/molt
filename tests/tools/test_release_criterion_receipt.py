@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from molt import verified_subset as verified_authority
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import install_module_view, run_guarded_test_process
 from tools import release_criterion_receipt as receipt
 from tools import verified_subset
 from tools.compat import comparison, test_policy
@@ -1060,7 +1060,9 @@ def test_structural_engine_binds_base_interpreter_beyond_venv_launcher(
     engine = tmp_path / "engine.exe"
     launcher.write_bytes(b"same venv launcher")
     engine.write_bytes(b"specific interpreter image")
-    monkeypatch.setattr(receipt_toolchain.sys, "executable", str(launcher))
+    install_module_view(
+        monkeypatch, "sys", sys, receipt_toolchain, executable=str(launcher)
+    )
     monkeypatch.setattr(receipt_toolchain.sys, "_base_executable", str(engine))
     observation = receipt_toolchain.observe_python_audit_engine()
     assert (
