@@ -704,7 +704,7 @@ def _path_is_within(path: Path, parent: Path) -> bool:
     return host_path_is_within(path, parent)
 
 
-def _git_checkout_head(repo_root: Path) -> str | None:
+def git_checkout_head(repo_root: Path) -> str | None:
     try:
         proc = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -803,7 +803,7 @@ def _github_actions_checkout_custody(
     github_sha = env.get("GITHUB_SHA", "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", github_sha):
         raise DxConfigError("GitHub Actions custody requires a full GITHUB_SHA")
-    checkout_head = _git_checkout_head(source_root)
+    checkout_head = git_checkout_head(source_root)
     if verify_checkout_files and checkout_head != github_sha:
         raise DxConfigError(
             f"GitHub Actions checkout HEAD mismatch: expected {github_sha}, got {checkout_head}"
