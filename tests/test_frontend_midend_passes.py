@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import __future__ as future_module
 import ast
 import os
@@ -16,6 +17,7 @@ from molt.frontend._types import (
     CodeSlotDeclaration,
     _SCCP_OVERDEFINED,
 )
+from molt.frontend import cfg_analysis
 from molt.frontend.cfg_analysis import BasicBlock, CFGEdgeKind, CFGGraph, build_cfg
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
@@ -5404,7 +5406,7 @@ def test_sccp_new_executable_edge_revisits_phi_with_equal_predecessor_states() -
         },
         predecessors={0: [], 1: [0], 2: [0], 3: [2], 4: [1, 3]},
         reachable={0, 1, 2, 3, 4},
-        dominators={0: {0}, 1: {0, 1}, 2: {0, 2}, 3: {0, 2, 3}, 4: {0, 4}},
+        idom={0: 0, 1: 0, 2: 0, 3: 2, 4: 0},
     )
     join = cfg.label_to_block["join"]
     gen = SimpleTIRGenerator()
@@ -6207,3 +6209,59 @@ def test_runtime_guard_mismatch_continues_sccp_and_preserves_source_type(
     # The guard's result may propagate, but its mismatch event remains.
     lowered = _lower_ops(ops)
     assert any(op.get("kind") == kind.lower() for op in lowered)
+
+
+def _reachable_without(
+    successors: dict[int, list[int]], removed: int | None
+) -> set[int]:
+    if removed == 0:
+        return set()
+    seen, stack = {0}, [0]
+    while stack:
+        for successor in successors.get(stack.pop(), ()):
+            if successor != removed and successor not in seen:
+                seen.add(successor)
+                stack.append(successor)
+    return seen
+
+
+@pytest.mark.parametrize("seed", range(300))
+def test_cfg_dominance_matches_the_path_definition(seed: int) -> None:
+    # Oracle: a dominates a reachable b exactly when removing a cuts every
+    # entry path to b; an unreachable block is dominated only by itself.
+    rng = random.Random(seed)
+    count = rng.randint(1, 24)
+    successors = {
+        block: sorted(rng.sample(range(count), rng.randint(0, min(3, count))))
+        for block in range(count)
+    }
+    predecessors: dict[int, list[int]] = {block: [] for block in range(count)}
+    for block, targets in successors.items():
+        for target in targets:
+            predecessors[target].append(block)
+    reachable = _reachable_without(successors, None)
+    idom = cfg_analysis._compute_immediate_dominators(
+        successors=successors, predecessors=predecessors
+    )
+    assert set(idom) == reachable  # one entry per reachable block, never a set
+    cfg = cfg_analysis.CFGGraph(
+        blocks=[],
+        index_to_block={},
+        label_to_block={},
+        block_entry_label={},
+        control=build_cfg([]).control,
+        successors=successors,
+        edge_kinds={},
+        predecessors=predecessors,
+        reachable=reachable,
+        idom=idom,
+    )
+    for block in range(count):
+        for candidate in range(count):
+            if block not in reachable:
+                expected = candidate == block
+            else:
+                expected = candidate == block or block not in _reachable_without(
+                    successors, candidate
+                )
+            assert cfg.dominates(candidate, block) is expected, (candidate, block)

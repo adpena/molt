@@ -159,7 +159,7 @@ def _phi_result(left: object, right: object) -> dict[str, object]:
         },
         predecessors={0: [], 1: [0], 2: [0], 3: [1, 2]},
         reachable={0, 1, 2, 3},
-        dominators={0: {0}, 1: {0, 1}, 2: {0, 2}, 3: {0, 3}},
+        idom={0: 0, 1: 0, 2: 0, 3: 0},
     )
     gen = SimpleTIRGenerator()
     result = gen._compute_sccp(ops, cfg)
