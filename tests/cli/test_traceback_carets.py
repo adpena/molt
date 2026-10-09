@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.cargo_execution_policy import default_nested_process_timeout_seconds
 from tests.cli.process_guard import run_cli_test_process
 
 
@@ -48,26 +49,6 @@ def _python_executable() -> str:
         return fallback
     return exe
 
-
-def _molt_build_available() -> bool:
-    """Return True if ``python3 -m molt build --help`` succeeds."""
-    try:
-        result = run_cli_test_process(
-            [_python_executable(), "-m", "molt", "build", "--help"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=_base_env(),
-        )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return False
-
-
-skip_no_molt = pytest.mark.skipif(
-    not _molt_build_available(),
-    reason="python3 -m molt build is not available",
-)
 
 # Caret line: a line that, after stripping, consists entirely of ^, ~, and spaces.
 _CARET_RE = re.compile(r"^[\s\^~]+$")
@@ -192,32 +173,29 @@ def _ensure_native_build_warm() -> None:
             out_dir = os.path.join(tmpdir, "warm_out")
             with open(src_file, "w", encoding="utf-8") as f:
                 f.write("print(1)\n")
-            try:
-                warm_result = run_cli_test_process(
-                    [
-                        _python_executable(),
-                        "-m",
-                        "molt",
-                        "build",
-                        "--target",
-                        "native",
-                        "--output",
-                        out_dir,
-                        src_file,
-                        "--rebuild",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=900,
-                    cwd=ROOT,
-                    env=_base_env(),
-                )
-            except subprocess.TimeoutExpired as exc:
-                pytest.skip(f"molt native warmup timed out: {exc}")
+            warm_result = run_cli_test_process(
+                [
+                    _python_executable(),
+                    "-m",
+                    "molt",
+                    "build",
+                    "--target",
+                    "native",
+                    "--output",
+                    out_dir,
+                    src_file,
+                    "--rebuild",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=default_nested_process_timeout_seconds("build"),
+                cwd=ROOT,
+                env=_base_env(),
+            )
             if warm_result.returncode != 0:
-                pytest.skip(
-                    "molt native warmup failed (infrastructure): "
-                    f"{warm_result.stderr[:500]}"
+                pytest.fail(
+                    f"molt native warmup build failed (exit "
+                    f"{warm_result.returncode}): {warm_result.stderr[-2000:]}"
                 )
             _WARM_NATIVE_BUILD_READY = True
 
@@ -227,7 +205,6 @@ def _ensure_native_build_warm() -> None:
 # ---------------------------------------------------------------------------
 
 
-@skip_no_molt
 class TestTracebackCarets:
     """Verify that traceback caret annotations match CPython output."""
 
