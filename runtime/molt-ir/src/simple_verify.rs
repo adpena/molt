@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use crate::ir::ExecutionContextPolicy;
 use crate::ir::{FunctionIR, OpIR, SimpleIR};
+use crate::tir::cfg_liveness::{SimpleNameSet, SimpleNameTable};
 use crate::tir::dominators::{
     exception_edge_binds_handler_arguments, is_simple_exception_transfer_kind,
 };
@@ -901,14 +902,6 @@ fn canonical_phi_edges(
     edges
 }
 
-fn definitions(op: &OpIR) -> BTreeSet<String> {
-    let mut result = BTreeSet::new();
-    visit_simple_ir_defined_names(op, |name| {
-        result.insert(name.to_string());
-    });
-    result
-}
-
 fn verify_definite_definitions(
     function: &FunctionIR,
     edges: &[Vec<LogicalEdge>],
@@ -941,20 +934,42 @@ fn verify_definite_definitions(
             pending.extend(successors[block].iter().copied());
         }
     }
-    let params: BTreeSet<String> = function.params.iter().cloned().collect();
-    let mut universe = params.clone();
-    for op in ops {
-        universe.extend(definitions(op));
+    // The canonical dense name table and bitsets: each block boundary set
+    // takes `names / 8` bytes. Name-keyed sets cost a heap string per name per
+    // block, which drove the verifier past 7 GB on large functions (HF-96).
+    let mut names = SimpleNameTable::for_ops(ops);
+    for param in &function.params {
+        names.intern(param);
     }
-    let generated: Vec<BTreeSet<String>> = blocks
+    let name_id = |name: &str| {
+        names
+            .id(name)
+            .expect("SimpleIR name table holds every name")
+    };
+    let mut params = SimpleNameSet::empty(names.len());
+    for param in &function.params {
+        params.insert(name_id(param));
+    }
+    let generated: Vec<SimpleNameSet> = blocks
         .ranges
         .iter()
-        .map(|(start, end)| ops[*start..=*end].iter().flat_map(definitions).collect())
+        .map(|(start, end)| {
+            let mut set = SimpleNameSet::empty(names.len());
+            for op in &ops[*start..=*end] {
+                visit_simple_ir_defined_names(op, |name| set.insert(name_id(name)));
+            }
+            set
+        })
         .collect();
+    let mut universe = params.clone();
+    for set in &generated {
+        universe.union_with(set);
+    }
     let mut definite_in = vec![universe.clone(); blocks.ranges.len()];
     let mut definite_out = vec![universe.clone(); blocks.ranges.len()];
     definite_in[0] = params.clone();
-    definite_out[0] = params.union(&generated[0]).cloned().collect();
+    definite_out[0] = params.clone();
+    definite_out[0].union_with(&generated[0]);
     loop {
         let mut changed = false;
         for block in &reachable {
@@ -963,13 +978,18 @@ fn verify_definite_definitions(
             } else {
                 let mut pred_iter = predecessors[*block].intersection(&reachable);
                 match pred_iter.next() {
-                    None => BTreeSet::new(),
-                    Some(first) => pred_iter.fold(definite_out[*first].clone(), |acc, pred| {
-                        acc.intersection(&definite_out[*pred]).cloned().collect()
-                    }),
+                    None => SimpleNameSet::empty(names.len()),
+                    Some(first) => {
+                        let mut acc = definite_out[*first].clone();
+                        for pred in pred_iter {
+                            acc.intersect_with(&definite_out[*pred]);
+                        }
+                        acc
+                    }
                 }
             };
-            let new_out = new_in.union(&generated[*block]).cloned().collect();
+            let mut new_out = new_in.clone();
+            new_out.union_with(&generated[*block]);
             if new_in != definite_in[*block] || new_out != definite_out[*block] {
                 definite_in[*block] = new_in;
                 definite_out[*block] = new_out;
@@ -1004,7 +1024,10 @@ fn verify_definite_definitions(
                     let Some(value) = args.get(if collapsed { 0 } else { edge_index }) else {
                         continue;
                     };
-                    if !definite_out[edge.source].contains(value) {
+                    if !names
+                        .id(value)
+                        .is_some_and(|id| definite_out[edge.source].contains(id))
+                    {
                         errors.push(diagnostic(
                             &function.name,
                             index as isize,
@@ -1018,10 +1041,14 @@ fn verify_definite_definitions(
                 }
             } else {
                 visit_simple_ir_reads(op, |read| {
-                    if read.name == "none" || available.contains(read.name) {
+                    if read.name == "none" {
                         return;
                     }
-                    let kind = if universe.contains(read.name) {
+                    let id = name_id(read.name);
+                    if available.contains(id) {
+                        return;
+                    }
+                    let kind = if universe.contains(id) {
                         "non-dominating-definition"
                     } else {
                         "use-before-def"
@@ -1037,7 +1064,7 @@ fn verify_definite_definitions(
                     ));
                 });
             }
-            available.extend(definitions(op));
+            visit_simple_ir_defined_names(op, |name| available.insert(name_id(name)));
         }
     }
 }
@@ -1960,6 +1987,52 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["non-dominating-definition"]
         );
+    }
+
+    fn error_kinds(report: &SimpleIrVerificationReport) -> Vec<&str> {
+        report
+            .errors
+            .iter()
+            .map(|diagnostic| diagnostic.kind.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn read_of_a_name_nothing_defines_is_use_before_def() {
+        let mut ret = op("ret");
+        ret.args = Some(vec!["ghost".to_string()]);
+
+        let report = verify(&[], vec![ret]);
+        assert_eq!(error_kinds(&report), vec!["use-before-def"]);
+    }
+
+    #[test]
+    fn definitions_on_every_branch_reach_the_join() {
+        let mut branch = op("if");
+        branch.args = Some(vec!["condition".to_string()]);
+        let mut left = op("const");
+        left.value = Some(1);
+        left.out = Some("joined".to_string());
+        let mut right = op("const");
+        right.value = Some(2);
+        right.out = Some("joined".to_string());
+        let mut ret = op("ret");
+        ret.args = Some(vec!["joined".to_string()]);
+
+        let report = verify(
+            &["condition", "unused_param"],
+            vec![branch, left, op("else"), right, op("end_if"), ret],
+        );
+        assert_eq!(error_kinds(&report), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn parameter_reads_need_no_defining_op() {
+        let mut ret = op("ret");
+        ret.args = Some(vec!["param".to_string()]);
+
+        let report = verify(&["param"], vec![ret]);
+        assert_eq!(error_kinds(&report), Vec::<&str>::new());
     }
 
     #[test]
