@@ -596,6 +596,7 @@ def test_prepare_backend_cache_setup_threads_capability_config_to_stdlib_key(
         stdlib_like_by_module={"sys": True},
     )
     common = dict(
+        codegen=CodegenSelection(),
         cache_enabled=True,
         ir=ir,
         target="native",
@@ -801,9 +802,12 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
     selected = ("native-backend",)
     seen: list[tuple[str, ...]] = []
 
-    def selected_features(*, target: str, is_wasm: bool) -> tuple[str, ...]:
+    def selected_features(
+        *, target: str, is_wasm: bool, codegen_backend: str
+    ) -> tuple[str, ...]:
         assert target == "native"
         assert not is_wasm
+        assert codegen_backend == "cranelift"
         return selected
 
     def compiler_fingerprint(**kwargs: object) -> str:
@@ -835,6 +839,7 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
         stdlib_like_by_module={"sys": True},
     )
     common = dict(
+        codegen=CodegenSelection(),
         cache_enabled=True,
         ir=ir,
         target="native",
@@ -929,6 +934,7 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
         stdlib_like_by_module={"sys": True},
     )
     common = dict(
+        codegen=CodegenSelection(),
         cache_enabled=True,
         ir=ir,
         target="native",
@@ -1090,6 +1096,7 @@ def test_prepare_backend_cache_setup_threads_ambient_capability_env_to_stdlib_ke
         stdlib_like_by_module={"sys": True},
     )
     common = dict(
+        codegen=CodegenSelection(),
         cache_enabled=True,
         ir=ir,
         target="native",
