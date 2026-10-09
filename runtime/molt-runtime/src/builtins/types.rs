@@ -96,6 +96,14 @@ macro_rules! define_types_runtime_state {
 }
 
 define_types_runtime_state! {
+    context_class,
+    context_var_class,
+    context_token_class,
+    context_missing_class,
+    context_missing,
+    context_keys_iterator_class,
+    context_values_iterator_class,
+    context_items_iterator_class,
     mappingproxy_class,
     simplenamespace_class,
     capsule_class,
@@ -204,7 +212,7 @@ pub(crate) struct RuntimeClassLayout {
     pub native_slots: Option<crate::object::class_storage::ClassSlotPolicy>,
 }
 
-fn init_cached_runtime_class_configured(
+pub(crate) fn init_cached_runtime_class_configured(
     _py: &PyToken<'_>,
     slot: &AtomicU64,
     name: &str,

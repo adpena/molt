@@ -67,6 +67,11 @@ from wasm_abi_gen.paths import (
 
 FRONTEND_TYPES = ROOT / "src/molt/frontend/_types.py"
 
+# Native runtime callable identities share one generated namespace in the
+# runtime and compiler. Poll slots themselves belong to the WASM ABI manifest.
+NATIVE_RUNTIME_CALLABLE_KEY_BASE = 0xFFFF_FF00_0000_0000
+NATIVE_RUNTIME_POLL_KEY_OFFSET = 0x100
+
 GENERATOR_CACHE_VERSION = "wasm-abi-render-v6"
 RUSTFMT_CACHE_VERSION = "wasm-abi-rustfmt-v1"
 # Every path this generator renders; the render cache holds exactly these.
@@ -1647,6 +1652,14 @@ def render_runtime_boxed_abi_rs(data: dict) -> str:
     return "".join(lines)
 
 
+def _runtime_poll_imports(data: dict) -> list[tuple[int, str]]:
+    return sorted(
+        (entry["poll_table_slot"], entry["name"])
+        for entry in data["import"]
+        if "poll_table_slot" in entry
+    )
+
+
 def render_runtime_callable_abi_rs(data: dict) -> str:
     lines = [
         _header("//"),
@@ -1680,9 +1693,18 @@ def render_runtime_callable_abi_rs(data: dict) -> str:
             "pub fn runtime_callable_abi(symbol: &str) -> Option<&'static RuntimeCallableAbi> {\n",
             "    let index = RUNTIME_CALLABLE_ABIS.binary_search_by_key(&symbol, |abi| abi.symbol).ok()?;\n",
             "    Some(&RUNTIME_CALLABLE_ABIS[index])\n",
-            "}\n",
+            "}\n\n",
+            "/// Native task constructors take stable keys for runtime polls and code\n",
+            "/// addresses for compiled polls. Select the domain during lowering.\n",
+            "pub fn runtime_poll_native_key(symbol: &str) -> Option<u64> {\n",
+            "    const BASE: u64 = ",
+            f"0x{NATIVE_RUNTIME_CALLABLE_KEY_BASE + NATIVE_RUNTIME_POLL_KEY_OFFSET:016X};\n",
+            "    match symbol {\n",
         ]
     )
+    for slot, import_name in _runtime_poll_imports(data):
+        lines.append(f'        "molt_{import_name}" => Some(BASE + {slot}),\n')
+    lines.extend(["        _ => None,\n", "    }\n", "}\n"])
     return "".join(lines)
 
 
@@ -1721,14 +1743,7 @@ def render_runtime_raw_abi_rs(data: dict) -> str:
 
 def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str]) -> str:
     lines: list[str] = [_runtime_callables_header("//")]
-    poll_imports = sorted(
-        (
-            (entry["poll_table_slot"], entry["name"])
-            for entry in data["import"]
-            if "poll_table_slot" in entry
-        ),
-        key=lambda item: item[0],
-    )
+    poll_imports = _runtime_poll_imports(data)
     reserved_callables = _shared_runtime_callables(data)
     callable_specs = {
         spec["runtime_name"]: spec for spec in data["runtime_callable_abi"]
@@ -2105,23 +2120,17 @@ def _rust_str_slice(values: list[str]) -> str:
 def render_runtime_callables_rs(data: dict) -> str:
     lines: list[str] = [_runtime_callables_header("//")]
     non_runtime_callables = sorted(data.get("non_runtime_callable_intrinsic", []))
-    poll_imports = sorted(
-        (
-            (entry["poll_table_slot"], entry["name"])
-            for entry in data["import"]
-            if "poll_table_slot" in entry
-        ),
-        key=lambda item: item[0],
-    )
+    poll_imports = _runtime_poll_imports(data)
     reserved_callables = _shared_runtime_callables(data)
     python_builtin_callables = _python_builtin_global_callables(data)
     lines.extend(
         [
             "#![allow(dead_code)]\n\n",
             "use super::*;\n\n",
-            "pub(crate) const RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFF_FF00_0000_0000;\n",
+            "pub(crate) const RUNTIME_CALLABLE_KEY_BASE: u64 = ",
+            f"0x{NATIVE_RUNTIME_CALLABLE_KEY_BASE:016X};\n",
             "pub(crate) const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 =\n",
-            "    RUNTIME_CALLABLE_KEY_BASE + 0x100;\n\n",
+            f"    RUNTIME_CALLABLE_KEY_BASE + 0x{NATIVE_RUNTIME_POLL_KEY_OFFSET:X};\n\n",
             "pub(crate) const NON_RUNTIME_CALLABLE_INTRINSICS: &[&str] = &[\n",
             *[f'    "{name}",\n' for name in non_runtime_callables],
             "];\n\n",

@@ -74,13 +74,17 @@ pub(crate) use arguments::{
     callargs_ptr, callargs_visit_owned, release_stack_arguments,
 };
 #[cfg(feature = "molt_gpu_primitives")]
-pub(crate) use arguments::{callargs_positional_snapshot, clone_callargs_builder_bits};
+pub(crate) use arguments::{
+    callargs_positional_snapshot, clone_callargs_builder_bits, molt_callargs_new_expanded,
+};
 pub use arguments::{
     molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new,
     molt_callargs_push_kw, molt_callargs_push_pos,
 };
 pub(crate) use constructors::dispatch_init_subclass_hooks;
 use constructors::{call_type_with_arguments, is_default_type_call};
+#[cfg(feature = "molt_gpu_primitives")]
+pub(crate) use frame_binding::bind_python_frame_tuple;
 use frame_binding::{
     call_function_with_arguments, call_owned_function, takes_positional_arguments_over,
 };

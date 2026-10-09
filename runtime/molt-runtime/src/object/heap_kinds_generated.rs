@@ -58,10 +58,12 @@ pub(crate) const TYPE_ID_WEAKREF: u32 = 256;
 pub(crate) const TYPE_ID_NATIVE_DESCRIPTOR: u32 = 257;
 pub(crate) const TYPE_ID_CELL: u32 = 258;
 pub(crate) const TYPE_ID_FRAME_BINDINGS: u32 = 259;
+pub(crate) const TYPE_ID_CONTEXT_BITMAP_NODE: u32 = 260;
+pub(crate) const TYPE_ID_CONTEXT_COLLISION_NODE: u32 = 261;
 
 pub(crate) const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;
-pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_FRAME_BINDINGS;
-pub(crate) const ALL_HEAP_TYPE_IDS: [u32; 58] = [
+pub(crate) const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_CONTEXT_COLLISION_NODE;
+pub(crate) const ALL_HEAP_TYPE_IDS: [u32; 60] = [
     TYPE_ID_OBJECT,
     TYPE_ID_STRING,
     TYPE_ID_LIST,
@@ -120,6 +122,8 @@ pub(crate) const ALL_HEAP_TYPE_IDS: [u32; 58] = [
     TYPE_ID_NATIVE_DESCRIPTOR,
     TYPE_ID_CELL,
     TYPE_ID_FRAME_BINDINGS,
+    TYPE_ID_CONTEXT_BITMAP_NODE,
+    TYPE_ID_CONTEXT_COLLISION_NODE,
 ];
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HeapLayoutPolicy {
@@ -292,6 +296,7 @@ pub(crate) enum HeapAcyclicSlot {
     CodeVarkw,
     CodeFreevars,
     CodeCellvars,
+    CodeGpuDescriptor,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -364,6 +369,8 @@ pub(crate) enum HeapLifecycleHandler {
     NativeDescriptor,
     Cell,
     FrameBindings,
+    ContextBitmapNode,
+    ContextCollisionNode,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -384,7 +391,7 @@ pub(crate) struct HeapKindDescriptor {
     pub(crate) acyclic: HeapAcyclicCapability,
 }
 
-pub(crate) const HEAP_KIND_DESCRIPTORS: [Option<HeapKindDescriptor>; 61] = [
+pub(crate) const HEAP_KIND_DESCRIPTORS: [Option<HeapKindDescriptor>; 63] = [
     Some(HeapKindDescriptor {
         type_id: TYPE_ID_OBJECT,
         name: "OBJECT",
@@ -1316,6 +1323,38 @@ pub(crate) const HEAP_KIND_DESCRIPTORS: [Option<HeapKindDescriptor>; 61] = [
         external_gc: HeapExternalGcPolicy::None,
         acyclic: HeapAcyclicCapability::None,
     }),
+    Some(HeapKindDescriptor {
+        type_id: TYPE_ID_CONTEXT_BITMAP_NODE,
+        name: "CONTEXT_BITMAP_NODE",
+        layout: HeapLayoutPolicy::Inline,
+        edges: HeapEdgePolicy::Dynamic,
+        cycle: HeapCyclePolicy::Always,
+        weakref: HeapWeakrefPolicy::Deny,
+        shape: HeapShapePolicy::Fixed,
+        drop: HeapDropPolicy::None,
+        metrics: HeapMetricsPolicy::None,
+        track: HeapTrackProjection::Always,
+        handler: HeapLifecycleHandler::ContextBitmapNode,
+        publication: HeapPublicationPolicy::Python,
+        external_gc: HeapExternalGcPolicy::None,
+        acyclic: HeapAcyclicCapability::None,
+    }),
+    Some(HeapKindDescriptor {
+        type_id: TYPE_ID_CONTEXT_COLLISION_NODE,
+        name: "CONTEXT_COLLISION_NODE",
+        layout: HeapLayoutPolicy::Inline,
+        edges: HeapEdgePolicy::Dynamic,
+        cycle: HeapCyclePolicy::Always,
+        weakref: HeapWeakrefPolicy::Deny,
+        shape: HeapShapePolicy::Fixed,
+        drop: HeapDropPolicy::None,
+        metrics: HeapMetricsPolicy::None,
+        track: HeapTrackProjection::Always,
+        handler: HeapLifecycleHandler::ContextCollisionNode,
+        publication: HeapPublicationPolicy::Python,
+        external_gc: HeapExternalGcPolicy::None,
+        acyclic: HeapAcyclicCapability::None,
+    }),
 ];
 
 #[inline(always)]
@@ -1395,6 +1434,8 @@ pub(crate) const fn heap_track_projection(type_id: u32) -> Option<HeapTrackProje
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapTrackProjection::Always),
         TYPE_ID_CELL => Some(HeapTrackProjection::Always),
         TYPE_ID_FRAME_BINDINGS => Some(HeapTrackProjection::Always),
+        TYPE_ID_CONTEXT_BITMAP_NODE => Some(HeapTrackProjection::Always),
+        TYPE_ID_CONTEXT_COLLISION_NODE => Some(HeapTrackProjection::Always),
         _ => None,
     }
 }
@@ -1460,6 +1501,8 @@ pub(crate) const fn heap_drop_policy(type_id: u32) -> Option<HeapDropPolicy> {
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapDropPolicy::NativeDescriptor),
         TYPE_ID_CELL => Some(HeapDropPolicy::Cell),
         TYPE_ID_FRAME_BINDINGS => Some(HeapDropPolicy::None),
+        TYPE_ID_CONTEXT_BITMAP_NODE => Some(HeapDropPolicy::None),
+        TYPE_ID_CONTEXT_COLLISION_NODE => Some(HeapDropPolicy::None),
         _ => None,
     }
 }
@@ -1525,6 +1568,8 @@ pub(crate) const fn heap_metrics_policy(type_id: u32) -> Option<HeapMetricsPolic
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapMetricsPolicy::None),
         TYPE_ID_CELL => Some(HeapMetricsPolicy::None),
         TYPE_ID_FRAME_BINDINGS => Some(HeapMetricsPolicy::None),
+        TYPE_ID_CONTEXT_BITMAP_NODE => Some(HeapMetricsPolicy::None),
+        TYPE_ID_CONTEXT_COLLISION_NODE => Some(HeapMetricsPolicy::None),
         _ => None,
     }
 }
@@ -1590,6 +1635,8 @@ pub(crate) const fn heap_weakref_policy(type_id: u32) -> Option<HeapWeakrefPolic
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_CELL => Some(HeapWeakrefPolicy::Deny),
         TYPE_ID_FRAME_BINDINGS => Some(HeapWeakrefPolicy::Deny),
+        TYPE_ID_CONTEXT_BITMAP_NODE => Some(HeapWeakrefPolicy::Deny),
+        TYPE_ID_CONTEXT_COLLISION_NODE => Some(HeapWeakrefPolicy::Deny),
         _ => None,
     }
 }
@@ -1655,6 +1702,8 @@ pub(crate) const fn heap_cycle_policy(type_id: u32) -> Option<HeapCyclePolicy> {
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapCyclePolicy::Always),
         TYPE_ID_CELL => Some(HeapCyclePolicy::Always),
         TYPE_ID_FRAME_BINDINGS => Some(HeapCyclePolicy::Always),
+        TYPE_ID_CONTEXT_BITMAP_NODE => Some(HeapCyclePolicy::Always),
+        TYPE_ID_CONTEXT_COLLISION_NODE => Some(HeapCyclePolicy::Always),
         _ => None,
     }
 }
@@ -1720,6 +1769,8 @@ pub(crate) const fn heap_layout_policy(type_id: u32) -> Option<HeapLayoutPolicy>
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapLayoutPolicy::FixedBits),
         TYPE_ID_CELL => Some(HeapLayoutPolicy::FixedBits),
         TYPE_ID_FRAME_BINDINGS => Some(HeapLayoutPolicy::FixedBits),
+        TYPE_ID_CONTEXT_BITMAP_NODE => Some(HeapLayoutPolicy::Inline),
+        TYPE_ID_CONTEXT_COLLISION_NODE => Some(HeapLayoutPolicy::Inline),
         _ => None,
     }
 }
@@ -1785,6 +1836,8 @@ pub(crate) const fn heap_shape_policy(type_id: u32) -> Option<HeapShapePolicy> {
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapShapePolicy::Fixed),
         TYPE_ID_CELL => Some(HeapShapePolicy::Fixed),
         TYPE_ID_FRAME_BINDINGS => Some(HeapShapePolicy::Fixed),
+        TYPE_ID_CONTEXT_BITMAP_NODE => Some(HeapShapePolicy::Fixed),
+        TYPE_ID_CONTEXT_COLLISION_NODE => Some(HeapShapePolicy::Fixed),
         _ => None,
     }
 }
@@ -1850,6 +1903,8 @@ pub(crate) const fn heap_publication_policy(type_id: u32) -> Option<HeapPublicat
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapPublicationPolicy::Python),
         TYPE_ID_CELL => Some(HeapPublicationPolicy::Python),
         TYPE_ID_FRAME_BINDINGS => Some(HeapPublicationPolicy::Python),
+        TYPE_ID_CONTEXT_BITMAP_NODE => Some(HeapPublicationPolicy::Python),
+        TYPE_ID_CONTEXT_COLLISION_NODE => Some(HeapPublicationPolicy::Python),
         _ => None,
     }
 }
@@ -1915,6 +1970,8 @@ pub(crate) const fn heap_external_gc_policy(type_id: u32) -> Option<HeapExternal
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapExternalGcPolicy::None),
         TYPE_ID_CELL => Some(HeapExternalGcPolicy::None),
         TYPE_ID_FRAME_BINDINGS => Some(HeapExternalGcPolicy::None),
+        TYPE_ID_CONTEXT_BITMAP_NODE => Some(HeapExternalGcPolicy::None),
+        TYPE_ID_CONTEXT_COLLISION_NODE => Some(HeapExternalGcPolicy::None),
         _ => None,
     }
 }
@@ -1980,6 +2037,8 @@ pub(crate) const fn heap_acyclic_capability_policy(type_id: u32) -> Option<HeapA
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapAcyclicCapability::None),
         TYPE_ID_CELL => Some(HeapAcyclicCapability::None),
         TYPE_ID_FRAME_BINDINGS => Some(HeapAcyclicCapability::None),
+        TYPE_ID_CONTEXT_BITMAP_NODE => Some(HeapAcyclicCapability::None),
+        TYPE_ID_CONTEXT_COLLISION_NODE => Some(HeapAcyclicCapability::None),
         _ => None,
     }
 }
@@ -2003,6 +2062,7 @@ pub(crate) const fn heap_acyclic_slot_domain(slot: HeapAcyclicSlot) -> HeapAcycl
         HeapAcyclicSlot::CodeVarkw => HeapAcyclicEdgeDomain::StrOrNone,
         HeapAcyclicSlot::CodeFreevars => HeapAcyclicEdgeDomain::StrTuple,
         HeapAcyclicSlot::CodeCellvars => HeapAcyclicEdgeDomain::StrTuple,
+        HeapAcyclicSlot::CodeGpuDescriptor => HeapAcyclicEdgeDomain::StrOrNone,
     }
 }
 
@@ -2067,6 +2127,8 @@ pub(crate) const fn heap_lifecycle_handler(type_id: u32) -> Option<HeapLifecycle
         TYPE_ID_NATIVE_DESCRIPTOR => Some(HeapLifecycleHandler::NativeDescriptor),
         TYPE_ID_CELL => Some(HeapLifecycleHandler::Cell),
         TYPE_ID_FRAME_BINDINGS => Some(HeapLifecycleHandler::FrameBindings),
+        TYPE_ID_CONTEXT_BITMAP_NODE => Some(HeapLifecycleHandler::ContextBitmapNode),
+        TYPE_ID_CONTEXT_COLLISION_NODE => Some(HeapLifecycleHandler::ContextCollisionNode),
         _ => None,
     }
 }
@@ -2145,6 +2207,8 @@ pub(crate) fn heap_kind_id_by_name(name: &str) -> Option<u32> {
         "NATIVE_DESCRIPTOR" => Some(TYPE_ID_NATIVE_DESCRIPTOR),
         "CELL" => Some(TYPE_ID_CELL),
         "FRAME_BINDINGS" => Some(TYPE_ID_FRAME_BINDINGS),
+        "CONTEXT_BITMAP_NODE" => Some(TYPE_ID_CONTEXT_BITMAP_NODE),
+        "CONTEXT_COLLISION_NODE" => Some(TYPE_ID_CONTEXT_COLLISION_NODE),
         _ => None,
     }
 }

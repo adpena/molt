@@ -3697,6 +3697,9 @@ pub(crate) unsafe fn object_shape_visit_owned_edges(
             ObjectShapeLifecycleFamily::Functools => {
                 crate::builtins::functools::functools_visit_owned_edges(shape, ptr, visit);
             }
+            ObjectShapeLifecycleFamily::Contextvars => {
+                crate::builtins::contextvars::contextvars_visit_owned_edges(shape, ptr, visit);
+            }
             ObjectShapeLifecycleFamily::Types => {
                 crate::builtins::types::types_visit_owned_edges(shape, ptr, visit);
             }
@@ -3773,6 +3776,13 @@ pub(crate) unsafe fn object_shape_clear_cycle_edges(
                 crate::builtins::functools::functools_detach_owned_edges(shape, ptr, |bits| {
                     detached_sink.detach_if_heap(bits)
                 });
+            }
+            ObjectShapeLifecycleFamily::Contextvars => {
+                crate::builtins::contextvars::contextvars_clear_cycle_edges(
+                    shape,
+                    ptr,
+                    detached_sink,
+                );
             }
             ObjectShapeLifecycleFamily::Types => {
                 crate::builtins::types::types_detach_owned_edges(shape, ptr, |bits| {

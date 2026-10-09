@@ -307,6 +307,31 @@ mod deadline_publication_tests {
 
     static OWNER: AtomicU64 = AtomicU64::new(0);
     static CALLS: AtomicUsize = AtomicUsize::new(0);
+    static OBSERVED_STATE: AtomicU64 = AtomicU64::new(0);
+    static OBSERVED_DEADLINE: AtomicU64 = AtomicU64::new(0);
+
+    struct CallbackScope;
+
+    impl CallbackScope {
+        fn new() -> Self {
+            let scope = Self;
+            scope.reset();
+            scope
+        }
+
+        fn reset(&self) {
+            OWNER.store(0, Ordering::Relaxed);
+            CALLS.store(0, Ordering::Relaxed);
+            OBSERVED_STATE.store(0, Ordering::Relaxed);
+            OBSERVED_DEADLINE.store(0, Ordering::Relaxed);
+        }
+    }
+
+    impl Drop for CallbackScope {
+        fn drop(&mut self) {
+            self.reset();
+        }
+    }
 
     extern "C" fn timeout_probe(_argument: u64) -> u64 {
         MoltObject::none().bits()
@@ -314,17 +339,14 @@ mod deadline_publication_tests {
 
     extern "C" fn timeout_released(_weak: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
-            let owner = ptr_from_bits(OWNER.load(Ordering::Relaxed));
-            assert_eq!(
-                crate::object::object_state(owner),
-                1,
-                "callback saw an unregistered wait"
-            );
+            let bits = OWNER.swap(0, Ordering::Relaxed);
+            if bits == 0 {
+                return MoltObject::none().bits();
+            }
+            let owner = ptr_from_bits(bits);
+            OBSERVED_STATE.store(crate::object::object_state(owner) as u64, Ordering::Relaxed);
             unsafe {
-                assert_eq!(
-                    *owner.cast::<u64>().add(2),
-                    MoltObject::from_float(123.0).bits()
-                );
+                OBSERVED_DEADLINE.store(*owner.cast::<u64>().add(2), Ordering::Relaxed);
                 crate::object::payload_refs::store_owned(
                     py,
                     owner,
@@ -353,6 +375,7 @@ mod deadline_publication_tests {
     fn payload_reference_wait_deadline_and_registered_state_precede_timeout_release() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
+            let _callbacks = CallbackScope::new();
             let owner = crate::molt_alloc((3 * std::mem::size_of::<u64>()) as u64);
             let ptr = ptr_from_bits(owner);
             assert!(!ptr.is_null());
@@ -377,9 +400,17 @@ mod deadline_publication_tests {
             }
             crate::molt_object_publish_initialized(owner);
             OWNER.store(owner, Ordering::Relaxed);
-            CALLS.store(0, Ordering::Relaxed);
             unsafe { publish_registered_wait(py, ptr, Some(MoltObject::from_float(123.0).bits())) };
             assert_eq!(CALLS.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                OBSERVED_STATE.load(Ordering::Relaxed),
+                1,
+                "callback saw an unregistered wait"
+            );
+            assert_eq!(
+                OBSERVED_DEADLINE.load(Ordering::Relaxed),
+                MoltObject::from_float(123.0).bits()
+            );
             assert_eq!(
                 crate::object::object_state(ptr),
                 7,
@@ -390,9 +421,51 @@ mod deadline_publication_tests {
                 MoltObject::from_float(456.0).bits()
             );
             assert!(obj_from_bits(crate::molt_weakref_call(weak)).is_none());
-            OWNER.store(0, Ordering::Relaxed);
             dec_ref_bits(py, weak);
             dec_ref_bits(py, hook);
+            dec_ref_bits(py, owner);
+            assert!(!crate::exception_pending(py));
+        });
+    }
+
+    #[test]
+    fn deadline_callback_records_bad_publication_and_disarms_on_unwind() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let owner = crate::molt_alloc(24);
+            let ptr = ptr_from_bits(owner);
+            assert!(!ptr.is_null());
+            unsafe {
+                for index in 0..3 {
+                    ptr.cast::<u64>()
+                        .add(index)
+                        .write(MoltObject::none().bits());
+                }
+                assert!(crate::object::object_init_state_unpublished(ptr, 0));
+            }
+            crate::molt_object_publish_initialized(owner);
+            let failure = crate::test_support::catch_expected_unwind(|| {
+                let _callbacks = CallbackScope::new();
+                OWNER.store(owner, Ordering::Relaxed);
+                let result = timeout_released(0);
+                dec_ref_bits(py, result);
+                assert_eq!(OBSERVED_STATE.load(Ordering::Relaxed), 0);
+                assert_eq!(
+                    OBSERVED_DEADLINE.load(Ordering::Relaxed),
+                    MoltObject::none().bits()
+                );
+                assert_eq!(OWNER.load(Ordering::Relaxed), 0);
+                OWNER.store(owner, Ordering::Relaxed);
+                panic!("deadline callback rollback control");
+            });
+            assert_eq!(
+                failure
+                    .expect_err("rollback control must unwind")
+                    .downcast_ref::<&str>(),
+                Some(&"deadline callback rollback control")
+            );
+            assert_eq!(OWNER.load(Ordering::Relaxed), 0);
+            assert_eq!(CALLS.load(Ordering::Relaxed), 0);
             dec_ref_bits(py, owner);
             assert!(!crate::exception_pending(py));
         });

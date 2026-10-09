@@ -126,7 +126,9 @@ def test_rejection_conversion_has_stable_code_and_location() -> None:
 
 
 def test_real_call_dispatch_rejection_is_deterministic() -> None:
-    source = "value = len()\n"
+    # Shape builtins such as len delegate invalid calls to the runtime binder.
+    # Exercise a signature still rejected by the actual scalar call dispatcher.
+    source = "value = isinstance()\n"
     messages: list[str] = []
     for _ in range(2):
         with pytest.raises(CompatibilityError) as raised:
@@ -134,7 +136,8 @@ def test_real_call_dispatch_rejection_is_deterministic() -> None:
         messages.append(str(raised.value))
     assert messages[0] == messages[1]
     assert "MOLT-FE002" in messages[0]
-    assert "feature: len() takes exactly one argument (0 given)" in messages[0]
+    assert "feature: isinstance expects 2 arguments" in messages[0]
+    assert "location: deterministic.py:1:8" in messages[0]
 
 
 def test_native_and_wasm_cli_share_the_frontend_diagnostic(
@@ -145,9 +148,12 @@ def test_native_and_wasm_cli_share_the_frontend_diagnostic(
     import molt.cli as cli
 
     source = tmp_path / "unsupported_call.py"
-    source.write_text("value = len()\n", encoding="utf-8")
+    source.write_text("value = isinstance()\n", encoding="utf-8")
     monkeypatch.setenv("MOLT_COMPAT_WARNINGS", "0")
     monkeypatch.setenv("PYTHONHASHSEED", "0")
+    # Optional cache activation has its own stderr diagnostics; this fixture
+    # exercises the frontend's structured error before backend compilation.
+    monkeypatch.setenv("MOLT_USE_SCCACHE", "0")
     errors: list[list[str]] = []
     for target in ("native", "wasm"):
         monkeypatch.setattr(
@@ -163,3 +169,5 @@ def test_native_and_wasm_cli_share_the_frontend_diagnostic(
         errors.append(payload["errors"])
     assert errors[0] == errors[1]
     assert "MOLT-FE002" in errors[0][0]
+    assert "feature: isinstance expects 2 arguments" in errors[0][0]
+    assert f"location: {source}:1:8" in errors[0][0]

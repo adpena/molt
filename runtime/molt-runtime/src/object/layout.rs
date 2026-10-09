@@ -1796,6 +1796,42 @@ pub(crate) unsafe fn code_freevars_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(19 * std::mem::size_of::<u64>()) as *const u64) }
 }
 
+/// Optional compiler-owned hardware body description. Public function attributes
+/// are not an authority for these bytes. Zero is unpublished and allocates no
+/// secondary owner; a published field is immutable for the code's lifetime.
+pub(crate) unsafe fn code_gpu_descriptor_bits(ptr: *mut u8) -> u64 {
+    unsafe { *ptr.cast::<u64>().add(22) }
+}
+
+pub(crate) unsafe fn code_publish_gpu_descriptor(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    bits: u64,
+) -> bool {
+    use crate::object::heap_kinds_generated::HeapAcyclicSlot;
+    unsafe {
+        if !crate::object::builders::acyclic_slot_edge(HeapAcyclicSlot::CodeGpuDescriptor, bits) {
+            raise_exception::<u64>(py, "TypeError", "GPU code descriptor must be str or None");
+            return false;
+        }
+        let slot = ptr.cast::<u64>().add(22);
+        if *slot != 0 {
+            if *slot == bits {
+                return true;
+            }
+            raise_exception::<u64>(
+                py,
+                "RuntimeError",
+                "GPU code descriptor is already published",
+            );
+            return false;
+        }
+        inc_ref_bits(py, bits);
+        *slot = bits;
+        true
+    }
+}
+
 pub(crate) unsafe fn code_cellvars_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(20 * std::mem::size_of::<u64>()) as *const u64) }
 }

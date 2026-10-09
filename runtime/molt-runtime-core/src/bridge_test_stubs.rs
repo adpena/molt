@@ -97,7 +97,7 @@ aborting_bridge_stub!(__molt_gpu_attr_name_bits);
 aborting_bridge_stub!(__molt_gpu_builtin_float);
 aborting_bridge_stub!(__molt_gpu_bytes_view);
 aborting_bridge_stub!(__molt_gpu_call_callable1);
-aborting_bridge_stub!(__molt_gpu_callargs_positional_snapshot);
+aborting_bridge_stub!(__molt_gpu_bind_kernel_arguments);
 aborting_bridge_stub!(__molt_gpu_clone_callargs_builder);
 aborting_bridge_stub!(__molt_gpu_missing_bits);
 aborting_bridge_stub!(__molt_gpu_object_class_bits);
@@ -454,3 +454,37 @@ aborting_bridge_stub!(molt_string_from);
 aborting_bridge_stub!(molt_tuple_from_array);
 aborting_bridge_stub!(molt_type_of);
 aborting_bridge_stub!(molt_unpack_sequence);
+
+aborting_bridge_stub!(__molt_gpu_clear_attribute_error_if_pending);
+
+aborting_bridge_stub!(__molt_gpu_kernel_descriptor);
+
+aborting_bridge_stub!(__molt_gpu_descriptor_is_current);
+
+aborting_bridge_stub!(__molt_gpu_kernel_global);
+
+aborting_bridge_stub!(__molt_gpu_module_binding);
+
+aborting_bridge_stub!(__molt_gpu_intrinsic_matches);
+
+aborting_bridge_stub!(__molt_gpu_compiled_body_matches);
+aborting_bridge_stub!(__molt_gpu_class_binding);
+aborting_bridge_stub!(__molt_gpu_default_field);
+aborting_bridge_stub!(__molt_gpu_function_binding);
+aborting_bridge_stub!(__molt_gpu_builtin_matches);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_gpu_bytearray_copy(
+    _bits: u64,
+    _bytes: *const u8,
+    _len: usize,
+    _same_size: i32,
+) -> i32 {
+    std::process::abort()
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_gpu_commit_buffer_data(_object: u64, _old: u64, _new: u64) -> i32 {
+    std::process::abort()
+}
+
+aborting_bridge_stub!(__molt_gpu_exact_scalar_kind);

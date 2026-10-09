@@ -178,7 +178,7 @@ unsafe fn repeat_by_index(
 ) -> *mut PyObject {
     unsafe {
         if crate::api::abstract_number::PyIndex_Check(count) == 0 {
-            if crate::api::errors::PyErr_Occurred().is_null() {
+            if !crate::api::errors::raised_error_pending() {
                 set_type_error(format!(
                     "can't multiply sequence by non-int of type '{}'",
                     type_name(count)
@@ -190,7 +190,7 @@ unsafe fn repeat_by_index(
             count,
             (&raw mut crate::abi_types::PyExc_OverflowError).cast(),
         );
-        if count == -1 && !crate::api::errors::PyErr_Occurred().is_null() {
+        if count == -1 && crate::api::errors::raised_error_pending() {
             return ptr::null_mut();
         }
         let call: SsizeArgFunc = std::mem::transmute(slot);
@@ -296,7 +296,7 @@ fn tag_dict() -> u8 {
 /// Set a `TypeError` with a formatted message, unless an exception is already
 /// pending (never mask the more specific inner error).
 unsafe fn set_type_error(message: String) {
-    if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+    if crate::api::errors::raised_error_pending() {
         return;
     }
     if let Ok(cmsg) = std::ffi::CString::new(message) {

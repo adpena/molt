@@ -56,13 +56,15 @@ def test_inventory_preserves_active_ids_and_retires_holes() -> None:
         ("OBJECT", 100)
     ]
     dense = [row["id"] for row in kinds if row["id"] >= 200]
-    assert dense == [value for value in range(200, 260) if value not in (205, 220, 231)]
+    assert dense == [value for value in range(200, 262) if value not in (205, 220, 231)]
     assert next(row for row in kinds if row["name"] == "CELL")["id"] == 258
     by_name = {row["name"]: row for row in kinds}
     assert by_name["WEAKREF"]["id"] == 256
     assert by_name["NATIVE_DESCRIPTOR"]["id"] == 257
     assert by_name["FRAME_BINDINGS"]["id"] == 259
-    assert kinds[-1]["name"] == "FRAME_BINDINGS"
+    assert by_name["CONTEXT_BITMAP_NODE"]["id"] == 260
+    assert by_name["CONTEXT_COLLISION_NODE"]["id"] == 261
+    assert kinds[-1]["name"] == "CONTEXT_COLLISION_NODE"
 
 
 def test_green_reference_holders_carry_closed_acyclic_capabilities() -> None:

@@ -337,8 +337,8 @@ impl ObjectBridge {
             )
         };
         if !valid_slot || (!pointer.is_null() && !self.pyobj_matches_handle(pointer, value_bits)) {
-            unsafe { crate::api::refcount::Py_XDECREF(pointer) };
-            if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe { crate::api::errors::release_preserving_error(&[pointer]) };
+            if !crate::api::errors::raised_error_pending() {
                 unsafe {
                     crate::api::errors::PyErr_SetString(
                         (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
@@ -350,8 +350,7 @@ impl ObjectBridge {
         }
         if !unsafe { self.projection_adopt_owned_ref(pointer) } {
             unsafe {
-                crate::api::refcount::Py_DECREF(pointer);
-                crate::api::errors::PyErr_NoMemory();
+                crate::api::errors::release_preserving_error(&[pointer]);
             }
             return None;
         }

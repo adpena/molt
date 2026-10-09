@@ -75,7 +75,7 @@ prefixes = [
     "runtime_init", "runtime_shutdown", "sys_set_version_info",
     "print_obj", "print_newline",
     "profile_",
-    "gen_locals", "get_awaitable", "iterator_throw", "task_new", "task_register_token_owned",
+    "gen_locals", "get_awaitable", "iterator_throw", "task_new", "task_register_execution",
     "stdlib_probe", "import_smoke", "types_bootstrap",
     "abc_bootstrap", "collections_abc_runtime", "builtin_class_lookup",
     "capabilities_",
@@ -341,3 +341,6 @@ feature = "stdlib_select"
 [stdlib.gpu_primitives]
 prefixes = ["gpu_", "gpu_prim_"]
 feature = "molt_gpu_primitives"
+
+[stdlib.contextvars]
+prefixes = ["contextvars_"]

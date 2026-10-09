@@ -25,8 +25,26 @@ def registered_simpleir_kinds(data: dict) -> set[str]:
     return _shared_simpleir_kinds(data) | backend_private_kinds(data).keys()
 
 
+def frontend_kinds_for_wire_kind(data: dict, spelling: str) -> tuple[str, ...]:
+    """Project one wire spelling through its declared frontend lowering names.
+
+    Explicit lowering rows replace the uppercase default. Several declared
+    frontend operations may lower to the same wire operation; retain them all.
+    """
+    declared = tuple(
+        row["kind"]
+        for row in data.get("frontend_lowering_kind", ())
+        if row["wire_kind"] == spelling
+    )
+    return declared or (spelling.upper(),)
+
+
 def registered_frontend_kinds(data: dict) -> set[str]:
-    registered = {kind.upper() for kind in _shared_simpleir_kinds(data)}
+    registered = {
+        frontend_kind
+        for kind in _shared_simpleir_kinds(data)
+        for frontend_kind in frontend_kinds_for_wire_kind(data, kind)
+    }
     for table in (
         "frontend_effect_kind",
         "frontend_raising_kind",

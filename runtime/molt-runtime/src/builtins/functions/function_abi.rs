@@ -49,6 +49,20 @@ pub(crate) fn canonicalize_runtime_callable_key(fn_ptr: u64) -> u64 {
     fn_ptr
 }
 
+/// Runtime poll entries accept object words; compiled poll entries accept raw
+/// payload addresses. The manifest owns a dense, disjoint interval for each
+/// target's runtime poll identities. This check is on the hot dispatch path.
+#[inline]
+pub(crate) fn runtime_poll_uses_object_argument(poll_fn: u64) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    let base = crate::wasm_table_base();
+    #[cfg(not(target_arch = "wasm32"))]
+    let base = wasm_callables::RUNTIME_POLL_CALLABLE_KEY_BASE;
+    poll_fn
+        .checked_sub(base)
+        .is_some_and(|slot| (1..=wasm_callables::WASM_POLL_SLOT_MAX_OFFSET).contains(&slot))
+}
+
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn reserved_wasm_runtime_callable_info(
     fn_ptr: u64,

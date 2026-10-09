@@ -18,6 +18,50 @@ use crate::{
 use super::scheduler::{await_waiter_clear, wake_task_ptr};
 use super::spawned_task_dec;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TaskContextBinding {
+    Inherited,
+    OwnedEmpty,
+    Owned(u64),
+}
+#[derive(Clone, Copy)]
+pub(crate) struct TaskExecutionAttachment {
+    pub(crate) token: u64,
+    pub(crate) context: TaskContextBinding,
+}
+
+pub(crate) fn task_context_binding(py: &PyToken<'_>, task: *mut u8) -> TaskContextBinding {
+    task_tokens(py)
+        .lock()
+        .unwrap()
+        .get(&PtrSlot(task))
+        .map_or(TaskContextBinding::Inherited, |entry| entry.context)
+}
+pub(crate) fn materialize_task_context(py: &PyToken<'_>, task: *mut u8, context: u64) {
+    crate::inc_ref_bits(py, context);
+    let mut table = task_tokens(py).lock().unwrap();
+    let entry = table
+        .get_mut(&PtrSlot(task))
+        .expect("scheduled Context attachment");
+    debug_assert_eq!(entry.context, TaskContextBinding::OwnedEmpty);
+    entry.context = TaskContextBinding::Owned(context);
+}
+pub(crate) fn ensure_scheduled_context(py: &PyToken<'_>, task: *mut u8) -> bool {
+    if task_context_binding(py, task) != TaskContextBinding::Inherited {
+        return true;
+    }
+    let Some(context) = crate::builtins::contextvars::capture_scheduled_context(py) else {
+        return false;
+    };
+    task_tokens(py)
+        .lock()
+        .unwrap()
+        .get_mut(&PtrSlot(task))
+        .expect("task token admitted before spawn")
+        .context = context;
+    true
+}
+
 pub(crate) struct CancelTokenEntry {
     pub(crate) parent: u64,
     pub(crate) cancelled: bool,
@@ -66,7 +110,7 @@ pub(super) fn task_loop_handle(_py: &PyToken<'_>, task_ptr: *mut u8) -> Option<u
         .lock()
         .unwrap()
         .get(&PtrSlot(task_ptr))
-        .copied()?;
+        .map(|entry| entry.token)?;
     cancel_tokens(_py).lock().unwrap().get(&token)?.loop_handle
 }
 
@@ -79,7 +123,7 @@ pub(super) fn bind_task_loop(
         .lock()
         .unwrap()
         .get(&PtrSlot(task_ptr))
-        .copied()
+        .map(|entry| entry.token)
         .ok_or("asyncio Task has no owned execution token")?;
     if token == 1 {
         return Err("asyncio Task requires an owned execution token");
@@ -95,7 +139,9 @@ pub(super) fn bind_task_loop(
     Ok(())
 }
 
-pub(crate) fn task_tokens(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, u64>> {
+pub(crate) fn task_tokens(
+    _py: &PyToken<'_>,
+) -> &'static Mutex<HashMap<PtrSlot, TaskExecutionAttachment>> {
     &runtime_state(_py).task_tokens
 }
 
@@ -184,7 +230,11 @@ pub(crate) fn task_cancellation_detach(
     }
 
     let token = task_tokens(_py).lock().unwrap().remove(&task_slot);
-    if let Some(token) = token {
+    if let Some(attachment) = token {
+        let token = attachment.token;
+        if let TaskContextBinding::Owned(context) = attachment.context {
+            sink.detach_if_heap(context);
+        }
         let mut index = task_tokens_by_id(_py).lock().unwrap();
         if let Some(tasks) = index.get_mut(&token) {
             tasks.remove(&task_slot);
@@ -196,12 +246,8 @@ pub(crate) fn task_cancellation_detach(
         release_token(_py, token);
     }
 
-    unsafe {
-        let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-        if (*header).take_flags(HEADER_FLAG_SPAWN_RETAIN) != 0 {
-            sink.detach(MoltObject::from_ptr(task_ptr).bits());
-            spawned_task_dec();
-        }
+    if let Some(bits) = take_task_spawn_root(task_ptr) {
+        sink.detach(bits);
     }
 }
 
@@ -255,38 +301,58 @@ pub(crate) fn release_token(_py: &PyToken<'_>, id: u64) {
     }
 }
 
-pub(crate) fn register_task_token(_py: &PyToken<'_>, task_ptr: *mut u8, token: u64) {
-    let task_slot = PtrSlot(task_ptr);
-    let mut map = task_tokens(_py).lock().unwrap();
-    let mut index = task_tokens_by_id(_py).lock().unwrap();
-    if let Some(old) = map.insert(task_slot, token) {
-        if let Some(tasks) = index.get_mut(&old) {
-            tasks.remove(&task_slot);
+/// The task attachment is the one owner of execution metadata; cancellation
+/// lookup never determines which Context is entered.
+pub(crate) fn register_task_execution(
+    py: &PyToken<'_>,
+    task: *mut u8,
+    token: u64,
+    context: TaskContextBinding,
+) {
+    if let TaskContextBinding::Owned(bits) = context {
+        crate::inc_ref_bits(py, bits);
+    }
+    retain_token(py, token);
+    let slot = PtrSlot(task);
+    let old = task_tokens(py)
+        .lock()
+        .unwrap()
+        .insert(slot, TaskExecutionAttachment { token, context });
+    {
+        let mut index = task_tokens_by_id(py).lock().unwrap();
+        if let Some(old) = old
+            && let Some(tasks) = index.get_mut(&old.token)
+        {
+            tasks.remove(&slot);
             if tasks.is_empty() {
-                index.remove(&old);
+                index.remove(&old.token);
             }
         }
-        release_token(_py, old);
+        if token != 0 {
+            index.entry(token).or_default().insert(slot);
+        }
     }
-    if token != 0 {
-        index.entry(token).or_default().insert(task_slot);
+    if let Some(old) = old {
+        release_token(py, old.token);
+        if let TaskContextBinding::Owned(bits) = old.context {
+            dec_ref_bits(py, bits);
+        }
     }
-    if trace_cancel_token() {
-        eprintln!(
-            "molt cancel token register task=0x{:x} token={}",
-            task_ptr as usize, token
-        );
-    }
-    retain_token(_py, token);
 }
 
 pub(crate) fn ensure_task_token(_py: &PyToken<'_>, task_ptr: *mut u8, fallback: u64) -> u64 {
     let task_slot = PtrSlot(task_ptr);
     let mut map = task_tokens(_py).lock().unwrap();
     if let Some(token) = map.get(&task_slot).copied() {
-        return token;
+        return token.token;
     }
-    map.insert(task_slot, fallback);
+    map.insert(
+        task_slot,
+        TaskExecutionAttachment {
+            token: fallback,
+            context: TaskContextBinding::Inherited,
+        },
+    );
     retain_token(_py, fallback);
     if fallback != 0 {
         let mut index = task_tokens_by_id(_py).lock().unwrap();
@@ -303,7 +369,8 @@ pub(crate) fn clear_task_token(_py: &PyToken<'_>, task_ptr: *mut u8) {
     let mut map = task_tokens(_py).lock().unwrap();
     let token = map.remove(&task_slot);
     drop(map);
-    if let Some(token) = token {
+    if let Some(attachment) = token {
+        let token = attachment.token;
         let mut index = task_tokens_by_id(_py).lock().unwrap();
         if let Some(tasks) = index.get_mut(&token) {
             tasks.remove(&task_slot);
@@ -311,23 +378,57 @@ pub(crate) fn clear_task_token(_py: &PyToken<'_>, task_ptr: *mut u8) {
                 index.remove(&token);
             }
         }
+        drop(index);
         release_token(_py, token);
-    }
-    if !task_ptr.is_null() {
-        unsafe {
-            let header = task_ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
-            if (*header).take_flags(HEADER_FLAG_SPAWN_RETAIN) != 0 {
-                dec_ref_bits(_py, MoltObject::from_ptr(task_ptr).bits());
-                spawned_task_dec();
-            }
+        if let TaskContextBinding::Owned(bits) = attachment.context {
+            dec_ref_bits(_py, bits);
         }
     }
+    // Keep the external root until all callback-bearing side state is empty.
+    // The caller additionally owns its active queue item or manual call operand.
+    let spawn_root = take_task_spawn_root(task_ptr);
     task_last_exception_drop(_py, task_ptr);
     task_exception_handler_stack_drop(_py, task_ptr);
     task_exception_stack_drop(_py, task_ptr);
     task_exception_depth_drop(_py, task_ptr);
     task_exception_baseline_drop(_py, task_ptr);
     await_waiter_clear(_py, task_ptr);
+    if let Some(bits) = spawn_root {
+        dec_ref_bits(_py, bits);
+    }
+}
+
+/// Transfer the scheduler's external execution reference without releasing it.
+/// Queue/current-poll custody is independent and remains valid after transfer.
+pub(crate) fn take_task_spawn_root(task_ptr: *mut u8) -> Option<u64> {
+    if task_ptr.is_null() {
+        return None;
+    }
+    let taken = unsafe { (*header_from_obj_ptr(task_ptr)).take_flags(HEADER_FLAG_SPAWN_RETAIN) };
+    if taken == 0 {
+        return None;
+    }
+    spawned_task_dec();
+    Some(MoltObject::from_ptr(task_ptr).bits())
+}
+
+/// A closed event loop can no longer execute its bound tasks. Transfer only
+/// its external spawn owners; task-owned Context/captures remain with the task
+/// until the user's remaining references (if any) are released.
+pub(super) fn take_loop_spawn_roots(py: &PyToken<'_>, loop_handle: u64) -> Vec<u64> {
+    let tokens: HashSet<_> = cancel_tokens(py)
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(&id, token)| (token.loop_handle == Some(loop_handle)).then_some(id))
+        .collect();
+    task_tokens(py)
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, attachment)| tokens.contains(&attachment.token))
+        .filter_map(|(slot, _)| take_task_spawn_root(slot.0))
+        .collect()
 }
 
 pub(crate) fn task_cancel_pending(task_ptr: *mut u8) -> bool {

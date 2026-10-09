@@ -96,9 +96,32 @@ Use these lanes for import-system, package-entry, and bootstrap regressions. The
 
 | Lane | Scope | Required Command(s) | Pass Criteria |
 | --- | --- | --- | --- |
-| GB0 | Native compiled kernel parity | `uv run --python 3.12 pytest -q tests/test_gpu_kernel_compiled.py tests/test_gpu_api.py -k 'compiled_gpu_kernel_vector_add_matches_interpreted_semantics or compiled_gpu_kernel_vector_add_uses_metal_backend_when_enabled or compiled_gpu_kernel_vector_add_uses_webgpu_backend_when_enabled or gpu_kernel_call_lowers_to_first_class_gpu_launch_ir or gpu_kernel_descriptor_is_attached_to_function_metadata or kernel_simulation or kernel_scalar_multiply'` | Native compiled kernel lowering, sequential semantics, and explicit Metal/WebGPU backend lanes stay green. |
+| GB0 | Native compiled kernel parity | `uv run --python 3.12 pytest -q tests/test_gpu_kernel_compiled.py tests/test_gpu_api.py` | Ordinary configured-call semantics, code-owned descriptor projection/admission, launch-state restoration, auto-selection compiled CPU execution, explicit CUDA/HIP kernel-capability refusal, and explicit Metal/WebGPU backend lanes stay green. |
 | GB1 | Split-runtime wasm compiled kernel parity | `uv run --python 3.12 pytest -q tests/test_wasm_split_runtime.py -k split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output` | Split-runtime wasm compiled kernel stays correct for the baseline vector-add lane. |
-| GB2 | Browser-host WebGPU dispatch contract | `uv run --python 3.12 pytest -q tests/test_wasm_browser_gpu_host.py -k compiled_gpu_kernel_uses_webgpu_dispatch` | Browser-host wasm compiled kernel uses the WebGPU dispatch boundary rather than the sequential fallback and produces the expected output. |
+| GB2 | Browser-host WebGPU dispatch contract | `uv run --python 3.12 pytest -q tests/test_wasm_browser_gpu_host.py -k "compiled_gpu_kernel_uses_webgpu_dispatch or real_worker_completes_synchronous_import"` | Browser-host compiled kernels use WebGPU dispatch; the actual worker handshake completes synchronously and publishes complete outputs/store flags only on success. Mutable and immutable output bindings are distinct controls; nonthrowing validation, internal/OOM, loss, late readback failure and zero-output completion refuse atomically. Injected-device transport controls do not establish physical adapter support. |
+
+Configured Python kernels currently have three hardware descriptor consumers:
+native Metal, native WebGPU, and browser-host WebGPU. Explicit CUDA/HIP kernel
+requests fail before dispatch; their tensor/device facilities do not establish
+this separate descriptor capability. Auto selection may use compiled Molt CPU
+execution. This is runtime execution in the produced binary, never host Python.
+
+GPU completion qualification also requires the existing device-owner tests
+`webgpu_device_tests::actual_device_errors_precede_readback_publication` and
+`metal_device_tests::actual_device_success_and_capability_error_preserve_outputs`
+with their explicit ignored hardware selectors on admitted adapters. The Metal
+SDK-status control does not substitute for an actual terminal device-error
+publication proof; that coordinate remains unverified until controlled evidence
+exists, without inducing a device fault or hang.
+
+For a physical browser adapter, serve the repository with the existing
+cross-origin isolation headers and execute
+`tests/fixtures/gpu_browser_completion.mjs::runBrowserGpuCompletionControls`.
+It uses the production worker to require two-output shader success, a real
+nonthrowing bind-group validation refusal with unchanged output bytes, a device
+limit refusal, and empty/no-readback completion. This developer fixture is not
+part of a guest binary and introduces no browser execution framework. Missing
+adapter/isolation capability is not a passing result.
 
 Required hardening gate details for IR dedicated probes (part of G3):
 - `uv run --python 3.12 python -m molt.cli debug verify --require-probe-execution --probe-rss-metrics <MOLT_DIFF_ROOT>/rss_metrics.jsonl --failure-queue <failure-queue-path> --format json`

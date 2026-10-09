@@ -29,7 +29,7 @@ use crate::{
     generator_raise_active, header_from_obj_ptr, inc_ref_bits, is_truthy, maybe_ptr_from_bits,
     molt_exception_clear, molt_exception_last, molt_exception_set_last, molt_raise, obj_from_bits,
     object_mark_has_ptrs, object_type_id, pending_bits_i64, ptr_from_bits, raise_exception,
-    register_task_token, resolve_task_ptr, runtime_state, set_generator_raise, to_i64,
+    register_task_execution, resolve_task_ptr, runtime_state, set_generator_raise, to_i64,
     token_id_from_bits, type_name,
 };
 
@@ -391,7 +391,11 @@ pub extern "C" fn molt_is_native_awaitable(val_bits: u64) -> u64 {
 /// - `task_bits` must be a valid pointer to a Molt task with a valid header.
 /// - `token_bits` must be an integer cancel token id.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_task_register_token_owned(task_bits: u64, token_bits: u64) -> u64 {
+pub unsafe extern "C" fn molt_task_register_execution(
+    task_bits: u64,
+    token_bits: u64,
+    context_bits: u64,
+) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let Some(task_ptr) = resolve_task_ptr(task_bits) else {
             return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
@@ -400,7 +404,14 @@ pub unsafe extern "C" fn molt_task_register_token_owned(task_bits: u64, token_bi
             Some(id) => id,
             None => return raise_exception::<_>(_py, "TypeError", "cancel token id must be int"),
         };
-        register_task_token(_py, task_ptr, id);
+        let context = if obj_from_bits(context_bits).is_none() {
+            super::cancellation::TaskContextBinding::Inherited
+        } else if crate::builtins::contextvars::is_context(context_bits) {
+            super::cancellation::TaskContextBinding::Owned(context_bits)
+        } else {
+            return raise_exception::<_>(_py, "TypeError", "context must be a Context");
+        };
+        register_task_execution(_py, task_ptr, id, context);
         MoltObject::none().bits()
     })
 }
@@ -2037,6 +2048,33 @@ mod suspension_reference_tests {
     static CALLBACK_OFFSET: AtomicUsize = AtomicUsize::new(0);
     static CALLBACK_OBSERVED: AtomicU64 = AtomicU64::new(0);
     static CALLBACK_EMPTY_PREFIX: AtomicUsize = AtomicUsize::new(0);
+    static CALLBACK_PREFIX: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+    struct CallbackScope;
+
+    impl CallbackScope {
+        fn new() -> Self {
+            let scope = Self;
+            scope.reset();
+            scope
+        }
+
+        fn reset(&self) {
+            CALLBACK_OWNER.store(0, Ordering::Relaxed);
+            CALLBACK_OFFSET.store(0, Ordering::Relaxed);
+            CALLBACK_OBSERVED.store(0, Ordering::Relaxed);
+            CALLBACK_EMPTY_PREFIX.store(0, Ordering::Relaxed);
+            for slot in &CALLBACK_PREFIX {
+                slot.store(0, Ordering::Relaxed);
+            }
+        }
+    }
+
+    impl Drop for CallbackScope {
+        fn drop(&mut self) {
+            self.reset();
+        }
+    }
 
     extern "C" fn payload(_value: u64) -> u64 {
         MoltObject::none().bits()
@@ -2044,15 +2082,16 @@ mod suspension_reference_tests {
 
     extern "C" fn on_release(_weak: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
-            let owner = ptr_from_bits(CALLBACK_OWNER.load(Ordering::Relaxed));
+            let bits = CALLBACK_OWNER.swap(0, Ordering::Relaxed);
+            if bits == 0 {
+                return MoltObject::none().bits();
+            }
+            let owner = ptr_from_bits(bits);
             let offset = CALLBACK_OFFSET.load(Ordering::Relaxed);
             unsafe {
                 let words = CALLBACK_EMPTY_PREFIX.load(Ordering::Relaxed);
-                for index in 0..words {
-                    assert!(
-                        obj_from_bits(*owner.cast::<u64>().add(index)).is_none(),
-                        "callback observed a partially retired payload"
-                    );
+                for (index, observed) in CALLBACK_PREFIX.iter().take(words).enumerate() {
+                    observed.store(*owner.cast::<u64>().add(index), Ordering::Relaxed);
                 }
                 CALLBACK_OBSERVED.store(*owner.add(offset).cast::<u64>(), Ordering::Relaxed);
                 crate::object::payload_refs::store_borrowed(
@@ -2169,6 +2208,7 @@ mod suspension_reference_tests {
     fn suspension_prefix_is_fully_detached_before_reentrant_release() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
+            let _callbacks = CallbackScope::new();
             let owner = crate::molt_alloc(16);
             let ptr = ptr_from_bits(owner);
             let value = callback(py, payload as *const ());
@@ -2185,6 +2225,13 @@ mod suspension_reference_tests {
             CALLBACK_OFFSET.store(8, Ordering::Relaxed);
             CALLBACK_EMPTY_PREFIX.store(2, Ordering::Relaxed);
             unsafe { crate::object::payload_refs::clear_prefix::<2>(py, ptr) };
+            for observed in &CALLBACK_PREFIX {
+                assert_eq!(
+                    observed.load(Ordering::Relaxed),
+                    MoltObject::none().bits(),
+                    "callback observed a partially retired payload"
+                );
+            }
             assert!(obj_from_bits(CALLBACK_OBSERVED.load(Ordering::Relaxed)).is_none());
             assert_eq!(
                 unsafe { *ptr.cast::<u64>().add(1) },
@@ -2192,8 +2239,6 @@ mod suspension_reference_tests {
             );
             assert!(obj_from_bits(crate::molt_weakref_call(weak)).is_none());
             assert!(obj_from_bits(crate::molt_weakref_call(later_weak)).is_none());
-            CALLBACK_EMPTY_PREFIX.store(0, Ordering::Relaxed);
-            CALLBACK_OWNER.store(0, Ordering::Relaxed);
             dec_ref_bits(py, weak);
             dec_ref_bits(py, later_weak);
             dec_ref_bits(py, hook);
@@ -2206,6 +2251,7 @@ mod suspension_reference_tests {
     fn suspension_slot_callback_observes_publication_and_keeps_reentrant_write() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
+            let _callbacks = CallbackScope::new();
             for field in [
                 Reference::Send,
                 Reference::Throw,
@@ -2230,13 +2276,49 @@ mod suspension_reference_tests {
                     MoltObject::from_int(77).bits()
                 );
                 assert!(obj_from_bits(crate::molt_weakref_call(weak)).is_none());
-                CALLBACK_OWNER.store(0, Ordering::Relaxed);
                 dec_ref_bits(py, incoming);
                 dec_ref_bits(py, weak);
                 dec_ref_bits(py, hook);
                 dec_ref_bits(py, owner);
                 assert!(!exception_pending(py));
             }
+        });
+    }
+
+    #[test]
+    fn suspension_callback_records_bad_prefix_and_disarms_on_unwind() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let owner = crate::molt_alloc(16);
+            let ptr = ptr_from_bits(owner);
+            assert!(!ptr.is_null());
+            let unexpected = MoltObject::from_int(73).bits();
+            unsafe {
+                ptr.cast::<u64>().write(unexpected);
+                ptr.cast::<u64>().add(1).write(MoltObject::none().bits());
+            }
+            crate::molt_object_publish_initialized(owner);
+            let failure = crate::test_support::catch_expected_unwind(|| {
+                let _callbacks = CallbackScope::new();
+                CALLBACK_OWNER.store(owner, Ordering::Relaxed);
+                CALLBACK_EMPTY_PREFIX.store(2, Ordering::Relaxed);
+                let result = on_release(0);
+                dec_ref_bits(py, result);
+                assert_eq!(CALLBACK_PREFIX[0].load(Ordering::Relaxed), unexpected);
+                assert_eq!(CALLBACK_OWNER.load(Ordering::Relaxed), 0);
+                CALLBACK_OWNER.store(owner, Ordering::Relaxed);
+                panic!("suspension callback rollback control");
+            });
+            assert_eq!(
+                failure
+                    .expect_err("rollback control must unwind")
+                    .downcast_ref::<&str>(),
+                Some(&"suspension callback rollback control")
+            );
+            assert_eq!(CALLBACK_OWNER.load(Ordering::Relaxed), 0);
+            assert_eq!(CALLBACK_EMPTY_PREFIX.load(Ordering::Relaxed), 0);
+            dec_ref_bits(py, owner);
+            assert!(!exception_pending(py));
         });
     }
 }

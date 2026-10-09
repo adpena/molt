@@ -37,6 +37,118 @@ class CFGEdgeKind(IntFlag):
     RESUME = 4
 
 
+@dataclass(frozen=True, slots=True)
+class DominatorTree:
+    """Reachable-node dominance with linear retained storage and O(1) queries.
+
+    Successors must be valid dense node IDs in [0, len(successors)). Node IDs
+    index immutable immediate-parent and tree-interval tables.
+    Entry and unreachable nodes have no immediate parent. Unreachable nodes do
+    not dominate anything, including themselves, matching TIR IndexedDominance.
+    """
+
+    _parents: tuple[int | None, ...]
+    _entered: tuple[int, ...]
+    _exited: tuple[int, ...]
+
+    @classmethod
+    def compute(
+        cls, successors: Sequence[Sequence[int]], entry: int = 0
+    ) -> DominatorTree:
+        count = len(successors)
+        entered = [-1] * count
+        exited = [-1] * count
+        parents: list[int | None] = [None] * count
+        if not 0 <= entry < count:
+            return cls(tuple(parents), tuple(entered), tuple(exited))
+
+        # Mark on entry, not when scheduling siblings: a cross-edge may visit
+        # a pending sibling first. Both traversals stay off Python's call stack.
+        seen = [False] * count
+        postorder: list[int] = []
+        stack = [(entry, False)]
+        while stack:
+            node, exiting = stack.pop()
+            if exiting:
+                postorder.append(node)
+            elif not seen[node]:
+                seen[node] = True
+                stack.append((node, True))
+                stack.extend(
+                    (child, False)
+                    for child in reversed(successors[node])
+                    if not seen[child]
+                )
+        order = list(reversed(postorder))
+        positions = [-1] * count
+        for index, node in enumerate(order):
+            positions[node] = index
+        predecessors: list[list[int]] = [[] for _ in order]
+        for index, node in enumerate(order):
+            for child in successors[node]:
+                predecessors[positions[child]].append(index)
+
+        # Cooper-Harvey-Kennedy, as in runtime/molt-ir/src/tir/dominators.rs:
+        # intersect immediate-parent paths in reachable reverse-postorder space
+        # instead of allocating the complete ancestor set for every CFG block.
+        idoms = [-1] * len(order)
+        idoms[0] = 0
+        changed = True
+        while changed:
+            changed = False
+            for node in range(1, len(order)):
+                parent = -1
+                for pred in predecessors[node]:
+                    if idoms[pred] == -1:
+                        continue
+                    if parent == -1:
+                        parent = pred
+                        continue
+                    left, right = parent, pred
+                    while left != right:
+                        while left > right:
+                            left = idoms[left]
+                        while right > left:
+                            right = idoms[right]
+                    parent = left
+                if parent != idoms[node]:
+                    idoms[node] = parent
+                    changed = True
+
+        children: list[list[int]] = [[] for _ in order]
+        for index in range(1, len(order)):
+            parent = idoms[index]
+            children[parent].append(index)
+            parents[order[index]] = order[parent]
+        clock = 0
+        stack = [(0, False)]
+        while stack:
+            index, exiting = stack.pop()
+            node = order[index]
+            if exiting:
+                exited[node] = clock
+            else:
+                entered[node] = clock
+                stack.append((index, True))
+                stack.extend((child, False) for child in reversed(children[index]))
+            clock += 1
+        return cls(tuple(parents), tuple(entered), tuple(exited))
+
+    def is_reachable(self, node: int) -> bool:
+        return 0 <= node < len(self._entered) and self._entered[node] >= 0
+
+    def dominates(self, definition: int, usage: int) -> bool:
+        return (
+            self.is_reachable(definition)
+            and self.is_reachable(usage)
+            and self._entered[definition] <= self._entered[usage]
+            and self._exited[usage] <= self._exited[definition]
+        )
+
+    def immediate_dominator(self, node: int) -> int | None:
+        return self._parents[node] if 0 <= node < len(self._parents) else None
+
+
 @dataclass(frozen=True)
 class CFGGraph:
     blocks: list[BasicBlock]
@@ -48,7 +160,7 @@ class CFGGraph:
     edge_kinds: dict[tuple[int, int], CFGEdgeKind]
     predecessors: dict[int, list[int]]
     reachable: set[int]
-    dominators: dict[int, set[int]]
+    dominance: DominatorTree
 
 
 def _collect_control_maps(ops: Sequence[OpLike]) -> ControlMaps:
@@ -116,7 +228,8 @@ def _build_basic_blocks(
         "TRY_START",
         "TRY_END",
         "JUMP",
-        "RETURN",
+        "ret",
+        "ret_void",
         "RAISE",
         "RAISE_CAUSE",
         "RERAISE",
@@ -291,7 +404,7 @@ def _compute_successors(
             target = str(op.args[0]) if op.args else ""
             add_succ(block_id, label_to_block.get(target), CFGEdgeKind.EXCEPTION)
             continue
-        if op.kind == "RETURN":
+        if op.kind in {"ret", "ret_void"}:
             continue
         if op.kind in {"RAISE", "RAISE_CAUSE", "RERAISE"}:
             # molt's exception model lowers `raise` to "set the pending
@@ -338,57 +451,6 @@ def _compute_predecessors(successors: dict[int, list[int]]) -> dict[int, list[in
     return predecessors
 
 
-def _reachable_blocks(successors: dict[int, list[int]]) -> set[int]:
-    if not successors:
-        return set()
-    seen: set[int] = set()
-    stack = [0]
-    while stack:
-        block_id = stack.pop()
-        if block_id in seen:
-            continue
-        seen.add(block_id)
-        for succ in successors.get(block_id, []):
-            if succ not in seen:
-                stack.append(succ)
-    return seen
-
-
-def _compute_dominators(
-    *,
-    block_count: int,
-    predecessors: dict[int, list[int]],
-    reachable: set[int],
-) -> dict[int, set[int]]:
-    dominators: dict[int, set[int]] = {}
-    all_blocks = set(range(block_count))
-    for block_id in range(block_count):
-        if block_id == 0:
-            dominators[block_id] = {0}
-        elif block_id in reachable:
-            dominators[block_id] = all_blocks.copy()
-        else:
-            dominators[block_id] = {block_id}
-
-    changed = True
-    while changed:
-        changed = False
-        for block_id in range(1, block_count):
-            if block_id not in reachable:
-                continue
-            preds = [p for p in predecessors.get(block_id, []) if p in reachable]
-            if not preds:
-                new_dom = {block_id}
-            else:
-                pred_sets = [dominators[p] for p in preds]
-                new_dom = set.intersection(*pred_sets)
-                new_dom.add(block_id)
-            if new_dom != dominators[block_id]:
-                dominators[block_id] = new_dom
-                changed = True
-    return dominators
-
-
 def build_cfg(ops: Sequence[OpLike]) -> CFGGraph:
     control = _collect_control_maps(ops)
     blocks, index_to_block, label_to_block, block_entry_label = _build_basic_blocks(
@@ -402,12 +464,8 @@ def build_cfg(ops: Sequence[OpLike]) -> CFGGraph:
         control=control,
     )
     predecessors = _compute_predecessors(successors)
-    reachable = _reachable_blocks(successors)
-    dominators = _compute_dominators(
-        block_count=len(blocks),
-        predecessors=predecessors,
-        reachable=reachable,
-    )
+    dominance = DominatorTree.compute([successors[block.id] for block in blocks])
+    reachable = {block.id for block in blocks if dominance.is_reachable(block.id)}
     return CFGGraph(
         blocks=blocks,
         index_to_block=index_to_block,
@@ -418,5 +476,5 @@ def build_cfg(ops: Sequence[OpLike]) -> CFGGraph:
         edge_kinds=edge_kinds,
         predecessors=predecessors,
         reachable=reachable,
-        dominators=dominators,
+        dominance=dominance,
     )

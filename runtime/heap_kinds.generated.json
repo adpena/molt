@@ -669,6 +669,7 @@
         "cellvars": "str_tuple",
         "filename": "str",
         "freevars": "str_tuple",
+        "gpu_descriptor": "str_or_none",
         "kwonly": "str_tuple",
         "linetable": "bytes_or_none",
         "name": "str",
@@ -946,6 +947,38 @@
       "shape": "fixed",
       "track": "always",
       "weakref": "deny"
+    },
+    {
+      "acyclic_capability": "none",
+      "acyclic_slots": {},
+      "cycle": "always",
+      "drop": "none",
+      "edges": "dynamic",
+      "external_gc": "none",
+      "id": 260,
+      "layout": "inline",
+      "metrics": "none",
+      "name": "CONTEXT_BITMAP_NODE",
+      "publication": "python",
+      "shape": "fixed",
+      "track": "always",
+      "weakref": "deny"
+    },
+    {
+      "acyclic_capability": "none",
+      "acyclic_slots": {},
+      "cycle": "always",
+      "drop": "none",
+      "edges": "dynamic",
+      "external_gc": "none",
+      "id": 261,
+      "layout": "inline",
+      "metrics": "none",
+      "name": "CONTEXT_COLLISION_NODE",
+      "publication": "python",
+      "shape": "fixed",
+      "track": "always",
+      "weakref": "deny"
     }
   ],
   "object_shapes": [
@@ -1199,6 +1232,30 @@
       "family": "types",
       "id": 75,
       "name": "TYPES_FRAME_LOCALS_PROXY",
+      "resource_slot0": "none"
+    },
+    {
+      "family": "contextvars",
+      "id": 76,
+      "name": "CONTEXT",
+      "resource_slot0": "none"
+    },
+    {
+      "family": "contextvars",
+      "id": 77,
+      "name": "CONTEXT_VAR",
+      "resource_slot0": "none"
+    },
+    {
+      "family": "contextvars",
+      "id": 78,
+      "name": "CONTEXT_TOKEN",
+      "resource_slot0": "none"
+    },
+    {
+      "family": "contextvars",
+      "id": 79,
+      "name": "CONTEXT_ITERATOR",
       "resource_slot0": "none"
     },
     {

@@ -370,6 +370,8 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 params=[], param_types=[], return_abi="value", return_hint=None, ops=[]
             ),
         )
+        if origin := self._gpu_body_origin_candidates.get(id(node)):
+            self.funcs_map[func_symbol]["gpu_body_origin"] = dict(origin)
         self.funcs_map[func_symbol]["return_hint"] = self._normalized_return_hint(
             node.returns
         )
@@ -447,18 +449,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             cellvars=cell_vars,
         )
         is_gpu_kernel = self._has_gpu_kernel_decorator(node)
-        # ── @gpu.kernel: mark function IR so the backend routes through GPU pipeline ──
-        if is_gpu_kernel:
-            self.gpu_kernel_symbols_by_name[func_name] = func_symbol
-            gpu_flag = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=gpu_flag))
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[func_val, "__molt_gpu_kernel__", gpu_flag],
-                    result=MoltValue("none"),
-                )
-            )
         if func_spill is not None:
             func_val = self._reload_async_value(func_spill, func_val.type_hint)
         self._emit_function_annotate(func_val, node)
@@ -491,8 +481,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
         )
         self._inherit_free_var_import_resolution(free_vars, prev_state)
         self.parameter_bindings = parameter_bindings
-        prev_gpu_kernel_context = self.current_gpu_kernel_context
-        self.current_gpu_kernel_context = is_gpu_kernel
         self.current_method_first_param = params[0] if params else None
         if has_closure:
             self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
@@ -562,7 +550,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             self._emit_return_value(res)
         self.resume_function(prev_func)
         self._restore_function_state(prev_state)
-        self.current_gpu_kernel_context = prev_gpu_kernel_context
         self.current_method_first_param = prev_first_param
         if is_gpu_kernel:
             descriptor_val = MoltValue(self.next_var(), type_hint="str")
@@ -577,12 +564,10 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                     result=descriptor_val,
                 )
             )
-            self.emit(
-                MoltOp(
-                    kind="SETATTR_GENERIC_OBJ",
-                    args=[func_val, "__molt_gpu_descriptor__", descriptor_val],
-                    result=MoltValue("none"),
-                )
+            self._emit_runtime_call(
+                "molt_gpu_kernel_descriptor_set",
+                [func_val, descriptor_val],
+                type_hint="None",
             )
         if node.decorator_list:
             decorated = func_val

@@ -22,6 +22,7 @@ mod compression_resolver;
 mod concurrent_resolver;
 mod configparser_resolver;
 mod contextlib_resolver;
+mod contextvars_resolver;
 mod copy_resolver;
 mod copyreg_resolver;
 mod core_resolver;
@@ -186,6 +187,9 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         return Some(v);
     }
     if let Some(v) = contextlib_resolver::resolve_symbol(symbol) {
+        return Some(v);
+    }
+    if let Some(v) = contextvars_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
     if let Some(v) = copy_resolver::resolve_symbol(symbol) {

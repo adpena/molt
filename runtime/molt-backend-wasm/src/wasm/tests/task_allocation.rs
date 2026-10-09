@@ -80,7 +80,7 @@ fn ordinary_task_initialization_is_success_only_and_preserves_result() {
                         .any(|op| matches!(op, wasmparser::Operator::Return))
                 );
                 if op_kind == "alloc_task" && task_kind != "generator" {
-                    let register = imports["task_register_token_owned"];
+                    let register = imports["task_register_execution"];
                     assert!(initialize[..end].iter().any(|op| matches!(op, wasmparser::Operator::Call {function_index} if *function_index == register)));
                 }
                 let releases = imports.get("dec_ref_obj").map_or(0, |release| {

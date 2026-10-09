@@ -129,7 +129,7 @@ def test_tuple_conversion_does_not_treat_annotations_as_exact(annotation: str) -
         "molt_promise_new",
         "molt_promise_set_result",
         "molt_promise_set_exception",
-        "molt_task_register_token_owned",
+        "molt_task_register_execution",
         "molt_cancel_token_is_cancelled",
         "molt_cancel_token_set_current",
         "molt_cancel_token_get_current",
@@ -1517,16 +1517,18 @@ def test_control_flow_definition_has_one_namespace_publication(definition: str) 
 def test_module_control_flow_promotion_flushes_only_unpublished_values(
     deferred: bool,
 ) -> None:
-    generator = SimpleTIRGenerator()
-    generator.visit(ast.parse(""))
-    generator.defer_module_attrs = deferred
-    flag = MoltValue(generator.next_var(), type_hint="int")
-    generator.emit(MoltOp(kind="CONST", args=[7], result=flag))
-    generator._store_local_value("flag", flag, publish_module=True)
-    generator.globals["flag"] = flag
-    generator._prepare_mutable_control_flow_bindings({"flag"})
-    generator._prepare_mutable_control_flow_bindings({"flag"})
-    generator._flush_deferred_module_attrs()
+    class RepeatedPromotion(SimpleTIRGenerator):
+        def visit_Assign(self, node: ast.Assign) -> None:
+            # Exercise promotion while the module body is live. Appending ops
+            # after visiting a complete module places them after its return.
+            self.defer_module_attrs = deferred
+            super().visit_Assign(node)
+            self._prepare_mutable_control_flow_bindings({"flag"})
+            self._prepare_mutable_control_flow_bindings({"flag"})
+            self._flush_deferred_module_attrs()
+
+    generator = RepeatedPromotion()
+    generator.visit(ast.parse("flag = 7"))
     ops = next(
         fn["ops"]
         for fn in generator.to_json()["functions"]

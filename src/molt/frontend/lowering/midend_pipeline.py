@@ -171,17 +171,20 @@ class MidendPipelineMixin(GeneratorMixinBase):
                         # value arg) to reference a variable from a non-
                         # dominating block, producing invalid IR — the
                         # "return-buffer" bug.
-                        block_doms = round_cfg.dominators.get(block_id, {block_id})
                         filtered_aliases: dict[str, MoltValue] = {}
                         for _ak, _av in in_state["aliases"].items():
                             _target_block = _value_def_block.get(_av.name)
-                            if _target_block is None or _target_block in block_doms:
+                            if _target_block is None or round_cfg.dominance.dominates(
+                                _target_block, block_id
+                            ):
                                 filtered_aliases[_ak] = _av
                         in_state["aliases"] = filtered_aliases
                         filtered_avail: dict[tuple[Any, ...], MoltValue] = {}
                         for _vk, _vv in in_state["available_values"].items():
                             _target_block = _value_def_block.get(_vv.name)
-                            if _target_block is None or _target_block in block_doms:
+                            if _target_block is None or round_cfg.dominance.dominates(
+                                _target_block, block_id
+                            ):
                                 filtered_avail[_vk] = _vv
                         in_state["available_values"] = filtered_avail
 

@@ -464,57 +464,113 @@ pub(crate) fn bigint_from_bytes(data: &[u8], little_endian: bool, signed: bool) 
     }
 }
 
-/// Shared arbitrary-width fixed-width encoder.
-///
-/// On magnitude overflow the low `out.len()` bytes are still written before
-/// `INT_BYTES_OVERFLOW` is returned, matching `_PyLong_AsByteArray`.
+/// Emit one fixed-width integer from borrowed magnitude words. Words are
+/// little-significance u32 values regardless of host endian or BigInt limb size.
+/// Overflow still writes the low bytes; unsigned negatives leave output intact.
+fn magnitude_to_bytes(
+    negative: bool,
+    bit_len: u64,
+    mut words: impl Iterator<Item = u32>,
+    out: &mut [u8],
+    little_endian: bool,
+    signed: bool,
+) -> i32 {
+    if negative && !signed {
+        return INT_BYTES_NEGATIVE_UNSIGNED;
+    }
+    // CPython has no significant two's-complement byte for either 0 or -1.
+    if out.is_empty() {
+        return if bit_len == 0 || negative && bit_len == 1 {
+            INT_BYTES_OK
+        } else {
+            INT_BYTES_OVERFLOW
+        };
+    }
+    let mut word = 0u32;
+    let mut carry = u16::from(negative);
+    let mut seen_nonzero = false;
+    let mut power_of_two = true;
+    for index in 0..out.len() {
+        if index % 4 == 0 {
+            word = words.next().unwrap_or(0);
+            if word != 0 {
+                power_of_two &= !seen_nonzero && word.is_power_of_two();
+                seen_nonzero = true;
+            }
+        }
+        let magnitude = (word >> ((index % 4) * 8)) as u8;
+        let byte = if negative {
+            let complemented = u16::from(!magnitude) + carry;
+            carry = complemented >> 8;
+            complemented as u8
+        } else {
+            magnitude
+        };
+        let target = if little_endian {
+            index
+        } else {
+            out.len() - 1 - index
+        };
+        out[target] = byte;
+    }
+    // An overflowing width is larger than every representable BigInt bit count.
+    let fits = (out.len() as u64).checked_mul(8).is_none_or(|width| {
+        if !signed {
+            bit_len <= width
+        } else if negative {
+            bit_len < width || bit_len == width && power_of_two && seen_nonzero
+        } else {
+            bit_len < width
+        }
+    });
+    if fits {
+        INT_BYTES_OK
+    } else {
+        INT_BYTES_OVERFLOW
+    }
+}
+
+/// Shared arbitrary-width encoder: no owned BigInt or byte staging allocation.
 pub(crate) fn bigint_to_bytes(
     value: &BigInt,
     out: &mut [u8],
     little_endian: bool,
     signed: bool,
 ) -> i32 {
-    if !signed && value.sign() == Sign::Minus {
-        return INT_BYTES_NEGATIVE_UNSIGNED;
-    }
+    magnitude_to_bytes(
+        value.sign() == Sign::Minus,
+        value.bits(),
+        value.iter_u32_digits(),
+        out,
+        little_endian,
+        signed,
+    )
+}
 
-    // num-bigint already owns the minimal two's-complement/sign-magnitude
-    // encoder. Use its single output buffer directly: the prior modulus,
-    // remainder, normalization and padding path allocated several full-width
-    // BigInts and a second Vec for every conversion.
-    let bytes = if signed {
-        if little_endian {
-            value.to_signed_bytes_le()
-        } else {
-            value.to_signed_bytes_be()
-        }
-    } else if little_endian {
-        value.to_bytes_le().1
-    } else {
-        value.to_bytes_be().1
-    };
-    let fits = value.is_zero() && out.is_empty() || bytes.len() <= out.len();
-    let pad = if signed && value.sign() == Sign::Minus {
-        0xff
-    } else {
-        0
-    };
-    out.fill(pad);
-    let copied = bytes.len().min(out.len());
-    if copied != 0 {
-        if little_endian {
-            out[..copied].copy_from_slice(&bytes[..copied]);
-        } else {
-            let out_start = out.len() - copied;
-            let bytes_start = bytes.len() - copied;
-            out[out_start..].copy_from_slice(&bytes[bytes_start..]);
-        }
-    };
-    if fits {
-        INT_BYTES_OK
-    } else {
-        INT_BYTES_OVERFLOW
+/// Encode a payload admitted by index_integral_payload_bits while its original
+/// owner remains alive. This neither calls guest protocols nor allocates.
+pub(crate) fn integral_payload_to_bytes(
+    bits: u64,
+    out: &mut [u8],
+    little_endian: bool,
+    signed: bool,
+) -> i32 {
+    let obj = obj_from_bits(bits);
+    if let Some(value) = obj.as_int().or_else(|| obj.as_bool().map(i64::from)) {
+        let magnitude = value.unsigned_abs();
+        return magnitude_to_bytes(
+            value < 0,
+            u64::from(u64::BITS - magnitude.leading_zeros()),
+            [magnitude as u32, (magnitude >> 32) as u32].into_iter(),
+            out,
+            little_endian,
+            signed,
+        );
     }
+    let Some(ptr) = bigint_ptr_from_bits(bits) else {
+        return INT_BYTES_INVALID;
+    };
+    bigint_to_bytes(unsafe { bigint_ref(ptr) }, out, little_endian, signed)
 }
 
 pub(crate) fn bigint_num_bits(value: &BigInt) -> Option<usize> {
@@ -902,47 +958,205 @@ pub(crate) fn sequence_index_i64(
     index_i64_with_overflow(_py, key_bits, &type_err, None)
 }
 
-pub(crate) fn index_bigint_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str) -> Option<BigInt> {
-    if let Some(value) = index_bigint_integral_bits(obj_bits) {
+/// Return an owned exact integer from validated integer storage. A sealed
+/// subclass payload is borrowed from its owner; retaining that payload avoids
+/// cloning/reboxing arbitrary-width integers. Semantic subtype storage itself
+/// must be copied to an exact owner.
+pub(crate) fn exact_integer_from_storage(py: &PyToken<'_>, bits: u64) -> Option<u64> {
+    let payload = index_integral_payload_bits(bits)?;
+    let obj = obj_from_bits(payload);
+    if let Some(value) = obj.as_bool() {
+        return Some(MoltObject::from_int(i64::from(value)).bits());
+    }
+    if obj.is_int() {
+        return Some(payload);
+    }
+    if builtin_int_bits_for_gil() == Some(type_of_bits(py, payload)) {
+        crate::inc_ref_bits(py, payload);
+        return Some(payload);
+    }
+    Some(int_bits_from_bigint(py, unsafe {
+        bigint_ref(bigint_ptr_from_bits(payload)?).clone()
+    }))
+}
+
+/// One type-level slot call owns conversion, strict result validation, subtype
+/// warnings, and owned-result transfer. None without an error means absent.
+fn integer_from_special(py: &PyToken<'_>, bits: u64, name: &'static [u8]) -> Option<u64> {
+    let callable = unsafe { crate::builtins::attr::lookup_special_method(py, bits, name) }?;
+    let callable_owner = obj_from_bits(callable)
+        .as_ptr()
+        .map(crate::PtrDropGuard::preserving);
+    let result = unsafe { call_callable0(py, callable) };
+    drop(callable_owner);
+    let mut result_owner = obj_from_bits(result)
+        .as_ptr()
+        .map(crate::PtrDropGuard::preserving);
+    if exception_pending(py) {
+        return None;
+    }
+    let protocol = std::str::from_utf8(name).expect("integer protocol is ASCII");
+    if index_integral_payload_bits(result).is_none() {
+        raise_exception::<()>(
+            py,
+            "TypeError",
+            &format!(
+                "{protocol} returned non-int (type {})",
+                class_name_for_error(type_of_bits(py, result))
+            ),
+        );
+        return None;
+    }
+    if obj_from_bits(result).is_int()
+        || builtin_int_bits_for_gil() == Some(type_of_bits(py, result))
+    {
+        if let Some(owner) = &mut result_owner {
+            owner.release();
+        }
+        return Some(result);
+    }
+    if !warn_numeric_subclass_result(py, protocol, "int", result) {
+        return None;
+    }
+    if let Some(owner) = &mut result_owner {
+        owner.release();
+    }
+    Some(result)
+}
+
+/// Consume a validated integer result at a public exact-int boundary. Exact
+/// owners transfer directly; only subtypes require payload projection.
+pub(crate) fn exact_integer_from_owned(py: &PyToken<'_>, bits: u64) -> u64 {
+    if obj_from_bits(bits).is_int() || builtin_int_bits_for_gil() == Some(type_of_bits(py, bits)) {
+        return bits;
+    }
+    let _owner = obj_from_bits(bits)
+        .as_ptr()
+        .map(crate::PtrDropGuard::preserving);
+    exact_integer_from_storage(py, bits).expect("validated integer result has a payload")
+}
+
+/// Private _PyNumber_Index semantics. Existing integers ignore __index__ overrides;
+/// other operands use that slot. Missing protocols leave the error to the
+/// caller, so successful conversions do not allocate diagnostic strings.
+pub(crate) fn index_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<u64> {
+    if index_integral_payload_bits(bits).is_some() {
+        crate::inc_ref_bits(py, bits);
+        return Some(bits);
+    }
+    integer_from_special(py, bits, b"__index__")
+}
+
+/// Required index conversion, shared by public operator.index and the private
+/// C-API projection. Diagnostic formatting belongs only to the absent path.
+pub(crate) fn index_from_object(py: &PyToken<'_>, bits: u64) -> u64 {
+    if let Some(result) = index_from_number_protocol(py, bits) {
+        return result;
+    }
+    if !exception_pending(py) {
+        raise_exception::<()>(
+            py,
+            "TypeError",
+            &format!(
+                "'{}' object cannot be interpreted as an integer",
+                crate::type_name(py, obj_from_bits(bits))
+            ),
+        );
+    }
+    MoltObject::none().bits()
+}
+
+pub(crate) fn index_bigint_from_obj(py: &PyToken<'_>, bits: u64, err: &str) -> Option<BigInt> {
+    if let Some(value) = index_bigint_integral_bits(bits) {
         return Some(value);
     }
-    if maybe_ptr_from_bits(obj_bits).is_some() {
-        unsafe {
-            if let Some(call_bits) =
-                crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__index__")
-            {
-                let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
-                if exception_pending(_py) {
-                    dec_ref_bits(_py, res_bits);
-                    return None;
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(value) = index_bigint_integral_bits(res_bits) {
-                    let exact = builtin_int_bits_for_gil() == Some(type_of_bits(_py, res_bits));
-                    let accepted =
-                        exact || warn_numeric_subclass_result(_py, "__index__", "int", res_bits);
-                    dec_ref_bits(_py, res_bits);
-                    if !accepted {
-                        return None;
-                    }
-                    return Some(value);
-                }
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                if res_obj.as_ptr().is_some() {
-                    dec_ref_bits(_py, res_bits);
-                }
-                let msg = format!("__index__ returned non-int (type {res_type})");
-                raise_exception::<u64>(_py, "TypeError", &msg);
-                return None;
-            }
-            if exception_pending(_py) {
-                return None;
-            }
-        }
+    if let Some(result) = integer_from_special(py, bits, b"__index__") {
+        let _owner = obj_from_bits(result)
+            .as_ptr()
+            .map(crate::PtrDropGuard::preserving);
+        return index_bigint_integral_bits(result);
     }
-    raise_exception::<u64>(_py, "TypeError", err);
+    if !exception_pending(py) {
+        raise_exception::<()>(py, "TypeError", err);
+    }
     None
+}
+
+/// int() numeric dispatch, shared by the constructor and the C API. Exact
+/// builtin values retain their direct path; subtypes first reach __int__.
+/// None without an exception permits the caller's string/buffer parser.
+pub(crate) fn int_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<u64> {
+    let obj = obj_from_bits(bits);
+    if obj.is_int()
+        || obj.is_bool()
+        || (bigint_ptr_from_bits(bits).is_some()
+            && builtin_int_bits_for_gil() == Some(type_of_bits(py, bits)))
+    {
+        return exact_integer_from_storage(py, bits);
+    }
+    if is_exact_float(py, bits) {
+        let value = as_float_extended(obj).expect("exact float has a payload");
+        if value.is_nan() {
+            raise_exception::<()>(py, "ValueError", "cannot convert float NaN to integer");
+            return None;
+        }
+        if value.is_infinite() {
+            raise_exception::<()>(
+                py,
+                "OverflowError",
+                "cannot convert float infinity to integer",
+            );
+            return None;
+        }
+        // The existing full-width boxer avoids both BigInt allocation and the
+        // inline representation's narrower integer range for common inputs.
+        if value >= i64::MIN as f64 && value < -(i64::MIN as f64) {
+            return Some(int_bits_from_i64(py, value as i64));
+        }
+        return Some(int_bits_from_bigint(py, bigint_from_f64_trunc(value)));
+    }
+    if let Some(value) = integer_from_special(py, bits, b"__int__") {
+        return Some(exact_integer_from_owned(py, value));
+    }
+    if exception_pending(py) {
+        return None;
+    }
+    if let Some(value) = index_from_number_protocol(py, bits) {
+        return Some(exact_integer_from_owned(py, value));
+    }
+    if exception_pending(py) || crate::object::ops_sys::runtime_target_minor(py) >= 14 {
+        return None;
+    }
+    let callable = unsafe { crate::builtins::attr::lookup_special_method(py, bits, b"__trunc__") }?;
+    let callable_owner = obj_from_bits(callable)
+        .as_ptr()
+        .map(crate::PtrDropGuard::preserving);
+    if !crate::builtins::warnings_ext::emit_deprecation_warning(
+        py,
+        "The delegation of int() to __trunc__ is deprecated.",
+    ) {
+        return None;
+    }
+    let result = unsafe { call_callable0(py, callable) };
+    drop(callable_owner);
+    let _result_owner = obj_from_bits(result)
+        .as_ptr()
+        .map(crate::PtrDropGuard::preserving);
+    if exception_pending(py) {
+        return None;
+    }
+    let converted = index_from_number_protocol(py, result);
+    if converted.is_none() && !exception_pending(py) {
+        raise_exception::<()>(
+            py,
+            "TypeError",
+            &format!(
+                "__trunc__ returned non-Integral (type {})",
+                class_name_for_error(type_of_bits(py, result))
+            ),
+        );
+    }
+    converted.map(|value| exact_integer_from_owned(py, value))
 }
 
 pub(crate) fn warn_numeric_subclass_result(
@@ -1231,6 +1445,249 @@ mod float_conversion_tests {
 
     extern "C" fn scalar_binary_override(value: u64, _other: u64) -> u64 {
         float_conversion_callback(value)
+    }
+
+    #[test]
+    fn private_index_retains_callback_result_until_public_normalization() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::cpython_abi_hooks::register_cpython_hooks();
+        crate::with_gil_entry_nopanic!(py, {
+            struct ResetCallbacks;
+            impl Drop for ResetCallbacks {
+                fn drop(&mut self) {
+                    reset_callbacks(0, false);
+                    crate::molt_warnings_resetwarnings();
+                }
+            }
+            let _callbacks = ResetCallbacks;
+            let int_class = conversion_class(py, builtin_classes(py).int, false, true);
+            let producer_class = conversion_class(py, builtin_classes(py).object, false, true);
+            let producer = plain_instance(py, producer_class);
+            let wide = bigint_bits(py, (BigInt::from(1u8) << 100usize) + 13u8);
+            let subtype = crate::molt_int_new(int_class, wide, missing_bits(py));
+            let ignore = attr_name_bits_from_bytes(py, b"ignore").unwrap();
+            crate::molt_warnings_resetwarnings();
+            crate::molt_warnings_simplefilter(
+                ignore,
+                crate::builtins::exceptions::exception_type_bits_from_name(
+                    py,
+                    "DeprecationWarning",
+                ),
+                MoltObject::from_int(0).bits(),
+                MoltObject::from_bool(false).bits(),
+            );
+            dec_ref_bits(py, ignore);
+            reset_callbacks(subtype, false);
+            let private = index_from_object(py, producer);
+            assert_eq!(
+                private, subtype,
+                "private index must retain the callback's actual owner"
+            );
+            assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 1);
+            dec_ref_bits(py, private);
+            // Exercise the actual ABI provider too; a public operator.index
+            // dispatch here would silently discard the subtype before C reads.
+            let projected = unsafe {
+                (molt_cpython_abi::hooks::hooks_or_stubs().number_unary_op)(
+                    molt_cpython_abi::NumberUnaryOp::Index as u32,
+                    producer,
+                )
+            };
+            let molt_cpython_abi::hooks::DecodedHandleResult::Ok(projected) = projected.decode()
+            else {
+                panic!("private index provider failed");
+            };
+            assert_eq!(projected, subtype);
+            dec_ref_bits(py, projected);
+            let public = crate::molt_operator_index(producer);
+            assert_eq!(
+                public, wide,
+                "public index reuses the existing exact payload"
+            );
+            dec_ref_bits(py, public);
+            reset_callbacks(0, true);
+            let direct = index_from_object(py, subtype);
+            assert_eq!(direct, subtype);
+            assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
+            dec_ref_bits(py, direct);
+            assert!(!exception_pending(py));
+            for input in [wide, subtype] {
+                let header =
+                    unsafe { crate::header_from_obj_ptr(obj_from_bits(input).as_ptr().unwrap()) };
+                let before = unsafe { (*header).ref_count_snapshot() };
+                raise_exception::<()>(py, "LookupError", "existing index error");
+                let original = crate::builtins::exceptions::molt_exception_last_pending();
+                let failed = crate::molt_operator_index(input);
+                assert_eq!(failed, MoltObject::none().bits());
+                assert_eq!(unsafe { (*header).ref_count_snapshot() }, before);
+                let observed = crate::builtins::exceptions::molt_exception_last_pending();
+                assert_eq!(observed, original);
+                assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
+                clear_exception(py);
+                dec_ref_bits(py, observed);
+                dec_ref_bits(py, original);
+            }
+            for value in [producer, producer_class, subtype, wide, int_class] {
+                dec_ref_bits(py, value);
+            }
+        });
+    }
+
+    #[test]
+    fn integer_conversion_preserves_exact_owners_and_dispatches_subtypes() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let class = conversion_class(py, builtin_classes(py).int, false, true);
+            install_scalar_test_method(
+                py,
+                class,
+                b"__int__",
+                "float_conversion_callback",
+                float_conversion_callback as *const (),
+                1,
+            );
+            let wide = bigint_bits(py, (BigInt::from(1u8) << 100usize) + 3u8);
+            for payload in [MoltObject::from_int(42).bits(), wide] {
+                let value = crate::molt_int_new(class, payload, missing_bits(py));
+                assert!(!exception_pending(py));
+                reset_callbacks(MoltObject::from_int(99).bits(), false);
+                let converted = crate::molt_int_from_obj(
+                    value,
+                    MoltObject::none().bits(),
+                    MoltObject::from_bool(false).bits(),
+                );
+                assert_eq!(obj_from_bits(converted).as_int(), Some(99));
+                assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
+                assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
+                for operation in [
+                    crate::molt_operator_index as extern "C" fn(u64) -> u64,
+                    crate::molt_int_int,
+                    crate::molt_int_index,
+                ] {
+                    let extracted = operation(value);
+                    assert_eq!(
+                        extracted, payload,
+                        "base slot reuses the exact payload owner"
+                    );
+                    dec_ref_bits(py, extracted);
+                }
+                assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
+                assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
+                let exact = crate::molt_int_from_obj(
+                    payload,
+                    MoltObject::none().bits(),
+                    MoltObject::from_bool(false).bits(),
+                );
+                assert_eq!(exact, payload);
+                for owned in [exact, converted, value] {
+                    dec_ref_bits(py, owned);
+                }
+            }
+            for base in [builtin_classes(py).float, builtin_classes(py).object] {
+                let class = conversion_class(py, base, false, true);
+                install_scalar_test_method(
+                    py,
+                    class,
+                    b"__int__",
+                    "float_conversion_callback",
+                    float_conversion_callback as *const (),
+                    1,
+                );
+                let value = if base == builtin_classes(py).float {
+                    crate::molt_float_new(class, MoltObject::from_float(1.25).bits())
+                } else {
+                    plain_instance(py, class)
+                };
+                reset_callbacks(MoltObject::from_int(99).bits(), false);
+                assert_eq!(
+                    int_from_number_protocol(py, value),
+                    Some(MoltObject::from_int(99).bits())
+                );
+                assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
+                assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
+                reset_callbacks(MoltObject::from_float(2.0).bits(), false);
+                assert_eq!(int_from_number_protocol(py, value), None);
+                assert_error(py, "TypeError", "__int__ returned non-int (type float)");
+                assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
+                reset_callbacks(wide, true);
+                assert_eq!(int_from_number_protocol(py, value), None);
+                assert_error(py, "RuntimeError", "float protocol failure");
+                assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
+                for owned in [value, class] {
+                    dec_ref_bits(py, owned);
+                }
+            }
+            reset_callbacks(0, false);
+            for owned in [wide, class] {
+                dec_ref_bits(py, owned);
+            }
+        });
+    }
+
+    #[test]
+    fn integer_trunc_delegation_is_target_versioned_and_warning_precedes_callback() {
+        let transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            struct ResetWarnings;
+            impl Drop for ResetWarnings {
+                fn drop(&mut self) {
+                    crate::molt_warnings_resetwarnings();
+                }
+            }
+            let _reset = ResetWarnings;
+            let class = conversion_class(py, builtin_classes(py).object, false, false);
+            install_scalar_test_method(
+                py,
+                class,
+                b"__trunc__",
+                "float_conversion_callback",
+                float_conversion_callback as *const (),
+                1,
+            );
+            let value = plain_instance(py, class);
+            let category = crate::builtins::exceptions::exception_type_bits_from_name(
+                py,
+                "DeprecationWarning",
+            );
+            let ignore = attr_name_bits_from_bytes(py, b"ignore").unwrap();
+            let error = attr_name_bits_from_bytes(py, b"error").unwrap();
+            for minor in [12, 13, 14] {
+                transaction.with_target_python_minor(py, minor, || {
+                    for (action, raises) in [(ignore, false), (error, true)] {
+                        crate::molt_warnings_resetwarnings();
+                        crate::molt_warnings_simplefilter(
+                            action,
+                            category,
+                            MoltObject::from_int(0).bits(),
+                            MoltObject::from_bool(false).bits(),
+                        );
+                        reset_callbacks(MoltObject::from_int(11).bits(), false);
+                        let actual = int_from_number_protocol(py, value);
+                        if minor >= 14 {
+                            assert_eq!(actual, None);
+                            assert!(!exception_pending(py));
+                            assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 0);
+                        } else if raises {
+                            assert_eq!(actual, None);
+                            assert_error(
+                                py,
+                                "DeprecationWarning",
+                                "The delegation of int() to __trunc__ is deprecated.",
+                            );
+                            assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 0);
+                        } else {
+                            assert_eq!(actual, Some(MoltObject::from_int(11).bits()));
+                            assert!(!exception_pending(py));
+                            assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
+                        }
+                    }
+                });
+            }
+            reset_callbacks(0, false);
+            for owned in [value, class, ignore, error] {
+                dec_ref_bits(py, owned);
+            }
+        });
     }
 
     #[test]
@@ -2712,5 +3169,101 @@ mod complex_arith_tests {
             assert!(complex_arith(ComplexArith::TrueDiv, r(1.0), c(0.0, -0.0), py314).is_none());
             assert!(complex_arith(ComplexArith::TrueDiv, c(1.0, 1.0), r(0.0), py314).is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod integer_byte_emission_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_integer_encoder_preserves_fixed_width_bytes_and_status() {
+        let values = [
+            i128::MIN,
+            -(1i128 << 96) - 1,
+            -(1i128 << 64),
+            -32769,
+            -32768,
+            -256,
+            -129,
+            -128,
+            -1,
+            0,
+            1,
+            127,
+            128,
+            255,
+            256,
+            (1i128 << 30) + 3,
+            (1i128 << 64) + 0x1234,
+            i128::MAX,
+        ];
+        for value in values {
+            let big = BigInt::from(value);
+            let raw = value.to_le_bytes();
+            for len in 0..=20 {
+                for little in [false, true] {
+                    for signed in [false, true] {
+                        let mut out = [0xa5; 20];
+                        let expected_status = if value < 0 && !signed {
+                            INT_BYTES_NEGATIVE_UNSIGNED
+                        } else if len == 0 {
+                            if value == 0 || signed && value == -1 {
+                                INT_BYTES_OK
+                            } else {
+                                INT_BYTES_OVERFLOW
+                            }
+                        } else if len >= 16
+                            || if signed {
+                                value >= -(1i128 << (len * 8 - 1))
+                                    && value < (1i128 << (len * 8 - 1))
+                            } else {
+                                (value as u128) < (1u128 << (len * 8))
+                            }
+                        {
+                            INT_BYTES_OK
+                        } else {
+                            INT_BYTES_OVERFLOW
+                        };
+                        assert_eq!(
+                            bigint_to_bytes(&big, &mut out[..len], little, signed),
+                            expected_status
+                        );
+                        for (index, actual) in out.iter().copied().enumerate() {
+                            let expected =
+                                if index >= len || expected_status == INT_BYTES_NEGATIVE_UNSIGNED {
+                                    0xa5
+                                } else {
+                                    let low_index = if little { index } else { len - 1 - index };
+                                    raw.get(low_index).copied().unwrap_or(if value < 0 {
+                                        255
+                                    } else {
+                                        0
+                                    })
+                                };
+                            assert_eq!(
+                                actual, expected,
+                                "value={value} len={len} little={little} signed={signed} index={index}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // More than i128, with a literal byte pattern and carry across empty limbs.
+        let source = [0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let positive = BigInt::from_bytes_le(Sign::Plus, &source);
+        let negative = -&positive;
+        let mut out = [0xa5; 17];
+        assert_eq!(
+            bigint_to_bytes(&negative, &mut out, true, true),
+            INT_BYTES_OK
+        );
+        assert_eq!(out, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255]);
+        assert_eq!(
+            bigint_to_bytes(&positive, &mut out, false, false),
+            INT_BYTES_OK
+        );
+        assert_eq!(out, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     }
 }

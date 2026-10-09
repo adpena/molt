@@ -50,14 +50,14 @@ pub(super) fn molt_exception_clear() -> u64 {
     molt_runtime_core::rt_exception_clear()
 }
 
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
 #[inline]
-pub(super) fn molt_exception_last() -> u64 {
-    unsafe { molt_runtime_core::ffi::molt_exception_last() }
-}
-
-#[inline]
-pub(super) fn molt_exception_kind(exc_bits: u64) -> u64 {
-    unsafe { molt_runtime_core::ffi::molt_exception_kind(exc_bits) }
+pub(super) fn clear_attribute_error_if_pending() -> bool {
+    unsafe { __molt_gpu_clear_attribute_error_if_pending() != 0 }
 }
 
 #[inline]
@@ -97,6 +97,96 @@ pub(super) fn string_obj_to_owned(obj: MoltObject) -> Option<String> {
 }
 
 unsafe extern "C" {
+    #[cfg(any(
+        target_arch = "wasm32",
+        all(target_os = "macos", feature = "metal-backend"),
+        all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+    ))]
+    fn __molt_gpu_bytearray_copy(bits: u64, bytes: *const u8, len: usize, same_size: i32) -> i32;
+    #[cfg(any(
+        target_arch = "wasm32",
+        all(target_os = "macos", feature = "metal-backend"),
+        all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+    ))]
+    fn __molt_gpu_commit_buffer_data(object: u64, old: u64, new: u64) -> i32;
+    #[cfg(any(
+        target_arch = "wasm32",
+        all(target_os = "macos", feature = "metal-backend"),
+        all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+    ))]
+    fn __molt_gpu_class_binding(bits: u64, name: *const u8, len: usize) -> u64;
+
+    #[cfg(any(
+        target_arch = "wasm32",
+        all(target_os = "macos", feature = "metal-backend"),
+        all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+    ))]
+    fn __molt_gpu_default_field(bits: u64, name: *const u8, len: usize) -> u64;
+
+    #[cfg(any(
+        target_arch = "wasm32",
+        all(target_os = "macos", feature = "metal-backend"),
+        all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+    ))]
+    fn __molt_gpu_function_binding(bits: u64, name: *const u8, len: usize) -> u64;
+
+    #[cfg(any(
+        target_arch = "wasm32",
+        all(target_os = "macos", feature = "metal-backend"),
+        all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+    ))]
+    fn __molt_gpu_builtin_matches(bits: u64, name: *const u8, len: usize) -> i32;
+
+    #[cfg(any(
+        target_arch = "wasm32",
+        all(target_os = "macos", feature = "metal-backend"),
+        all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+    ))]
+    fn __molt_gpu_kernel_descriptor(callable: u64) -> u64;
+    #[cfg(any(
+        target_arch = "wasm32",
+        all(target_os = "macos", feature = "metal-backend"),
+        all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+    ))]
+    fn __molt_gpu_compiled_body_matches(
+        bits: u64,
+        symbol: *const u8,
+        symbol_len: usize,
+        arity: u64,
+        slot: u64,
+        defaults: *const u64,
+        defaults_len: usize,
+    ) -> i32;
+    #[cfg(any(
+        target_arch = "wasm32",
+        all(target_os = "macos", feature = "metal-backend"),
+        all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+    ))]
+    fn __molt_gpu_descriptor_is_current(callable: u64, descriptor: u64, slot: u64) -> i32;
+    #[cfg(any(
+        target_arch = "wasm32",
+        all(target_os = "macos", feature = "metal-backend"),
+        all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+    ))]
+    fn __molt_gpu_kernel_global(callable: u64, name: *const u8, len: usize) -> u64;
+    #[cfg(any(
+        target_arch = "wasm32",
+        all(target_os = "macos", feature = "metal-backend"),
+        all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+    ))]
+    fn __molt_gpu_module_binding(module: u64, name: *const u8, len: usize) -> u64;
+    #[cfg(any(
+        target_arch = "wasm32",
+        all(target_os = "macos", feature = "metal-backend"),
+        all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+    ))]
+    fn __molt_gpu_intrinsic_matches(bits: u64, name: *const u8, len: usize) -> i32;
+    #[cfg(any(
+        target_arch = "wasm32",
+        all(target_os = "macos", feature = "metal-backend"),
+        all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+    ))]
+    fn __molt_gpu_clear_attribute_error_if_pending() -> i32;
     fn __molt_gpu_raise_exception(
         kind_ptr: *const u8,
         kind_len: usize,
@@ -107,6 +197,12 @@ unsafe extern "C" {
     fn __molt_gpu_alloc_bytearray(data_ptr: *const u8, data_len: usize) -> *mut u8;
     fn __molt_gpu_bytes_view(ptr: *mut u8, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
     fn __molt_gpu_to_i64(bits: u64, out: *mut i64) -> i32;
+    #[cfg(any(
+        target_arch = "wasm32",
+        all(target_os = "macos", feature = "metal-backend"),
+        all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+    ))]
+    fn __molt_gpu_exact_scalar_kind(bits: u64) -> i32;
     fn __molt_gpu_to_f64(bits: u64, out: *mut f64) -> i32;
     fn __molt_gpu_attr_name_bits(data_ptr: *const u8, data_len: usize) -> u64;
     fn __molt_gpu_object_setattr_raw(
@@ -138,11 +234,7 @@ unsafe extern "C" {
         elems_len: usize,
         capacity: usize,
     ) -> *mut u8;
-    fn __molt_gpu_callargs_positional_snapshot(
-        builder_bits: u64,
-        out_ptr: *mut *const u64,
-        out_len: *mut usize,
-    ) -> i32;
+    fn __molt_gpu_bind_kernel_arguments(callable: u64, builder: u64) -> u64;
     fn __molt_gpu_clone_callargs_builder(builder_bits: u64, out: *mut u64) -> i32;
     fn __molt_gpu_missing_bits() -> u64;
     fn __molt_gpu_call_callable1(call_bits: u64, arg_bits: u64) -> u64;
@@ -217,6 +309,15 @@ pub(super) unsafe fn bytes_len(ptr: *mut u8) -> usize {
 }
 
 #[inline]
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+pub(super) fn exact_scalar_kind(bits: u64) -> i32 {
+    unsafe { __molt_gpu_exact_scalar_kind(bits) }
+}
+
 pub(super) fn to_i64(obj: MoltObject) -> Option<i64> {
     let mut value = 0;
     (unsafe { __molt_gpu_to_i64(obj.bits(), &mut value) } != 0).then_some(value)
@@ -282,16 +383,27 @@ pub(super) fn alloc_list_with_capacity_owned(
     all(target_os = "macos", feature = "metal-backend"),
     all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 ))]
-pub(super) unsafe fn callargs_positional_snapshot(
-    _py: &PyToken,
-    builder_bits: u64,
-) -> Result<Vec<u64>, u64> {
-    let mut ptr = std::ptr::null();
-    let mut len = 0;
-    if unsafe { __molt_gpu_callargs_positional_snapshot(builder_bits, &mut ptr, &mut len) } == 0 {
+pub(super) unsafe fn bound_kernel_arguments(
+    py: &PyToken,
+    callable: u64,
+    builder: u64,
+) -> Result<seq_access::PinnedSequenceSnapshot, u64> {
+    let bound = unsafe {
+        OwnedRuntimeValue::from_owned_bits(py, __molt_gpu_bind_kernel_arguments(callable, builder))
+    };
+    if exception_pending(py) {
         return Err(MoltObject::none().bits());
     }
-    Ok(unsafe { bridge_owned_u64_to_vec(ptr, len) })
+    let Some(tuple) = obj_from_bits(bound.bits()).as_ptr() else {
+        return Err(raise_exception::<u64>(
+            py,
+            "SystemError",
+            "kernel binding did not return a tuple",
+        ));
+    };
+    // The shared snapshot owns each bound value after this temporary tuple
+    // retires, including defaults and the canonical *args/**kwargs slots.
+    unsafe { seq_access::pin_tuple(py, tuple) }.ok_or_else(|| MoltObject::none().bits())
 }
 
 #[inline]
@@ -486,4 +598,126 @@ pub(super) mod seq_access {
     pub(crate) unsafe fn pin_tuple(py: &PyToken, ptr: *mut u8) -> Option<PinnedSequenceSnapshot> {
         unsafe { snapshot(py, ptr, "GPU tuple snapshot allocation failed") }
     }
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+#[inline]
+pub(super) fn kernel_descriptor(callable: u64) -> u64 {
+    unsafe { __molt_gpu_kernel_descriptor(callable) }
+}
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+#[inline]
+pub(super) fn descriptor_is_current(callable: u64, descriptor: u64, slot: u64) -> bool {
+    unsafe { __molt_gpu_descriptor_is_current(callable, descriptor, slot) != 0 }
+}
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+#[inline]
+pub(super) fn kernel_global(callable: u64, name: &str) -> u64 {
+    unsafe { __molt_gpu_kernel_global(callable, name.as_ptr(), name.len()) }
+}
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+#[inline]
+pub(super) fn module_binding(module: u64, name: &str) -> u64 {
+    unsafe { __molt_gpu_module_binding(module, name.as_ptr(), name.len()) }
+}
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+#[inline]
+pub(super) fn intrinsic_matches(bits: u64, name: &str) -> bool {
+    unsafe { __molt_gpu_intrinsic_matches(bits, name.as_ptr(), name.len()) != 0 }
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+pub(super) fn compiled_body_matches(bits: u64, body: &super::RuntimeKernelBody) -> bool {
+    unsafe {
+        __molt_gpu_compiled_body_matches(
+            bits,
+            body.symbol.as_ptr(),
+            body.symbol.len(),
+            body.arity,
+            body.code_slot,
+            body.defaults.as_ptr(),
+            body.defaults.len(),
+        ) != 0
+    }
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+pub(super) fn class_binding(bits: u64, name: &str) -> u64 {
+    unsafe { __molt_gpu_class_binding(bits, name.as_ptr(), name.len()) }
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+pub(super) fn default_field(bits: u64, name: &str) -> u64 {
+    unsafe { __molt_gpu_default_field(bits, name.as_ptr(), name.len()) }
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+pub(super) fn function_binding(bits: u64, name: &str) -> u64 {
+    unsafe { __molt_gpu_function_binding(bits, name.as_ptr(), name.len()) }
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+pub(super) fn builtin_matches(bits: u64, name: &str) -> bool {
+    unsafe { __molt_gpu_builtin_matches(bits, name.as_ptr(), name.len()) != 0 }
+}
+
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+#[inline]
+pub(super) fn bytearray_copy(bits: u64, bytes: &[u8], same_size: bool) -> bool {
+    unsafe {
+        __molt_gpu_bytearray_copy(bits, bytes.as_ptr(), bytes.len(), i32::from(same_size)) != 0
+    }
+}
+#[cfg(any(
+    target_arch = "wasm32",
+    all(target_os = "macos", feature = "metal-backend"),
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+))]
+#[inline]
+pub(super) fn commit_buffer_data(object: u64, old: u64, new: u64) -> bool {
+    unsafe { __molt_gpu_commit_buffer_data(object, old, new) != 0 }
 }

@@ -4,9 +4,10 @@
 //! int promotion, float coercion, operator-overload dispatch, and CPython-shaped
 //! exception raising. This ABI layer MUST NOT reimplement arithmetic — an i64
 //! reimplementation silently wraps Python's unbounded ints at 64 bits and masks
-//! the exceptions CPython raises. Every `PyNumber_*` here resolves its operands
-//! to runtime handle bits and delegates to that authority through the numeric
-//! hooks (`number_binary_op` / `number_unary_op` / `number_power`).
+//! the exceptions CPython raises. Arithmetic resolves operands to runtime handles
+//! and delegates through numeric hooks. Integer admission and exact index copies
+//! use the published physical integer layout; protocol predicates consult the
+//! existing type MRO without executing conversion methods.
 
 use crate::abi_types::{Py_ssize_t, PyNumberMethods, PyObject, PyTypeObject};
 use crate::bridge::{ResolvedPyObject, observe_pyobject};
@@ -20,7 +21,7 @@ use std::ptr;
 /// NULL arguments get BadInternalCall only when no earlier error exists.
 unsafe fn observe_numeric_operand(op: *mut PyObject) -> Option<ResolvedPyObject> {
     if op.is_null() {
-        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        if !crate::api::errors::raised_error_pending() {
             unsafe { crate::api::errors::PyErr_BadInternalCall() };
         }
         return None;
@@ -88,7 +89,7 @@ unsafe fn protocol_arg(op: *mut PyObject, observed: ResolvedPyObject) -> Option<
         },
     };
     if arg.ptr.is_null() {
-        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        if !crate::api::errors::raised_error_pending() {
             unsafe { crate::api::errors::PyErr_NoMemory() };
         }
         None
@@ -122,17 +123,13 @@ unsafe fn protocol_pair_observed(
 /// Ensure a NULL return carries a set exception, as the CPython ABI requires.
 ///
 /// Numeric hooks return a typed Error/Missing status and normally leave the
-/// exact exception in either the C or runtime channel. Preserve an existing C
-/// error, transfer a runtime error losslessly, and synthesize SystemError only
-/// when neither authority supplied one. A bare NULL violates the C-API contract.
+/// exact exception in either the C or runtime channel. Reuse the shared result
+/// boundary so unavailable projection cannot replace a pending runtime error.
+/// Synthesize SystemError only when neither authority supplied an exception.
 unsafe fn ensure_exception_set() {
-    if crate::api::errors::transfer_runtime_pending_to_current() {
-        return;
-    }
     unsafe {
-        crate::api::errors::PyErr_SetString(
-            (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-            c"PyNumber operation failed: runtime numeric authority unavailable".as_ptr(),
+        crate::bridge::ensure_result_error(
+            c"PyNumber operation failed: runtime numeric authority unavailable",
         );
     }
 }
@@ -692,8 +689,11 @@ unsafe fn unary_op(op: NumberUnaryOp, o: *mut PyObject) -> *mut PyObject {
                 NumberUnaryOp::Positive => ((*methods).nb_positive, "unary +"),
                 NumberUnaryOp::Absolute => ((*methods).nb_absolute, "abs()"),
                 NumberUnaryOp::Invert => ((*methods).nb_invert, "unary ~"),
-                NumberUnaryOp::Float | NumberUnaryOp::FloatAsDouble | NumberUnaryOp::Index => {
-                    unreachable!("float conversions use their typed conversion entrypoints")
+                NumberUnaryOp::Float
+                | NumberUnaryOp::FloatAsDouble
+                | NumberUnaryOp::Index
+                | NumberUnaryOp::Long => {
+                    unreachable!("numeric conversions use their typed conversion entrypoints")
                 }
             }
         }
@@ -863,12 +863,7 @@ unsafe fn type_name_of(o: *mut PyObject) -> String {
 /// True when an exception is already pending in either the C-API thread-local
 /// store or the runtime's own exception slot.
 fn conversion_exception_pending() -> bool {
-    if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
-        return true;
-    }
-    crate::hooks::hooks()
-        .map(|h| unsafe { (h.exception_pending)() } != 0)
-        .unwrap_or(false)
+    crate::api::errors::raised_error_pending()
 }
 
 /// Call a foreign object's unary number slot (`nb_int` / `nb_float` /
@@ -909,27 +904,6 @@ unsafe fn call_number_unary_slot(o: *mut PyObject, slot: NumberSlot) -> Option<*
     Some(unsafe { f(o) })
 }
 
-/// Finalize a foreign conversion slot's result, enforcing the ABI contract that
-/// a NULL return carries a pending exception. If the slot broke that contract,
-/// record the site on the permanent silent-failure surface (`MOLT_TRACE_CAPI`)
-/// and raise a `SystemError` so the caller never sees a bare NULL.
-unsafe fn finalize_slot_result(
-    o: *mut PyObject,
-    result: *mut PyObject,
-    capi_name: &str,
-) -> *mut PyObject {
-    if result.is_null() && !conversion_exception_pending() {
-        crate::capi_trace::record_silent_failure(capi_name, Some(&unsafe { type_name_of(o) }));
-        unsafe {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-                c"numeric conversion slot returned NULL without setting an exception".as_ptr(),
-            );
-        }
-    }
-    result
-}
-
 /// No native or foreign conversion applied: record the site on the permanent
 /// silent-failure surface and raise the CPython-shaped `TypeError`, so a failing
 /// conversion is never a bare NULL (the C-API contract every caller relies on).
@@ -952,6 +926,142 @@ unsafe fn conversion_type_error(
     ptr::null_mut()
 }
 
+/// Result classification is fallible: managed class resolution and the shared
+/// subtype authority may raise. A failed lookup is never an ordinary mismatch.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NumericResultKind {
+    Exact,
+    Subtype,
+    Other,
+}
+
+pub(crate) unsafe fn numeric_result_class(
+    result: *mut PyObject,
+    expected: *mut PyTypeObject,
+) -> Result<(*mut PyTypeObject, NumericResultKind), crate::ErrorIndicatorSet> {
+    if crate::api::errors::raised_error_pending() {
+        return Err(crate::ErrorIndicatorSet);
+    }
+    let actual = unsafe { crate::bridge::semantic_type(result) };
+    if actual.is_null() {
+        if !crate::api::errors::raised_error_pending() {
+            unsafe { crate::bridge::ensure_result_error(c"numeric result class unavailable") };
+        }
+        return Err(crate::ErrorIndicatorSet);
+    }
+    if crate::api::errors::raised_error_pending() {
+        return Err(crate::ErrorIndicatorSet);
+    }
+    if actual == expected {
+        return Ok((actual, NumericResultKind::Exact));
+    }
+    let subtype = unsafe { crate::api::typeobj::PyType_IsSubtype(actual, expected) };
+    if crate::api::errors::raised_error_pending() {
+        return Err(crate::ErrorIndicatorSet);
+    }
+    Ok((
+        actual,
+        if subtype != 0 {
+            NumericResultKind::Subtype
+        } else {
+            NumericResultKind::Other
+        },
+    ))
+}
+
+/// Numeric conversion diagnostics use CPython's caller-selected byte precision. Reuse
+/// the already resolved class instead of repeating a fallible class lookup.
+pub(crate) unsafe fn numeric_class_name(class: *mut PyTypeObject, precision: usize) -> String {
+    let name = unsafe { (*class).tp_name };
+    if name.is_null() {
+        return "object".to_string();
+    }
+    let bytes = unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes();
+    String::from_utf8_lossy(&bytes[..bytes.len().min(precision)]).into_owned()
+}
+
+/// Validate a foreign integer slot, retaining its owned result through the
+/// caller's extraction. Only public conversions normalize a valid subtype.
+unsafe fn integer_slot_result(result: *mut PyObject, method: &str) -> *mut PyObject {
+    use crate::api::errors;
+    let result = unsafe { errors::check_native_result(result, method) };
+    if result.is_null() {
+        return result;
+    }
+    let Ok((actual, kind)) =
+        (unsafe { numeric_result_class(result, &raw mut crate::abi_types::PyLong_Type) })
+    else {
+        unsafe { errors::release_preserving_error(&[result]) };
+        return ptr::null_mut();
+    };
+    if kind == NumericResultKind::Exact {
+        return result;
+    }
+    let name = unsafe { numeric_class_name(actual, 200) };
+    if kind == NumericResultKind::Other {
+        let message = format!("{method} returned non-int (type {name})");
+        unsafe {
+            errors::set_python_error_bytes(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast(),
+                message.as_bytes(),
+            );
+            errors::release_preserving_error(&[result]);
+        }
+        return ptr::null_mut();
+    }
+    let message = std::ffi::CString::new(format!(
+        "{method} returned non-int (type {name}).  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python."
+    )).expect("native type names are terminated C strings");
+    if unsafe {
+        errors::PyErr_WarnEx(
+            (&raw mut crate::abi_types::PyExc_DeprecationWarning).cast(),
+            message.as_ptr(),
+            1,
+        )
+    } != 0
+    {
+        unsafe { errors::release_preserving_error(&[result]) };
+        return ptr::null_mut();
+    }
+    result
+}
+
+/// Consume a validated integer owner and publish an exact int. Extraction
+/// consumers retain the original owner instead of paying for this copy.
+unsafe fn exact_integer_result(result: *mut PyObject) -> *mut PyObject {
+    use crate::api::{errors, numbers};
+    if result.is_null() {
+        return result;
+    }
+    let Ok((_, kind)) =
+        (unsafe { numeric_result_class(result, &raw mut crate::abi_types::PyLong_Type) })
+    else {
+        unsafe { errors::release_preserving_error(&[result]) };
+        return ptr::null_mut();
+    };
+    if kind == NumericResultKind::Exact {
+        return result;
+    }
+    let has_payload =
+        kind == NumericResultKind::Subtype && unsafe { numbers::has_layout_long(result) };
+    if conversion_exception_pending() {
+        unsafe { errors::release_preserving_error(&[result]) };
+        return ptr::null_mut();
+    }
+    let exact = if has_payload {
+        unsafe { numbers::copy_layout_long_to_exact(result) }
+    } else {
+        unsafe {
+            crate::bridge::ensure_result_error(
+                c"integer conversion returned no physical integer payload",
+            )
+        };
+        ptr::null_mut()
+    };
+    unsafe { errors::release_preserving_error(&[result]) };
+    exact
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Long(o: *mut PyObject) -> *mut PyObject {
     if o.is_null() {
@@ -960,47 +1070,82 @@ pub unsafe extern "C" fn PyNumber_Long(o: *mut PyObject) -> *mut PyObject {
     }
     let physical = unsafe { (*o).ob_type };
     if std::ptr::eq(physical, &raw const crate::abi_types::PyLong_Type) {
-        unsafe { crate::api::refcount::Py_INCREF(o) };
-        return o;
+        let semantic = unsafe { crate::bridge::semantic_type(o) };
+        if semantic.is_null() {
+            return ptr::null_mut();
+        }
+        if std::ptr::eq(semantic, &raw const crate::abi_types::PyLong_Type) {
+            unsafe { crate::api::refcount::Py_INCREF(o) };
+            return o;
+        }
     }
     if std::ptr::eq(physical, &raw const crate::abi_types::PyBool_Type) {
-        return pyobj_from_int(
-            (o == (&raw mut crate::abi_types::Py_True).cast::<PyObject>()) as i64,
-        );
-    }
-    // Native Molt fast path. A failed managed projection never falls through
-    // into foreign numeric slots and masks its original exception.
-    let foreign = match unsafe { observe_numeric_operand(o) } {
-        Some(ResolvedPyObject::ManagedMolt(value)) => {
-            let bits = value.bits();
-            let obj = MoltObject::from_bits(bits);
-            if obj.is_bool() {
-                return pyobj_from_int(obj.as_bool().unwrap_or(false) as i64);
-            }
-            if is_runtime_int(bits) {
-                return unsafe { crate::api::numbers::materialize_numeric_borrowed_handle(bits).0 };
-            }
-            if obj.is_float()
-                && let Some(v) = obj.as_float()
-            {
-                return unsafe { crate::api::numbers::PyLong_FromDouble(v) };
-            }
-            false
-        }
-        Some(ResolvedPyObject::Foreign) => true,
-        None => return ptr::null_mut(),
-    };
-    if foreign && unsafe { crate::api::numbers::PyLong_Check(o) } != 0 {
         return unsafe { crate::api::numbers::copy_layout_long_to_exact(o) };
     }
-    // Foreign object: dispatch to its `nb_int` slot, then `nb_index`
-    // (CPython Objects/abstract.c `PyNumber_Long`).
-    if foreign {
-        if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Int) } {
-            return unsafe { finalize_slot_result(o, result, "PyNumber_Long") };
+    // Managed int() is the runtime's canonical protocol/text conversion. It
+    // must see subtype overrides instead of reusing their numeric handle.
+    match unsafe { observe_numeric_operand(o) } {
+        Some(ResolvedPyObject::ManagedMolt(value)) => {
+            let result = unsafe {
+                (crate::hooks::hooks_or_stubs().number_unary_op)(
+                    NumberUnaryOp::Long as u32,
+                    value.bits(),
+                )
+            };
+            return unsafe { pyobj_from_result(result) };
         }
-        if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Index) } {
-            return unsafe { finalize_slot_result(o, result, "PyNumber_Long") };
+        Some(ResolvedPyObject::Foreign) => {}
+        None => return ptr::null_mut(),
+    }
+    if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Int) } {
+        return unsafe { exact_integer_result(integer_slot_result(result, "__int__")) };
+    }
+    if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Index) } {
+        return unsafe { exact_integer_result(integer_slot_result(result, "__index__")) };
+    }
+    // CPython removed int() delegation to __trunc__ in Python 3.14. Use
+    // the existing type-special resolver and warn before invoking the method.
+    if unsafe { (crate::hooks::hooks_or_stubs().target_python_minor)() } < 14 {
+        let name = unsafe { crate::api::strings::PyUnicode_FromString(c"__trunc__".as_ptr()) };
+        if name.is_null() {
+            return ptr::null_mut();
+        }
+        let name = unsafe { crate::api::refcount::OwnedPyObject::from_owned(name) };
+        match unsafe { crate::api::object::lookup_type_special(o, name.as_ptr()) } {
+            Err(_) => return ptr::null_mut(),
+            Ok(None) => {}
+            Ok(Some(method)) => {
+                if unsafe {
+                    crate::api::errors::PyErr_WarnEx(
+                        (&raw mut crate::abi_types::PyExc_DeprecationWarning).cast(),
+                        c"The delegation of int() to __trunc__ is deprecated.".as_ptr(),
+                        1,
+                    )
+                } != 0
+                {
+                    return ptr::null_mut();
+                }
+                let result = unsafe { crate::api::object::PyObject_CallNoArgs(method.as_ptr()) };
+                if result.is_null() {
+                    return ptr::null_mut();
+                }
+                if unsafe { PyIndex_Check(result) } == 0 {
+                    let message = format!("__trunc__ returned non-Integral (type {})", unsafe {
+                        type_name_of(result)
+                    });
+                    unsafe {
+                        crate::api::errors::set_python_error_bytes(
+                            (&raw mut crate::abi_types::PyExc_TypeError).cast(),
+                            message.as_bytes(),
+                        );
+                        crate::api::errors::release_preserving_error(&[result]);
+                    }
+                    return ptr::null_mut();
+                }
+                let exact = unsafe { PyNumber_Index(result) };
+                unsafe { crate::api::errors::release_preserving_error(&[result]) };
+                return exact;
+            }
         }
     }
     let message = format!(
@@ -1025,11 +1170,17 @@ pub(crate) unsafe fn foreign_float_conversion(o: *mut PyObject) -> Option<*mut P
         if result.is_null() {
             return Some(result);
         }
-        if unsafe { numbers::PyFloat_Check(result) } == 0 {
+        let Ok((actual, kind)) =
+            (unsafe { numeric_result_class(result, &raw mut crate::abi_types::PyFloat_Type) })
+        else {
+            unsafe { errors::release_preserving_error(&[result]) };
+            return Some(ptr::null_mut());
+        };
+        if kind == NumericResultKind::Other {
             let message = format!(
                 "{}.__float__ returned non-float (type {})",
-                unsafe { type_name_of(o) },
-                unsafe { type_name_of(result) }
+                unsafe { numeric_class_name((*o).ob_type, 50) },
+                unsafe { numeric_class_name(actual, 50) }
             );
             unsafe {
                 errors::set_python_error_bytes(
@@ -1040,13 +1191,13 @@ pub(crate) unsafe fn foreign_float_conversion(o: *mut PyObject) -> Option<*mut P
             }
             return Some(ptr::null_mut());
         }
-        if unsafe { numbers::PyFloat_CheckExact(result) } != 0 {
+        if kind == NumericResultKind::Exact {
             return Some(result);
         }
         let message = format!(
             "{}.__float__ returned non-float (type {}).  The ability to return an instance of a strict subclass of float is deprecated, and may be removed in a future version of Python.",
-            unsafe { type_name_of(o) },
-            unsafe { type_name_of(result) }
+            unsafe { numeric_class_name((*o).ob_type, 50) },
+            unsafe { numeric_class_name(actual, 50) }
         );
         let message =
             std::ffi::CString::new(message).expect("native type names are terminated C strings");
@@ -1069,41 +1220,9 @@ pub(crate) unsafe fn foreign_float_conversion(o: *mut PyObject) -> Option<*mut P
         return Some(pyobj_from_float(value));
     }
     if let Some(index) = unsafe { call_number_unary_slot(o, NumberSlot::Index) } {
-        let index = unsafe { errors::check_native_result(index, "__index__") };
+        let index = unsafe { integer_slot_result(index, "__index__") };
         if index.is_null() {
             return Some(index);
-        }
-        if unsafe { numbers::PyLong_Check(index) } == 0 {
-            let message = format!("__index__ returned non-int (type {})", unsafe {
-                type_name_of(index)
-            });
-            unsafe {
-                errors::set_python_error_bytes(
-                    (&raw mut crate::abi_types::PyExc_TypeError).cast(),
-                    message.as_bytes(),
-                );
-                errors::release_preserving_error(&[index]);
-            }
-            return Some(ptr::null_mut());
-        }
-        if unsafe { numbers::PyLong_CheckExact(index) } == 0 {
-            let message = format!(
-                "__index__ returned non-int (type {}).  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python.",
-                unsafe { type_name_of(index) }
-            );
-            let message = std::ffi::CString::new(message)
-                .expect("native type names are terminated C strings");
-            if unsafe {
-                errors::PyErr_WarnEx(
-                    (&raw mut crate::abi_types::PyExc_DeprecationWarning).cast(),
-                    message.as_ptr(),
-                    1,
-                )
-            } != 0
-            {
-                unsafe { errors::release_preserving_error(&[index]) };
-                return Some(ptr::null_mut());
-            }
         }
         let value = unsafe { numbers::PyLong_AsDouble(index) };
         unsafe { errors::release_preserving_error(&[index]) };
@@ -1117,13 +1236,26 @@ pub(crate) unsafe fn foreign_float_conversion(o: *mut PyObject) -> Option<*mut P
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Float(o: *mut PyObject) -> *mut PyObject {
+    if o.is_null() {
+        unsafe { ensure_exception_set() };
+        return ptr::null_mut();
+    }
+    if std::ptr::eq(
+        unsafe { (*o).ob_type },
+        &raw const crate::abi_types::PyFloat_Type,
+    ) {
+        let semantic = unsafe { crate::bridge::semantic_type(o) };
+        if semantic.is_null() {
+            return ptr::null_mut();
+        }
+        if std::ptr::eq(semantic, &raw const crate::abi_types::PyFloat_Type) {
+            unsafe { crate::api::refcount::Py_INCREF(o) };
+            return o;
+        }
+    }
     let Some(observed) = (unsafe { observe_numeric_operand(o) }) else {
         return ptr::null_mut();
     };
-    if unsafe { crate::api::numbers::PyFloat_CheckExact(o) } != 0 {
-        unsafe { crate::api::refcount::Py_INCREF(o) };
-        return o;
-    }
     if let ResolvedPyObject::ManagedMolt(value) = observed {
         let result = unsafe {
             (crate::hooks::hooks_or_stubs().number_unary_op)(
@@ -1136,14 +1268,6 @@ pub unsafe extern "C" fn PyNumber_Float(o: *mut PyObject) -> *mut PyObject {
     if let Some(result) = unsafe { foreign_float_conversion(o) } {
         return result;
     }
-    // CPython permits a native float subclass with no conversion slot.
-    if unsafe { crate::api::numbers::PyFloat_Check(o) } != 0 {
-        let value = unsafe { crate::api::numbers::PyFloat_AsDouble(o) };
-        if value == -1.0 && conversion_exception_pending() {
-            return ptr::null_mut();
-        }
-        return pyobj_from_float(value);
-    }
     let message = format!(
         "float() argument must be a string or a real number, not '{}'",
         unsafe { type_name_of(o) }
@@ -1153,31 +1277,25 @@ pub unsafe extern "C" fn PyNumber_Float(o: *mut PyObject) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_Index(o: *mut PyObject) -> *mut PyObject {
+    unsafe { exact_integer_result(number_index(o)) }
+}
+
+/// CPython's private _PyNumber_Index contract: return an owned integer,
+/// preserving valid subtypes until the consumer finishes extracting its value.
+/// Existing physical integers ignore overrides and never require a copy.
+pub(crate) unsafe fn number_index(o: *mut PyObject) -> *mut PyObject {
     if o.is_null() {
         unsafe { ensure_exception_set() };
         return ptr::null_mut();
     }
-    let physical = unsafe { (*o).ob_type };
-    if std::ptr::eq(physical, &raw const crate::abi_types::PyLong_Type) {
+    if unsafe { crate::api::numbers::has_layout_long(o) } {
         unsafe { crate::api::refcount::Py_INCREF(o) };
         return o;
-    }
-    if std::ptr::eq(physical, &raw const crate::abi_types::PyBool_Type) {
-        return pyobj_from_int(
-            (o == (&raw mut crate::abi_types::Py_True).cast::<PyObject>()) as i64,
-        );
     }
     // Native Molt fast path. Failed observation is terminal, not foreign.
     match unsafe { observe_numeric_operand(o) } {
         Some(ResolvedPyObject::ManagedMolt(value)) => {
             let bits = value.bits();
-            let obj = MoltObject::from_bits(bits);
-            if obj.is_bool() {
-                return pyobj_from_int(obj.as_bool().unwrap_or(false) as i64);
-            }
-            if is_runtime_int(bits) {
-                return unsafe { crate::api::numbers::materialize_numeric_borrowed_handle(bits).0 };
-            }
             let result = unsafe {
                 (crate::hooks::hooks_or_stubs().number_unary_op)(NumberUnaryOp::Index as u32, bits)
             };
@@ -1186,13 +1304,10 @@ pub unsafe extern "C" fn PyNumber_Index(o: *mut PyObject) -> *mut PyObject {
         Some(ResolvedPyObject::Foreign) => {}
         None => return ptr::null_mut(),
     };
-    if unsafe { crate::api::numbers::PyLong_Check(o) } != 0 {
-        return unsafe { crate::api::numbers::copy_layout_long_to_exact(o) };
-    }
     // Foreign object: dispatch to its `nb_index` slot only (CPython's
     // `_PyNumber_Index` never falls back to `nb_int`/`nb_float`).
     if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Index) } {
-        return unsafe { finalize_slot_result(o, result, "PyNumber_Index") };
+        return unsafe { integer_slot_result(result, "__index__") };
     }
     let message = format!("'{}' object cannot be interpreted as an integer", unsafe {
         type_name_of(o)
@@ -1200,27 +1315,44 @@ pub unsafe extern "C" fn PyNumber_Index(o: *mut PyObject) -> *mut PyObject {
     unsafe { conversion_type_error(o, "PyNumber_Index", message) }
 }
 
+/// Reuse the shared MRO authority without binding or executing descriptors.
+/// Only genuine managed protocol checks need a name object; physical numeric
+/// admission and foreign slot checks bypass this allocation entirely.
+pub(crate) unsafe fn has_numeric_special(
+    o: *mut PyObject,
+    name: &std::ffi::CStr,
+) -> Result<bool, crate::ErrorIndicatorSet> {
+    let probe = || {
+        let name = unsafe { crate::api::strings::PyUnicode_FromString(name.as_ptr()) };
+        if name.is_null() {
+            return Err(crate::ErrorIndicatorSet);
+        }
+        let name = unsafe { crate::api::refcount::OwnedPyObject::from_owned(name) };
+        unsafe { crate::api::object::has_type_special(o, name.as_ptr()) }
+    };
+    // A pre-existing exception must neither stop an inherited lookup at its
+    // first namespace miss nor be replaced by incidental probe cleanup.
+    if crate::api::errors::raised_error_pending() {
+        crate::api::errors::with_preserved_error(probe)
+    } else {
+        probe()
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyIndex_Check(o: *mut PyObject) -> c_int {
     if o.is_null() {
         return 0;
     }
-    // Native Molt integers/bools are indices.
-    match observe_pyobject(o) {
-        Some(ResolvedPyObject::ManagedMolt(value)) => {
-            if is_runtime_int(value.bits()) {
-                return 1;
-            }
-            let name = unsafe { crate::api::strings::PyUnicode_FromString(c"__index__".as_ptr()) };
-            if name.is_null() {
-                return 0;
-            }
-            let name = unsafe { crate::api::refcount::OwnedPyObject::from_owned(name) };
-            return unsafe { crate::api::object::has_type_special(o, name.as_ptr()) }
-                .unwrap_or(false) as c_int;
+    if unsafe { crate::api::numbers::has_layout_long(o) } {
+        return 1;
+    }
+    // Classification needs membership and the live type, not a payload commit.
+    if let Some(value) = crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(o) {
+        if is_runtime_int(value.bits()) {
+            return 1;
         }
-        Some(ResolvedPyObject::Foreign) => {}
-        None => return 0,
+        return unsafe { has_numeric_special(o, c"__index__") }.unwrap_or(false) as c_int;
     }
     // Foreign object: CPython's `PyIndex_Check` tests `tp_as_number->nb_index`
     // (numpy integer scalars define it). A native non-integer (float) has no
@@ -1236,14 +1368,10 @@ pub unsafe extern "C" fn PyIndex_Check(o: *mut PyObject) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyNumber_AsSsize_t(o: *mut PyObject, exc: *mut PyObject) -> Py_ssize_t {
-    // Otherwise reduce through `PyNumber_Index` (which now dispatches the
-    // object's `nb_index` slot — e.g. a numpy integer scalar) and read the
-    // ssize_t, as CPython's `PyNumber_AsSsize_t` does (Objects/abstract.c). A
-    // failed reduction leaves a pending exception; we propagate the -1 sentinel
-    // instead of the prior bare -1 that carried none. (`_exc` overflow-clamp
-    // translation is a no-op here: ssize_t is i64 on wasm32 and PyLong_AsSsize_t
-    // already raises an honest OverflowError for a genuine out-of-range value.)
-    let index = unsafe { PyNumber_Index(o) };
+    // Reduce through __index__ and read the target-width ssize_t. On overflow,
+    // a NULL exception class requests signed clamping; otherwise replace the
+    // conversion error with that exact exception class and CPython's message.
+    let index = unsafe { number_index(o) };
     if index.is_null() {
         return -1;
     }
@@ -1259,21 +1387,22 @@ pub unsafe extern "C" fn PyNumber_AsSsize_t(o: *mut PyObject, exc: *mut PyObject
         let sign = unsafe { crate::api::numbers::_PyLong_Sign(index) };
         unsafe { crate::api::errors::PyErr_Clear() };
         if exc.is_null() {
-            unsafe { crate::api::refcount::Py_DECREF(index) };
+            unsafe { crate::api::errors::release_preserving_error(&[index]) };
             return if sign < 0 {
                 Py_ssize_t::MIN
             } else {
                 Py_ssize_t::MAX
             };
         }
-        unsafe {
-            crate::api::errors::PyErr_SetString(
-                exc,
-                c"cannot fit 'int' into an index-sized integer".as_ptr(),
-            )
-        };
+        let actual = unsafe { crate::bridge::semantic_type(o) };
+        if !actual.is_null() && !conversion_exception_pending() {
+            let message = format!("cannot fit '{}' into an index-sized integer", unsafe {
+                numeric_class_name(actual, 200)
+            });
+            unsafe { crate::api::errors::set_python_error_bytes(exc, message.as_bytes()) };
+        }
     }
-    unsafe { crate::api::refcount::Py_DECREF(index) };
+    unsafe { crate::api::errors::release_preserving_error(&[index]) };
     value
 }
 
@@ -1501,12 +1630,6 @@ mod conversion_slot_tests {
     use super::*;
     use crate::abi_types::{PyNumberMethods, PyObject, PyTypeObject};
 
-    // Stand-in "converted integer" the fake `nb_int` slot hands back. Its
-    // contents are irrelevant; the test only checks pointer identity.
-    static mut FAKE_INT_RESULT: PyObject = PyObject {
-        ob_refcnt: 1,
-        ob_type: ptr::null_mut(),
-    };
     static mut ADD_RESULT: PyObject = PyObject {
         ob_refcnt: 1,
         ob_type: ptr::null_mut(),
@@ -1525,7 +1648,7 @@ mod conversion_slot_tests {
     };
 
     unsafe extern "C" fn fake_nb_int(_o: *mut PyObject) -> *mut PyObject {
-        &raw mut FAKE_INT_RESULT
+        unsafe { crate::api::numbers::PyLong_FromLong(41) }
     }
 
     unsafe extern "C" fn fake_nb_add(_left: *mut PyObject, _right: *mut PyObject) -> *mut PyObject {
@@ -1658,6 +1781,7 @@ mod conversion_slot_tests {
     /// "Py_mod_exec slot returned non-zero without setting an exception".
     #[test]
     fn py_number_long_dispatches_to_foreign_nb_int() {
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
         let _ = crate::capi_trace::take_last_silent_failure();
         let mut num: PyNumberMethods = unsafe { std::mem::zeroed() };
         num.nb_int = fake_nb_int as *mut c_void;
@@ -1669,36 +1793,12 @@ mod conversion_slot_tests {
             ob_type: &raw mut ty,
         };
         let result = unsafe { PyNumber_Long(&raw mut obj) };
-        assert_eq!(result, &raw mut FAKE_INT_RESULT);
+        assert!(!result.is_null());
+        assert_eq!(unsafe { crate::api::numbers::PyLong_CheckExact(result) }, 1);
+        assert_eq!(unsafe { crate::api::numbers::PyLong_AsLong(result) }, 41);
+        unsafe { crate::api::refcount::Py_DECREF(result) };
     }
 
-    /// A foreign object with no numeric conversion slot must never return a bare
-    /// NULL: `PyNumber_Long` records the site on the permanent silent-failure
-    /// surface and raises an honest `TypeError` (the C-API contract every caller
-    /// — including numpy's reduction-identity packing — relies on).
-    #[test]
-    fn py_number_long_without_slot_is_never_a_silent_null() {
-        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
-        let _ = crate::capi_trace::take_last_silent_failure();
-        unsafe { crate::api::errors::PyErr_Clear() };
-        let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
-        ty.tp_name = c"opaque".as_ptr();
-        // tp_as_number left NULL: neither nb_int nor nb_index is available.
-        let mut obj = PyObject {
-            ob_refcnt: 1,
-            ob_type: &raw mut ty,
-        };
-        let result = unsafe { PyNumber_Long(&raw mut obj) };
-        assert!(result.is_null());
-        let recorded = crate::capi_trace::take_last_silent_failure();
-        assert!(
-            recorded.as_deref().unwrap_or("").contains("PyNumber_Long"),
-            "expected PyNumber_Long on the silent-failure surface, got {recorded:?}"
-        );
-        assert!(
-            !unsafe { crate::api::errors::PyErr_Occurred() }.is_null(),
-            "PyNumber_Long must leave a pending exception, never a bare NULL"
-        );
-        unsafe { crate::api::errors::PyErr_Clear() };
-    }
+    // Missing-conversion diagnostics require the real type-MRO/name lifetime
+    // boundary and live hooks; see test_numbers integration controls.
 }

@@ -218,7 +218,7 @@ pub unsafe extern "C" fn int_to_bytes(
     let fits = if length >= 16 {
         true
     } else if length == 0 {
-        value == 0
+        value == 0 || signed != 0 && value == -1
     } else {
         let width = length * 8;
         if signed != 0 {
@@ -864,7 +864,7 @@ pub unsafe extern "C" fn runtime_class_borrowed(bits: u64) -> BorrowedHandleResu
     };
     BorrowedHandleResult::ok(class)
 }
-unsafe extern "C" fn type_is_subtype(subclass: u64, class: u64) -> i32 {
+pub unsafe extern "C" fn type_is_subtype(subclass: u64, class: u64) -> i32 {
     let classes = CLASSES
         .get()
         .expect("initialize fixture class bindings before C-API execution");

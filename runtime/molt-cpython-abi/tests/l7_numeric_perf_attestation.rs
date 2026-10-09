@@ -165,16 +165,6 @@ unsafe extern "C" fn counted_from_bytes(
     support::fake_runtime::pattern_integer(0xa5, len)
 }
 
-unsafe extern "C" fn counted_i64_checked(_bits: u64, _out: *mut i64) -> i32 {
-    count_hook();
-    -1
-}
-
-unsafe extern "C" fn counted_u64_checked(_bits: u64, _out: *mut u64) -> i32 {
-    count_hook();
-    -1
-}
-
 unsafe extern "C" fn counted_binary(
     op: u32,
     mode: u32,
@@ -274,8 +264,7 @@ fn initialize_hooks() {
     hooks.ref_count = Some(counted_ref_count);
     hooks.int_from_digits = counted_from_digits;
     hooks.int_from_bytes = counted_from_bytes;
-    hooks.int_as_i64_checked = counted_i64_checked;
-    hooks.int_as_u64_checked = counted_u64_checked;
+
     hooks.int_to_bytes = counted_to_bytes;
     hooks.int_num_bits = counted_num_bits;
     hooks.int_sign = counted_int_sign;

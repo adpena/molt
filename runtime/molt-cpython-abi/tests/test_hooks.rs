@@ -45,9 +45,6 @@ fn test_hooks_or_stubs_returns_stubs() {
     let uint_bits = unsafe { (h.int_from_u64)(u64::MAX) };
     assert_eq!(uint_bits, 0);
 
-    let int_value = unsafe { (h.int_as_i64)(0) };
-    assert_eq!(int_value, -1);
-
     let list_bits = unsafe { (h.alloc_list)() };
     assert_eq!(list_bits, 0);
 
@@ -230,7 +227,7 @@ fn test_stub_number_hooks_fail_closed() {
             DecodedHandleResult::Error
         ));
     }
-    for op in 0..4u32 {
+    for op in 0..=molt_cpython_abi::hooks::NumberUnaryOp::Long as u32 {
         assert!(matches!(
             unsafe { (h.number_unary_op)(op, 1) }.decode(),
             DecodedHandleResult::Error

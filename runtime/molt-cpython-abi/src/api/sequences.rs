@@ -621,9 +621,7 @@ pub unsafe extern "C" fn PyTuple_New(size: Py_ssize_t) -> *mut PyObject {
     }
     let bits = unsafe { hooks_or_stubs().alloc_tuple(size as usize) };
     if bits == 0 {
-        if !crate::api::errors::transfer_runtime_pending_to_current()
-            && unsafe { crate::api::errors::PyErr_Occurred() }.is_null()
-        {
+        if !crate::api::errors::raised_error_pending() {
             unsafe { crate::api::errors::PyErr_NoMemory() };
         }
         return ptr::null_mut();

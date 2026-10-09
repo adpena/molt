@@ -1882,6 +1882,9 @@ pub unsafe extern "C" fn molt_capi_pyobj_is_bridge_managed(ptr: *mut PyObject) -
 /// Physical `ob_type` remains an honest layout discriminator, not a substitute
 /// for the runtime class of a managed heap value.
 pub(crate) unsafe fn semantic_type(ptr: *mut PyObject) -> *mut PyTypeObject {
+    if GLOBAL_BRIDGE.admit_lazy_static_type(ptr).is_err() {
+        return std::ptr::null_mut();
+    }
     // Asking for a type does not export a runtime value. A fresh standalone
     // numeric already owns truthful immutable physical type information; avoid
     // adopting it merely for Py_TYPE/Check. Managed values still use the live
@@ -2699,7 +2702,7 @@ pub(crate) fn molt_hash_from_bits(bits: u64) -> isize {
 
     if mo.is_ptr() {
         let hash = unsafe { (crate::hooks::hooks_or_stubs().object_hash)(bits) } as isize;
-        if hash == -1 && unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+        if hash == -1 && !crate::api::errors::raised_error_pending() {
             unsafe {
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),

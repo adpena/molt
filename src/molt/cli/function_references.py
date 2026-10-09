@@ -90,6 +90,9 @@ def function_references(
             continue
         if name in defined:
             refs.add(name)
+    from molt.frontend.lowering.gpu_kernel_descriptor import descriptor_body_symbols
+
+    refs.update(descriptor_body_symbols(ops) & defined)
     return frozenset(refs)
 
 

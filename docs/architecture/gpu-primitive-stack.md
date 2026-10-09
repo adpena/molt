@@ -191,7 +191,37 @@ Backends that lack certain types automatically narrow:
 - **WebGL2**: f64 -> f32, i64 -> i32, u64 -> u32, f16 -> f32, bf16 -> f32, i8 -> i32, u8 -> u32, i16 -> i32, u16 -> u32
 - **OpenCL**: f64 -> f32 (when `cl_khr_fp64` absent), bf16 -> f32 (always). i64 supported natively.
 
-Narrowing is applied at render time and is transparent to the user.
+These are backend representation conversions, not permission to change Python
+numeric semantics. Device selection alone never opts a Python kernel into
+approximate arithmetic. The strict default policy is owned by
+[WebGPU lowering](../design/foundation/WEBGPU_LOWERING.md).
+
+For `molt.gpu.kernel`, compiler-published obligations currently admit a bounded
+exact integral island: add/subtract/multiply/comparison and structured guards,
+with every intermediate within the exact 24-bit magnitude budget, explicit
+signed-zero restrictions, final backing/bounds checks, and independent per-thread
+memory effects. Values may reside in `f`, `d`, or `q` public buffers; the physical
+shader representation is signed `i32` only after those checks prove exactness.
+Fractional/nonfinite/negative-zero values, unproved arithmetic or races, and
+incompatible writable alias views are refused before dispatch. Division has no
+strict hardware certificate. Ordinary compiled CPU execution retains the public
+Python semantics. This admission does not alter the separate tensor primitive
+conversion policy or imply a general floating-point hardware parity claim.
+
+The Python-kernel dispatchers are Metal, native WebGPU, and browser WebGPU.
+Automatic selection retains compiled CPU execution when no descriptor device is
+selected. Explicit CUDA/HIP Python-kernel execution is unavailable and reports a
+capability error; CUDA/HIP tensor facilities have their own implementations.
+
+One physical binding plan owns argument order, mutable backing aliases and
+readback. Immutable bytes use per-wrapper copy-on-write: no store preserves the
+original identity, while even a same-value store creates a mutable destination.
+Each writable immutable owner adds one 4-byte store-occurrence buffer and at most
+one relaxed atomic publication per participating invocation. Mutable bytearray
+owners need no such flag. Host COW destinations are prepared before final
+admission; all readbacks validate before callback-free publication. Import,
+first-use, launch, staging-memory, code-retention and device costs remain measured
+qualification obligations; these structural facts are not speedup claims.
 
 ## Integration Points
 
@@ -439,3 +469,28 @@ UInt8/16/32, Float16, and Float32 storage, including dtype-correct zero-fill
 and int32-domain guardrails. MIL compute view reads remain Float32-only but now
 preserve logical rank for reductions; BF16, 64-bit, and MXFP materialization
 remain blocked until their storage roundtrip contracts are explicit.
+
+
+### Device completion and publication
+
+Python-kernel scalar specialization admits exact builtin numeric kinds only;
+int/float subclasses retain their ordinary compiled CPU protocols and are
+refused by the hardware path before conversion. Numeric magnitude alone does
+not prove their arithmetic, reflected operations, comparisons or coercions.
+
+Host output publication follows successful device completion, not merely a
+wait or successful mapping. Metal requires command-buffer `Completed` status.
+Native and browser WebGPU cover allocation, upload, pipeline, dispatch and
+readback with validation, internal-error and out-of-memory scopes, plus
+invocation/device-local loss and uncaptured-error outcomes. Every scope is
+consumed on an ordinary success/error return; SDK guards handle native unwind.
+Browser pipeline creation is asynchronous, queue completion is explicit even
+with zero writable bindings, and all readbacks complete before shared output
+staging is published. Device errors have no retry or CPU substitution.
+
+These checks add required device-boundary scope/completion work, not per-element
+checks. Native device instances are invocation-owned; the browser worker has
+one in-flight synchronous-host request and retains its existing device/pipeline
+cache. Measure host latency for empty and small kernels separately from payload
+conversion/readback. Scope/error checks do not establish that a specific driver
+failure or device-loss matrix cell has been executed.

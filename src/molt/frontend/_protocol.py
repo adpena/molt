@@ -89,7 +89,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    gpu_kernel_symbols_by_name: dict[str, str]
     imported_attr_names: dict[str, str]
     imported_module_attr_mutations: set[tuple[str, str]]
     imported_module_provenance: dict[str, frozenset[str]]
@@ -1137,8 +1136,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_globals_dict(self) -> MoltValue: ...
 
-    def _emit_gpu_kernel_intrinsic_op(self, gpu_intrinsic: str) -> MoltValue: ...
-
     def _emit_guard_dict_shape(self, obj: MoltValue) -> MoltValue: ...
 
     def _emit_guard_map_condition(
@@ -1870,9 +1867,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _is_entry_app_binding_scope(self) -> bool: ...
 
     @staticmethod
-    def _is_gpu_intrinsic_call(node: ast.Call) -> str | None: ...
-
-    @staticmethod
     def _is_gpu_kernel_decorator(deco: ast.expr) -> bool: ...
 
     def _is_heap_read_key(self, key: tuple[Any, ...]) -> bool: ...
@@ -2006,8 +2000,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _loop_guard_for(
         self, obj: MoltValue, expected_class: str, *, obj_name: str | None = ...
     ) -> MoltValue | None: ...
-
-    def _lower_gpu_kernel_launch_call(self, node: ast.Call) -> MoltValue | None: ...
 
     def _lower_statistics_slice_call(
         self, func_id: str, node: ast.Call
@@ -2179,10 +2171,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _parse_container_hint(self, hint: str) -> tuple[str, str | None]: ...
 
     def _parse_dict_hint(self, hint: str) -> tuple[str | None, str | None]: ...
-
-    def _parse_gpu_launch_config_expr(
-        self, config_expr: ast.expr
-    ) -> tuple[MoltValue, MoltValue] | None: ...
 
     def _parse_range_call(
         self, node: ast.AST

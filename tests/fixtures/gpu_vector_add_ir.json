@@ -1,0 +1,383 @@
+[
+  {
+    "kind": "molt_gpu_kernel",
+    "name": "vector_add",
+    "ops": [
+      {
+        "kind": "trace_enter_slot",
+        "value": 1
+      },
+      {
+        "kind": "check_exception",
+        "value": 4
+      },
+      {
+        "args": [
+          "a"
+        ],
+        "kind": "frame_home_store",
+        "out": "v82",
+        "value": 0
+      },
+      {
+        "kind": "check_exception",
+        "value": 3
+      },
+      {
+        "args": [
+          "b"
+        ],
+        "kind": "frame_home_store",
+        "out": "v83",
+        "value": 1
+      },
+      {
+        "kind": "check_exception",
+        "value": 3
+      },
+      {
+        "args": [
+          "c"
+        ],
+        "kind": "frame_home_store",
+        "out": "v84",
+        "value": 2
+      },
+      {
+        "kind": "check_exception",
+        "value": 3
+      },
+      {
+        "args": [
+          "n"
+        ],
+        "kind": "frame_home_store",
+        "out": "v85",
+        "value": 3
+      },
+      {
+        "kind": "check_exception",
+        "value": 3
+      },
+      {
+        "kind": "const_none",
+        "out": "v86"
+      },
+      {
+        "kind": "const",
+        "out": "v87",
+        "value": 3
+      },
+      {
+        "args": [
+          "v86",
+          "v87",
+          "v86"
+        ],
+        "kind": "frame_context_set"
+      },
+      {
+        "col_offset": 4,
+        "end_col_offset": 25,
+        "kind": "line",
+        "source_line": 5,
+        "value": 5
+      },
+      {
+        "col_offset": 10,
+        "end_col_offset": 13,
+        "kind": "const_str",
+        "out": "v88",
+        "s_value": "gpu",
+        "source_line": 5
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 5,
+        "value": 3
+      },
+      {
+        "args": [
+          "v86",
+          "v88"
+        ],
+        "col_offset": 10,
+        "end_col_offset": 13,
+        "kind": "module_get_global",
+        "out": "v90",
+        "source_line": 5
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 5,
+        "value": 3
+      },
+      {
+        "args": [
+          "v90"
+        ],
+        "col_offset": 10,
+        "end_col_offset": 23,
+        "kind": "get_attr_generic_obj",
+        "out": "v91",
+        "s_value": "thread_id",
+        "source_line": 5
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 5,
+        "value": 3
+      },
+      {
+        "args": [
+          "v91"
+        ],
+        "argument_custody": [
+          "transferred"
+        ],
+        "col_offset": 10,
+        "end_col_offset": 25,
+        "kind": "call_func",
+        "out": "v92",
+        "source_line": 5
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 5,
+        "value": 3
+      },
+      {
+        "args": [
+          "v92"
+        ],
+        "kind": "frame_home_store",
+        "out": "v93",
+        "source_line": 5,
+        "value": 4
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 5,
+        "value": 3
+      },
+      {
+        "args": [
+          "v93"
+        ],
+        "kind": "store_var",
+        "source_line": 5,
+        "var": "tid"
+      },
+      {
+        "col_offset": 4,
+        "end_col_offset": 32,
+        "kind": "line",
+        "source_line": 6,
+        "value": 6
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 6,
+        "value": 3
+      },
+      {
+        "kind": "load_var",
+        "out": "v94",
+        "source_line": 6,
+        "var": "tid"
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 6,
+        "value": 3
+      },
+      {
+        "args": [
+          "v94",
+          "v85"
+        ],
+        "kind": "lt",
+        "out": "v95",
+        "source_line": 6
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 6,
+        "value": 3
+      },
+      {
+        "args": [
+          "v95"
+        ],
+        "kind": "bool",
+        "out": "v96",
+        "source_line": 6
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 6,
+        "value": 3
+      },
+      {
+        "args": [
+          "v96"
+        ],
+        "kind": "if",
+        "source_line": 6,
+        "type_hint": "bool"
+      },
+      {
+        "col_offset": 8,
+        "end_col_offset": 32,
+        "kind": "line",
+        "source_line": 7,
+        "value": 7
+      },
+      {
+        "kind": "load_var",
+        "out": "v97",
+        "source_line": 7,
+        "var": "tid"
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 7,
+        "value": 3
+      },
+      {
+        "args": [
+          "v82",
+          "v97"
+        ],
+        "col_offset": 17,
+        "end_col_offset": 23,
+        "kind": "index",
+        "out": "v98",
+        "source_line": 7
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 7,
+        "value": 3
+      },
+      {
+        "kind": "load_var",
+        "out": "v99",
+        "source_line": 7,
+        "var": "tid"
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 7,
+        "value": 3
+      },
+      {
+        "args": [
+          "v83",
+          "v99"
+        ],
+        "col_offset": 26,
+        "end_col_offset": 32,
+        "kind": "index",
+        "out": "v100",
+        "source_line": 7
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 7,
+        "value": 3
+      },
+      {
+        "args": [
+          "v98",
+          "v100"
+        ],
+        "col_offset": 17,
+        "end_col_offset": 32,
+        "kind": "add",
+        "out": "v101",
+        "source_line": 7
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 7,
+        "value": 3
+      },
+      {
+        "kind": "load_var",
+        "out": "v102",
+        "source_line": 7,
+        "var": "tid"
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 7,
+        "value": 3
+      },
+      {
+        "args": [
+          "v84",
+          "v102",
+          "v101"
+        ],
+        "kind": "store_index",
+        "out": "none",
+        "source_line": 7
+      },
+      {
+        "kind": "check_exception",
+        "source_line": 7,
+        "value": 3
+      },
+      {
+        "kind": "end_if",
+        "source_line": 7
+      },
+      {
+        "kind": "trace_exit",
+        "source_line": 7
+      },
+      {
+        "args": [
+          "v86"
+        ],
+        "kind": "ret",
+        "source_line": 7
+      },
+      {
+        "kind": "label",
+        "source_line": 7,
+        "value": 3
+      },
+      {
+        "kind": "trace_exit",
+        "source_line": 7
+      },
+      {
+        "kind": "ret_void",
+        "source_line": 7
+      },
+      {
+        "kind": "label",
+        "source_line": 7,
+        "value": 4
+      },
+      {
+        "kind": "trace_exit",
+        "source_line": 7
+      },
+      {
+        "kind": "ret_void",
+        "source_line": 7
+      }
+    ],
+    "params": [
+      "a",
+      "b",
+      "c",
+      "n"
+    ],
+    "schema_version": 1,
+    "symbol": "__main____vector_add"
+  }
+]

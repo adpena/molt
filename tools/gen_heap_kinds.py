@@ -66,6 +66,7 @@ ACYCLIC_SLOT_SCHEMAS = {
         ("varkw", "str_or_none"),
         ("freevars", "str_tuple"),
         ("cellvars", "str_tuple"),
+        ("gpu_descriptor", "str_or_none"),
     ),
 }
 ALLOWED = {
@@ -179,6 +180,7 @@ OBJECT_SHAPE_FAMILIES = {
     "functools",
     "types",
     "itertools",
+    "contextvars",
 }
 OBJECT_SHAPE_RESOURCE_SLOTS = {"none", "io_socket", "websocket"}
 

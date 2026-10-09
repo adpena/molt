@@ -740,7 +740,6 @@ PyAPI_DATA(PyTypeObject) PyByteArray_Type;
 PyAPI_DATA(PyTypeObject) PyBool_Type;
 PyAPI_DATA(PyTypeObject) PyDictProxy_Type;
 PyAPI_DATA(PyTypeObject) Py_GenericAliasType;
-PyAPI_DATA(PyTypeObject) PyContextVar_Type;
 PyAPI_DATA(PyTypeObject) PyMemoryView_Type;
 PyAPI_DATA(PyTypeObject) PyRange_Type;
 PyAPI_DATA(PyTypeObject) PyType_Type;
@@ -1191,10 +1190,8 @@ static inline size_t _PyObject_VAR_SIZE(PyTypeObject *typeobj, Py_ssize_t nitems
 extern int       PyTraceMalloc_Track   (unsigned int domain, uintptr_t ptr, size_t size);
 extern int       PyTraceMalloc_Untrack (unsigned int domain, uintptr_t ptr);
 
-/* Context variables */
-extern PyObject *PyContextVar_New      (const char *name, PyObject *default_value);
-extern int       PyContextVar_Get      (PyObject *var, PyObject *default_value, PyObject **value);
-extern PyObject *PyContextVar_Set      (PyObject *var, PyObject *value);
+/* Context variables: opaque runtime-owned objects. */
+#include <_context_exports.h>
 
 /* Function objects */
 

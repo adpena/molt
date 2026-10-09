@@ -3,6 +3,7 @@
 //! Each hook acquires the GIL internally via `with_gil` — re-entrant and safe
 //! whether called from within Molt's execution frame or from a bare C extension.
 
+mod contextvars;
 mod extension_init;
 mod gc_control;
 mod slice;
@@ -43,8 +44,8 @@ use num_traits::ToPrimitive;
 use crate::builtins::containers::{dict_len, dict_next_entry, list_len, tuple_len};
 use crate::builtins::numbers::{
     INT_BYTES_INVALID, bigint_from_bytes, bigint_from_f64_trunc, bigint_num_bits,
-    bigint_ptr_from_bits, bigint_ref, bigint_to_bytes, int_bits_from_bigint, int_bits_from_i64,
-    int_bits_from_i128, to_bigint, to_i64,
+    bigint_ptr_from_bits, bigint_ref, int_bits_from_bigint, int_bits_from_i64, int_bits_from_i128,
+    to_bigint, to_i64,
 };
 #[cfg(test)]
 use crate::concurrency::GilGuard;
@@ -418,68 +419,6 @@ unsafe extern "C" fn hook_int_from_u64(value: u64) -> u64 {
     with_gil(|_py| int_bits_from_i128(&_py, value as i128))
 }
 
-unsafe extern "C" fn hook_int_as_i64(bits: u64) -> i64 {
-    with_gil(|_py| to_i64(MoltObject::from_bits(bits)).unwrap_or(-1))
-}
-
-unsafe extern "C" fn hook_int_as_i64_checked(bits: u64, out: *mut i64) -> i32 {
-    if out.is_null() {
-        return -1;
-    }
-    with_gil(|_py| match to_i64(MoltObject::from_bits(bits)) {
-        Some(value) => {
-            unsafe {
-                *out = value;
-            }
-            0
-        }
-        None => -1,
-    })
-}
-
-unsafe extern "C" fn hook_int_as_u64_checked(bits: u64, out: *mut u64) -> i32 {
-    if out.is_null() {
-        return -1;
-    }
-    with_gil(|_py| {
-        let obj = MoltObject::from_bits(bits);
-        if let Some(value) = to_i64(obj) {
-            if value < 0 {
-                return -1;
-            }
-            unsafe {
-                *out = value as u64;
-            }
-            return 0;
-        }
-        if let Some(value) = to_bigint(obj).and_then(|value| value.to_u64()) {
-            unsafe {
-                *out = value;
-            }
-            return 0;
-        }
-        -1
-    })
-}
-
-unsafe extern "C" fn hook_int_as_u64_mask(bits: u64, width: u32, out: *mut u64) -> i32 {
-    if out.is_null() || width == 0 || width > 64 {
-        return -1;
-    }
-    with_gil(|_py| {
-        let Some(value) = to_bigint(MoltObject::from_bits(bits)) else {
-            return -1;
-        };
-        let modulus = BigInt::from(1u8) << width;
-        let masked = ((value % &modulus) + &modulus) % &modulus;
-        let Some(masked) = masked.to_u64() else {
-            return -1;
-        };
-        unsafe { *out = masked };
-        0
-    })
-}
-
 unsafe extern "C" fn hook_int_from_bytes(
     data: *const u8,
     len: usize,
@@ -561,44 +500,6 @@ unsafe extern "C" fn hook_int_sign(bits: u64) -> c_int {
     })
 }
 
-unsafe extern "C" fn hook_int_signed_byte_width(bits: u64, out: *mut usize) -> c_int {
-    if out.is_null() {
-        return -1;
-    }
-    with_gil(|_py| {
-        let obj = MoltObject::from_bits(bits);
-        let width = if let Some(value) = obj.as_int() {
-            let significant = if value >= 0 {
-                65 - value.leading_zeros() as usize
-            } else {
-                65 - (!value).leading_zeros() as usize
-            };
-            significant.div_ceil(8)
-        } else if let Some(ptr) = bigint_ptr_from_bits(bits) {
-            let value = unsafe { bigint_ref(ptr) };
-            let bit_len = usize::try_from(value.bits()).unwrap_or(usize::MAX);
-            match value.sign() {
-                Sign::NoSign => 1,
-                Sign::Plus => bit_len.saturating_add(1).div_ceil(8).max(1),
-                Sign::Minus => {
-                    let exact_power = value.magnitude().trailing_zeros()
-                        == Some(value.magnitude().bits().saturating_sub(1));
-                    let base = bit_len.div_ceil(8).max(1);
-                    if bit_len % 8 == 0 && !exact_power {
-                        base.saturating_add(1)
-                    } else {
-                        base
-                    }
-                }
-            }
-        } else {
-            return -1;
-        };
-        unsafe { *out = width };
-        0
-    })
-}
-
 unsafe extern "C" fn hook_int_to_bytes(
     bits: u64,
     data: *mut u8,
@@ -612,7 +513,7 @@ unsafe extern "C" fn hook_int_to_bytes(
         not(miri)
     ))]
     crate::attestation_probe::record_numeric_hook();
-    if data.is_null() && len != 0 {
+    if len > isize::MAX as usize || data.is_null() && len != 0 {
         return INT_BYTES_INVALID;
     }
     with_gil(|_py| {
@@ -621,18 +522,15 @@ unsafe extern "C" fn hook_int_to_bytes(
         } else {
             unsafe { std::slice::from_raw_parts_mut(data, len) }
         };
-        if let Some(ptr) = bigint_ptr_from_bits(bits) {
-            return bigint_to_bytes(
-                unsafe { bigint_ref(ptr) },
-                out,
-                little_endian != 0,
-                signed != 0,
-            );
-        }
-        let Some(value) = to_bigint(MoltObject::from_bits(bits)) else {
+        let Some(payload) = crate::builtins::numbers::index_integral_payload_bits(bits) else {
             return INT_BYTES_INVALID;
         };
-        bigint_to_bytes(&value, out, little_endian != 0, signed != 0)
+        crate::builtins::numbers::integral_payload_to_bytes(
+            payload,
+            out,
+            little_endian != 0,
+            signed != 0,
+        )
     })
 }
 
@@ -2831,22 +2729,20 @@ unsafe extern "C" fn hook_number_unary_op(op: u32, a_bits: u64) -> OwnedHandleRe
         x if x == NumberUnaryOp::Absolute as u32 => crate::c_api::PyNumber_Absolute(a_bits),
         x if x == NumberUnaryOp::Invert as u32 => crate::c_api::PyNumber_Invert(a_bits),
         x if x == NumberUnaryOp::Float as u32 => crate::molt_float_from_obj(a_bits),
+        x if x == NumberUnaryOp::Long as u32 => crate::molt_int_from_obj(
+            a_bits,
+            MoltObject::none().bits(),
+            MoltObject::from_bool(false).bits(),
+        ),
         x if x == NumberUnaryOp::FloatAsDouble as u32 => with_gil(|py| {
             crate::builtins::numbers::float_as_double(&py, a_bits).map_or_else(
                 || MoltObject::none().bits(),
                 |value| crate::object::ops::float_result_bits(&py, value),
             )
         }),
-        x if x == NumberUnaryOp::Index as u32 => with_gil(|py| {
-            let message = format!(
-                "'{}' object cannot be interpreted as an integer",
-                crate::type_name(&py, crate::obj_from_bits(a_bits))
-            );
-            crate::builtins::numbers::index_bigint_from_obj(&py, a_bits, &message).map_or_else(
-                || MoltObject::none().bits(),
-                |value| crate::builtins::numbers::int_bits_from_bigint(&py, value),
-            )
-        }),
+        x if x == NumberUnaryOp::Index as u32 => {
+            with_gil(|py| crate::builtins::numbers::index_from_object(&py, a_bits))
+        }
         _ => with_gil(|_py| {
             crate::raise_exception::<u64>(
                 &_py,
@@ -4989,6 +4885,58 @@ fn admit_process_cpython_state(py: &crate::PyToken<'_>) -> bool {
     false
 }
 
+/// Publish each lazy Context type into its process-lived C shell once. The
+/// runtime class cache remains its semantic authority; static_bindings owns the
+/// ordinary retained C projection and participates in class retirement.
+pub(crate) fn bind_context_class(
+    py: &crate::PyToken<'_>,
+    bits: u64,
+    shape: crate::object::ObjectShapeId,
+) -> bool {
+    if bits == 0 || crate::exception_pending(py) {
+        return false;
+    }
+    // Context semantics belong to every runtime. Only the process C-shell owner
+    // publishes these optional ABI projections; isolated runtime classes must
+    // not attempt to rebind process-static C identities.
+    if !crate::state::runtime_state::owns_process_cpython_state(crate::runtime_state(py)) {
+        return true;
+    }
+    if !register_cpython_hooks() {
+        return false;
+    }
+    let pointer = match shape {
+        crate::object::ObjectShapeId::Context => {
+            (&raw mut molt_cpython_abi::abi_types::PyContext_Type).cast::<PyObject>()
+        }
+        crate::object::ObjectShapeId::ContextVar => {
+            (&raw mut molt_cpython_abi::abi_types::PyContextVar_Type).cast::<PyObject>()
+        }
+        crate::object::ObjectShapeId::ContextToken => {
+            (&raw mut molt_cpython_abi::abi_types::PyContextToken_Type).cast::<PyObject>()
+        }
+        _ => return true,
+    };
+    let runtime = &crate::runtime_state(py).cpython;
+    if let Some(binding) = runtime
+        .static_bindings
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|binding| binding.pointer == pointer)
+    {
+        assert_eq!(
+            binding.bits, bits,
+            "Context C shell bound to a different owner"
+        );
+        return true;
+    }
+    unsafe {
+        runtime.bind_static(py, pointer, bits, true);
+    }
+    true
+}
+
 /// Register the runtime hooks into `molt-lang-cpython-abi`.
 /// Install process-lived hooks once and publish class bindings once per runtime.
 pub fn register_cpython_hooks() -> bool {
@@ -5153,14 +5101,11 @@ pub fn register_cpython_hooks() -> bool {
                 float_payload: hook_float_payload,
                 int_from_i64: hook_int_from_i64,
                 int_from_u64: hook_int_from_u64,
-                int_as_i64: hook_int_as_i64,
-                int_as_i64_checked: hook_int_as_i64_checked,
-                int_as_u64_checked: hook_int_as_u64_checked,
-                int_as_u64_mask: hook_int_as_u64_mask,
+
                 int_from_digits: hook_int_from_digits,
                 int_from_f64_trunc: hook_int_from_f64_trunc,
                 int_sign: hook_int_sign,
-                int_signed_byte_width: hook_int_signed_byte_width,
+
                 int_from_bytes: hook_int_from_bytes,
                 int_to_bytes: hook_int_to_bytes,
                 int_num_bits: hook_int_num_bits,
@@ -5310,6 +5255,16 @@ pub fn register_cpython_hooks() -> bool {
                 slice_new: slice::hook_slice_new,
                 slice_item: slice::hook_slice_item,
                 object_contains: hook_object_contains,
+                context_type_admit: contextvars::type_admit,
+                context_new: contextvars::new,
+                context_copy_current: contextvars::copy_current,
+                context_copy: contextvars::copy,
+                context_enter: contextvars::enter,
+                context_exit: contextvars::exit,
+                context_var_new: contextvars::var_new,
+                context_var_get: contextvars::var_get,
+                context_var_set: contextvars::var_set,
+                context_var_reset: contextvars::var_reset,
             };
             // SAFETY: all fn pointers are valid for the process lifetime.
             let installed = unsafe { molt_cpython_abi::try_set_runtime_hooks(hooks) };
@@ -8071,6 +8026,10 @@ mod tests {
                     )
                 };
                 assert!(!token.is_null(), "shutdown proof requires a context edge");
+                unsafe {
+                    molt_cpython_abi::api::refcount::Py_DECREF(token);
+                    molt_cpython_abi::api::refcount::Py_DECREF(var);
+                }
                 unsafe {
                     molt_cpython_abi::api::errors::PyErr_SetString(
                         (&raw mut PyExc_MemoryError).cast::<PyObject>(),
@@ -11775,6 +11734,55 @@ mod tests {
             dec_ref_bits(&_py, big_endian);
             dec_ref_bits(&_py, negative);
         });
+    }
+
+    #[test]
+    fn integer_byte_hook_refuses_float_and_accepts_bool_without_conversion() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        register_cpython_hooks();
+        let mut output = [0xa5; 4];
+        assert_eq!(
+            unsafe {
+                hook_int_to_bytes(
+                    MoltObject::from_float(3.0).bits(),
+                    output.as_mut_ptr(),
+                    4,
+                    1,
+                    1,
+                )
+            },
+            INT_BYTES_INVALID
+        );
+        assert_eq!(output, [0xa5; 4]);
+        assert_eq!(
+            unsafe {
+                hook_int_to_bytes(
+                    MoltObject::from_bool(true).bits(),
+                    output.as_mut_ptr(),
+                    4,
+                    0,
+                    0,
+                )
+            },
+            crate::builtins::numbers::INT_BYTES_OK
+        );
+        assert_eq!(output, [0, 0, 0, 1]);
+        assert_eq!(
+            unsafe { hook_int_to_bytes(MoltObject::from_int(-1).bits(), ptr::null_mut(), 0, 0, 1) },
+            crate::builtins::numbers::INT_BYTES_OK
+        );
+        assert_eq!(
+            unsafe {
+                hook_int_to_bytes(
+                    MoltObject::from_int(1).bits(),
+                    output.as_mut_ptr(),
+                    usize::MAX,
+                    1,
+                    0,
+                )
+            },
+            INT_BYTES_INVALID
+        );
     }
 
     #[test]

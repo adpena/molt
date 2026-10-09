@@ -83,6 +83,36 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_gpu_tensor__zeros as *const (),
         )),
         #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_kernel_launch_python" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_kernel_launch_python",
+            crate::molt_gpu_kernel_launch_python as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_thread_id" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_thread_id",
+            crate::molt_gpu_thread_id as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_block_id" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_block_id",
+            crate::molt_gpu_block_id as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_block_dim" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_block_dim",
+            crate::molt_gpu_block_dim as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_grid_dim" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_grid_dim",
+            crate::molt_gpu_grid_dim as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
+        "molt_gpu_barrier" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_gpu_barrier",
+            crate::molt_gpu_barrier as *const (),
+        )),
+        #[cfg(feature = "molt_gpu_primitives")]
         "molt_gpu_buffer_to_list" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_gpu_buffer_to_list",
             crate::molt_gpu_buffer_to_list as *const (),

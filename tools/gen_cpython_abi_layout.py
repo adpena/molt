@@ -323,7 +323,6 @@ ASSERTED_STRUCTS: tuple[str, ...] = (
     "PyLongObject",
     "PyLongValue",
     "PyCapsuleObject",
-    "PyContextVarObject",
     "PyDescrObject",
     "PyMethodDescrObject",
     "PyGetSetDescrObject",
@@ -586,7 +585,6 @@ _C_TYPE_EXPR: dict[str, str | None] = {
     "PyLongObject": "PyLongObject",
     "PyLongValue": "_PyLongValue",
     "PyCapsuleObject": None,  # asserted only if C spelling present; see resolve
-    "PyContextVarObject": None,
     "PyDescrObject": "PyDescrObject",
     "PyMethodDescrObject": "PyMethodDescrObject",
     "PyGetSetDescrObject": "PyGetSetDescrObject",

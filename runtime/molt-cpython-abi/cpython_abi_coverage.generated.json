@@ -18,10 +18,10 @@
     "molt-private": 46,
     "private": 63,
     "private-representation": 1,
-    "public-version-specific": 162,
+    "public-version-specific": 172,
     "stable-abi": 466,
     "stable-values-version-specific-layout": 1,
-    "total": 750,
+    "total": 760,
     "unstable": 9,
     "version-specific-public": 2
   },
@@ -49,6 +49,12 @@
       "source": "https://docs.python.org/3.13/c-api/stable.html",
       "summary": "Private _Py APIs may change without notice and several were removed or restored during the 3.13 cycle.",
       "surface": "private-_Py-symbols"
+    },
+    {
+      "introduced": "3.14",
+      "source": "https://docs.python.org/3.14/c-api/contextvars.html",
+      "summary": "Context watcher registration, notification and unraisable-error preservation are not implemented. The 3.14 Context C-API coordinate remains unsupported and release-held; other Context APIs do not demonstrate watcher support.",
+      "surface": "PyContext_AddWatcher/PyContext_ClearWatcher/Py_CONTEXT_SWITCHED"
     }
   ],
   "schema_version": 1,
@@ -575,6 +581,27 @@
       "source": "runtime/molt-cpython-abi/src/api/contextvars.rs",
       "stability": "public-version-specific",
       "surface": "function",
+      "symbol": "PyContextToken_CheckExact",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "type-object",
+      "symbol": "PyContextToken_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/contextvars.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyContextVar_CheckExact",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/contextvars.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
       "symbol": "PyContextVar_Get",
       "verified_at": "3.12"
     },
@@ -604,6 +631,55 @@
       "stability": "public-version-specific",
       "surface": "type-object",
       "symbol": "PyContextVar_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/contextvars.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyContext_CheckExact",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/contextvars.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyContext_Copy",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/contextvars.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyContext_CopyCurrent",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/contextvars.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyContext_Enter",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/contextvars.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyContext_Exit",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/contextvars.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyContext_New",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/abi_types.rs",
+      "stability": "public-version-specific",
+      "surface": "type-object",
+      "symbol": "PyContext_Type",
       "verified_at": "3.12"
     },
     {

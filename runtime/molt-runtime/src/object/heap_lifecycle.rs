@@ -698,6 +698,10 @@ pub(crate) unsafe fn visit_payload_owned_values(
                     );
                 }
             }
+            HeapLifecycleHandler::ContextBitmapNode
+            | HeapLifecycleHandler::ContextCollisionNode => {
+                crate::builtins::contextvars::trie::visit(ptr, |bits| visit_bits(bits, visit));
+            }
             HeapLifecycleHandler::FrameBindings => {
                 crate::builtins::frames::frame_bindings_visit(ptr, visit);
             }
@@ -720,7 +724,7 @@ pub(crate) unsafe fn visit_payload_owned_values(
                 visit_bits(super::instance_dict_bits(ptr), visit);
             }
             HeapLifecycleHandler::Code => {
-                for slot in [0usize, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20] {
+                for slot in [0usize, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20, 22] {
                     visit_bits(
                         *(ptr.add(slot * std::mem::size_of::<u64>()) as *const u64),
                         visit,
@@ -732,6 +736,9 @@ pub(crate) unsafe fn visit_payload_owned_values(
             }
             // Shape/custom handlers have their own typed projection authorities.
             HeapLifecycleHandler::Generator => {
+                crate::async_rt::scheduler::task_visit_owned_edges(py, ptr, &mut |bits| {
+                    visit_bits(bits, visit)
+                });
                 crate::builtins::exceptions::generator_exception_stack_visit(ptr, |bits| {
                     visit_bits(bits, visit)
                 });
@@ -991,8 +998,14 @@ pub(crate) unsafe fn terminal_detach_capacity(py: &PyToken<'_>, ptr: *mut u8) ->
         }
         _ => 0,
     };
+    // A terminal/explicit close can retire a scheduler reference even though
+    // that external root must never be subtracted by cycle graph traversal.
+    let scheduler_extra = usize::from(unsafe {
+        (*crate::header_from_obj_ptr(ptr)).has_flag(crate::HEADER_FLAG_SPAWN_RETAIN)
+    });
     let edges = count
-        .checked_add(extra)
+        .checked_add(scheduler_extra)
+        .and_then(|count| count.checked_add(extra))
         .unwrap_or_else(|| std::process::abort());
     (edges, unsafe { detached_resource_count(ptr) })
 }
@@ -1411,6 +1424,7 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                 );
             }
             HeapLifecycleHandler::Generator => {
+                crate::async_rt::scheduler::task_detach_owned_edges(py, ptr, sink);
                 detach_generator_owned_edges(ptr, sink);
             }
             HeapLifecycleHandler::AsyncGenerator => {
@@ -1474,7 +1488,9 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
             | HeapLifecycleHandler::ListInt
             | HeapLifecycleHandler::Float
             | HeapLifecycleHandler::ListBool
-            | HeapLifecycleHandler::GlobIter => {}
+            | HeapLifecycleHandler::GlobIter
+            | HeapLifecycleHandler::ContextBitmapNode
+            | HeapLifecycleHandler::ContextCollisionNode => {}
             HeapLifecycleHandler::NativeHandle => sink.detach_resource(DetachedResource::Native(
                 super::native_handle::native_handle_detach(ptr),
             )),
@@ -1524,6 +1540,10 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
                 ) {
                     sink.detach_if_heap(bits);
                 }
+            }
+            HeapLifecycleHandler::ContextBitmapNode
+            | HeapLifecycleHandler::ContextCollisionNode => {
+                crate::builtins::contextvars::trie::detach(ptr, sink);
             }
             HeapLifecycleHandler::Tuple => {
                 crate::object::seq_access::detach_tuple_edges(ptr, |bits| {
@@ -1637,7 +1657,7 @@ pub(crate) unsafe fn detach_terminal_owned_edges(
                 sink.detach_if_heap(payload.replace(MoltObject::none().bits()));
             }
             HeapLifecycleHandler::Code => {
-                detach_slots(ptr, [0, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20], sink)
+                detach_slots(ptr, [0, 1, 3, 4, 5, 12, 13, 14, 15, 16, 19, 20, 22], sink)
             }
             HeapLifecycleHandler::NativeDescriptor => detach_slots(ptr, [0, 1, 2, 3, 4, 5], sink),
             HeapLifecycleHandler::ListBuilder => {

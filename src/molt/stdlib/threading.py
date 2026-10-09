@@ -606,10 +606,11 @@ class Thread:
     ) -> None:
         if _group is not None:
             raise ValueError("group argument must be None for now")
-        if context is not _NO_CONTEXT:
+        if sys.version_info < (3, 14) and context is not _NO_CONTEXT:
             raise TypeError(
                 "Thread.__init__() got an unexpected keyword argument 'context'"
             )
+        self._context = None if context is _NO_CONTEXT else context
         self._target = target
         self._args = tuple(args)
         self._kwargs = dict(kwargs) if kwargs else {}
@@ -681,6 +682,13 @@ class Thread:
     def start(self) -> None:
         if self._started:
             raise RuntimeError("threads can only be started once")
+        if sys.version_info >= (3, 14) and self._context is None:
+            import contextvars as _contextvars
+            self._context = (
+                _contextvars.copy_context()
+                if sys.flags.thread_inherit_context
+                else _contextvars.Context()
+            )
         token = _next_thread_token()
         self._token = token
         handle = _thread_spawn_shared(token, self._bootstrap, (), {})
@@ -716,7 +724,10 @@ class Thread:
     def _bootstrap(self) -> None:
         try:
             _invoke_thread_hooks()
-            self.run()
+            if sys.version_info >= (3, 14):
+                self._context.run(self.run)
+            else:
+                self.run()
         except BaseException as exc:
             _call_excepthook(self, exc)
         finally:

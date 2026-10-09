@@ -62,6 +62,35 @@ requires their actual comparison and the complete release gates to pass for the
 selected source and toolchain. It is not an unconditional bit-identical-output
 promise.
 
+## Development secret gate
+
+The local pre-commit hook runs `tools/secret_guard.py --staged`. It reads added
+lines from the entire selected Git index, including when invoked from a nested
+directory; unstaged file contents do not replace those inputs. Its fixed diff
+transport disables external diff drivers and text conversion. Malformed or
+incomplete hunks fail rather than accepting a partial scan.
+
+The gate recognizes private-key headers, a finite set of provider signatures,
+bearer values and sensitive literal assignments. Source expressions are not
+literal credentials. Diagnostics and the optional security event contain only
+paths, line numbers and rule names or counts, never matched values. The existing
+exact-line `secret-guard: allow` marker and vendored RustPython path exemption
+remain explicit review-sensitive exceptions.
+
+The generated intrinsic and WASM symbol maps may contain `token` in public
+identifiers. In those three projections, the generic assignment check admits
+only complete quoted identifier map entries whose value equals the key, or
+whose key and value differ solely by the fixed `molt_` namespace. This rule
+does not admit unrelated values, assignments or concatenated expressions;
+provider and private-key detection remain independent. It trusts the exact
+public naming relation, without exempting the containing file.
+
+This line heuristic is not a complete language parser or a guarantee that no
+secrets exist. Multiline, computed, escaped and newly introduced credential
+formats need separate coverage. It requires no network, external detector or
+emitted-guest instrumentation. Broader security qualification remains in the
+[release findings](agent/V1_HANDOFF_FINDINGS.md).
+
 ## Verification
 
 Differential tests use CPython as the semantic oracle. They must exercise the

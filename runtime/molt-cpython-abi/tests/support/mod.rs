@@ -15,6 +15,8 @@ pub mod fake_numbers;
 #[allow(dead_code)]
 pub mod fake_runtime;
 pub mod fake_strings;
+#[allow(dead_code)]
+pub mod warnings;
 
 // Builtin shells and the hook table are process-owned. A per-thread ledger
 // cannot retire their roots while another fixture is executing against them.
