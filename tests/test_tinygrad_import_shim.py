@@ -10,7 +10,7 @@ import pytest
 from tests.native_process_guard import run_native_test_process
 
 from molt.dx import development_artifact_env
-from tests.helpers.falcon_ocr_paths import FALCON_OCR_ARTIFACT_ROOT
+from tests.helpers.falcon_ocr_paths import require_falcon_ocr_artifact_root
 from tests.helpers.tinygrad_stdlib_loader import tinygrad_stdlib_context
 
 
@@ -1156,7 +1156,7 @@ def test_tinygrad_falcon_helper_modules_compile_in_native_molt(tmp_path: Path) -
     env = _native_molt_env(
         root,
         hermetic=True,
-        module_roots=(FALCON_OCR_ARTIFACT_ROOT,),
+        module_roots=(require_falcon_ocr_artifact_root(),),
     )
     run = run_native_test_process(
         [
