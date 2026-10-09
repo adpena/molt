@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "968724008d549c7209cb3d2bb57f31bcb0e7dd248b03c89173f41e31cd120d62",
+  "authority_sha256": "47afb9aa2497f9eec4ee36e56ee135be3412e52c7831bde99b388effc352e1b7",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2413,6 +2413,7 @@
         "not slow",
         "tests/test_dead_code_allow_ratchet.py",
         "tests/tools/test_advisory_classifier.py",
+        "tests/tools/test_profile_python_import_consumer.py",
         "tests/tools/test_bootstrap_actionlint.py",
         "tests/tools/test_build_graph_audit.py",
         "tests/tools/test_build_health_gate.py",
