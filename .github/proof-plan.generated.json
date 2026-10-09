@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "bef4677fb056db93652e5b624eec1e6391e5628bc5a74647bd5632d3b18ea19f",
+  "authority_sha256": "80535b97db5e246e16c56f055f1e4d2c9c80ca134f7201502b0ac6435a1ca5e8",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2536,7 +2536,10 @@
         "tests/tools/test_release_exit_gate.py",
         "tests/tools/test_runtime_wasm_final_preflight.py",
         "tests/tools/test_source_extension_proof_family.py",
-        "tests/tools/test_startup_bench.py"
+        "tests/tools/test_startup_bench.py",
+        "tests/tools/test_legacy_default_cleanup.py",
+        "tests/tools/test_wasm_link_fact_provider.py",
+        "tests/tools/test_cargo_test_binary_discovery.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
