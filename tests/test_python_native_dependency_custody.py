@@ -17,7 +17,7 @@ from molt.python_native_locations import (
 )
 from molt.python_runtime_identity import _NATIVE_DEPENDENCY_POLICIES
 from tests.native_artifact_fixtures import (
-    elf_header,
+    elf_dynamic_image,
     pe_header,
     macho_header,
     fat_macho,
@@ -135,20 +135,6 @@ def _pe_image(
     return image
 
 
-def _elf_image(name: bytes = b"libc.so") -> bytearray:
-    image = elf_header(kind=3, image_size=0x400)
-    struct.pack_into("<Q", image, 32, 64)
-    struct.pack_into("<HH", image, 54, 56, 2)
-    struct.pack_into("<IIQQQQQQ", image, 64, 1, 0, 0, 0, 0, len(image), len(image), 1)
-    struct.pack_into("<IIQQQQQQ", image, 120, 2, 0, 0x200, 0x200, 0, 64, 64, 8)
-    struct.pack_into("<qQ", image, 0x200, 1, 1)
-    struct.pack_into("<qQ", image, 0x210, 5, 0x300)
-    strings = b"\0" + name + b"\0"
-    struct.pack_into("<qQ", image, 0x220, 10, len(strings))
-    image[0x300 : 0x300 + len(strings)] = strings
-    return image
-
-
 def _macho_image(
     *,
     cpu: int = 0x01000007,
@@ -244,7 +230,7 @@ def test_pe_rejects_unknown_delay_import_attributes(attributes: int) -> None:
 )
 def test_elf_preserves_loader_name_including_path_qualified_needed(name: bytes) -> None:
     assert native._native_dependencies(
-        bytes(_elf_image(name)), "linux", architecture="x86_64"
+        bytes(elf_dynamic_image(name)), "linux", architecture="x86_64"
     ) == (native.NativeDependency(name.decode(), "required"),)
 
 
@@ -262,14 +248,14 @@ def test_elf_preserves_loader_name_including_path_qualified_needed(name: bytes) 
 def test_elf_rejects_malformed_dynamic_metadata(
     fmt: str, offset: int, value: int, reason: str
 ) -> None:
-    image = _elf_image()
+    image = elf_dynamic_image()
     struct.pack_into(fmt, image, offset, value)
     with pytest.raises(PythonEnvironmentIdentityError, match=reason):
         native._elf_dependencies(bytes(image))
 
 
 def test_elf_requires_name_termination_inside_string_table() -> None:
-    image = _elf_image()
+    image = elf_dynamic_image()
     image[0x308] = ord("x")
     with pytest.raises(PythonEnvironmentIdentityError, match="name is invalid"):
         native._elf_dependencies(bytes(image))
@@ -281,7 +267,7 @@ def _elf_image_with_split_string_table(*, second_vaddr: int) -> bytearray:
     Mirrors python-build-standalone's BOLT/patchelf x86_64 interpreter, whose
     ``DT_STRTAB`` starts in one PT_LOAD and continues into the next.
     """
-    image = _elf_image(b"libc.so")
+    image = elf_dynamic_image(b"libc.so")
     struct.pack_into("<HH", image, 54, 56, 3)
     # LOAD 0 maps file [0, 0x304) at vaddr 0: the table's first four bytes.
     struct.pack_into("<IIQQQQQQ", image, 64, 1, 0, 0, 0, 0, 0x304, 0x304, 1)
@@ -432,7 +418,7 @@ def test_macho_universal_never_guesses_host_architecture() -> None:
     "operating_system,image",
     [
         ("windows", bytes(_pe_image())),
-        ("linux", bytes(_elf_image())),
+        ("linux", bytes(elf_dynamic_image())),
         ("macos", bytes(_macho_image())),
     ],
 )
@@ -540,7 +526,7 @@ def test_configured_launcher_and_loaded_image_share_no_component_identity(
     if operating_system == "windows":
         image = _empty_pe_image()
     elif operating_system == "linux":
-        image = _elf_image()
+        image = elf_dynamic_image()
         struct.pack_into("<q", image, 0x200, 0)
     else:
         image = _macho_image()
@@ -574,7 +560,7 @@ def test_unloaded_configured_root_cannot_provide_a_loaded_import(
     if operating_system == "windows":
         executable.write_bytes(_pe_image(b"configured"))
     elif operating_system == "linux":
-        executable.write_bytes(_elf_image(b"configured"))
+        executable.write_bytes(elf_dynamic_image(b"configured"))
     else:
         executable.write_bytes(
             _macho_image(name=b"@executable_path/configured", command=0xC)
@@ -852,7 +838,7 @@ def test_elf_needed_is_required_not_a_delayed_symbol_binding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     executable = tmp_path / "python"
-    executable.write_bytes(_elf_image(b"unloaded.so"))
+    executable.write_bytes(elf_dynamic_image(b"unloaded.so"))
     with pytest.raises(PythonEnvironmentIdentityError, match="cannot resolve"):
         _capture_loaded_closure(
             monkeypatch, executable, (executable,), operating_system="linux"
@@ -998,7 +984,7 @@ def test_observed_virtual_images_are_census_roots_not_invented_bindings(
     if operating_system == "macos":
         image = _macho_image()
     else:
-        image = _elf_image()
+        image = elf_dynamic_image()
         struct.pack_into("<q", image, 0x200, 0)
     executable.write_bytes(image)
     loader_snapshot = (
@@ -1239,3 +1225,37 @@ def test_macos_loaded_object_index_selects_alias_deterministically(
     reverse = native._loaded_path_object_index([second, first])
     assert forward == reverse
     assert list(forward.values()) == [first]
+
+
+@pytest.mark.parametrize(
+    "loader", [b"/lib64/ld-linux-x86-64.so.2", b"/lib/ld-linux-aarch64.so.1"]
+)
+def test_elf_interpreter_reads_one_physical_program_header(loader):
+    image = elf_dynamic_image()
+    struct.pack_into("<H", image, 56, 3)
+    image[0x350 : 0x350 + len(loader) + 1] = loader + b"\0"
+    struct.pack_into(
+        "<IIQQQQQQ", image, 176, 3, 4, 0x350, 0, 0, len(loader) + 1, len(loader) + 1, 1
+    )
+    assert (
+        native.elf_interpreter(bytes(image), architecture="x86_64") == loader.decode()
+    )
+    # Existing DT_NEEDED meaning survives the shared header extraction.
+    assert native._elf_dependencies(bytes(image)) == (
+        native.NativeDependency("libc.so", "required"),
+    )
+
+
+@pytest.mark.parametrize(
+    "loader",
+    [b"relative/loader", b"/lib/../python", b"/lib//loader", b"/lib/loader\0junk"],
+)
+def test_elf_interpreter_rejects_aliased_or_ambiguous_paths(loader):
+    image = elf_dynamic_image()
+    struct.pack_into("<H", image, 56, 3)
+    image[0x350 : 0x350 + len(loader) + 1] = loader + b"\0"
+    struct.pack_into(
+        "<IIQQQQQQ", image, 176, 3, 4, 0x350, 0, 0, len(loader) + 1, len(loader) + 1, 1
+    )
+    with pytest.raises(PythonEnvironmentIdentityError):
+        native.elf_interpreter(bytes(image), architecture="x86_64")

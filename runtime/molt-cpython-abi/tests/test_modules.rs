@@ -816,14 +816,17 @@ unsafe extern "C" fn fake_object_dir(_obj: u64) -> OwnedHandleResult {
 
 /// Acquire the binary-wide serialization guard (poison-tolerant, so one test's
 /// failure never cascades into the rest) and run the idempotent ABI + hook init.
-/// Every test binds the returned guard for its whole body — see `TEST_LOCK`.
-/// The returned `MutexGuard` is itself `#[must_use]`, so a test that drops it
-/// early (a bare `init();`) is caught at compile time.
-fn init() -> MutexGuard<'static, ()> {
+/// Every test binds both guards for its whole body — see `TEST_LOCK`.
+/// Tuple field order retires the ABI transaction before releasing TEST_LOCK.
+#[must_use = "retain ABI and fixture-lock custody for the whole test"]
+fn init() -> (
+    support::AbiTestThreadStateTransaction,
+    MutexGuard<'static, ()>,
+) {
     let guard = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    support::prepare_abi_test_thread(TEST_HOOKS);
+    let transaction = support::enter_abi_test(TEST_HOOKS);
     support::fake_runtime::prepare_class_bindings();
-    guard
+    (transaction, guard)
 }
 
 #[test]

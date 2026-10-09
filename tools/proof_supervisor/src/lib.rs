@@ -7,11 +7,13 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 include!(concat!(env!("OUT_DIR"), "/protocol.rs"));
+
+// The transport bound is declared in protocol.json for Rust and Python.
+const _: () = assert!(EXPORT_RECEIPT_MAX_BYTES == evidence::MAX_RECEIPT_BYTES);
 
 pub mod evidence;
 pub mod image_cache;
@@ -93,6 +95,7 @@ pub struct ValidatedPolicy {
     pub root_path: PathBuf,
     pub fixed: BTreeMap<PathBuf, FixedAuthority>,
     pub derived: Vec<DerivedRoot>,
+    path_namespace: PolicyPathNamespace,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -465,8 +468,183 @@ fn valid_transition(current: SupervisorState, next: SupervisorState) -> bool {
     )
 }
 
+#[derive(Clone, Copy, Debug)]
+enum PolicyPathNamespace {
+    Host,
+    LinuxGuest,
+}
+
+/// A retained Linux root is an input to offline verification, never a launch
+/// authority. The caller owns immutable custody and admission of the complete
+/// root; this resolver checks only the policy's directories and fixed images.
+enum PolicyPaths {
+    Host,
+    RetainedLinuxRoot(PathBuf),
+}
+
+impl PolicyPaths {
+    fn namespace(&self) -> PolicyPathNamespace {
+        match self {
+            Self::Host => PolicyPathNamespace::Host,
+            Self::RetainedLinuxRoot(_) => PolicyPathNamespace::LinuxGuest,
+        }
+    }
+
+    fn required_environment(&self) -> BTreeMap<String, String> {
+        match self {
+            Self::Host => platform::required_environment(),
+            Self::RetainedLinuxRoot(_) => BTreeMap::new(),
+        }
+    }
+
+    fn is_absolute(&self, path: &Path) -> bool {
+        match self {
+            Self::Host => path.is_absolute(),
+            Self::RetainedLinuxRoot(_) => linux_guest_components(path).is_ok(),
+        }
+    }
+
+    fn resolve(
+        &self,
+        path: &Path,
+        label: &str,
+        directory: bool,
+    ) -> Result<(PathBuf, PathBuf), String> {
+        match self {
+            Self::Host => {
+                let canonical = if directory {
+                    canonical_directory(path, label)?
+                } else {
+                    canonical_file(path, label)?
+                };
+                Ok((canonical.clone(), canonical))
+            }
+            Self::RetainedLinuxRoot(root) => {
+                let components = linux_guest_components(path)?;
+                let mut retained = root.clone();
+                for component in components {
+                    // Match the actual entry spelling even on case-insensitive
+                    // verifier filesystems. Guest Linux names remain exact.
+                    let mut found = false;
+                    for entry in std::fs::read_dir(&retained).map_err(|error| {
+                        format!(
+                            "cannot read retained directory {}: {error}",
+                            retained.display()
+                        )
+                    })? {
+                        let entry = entry
+                            .map_err(|error| format!("cannot read retained entry: {error}"))?;
+                        if entry.file_name().as_os_str() == std::ffi::OsStr::new(component) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        return Err(format!(
+                            "retained {label} has no exact entry: {}",
+                            path.display()
+                        ));
+                    }
+                    retained.push(component);
+                    let metadata = std::fs::symlink_metadata(&retained).map_err(|error| {
+                        format!(
+                            "cannot inspect retained {label} {}: {error}",
+                            retained.display()
+                        )
+                    })?;
+                    if redirecting_metadata(&metadata) {
+                        return Err(format!(
+                            "retained {label} contains a symlink or reparse point: {}",
+                            path.display()
+                        ));
+                    }
+                }
+                let metadata = std::fs::symlink_metadata(&retained)
+                    .map_err(|error| format!("cannot inspect retained {label}: {error}"))?;
+                if redirecting_metadata(&metadata)
+                    || (directory && !metadata.is_dir())
+                    || (!directory && !metadata.is_file())
+                {
+                    return Err(format!(
+                        "retained {label} has an invalid file type: {}",
+                        path.display()
+                    ));
+                }
+                let canonical = dunce::canonicalize(&retained)
+                    .map_err(|error| format!("cannot resolve retained {label}: {error}"))?;
+                if !canonical.starts_with(root) {
+                    return Err(format!("retained {label} escaped root: {}", path.display()));
+                }
+                Ok((path.to_path_buf(), canonical))
+            }
+        }
+    }
+}
+
+fn redirecting_metadata(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Canonical, portable spelling of an absolute Linux guest path. Do not use
+/// the verifier host's Path::is_absolute or normalize away guest path escapes.
+fn linux_guest_components(path: &Path) -> Result<Vec<&str>, String> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| "Linux guest path must be UTF-8".to_owned())?;
+    if text == "/" {
+        return Ok(Vec::new());
+    }
+    if !text.starts_with('/') || text.contains(['\\', ':', '\0']) {
+        return Err("Linux guest path must be an absolute portable path".to_owned());
+    }
+    let components: Vec<_> = text[1..].split('/').collect();
+    if components
+        .iter()
+        .any(|part| part.is_empty() || *part == "." || *part == ".." || part.ends_with(['.', ' ']))
+    {
+        return Err("Linux guest path must not contain aliases or traversal components".to_owned());
+    }
+    Ok(components)
+}
+
 impl Policy {
     pub fn validate(self) -> Result<ValidatedPolicy, String> {
+        self.validate_paths(PolicyPaths::Host)
+    }
+
+    /// Verify fixed-image policy inputs in a retained Linux execution root.
+    /// Logical guest paths and the policy digest are preserved. This does not
+    /// authenticate root provenance, prove isolation, or authorize execution.
+    pub fn validate_rooted_linux(self, rootfs: &Path) -> Result<ValidatedPolicy, String> {
+        if self.mode == ClosureMode::InventoryTree || !self.derived_roots.is_empty() {
+            return Err(
+                "rooted Linux verification requires fixed-only leaf or declared-tree policy"
+                    .to_owned(),
+            );
+        }
+        let metadata = std::fs::symlink_metadata(rootfs)
+            .map_err(|error| format!("cannot inspect retained root: {error}"))?;
+        if redirecting_metadata(&metadata) || !metadata.is_dir() {
+            return Err(
+                "retained root must be a directory, not a symlink or reparse point".to_owned(),
+            );
+        }
+        let root = canonical_directory(rootfs, "retained root")?;
+        self.validate_paths(PolicyPaths::RetainedLinuxRoot(root))
+    }
+
+    fn validate_paths(self, paths: PolicyPaths) -> Result<ValidatedPolicy, String> {
         if self.schema != POLICY_SCHEMA {
             return Err(format!("policy schema must be {POLICY_SCHEMA}"));
         }
@@ -481,7 +659,7 @@ impl Policy {
         if self.command.iter().any(|argument| argument.contains('\0')) {
             return Err("policy command arguments cannot contain NUL".to_owned());
         }
-        if !self.cwd.is_absolute() || !Path::new(&self.command[0]).is_absolute() {
+        if !paths.is_absolute(&self.cwd) || !paths.is_absolute(Path::new(&self.command[0])) {
             return Err("policy cwd and root command must be absolute".to_owned());
         }
         let mut environment_keys = BTreeSet::new();
@@ -493,7 +671,7 @@ impl Policy {
                 return Err("policy environment keys must be unique ignoring ASCII case".to_owned());
             }
         }
-        for (key, value) in platform::required_environment() {
+        for (key, value) in paths.required_environment() {
             match self.environment.get(&key) {
                 None => {
                     return Err(format!(
@@ -509,7 +687,7 @@ impl Policy {
         if self.root_role.is_empty() {
             return Err("policy root_role must be non-empty".to_owned());
         }
-        let cwd = canonical_directory(&self.cwd, "policy cwd")?;
+        let (cwd, _) = paths.resolve(&self.cwd, "policy cwd", true)?;
         let mut fixed = BTreeMap::new();
         let mut normalized_images = Vec::with_capacity(self.fixed_images.len());
         for image in &self.fixed_images {
@@ -517,11 +695,11 @@ impl Policy {
                 return Err("fixed image role must be non-empty".to_owned());
             }
             validate_digest(&image.sha256, "fixed image")?;
-            if !image.path.is_absolute() {
+            if !paths.is_absolute(&image.path) {
                 return Err("fixed image paths must be absolute".to_owned());
             }
-            let path = canonical_file(&image.path, "fixed image")?;
-            let actual = sha256_file(&path)
+            let (path, retained) = paths.resolve(&image.path, "fixed image", false)?;
+            let actual = sha256_file(&retained)
                 .map_err(|error| format!("cannot hash fixed image {}: {error}", path.display()))?;
             if !constant_time_eq(
                 actual.as_bytes(),
@@ -560,7 +738,7 @@ impl Policy {
         if fixed.is_empty() {
             return Err("policy must contain at least the root fixed image".to_owned());
         }
-        let root_path = canonical_file(Path::new(&self.command[0]), "root command")?;
+        let (root_path, _) = paths.resolve(Path::new(&self.command[0]), "root command", false)?;
         let root_key = root_path.clone();
         let root = fixed
             .get(&root_key)
@@ -618,11 +796,22 @@ impl Policy {
             root_path,
             fixed,
             derived,
+            path_namespace: paths.namespace(),
         })
     }
 }
 
 impl ValidatedPolicy {
+    pub(crate) fn validate_observed_image_path(&self, path: &Path) -> Result<(), String> {
+        match self.path_namespace {
+            PolicyPathNamespace::Host if path.is_absolute() => Ok(()),
+            PolicyPathNamespace::Host => {
+                Err("observed executable image path is not absolute".to_owned())
+            }
+            PolicyPathNamespace::LinuxGuest => linux_guest_components(path).map(|_| ()),
+        }
+    }
+
     pub fn root_exit_disposition(&self, canonical_path: &Path) -> RootExitDisposition {
         self.fixed
             .get(canonical_path)
@@ -694,8 +883,14 @@ impl ValidatedPolicy {
 }
 
 pub fn sha256_file(path: &Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
-    sha256_reader(&mut file)
+    let opened = evidence::OpenedRegularFile::open(path)?;
+    let mut reader = opened.bounded_reader();
+    let digest = sha256_reader(&mut reader)?;
+    if reader.limit() == 0 {
+        return Err(io::Error::other("regular input grew while hashing"));
+    }
+    opened.verify()?;
+    Ok(digest)
 }
 
 pub fn sha256_reader(reader: &mut impl Read) -> io::Result<String> {
@@ -956,6 +1151,7 @@ mod tests {
             root_path: PathBuf::from("proof"),
             fixed: BTreeMap::new(),
             derived: Vec::new(),
+            path_namespace: PolicyPathNamespace::Host,
         };
         let capability = Capability {
             schema: CAPABILITY_SCHEMA.to_owned(),
@@ -1013,6 +1209,7 @@ mod tests {
             root_path: PathBuf::from("proof"),
             fixed: BTreeMap::new(),
             derived: Vec::new(),
+            path_namespace: PolicyPathNamespace::Host,
         };
         let capability = Capability {
             schema: CAPABILITY_SCHEMA.to_owned(),

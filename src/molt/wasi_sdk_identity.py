@@ -25,6 +25,7 @@ from molt.portable_paths import portable_path_identity, portable_relative_path
 from molt.toolchain_identity import (
     open_stable_regular_file,
     stable_regular_file_identity,
+    stable_regular_file_handle_identity,
 )
 
 
@@ -666,9 +667,11 @@ def read_wasi_sdk_version_identity(version_file: Path) -> WasiSdkVersionIdentity
         with open_stable_regular_file(version_file, label="WASI SDK VERSION") as opened:
             if opened.stat.st_size > 64 * 1024:
                 raise WasiSdkIdentityError("WASI SDK VERSION exceeds its size limit")
-            raw = opened.stream.read(64 * 1024 + 1)
+            raw = opened.stream.read(opened.stat.st_size + 1)
             if len(raw) > 64 * 1024:
                 raise WasiSdkIdentityError("WASI SDK VERSION exceeds its size limit")
+            if len(raw) != opened.stat.st_size:
+                raise WasiSdkIdentityError("WASI SDK VERSION size changed")
         return _parse_wasi_sdk_version(raw, label=str(version_file))
     except (OSError, ValueError) as exc:
         raise WasiSdkIdentityError(
@@ -752,7 +755,7 @@ def wasi_sdk_tree_identity(root: Path) -> WasiSdkTreeIdentity:
                                 raise WasiSdkIdentityError(
                                     "WASI SDK VERSION exceeds its size limit"
                                 )
-                            raw = opened.stream.read(64 * 1024 + 1)
+                            raw = opened.stream.read(opened.stat.st_size + 1)
                             if len(raw) != size:
                                 raise WasiSdkIdentityError(
                                     "WASI SDK VERSION size changed"
@@ -760,9 +763,9 @@ def wasi_sdk_tree_identity(root: Path) -> WasiSdkTreeIdentity:
                             version = _parse_wasi_sdk_version(raw, label=relative_text)
                             digest = hashlib.sha256(raw).hexdigest()
                         else:
-                            digest = hashlib.file_digest(
-                                opened.stream, "sha256"
-                            ).hexdigest()
+                            digest = stable_regular_file_handle_identity(
+                                opened, label="WASI SDK file"
+                            ).sha256
                 except (OSError, ValueError) as exc:
                     raise WasiSdkIdentityError(
                         f"WASI SDK file is unreadable: {relative_text}: {exc}"

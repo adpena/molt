@@ -42,7 +42,7 @@ fn runtime_import_exception_is_not_masked_by_synthetic_abi_error() {
     hooks.exception_pending = runtime_exception_pending;
     hooks.clear_pending_exception = runtime_clear_pending_exception;
     hooks.with_preserved_pending_exception = runtime_with_preserved_pending_exception;
-    support::prepare_abi_test_thread(hooks);
+    let _abi_test = support::enter_abi_test(hooks);
 
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let module =

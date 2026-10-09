@@ -365,7 +365,20 @@ molt config --file src/app.py
 
 #### `molt completion`
 
-Generate shell completions.
+Generate shell completions from the CLI parser’s visible commands, exact short
+and long flags, and declared value choices. Nested commands and positional
+words such as `install add` stay positional. Regenerate the script after
+upgrading Molt.
+
+Completion stops at forwarded arguments and `--`. It does not discover package
+names or file paths, expand option abbreviations or short-flag clusters, or
+complete values inside `--option=value`. Completed inline options remain
+recognized: Bash restores arguments split by configured data word breaks,
+including `=`, `:` and `@`, without changing other commands’ completion settings.
+Bash matches the prefix before the cursor, including edits inside an existing
+word. Fragments inside the current value do not receive Molt flag suggestions;
+editing the option name before `=` still permits matching flags. Custom
+word breaks inside option names are outside this projection.
 
 ```bash
 molt completion --shell bash >> ~/.bashrc

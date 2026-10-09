@@ -33,6 +33,7 @@ thread_local! {
     static NUMERIC_UNARY_OPERATION: Cell<Option<u32>> = const { Cell::new(None) };
     static SUBTYPE_CALLBACK_ERROR: Cell<usize> = const { Cell::new(0) };
     static SUBTYPE_RUNTIME_FAILURE: Cell<bool> = const { Cell::new(false) };
+    static PROBE_MANAGED_SUBTYPING: Cell<Option<(u64, u64)>> = const { Cell::new(None) };
     static NUMERIC_CLASS_CALLS: Cell<usize> = const { Cell::new(0) };
     static NUMERIC_SUBTYPE_CALLS: Cell<usize> = const { Cell::new(0) };
     static CLASS_CALLBACK_ERROR: Cell<Option<(u64, usize)>> = const { Cell::new(None) };
@@ -190,6 +191,19 @@ unsafe extern "C" fn numeric_preserve_pending(
     unsafe { callback(context) };
     NUMERIC_RUNTIME_PENDING.with(|value| value.set(incoming));
 }
+// The ordinary fixture class anchors intentionally expose native C class
+// semantics. This bounded probe selects the managed subtype callback for the
+// two already-bound builtin classes, without inventing class handles or a
+// namespace/MRO provider. No class readiness occurs within this probe.
+unsafe extern "C" fn numeric_classify_heap(bits: u64) -> u8 {
+    if let Some((subclass, class)) = PROBE_MANAGED_SUBTYPING.with(Cell::get)
+        && (bits == subclass || bits == class)
+    {
+        return molt_cpython_abi::abi_types::MoltTypeTag::Type as u8;
+    }
+    unsafe { support::fake_runtime::classify_heap(bits) }
+}
+
 unsafe extern "C" fn numeric_type_is_subtype(subclass: u64, class: u64) -> i32 {
     NUMERIC_SUBTYPE_CALLS.with(|value| value.set(value.get() + 1));
     let error = SUBTYPE_CALLBACK_ERROR.with(Cell::get) as *mut PyObject;
@@ -318,7 +332,7 @@ unsafe extern "C" fn forbidden_index_override(_object: *mut PyObject) -> *mut Py
     unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(7) }
 }
 
-fn init() {
+fn init() -> support::AbiTestThreadStateTransaction {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire_sequences(&mut hooks);
@@ -334,11 +348,12 @@ fn init() {
     hooks.int_from_bytes = counted_int_from_bytes;
     hooks.runtime_class_borrowed = Some(protocol_runtime_class);
     hooks.type_is_subtype = numeric_type_is_subtype;
+    hooks.classify_heap = Some(numeric_classify_heap);
     hooks.exception_pending = numeric_exception_pending;
     hooks.pending_exception_class = numeric_pending_class;
     hooks.clear_pending_exception = numeric_clear_pending;
     hooks.with_preserved_pending_exception = numeric_preserve_pending;
-    support::prepare_abi_test_thread(hooks);
+    let transaction = support::enter_abi_test(hooks);
     support::fake_runtime::prepare_class_bindings();
     NUMERIC_ADOPTIONS.with(|calls| calls.set(0));
     NUMERIC_BYTE_IMPORTS.with(|calls| calls.set(0));
@@ -360,6 +375,7 @@ fn init() {
     FOREIGN_BINARY_CALLS.with(|calls| calls.set(0));
     FOREIGN_MATRIX_CALLS.with(|calls| calls.set(0));
     FOREIGN_INPLACE_MATRIX_CALLS.with(|calls| calls.set(0));
+    transaction
 }
 
 // ---------------------------------------------------------------------------
@@ -368,75 +384,85 @@ fn init() {
 
 #[test]
 fn test_pynumber_power_preserves_modulus_presence_and_value_bits() {
-    init();
-    let base = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(2) };
-    let exponent = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(3) };
-    let positive_float_zero = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(0.0) };
-    let negative_float_zero = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(-0.0) };
-    let integer_zero = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(0) };
-    let cases = [
-        (
-            "omitted modulus",
-            ptr::null_mut(),
-            MoltObject::none().bits(),
-        ),
-        ("explicit None", &raw mut Py_None, MoltObject::none().bits()),
-        (
-            "float +0.0",
-            positive_float_zero,
-            MoltObject::from_float(0.0).bits(),
-        ),
-        (
-            "float -0.0",
-            negative_float_zero,
-            MoltObject::from_float(-0.0).bits(),
-        ),
-        ("integer zero", integer_zero, MoltObject::from_int(0).bits()),
-    ];
-
-    for (label, modulus, expected_bits) in cases {
-        POWER_MODULUS_BITS.with(|value| value.set(None));
-        let result = unsafe {
-            molt_cpython_abi::api::abstract_number::PyNumber_Power(base, exponent, modulus)
-        };
-        assert!(!result.is_null(), "{label} must reach the runtime hook");
-        assert_eq!(POWER_MODE.with(Cell::get), Some(0));
-        assert_eq!(
-            POWER_MODULUS_BITS.with(Cell::get),
-            Some(expected_bits),
-            "{label} lost its modulus representation"
-        );
-        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(result) };
-
-        POWER_MODULUS_BITS.with(|value| value.set(None));
-        let result = unsafe {
-            molt_cpython_abi::api::abstract_number::PyNumber_InPlacePower(base, exponent, modulus)
-        };
-        assert!(
-            !result.is_null(),
-            "in-place {label} must reach the runtime hook"
-        );
-        assert_eq!(
-            POWER_MODULUS_BITS.with(Cell::get),
-            Some(expected_bits),
-            "in-place {label} lost its modulus representation"
-        );
-        assert_eq!(POWER_MODE.with(Cell::get), Some(1));
-        unsafe { molt_cpython_abi::api::refcount::Py_DECREF(result) };
+    use molt_cpython_abi::api::{abstract_number, numbers, refcount::OwnedPyObject};
+    let _abi_test = init();
+    #[derive(Clone, Copy)]
+    enum Modulus {
+        None,
+        Integer,
+        Float(f64),
     }
-
     unsafe {
-        molt_cpython_abi::api::refcount::Py_DECREF(base);
-        molt_cpython_abi::api::refcount::Py_DECREF(exponent);
-        molt_cpython_abi::api::refcount::Py_DECREF(positive_float_zero);
-        molt_cpython_abi::api::refcount::Py_DECREF(negative_float_zero);
-        molt_cpython_abi::api::refcount::Py_DECREF(integer_zero);
+        let base = OwnedPyObject::from_owned(numbers::PyLong_FromLong(2));
+        let exponent = OwnedPyObject::from_owned(numbers::PyLong_FromLong(3));
+        let positive_float_zero = OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(0.0));
+        let negative_float_zero = OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(-0.0));
+        let integer_zero = OwnedPyObject::from_owned(numbers::PyLong_FromLong(0));
+        let cases = [
+            ("omitted modulus", ptr::null_mut(), Modulus::None),
+            ("explicit None", &raw mut Py_None, Modulus::None),
+            (
+                "float +0.0",
+                positive_float_zero.as_ptr(),
+                Modulus::Float(0.0),
+            ),
+            (
+                "float -0.0",
+                negative_float_zero.as_ptr(),
+                Modulus::Float(-0.0),
+            ),
+            ("integer zero", integer_zero.as_ptr(), Modulus::Integer),
+        ];
+        type Power =
+            unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
+        let operations: [(u32, Power); 2] = [
+            (0, abstract_number::PyNumber_Power),
+            (1, abstract_number::PyNumber_InPlacePower),
+        ];
+        for (label, modulus, expected) in cases {
+            for (mode, power) in operations {
+                POWER_MODULUS_BITS.with(|value| value.set(None));
+                let result =
+                    OwnedPyObject::from_owned(power(base.as_ptr(), exponent.as_ptr(), modulus));
+                assert!(
+                    !result.as_ptr().is_null(),
+                    "{label} must reach the runtime hook"
+                );
+                assert_eq!(POWER_MODE.with(Cell::get), Some(mode));
+                let bits = POWER_MODULUS_BITS
+                    .with(Cell::get)
+                    .expect("observed modulus");
+                match expected {
+                    Modulus::None => assert_eq!(bits, MoltObject::none().bits(), "{label}"),
+                    Modulus::Integer => {
+                        assert!(!MoltObject::from_bits(bits).is_bool());
+                        assert_eq!(
+                            support::fake_runtime::integer_value(bits),
+                            Some(0),
+                            "{label}"
+                        );
+                    }
+                    Modulus::Float(value) => {
+                        let observed = support::fake_runtime::float_value(bits)
+                            .expect("float modulus retains its numeric type");
+                        assert_eq!(observed.to_bits(), value.to_bits(), "{label}");
+                        assert_eq!(
+                            GLOBAL_BRIDGE
+                                .molt_handle_for_pyobj(modulus)
+                                .map(|handle| handle.bits()),
+                            Some(bits),
+                            "{label} keeps its originating owner across semantic ingress"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
 #[test]
 fn test_pynumber_power_hook_failure_returns_null_with_exception() {
-    init();
+    let _abi_test = init();
     let base = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(2) };
     let exponent = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(3) };
     POWER_HOOK_FAILS.with(|value| value.set(true));
@@ -461,7 +487,7 @@ fn test_pynumber_power_hook_failure_returns_null_with_exception() {
 
 #[test]
 fn test_pynumber_power_foreign_dispatch_uses_normal_and_inplace_slots() {
-    init();
+    let _abi_test = init();
     let mut methods: Box<PyNumberMethods> = Box::new(unsafe { std::mem::zeroed() });
     methods.nb_power = foreign_power_slot as *mut c_void;
     methods.nb_inplace_power = foreign_inplace_power_slot as *mut c_void;
@@ -569,7 +595,7 @@ fn test_failed_managed_projection_never_reaches_foreign_numeric_slots() {
         unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     }
 
-    init();
+    let _abi_test = init();
     let list = unsafe { molt_cpython_abi::api::sequences::PyList_New(1) };
     assert!(!list.is_null());
 
@@ -640,7 +666,7 @@ fn test_failed_managed_projection_never_reaches_foreign_numeric_slots() {
 
 #[test]
 fn test_pylong_from_long_returns_non_null() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
     assert!(!py.is_null());
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
@@ -648,7 +674,7 @@ fn test_pylong_from_long_returns_non_null() {
 
 #[test]
 fn test_pylong_roundtrip_positive() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(12345) };
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(py) };
     assert_eq!(val, 12345);
@@ -657,7 +683,7 @@ fn test_pylong_roundtrip_positive() {
 
 #[test]
 fn test_pylong_roundtrip_negative() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(-999) };
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(py) };
     assert_eq!(val, -999);
@@ -666,7 +692,7 @@ fn test_pylong_roundtrip_negative() {
 
 #[test]
 fn test_pylong_roundtrip_zero() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(0) };
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(py) };
     assert_eq!(val, 0);
@@ -675,14 +701,14 @@ fn test_pylong_roundtrip_zero() {
 
 #[test]
 fn test_pylong_aslong_null_returns_minus_one() {
-    init();
+    let _abi_test = init();
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(ptr::null_mut()) };
     assert_eq!(val, -1);
 }
 
 #[test]
 fn test_pylong_aslonglong_and_overflow_reports_inline_value() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLongLong(12345) };
     let mut overflow = 99;
     let val =
@@ -694,7 +720,7 @@ fn test_pylong_aslonglong_and_overflow_reports_inline_value() {
 
 #[test]
 fn test_pylong_aslonglong_and_overflow_null_sets_error() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut overflow = 99;
     let val = unsafe {
@@ -708,7 +734,7 @@ fn test_pylong_aslonglong_and_overflow_null_sets_error() {
 
 #[test]
 fn test_pylong_from_ssize_t() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromSsize_t(77) };
     assert!(!py.is_null());
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_AsSsize_t(py) };
@@ -718,7 +744,7 @@ fn test_pylong_from_ssize_t() {
 
 #[test]
 fn test_pylong_from_size_t_and_number_index() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromSize_t(55) };
     assert!(!py.is_null());
     let indexed = unsafe { molt_cpython_abi::api::abstract_number::PyNumber_Index(py) };
@@ -735,7 +761,7 @@ fn test_pylong_from_size_t_and_number_index() {
 
 #[test]
 fn test_physical_integer_admission_never_requests_runtime_identity() {
-    init();
+    let _abi_test = init();
     DENY_NUMERIC_ADOPTION.with(|deny| deny.set(true));
     unsafe {
         for value in [i64::MIN, -257, 257, i64::MAX] {
@@ -797,7 +823,7 @@ fn test_physical_integer_admission_never_requests_runtime_identity() {
 
 #[test]
 fn test_pylong_from_unsigned_long() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromUnsignedLong(100) };
     assert!(!py.is_null());
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_AsUnsignedLong(py) };
@@ -807,7 +833,7 @@ fn test_pylong_from_unsigned_long() {
 
 #[test]
 fn test_pylong_as_unsigned_longlong_and_byte_array() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromUnsignedLong(0x1234) };
     assert!(!py.is_null());
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_AsUnsignedLongLong(py) };
@@ -843,7 +869,7 @@ fn test_pylong_as_unsigned_longlong_and_byte_array() {
 
 #[test]
 fn test_pylong_as_byte_array_rejects_unsigned_negative() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(-1) };
     let mut bytes = [0u8; 1];
     let rc = unsafe {
@@ -864,18 +890,40 @@ fn test_pylong_as_byte_array_rejects_unsigned_negative() {
 }
 
 #[test]
-fn test_pylong_from_unsigned_longlong_non_inline_requires_runtime_hook() {
-    init();
-    let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromUnsignedLongLong(u64::MAX) };
-    assert!(
-        py.is_null(),
-        "heap unsigned BigInt construction requires registered runtime hooks"
-    );
+fn test_pylong_from_unsigned_longlong_reads_physical_digits_without_runtime_adoption() {
+    use molt_cpython_abi::api::{errors, numbers, refcount::OwnedPyObject};
+    let _abi_test = init();
+    struct ResetDenial;
+    impl Drop for ResetDenial {
+        fn drop(&mut self) {
+            DENY_NUMERIC_ADOPTION.with(|value| value.set(false));
+            DENY_NUMERIC_BYTE_IMPORT.with(|value| value.set(false));
+        }
+    }
+    let _reset = ResetDenial;
+    DENY_NUMERIC_ADOPTION.with(|value| value.set(true));
+    DENY_NUMERIC_BYTE_IMPORT.with(|value| value.set(true));
+    let adoptions = NUMERIC_ADOPTIONS.with(Cell::get);
+    let imports = NUMERIC_BYTE_IMPORTS.with(Cell::get);
+    unsafe {
+        let py = OwnedPyObject::from_owned(numbers::PyLong_FromUnsignedLongLong(u64::MAX));
+        assert!(!py.as_ptr().is_null());
+        assert_eq!(numbers::PyLong_AsUnsignedLongLong(py.as_ptr()), u64::MAX);
+        let mut bytes = [0u8; 8];
+        assert_eq!(
+            numbers::_PyLong_AsByteArray(py.as_ptr().cast(), bytes.as_mut_ptr(), bytes.len(), 1, 0),
+            0
+        );
+        assert_eq!(bytes, [255; 8]);
+        assert!(errors::PyErr_Occurred().is_null());
+    }
+    assert_eq!(NUMERIC_ADOPTIONS.with(Cell::get), adoptions);
+    assert_eq!(NUMERIC_BYTE_IMPORTS.with(Cell::get), imports);
 }
 
 #[test]
 fn test_pylong_void_ptr_roundtrip_inline_pointer_value() {
-    init();
+    let _abi_test = init();
     let raw = 0x1234usize as *mut c_void;
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromVoidPtr(raw) };
     assert!(!py.is_null());
@@ -886,7 +934,7 @@ fn test_pylong_void_ptr_roundtrip_inline_pointer_value() {
 
 #[test]
 fn test_pylong_as_void_ptr_preserves_negative_signed_cast() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(-1) };
     let roundtrip = unsafe { molt_cpython_abi::api::numbers::PyLong_AsVoidPtr(py) };
     assert_eq!(roundtrip as usize, usize::MAX);
@@ -895,14 +943,14 @@ fn test_pylong_as_void_ptr_preserves_negative_signed_cast() {
 
 #[test]
 fn test_pylong_as_void_ptr_null_returns_null() {
-    init();
+    let _abi_test = init();
     let roundtrip = unsafe { molt_cpython_abi::api::numbers::PyLong_AsVoidPtr(ptr::null_mut()) };
     assert!(roundtrip.is_null());
 }
 
 #[test]
 fn test_pylong_from_double_truncates_toward_zero() {
-    init();
+    let _abi_test = init();
     let positive = unsafe { molt_cpython_abi::api::numbers::PyLong_FromDouble(12.75) };
     let negative = unsafe { molt_cpython_abi::api::numbers::PyLong_FromDouble(-12.75) };
     assert_eq!(
@@ -921,7 +969,7 @@ fn test_pylong_from_double_truncates_toward_zero() {
 
 #[test]
 fn test_pylong_from_double_rejects_nan_and_infinity() {
-    init();
+    let _abi_test = init();
     let nan = unsafe { molt_cpython_abi::api::numbers::PyLong_FromDouble(f64::NAN) };
     assert!(nan.is_null());
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
@@ -936,7 +984,7 @@ fn test_pylong_from_double_rejects_nan_and_infinity() {
 
 #[test]
 fn test_pyfloat_from_double_returns_non_null() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(PI) };
     assert!(!py.is_null());
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(py) };
@@ -944,7 +992,7 @@ fn test_pyfloat_from_double_returns_non_null() {
 
 #[test]
 fn test_pyfloat_roundtrip() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(E) };
     let val = unsafe { molt_cpython_abi::api::numbers::PyFloat_AsDouble(py) };
     assert!((val - E).abs() < 1e-10);
@@ -953,7 +1001,7 @@ fn test_pyfloat_roundtrip() {
 
 #[test]
 fn test_pyfloat_negative() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(-1.5) };
     let val = unsafe { molt_cpython_abi::api::numbers::PyFloat_AsDouble(py) };
     assert!((val - (-1.5)).abs() < 1e-10);
@@ -962,7 +1010,7 @@ fn test_pyfloat_negative() {
 
 #[test]
 fn test_pyfloat_zero() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(0.0) };
     let val = unsafe { molt_cpython_abi::api::numbers::PyFloat_AsDouble(py) };
     assert_eq!(val, 0.0);
@@ -971,14 +1019,14 @@ fn test_pyfloat_zero() {
 
 #[test]
 fn test_pyfloat_asdouble_null_returns_minus_one() {
-    init();
+    let _abi_test = init();
     let val = unsafe { molt_cpython_abi::api::numbers::PyFloat_AsDouble(ptr::null_mut()) };
     assert_eq!(val, -1.0);
 }
 
 #[test]
 fn test_pyfloat_asdouble_from_int_coerces() {
-    init();
+    let _abi_test = init();
     // PyFloat_AsDouble on an int object should coerce to double
     let py_int = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(7) };
     let val = unsafe { molt_cpython_abi::api::numbers::PyFloat_AsDouble(py_int) };
@@ -988,7 +1036,7 @@ fn test_pyfloat_asdouble_from_int_coerces() {
 
 #[test]
 fn test_py_hash_double_matches_integer_hash_for_integral_values() {
-    init();
+    let _abi_test = init();
     assert_eq!(
         unsafe { molt_cpython_abi::api::numbers::_Py_HashDouble(ptr::null_mut(), 0.0) },
         0
@@ -1005,7 +1053,7 @@ fn test_py_hash_double_matches_integer_hash_for_integral_values() {
 
 #[test]
 fn test_py_hash_double_handles_infinity_and_nan() {
-    init();
+    let _abi_test = init();
     assert_eq!(
         unsafe { molt_cpython_abi::api::numbers::_Py_HashDouble(ptr::null_mut(), f64::INFINITY) },
         314159
@@ -1028,7 +1076,7 @@ fn test_py_hash_double_handles_infinity_and_nan() {
 
 #[test]
 fn test_pycomplex_roundtrip() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyComplex_FromDoubles(1.25, -2.5) };
     assert!(!py.is_null());
     assert_eq!(
@@ -1044,7 +1092,7 @@ fn test_pycomplex_roundtrip() {
 
 #[test]
 fn test_pycomplex_as_c_complex_from_int() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(9) };
     let value = unsafe { molt_cpython_abi::api::numbers::PyComplex_AsCComplex(py) };
     assert_eq!(value.real, 9.0);
@@ -1058,28 +1106,28 @@ fn test_pycomplex_as_c_complex_from_int() {
 
 #[test]
 fn test_pybool_from_long_true() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyBool_FromLong(1) };
     assert!(std::ptr::eq(py, (&raw mut Py_True).cast()));
 }
 
 #[test]
 fn test_pybool_from_long_false() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyBool_FromLong(0) };
     assert!(std::ptr::eq(py, (&raw mut Py_False).cast()));
 }
 
 #[test]
 fn test_pybool_from_long_nonzero_is_true() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyBool_FromLong(42) };
     assert!(std::ptr::eq(py, (&raw mut Py_True).cast()));
 }
 
 #[test]
 fn test_pybool_from_long_negative_is_true() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyBool_FromLong(-1) };
     assert!(std::ptr::eq(py, (&raw mut Py_True).cast()));
 }
@@ -1090,7 +1138,7 @@ fn test_pybool_from_long_negative_is_true() {
 
 #[test]
 fn test_pylong_check_on_int() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(5) };
     let result = unsafe { molt_cpython_abi::api::numbers::PyLong_Check(py) };
     assert_eq!(result, 1);
@@ -1099,7 +1147,7 @@ fn test_pylong_check_on_int() {
 
 #[test]
 fn test_pylong_check_on_float_returns_false() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(1.0) };
     let result = unsafe { molt_cpython_abi::api::numbers::PyLong_Check(py) };
     assert_eq!(result, 0);
@@ -1108,7 +1156,7 @@ fn test_pylong_check_on_float_returns_false() {
 
 #[test]
 fn test_pyfloat_check_on_float() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(1.0) };
     let result = unsafe { molt_cpython_abi::api::numbers::PyFloat_Check(py) };
     assert_eq!(result, 1);
@@ -1117,7 +1165,7 @@ fn test_pyfloat_check_on_float() {
 
 #[test]
 fn test_pyfloat_check_on_int_returns_false() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(5) };
     let result = unsafe { molt_cpython_abi::api::numbers::PyFloat_Check(py) };
     assert_eq!(result, 0);
@@ -1126,21 +1174,21 @@ fn test_pyfloat_check_on_int_returns_false() {
 
 #[test]
 fn test_pylong_check_null_returns_zero() {
-    init();
+    let _abi_test = init();
     let result = unsafe { molt_cpython_abi::api::numbers::PyLong_Check(ptr::null_mut()) };
     assert_eq!(result, 0);
 }
 
 #[test]
 fn test_pyfloat_check_null_returns_zero() {
-    init();
+    let _abi_test = init();
     let result = unsafe { molt_cpython_abi::api::numbers::PyFloat_Check(ptr::null_mut()) };
     assert_eq!(result, 0);
 }
 
 #[test]
 fn test_pybool_check_null_returns_zero() {
-    init();
+    let _abi_test = init();
     let result = unsafe { molt_cpython_abi::api::numbers::PyBool_Check(ptr::null_mut()) };
     assert_eq!(result, 0);
 }
@@ -1151,7 +1199,7 @@ fn test_pybool_check_null_returns_zero() {
 
 #[test]
 fn test_pynumber_check_on_int() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(10) };
     let result = unsafe { molt_cpython_abi::api::numbers::PyNumber_Check(py) };
     assert_eq!(result, 1);
@@ -1160,7 +1208,7 @@ fn test_pynumber_check_on_int() {
 
 #[test]
 fn test_pynumber_check_on_float() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(1.5) };
     let result = unsafe { molt_cpython_abi::api::numbers::PyNumber_Check(py) };
     assert_eq!(result, 1);
@@ -1169,14 +1217,14 @@ fn test_pynumber_check_on_float() {
 
 #[test]
 fn test_pynumber_check_null_returns_zero() {
-    init();
+    let _abi_test = init();
     let result = unsafe { molt_cpython_abi::api::numbers::PyNumber_Check(ptr::null_mut()) };
     assert_eq!(result, 0);
 }
 
 #[test]
 fn test_pyindex_check_matches_integer_index_contract() {
-    init();
+    let _abi_test = init();
     let py_int = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(10) };
     let py_float = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(1.5) };
 
@@ -1209,7 +1257,7 @@ fn test_pyindex_check_matches_integer_index_contract() {
 
 #[test]
 fn test_pylong_aslong_on_true_returns_one() {
-    init();
+    let _abi_test = init();
     let py_true = (&raw mut Py_True).cast();
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(py_true) };
     assert_eq!(val, 1);
@@ -1217,7 +1265,7 @@ fn test_pylong_aslong_on_true_returns_one() {
 
 #[test]
 fn test_pylong_aslong_on_false_returns_zero() {
-    init();
+    let _abi_test = init();
     let py_false = (&raw mut Py_False).cast();
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(py_false) };
     assert_eq!(val, 0);
@@ -1243,7 +1291,7 @@ fn every_managed_binary_entry_preserves_normal_or_inplace_mode() {
         (10, PyNumber_Xor, PyNumber_InPlaceXor),
         (11, PyNumber_MatrixMultiply, PyNumber_InPlaceMatrixMultiply),
     ];
-    init();
+    let _abi_test = init();
     unsafe {
         let left = molt_cpython_abi::api::numbers::PyLong_FromLong(8);
         let right = molt_cpython_abi::api::numbers::PyLong_FromLong(3);
@@ -1308,7 +1356,7 @@ fn physical_long_fixture(
 
 #[test]
 fn test_physical_integer_subtype_index_ignores_override_and_returns_exact_int() {
-    init();
+    let _abi_test = init();
     DENY_NUMERIC_ADOPTION.with(|deny| deny.set(true));
     let mut slots: PyNumberMethods = unsafe { std::mem::zeroed() };
     slots.nb_index = forbidden_index_override as *const () as *mut c_void;
@@ -1361,7 +1409,7 @@ fn test_physical_integer_subtype_index_ignores_override_and_returns_exact_int() 
 
 #[test]
 fn test_as_long_long_overflow_has_cpython_exact_error_and_recovers() {
-    init();
+    let _abi_test = init();
     unsafe {
         for (negative, magnitude) in [
             (false, 1u128 << 63),
@@ -1402,7 +1450,7 @@ fn test_as_long_long_overflow_has_cpython_exact_error_and_recovers() {
 
 #[test]
 fn test_managed_numeric_predicates_use_inherited_type_protocol_presence() {
-    init();
+    let _abi_test = init();
     // The instance really is an opaque managed heap object. Its class is a
     // separate native type with a real dictionary/base edge; there is no fake
     // numeric tag, payload, special lookup, or conversion-result hook.
@@ -1502,7 +1550,7 @@ fn test_managed_numeric_predicates_use_inherited_type_protocol_presence() {
 
 #[test]
 fn test_foreign_numeric_predicates_use_slots_without_calling_them() {
-    init();
+    let _abi_test = init();
     for (number, index, kind) in [(1, 1, 0), (1, 0, 1), (1, 0, 2), (0, 0, 3), (0, 0, 4)] {
         let mut slots: PyNumberMethods = unsafe { std::mem::zeroed() };
         let slot = forbidden_index_override as *const () as *mut c_void;
@@ -1539,7 +1587,7 @@ fn test_foreign_numeric_predicates_use_slots_without_calling_them() {
 
 #[test]
 fn test_wide_physical_integer_subtype_index_preserves_limbs_and_ownership() {
-    init();
+    let _abi_test = init();
     let mut slots: PyNumberMethods = unsafe { std::mem::zeroed() };
     slots.nb_index = forbidden_index_override as *const () as *mut c_void;
     let mut subtype = support::StaticType::new();
@@ -1587,7 +1635,7 @@ fn test_wide_physical_integer_subtype_index_preserves_limbs_and_ownership() {
 
 #[test]
 fn test_managed_numeric_carrier_keeps_semantic_subtype_protocols() {
-    init();
+    let _abi_test = init();
     unsafe {
         for is_float in [false, true] {
             let mut callable_type = support::StaticType::new();
@@ -1713,7 +1761,7 @@ fn test_managed_numeric_carrier_keeps_semantic_subtype_protocols() {
 
 #[test]
 fn test_native_integer_subtype_int_override_is_distinct_from_index_admission() {
-    init();
+    let _abi_test = init();
     let mut slots: PyNumberMethods = unsafe { std::mem::zeroed() };
     slots.nb_int = forbidden_index_override as *const () as *mut c_void;
     slots.nb_index = forbidden_index_override as *const () as *mut c_void;
@@ -1745,7 +1793,7 @@ fn test_native_integer_subtype_int_override_is_distinct_from_index_admission() {
 
 #[test]
 fn test_complex_parts_versioned_non_numeric_refusal_and_recovery() {
-    init();
+    let _abi_test = init();
     let mut class = support::StaticType::new();
     class.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
     class.tp_name = c"Plain".as_ptr();
@@ -1833,7 +1881,7 @@ fn private_index_consumers_extract_wide_subtypes_without_exact_materialization()
     unsafe extern "C" {
         fn PyArg_ParseTuple(args: *mut PyObject, format: *const std::ffi::c_char, ...) -> i32;
     }
-    init();
+    let _abi_test = init();
     with_numeric_warning_provider(|| unsafe {
         let mut slots: PyNumberMethods = std::mem::zeroed();
         slots.nb_index = borrowed_slot_result as *const () as *mut c_void;
@@ -1892,15 +1940,26 @@ fn private_index_consumers_extract_wide_subtypes_without_exact_materialization()
             1
         );
         errors::PyErr_Clear();
-        let bound = refcount::OwnedPyObject::from_owned(slice::PySlice_New(
-            ptr::null_mut(),
-            object_ptr,
-            ptr::null_mut(),
-        ));
-        assert!(!bound.as_ptr().is_null());
+        // As in test_slice_unpack, this is a physical borrowed input to the
+        // standalone extraction API. Actual constructor ownership is covered by
+        // cpython_abi_hooks::slice_semantics_tests with the runtime provider.
+        let mut bound = molt_cpython_abi::abi_types::PySliceObject {
+            ob_base: PyObject {
+                ob_refcnt: 1,
+                ob_type: &raw mut molt_cpython_abi::abi_types::PySlice_Type,
+            },
+            start: &raw mut Py_None,
+            stop: object_ptr,
+            step: &raw mut Py_None,
+        };
         let (mut start, mut stop, mut step) = (77, 77, 77);
         assert_eq!(
-            slice::PySlice_Unpack(bound.as_ptr(), &raw mut start, &raw mut stop, &raw mut step),
+            slice::PySlice_Unpack(
+                (&raw mut bound).cast(),
+                &raw mut start,
+                &raw mut stop,
+                &raw mut step
+            ),
             0
         );
         assert_eq!((start, stop, step), (0, isize::MAX, 1));
@@ -1997,7 +2056,7 @@ fn private_index_consumers_extract_wide_subtypes_without_exact_materialization()
 #[test]
 fn native_integer_byte_constructors_share_cpython_flags_and_error_ownership() {
     use molt_cpython_abi::api::{errors, numbers, refcount};
-    init();
+    let _abi_test = init();
     struct ResetFailure;
     impl Drop for ResetFailure {
         fn drop(&mut self) {
@@ -2115,7 +2174,7 @@ fn native_integer_byte_constructors_share_cpython_flags_and_error_ownership() {
 fn managed_numeric_hook_failures_preserve_runtime_error_before_projection() {
     use molt_cpython_abi::api::{abstract_number, errors, numbers, refcount};
     use molt_cpython_abi::hooks::NumberUnaryOp;
-    init();
+    let _abi_test = init();
     struct ResetFailure;
     impl Drop for ResetFailure {
         fn drop(&mut self) {
@@ -2185,7 +2244,7 @@ fn managed_numeric_hook_failures_preserve_runtime_error_before_projection() {
 #[test]
 fn numeric_classification_preserves_runtime_only_and_subtype_provider_failures() {
     use molt_cpython_abi::api::{abstract_number, errors, refcount};
-    init();
+    let _abi_test = init();
     unsafe {
         errors::PyErr_SetString(
             (&raw mut molt_cpython_abi::abi_types::PyExc_LookupError).cast(),
@@ -2198,6 +2257,7 @@ fn numeric_classification_preserves_runtime_only_and_subtype_provider_failures()
                 NUMERIC_RUNTIME_PENDING.with(|value| value.set(0));
                 SUBTYPE_CALLBACK_ERROR.with(|value| value.set(0));
                 SUBTYPE_RUNTIME_FAILURE.with(|value| value.set(false));
+                PROBE_MANAGED_SUBTYPING.with(|value| value.set(None));
             }
         }
         let _reset = ResetFailure;
@@ -2225,6 +2285,19 @@ fn numeric_classification_preserves_runtime_only_and_subtype_provider_failures()
             ));
             assert_eq!(recovered.as_ptr(), object.as_ptr());
         }
+        // The default native-anchor path deliberately cannot invoke a runtime
+        // subtype hook. Opt into that boundary only for these exact calls.
+        let bound_class = |class: *mut PyTypeObject| {
+            GLOBAL_BRIDGE
+                .molt_handle_for_pyobj(class.cast())
+                .expect("builtin class was already bound by fixture setup")
+                .bits()
+        };
+        let targets = (
+            bound_class(&raw mut molt_cpython_abi::abi_types::PyBool_Type),
+            bound_class(&raw mut molt_cpython_abi::abi_types::PyLong_Type),
+        );
+        PROBE_MANAGED_SUBTYPING.with(|value| value.set(Some(targets)));
         for runtime_only in [false, true] {
             if runtime_only {
                 SUBTYPE_RUNTIME_FAILURE.with(|value| value.set(true));
@@ -2265,7 +2338,7 @@ fn numeric_classification_preserves_runtime_only_and_subtype_provider_failures()
 #[test]
 fn float_slot_diagnostics_bound_source_and_result_names_to_fifty_bytes() {
     use molt_cpython_abi::api::{abstract_number, errors};
-    init();
+    let _abi_test = init();
     with_numeric_warning_provider(|| unsafe {
         let source_name = std::ffi::CString::new("S".repeat(70)).unwrap();
         let result_name = std::ffi::CString::new("R".repeat(70)).unwrap();
@@ -2325,7 +2398,7 @@ fn float_slot_diagnostics_bound_source_and_result_names_to_fifty_bytes() {
 #[test]
 fn numeric_result_class_failure_preserves_exact_error_and_owned_results() {
     use molt_cpython_abi::api::{abstract_number, errors, mapping, numbers, refcount};
-    init();
+    let _abi_test = init();
     with_numeric_warning_provider(|| unsafe {
         let mut slots: PyNumberMethods = std::mem::zeroed();
         slots.nb_index = borrowed_slot_result as *const () as *mut c_void;
@@ -2443,7 +2516,7 @@ fn numeric_result_class_failure_preserves_exact_error_and_owned_results() {
 
 #[test]
 fn test_foreign_integer_slot_results_validate_normalize_and_preserve_warning_failure() {
-    init();
+    let _abi_test = init();
     with_numeric_warning_provider(|| unsafe {
         let mut slots: PyNumberMethods = std::mem::zeroed();
         slots.nb_int = borrowed_slot_result as *const () as *mut c_void;
@@ -2509,7 +2582,7 @@ fn test_foreign_integer_slot_results_validate_normalize_and_preserve_warning_fai
 
 #[test]
 fn test_foreign_trunc_delegation_version_warning_order_and_result_validation() {
-    init();
+    let _abi_test = init();
     with_numeric_warning_provider(|| unsafe {
         let mut callable_type = support::StaticType::new();
         callable_type.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
@@ -2594,7 +2667,7 @@ fn test_foreign_trunc_delegation_version_warning_order_and_result_validation() {
 
 #[test]
 fn test_foreign_number_long_without_conversion_reports_exact_type_error() {
-    init();
+    let _abi_test = init();
     let mut class = support::StaticType::new();
     class.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
     class.tp_name = c"Opaque".as_ptr();
@@ -2630,7 +2703,7 @@ fn test_foreign_number_long_without_conversion_reports_exact_type_error() {
 
 #[test]
 fn test_foreign_float_storage_read_and_float_constructor_have_distinct_protocols() {
-    init();
+    let _abi_test = init();
     let mut methods: PyNumberMethods = unsafe { std::mem::zeroed() };
     methods.nb_float = foreign_float_override as *const () as *mut c_void;
     let mut subtype = support::StaticType::new();
@@ -2667,7 +2740,7 @@ fn test_foreign_float_storage_read_and_float_constructor_have_distinct_protocols
 
 #[test]
 fn test_complex_subtype_result_warning_and_failure_preserve_owners() {
-    init();
+    let _abi_test = init();
     with_numeric_warning_provider(|| unsafe {
         let mut callable_type = support::StaticType::new();
         callable_type.ob_base.ob_base.ob_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;

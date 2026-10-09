@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Take, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -17,6 +17,120 @@ pub const MAX_RECEIPT_BYTES: usize = 64 * 1024;
 const MAX_EVENT_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_EVENT_LOG_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_EVENT_RECORDS: u64 = 10_000_000;
+
+/// One direct regular-file generation for supervisor input readers. The open
+/// cannot wait for a FIFO writer; byte consumers are bounded by its admitted
+/// extent, and verification checks both the retained handle and current name.
+pub struct OpenedRegularFile {
+    file: File,
+    path: PathBuf,
+    bytes: u64,
+    key: crate::ImageCacheKey,
+}
+
+impl OpenedRegularFile {
+    pub fn open(path: &Path) -> io::Result<Self> {
+        #[cfg(windows)]
+        let path = {
+            use std::os::windows::ffi::OsStringExt;
+            let wide = molt_artifact_publish::windows_namespace_path_wide(path)?;
+            PathBuf::from(OsString::from_wide(&wide[..wide.len() - 1]))
+        };
+        #[cfg(not(windows))]
+        let path = path.to_path_buf();
+        let direct = fs::symlink_metadata(&path)?;
+        if !direct.is_file() || crate::redirecting_metadata(&direct) {
+            return Err(io::Error::other("input must be a direct regular file"));
+        }
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(
+                windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT,
+            );
+        }
+        let file = options.open(&path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || crate::redirecting_metadata(&metadata) {
+            return Err(io::Error::other(
+                "opened input must be a direct regular file",
+            ));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_DISK, GetFileType};
+            if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK {
+                return Err(io::Error::other("opened input must be a disk file"));
+            }
+        }
+        let bytes = metadata.len();
+        if bytes == u64::MAX {
+            return Err(io::Error::other("regular input extent cannot be bounded"));
+        }
+        let key = crate::platform::opened_file_key(&file)?;
+        if file.metadata()?.len() != bytes {
+            return Err(io::Error::other("regular input changed during admission"));
+        }
+        Ok(Self {
+            file,
+            path,
+            bytes,
+            key,
+        })
+    }
+
+    pub fn file(&self) -> &File {
+        &self.file
+    }
+
+    pub fn size_bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    pub fn bounded_reader(&self) -> Take<&File> {
+        (&self.file).take(self.bytes + 1)
+    }
+
+    pub fn rewind(&self) -> io::Result<()> {
+        use std::io::Seek;
+        let mut file = &self.file;
+        file.rewind()
+    }
+
+    pub fn verify(&self) -> io::Result<()> {
+        let after = crate::platform::opened_file_key(&self.file)?;
+        let named = Self::open(&self.path)?;
+        if self.key != after || after != named.key || self.bytes != named.bytes {
+            return Err(io::Error::other(
+                "regular input generation changed while reading",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn read_all(&self, limit: usize) -> io::Result<Vec<u8>> {
+        if self.bytes > limit as u64 {
+            return Err(io::Error::other("regular input exceeds its byte budget"));
+        }
+        let mut bytes = Vec::with_capacity(self.bytes as usize);
+        self.bounded_reader().read_to_end(&mut bytes)?;
+        if bytes.len() as u64 != self.bytes {
+            return Err(io::Error::other(
+                "regular input grew or shrank while reading",
+            ));
+        }
+        self.verify()?;
+        Ok(bytes)
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -235,19 +349,16 @@ pub fn verify_event_artifact(
     if expected.file != expected_name {
         return Err("event log is not the deterministic adjacent artifact".to_owned());
     }
-    let file = File::open(&path)
+    let opened = OpenedRegularFile::open(&path)
         .map_err(|error| format!("cannot open event log {}: {error}", path.display()))?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| format!("cannot stat event log {}: {error}", path.display()))?;
-    if metadata.len() != expected.bytes {
+    if opened.size_bytes() != expected.bytes {
         return Err(format!(
             "event log byte count mismatch: receipt={} actual={}",
             expected.bytes,
-            metadata.len()
+            opened.size_bytes()
         ));
     }
-    let mut reader = BufReader::new(file);
+    let mut reader = BufReader::new(opened.bounded_reader());
     let mut digest = Sha256::new();
     let mut line = Vec::new();
     let mut count = 0_u64;
@@ -298,6 +409,9 @@ pub fn verify_event_artifact(
     if !crate::constant_time_eq(expected.sha256.as_bytes(), actual_sha256.as_bytes()) {
         return Err("event log digest mismatch".to_owned());
     }
+    opened
+        .verify()
+        .map_err(|error| format!("event log changed: {error}"))?;
     verified_from_ledger(ledger.snapshot())
 }
 
@@ -612,6 +726,71 @@ mod tests {
             bytes: bytes.len() as u64,
             sha256,
         }
+    }
+
+    #[test]
+    fn regular_input_owner_binds_empty_exact_growth_and_same_size_replacement() {
+        use std::io::Read;
+        let path = unique_path("regular-input.json");
+        fs::write(&path, b"").unwrap();
+        let empty = OpenedRegularFile::open(&path).unwrap();
+        assert_eq!(empty.read_all(0).unwrap(), b"");
+        drop(empty);
+        fs::write(&path, b"abcd").unwrap();
+        let opened = OpenedRegularFile::open(&path).unwrap();
+        assert!(opened.read_all(3).is_err());
+        assert_eq!(opened.read_all(4).unwrap(), b"abcd");
+        opened.rewind().unwrap();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&[b'x'; 1024])
+            .unwrap();
+        let mut consumed = Vec::new();
+        opened.bounded_reader().read_to_end(&mut consumed).unwrap();
+        assert_eq!(
+            consumed, b"abcdx",
+            "growth reads at most the old extent plus one probe"
+        );
+        opened.rewind().unwrap();
+        assert!(opened.read_all(4096).is_err());
+        assert!(opened.verify().is_err());
+        drop(opened);
+        fs::write(&path, b"abcd").unwrap();
+        let opened = OpenedRegularFile::open(&path).unwrap();
+        fs::write(&path, b"wxyz").unwrap();
+        assert!(
+            opened.verify().is_err(),
+            "same-sized writes change the mutation token"
+        );
+        drop(opened);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regular_input_owner_keeps_nonblocking_flag_and_rejects_replaced_name() {
+        use std::os::fd::AsRawFd;
+        let path = unique_path("regular-input-generation.json");
+        let replacement = unique_path("replacement-generation.json");
+        fs::write(&path, b"same").unwrap();
+        let opened = OpenedRegularFile::open(&path).unwrap();
+        let flags = unsafe { libc::fcntl(opened.file().as_raw_fd(), libc::F_GETFL) };
+        assert!(flags >= 0);
+        assert_ne!(
+            flags & libc::O_NONBLOCK,
+            0,
+            "pre-open type checks cannot close the FIFO replacement race"
+        );
+        fs::write(&replacement, b"same").unwrap();
+        fs::rename(&replacement, &path).unwrap();
+        assert!(
+            opened.verify().is_err(),
+            "equal bytes cannot replace OS generation identity"
+        );
+        drop(opened);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -392,7 +392,7 @@ fn proc_image_identity(
     Ok(policy.classify_path(&path, file_id, metadata.size(), sha256))
 }
 
-fn linux_cache_key(metadata: &std::fs::Metadata) -> ImageCacheKey {
+pub(super) fn linux_cache_key(metadata: &std::fs::Metadata) -> ImageCacheKey {
     ImageCacheKey::new(
         format!("{:x}:{:x}", metadata.dev(), metadata.ino()),
         format!(

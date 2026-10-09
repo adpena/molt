@@ -501,15 +501,52 @@ def _stable_file_content(
 _DIGEST_CHUNK_BYTES = 256 * 1024
 
 
-def _sha256_stream(stream: BinaryIO) -> str:
-    """SHA-256 of an open binary handle, read in bounded chunks."""
-
-    digest = hashlib.sha256()
+def _captured_file_chunks(
+    stream: BinaryIO, *, size: int, chunk_bytes: int
+) -> Iterator[bytes]:
+    """Consume exactly one admitted extent, probing one byte for growth."""
+    consumed = 0
     while True:
-        chunk = stream.read(_DIGEST_CHUNK_BYTES)
+        chunk = stream.read(min(chunk_bytes, size - consumed + 1))
         if not chunk:
-            break
+            if consumed != size:
+                raise StableRegularFileChangedError(
+                    "file size changed below its captured extent while reading"
+                )
+            return
+        consumed += len(chunk)
+        if consumed > size:
+            raise StableRegularFileChangedError(
+                "file size changed beyond its captured extent while reading"
+            )
+        yield chunk
+        del chunk
+
+
+def iter_stable_regular_file_chunks(
+    opened: StableRegularFileHandle, *, chunk_bytes: int = _DIGEST_CHUNK_BYTES
+) -> Iterator[bytes]:
+    """Read a newly opened or rewound file without following concurrent growth.
+
+    Exhaust this iterator inside the existing open_stable_regular_file context:
+    its owner still checks pathname, handle and change-time identity on exit.
+    No over-extent chunk reaches the consumer, including a staging destination.
+    """
+    if type(chunk_bytes) is not int or chunk_bytes <= 0:
+        raise ValueError("stable file chunk size must be a positive integer")
+    yield from _captured_file_chunks(
+        opened.stream, size=opened.stat.st_size, chunk_bytes=chunk_bytes
+    )
+
+
+def _sha256_stream(stream: BinaryIO, *, max_bytes: int) -> str:
+    """Hash exactly the captured file size using the shared finite traversal."""
+    digest = hashlib.sha256()
+    for chunk in _captured_file_chunks(
+        stream, size=max_bytes, chunk_bytes=_DIGEST_CHUNK_BYTES
+    ):
         digest.update(chunk)
+        del chunk
     return digest.hexdigest()
 
 
@@ -739,7 +776,7 @@ def _regular_file_identity(
 def stable_regular_file_handle_identity(
     opened: StableRegularFileHandle, *, label: str, max_bytes: int | None = None
 ) -> StableRegularFileIdentity:
-    """Hash an owned handle in bounded chunks, then rewind it for its consumer.
+    """Hash no more than the captured size, then rewind it for its consumer.
 
     The caller retains the enclosing open_stable_regular_file context through
     consumption. This is the same content authority as a pathname capture;
@@ -750,7 +787,7 @@ def stable_regular_file_handle_identity(
     ):
         raise ValueError(f"{label} exceeds size limit: {opened.path}")
     opened.stream.seek(0)
-    digest = _sha256_stream(opened.stream)
+    digest = _sha256_stream(opened.stream, max_bytes=opened.stat.st_size)
     if opened.stream.tell() != opened.stat.st_size:
         raise StableRegularFileChangedError(
             f"{label} size changed during capture: {opened.path}"
@@ -844,8 +881,15 @@ def snapshot_stable_regular_file(
     *,
     label: str,
     capture_prefix_bytes: int = 0,
+    max_bytes: int | None = None,
 ) -> StableRegularFileSnapshot:
-    """Stream one direct stable file into one exclusive attested snapshot."""
+    """Stream one direct stable file into one exclusive attested snapshot.
+
+    A caller's optional byte allowance is checked before output creation. Every
+    copy is bounded by the captured source size, including growth after opening.
+    """
+    if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
+        raise ValueError("stable snapshot byte limit must be a nonnegative integer")
 
     if not 0 <= capture_prefix_bytes <= _STABLE_SNAPSHOT_MAX_PREFIX_BYTES:
         raise ValueError(
@@ -859,6 +903,10 @@ def snapshot_stable_regular_file(
     owned_snapshot_identity: os.stat_result | None = None
     try:
         with open_stable_regular_file(source, label=label) as opened:
+            if max_bytes is not None and opened.stat.st_size > max_bytes:
+                raise StableRegularFileSnapshotError(
+                    f"{label} exceeds snapshot byte limit: {opened.stat.st_size} > {max_bytes}"
+                )
             if snapshot == opened.path:
                 raise StableRegularFileError(
                     f"{label} snapshot must differ from its source: {snapshot}"
@@ -882,7 +930,11 @@ def snapshot_stable_regular_file(
                 os.close(descriptor)
                 raise
             with destination:
-                while chunk := opened.stream.read(_STABLE_SNAPSHOT_CHUNK_BYTES):
+                copied = 0
+                for chunk in iter_stable_regular_file_chunks(
+                    opened, chunk_bytes=_STABLE_SNAPSHOT_CHUNK_BYTES
+                ):
+                    copied += len(chunk)
                     hasher.update(chunk)
                     written = destination.write(chunk)
                     if written != len(chunk):

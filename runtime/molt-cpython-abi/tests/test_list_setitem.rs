@@ -23,10 +23,10 @@ use std::ptr;
 use std::sync::Mutex;
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
-fn install() {
+fn install() -> support::AbiTestThreadStateTransaction {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire_sequences(&mut hooks);
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 use molt_cpython_abi::api::{errors, numbers, sequences};
@@ -34,7 +34,7 @@ use molt_cpython_abi::api::{errors, numbers, sequences};
 #[test]
 fn cython_direct_ob_item_construction_commits_one_truthful_list() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install();
+    let _abi_test = install();
     unsafe { errors::PyErr_Clear() };
 
     let list = unsafe { sequences::PyList_New(3) };
@@ -106,7 +106,7 @@ fn cython_direct_ob_item_construction_commits_one_truthful_list() {
 #[test]
 fn setitem_places_items_at_index_out_of_order() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install();
+    let _abi_test = install();
     unsafe { errors::PyErr_Clear() };
 
     // PyList_New(3) must PRESIZE: GET_SIZE == 3 immediately (ledger row
@@ -152,7 +152,7 @@ fn setitem_places_items_at_index_out_of_order() {
 #[test]
 fn setitem_accepts_a_self_cycle_during_presized_construction() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install();
+    let _abi_test = install();
     unsafe { errors::PyErr_Clear() };
 
     let list = unsafe { sequences::PyList_New(1) };
@@ -176,7 +176,7 @@ fn setitem_accepts_a_self_cycle_during_presized_construction() {
 #[test]
 fn setitem_accepts_mutual_list_tuple_construction_edges() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install();
+    let _abi_test = install();
     unsafe { errors::PyErr_Clear() };
 
     let list = unsafe { sequences::PyList_New(1) };
@@ -214,7 +214,7 @@ fn setitem_accepts_mutual_list_tuple_construction_edges() {
 #[test]
 fn append_and_insert_accept_incomplete_list_reference_edges() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install();
+    let _abi_test = install();
     unsafe { errors::PyErr_Clear() };
 
     let appended = unsafe { sequences::PyList_New(1) };
@@ -271,7 +271,7 @@ fn append_and_insert_accept_incomplete_list_reference_edges() {
 #[test]
 fn setitem_oob_sets_indexerror_and_releases_stolen_ref() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install();
+    let _abi_test = install();
     unsafe { errors::PyErr_Clear() };
 
     let list = unsafe { sequences::PyList_New(1) };
@@ -302,7 +302,7 @@ fn setitem_oob_sets_indexerror_and_releases_stolen_ref() {
 #[test]
 fn setitem_foreign_item_gets_custody_and_is_retrievable() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install();
+    let _abi_test = install();
     unsafe { errors::PyErr_Clear() };
 
     let list = unsafe { sequences::PyList_New(1) };

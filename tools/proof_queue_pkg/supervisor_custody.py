@@ -14,14 +14,25 @@ from typing import Mapping, Sequence, TypedDict, cast
 
 from molt import cargo_workspace
 from molt.dx import PROOF_SCRATCH_ROOT_ENV
-from molt.exact_json import ExactJsonError, encode_exact, loads_exact, read_exact
+from molt.exact_json import (
+    ExactJsonError,
+    capture_exact,
+    encode_exact,
+    loads_exact,
+    read_exact,
+)
+from molt.toolchain_identity import (
+    StableRegularFileIdentity,
+    open_stable_regular_file,
+    stable_regular_file_handle_identity,
+)
 from tools.proof_queue_pkg import command_identity
 from tools.proof_queue_pkg import custody_cas
 from tools.proof_queue_pkg import execution_custody
 from tools.proof_queue_pkg import process_image_capture
 
 
-def _protocol_schemas() -> dict[str, str]:
+def _protocol_authority() -> dict[str, object]:
     authority = (
         Path(__file__).resolve().parents[1] / "proof_supervisor" / "protocol.json"
     )
@@ -41,7 +52,9 @@ def _protocol_schemas() -> dict[str, str]:
     }
     if (
         not isinstance(payload, dict)
-        or set(payload) != expected
+        or set(payload) != expected | {"export", "policy_max_bytes"}
+        or type(payload.get("policy_max_bytes")) is not int
+        or payload["policy_max_bytes"] <= 0
         or not all(
             isinstance(payload[name], str)
             and re.fullmatch(r"molt\.[a-z0-9.-]+\.v[0-9]+", payload[name])
@@ -49,18 +62,119 @@ def _protocol_schemas() -> dict[str, str]:
         )
     ):
         raise RuntimeError("proof supervisor protocol authority is malformed")
-    return {name: payload[name] for name in sorted(expected)}
+    export = payload["export"]
+    if (
+        not isinstance(export, dict)
+        or set(export)
+        != {"footer_magic", "length_hex_digits", "event_max_bytes", "receipt_max_bytes"}
+        or not isinstance(export["footer_magic"], str)
+        or not export["footer_magic"].isascii()
+        or not export["footer_magic"].startswith("\n")
+        or not export["footer_magic"].endswith("\n")
+        or any(
+            type(export[key]) is not int or export[key] <= 0
+            for key in ("length_hex_digits", "event_max_bytes", "receipt_max_bytes")
+        )
+    ):
+        raise RuntimeError("proof supervisor export authority is malformed")
+    return payload
 
 
-_PROTOCOL_SCHEMAS = _protocol_schemas()
+_PROTOCOL_SCHEMAS = _protocol_authority()
 SUPERVISOR_POLICY_SCHEMA = _PROTOCOL_SCHEMAS["policy_schema"]
 SUPERVISOR_CAPABILITY_SCHEMA = _PROTOCOL_SCHEMAS["capability_schema"]
 SUPERVISOR_RECEIPT_SCHEMA = _PROTOCOL_SCHEMAS["receipt_schema"]
 SUPERVISOR_EVENT_LOG_SCHEMA = _PROTOCOL_SCHEMAS["event_log_schema"]
+SUPERVISOR_POLICY_MAX_BYTES = _PROTOCOL_SCHEMAS["policy_max_bytes"]
+SUPERVISOR_RECEIPT_MAX_BYTES = _PROTOCOL_SCHEMAS["export"]["receipt_max_bytes"]
 _MAX_SUPERVISOR_EVENT_LOG_BYTES = 1024 * 1024 * 1024
 _MAX_SUPERVISOR_EVENT_RECORD_BYTES = 1024 * 1024
 _MAX_SUPERVISOR_EVENT_RECORDS = 10_000_000
 _MAX_INVENTORY_IMAGE_IDENTITIES = 16_384
+
+
+def read_supervisor_export(
+    path: Path,
+    *,
+    receipt_name: str = "receipt.json",
+    expected: Mapping[str, object] | None = None,
+) -> tuple[bytes, bytes, bytes]:
+    """Retain the final exact frame; stderr before it is guest output, not proof.
+
+    Parsing does not admit success. The caller must run the native verifier and
+    require the successful terminal/coordinate/output contracts separately.
+    """
+    export = _PROTOCOL_SCHEMAS["export"]
+    magic = export["footer_magic"].encode("ascii")
+    digits = export["length_hex_digits"]
+    footer_size = len(magic) + 2 * digits + 1
+    with open_stable_regular_file(path, label="supervisor export") as opened:
+        stream = opened.stream
+        size = opened.stat.st_size
+        if (
+            size < footer_size
+            or size > 16 * 1024 * 1024 + export["receipt_max_bytes"] + footer_size
+        ):
+            raise ValueError("supervisor export transport extent is invalid")
+        if expected is not None:
+            identity = stable_regular_file_handle_identity(
+                opened, label="supervisor export"
+            )
+            if (identity.size, identity.sha256) != (
+                expected.get("size"),
+                expected.get("sha256"),
+            ):
+                raise ValueError("supervisor export differs from retained inventory")
+        stream.seek(-footer_size, os.SEEK_END)
+        footer = stream.read(footer_size)
+        if not footer.startswith(magic) or footer[-1:] != b"\n":
+            raise ValueError("supervisor export footer is missing at exact EOF")
+        lengths = footer[len(magic) : -1]
+        if re.fullmatch(rb"[0-9a-f]+", lengths) is None:
+            raise ValueError("supervisor export lengths are not canonical")
+        receipt_size, events_size = int(lengths[:digits], 16), int(lengths[digits:], 16)
+        if (
+            not 0 < receipt_size <= export["receipt_max_bytes"]
+            or not 0 <= events_size <= export["event_max_bytes"]
+        ):
+            raise ValueError("supervisor export payload exceeds its protocol bound")
+        prefix_size = size - footer_size - receipt_size - events_size
+        if prefix_size < 0:
+            raise ValueError("supervisor export payload is truncated")
+        stream.seek(0)
+        prefix = stream.read(prefix_size)
+        receipt_bytes = stream.read(receipt_size)
+        events = stream.read(events_size)
+    receipt = loads_exact(receipt_bytes)
+    descriptor = receipt.get("event_log") if isinstance(receipt, dict) else None
+    if not isinstance(descriptor, dict):
+        raise ValueError("supervisor export has no event descriptor")
+    digest = hashlib.sha256(events).hexdigest()
+    expected_name = f"{receipt_name}.events.{digest}.jsonl"
+    if (
+        descriptor.get("file") != expected_name
+        or descriptor.get("sha256") != digest
+        or descriptor.get("bytes") != len(events)
+    ):
+        raise ValueError("supervisor export event identity differs from receipt")
+    return prefix, receipt_bytes, events
+
+
+def decode_supervisor_export(path: Path, *, receipt_path: Path) -> bytes:
+    prefix, receipt_bytes, events = read_supervisor_export(
+        path, receipt_name=receipt_path.name
+    )
+    descriptor = loads_exact(receipt_bytes)["event_log"]
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    event_path = receipt_path.with_name(descriptor["file"])
+    with event_path.open("xb") as stream:
+        stream.write(events)
+    with receipt_path.open("xb") as stream:
+        stream.write(receipt_bytes)
+    _verified_supervisor_event_artifact(
+        receipt_path=receipt_path, descriptor=descriptor, collect_images=False
+    )
+    return prefix
 
 
 def _atomic_json(path: Path, payload: Mapping[str, object]) -> None:
@@ -554,11 +668,13 @@ def _validated_supervisor_receipt(
     receipt_path: Path,
     cwd: Path,
     env: Mapping[str, str],
+    rootfs: Path | None = None,
 ) -> dict[str, object]:
     verified = command_identity._run_captured(
         (
             str(binary),
-            "verify",
+            "verify-rooted" if rootfs is not None else "verify",
+            *(("--rootfs", str(rootfs)) if rootfs is not None else ()),
             "--policy",
             str(policy_path),
             "--receipt",
@@ -573,9 +689,9 @@ def _validated_supervisor_receipt(
             + (verified.stderr.strip() or verified.stdout.strip())
         )
     try:
-        receipt = read_exact(
+        identity, receipt = capture_exact(
             receipt_path,
-            max_bytes=64 * 1024,
+            max_bytes=SUPERVISOR_RECEIPT_MAX_BYTES,
             label="native proof supervisor receipt",
         )
     except (OSError, UnicodeDecodeError, ExactJsonError, json.JSONDecodeError) as exc:
@@ -587,7 +703,40 @@ def _validated_supervisor_receipt(
         or receipt.get("schema") != SUPERVISOR_RECEIPT_SCHEMA
     ):
         raise ValueError("native proof supervisor receipt schema is unsupported")
+    try:
+        result = loads_exact(verified.stdout)
+        policy_identity, _ = capture_exact(
+            policy_path,
+            max_bytes=SUPERVISOR_POLICY_MAX_BYTES,
+            label="native proof supervisor policy",
+        )
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise ValueError(
+            "native proof supervisor returned no readable verification binding"
+        ) from exc
+    require_verified_input_bindings(result, receipt=identity, policy=policy_identity)
     return receipt
+
+
+def require_verified_input_bindings(
+    result: object,
+    *,
+    receipt: StableRegularFileIdentity,
+    policy: StableRegularFileIdentity,
+) -> None:
+    """Bind either verifier consumer to the exact native-decoded input buffers."""
+    if (
+        not isinstance(result, dict)
+        or type(result.get("receipt_bytes")) is not int
+        or type(result.get("policy_input_bytes")) is not int
+        or (result.get("receipt_sha256"), result["receipt_bytes"])
+        != (receipt.sha256, receipt.size)
+        or (result.get("policy_input_sha256"), result["policy_input_bytes"])
+        != (policy.sha256, policy.size)
+    ):
+        raise ValueError(
+            "native proof supervisor verified different receipt or policy bytes"
+        )
 
 
 def capture_process_image_inventory(
@@ -656,7 +805,7 @@ def capture_process_image_inventory(
                 try:
                     failed_receipt = read_exact(
                         receipt_path,
-                        max_bytes=16 * 1024 * 1024,
+                        max_bytes=SUPERVISOR_RECEIPT_MAX_BYTES,
                         label="failed native proof supervisor receipt",
                     )
                 except (

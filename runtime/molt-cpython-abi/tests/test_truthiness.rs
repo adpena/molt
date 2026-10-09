@@ -48,7 +48,7 @@ unsafe extern "C" fn list_item_hook(
     molt_cpython_abi::hooks::BorrowedHandleResult::ok(MoltObject::from_int(i as i64).bits())
 }
 
-fn init_hooks() {
+fn init_hooks() -> support::AbiTestThreadStateTransaction {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.classify_heap = Some(list_classify);
@@ -56,7 +56,7 @@ fn init_hooks() {
     hooks.list_item = list_item_hook;
     hooks.object_length = object_length_hook;
     hooks.object_is_true = object_truth_hook;
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 fn native_list(nonempty: bool) -> *mut PyObject {
@@ -76,7 +76,7 @@ fn native_list(nonempty: bool) -> *mut PyObject {
 
 #[test]
 fn native_container_truthiness_size_and_seqiter() {
-    init_hooks();
+    let _abi_test = init_hooks();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     // ── Empty native list is FALSY (the headline `bool([]) == 1` divergence) ──

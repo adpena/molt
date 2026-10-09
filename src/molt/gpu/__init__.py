@@ -222,8 +222,10 @@ else:
         return _reference_geometry()[3]
 
     def barrier():
-        """Collective synchronization requires a parallel hardware kernel."""
-        raise NotImplementedError("GPU barriers require a parallel hardware kernel")
+        """Reject a collective operation outside parallel hardware execution."""
+        raise RuntimeError(
+            "GPU barrier requires a parallel hardware kernel execution context"
+        )
 
     def _reference_launch(func, grid: int, threads: int, args):
         # No ContextVar import or object is needed until a host reference launch.

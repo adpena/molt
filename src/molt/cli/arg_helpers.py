@@ -42,9 +42,15 @@ def _hash_seed_sentinel_env() -> str:
     return _cli_module()._HASH_SEED_SENTINEL_ENV
 
 
-def completion(shell: str, json_output: bool = False, verbose: bool = False) -> int:
+def completion(
+    shell: str,
+    json_output: bool = False,
+    verbose: bool = False,
+    *,
+    parser: argparse.ArgumentParser,
+) -> int:
     try:
-        script = _completion_script(shell)
+        script = _completion_script(shell, parser=parser)
     except ValueError as exc:
         return _fail(str(exc), json_output, command="completion")
     if json_output:

@@ -12,6 +12,7 @@ from molt.toolchain_identity import (
     StableRegularFileHandle,
     StableRegularFileIdentity,
     open_stable_regular_file,
+    stable_regular_file_handle_identity,
 )
 from molt.exact_json import string_keyed_mapping
 from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
@@ -393,15 +394,13 @@ def artifact_content_identity(
                 return _static_archive_stream_identity(
                     stream, archive_size=opened.stat.st_size
                 )
-            digest = hashlib.sha256(prefix)
-            size = len(prefix)
-            while block := stream.read(8 * 1024 * 1024):
-                digest.update(block)
-                size += len(block)
+            identity = stable_regular_file_handle_identity(
+                opened, label="runtime artifact"
+            )
             return {
                 "schema": _BYTE_IDENTITY_SCHEMA,
-                "sha256": digest.hexdigest(),
-                "size_bytes": size,
+                "sha256": identity.sha256,
+                "size_bytes": identity.size,
             }
     except (OSError, ValueError) as exc:
         if isinstance(exc, StaticArchiveIdentityError):

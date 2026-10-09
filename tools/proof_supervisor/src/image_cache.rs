@@ -60,8 +60,16 @@ impl ImageHashCache {
             ensure_stable(key, &revalidate(reader)?)?;
             return Ok(entry.sha256.clone());
         }
+        let extent = reader.seek(SeekFrom::End(0))?;
+        let allowance = extent
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("executable extent cannot be bounded"))?;
         reader.seek(SeekFrom::Start(0))?;
-        let sha256 = crate::sha256_reader(reader)?;
+        let mut bounded = reader.by_ref().take(allowance);
+        let sha256 = crate::sha256_reader(&mut bounded)?;
+        if allowance - bounded.limit() != extent {
+            return Err(io::Error::other("executable grew or shrank while hashing"));
+        }
         ensure_stable(key, &revalidate(reader)?)?;
         if self.entries.len() >= MAX_CACHED_IDENTITIES
             && !self.entries.contains_key(&key.stable_file_id)
@@ -120,6 +128,45 @@ mod tests {
         fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
             self.inner.seek(position)
         }
+    }
+
+    #[test]
+    fn growing_reader_is_stopped_at_initial_extent_plus_one_and_not_cached() {
+        struct GrowingReader {
+            inner: Cursor<Vec<u8>>,
+            consumed: usize,
+            appended: bool,
+        }
+        impl Read for GrowingReader {
+            fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+                if !self.appended {
+                    self.inner.get_mut().extend_from_slice(&[b'x'; 4096]);
+                    self.appended = true;
+                }
+                let count = self.inner.read(output)?;
+                self.consumed += count;
+                Ok(count)
+            }
+        }
+        impl Seek for GrowingReader {
+            fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+                self.inner.seek(position)
+            }
+        }
+        let mut reader = GrowingReader {
+            inner: Cursor::new(b"abcd".to_vec()),
+            consumed: 0,
+            appended: false,
+        };
+        let key = ImageCacheKey::new("growing-file".to_owned(), "initial-token".to_owned());
+        let mut cache = ImageHashCache::default();
+        assert!(
+            cache
+                .digest(&key, &mut reader, |_| Ok(key.clone()))
+                .is_err()
+        );
+        assert_eq!(reader.consumed, 5);
+        assert!(cache.entries.is_empty());
     }
 
     #[test]

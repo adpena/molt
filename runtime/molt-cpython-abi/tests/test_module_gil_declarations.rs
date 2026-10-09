@@ -64,13 +64,13 @@ unsafe extern "C" fn exec_begin(bits: u64, _definition: usize) -> c_int {
         -1
     }
 }
-fn install_hooks() {
+fn install_hooks() -> support::AbiTestThreadStateTransaction {
     let mut hooks = support::stub_runtime_hooks();
     support::fake_strings::wire(&mut hooks);
     hooks.classify_heap = Some(classify);
     hooks.alloc_module = alloc_module;
     hooks.module_exec_begin = exec_begin;
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 #[repr(C)]
 struct NativeSpec {
@@ -129,7 +129,6 @@ unsafe extern "C" fn noop_exec(module: *mut PyObject) -> c_int {
 
 /// Build a leaked (test-'static) PyModuleDef with the given name and slots.
 fn make_def(name: &'static str, slots: Vec<PyModuleDef_Slot>) -> *mut PyModuleDef {
-    install_hooks();
     assert!(name.ends_with('\0'), "name must be NUL-terminated");
     let mut slots = slots;
     slots.push(PyModuleDef_Slot {
@@ -154,6 +153,7 @@ fn make_def(name: &'static str, slots: Vec<PyModuleDef_Slot>) -> *mut PyModuleDe
 #[test]
 fn py_mod_gil_not_used_slot_is_recorded_from_fromdefandspec() {
     // The numpy shape: {Py_mod_exec, ...}, {Py_mod_gil, Py_MOD_GIL_NOT_USED}.
+    let _abi_test = install_hooks();
     let def = make_def(
         "gil_itest_notused\0",
         vec![
@@ -190,6 +190,7 @@ fn py_mod_gil_not_used_slot_is_recorded_from_fromdefandspec() {
 
 #[test]
 fn py_mod_gil_used_explicit_slot_is_recorded() {
+    let _abi_test = install_hooks();
     let def = make_def(
         "gil_itest_used_explicit\0",
         vec![PyModuleDef_Slot {
@@ -219,6 +220,7 @@ fn py_mod_gil_used_explicit_slot_is_recorded() {
 #[test]
 fn absent_slot_records_cpython_default_gil_used() {
     // Slot array present but WITHOUT Py_mod_gil: CPython default (GIL used).
+    let _abi_test = install_hooks();
     let def = make_def(
         "gil_itest_default\0",
         vec![PyModuleDef_Slot {
@@ -249,6 +251,7 @@ fn absent_slot_records_cpython_default_gil_used() {
 fn execdef_records_the_declaration_too() {
     // The two-step loader path: creation elsewhere, exec through
     // PyModule_ExecDef. The exec slot must receive a semantically valid module.
+    let _abi_test = install_hooks();
     let def = make_def(
         "gil_itest_execdef\0",
         vec![
@@ -298,6 +301,7 @@ fn setgil_on_unresolvable_module_counts_unresolved_and_still_returns_0() {
 
 #[test]
 fn invalid_definition_inputs_fail_before_metadata_publication() {
+    let _abi_test = install_hooks();
     let def = make_def("gil_itest_invalid_spec\0", vec![]);
     unsafe {
         assert!(PyModule_FromDefAndSpec2(def, ptr::null_mut(), 0).is_null());

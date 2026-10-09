@@ -54,12 +54,13 @@ unsafe extern "C" fn reject_method_store(
     }
 }
 
-fn install_hooks_with_rejected_method_store() {
+fn install_hooks_with_rejected_method_store() -> support::AbiTestThreadStateTransaction {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
     hooks.dict_mutate = reject_method_store;
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    let transaction = support::enter_runtime_class_abi_test(hooks);
     METHOD_STORE_FAILURES.store(0, Ordering::Relaxed);
+    transaction
 }
 
 unsafe extern "C" fn dummy_method(_self: *mut PyObject, _args: *mut PyObject) -> *mut PyObject {
@@ -77,7 +78,7 @@ fn method_def(name: &'static [u8]) -> PyMethodDef {
 
 #[test]
 fn type_ready_fails_closed_when_method_store_fails() {
-    install_hooks_with_rejected_method_store();
+    let _abi_test = install_hooks_with_rejected_method_store();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let mut methods = [
@@ -188,7 +189,7 @@ unsafe extern "C" fn observe_publication(context: *mut std::ffi::c_void) -> i32 
 #[test]
 fn dict_mutation_publishes_committed_storage_before_retiring_owners() {
     use molt_cpython_abi::hooks::DecodedHandleResult;
-    install_hooks_with_rejected_method_store();
+    let _abi_test = install_hooks_with_rejected_method_store();
     let hooks = molt_cpython_abi::hooks::hooks_or_stubs();
     unsafe {
         molt_cpython_abi::api::errors::PyErr_Clear();

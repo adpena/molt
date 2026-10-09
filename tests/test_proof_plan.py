@@ -368,7 +368,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         core.argv[index + 1]
         for index, arg in enumerate(core.argv[:-1])
         if arg == "--test"
-    ] == ["ownership_memory_contracts"]
+    ] == ["ownership_memory_contracts", "test_builtins"]
     assert "--bins" not in core.argv
     assert "--include-ignored" not in core.argv
     assert {
@@ -395,6 +395,48 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "builtins::attr::",
         "builtins::classes::",
     }.issubset(filters)
+
+
+def test_compression_export_proofs_select_both_feature_coordinates() -> None:
+    from tools import run_cargo_test_truth
+
+    commands = {command.id: command for command in PLAN.commands}
+    truth = commands["rust.test.default-truth"]
+    assert truth.argv == (
+        "uv",
+        "run",
+        "--frozen",
+        "python3",
+        "tools/run_cargo_test_truth.py",
+    )
+    # The canonical workspace test command includes test_builtins with default
+    # features and wasm_cdylib_exports, whose existing artifact owner tests the
+    # compression-disabled/enabled WASM pair. A --lib-only rewrite loses both.
+    assert run_cargo_test_truth.CANONICAL_COMMAND == (
+        "cargo",
+        "test",
+        "--locked",
+        "--workspace",
+        "--tests",
+        "--no-fail-fast",
+    )
+    micro = commands["rust.test.ir-wasm-runtime-authorities"]
+    cargo = micro.argv[: micro.argv.index("--")]
+    filters = micro.argv[micro.argv.index("--") + 1 :]
+    assert "--no-default-features" in cargo and "--no-run" not in cargo
+    assert cargo[cargo.index("--features") + 1].split(",") == [
+        "molt-passes/native-backend",
+        "molt-passes/wasm-backend",
+        "molt-passes/test-util",
+        "molt-backend-wasm/test-util",
+        "molt-runtime/stdlib_micro",
+        "molt-runtime/builtin_complex",
+        "molt-runtime/builtin_set",
+    ]
+    assert "test_builtins" in [
+        cargo[index + 1] for index, arg in enumerate(cargo[:-1]) if arg == "--test"
+    ]
+    assert "test_raw_compression_c_exports_are_linkable" in filters
 
 
 def test_extension_admission_proof_executes_required_public_resolver_witness() -> None:
@@ -1044,10 +1086,15 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
 ) -> None:
     rows = {row.id: row for row in PLAN.commands if row.family == "wasm"}
     expected_pytest_rows = {
+        "wasm.test.startup-lifecycle",
         "wasm.test.linker-admission",
         "wasm.test.control-flow",
         "wasm.integration.split-runtime",
-        "wasm.integration.host-exports",
+        "wasm.integration.host-exports.gpu-kernel",
+        "wasm.integration.host-exports.attribute-error",
+        "wasm.integration.host-exports.tinygrad-dtype",
+        "wasm.integration.host-exports.tinygrad-tensor",
+        "wasm.integration.host-exports.tensor-row-ops",
         "wasm.test.freestanding-e2e",
         "wasm.test.finally-pending-observer-parity",
     }
@@ -1088,6 +1135,96 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
             "0" if "cargo" in row.toolchains else "1"
         )
         assert environment["MOLT_BUILD_PYTHON"] == "/selected/build-python"
+
+
+def test_wasm_host_export_applications_have_independent_cold_partitions() -> None:
+    expected: dict[str, tuple[str, set[str]]] = {
+        "wasm.integration.host-exports.gpu-kernel": (
+            "test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output",
+            set(),
+        ),
+        "wasm.integration.host-exports.attribute-error": (
+            "test_linked_host_export_attribute_error_does_not_return_none",
+            {"wasm.build.shared-runtime"},
+        ),
+        "wasm.integration.host-exports.tinygrad-dtype": (
+            "test_linked_host_export_imports_tinygrad_dtype_class",
+            set(),
+        ),
+        "wasm.integration.host-exports.tinygrad-tensor": (
+            "test_linked_host_export_imports_tinygrad_tensor_module",
+            set(),
+        ),
+        "wasm.integration.host-exports.tensor-row-ops": (
+            "test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype",
+            set(),
+        ),
+    }
+    rows = {
+        row.id: row
+        for row in PLAN.commands
+        if row.id.startswith("wasm.integration.host-exports")
+    }
+    assert set(rows) == set(expected)
+    for name, (test_name, runtime_dependencies) in expected.items():
+        row = rows[name]
+        assert row.argv[6:] == (f"tests/test_wasm_split_runtime.py::{test_name}",)
+        assert row.data["timeout_budget"] == "cold"
+        assert {"node", "wasi-clang"}.issubset(PLAN.required_toolchains(row))
+        # Each program retains its own import closure. The GPU/tinygrad cells
+        # compile their exact feature generation; AttributeError consumes the
+        # admitted micro pair. Node needs no native host or other runtime tier.
+        assert set(row.dependencies) == {"wasm.build.backend", *runtime_dependencies}
+        assert {
+            selected.id
+            for selected in proof_plan._topological_commands(PLAN, command_id=name)
+        } == {name, "wasm.build.backend", *runtime_dependencies}
+
+    # The shared compiler resource serializes cold application rows. Allocate
+    # their declared work in the existing job, without extending a child bound.
+    compiler_seconds = sum(
+        int(row.data["timeout_seconds"])
+        for row in PLAN.commands
+        if row.family == "wasm"
+        and row.data["resource_class"] == "compiler-build-resource"
+    )
+    envelope = PLAN.timeout_envelope("wasm")
+    assert envelope.projected_makespan_seconds == compiler_seconds
+    assert (
+        envelope.resource_capacity_floor_seconds["compiler-build-resource"]
+        == compiler_seconds
+    )
+    family = next(family for family in PLAN.families if family.name == "wasm")
+    assert int(family.data["timeout_minutes"]) * 60 >= compiler_seconds
+
+
+def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
+    rows = {row.id: row for row in PLAN.commands}
+    startup = rows["wasm.test.startup-lifecycle"]
+    assert set(startup.argv[6:]) == {
+        "tests/test_wasm_startup_failures.py",
+        "tests/test_generate_worker.py",
+        "tests/test_browser_asset_closure.py",
+        "tests/test_wasm_reserved_callable_arity.py",
+    }
+    assert {"pr", "main"} <= set(startup.data["tiers"])
+    assert "node" in PLAN.required_toolchains(startup)
+    assert not startup.dependencies
+    for path in startup.argv[6:]:
+        assert "wasm" in {family.name for family in PLAN.select([path]).selected}
+    split = rows["wasm.integration.split-runtime"]
+    assert set(split.argv[6:]) == {
+        "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts",
+        "tests/test_wasm_split_runtime.py::TestWorkerJsContent",
+        "tests/test_wasm_split_runtime.py::TestManifestJson",
+        "tests/test_wasm_split_runtime.py::TestRuntimeCacheability",
+        "tests/test_browser_vfs.py",
+    }
+    assert "node" in PLAN.required_toolchains(split)
+    assert {"pr", "main"} <= set(split.data["tiers"])
+    assert "wasm.build.host" not in {
+        row.id for row in proof_plan._topological_commands(PLAN, command_id=split.id)
+    }
 
 
 def test_wasm_e2e_commands_bind_complete_child_toolchain_closure() -> None:
@@ -1865,6 +2002,7 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
     assert all(entry["family"] == "platform_portability" for entry in matrix)
     assert {entry["cell"]: entry["command_ids"] for entry in matrix} == {
         "linux-x86_64-py312-queue-portability": [
+            "portability.completion.linux",
             "portability.queue.linux",
             "portability.cargo-link.linux",
             "portability.cargo-custody.linux",
@@ -4383,16 +4521,19 @@ def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
         }
         assert "wasm.build.host" not in selected
         assert {name, "wasm.build.backend", "wasm.build.shared-runtime"} <= selected
-    # These consumers execute a host; removing the build-only edge must not
-    # detach their selected runtime from its actual completed producer.
+    split = "wasm.integration.split-runtime"
+    assert {
+        command.id
+        for command in proof_plan._topological_commands(PLAN, command_id=split)
+    } == {split, "wasm.build.backend", "wasm.build.split-runtime-release"}
+    # The split artifact and browser VFS consumers execute Node, with no native
+    # precompile request. The native consumers below retain their host producer.
     for name in (
         "wasm.run.hello",
         "wasm.run.comprehension",
         "wasm.run.sieve",
         "wasm.test.control-flow",
         "wasm.test.finally-pending-observer-parity",
-        "wasm.integration.split-runtime",
-        "wasm.integration.host-exports",
     ):
         assert "wasm.build.host" in commands[name].dependencies
     for name in (
@@ -4403,7 +4544,6 @@ def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
         "wasm.test.freestanding-e2e",
         "wasm.test.finally-pending-observer-parity",
         "wasm.integration.split-runtime",
-        "wasm.integration.host-exports",
     ):
         assert "wasm.build.backend" in commands[name].dependencies
 

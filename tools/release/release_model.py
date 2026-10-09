@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config" / "release_supply_chain.toml"
 CONFIG_SCHEMA = "molt.release-supply-chain.v1"
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
-MANIFEST_SCHEMA = "molt.release-manifest.v4"
+MANIFEST_SCHEMA = "molt.release-manifest.v5"
 SPDX_VERSION = "2.3"
 SPDX_PREDICATE_TYPE = f"https://spdx.dev/Document/v{SPDX_VERSION}"
 RELEASE_EXIT_ARCHIVE_KIND = "release-exit-evidence"
@@ -203,6 +203,18 @@ def validate_artifact_record(
             != ("wheel", "gnu" if platform == "linux" else None)
         ):
             raise ValueError("release platform wheel metadata is invalid")
+    elif name == "molt-consumer-evidence":
+        target = next(
+            (t for t in release_targets() if (t.platform, t.arch) == (platform, arch)),
+            None,
+        )
+        if (
+            target is None
+            or record["kind"] != name
+            or record["filename"] != f"{name}-{version}-{platform}-{arch}.zip"
+            or record["libc"] is not None
+        ):
+            raise ValueError("release consumer evidence metadata is invalid")
     else:
         target = next(
             (t for t in release_targets() if (t.platform, t.arch) == (platform, arch)),
@@ -280,7 +292,7 @@ def validate_release_manifest(value: object) -> dict[str, Any]:
     expected = {("molt-wheel", "any", "any")} | {
         (name, target.platform, target.arch)
         for target in release_targets()
-        for name in ("molt", "molt-worker", "molt-wheel")
+        for name in ("molt", "molt-worker", "molt-wheel", "molt-consumer-evidence")
     }
     if not isinstance(artifacts, list) or len(artifacts) != len(expected):
         raise ValueError("release manifest artifact matrix is incomplete")

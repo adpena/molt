@@ -129,7 +129,7 @@ def test_docker_transport_run_uses_memory_guard(monkeypatch, tmp_path: Path) -> 
         name="docker",
         target="x86_64-unknown-linux-gnu",
         transport="docker",
-        container="example:latest",
+        container="example@sha256:" + "a" * 64,
     )
     transport = cross_run.DockerTransport(host)
     transport._stage = tmp_path
@@ -151,5 +151,73 @@ def test_docker_transport_run_uses_memory_guard(monkeypatch, tmp_path: Path) -> 
     assert stdout == "ok\n"
     assert stderr == ""
     assert captured["cmd"][:2] == ["docker", "run"]
+    assert "--pull=never" in captured["cmd"]
     assert captured["kwargs"]["prefix"] == "MOLT_CROSS"
     assert captured["kwargs"]["timeout"] == 9
+
+
+@pytest.mark.parametrize(
+    "reference", ["example:latest", "example:stable", "sha256:short"]
+)
+def test_docker_prepare_rejects_mutable_or_malformed_image_without_pull(
+    monkeypatch, reference
+):
+    monkeypatch.setattr(cross_run.shutil, "which", lambda name: "/usr/bin/docker")
+    calls = []
+    monkeypatch.setattr(cross_run, "_guarded_run", lambda *a, **k: calls.append(a))
+    transport = cross_run.DockerTransport(
+        cross_run.Host(
+            name="test",
+            target="x86_64-unknown-linux-gnu",
+            transport="docker",
+            container=reference,
+        )
+    )
+    with pytest.raises(ValueError, match="immutable image digest"):
+        transport.prepare()
+    assert calls == []
+
+
+def test_docker_prepare_missing_pin_never_pulls(monkeypatch):
+    monkeypatch.setattr(cross_run.shutil, "which", lambda name: "/usr/bin/docker")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1, "", "absent")
+
+    monkeypatch.setattr(cross_run, "_guarded_run", run)
+    reference = "example@sha256:" + "a" * 64
+    transport = cross_run.DockerTransport(
+        cross_run.Host(
+            name="test",
+            target="x86_64-unknown-linux-gnu",
+            transport="docker",
+            container=reference,
+        )
+    )
+    with pytest.raises(RuntimeError, match="no automatic pull"):
+        transport.prepare()
+    assert calls == [["docker", "image", "inspect", reference]]
+
+
+def test_external_raw_capture_uses_a_positive_bounded_diagnostic_tail(
+    monkeypatch, tmp_path
+):
+    captured = {}
+
+    def run(command, **kwargs):
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, "tail", "tail")
+
+    monkeypatch.setattr(
+        cross_run.harness_memory_guard, "guarded_completed_process", run
+    )
+    cross_run._guarded_run(
+        ["/docker", "start"],
+        stdout_capture_path=tmp_path / "stdout",
+        stderr_capture_path=tmp_path / "stderr",
+        capture_tail_bytes=4096,
+    )
+    assert captured["capture_tail_bytes"] == 4096
+    assert captured["stdout_capture_path"] == tmp_path / "stdout"

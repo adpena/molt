@@ -143,6 +143,13 @@ jobs:
           sync-frozen: "true"
           sync-groups: dev
 
+      - name: Install completion test shells
+        if: matrix.cell == 'linux-x86_64-py312-queue-portability'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes fish zsh
+
       - name: Resolve portability command evidence custody
         id: build-control
         shell: bash

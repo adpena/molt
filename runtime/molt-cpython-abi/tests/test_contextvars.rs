@@ -6,13 +6,13 @@ mod support;
 
 use std::ptr;
 
-fn init() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+fn init() -> support::AbiTestThreadStateTransaction {
+    support::enter_abi_test(support::stub_runtime_hooks())
 }
 
 #[test]
 fn test_contextvar_new_rejects_null_name() {
-    init();
+    let _abi_test = init();
     let var = unsafe {
         molt_cpython_abi::api::contextvars::PyContextVar_New(ptr::null(), ptr::null_mut())
     };
@@ -27,7 +27,7 @@ fn test_contextvar_new_name_alloc_fails_closed_under_stubs() {
     // rather than constructing a var around a fabricated None-name placeholder.
     // (Get/Set semantics with a real name require a runtime and are covered by the
     // c_extensions integration suite.)
-    init();
+    let _abi_test = init();
     let default_value = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(7) };
     let var = unsafe {
         molt_cpython_abi::api::contextvars::PyContextVar_New(c"answer".as_ptr(), default_value)

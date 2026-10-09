@@ -24,6 +24,25 @@ checklist for new or modified stdlib shims.
   builtin dispatch and module lookup. Name arguments remain borrowed: the
   resolver retains them across callback-capable work and releases them on exit.
 
+## C symbol ownership
+
+A canonical intrinsic's Rust callable address does not establish its exported
+C name. An operation requiring a C-link spelling must retain one unmangled
+provider in each admitted cell; feature-disabled and target-exclusive providers
+cannot witness another cell. `tests/test_wasm_runtime_export_no_mangle.py` checks
+the WASM symbol contract and the explicitly split native/WASM LZMA owners against
+the canonical registry and source cfg gates. A WASM-conditional export attribute
+supplies a WASM C name without promising the same native C-link spelling. Native external
+link references in `test_builtins` and the selected Cargo artifacts in
+`wasm_cdylib_exports` exercise the actual symbols.
+
+With `stdlib_compression`, the extracted compression crate owns raw deflate,
+inflate and native LZMA exports. Without it, the existing raw micro diagnostics
+remain the owners; LZMA is absent. On WASM with compression enabled, the root
+LZMA module supplies constants and explicit unavailable-operation diagnostics.
+That symbol presence does not claim a WASM LZMA implementation. Runtime export
+validation remains strict for the exact admitted feature and target set.
+
 ## Dynamic callable closure
 
 `molt-tir::passes::collect_app_callable_requirements` owns possible callable

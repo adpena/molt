@@ -105,6 +105,29 @@ fn expected_cpython_abi_requested_exports() -> BTreeSet<String> {
     names
 }
 
+fn expected_compression_exports(enabled: bool) -> BTreeSet<String> {
+    // Independent raw symbol witnesses also exist in the feature-off micro ABI.
+    let mut names = BTreeSet::from(["molt_deflate_raw".to_owned(), "molt_inflate_raw".to_owned()]);
+    if enabled {
+        let manifest: JsonValue =
+            serde_json::from_str(include_str!("../../../wasm/wasm_abi_generated.json"))
+                .expect("generated WASM ABI manifest");
+        let exports = manifest["runtime_export_by_import"]
+            .as_object()
+            .expect("canonical runtime export mapping");
+        names.extend(
+            exports
+                .values()
+                .filter_map(JsonValue::as_str)
+                .filter(|name| name.starts_with("molt_lzma_"))
+                .map(str::to_owned),
+        );
+        assert!(names.contains("molt_lzma_compress"));
+        assert!(names.contains("molt_lzma_file_drop"));
+    }
+    names
+}
+
 fn requested_data_exports(exports: &BTreeSet<String>) -> Vec<String> {
     let manifest: JsonValue =
         serde_json::from_str(include_str!("../../../wasm/wasm_abi_generated.json"))
@@ -276,105 +299,131 @@ fn cargo_cdylib_selection_reports_runtime_wasm_with_fixed_abi_surface() {
     )
     .join("wasm-cdylib-exports-test");
     fs::create_dir_all(&target_dir).expect("create selected target dir");
-    let runtime_features = [
-        "stdlib_micro",
-        "builtin_set",
-        "builtin_complex",
-        "builtin_memoryview",
-        "builtin_fcntl",
-    ];
+    // Keep link flags identical across cells so unchanged dependencies reuse
+    // Cargo artifacts. export-if-defined requests do not admit absent features.
+    let requested_compression = expected_compression_exports(true);
+    // Reuse the same admitted SDK, Cargo selector, target directory and complete
+    // feature vector. The second coordinate changes only compression admission.
+    for compression_enabled in [false, true] {
+        let mut runtime_features = vec![
+            "stdlib_micro",
+            "builtin_set",
+            "builtin_complex",
+            "builtin_memoryview",
+            "builtin_fcntl",
+        ];
+        if compression_enabled {
+            runtime_features.push("stdlib_compression");
+        }
+        let expected_compression = expected_compression_exports(compression_enabled);
 
-    let expected_cpython_abi = expected_cpython_abi_requested_exports();
-    let cpython_abi_requested_exports = expected_cpython_abi
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n");
-    let cpython_abi_requested_data_exports =
-        requested_data_exports(&expected_cpython_abi).join("\n");
-    let mut rustflags = wasi_cargo_rustflags(&plan);
-    rustflags.extend(
-        [
-            "-C",
-            "link-arg=--import-memory",
-            "-C",
-            "link-arg=--import-table",
-            "-C",
-            "link-arg=--growable-table",
-            "-C",
-            "link-arg=--export-dynamic",
-            "-C",
-            "target-feature=-reference-types,+simd128",
-        ]
-        .into_iter()
-        .map(str::to_owned),
-    );
-    for name in &expected_cpython_abi {
-        rustflags.extend([
-            "-C".to_owned(),
-            format!("link-arg=--export-if-defined={name}"),
-        ]);
+        let expected_cpython_abi = expected_cpython_abi_requested_exports();
+        let cpython_abi_requested_exports = expected_cpython_abi
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cpython_abi_requested_data_exports =
+            requested_data_exports(&expected_cpython_abi).join("\n");
+        let mut rustflags = wasi_cargo_rustflags(&plan);
+        rustflags.extend(
+            [
+                "-C",
+                "link-arg=--import-memory",
+                "-C",
+                "link-arg=--import-table",
+                "-C",
+                "link-arg=--growable-table",
+                "-C",
+                "link-arg=--export-dynamic",
+                "-C",
+                "target-feature=-reference-types,+simd128",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        for name in expected_cpython_abi.iter().chain(&requested_compression) {
+            rustflags.extend([
+                "-C".to_owned(),
+                format!("link-arg=--export-if-defined={name}"),
+            ]);
+        }
+        let encoded_flags = rustflags.join("\x1f");
+        let output = Command::new("cargo")
+            .current_dir(&root)
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .env("MOLT_SESSION_ID", "test-wasm-cdylib-exports")
+            .env(
+                "MOLT_WASM_CPYTHON_ABI_EXPORTS",
+                cpython_abi_requested_exports,
+            )
+            .env(
+                "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS",
+                cpython_abi_requested_data_exports,
+            )
+            .env("CARGO_INCREMENTAL", "0")
+            .env_remove("RUSTFLAGS")
+            .env("CARGO_ENCODED_RUSTFLAGS", encoded_flags)
+            .env("CARGO_TARGET_WASM32_WASIP1_LINKER", &plan.linker)
+            .args([
+                "rustc",
+                "--package",
+                "molt-runtime",
+                "--profile",
+                "dev-fast",
+                "--target",
+                "wasm32-wasip1",
+                "--lib",
+                "--no-default-features",
+                "--features",
+                &runtime_features.join(","),
+                "--crate-type",
+                "cdylib",
+                "--message-format=json-render-diagnostics",
+            ])
+            .output()
+            .expect("run cargo build for wasm runtime");
+
+        assert!(
+            output.status.success(),
+            "cargo build failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+
+        let runtime_wasm =
+            reported_runtime_cdylib(&String::from_utf8_lossy(&output.stdout), &target_dir);
+        let export_names = read_export_names(&runtime_wasm);
+        let expected = expected_fixed_exports(&runtime_features);
+        let missing: Vec<String> = expected.difference(&export_names).cloned().collect();
+        assert!(
+            missing.is_empty(),
+            "missing fixed wasm cdylib exports: {missing:?}"
+        );
+        let missing_cpython_abi: Vec<String> = expected_cpython_abi
+            .difference(&export_names)
+            .cloned()
+            .collect();
+        assert!(
+            missing_cpython_abi.is_empty(),
+            "missing requested CPython ABI wasm exports: {missing_cpython_abi:?}"
+        );
+        if !compression_enabled {
+            let unexpected: Vec<_> = requested_compression
+                .difference(&expected_compression)
+                .filter(|name| export_names.contains(*name))
+                .collect();
+            assert!(
+                unexpected.is_empty(),
+                "feature-disabled LZMA exports: {unexpected:?}"
+            );
+        }
+        let missing_compression: Vec<_> = expected_compression.difference(&export_names).collect();
+        assert!(
+            missing_compression.is_empty(),
+            "missing compression exports (stdlib_compression={compression_enabled}): {missing_compression:?}"
+        );
     }
-    let encoded_flags = rustflags.join("\x1f");
-    let output = Command::new("cargo")
-        .current_dir(&root)
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .env("MOLT_SESSION_ID", "test-wasm-cdylib-exports")
-        .env(
-            "MOLT_WASM_CPYTHON_ABI_EXPORTS",
-            cpython_abi_requested_exports,
-        )
-        .env(
-            "MOLT_WASM_CPYTHON_ABI_DATA_EXPORTS",
-            cpython_abi_requested_data_exports,
-        )
-        .env("CARGO_INCREMENTAL", "0")
-        .env_remove("RUSTFLAGS")
-        .env("CARGO_ENCODED_RUSTFLAGS", encoded_flags)
-        .env("CARGO_TARGET_WASM32_WASIP1_LINKER", &plan.linker)
-        .args([
-            "rustc",
-            "--package",
-            "molt-runtime",
-            "--profile",
-            "dev-fast",
-            "--target",
-            "wasm32-wasip1",
-            "--lib",
-            "--no-default-features",
-            "--features",
-            &runtime_features.join(","),
-            "--crate-type",
-            "cdylib",
-            "--message-format=json-render-diagnostics",
-        ])
-        .output()
-        .expect("run cargo build for wasm runtime");
-
-    assert!(
-        output.status.success(),
-        "cargo build failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-
-    let runtime_wasm =
-        reported_runtime_cdylib(&String::from_utf8_lossy(&output.stdout), &target_dir);
-    let export_names = read_export_names(&runtime_wasm);
-    let expected = expected_fixed_exports(&runtime_features);
-    let missing: Vec<String> = expected.difference(&export_names).cloned().collect();
-    assert!(
-        missing.is_empty(),
-        "missing fixed wasm cdylib exports: {missing:?}"
-    );
-    let missing_cpython_abi: Vec<String> = expected_cpython_abi
-        .difference(&export_names)
-        .cloned()
-        .collect();
-    assert!(
-        missing_cpython_abi.is_empty(),
-        "missing requested CPython ABI wasm exports: {missing_cpython_abi:?}"
-    );
 }
 
 #[test]

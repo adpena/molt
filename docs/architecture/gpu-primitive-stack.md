@@ -210,8 +210,18 @@ conversion policy or imply a general floating-point hardware parity claim.
 
 The Python-kernel dispatchers are Metal, native WebGPU, and browser WebGPU.
 Automatic selection retains compiled CPU execution when no descriptor device is
-selected. Explicit CUDA/HIP Python-kernel execution is unavailable and reports a
-capability error; CUDA/HIP tensor facilities have their own implementations.
+selected. After validating launch geometry, the runtime admits a typed executor
+from one backend selection and dispatches only to that executor. An explicit
+backend failure cannot enter the sequential executor. CUDA/HIP Python-kernel
+descriptor execution remains unavailable: admission raises `RuntimeError` naming
+the requested backend before kernel binding, body execution or output mutation.
+CUDA/HIP tensor facilities have their own implementations and capability checks.
+
+`gpu.barrier()` is a collective hardware operation. Admitted Metal and WebGPU
+descriptors emit their real device barriers. Calling it from sequential compiled
+CPU execution or the development CPython reference lane raises `RuntimeError`
+because there is no parallel workgroup execution context. This context error
+does not authorize a silent no-op or claim a CPU collective implementation.
 
 One physical binding plan owns argument order, mutable backing aliases and
 readback. Immutable bytes use per-wrapper copy-on-write: no store preserves the

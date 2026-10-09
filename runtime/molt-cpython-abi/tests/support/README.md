@@ -11,14 +11,20 @@ Runtime hook installation is process-first-wins. Every test in one integration
 binary must install the same table. Model per-test failures inside that table
 with thread-local capability state, not a competing installation.
 
-Use `prepare_runtime_class_abi_test_thread` when a cohort needs managed scalar
+Keep the returned transaction in a named local binding for the complete test,
+before creating fixture values. Helper installers return that same transaction.
+Cleanup then runs before the test returns, so leak assertions are test failures
+and an original panic survives a secondary cleanup assertion. No transaction
+is retained until thread-local destruction.
+
+Use `enter_runtime_class_abi_test` when a cohort needs managed scalar
 classes or normalized exception values. It installs class observation and
 subtyping alongside the thread-state transaction, then binds canonical builtin
 classes before any C-API callback. Every `fake_runtime::wire` consumer uses this
 boundary, including native from-spec fixtures that also need runtime-owned
 strings and dictionaries. Scoped transactions and custom class-hook providers
 explicitly call `prepare_class_bindings` after attachment. Bare native fixtures
-without class hooks retain `prepare_abi_test_thread`.
+without class hooks retain `enter_abi_test`.
 
 The shared model observes bool as a subtype of int and distinguishes class
 objects from instances. Its class anchors resolve to canonical physical C type

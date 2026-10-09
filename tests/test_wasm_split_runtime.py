@@ -228,7 +228,8 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
     assert 'encoder.encode(e + "\\0")' in worker_js
     assert "const stdoutDecoder = new TextDecoder();" in worker_js
     assert "const stderrDecoder = new TextDecoder();" in worker_js
-    assert "rtInstance.exports.molt_runtime_shutdown" in worker_js
+    # Runtime shutdown and error ordering are executed by the shared witness in
+    # test_wasm_startup_failures, including the emitted artifact below.
     assert "molt_set_wasm_table_base(BigInt(4096))" in worker_js
     assert (
         'const WEBGPU_DISPATCH_HOST_IMPORT = "molt_gpu_webgpu_dispatch_host";'
@@ -454,9 +455,24 @@ def test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output(
     build = _build_split(src, out_dir)
     assert build.returncode == 0, build.stdout + build.stderr
 
-    run = _run_split_direct(out_dir, timeout=120)
+    run = _run_split_direct(out_dir, timeout=120, extra_env={"MOLT_GPU_BACKEND": ""})
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip() == "[11.0, 22.0, 33.0, 44.0]\nlaunch semantics ok"
+
+    for backend in ("cuda", "hip"):
+        refused = _run_split_direct(
+            out_dir, timeout=120, extra_env={"MOLT_GPU_BACKEND": backend}
+        )
+        assert refused.returncode != 0, refused.stdout + refused.stderr
+        assert "RuntimeError" in refused.stderr
+        assert (
+            f"requested {backend.capitalize()} Python-kernel descriptor execution is unavailable"
+            in refused.stderr
+        )
+        assert (
+            refused.stdout.strip() == "GPU capability refused before kernel execution"
+        )
+        assert "launch semantics ok" not in refused.stdout
 
 
 def test_hostfed_call_bundle_parses_profile_and_classifies_timeout(
@@ -562,6 +578,12 @@ def _minimum_wasm_table_ref_index(path: Path) -> int | None:
     return min(ref_indices)
 
 
+def _require_split_artifact(out_dir: Path, name: str) -> Path:
+    artifact = out_dir / name
+    assert artifact.is_file(), f"Missing required split-runtime artifact: {artifact}"
+    return artifact
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -575,7 +597,14 @@ def split_build_a(tmp_path_factory):
     src.write_text(PROGRAM_A, encoding="utf-8")
     out_dir = base / "out"
     out_dir.mkdir()
-    result = _build_split(src, out_dir)
+    with pytest.MonkeyPatch.context() as environment:
+        environment.setenv("MOLT_BUILD_STATE_DIR", str(base / "build-state"))
+        result = _build_split(src, out_dir)
+    assert result.returncode == 0, (
+        f"Split build failed (rc={result.returncode}).\n"
+        f"stdout:\n{result.stdout[-2000:]}\n"
+        f"stderr:\n{result.stderr[-2000:]}"
+    )
     return out_dir, result
 
 
@@ -587,7 +616,14 @@ def split_build_b(tmp_path_factory):
     src.write_text(PROGRAM_B, encoding="utf-8")
     out_dir = base / "out"
     out_dir.mkdir()
-    result = _build_split(src, out_dir)
+    with pytest.MonkeyPatch.context() as environment:
+        environment.setenv("MOLT_BUILD_STATE_DIR", str(base / "build-state"))
+        result = _build_split(src, out_dir)
+    assert result.returncode == 0, (
+        f"Split build failed (rc={result.returncode}).\n"
+        f"stdout:\n{result.stdout[-2000:]}\n"
+        f"stderr:\n{result.stderr[-2000:]}"
+    )
     return out_dir, result
 
 
@@ -601,21 +637,16 @@ class TestSplitRuntimeArtifacts:
     """Verify the split-runtime build produces all expected artifacts."""
 
     def test_repeated_build_preserves_complete_generation_and_executes(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, split_build_a, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Two real builds, one deployed generation, then its actual Node consumer."""
+        """Reuse the admitted generation, then prove a real rebuild and execution."""
         from molt.cli.link_fingerprints import _read_link_fingerprint
         from molt.artifact_publication import publication_receipt_path
         from molt.cli.static_archive_identity import artifact_content_identity
 
-        state_root = tmp_path / "build-state"
-        monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(state_root))
-        source = tmp_path / "program.py"
-        source.write_text(PROGRAM_A, encoding="utf-8")
-        out = tmp_path / "out"
-        out.mkdir()
-        first = _build_split(source, out)
-        assert first.returncode == 0, first.stderr[-4000:]
+        out, _ = split_build_a
+        monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(out.parent / "build-state"))
+        source = out.parent / "prog_a.py"
         receipt_path = publication_receipt_path(out / "manifest.json")
         receipt = _read_link_fingerprint(receipt_path)
         assert receipt is not None
@@ -666,70 +697,48 @@ class TestSplitRuntimeArtifacts:
         )
 
     def test_expected_files_exist(self, split_build_a):
-        out_dir, result = split_build_a
-        if result.returncode != 0:
-            pytest.skip("build failed")
-        expected = [
+        from molt.browser_asset_closure import wasm_loader_asset_payloads
+
+        out_dir, _ = split_build_a
+        for name in (
             "app.wasm",
-            "browser_embed.js",
-            "browser_host.js",
-            "browser_gpu_dispatch.js",
-            "browser_gpu_worker.js",
-            "browser_target_features.js",
-            "callable_table_abi_generated.js",
-            "loader_bridge.js",
             "molt_runtime.wasm",
-            "molt_vfs_browser.js",
             "target_feature_manifest.json",
-            "target_feature_constants.generated.js",
             "worker.js",
             "manifest.json",
             "wrangler.jsonc",
-        ]
-        for name in expected:
-            assert (out_dir / name).exists(), f"Missing artifact: {name}"
+        ):
+            _require_split_artifact(out_dir, name)
+        for name, payload in wasm_loader_asset_payloads(ROOT / "wasm").items():
+            assert _require_split_artifact(out_dir, name).read_bytes() == payload, (
+                f"Copied browser asset differs from its canonical payload: {name}"
+            )
         assert not (out_dir / "wrangler.toml").exists()
 
     def test_app_wasm_size(self, split_build_a):
-        out_dir, result = split_build_a
-        if result.returncode != 0:
-            pytest.skip("build failed")
-        app_wasm = out_dir / "app.wasm"
-        if not app_wasm.exists():
-            pytest.skip("app.wasm not produced")
+        out_dir, _ = split_build_a
+        app_wasm = _require_split_artifact(out_dir, "app.wasm")
         size_mb = app_wasm.stat().st_size / (1024 * 1024)
         assert size_mb < 1, f"app.wasm is {size_mb:.2f} MB, expected < 1 MB"
 
     def test_app_wasm_smaller_than_raw_output_module(self, split_build_a):
-        out_dir, result = split_build_a
-        if result.returncode != 0:
-            pytest.skip("build failed")
-        app_wasm = out_dir / "app.wasm"
-        raw_output = out_dir / "output.wasm"
-        if not app_wasm.exists() or not raw_output.exists():
-            pytest.skip("split-runtime app/raw output not produced")
+        out_dir, _ = split_build_a
+        app_wasm = _require_split_artifact(out_dir, "app.wasm")
+        raw_output = _require_split_artifact(out_dir, "output.wasm")
         assert app_wasm.stat().st_size < raw_output.stat().st_size, (
             "split-runtime app.wasm should be deforested below the raw rewritten "
             "output.wasm artifact"
         )
 
     def test_runtime_wasm_size(self, split_build_a):
-        out_dir, result = split_build_a
-        if result.returncode != 0:
-            pytest.skip("build failed")
-        rt_wasm = out_dir / "molt_runtime.wasm"
-        if not rt_wasm.exists():
-            pytest.skip("molt_runtime.wasm not produced")
+        out_dir, _ = split_build_a
+        rt_wasm = _require_split_artifact(out_dir, "molt_runtime.wasm")
         size_mb = rt_wasm.stat().st_size / (1024 * 1024)
         assert size_mb < 5, f"molt_runtime.wasm is {size_mb:.2f} MB, expected < 5 MB"
 
     def test_app_wasm_retains_runtime_abi_imports(self, split_build_a):
-        out_dir, result = split_build_a
-        if result.returncode != 0:
-            pytest.skip("build failed")
-        app_wasm = out_dir / "app.wasm"
-        if not app_wasm.exists():
-            pytest.skip("app.wasm not produced")
+        out_dir, _ = split_build_a
+        app_wasm = _require_split_artifact(out_dir, "app.wasm")
         runtime_imports = _collect_module_imports(app_wasm, "molt_runtime")
         assert runtime_imports, (
             "app.wasm must retain molt_runtime imports in split mode"
@@ -738,14 +747,10 @@ class TestSplitRuntimeArtifacts:
         assert "molt_module_import" in runtime_imports
 
     def test_worker_uses_backend_wasm_table_base(self, split_build_a):
-        out_dir, result = split_build_a
-        if result.returncode != 0:
-            pytest.skip("build failed")
-        app_wasm = out_dir / "app.wasm"
-        worker_js = out_dir / "worker.js"
-        manifest = out_dir / "manifest.json"
-        if not app_wasm.exists() or not worker_js.exists() or not manifest.exists():
-            pytest.skip("split-runtime artifacts not produced")
+        out_dir, _ = split_build_a
+        app_wasm = _require_split_artifact(out_dir, "app.wasm")
+        worker_js = _require_split_artifact(out_dir, "worker.js")
+        manifest = _require_split_artifact(out_dir, "manifest.json")
 
         manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
         wasm_table_base = manifest_data["wasm_table_base"]
@@ -915,7 +920,6 @@ def test_linked_host_export_attribute_error_does_not_return_none(
             "wasm",
             "--build-profile",
             "dev",
-            "--rebuild",
             "--out-dir",
             str(out_dir),
         ],
@@ -972,7 +976,6 @@ def test_linked_host_export_imports_tinygrad_dtype_class(
             "wasm",
             "--build-profile",
             "dev",
-            "--rebuild",
             "--out-dir",
             str(out_dir),
         ],
@@ -1032,7 +1035,6 @@ def test_linked_host_export_imports_tinygrad_tensor_module(
             "wasm",
             "--build-profile",
             "dev",
-            "--rebuild",
             "--out-dir",
             str(out_dir),
         ],
@@ -1125,7 +1127,6 @@ def test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype(
             "wasm",
             "--build-profile",
             "dev",
-            "--rebuild",
             "--out-dir",
             str(out_dir),
         ],
@@ -1766,12 +1767,8 @@ class TestWorkerJsContent:
     """Verify worker.js contains key runtime patterns."""
 
     def _read_worker(self, split_build_a):
-        out_dir, result = split_build_a
-        if result.returncode != 0:
-            pytest.skip("build failed")
-        worker = out_dir / "worker.js"
-        if not worker.exists():
-            pytest.skip("worker.js not produced")
+        out_dir, _ = split_build_a
+        worker = _require_split_artifact(out_dir, "worker.js")
         return worker.read_text(encoding="utf-8")
 
     def test_shared_table(self, split_build_a):
@@ -1811,11 +1808,19 @@ class TestWorkerJsContent:
             "worker.js must propagate the computed wasm table base into the runtime"
         )
 
-    def test_worker_runs_runtime_shutdown(self, split_build_a):
-        content = self._read_worker(split_build_a)
-        assert "molt_runtime_shutdown" in content, (
-            "worker.js must shut the runtime down so stdio buffers flush"
+    def test_worker_runs_runtime_shutdown(self, split_build_a, tmp_path: Path):
+        from molt.browser_asset_closure import canonical_wasm_loader_asset_bytes
+        from tests.test_wasm_startup_failures import (
+            assert_split_worker_runtime_lifecycle,
         )
+
+        content = self._read_worker(split_build_a)
+        out_dir, _ = split_build_a
+        lifecycle = _require_split_artifact(out_dir, "runtime_lifecycle.js")
+        assert lifecycle.read_bytes() == canonical_wasm_loader_asset_bytes(
+            ROOT / "wasm/runtime_lifecycle.js"
+        )
+        assert_split_worker_runtime_lifecycle(content, lifecycle, tmp_path)
 
     def test_worker_provisions_shared_memory(self, split_build_a):
         content = self._read_worker(split_build_a)
@@ -1861,21 +1866,13 @@ class TestManifestJson:
     """Verify manifest.json has the correct structure."""
 
     def _read_manifest(self, split_build_a):
-        out_dir, result = split_build_a
-        if result.returncode != 0:
-            pytest.skip("build failed")
-        manifest = out_dir / "manifest.json"
-        if not manifest.exists():
-            pytest.skip("manifest.json not produced")
+        out_dir, _ = split_build_a
+        manifest = _require_split_artifact(out_dir, "manifest.json")
         return json.loads(manifest.read_text(encoding="utf-8"))
 
     def _read_worker(self, split_build_a):
-        out_dir, result = split_build_a
-        if result.returncode != 0:
-            pytest.skip("build failed")
-        worker = out_dir / "worker.js"
-        if not worker.exists():
-            pytest.skip("worker.js not produced")
+        out_dir, _ = split_build_a
+        worker = _require_split_artifact(out_dir, "worker.js")
         return worker.read_text(encoding="utf-8")
 
     @staticmethod
@@ -1940,12 +1937,8 @@ class TestManifestJson:
             _runtime_import_signatures_from_manifest,
         )
 
-        out_dir, result = split_build_a
-        if result.returncode != 0:
-            pytest.skip("build failed")
-        app_wasm = out_dir / "app.wasm"
-        if not app_wasm.exists():
-            pytest.skip("app.wasm not produced")
+        out_dir, _ = split_build_a
+        app_wasm = _require_split_artifact(out_dir, "app.wasm")
         runtime_import_names = wasm_artifact._collect_wasm_module_import_names(
             app_wasm, "molt_runtime"
         )
@@ -1961,8 +1954,7 @@ class TestManifestJson:
         expected_export_names = _runtime_import_export_names_from_manifest(
             manifest_runtime_names
         )
-        if not expected_signatures:
-            pytest.skip("app has no runtime imports")
+        assert expected_signatures, "split-runtime host ABI requires runtime imports"
 
         abi = self._read_manifest(split_build_a)["abi"]["runtime_imports"]
 
@@ -1995,9 +1987,7 @@ class TestManifestJson:
             wasm_callable_table_manifest_summary,
         )
 
-        out_dir, result = split_build_a
-        if result.returncode != 0:
-            pytest.skip("build failed")
+        out_dir, _ = split_build_a
         manifest_abi = self._read_manifest(split_build_a)["abi"]["callable_table"]
         worker_js = self._read_worker(split_build_a)
 
@@ -2016,14 +2006,10 @@ class TestRuntimeCacheability:
     """Two different programs must produce identical molt_runtime.wasm for CDN caching."""
 
     def test_runtime_hash_identical(self, split_build_a, split_build_b):
-        out_a, result_a = split_build_a
-        out_b, result_b = split_build_b
-        if result_a.returncode != 0 or result_b.returncode != 0:
-            pytest.skip("one or both builds failed")
-        rt_a = out_a / "molt_runtime.wasm"
-        rt_b = out_b / "molt_runtime.wasm"
-        if not rt_a.exists() or not rt_b.exists():
-            pytest.skip("molt_runtime.wasm not produced in both builds")
+        out_a, _ = split_build_a
+        out_b, _ = split_build_b
+        rt_a = _require_split_artifact(out_a, "molt_runtime.wasm")
+        rt_b = _require_split_artifact(out_b, "molt_runtime.wasm")
         hash_a = _sha256(rt_a)
         hash_b = _sha256(rt_b)
         assert hash_a == hash_b, (
@@ -2036,14 +2022,10 @@ class TestRuntimeCacheability:
 
     def test_app_wasm_differs(self, split_build_a, split_build_b):
         """Sanity check: the app modules should be different."""
-        out_a, result_a = split_build_a
-        out_b, result_b = split_build_b
-        if result_a.returncode != 0 or result_b.returncode != 0:
-            pytest.skip("one or both builds failed")
-        app_a = out_a / "app.wasm"
-        app_b = out_b / "app.wasm"
-        if not app_a.exists() or not app_b.exists():
-            pytest.skip("app.wasm not produced in both builds")
+        out_a, _ = split_build_a
+        out_b, _ = split_build_b
+        app_a = _require_split_artifact(out_a, "app.wasm")
+        app_b = _require_split_artifact(out_b, "app.wasm")
         hash_a = _sha256(app_a)
         hash_b = _sha256(app_b)
         assert hash_a != hash_b, (

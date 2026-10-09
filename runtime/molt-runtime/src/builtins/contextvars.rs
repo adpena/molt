@@ -108,17 +108,30 @@ fn var_hash(bits: u64) -> u32 {
     let hash = unsafe { variable(bits).hash } as u64;
     (hash ^ (hash >> 32)) as u32
 }
-fn alloc<T>(py: &PyToken<'_>, class: u64, value: T) -> Option<u64> {
+fn alloc_unpublished<T>(py: &PyToken<'_>, class: u64) -> Option<*mut u8> {
     if class == 0 || exception_pending(py) {
         return None;
     }
-    let bits = crate::object::builders::alloc_class_instance(py, std::mem::size_of::<T>(), class);
-    let p = obj_from_bits(bits).as_ptr()?;
+    let class_ptr = obj_from_bits(class).as_ptr()?;
+    // Native class construction has sealed the full extent, including shared
+    // backing after the typed prefix. Keep publication with the typed caller.
+    let size = unsafe { crate::object::layout::class_cached_layout_size(class_ptr) }?;
+    debug_assert!(
+        size >= std::mem::size_of::<T>()
+            + unsafe { crate::object::class_reserved_layout_tail(py, class_ptr) }
+    );
+    obj_from_bits(crate::object::builders::alloc_class_instance(
+        py, size, class,
+    ))
+    .as_ptr()
+}
+fn alloc<T>(py: &PyToken<'_>, class: u64, value: T) -> Option<u64> {
+    let p = alloc_unpublished::<T>(py, class)?;
     unsafe {
         p.cast::<T>().write(value);
         crate::object::gc::gc_publish_initialized(py, p);
     }
-    Some(bits)
+    Some(MoltObject::from_ptr(p).bits())
 }
 pub(crate) fn new_context(py: &PyToken<'_>) -> Option<u64> {
     alloc(
@@ -254,9 +267,8 @@ pub(crate) fn new_variable(py: &PyToken<'_>, name: u64, default: Option<u64>) ->
     }
     // Allocate before computing the identity hash, but keep the unpublished
     // native shape valid and locally pinned across a str-subclass hash call.
-    let bits =
-        crate::object::builders::alloc_class_instance(py, std::mem::size_of::<Variable>(), class);
-    let p = obj_from_bits(bits).as_ptr()?;
+    let p = alloc_unpublished::<Variable>(py, class)?;
+    let bits = MoltObject::from_ptr(p).bits();
     let mut pin = PtrDropGuard::preserving(p);
     let hash = crate::object::ops_hash::hash_bits_signed(py, name);
     if exception_pending(py) {
@@ -409,10 +421,10 @@ impl<'a, 'py> ExecutionContextLease<'a, 'py> {
     pub(crate) fn enter(py: &'a PyToken<'py>, task: *mut u8) -> Option<Self> {
         use crate::async_rt::cancellation::TaskContextBinding as B;
         let binding = crate::async_rt::cancellation::task_context_binding(py, task);
-        if let B::Owned(ctx) = binding {
-            if !enter(py, ctx) {
-                return None;
-            }
+        if let B::Owned(ctx) = binding
+            && !enter(py, ctx)
+        {
+            return None;
         }
         let saved_task = if matches!(binding, B::Inherited) {
             0

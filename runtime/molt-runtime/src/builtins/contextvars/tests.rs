@@ -23,6 +23,150 @@ fn integer(n: i64) -> u64 {
     MoltObject::from_int(n).bits()
 }
 
+// The semantic prefix and the common lifecycle dictionary edge must occupy
+// disjoint physical ranges. Derive the edge address from the common owner, not
+// from the Context allocator's size calculation.
+fn assert_native_prefix_precedes_shared_backing(bits: u64, prefix_size: usize) {
+    let pointer = obj_from_bits(bits).as_ptr().unwrap();
+    unsafe {
+        let end = pointer.add(crate::object::object_payload_size(pointer)) as usize;
+        let dictionary = crate::object::instance_dict_bits_ptr(pointer);
+        assert!(!dictionary.is_null());
+        assert!(dictionary as usize >= pointer as usize + prefix_size);
+        assert_eq!(dictionary as usize + std::mem::size_of::<u64>(), end);
+        assert_eq!(
+            *dictionary, 0,
+            "native fields must not populate shared backing"
+        );
+    }
+}
+
+#[test]
+fn cold_missing_and_every_context_payload_have_disjoint_shared_backing() {
+    crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        with_gil(|py| unsafe {
+            use molt_cpython_abi::abi_types::PyContextToken_Type;
+            use molt_cpython_abi::api::object::PyObject_GetAttrString;
+            use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+            let var = variable_named(&py, "layout", Some(none()));
+            let selected = new_context(&py).unwrap();
+            assert!(enter(&py, selected));
+            // The first set constructs Token.MISSING from a zero-sized native
+            // prefix. The second gives Token a nonzero final native flags word.
+            let first = set_variable(&py, var, integer(11)).unwrap();
+            let second = set_variable(&py, var, integer(22)).unwrap();
+            assert!(!exception_pending(&py));
+            let token_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(first);
+            assert!(!token_view.is_null());
+            let old = PyObject_GetAttrString(token_view, c"old_value".as_ptr());
+            assert!(!old.is_null());
+            let missing = PyObject_GetAttrString(
+                (&raw mut PyContextToken_Type).cast::<PyObject>(),
+                c"MISSING".as_ptr(),
+            );
+            assert!(!missing.is_null());
+            assert_eq!(old, missing, "old_value must return the cached singleton");
+            let missing_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(missing).unwrap().bits();
+            let iterators = [
+                molt_contextvars_keys(selected),
+                molt_contextvars_values(selected),
+                molt_contextvars_items(selected),
+            ];
+            for (bits, prefix_size) in [
+                (selected, std::mem::size_of::<Context>()),
+                (var, std::mem::size_of::<Variable>()),
+                (second, std::mem::size_of::<Token>()),
+                (missing_bits, 0),
+            ] {
+                assert_native_prefix_precedes_shared_backing(bits, prefix_size);
+            }
+            for iterator in iterators {
+                assert_native_prefix_precedes_shared_backing(
+                    iterator,
+                    std::mem::size_of::<ContextIterator>(),
+                );
+                dec_ref_bits(&py, iterator);
+            }
+            refcount::Py_DECREF(old);
+            refcount::Py_DECREF(missing);
+            assert!(reset_variable(&py, var, second));
+            assert!(reset_variable(&py, var, first));
+            assert!(exit(&py, selected));
+            for bits in [first, second, selected, var] {
+                dec_ref_bits(&py, bits);
+            }
+            clear_thread_context(&py);
+        });
+    });
+}
+
+#[test]
+fn all_iterator_modes_own_snapshots_after_context_and_token_release() {
+    fixture(|py| {
+        use crate::object::weakref::WeakBorrow;
+        clear_thread_context(py);
+        let var = variable_named(py, "iterator-lifetime", None);
+        let value = new_context(py).unwrap();
+        let variable_watch = WeakBorrow::new(py, var).unwrap();
+        let value_watch = WeakBorrow::new(py, value).unwrap();
+        let token = set_variable(py, var, value).unwrap();
+        let selected = current(py).unwrap();
+        let iterators = [
+            molt_contextvars_keys(selected),
+            molt_contextvars_values(selected),
+            molt_contextvars_items(selected),
+        ];
+        assert!(!exception_pending(py));
+        assert!(reset_variable(py, var, token));
+        for bits in [token, var, value] {
+            dec_ref_bits(py, bits);
+        }
+        clear_thread_context(py);
+        unsafe { crate::object::gc::collect_cycles(py) };
+        for watch in [&variable_watch, &value_watch] {
+            let retained = watch.upgrade_owned().expect("iterator owns its snapshot");
+            dec_ref_bits(py, retained);
+        }
+        for (mode, iterator) in iterators.into_iter().enumerate() {
+            let item = molt_contextvars_iter_next(iterator);
+            assert!(!exception_pending(py));
+            match mode {
+                0 => assert_eq!(item, var),
+                1 => assert_eq!(item, value),
+                _ => assert_eq!(
+                    unsafe {
+                        crate::object::seq_access::with_immutable_tuple_slice(
+                            obj_from_bits(item).as_ptr().unwrap(),
+                            |values| values.to_vec(),
+                        )
+                    },
+                    Some(vec![var, value]),
+                ),
+            }
+            dec_ref_bits(py, item);
+            assert_native_prefix_precedes_shared_backing(
+                iterator,
+                std::mem::size_of::<ContextIterator>(),
+            );
+            assert_eq!(molt_contextvars_iter_next(iterator), none());
+            unsafe {
+                assert_ne!(
+                    errors::PyErr_ExceptionMatches(
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_StopIteration).cast()
+                    ),
+                    0
+                );
+                errors::PyErr_Clear();
+            }
+            dec_ref_bits(py, iterator);
+        }
+        unsafe { crate::object::gc::collect_cycles(py) };
+        assert!(variable_watch.upgrade_owned().is_none());
+        assert!(value_watch.upgrade_owned().is_none());
+    });
+}
+
 #[test]
 fn copies_share_roots_but_tokens_require_the_original_context_identity() {
     fixture(|py| {
@@ -238,6 +382,48 @@ fn allocation_failure_is_atomic_and_failed_reset_consumes_the_token() {
         let reset = set_variable(py, var, integer(2)).unwrap();
         let ctx = current(py).unwrap();
         let root = unsafe { context(ctx).root };
+        // Warm native class caches so each denial reaches the actual instance
+        // allocator. All three iterator modes share that allocation authority.
+        for iterator in [
+            molt_contextvars_keys(ctx),
+            molt_contextvars_values(ctx),
+            molt_contextvars_items(ctx),
+        ] {
+            assert!(obj_from_bits(iterator).as_ptr().is_some());
+            dec_ref_bits(py, iterator);
+        }
+        for operation in 0..6 {
+            let construct = || match operation {
+                0 => new_context(py),
+                1 => copy_context(py, ctx),
+                2 => new_variable(py, unsafe { variable(var).name }, Some(none())),
+                mode => {
+                    let bits = match mode {
+                        3 => molt_contextvars_keys(ctx),
+                        4 => molt_contextvars_values(ctx),
+                        _ => molt_contextvars_items(ctx),
+                    };
+                    obj_from_bits(bits).as_ptr().map(|_| bits)
+                }
+            };
+            let budget = deny();
+            let denied = construct();
+            drop(budget);
+            assert!(denied.is_none());
+            unsafe {
+                assert_eq!(
+                    errors::PyErr_ExceptionMatches(
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast(),
+                    ),
+                    1,
+                );
+                errors::PyErr_Clear();
+            }
+            assert_eq!(unsafe { context(ctx).root }, root);
+            let recovered = construct().expect("allocation must recover after denial");
+            assert!(!exception_pending(py));
+            dec_ref_bits(py, recovered);
+        }
         let budget = deny();
         assert!(set_variable(py, var, integer(3)).is_none());
         drop(budget);

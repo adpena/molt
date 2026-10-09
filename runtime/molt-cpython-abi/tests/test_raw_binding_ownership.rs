@@ -48,18 +48,19 @@ unsafe extern "C" fn deallocate(object: *mut PyObject) {
     unsafe { drop(Box::from_raw(object)) };
 }
 
-fn setup(watch: &[u64]) {
+fn setup(watch: &[u64]) -> support::AbiTestThreadStateTransaction {
     let mut hooks = support::stub_runtime_hooks();
     support::fake_strings::wire(&mut hooks);
     hooks.dec_ref = release_runtime;
     hooks.foreign_new = support::fake_foreign::foreign_new;
-    support::prepare_abi_test_thread(hooks);
+    let transaction = support::enter_abi_test(hooks);
     *WATCH.lock().unwrap() = watch.to_vec();
     RELEASES.lock().unwrap().clear();
     REENTER_ADDRESS.store(0, Ordering::Relaxed);
     REENTRY_SAW_DETACHED.store(false, Ordering::Relaxed);
     DEALLOCS.store(0, Ordering::Relaxed);
     unsafe { errors::PyErr_Clear() };
+    transaction
 }
 
 fn raw_object(typ: &mut PyTypeObject) -> *mut PyObject {
@@ -73,7 +74,7 @@ fn raw_object(typ: &mut PyTypeObject) -> *mut PyObject {
 #[test]
 fn borrowed_static_alias_retirement_preserves_reverse_identity_and_runtime_owner() {
     let _lock = LOCK.lock().unwrap();
-    setup(&[bits(7)]);
+    let _abi_test = setup(&[bits(7)]);
     let mut typ: PyTypeObject = unsafe { std::mem::zeroed() };
     let canonical = raw_object(&mut typ);
     let alias = raw_object(&mut typ);
@@ -100,7 +101,7 @@ fn borrowed_static_alias_retirement_preserves_reverse_identity_and_runtime_owner
 #[test]
 fn borrowed_static_without_reverse_detaches_before_native_deallocation() {
     let _lock = LOCK.lock().unwrap();
-    setup(&[bits(12)]);
+    let _abi_test = setup(&[bits(12)]);
     let mut typ: PyTypeObject = unsafe { std::mem::zeroed() };
     let alias = raw_object(&mut typ);
     unsafe {
@@ -121,7 +122,7 @@ fn borrowed_static_without_reverse_detaches_before_native_deallocation() {
 #[test]
 fn borrowed_static_rebinding_preserves_aliases_and_rejects_collision_without_mutation() {
     let _lock = LOCK.lock().unwrap();
-    setup(&[bits(8), bits(9), bits(10)]);
+    let _abi_test = setup(&[bits(8), bits(9), bits(10)]);
     let mut typ: PyTypeObject = unsafe { std::mem::zeroed() };
     let canonical = raw_object(&mut typ);
     let alias = raw_object(&mut typ);
@@ -182,7 +183,7 @@ fn borrowed_static_rebinding_preserves_aliases_and_rejects_collision_without_mut
 #[test]
 fn borrowed_foreign_wrapper_reverse_entry_never_releases_its_own_runtime_identity() {
     let _lock = LOCK.lock().unwrap();
-    setup(&[]);
+    let _abi_test = setup(&[]);
     let mut typ: PyTypeObject = unsafe { std::mem::zeroed() };
     let foreign = raw_object(&mut typ);
     unsafe {

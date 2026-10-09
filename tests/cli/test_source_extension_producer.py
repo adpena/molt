@@ -838,7 +838,8 @@ def test_produce_set_dispatches_complete_set(
         "produce_source_extension_set",
         lambda **kwargs: calls.append(kwargs) or 0,
     )
-    args = entrypoint_parser._build_entrypoint_parser().parse_args(
+    parser = entrypoint_parser._build_entrypoint_parser()
+    args = parser.parse_args(
         [
             "extension",
             "produce-set",
@@ -860,6 +861,7 @@ def test_produce_set_dispatches_complete_set(
     assert (
         entrypoint_dispatch._dispatch_entrypoint_command(
             args,
+            parser=parser,
             build_fn=lambda **_: 0,
             config_root=tmp_path,
             config={},

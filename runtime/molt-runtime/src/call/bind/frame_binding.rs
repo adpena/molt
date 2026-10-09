@@ -614,10 +614,7 @@ unsafe fn bind_python_frame<'a, 'py>(
             has_varkw,
         };
         let total_pos = layout.positional;
-        let slots = match BoundCallSlots::new(_py, layout) {
-            Ok(slots) => slots,
-            Err(error) => return Err(error),
-        };
+        let slots = BoundCallSlots::new(_py, layout)?;
         // T2: an inlined CALL frame takes the call's arguments over; any other
         // binding gives the frame its own references (`Admission`).
         let mut binding = FrameBinding::new(args, slots);
@@ -893,10 +890,7 @@ unsafe fn bind_python_frame<'a, 'py>(
             if binding.slots[slot_idx].is_some() {
                 continue;
             }
-            let default = match function_kwdefault_owned(_py, func_ptr, name_bits) {
-                Ok(value) => value,
-                Err(error) => return Err(error),
-            };
+            let default = function_kwdefault_owned(_py, func_ptr, name_bits)?;
             if let Some(val) = default {
                 binding.slots.set_owned(slot_idx, val);
                 continue;

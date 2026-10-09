@@ -455,7 +455,9 @@ def test_sdk_tree_byte_limit_is_checked_before_file_content_is_read(
         pytest.fail("out-of-policy file content must not be read")
 
     with monkeypatch.context() as hashing:
-        hashing.setattr(wasi_sdk_identity.hashlib, "file_digest", forbidden_hash)
+        hashing.setattr(
+            wasi_sdk_identity, "stable_regular_file_handle_identity", forbidden_hash
+        )
         with pytest.raises(ValueError, match="total-byte policy"):
             wasi_sdk_tree_identity(tmp_path)
 
@@ -561,3 +563,84 @@ def test_receipt_facts_use_captured_tree_without_reopening_members(
         )
         == expected
     )
+
+
+@pytest.mark.parametrize("mode", ["version", "tree-version", "tree-file"])
+def test_sdk_identity_reads_only_its_initial_extent(tmp_path, monkeypatch, mode):
+    from contextlib import contextmanager
+    from tests.operation_probe import same_thread_probe
+
+    sdk = tmp_path / "sdk"
+    sdk.mkdir()
+    version = mode != "tree-file"
+    path = sdk / ("VERSION" if version else "payload")
+    raw = VERSION_TEXT if version else b"SDK bytes"
+    path.write_bytes(raw)
+
+    def read():
+        if mode == "version":
+            return wasi_sdk_identity.read_wasi_sdk_version_identity(path)
+        return wasi_sdk_tree_identity(sdk)
+
+    observed = read()
+    if mode == "version":
+        assert observed.sdk_version == _WASI.sdk_version
+        assert observed.llvm_version == _WASI.llvm_version
+    else:
+        assert (
+            path.name,
+            "file",
+            len(raw),
+            hashlib.sha256(raw).hexdigest(),
+        ) in observed.records
+        assert (observed.version is not None) is version
+    original = wasi_sdk_identity.open_stable_regular_file
+    consumed = []
+    attempts = []
+
+    class GrowingStream:
+        def __init__(self, stream):
+            self.stream = stream
+            self.grown = False
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def grow(self):
+            if not self.grown:
+                self.grown = True
+                attempts.append(path)
+                # The real POSIX file grows after admitted metadata was read.
+                # Windows may refuse this write under its existing read lease.
+                with path.open("ab") as writer:
+                    writer.write(b"late bytes" * 10000)
+
+        def read(self, size=-1):
+            self.grow()
+            data = self.stream.read(size)
+            consumed.append(len(data))
+            return data
+
+        def readinto(self, buffer):
+            # The predecessor hashlib.file_digest uses readinto, so count its
+            # actual bytes as well; do not assume the repaired read mechanism.
+            self.grow()
+            count = self.stream.readinto(buffer)
+            consumed.append(count)
+            return count
+
+    @contextmanager
+    def growing_open(selected, **kwargs):
+        with original(selected, **kwargs) as opened:
+            yield replace(opened, stream=GrowingStream(opened.stream))
+
+    monkeypatch.setattr(
+        wasi_sdk_identity,
+        "open_stable_regular_file",
+        same_thread_probe(original, growing_open),
+    )
+    with pytest.raises(wasi_sdk_identity.WasiSdkIdentityError) as failure:
+        read()
+    assert attempts == [path]
+    assert sum(consumed) <= len(raw) + 1
+    assert "changed" in str(failure.value)

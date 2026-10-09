@@ -164,7 +164,7 @@ unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
     unsafe { support::fake_runtime::classify_heap(bits) }
 }
 
-fn install() {
+fn install() -> support::AbiTestThreadStateTransaction {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
     hooks.object_richcompare = fx_richcompare;
@@ -173,7 +173,7 @@ fn install() {
     hooks.list_len = fx_list_len;
     hooks.list_item = fx_list_item;
     hooks.classify_heap = Some(fx_classify_heap);
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 /// Mint a `*mut PyObject` for a runtime handle (ob_type set from classify_heap).
@@ -218,7 +218,7 @@ fn mk_dict(pairs: &[(i64, i64)]) -> *mut PyObject {
 
 #[test]
 fn list_structural_richcompare_over_distinct_objects() {
-    install();
+    let _abi_test = install();
     COMPARISONS.lock().unwrap().clear();
     use molt_cpython_abi::api::typeobj::PyObject_RichCompareBool;
     unsafe {
@@ -270,7 +270,7 @@ fn list_structural_richcompare_over_distinct_objects() {
 
 #[test]
 fn dict_structural_richcompare_over_distinct_objects() {
-    install();
+    let _abi_test = install();
     COMPARISONS.lock().unwrap().clear();
     use molt_cpython_abi::api::typeobj::PyObject_RichCompareBool;
     unsafe {

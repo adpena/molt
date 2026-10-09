@@ -31,10 +31,10 @@ use std::ptr;
 
 // Shared dictionary/string/foreign ownership capability model.
 
-fn install_hooks() {
+fn install_hooks() -> support::AbiTestThreadStateTransaction {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 // ── Slot callbacks whose identity the test verifies survives dispatch ────────
@@ -69,7 +69,7 @@ const PY_NB_ADD: c_int = 7;
 #[test]
 fn fromspec_relative_members_are_normalized_before_descriptor_dispatch() {
     use molt_cpython_abi::api::{errors, numbers, object, refcount, strings, typeobj};
-    install_hooks();
+    let _abi_test = install_hooks();
     let mut declarations = [
         PyMemberDef {
             name: c"number".as_ptr(),
@@ -179,6 +179,11 @@ fn fromspec_relative_members_are_normalized_before_descriptor_dispatch() {
             );
         }
         assert!(errors::PyErr_Occurred().is_null());
+        drop(instance);
+        // A ready heap type owns its MRO and descriptor cycles. The fixture
+        // has no collector: use the production cycle-breaking slot while this
+        // external type owner is still live, as the other FromSpec cases do.
+        assert_eq!(typeobj::molt_type_clear(owner.as_ptr()), 0);
     }
 }
 
@@ -187,7 +192,7 @@ fn fromspec_relative_members_are_normalized_before_descriptor_dispatch() {
 // ===========================================================================
 #[test]
 fn fromspec_installs_all_slot_families() {
-    install_hooks();
+    let _abi_test = install_hooks();
 
     let mut methods = [
         PyMethodDef {
@@ -359,7 +364,7 @@ fn fromspec_installs_all_slot_families() {
 
 #[test]
 fn getslot_invalid_id_fails_closed() {
-    install_hooks();
+    let _abi_test = install_hooks();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
 
@@ -375,7 +380,7 @@ fn getslot_invalid_id_fails_closed() {
 // ===========================================================================
 #[test]
 fn fromspec_unknown_slot_fails_closed() {
-    install_hooks();
+    let _abi_test = install_hooks();
     unsafe {
         // Clear any stale exception from earlier tests in this binary.
         molt_cpython_abi::api::errors::PyErr_Clear();
@@ -424,7 +429,7 @@ fn fromspec_unknown_slot_fails_closed() {
 // ===========================================================================
 #[test]
 fn fromspec_type_is_heaptype_with_inbounds_ht_module_and_name() {
-    install_hooks();
+    let _abi_test = install_hooks();
     let mut term = [PyType_Slot {
         slot: 0,
         pfunc: ptr::null_mut(),

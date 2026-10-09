@@ -6,13 +6,13 @@ mod support;
 
 use std::ffi::c_void;
 
-fn init() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+fn init() -> support::AbiTestThreadStateTransaction {
+    support::enter_abi_test(support::stub_runtime_hooks())
 }
 
 #[test]
 fn test_capsule_pointer_context_and_import_registry() {
-    init();
+    let _abi_test = init();
     let mut value = 7u32;
     let mut updated = 9u32;
     let mut context = 11u32;

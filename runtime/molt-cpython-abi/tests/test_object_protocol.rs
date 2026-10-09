@@ -17,11 +17,16 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// Acquire the binary-wide serialization guard (poison-tolerant) and run the
-/// idempotent ABI init. Every test binds the returned `MutexGuard` for its body.
-fn init() -> MutexGuard<'static, ()> {
+/// idempotent ABI init. Every test retains both guards; tuple field order
+/// retires the ABI transaction before releasing the fixture serialization lock.
+#[must_use = "retain ABI and fixture-lock custody for the whole test"]
+fn init() -> (
+    support::AbiTestThreadStateTransaction,
+    MutexGuard<'static, ()>,
+) {
     let guard = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
-    guard
+    let transaction = support::enter_abi_test(support::stub_runtime_hooks());
+    (transaction, guard)
 }
 
 /// Expected `ob_refcnt` after ONE new-reference `Py_INCREF`. CPython-faithful:
@@ -531,7 +536,7 @@ fn test_object_dir_foreign_nonbridge_does_not_hang() {
     // lending parent stack storage would also become unsafe on timeout.
     let _guard = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let handle = std::thread::spawn(move || {
-        support::prepare_abi_test_thread(support::stub_runtime_hooks());
+        let _abi_test = support::enter_abi_test(support::stub_runtime_hooks());
         let mut fake = PyObject {
             ob_refcnt: 1,
             ob_type: ptr::null_mut(),

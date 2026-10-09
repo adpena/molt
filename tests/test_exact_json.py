@@ -51,6 +51,31 @@ def test_exact_file_read_admits_byte_limit_and_rejects_before_decode(
         exact_json.read_exact(path, max_bytes=10, label="test receipt")
 
 
+@pytest.mark.parametrize("reader", [exact_json.read_exact, exact_json.capture_exact])
+def test_small_json_allocation_is_independent_of_admitted_budget(tmp_path, reader):
+    import gc
+    import tracemalloc
+
+    path = tmp_path / "small.json"
+    path.write_bytes(b'{"value":1}')
+    peaks = []
+    for budget in (1024 * 1024, 8 * 1024 * 1024):
+        gc.collect()
+        tracemalloc.start()
+        try:
+            result = reader(path, max_bytes=budget, label="small receipt")
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        decoded = result[1] if reader is exact_json.capture_exact else result
+        assert decoded == {"value": 1}
+        peaks.append(peak)
+    # Policy headroom is not requested storage. This tolerates interpreter and
+    # filesystem bookkeeping while detecting allocation proportional to 7 MiB
+    # of unused admission allowance.
+    assert peaks[1] - peaks[0] < 256 * 1024
+
+
 @pytest.mark.parametrize("raw", (b'{"v":1,"v":2}', b'{"v":NaN}', b'"\xff"'))
 def test_exact_file_read_preserves_strict_codec(tmp_path: Path, raw: bytes) -> None:
     path = tmp_path / "receipt.json"

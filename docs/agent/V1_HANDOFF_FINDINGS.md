@@ -43,9 +43,81 @@ instances and missing qualification into the existing owning open requirement;
 retain the historical repair evidence without treating it as release acceptance.
 
 Current integration evidence (2026-10-09 UTC): draft PR119 is not merged into
-main. Published candidate `68ddf6b85` integrates the runtime, numeric, Context,
-GPU, frontend and tooling consumer families below. CI `37926018942` executes
-PR merge commit `083f2da8c`, whose source tree is identical to the candidate.
+main. The last completed CI candidate, `031432674`, includes the runtime,
+numeric, Context, GPU and tooling migrations plus the extension/header/toolchain
+corrections below. Its successor integrates the source repairs described here;
+fresh target execution is required. CI `37935929479` completes with failures. Native integration, LLVM, Python
+static, Windows portability, Linux/macOS queue portability, security and formal
+jobs pass. Both Python unit cells report 1,331 passes and one stale Rust-diagnostic
+upload expectation; its complete workflow owner now passes all 92 local checks.
+Both native ARM cells reject six Clippy sites; working source reuses the runtime
+class-layout authority and simplifies redundant control flow. Rust adds three
+byte-slice test warnings, now corrected without changing their numeric oracles.
+The filtered micro runtime cohort passes 776 tests with two ignored; it excludes
+the Context/scheduler tests that fail in both default runtime cohorts. The first
+source defect is corrected: Context construction now consumes the sealed extent,
+including the common backing word, and all seven physical projections reserve
+that word after their native fields. This fixes zero-payload MISSING allocation
+and prevents payload/lifecycle overlap. Default debug/shipping execution remains
+required; the remaining failures are not assigned to one cascade without replay.
+The common tail is required by today’s shared representation even where public
+dictionaries are forbidden. Removing unused Context backing remains an allocation-
+density question for the complete sealed-layout/lifecycle authority, with actual
+bucket/RSS measurements required before changing that representation.
+The same physical-layout census found a `groupby` payload overlapping the
+common backing word; its declared extent now reserves the word separately.
+The new actual-runtime regression covers both active-grouper lifetime branches.
+This remains source-qualified until the rebuilt runtime cohorts execute.
+
+The separate C-ABI test failures are reconciled independently of Context.
+Numeric receivers now exercise the existing physical scalar owner, complete
+string/class capabilities and real shared fixture ownership. List insertion
+uses the existing sequence owner; the tuple comparison witness now exercises
+the real runtime rather than a numeric-only fixture comparator. Heap-type tests
+retire their owned type roots through the production clear/deallocation path.
+All 49 old lifecycle consumers now retain lexical transactions, including
+returning setup helpers and worker scopes; the TLS-held transaction is deleted.
+A regression exercises ordinary cleanup failure, preservation of the original
+panic during cleanup failure, and successful subsequent attachment. All 78
+changed Rust files pass formatting. Compilation, libtest execution and the
+remaining target/feature cells are not yet qualified by these source checks.
+WASM exposes missing canonical raw compression exports in a split runtime; a
+later tinygrad probe is interrupted by the outer 1,200-second cohort deadline.
+The five distinct applications now have separate cold proof rows with the same
+1,200-second per-command bound. Their serialized job envelope accounts for the
+declared compiler work at 240 minutes; this is command-budget accounting, not
+a measured complete-job bound or speed claim. Setup, cleanup and upload overhead
+still need explicit whole-job qualification.
+The Node-only consumers omit the unused native-host producer, and GPU/tinygrad
+builds omit micro prebuilds whose feature identities they cannot consume.
+AttributeError retains its receipt-proven dev micro dependency. Four unnecessary
+application rebuild flags are removed; all isolated import/output oracles and
+runtime identity admission remain intact. Hosted execution remains required.
+The shared lifecycle/worker/companion consumers now have an admitted-Node
+PR/main row, with test-only changes routed to that family. Its executable
+reserved-callable oracle replaces expectations for the retired inline dispatcher.
+The emitted artifact, worker, manifest and cacheability classes are also selected
+on PR/main. They share the first admitted A build, independently verify its
+repeat, and build B only for the two-program cacheability oracle. Required build
+outputs fail instead of skipping; the Node lifetime witness uses the emitted
+canonical companion. Local qualification passes 166 affected Python/Node checks;
+the broader cohort exposes two receiver/admission omissions, whose corrected
+plan/bridge controls pass all 230 selected checks. The 36 emitted-artifact tests
+collect successfully but still require their actual compiled execution. All 26
+reproducible generators and the ownership check pass. Counts overlap and do not
+qualify actual WASM instantiation, Rust execution or the complete target matrix.
+The export owner now restores its 29 canonical raw/native compression symbols.
+Native link references and actual WASM feature-enabled/disabled export checks
+share the existing proof owners. The source guard distinguishes WASM-only
+conditional exports from native requirements and passes its negative controls;
+actual rebuilt export execution remains required.
+Docs passes 253 release-contract checks with one skip, then reports three GPU
+implementation-gap surfaces. Their working-source correction uses one selected
+operation executor and preserves explicit hardware-backend refusal. The structural
+ratchet now passes with its baseline unchanged; native/WASM recompilation and
+performance qualification remain required.
+The preceding `68ddf6b85` candidate's CI `37926018942` executes PR merge commit
+`083f2da8c`, whose source tree is identical to that preceding candidate.
 Windows portability, Linux/macOS Python units, native integration, LLVM,
 Python static, Linux/macOS queue portability, both security jobs and all three
 formal jobs pass. The run completes with Rust/WASM failures. The serial runtime
@@ -89,6 +161,30 @@ projections, normalized-path fixture mismatches and the Windows cleanup defect.
 Those source/fixture corrections are integrated; passing Windows execution does
 not qualify unrelated Rust, WASM, no-GIL or performance coordinates.
 
+Development-side retained-file consumers now share a finite captured-extent
+reader. Cargo documents, SDK files, textual/raw artifacts, runtime staging and
+observed copies reject growth before accepting excess bytes; the phase/SDK
+readers allocate for their actual extent rather than unused policy headroom.
+Nine growth/allocation controls reproduce predecessor failures. The complete
+reader cohort passes 434 tests with ten skips, including a further allocation
+control that fails before the buffer-lifetime refinement. A shuffled 21-sample
+warm 64-MiB comparison keeps hashing medians around 23.0–23.3 ms while reducing
+raw-artifact peak Python allocation from about 16 MiB to 0.26 MiB. SDK hashing
+retains its prior allocation budget; these measurements do not establish cold
+I/O, process RSS or guest performance. This work adds no emitted-binary checks.
+
+Shell completion now projects the selected parser once across Bash, Zsh and Fish;
+the duplicate command/flag inventory is removed and every direct dispatcher fixture
+uses the same parser boundary. Focused completion checks pass 15 cases with Fish
+unavailable locally; the affected parser/direct-call suites pass 424 cases with
+one slow test deselected. Actual emitted Bash completion passes 44 interactive
+Readline controls across Bash 3.2 and 5.3 in UTF-8 and C locales, including current
+values, cursor suffixes, exact `=` boundaries and forwarded arguments. Fish is
+required before execution by a new small command in the existing Linux portability
+job, alongside Bash and Zsh; actual hosted execution remains pending. The changed
+CI command-list oracle now includes that command and its two focused wiring checks
+pass. No per-completion Python process or ordinary CLI parser rebuild is added.
+
 The C-header family also incorrectly defined `Py_GIL_DISABLED` as zero, although
 CPython selects its different object layout by macro presence. Both transports
 now leave it undefined and share an early rejection of caller definitions.
@@ -117,6 +213,48 @@ three affected scheduler, row and job-envelope checks pass while production
 receipt requirements remain intact. Actual feature-enabled Rust execution is
 still required. Library byte custody between validation and loading remains a
 separate open obligation.
+
+The standalone-execution successor is integrated in working source, with release
+acceptance still held. Its one pinned archive provisioner and retained-descriptor
+readers pass 111 finite archive/identity controls; 34 downstream source consumers
+pass before the manifest diagnostic correction. Five malformed manifest-path
+controls reproduce a missing type check; all six affected admission controls
+pass after correction. Adversarial review also exposes weaker pip command-record
+admission. Bundle and pip receipts now share the existing typed validator, with
+the duplicate removed; all 19 selected record/binding/index consumers pass after
+six causal failures on the old pip path. Source typing, lint and public projection
+checks pass, and the new sealed-replay suite belongs to the existing release
+contract proof command. These fixture and source checks do not establish guest
+Python absence. Prelaunch WASM payload, sealing, archive and verifier-result
+consumers now retain their admitted bytes or open file generation; native receipt
+verification binds the exact policy and receipt buffers it decoded. The shared
+supervisor input owner additionally rejects indirect/special files before reading,
+bounds growth and fences export completion; actual platform compilation remains
+required. The integrated receiver/generation fixture cohort passes 80 controls.
+Real pinned archive provisioning and complete Node/OS ELF dependency closure now
+pass for both Linux architectures. The earlier census found `libatomic.so.1` as
+the sole missing provider in each architecture; the same provisioner now admits
+its official digest-pinned Debian package and audits the complete closure before
+success. No successful guest execution is inferred from archive admission.
+
+Browser staging retains only selected payloads while verifying every graph asset;
+names-only consumers retain no payloads between reads. A measurement exposed
+budget-sized allocation in the shared exact-JSON reader. An independent allocation
+control reproduces a 7 MiB increase for unchanged small input; the corrected owner
+reads only the admitted extent and keeps mutation fences. The affected JSON,
+identity, browser and sealed-replay cohort passes 237 checks with 11 platform
+skips. Over the current 15-asset graph, warm Darwin measurements reduce names-only
+Python allocation peaks from 4,205,252 to about 806,400 bytes and staging peaks
+to 1,070,171–1,138,954 bytes after reusing already canonical UTF-8 bytes. Twenty-one
+alternating latency samples per cell reduce staging medians from 3.015–3.302 ms
+to 2.182–2.437 ms versus whole-graph retention; the stronger custody path remains
+slower than the former verify-then-reopen implementation. The complete owning
+release/issued-receipt/browser consumer cohort passes 370 checks with one skip.
+These are development/compiler costs, not guest performance qualification. Actual Linux execution on both
+architectures, all seven native and six WASM products, contamination controls,
+retained receiver admission and cost measurements remain required. macOS and
+Windows filesystem adapters remain absent; the six-target contract is retained
+and those targets refuse unsupported replay before provisioning.
 
 The selected-scope subprocess audit preserves global/default and explicit
 custom allowance policy while reporting the actual selected denominator.
@@ -518,9 +656,9 @@ result alone cannot redefine the contract.
 | ID | Open release requirement | Existing authority and acceptance boundary |
 |----|--------------------------|--------------------------------------------|
 | V1-01 | Actual execution identity must connect retained compiler/process generations, emitted or cached artifacts, runtime codegen bindings, and every E1/E2/E3/H0 consumer. Selected-file hashes and post-build observations do not prove the images or bytes actually consumed. Current compiles selected Cargo libraries missing the live C-width module and SSL schema variant while Cargo reported them Fresh. An independent two-workspace control reproduced wrong-source execution from shared Cargo intermediates; separate workspace intermediates produced both correct values. | `tools/release/release_evidence.py`, `tools/release_matrix_acceptance.py`, `tools/perf_authority.py`, and the existing compiler/runtime admission and publication authorities currently hold full acceptance. Complete stable workspace/source artifact custody through developer commands, CLI builds, target selection, cache admission and every artifact consumer, retaining persistent compiler caches without conflating source workspaces. The bounded separate-intermediates control is evidence for that mechanism, not completion of kernel execution identity or the full producer/consumer migration. Exact E3 reference versions already come from config/verified_subset.toml and are checked by the producer and installed release consumer. Keep compiler-host pins separate. Reconcile compatibility-source generation and historical semantic oracles against the claimed reference without relabeling provenance or creating another pin table. The runtime and reproducibility producers now retain distinct actual compiler, guest and IR launch environments, commands and outcomes; the incorrect reconstructed guest seed is removed. Their v3 receivers preserve completed and attempted launches through source/artifact reads, typed build-JSON refusals and temporary cleanup failures, and require every requested IR observation to complete before a pass. All three isolated allocations reuse the canonical owned-directory authority. The 68 affected checks pass, including real guarded CPython transport, host temporary-directory aliases, independent observable comparisons and actual inode-substitution refusal with prior observations and replacement files preserved. These bounded controls qualify reporting and failure semantics, not Molt-generated programs or the release matrix. The named full reproducibility corpus currently contains only hello, simple_ret and sieve_bench. Its scheduled native/dev checks do not qualify broad semantic determinism or the release matrix. Reconcile artifact reproducibility, runtime observable determinism and CPython conformance under their existing authorities, with independently sensitive controls and explicit backend/profile/target coverage. The current selected-tool integration also closes filtered CARGO loss, generic Python PATH versus explicit-hook custody, configured Rustc versus PATH metadata dependencies, physical-component retargeting before reuse, and CPython child PATH semantics. Its main landing remains draft pending independent final review and current-main integration. Bounded macOS producer, receiver and actual-child controls do not qualify the full determinism or conformance matrix. The installed native replay currently removes Molt bundles and private homes but retains the reference CPython environment and host executable availability. It qualifies Molt-install independence only. Complete the same release producer/receipt/receiver boundary with actual execution where host or fallback Python is unavailable, including linked-library and child-execution controls. CPython reference work and absence qualification are development-side costs; emitted native/WASM programs must require no host Python or fallback interpreter. |
-| V1-02 | LLVM is a required frontier backend, but production compiler feature selection and LLVM provisioning still need a coherent shipped path. | Qualify the required LLVM matrix through actual installed compiler features, provisioning, packaging and target execution; the existence of declared coordinates is not qualification. |
+| V1-02 | LLVM is a required frontier backend, but production compiler feature selection and LLVM provisioning still need a coherent shipped path. The current production feature tuple omits Cargo feature `llvm`; the release component planner consumes that tuple with compiler default features disabled. Source LLVM CI does not prove installed LLVM capability. | Qualify the required LLVM matrix through actual installed compiler features, provisioning, packaging and target execution; the existence of declared coordinates is not qualification. |
 | V1-03 | WASM stderr capture loses guest diagnostics through Node-noise normalization. Separating host diagnostics must also preserve descriptor behavior, status, backpressure, lifetime and failure atomicity across the shared capture transport. | `tools/compat/backends.py`, `wasm/run_wasm.js`, the process guard, and verified-subset receipts must share one lossless output contract. A regular-file replacement permits seek/overwrite; a WASM-only pipe changes the current guarded file-backed descriptor behavior. Neither prototype qualifies the family. Include the shared diagnostics owner and generated native launcher in output qualification: an invalid host diagnostic sink currently falls back to stderr, and uncaught-exception/profile sinks have distinct write behavior. Keep supported host diagnostics explicit and lossless; ordinary Python environment mutation is not the host-environment mutation path. |
-| V1-04 | The compatibility corpus generally ignores stderr, so recorded stderr hashes alone do not prove equal observable output. | Migrate the canonical comparison policy and E3 producer/consumer family, with justified per-case exceptions and independent negative controls. Preserve raw output and distinguish guest diagnostics from host infrastructure failures. |
+| V1-04 | The compatibility corpus generally ignores stderr, so recorded stderr hashes alone do not prove equal observable output. The WASM adapter also strips blank lines and guest text matching Node warning patterns, then rejoins lines; the comparator defaults to ignoring stderr. | Migrate the canonical comparison policy and E3 producer/consumer family, with justified per-case exceptions and independent negative controls. Preserve raw output and distinguish guest diagnostics from host infrastructure failures. Exercise actual native/Node adapters with guest-emitted warning strings, blank lines and final-newline differences; do not qualify parity from hashes of already normalized output. |
 | V1-05 | Copy reconstruction, owned-return rules, memoization and cyclic object graphs need complete runtime ownership qualification. | Reconcile the existing copy/object/runtime authorities; prove aliasing, cycles, cleanup and failure paths across native/WASM and concurrency cells before claiming support. The current C-ABI weak-reference surface cannot create weakrefs and reports no objects as weakrefs. PyObject_ClearWeakRefs nevertheless empties a nonempty raw weakref head after recording a trace, without clearing referents or running callbacks. That is an incomplete lifecycle contract, not conformance or a qualified impossible state. Reconcile the runtime weakref owner, C-ABI creation/observation, supported type offsets and retirement callbacks through one authority; preserve actual referents and callbacks with independent native/WASM lifecycle controls. Callable vector-layout work does not establish weakref support and must not advertise unsupported weak-list offsets. Context variables expose three conflicting state authorities: the C thread-state map, runtime ContextVarsState and Python cancellation-keyed _CONTEXTS. The C map borrows variable keys, tokens lack origin-context ownership and their defined deallocator is not installed; C and Python reset publish token consumption after callback-capable releases. Reconcile Context/ContextVar/Token ownership, identity, structural copy, task attachment, C headers, runtime intrinsics and Python projections together against pinned CPython, with cycle/finalizer/cross-surface controls. A C-API-only repair cannot close this family. |
 | V1-06 | Release supply-chain evidence must bind the exact resolved transitive Python and Cargo graphs and installed delivery artifacts. Source checksums and a dependency inventory alone do not establish authenticated delivery. | Complete the existing SBOM, provenance, package/install and release-evidence joins. The historical strict local audit found no known vulnerabilities across 699 locked Cargo dependencies against 1,290 loaded advisories, but refused nine unmaintained dependencies. Current CI `37884430121` audits merge `895cb0326` with lock and policy bytes equal to candidate `2fe3b1091`: its 672-package lock contains 620 registry packages and 52 sourceless entries, and cargo audit loads 1,295 advisories. The retained log reports no blocking vulnerability and eight unmaintained warnings: rustls-pemfile, serde_cbor and six rust-unic crates. Paste is already removed. Current deny ignores and nonfatal audit warnings explain the green security job; the current advisory database commit is not established, and no fresh strict pass is claimed. The dependency-policy candidate removes the partial target filter, requires a locked all-feature graph, includes transitive unsoundness and yanked-version failures, removes every advisory ignore and makes every Cargo audit warning fatal. Both historical strict checks refused their graph with nine findings; the eight current maintenance findings remain release blockers. Reconcile the preserved strict policy with the complete replacement families and qualify the current graph, including applicable independent lockfiles and installed delivery consumers. Selected sanitizer jobs are bounded evidence, not universal memory-safety qualification. The runtime RustPython parser dependency carries all six rust-unic paths in the locked graph. Replace that dependency family together with its AST, compile/codeop and traceback consumers under V1-26. Dependency inclusion alone does not establish retained bytes in every final guest; measure artifact size and execution cost. |
 | V1-07 | Resource and performance acceptance still lacks a complete positive admission path, measurements and benchmark-method qualification. | Use the canonical performance authority and required cell matrix for startup, latency/throughput, allocation/live memory, process-tree RSS/commit, artifact/code size, contention, link/build cost and failure atomicity as applicable. Native first-build measurements must bind the selected source, compiler/runtime profiles, feature identity and actual cache state, retain complete build/cleanup results, and distinguish subsequent warm reuse. Correct workload timeout classification is development admission, not performance acceptance. The current receiver accepts required metrics only as unmeasured, the release caller supplies empty performance shards and toolchain identities, and full admission unconditionally reports its authenticated producer as unavailable. This is unfinished fail-closed wiring: collecting benchmark numbers alone cannot close it. Migrate measured metric declarations and budgets, authenticated shard producers, actual compiler/runtime bindings, exact source and used-byte admission, and release/signing consumers together under V1-01/V1-07. Prove one complete installed positive path and independent artifact substitution, cell omission and forged-summary controls before dispatching the full matrix. Missing measurements remain missing; local wins cannot replace release-cell acceptance. Binaryen invocation admission also repeatedly hashes its full distribution and probes the tool version; cache admission repeats executable capture and the version probe. Three profiled Linux/aarch64 calls on bbea8cde0 attribute 338.88 of 385.58 ms to the full tree scan, with 51 file digests; three cache admissions take 48.02 ms and launch three version probes. These instrumented attribution samples are not accepted latency or guest-performance measurements. Reuse the existing provisioner receipt and stable executable authority; retire repeated distribution work only after establishing which non-executable members the supported host tools actually load, while retaining finite execution-relevant identity and failure atomicity. The SDK path-selection baseline is not SDK receipt admission and cannot serve as an equivalent-work speedup denominator. A fresh compiled hello input exposes a size cost under Binaryen133: O1 produces 821,020 bytes, default converged Oz 852,262, nonconverged Oz 852,289 and the shipping post-link Oz policy 850,636. The shipping result is 3.61% larger than O1, predominantly in generated code. Disabling convergence does not remove it. A diagnostic pass trace reproduces the exact shipping output and attributes a 69,525-byte intermediate code expansion to precompute-propagate. The same-policy ablation without that pass yields 796,854 bytes and improves gzip size from 221,408 to 214,003 bytes. Appending constant hoisting yields 773,025 raw bytes but increases gzip size to 223,242. These single-input causal controls require representative artifact and guest execution-cost qualification before selecting a policy. Preserve the actual inputs, outputs and independent semantic oracles; the optimizer-policy finding is distinct from tool-state discovery/admission. The owning test also assumes universal size ordering between heuristic levels, which upstream does not guarantee; neither a relaxed threshold nor collecting these four samples closes the performance obligation. Ordinary-build diagnostic readers, optimization switches and host-selected exception/profile sinks require measured disabled-path and enabled costs. Reconcile feature selection, runtime/extracted crates, generated launchers, shared diagnostics, profile ABI and benchmark/registry consumers through existing owners. Verify actual shipped code reachability, separate guest output from diagnostics, preserve explicit supported host configuration, and prove failure/sentinel behavior; source presence alone proves neither guest escalation nor zero overhead. The cited C-extension benchmark controls are test-only. The native size analyzer also infers categories from legacy Rust spellings and labels unmatched symbols as user code; Rust v0 and Mach-O symbol decoration therefore lose runtime attribution. Its address-delta fallback crosses section gaps, while sized symbols can alias or overlap, so symbol sums are not established file-byte contributions. The analysis capsule retains categories but drops their symbol denominator and collection method. Reconcile symbol parsing, explicit unknown attribution, disjoint file-backed ranges and capsule metadata through the existing analyzer before using these reports for performance acceptance; do not add a second demangler or silently normalize unsupported evidence. The integrated candidate replaces symbol-text parsing with a mode in the existing compiler using maintained object and Rust demangling readers. The analyzer and capsule retain disjoint physical-byte accounting, explicit unknowns, format capabilities and both input identities. All 78 owning Python controls and static/generated checks pass. Actual Rust compilation, retained ELF/Mach-O/universal execution, scanner-selection consumers and measured compiler/analysis cost remain required before this candidate is qualified. No guest instrumentation is introduced. On the current main-integration candidate, seven alternating warm Cargo identity captures measure median 55.397 ms through the selected Rustup proxy and 26.328 ms for an explicitly selected physical Cargo binary; warm captures spawn one selector process and zero processes respectively, with image-byte revalidation in both cases. These are current development-tooling costs, not a historical speedup or guest-performance claim; Rustc and complete pipeline cost qualification remain open. |

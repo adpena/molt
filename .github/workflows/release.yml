@@ -198,6 +198,14 @@ jobs:
           name: release-wheel-${{ needs.plan.outputs.source_sha }}
           path: dist/wheel
 
+      - name: Provision exact standalone consumer archive inputs
+        shell: bash
+        run: >-
+          uv run --no-sync python tools/guarded_exec.py --prefix MOLT_RELEASE --
+          uv run --no-sync python -m tools.release.provision_execution_archives
+          --target "${{ matrix.id }}"
+          --execution-archive-cache "${{ runner.temp }}/molt-release-execution-archives"
+
       - name: Build independent native release generations
         shell: bash
         run: |
@@ -248,6 +256,7 @@ jobs:
           uv run --no-sync python -m tools.release.verify_consumer
           --candidate dist/candidate
           --receipt dist/candidate/consumer-verification.json
+          --execution-archive-cache "${{ runner.temp }}/molt-release-execution-archives"
 
       - name: Upload verified immutable candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

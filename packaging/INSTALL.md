@@ -257,3 +257,12 @@ Failed checks include a `level` and optional `advice` list in `data.checks`.
 
 - `MOLT_HOME`: override the mutable data/build root, not the installation prefix
 - `MOLT_PROJECT_ROOT`: overrides project root resolution
+
+
+Release verification keeps frontend/build CPython separate from emitted guest
+execution. The release consumer gate retains native and WASM post-uninstall
+replay in a sealed Linux root with exact pinned runtime inputs and no host Python
+or package installation. Source implementation alone is not qualification:
+Linux engine/ptrace replay and the other platform filesystem adapters remain
+release acceptance work. See [the packaging contract](PACKAGING.md) for the
+current boundary, input provisioning and retained evidence.

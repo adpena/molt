@@ -62,6 +62,7 @@ def _configured_build_target(target: str | None, build_cfg: Mapping[str, Any]) -
 def _dispatch_entrypoint_command(
     args: argparse.Namespace,
     *,
+    parser: argparse.ArgumentParser,
     build_fn: Callable[..., int],
     config_root: Path,
     config: Mapping[str, Any],
@@ -1099,7 +1100,7 @@ def _dispatch_entrypoint_command(
         return deps(args.include_dev, args.json, args.verbose)
     if args.command == "install":
         pkgs = args.packages or []
-        if pkgs and pkgs[0] == "add":
+        if pkgs and pkgs[0] == args._install_add_command:
             add_pkgs = pkgs[1:]
             if not add_pkgs:
                 return _fail(
@@ -1153,7 +1154,7 @@ def _dispatch_entrypoint_command(
     if args.command == "config":
         return show_config(config_root, config, args.json, args.verbose)
     if args.command == "completion":
-        return completion(args.shell, args.json, args.verbose)
+        return completion(args.shell, args.json, args.verbose, parser=parser)
 
     if args.command == "harness":
         from molt.harness import main as harness_main

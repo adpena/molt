@@ -56,6 +56,7 @@ def main(build_fn: Callable[..., int] | None = None) -> int:
 
     return _dispatch_entrypoint_command(
         args,
+        parser=parser,
         build_fn=build_fn,
         config_root=config_root,
         config=config,
