@@ -12,10 +12,10 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 _PROBE = f"""
 import base64 as _host_base64
 import bisect as _host_bisect
-import builtins
 import importlib.util
 import sys
 import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 def _load_module(name, path_text):
@@ -84,7 +84,7 @@ def _merge(iterables, key, reverse):
     return sorted(values, key=key, reverse=reverse)
 
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_base64_b64encode": lambda s, altchars=None: _host_base64.b64encode(bytes(s), altchars),
     "molt_base64_b64decode": lambda s, altchars=None, validate=False: _host_base64.b64decode(s, altchars=altchars, validate=validate),
     "molt_base64_standard_b64encode": lambda s: _host_base64.standard_b64encode(bytes(s)),
@@ -141,23 +141,7 @@ builtins._molt_intrinsics = {{
     "molt_heapq_nsmallest": _nsmallest,
     "molt_heapq_nlargest": _nlargest,
     "molt_heapq_merge": _merge,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 base64_mod = _load_module("molt_test_base64", {str(STDLIB_ROOT / "base64.py")!r})

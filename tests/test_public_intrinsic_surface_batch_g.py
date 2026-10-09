@@ -10,10 +10,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 def _load_module(name, path_text):
@@ -41,7 +40,7 @@ def _atexit_run():
         func(*args, **kwargs)
 
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_atexit_register": _atexit_register,
     "molt_atexit_unregister": _atexit_unregister,
     "molt_atexit_clear": lambda: _callbacks.clear(),
@@ -62,23 +61,7 @@ builtins._molt_intrinsics = {{
     "molt_html_entities_codepoint2name": lambda: {{34: "quot"}},
     "molt_html_entities_name2codepoint": lambda: {{"quot": 34}},
     "molt_html_entities_html5": lambda: {{"quot;": '"'}},
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 atexit_mod = _load_module("molt_test_atexit", {str(STDLIB_ROOT / "atexit.py")!r})

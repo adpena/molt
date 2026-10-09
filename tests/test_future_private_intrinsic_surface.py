@@ -10,13 +10,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_future_features": lambda: [
         ("nested_scopes", (2, 1, 0, "beta", 1), (2, 2, 0, "alpha", 0), 16),
         ("generators", (2, 2, 0, "alpha", 1), (2, 3, 0, "final", 0), 0),
@@ -29,23 +28,7 @@ builtins._molt_intrinsics = {{
         ("generator_stop", (3, 5, 0, "beta", 1), (3, 7, 0, "alpha", 0), 8388608),
         ("annotations", (3, 7, 0, "beta", 1), None, 16777216),
     ],
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 spec = importlib.util.spec_from_file_location(
     "molt_test__future__", {str(STDLIB_ROOT / "__future__.py")!r}

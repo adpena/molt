@@ -10,15 +10,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 calls = []
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_abc_get_cache_token": lambda: 5,
     "molt_abc_init": lambda cls: calls.append(("init", cls.__name__)),
     "molt_abc_register": lambda cls, subcls: subcls,
@@ -29,23 +28,7 @@ builtins._molt_intrinsics = {{
     "molt_abc_reset_caches": lambda cls: None,
     "molt_abc_bootstrap": lambda: None,
     "molt_abc_update_abstractmethods": lambda cls: cls,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 def _load_module(name, path_text):

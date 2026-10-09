@@ -13,7 +13,7 @@ _PROBE = f"""
 import builtins
 import importlib.util
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 def _load_module(name, path_text):
@@ -82,7 +82,7 @@ _signal_values = {{
 
 _stat_constants = (0,) * 74
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_codecs_decode": _codecs_decode,
     "molt_codecs_encode": _codecs_encode,
     "molt_codecs_normalize_encoding": lambda encoding: str(encoding).lower().replace("-", "_"),
@@ -149,25 +149,9 @@ builtins._molt_intrinsics = {{
     "molt_signal_sigpending": lambda: {{2}},
     "molt_signal_sigwait": lambda signals: min(signals),
     "molt_signal_default_int_handler": lambda signum=None, frame=None: None,
-}}
+}})
 for _name, _value in _signal_values.items():
     builtins._molt_intrinsics[_name] = (lambda value: (lambda: value))(_value)
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
 
 
 codecs_mod = _load_module("molt_test_codecs", {str(STDLIB_ROOT / "codecs.py")!r})

@@ -10,16 +10,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import itertools as _host_itertools
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 _HOST_MISSING = object()
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_itertools_kwd_mark": lambda: _HOST_MISSING,
     "molt_itertools_chain": lambda iterables: _host_itertools.chain(*iterables),
     "molt_itertools_chain_from_iterable": _host_itertools.chain.from_iterable,
@@ -43,23 +42,7 @@ builtins._molt_intrinsics = {{
     "molt_itertools_filterfalse": _host_itertools.filterfalse,
     "molt_itertools_starmap": _host_itertools.starmap,
     "molt_itertools_takewhile": _host_itertools.takewhile,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 def _load_module(name, path_text):

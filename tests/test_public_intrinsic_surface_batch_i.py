@@ -10,10 +10,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 def _load_module(name, path_text):
@@ -32,7 +31,7 @@ class _SelectNS:
 sys.modules["select"] = _SelectNS()
 
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_platform_system": lambda: "MoltOS",
     "molt_platform_node": lambda: "node-1",
     "molt_platform_release": lambda: "1.0",
@@ -115,23 +114,7 @@ builtins._molt_intrinsics = {{
     "molt_weakcontainer_pop": lambda *args: None,
     "molt_weakcontainer_clear": lambda *args: None,
     "molt_weakcontainer_dead": lambda *args: None,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 platform_mod = _load_module("molt_test_platform", {str(STDLIB_ROOT / "platform.py")!r})

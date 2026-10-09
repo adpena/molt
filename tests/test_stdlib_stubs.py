@@ -39,27 +39,27 @@ MODULE_DUNDERS = frozenset(
     }
 )
 
-# Runs in a fresh interpreter: the probe installs a fake ``_intrinsics`` module
-# and patches ``sys.platform``, which must not leak into the test process.
+# Runs in a fresh interpreter: the probe installs the intrinsic registry and
+# patches ``sys.platform``, which must not leak into the test process.
 _PROBE = r"""
 import importlib.util
 import json
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 def install_intrinsics(available):
+    # Exactly the given intrinsics: a stub must ask for the capability check
+    # and nothing else.
+    resolver = install_registry(available, with_anchors=False)
+    resolve = resolver.require_intrinsic
     calls = []
 
     def require_intrinsic(name, namespace=None):
         calls.append(name)
-        if name not in available:
-            raise RuntimeError(f"intrinsic unavailable: {name}")
-        return available[name]
+        return resolve(name, namespace)
 
-    module = types.ModuleType("_intrinsics")
-    module.require_intrinsic = require_intrinsic
-    sys.modules["_intrinsics"] = module
+    resolver.require_intrinsic = require_intrinsic
     return calls
 
 

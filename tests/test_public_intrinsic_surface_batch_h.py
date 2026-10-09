@@ -10,10 +10,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
 import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 def _load_module(name, path_text):
@@ -54,7 +54,7 @@ def _file_open_ex(path, mode, buffering, encoding, errors, newline, closefd, ope
     return _FakeBuffer(text, "b" in mode)
 
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_stdlib_probe": lambda: None,
     "molt_file_open_ex": _file_open_ex,
     "molt_path_exists": lambda path: path == "foo.py",
@@ -62,24 +62,7 @@ builtins._molt_intrinsics = {{
     "molt_path_join": lambda dirname, filename: f"{{dirname}}/{{filename}}",
     "molt_linecache_loader_get_source": lambda loader, name: None,
     "molt_linecache_detect_encoding": lambda first, second: ("utf-8", False),
-    "molt_capabilities_has": lambda name: True,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 linecache_mod = _load_module("molt_test_linecache", {str(STDLIB_ROOT / "linecache.py")!r})

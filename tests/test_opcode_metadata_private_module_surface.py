@@ -10,16 +10,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import json
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 sys.version_info = (3, 14, 0, "final", 0)
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_opcode_metadata_payload_314_json": lambda: json.dumps({{
         "HAVE_ARGUMENT": 90,
         "MIN_INSTRUMENTED_OPCODE": 200,
@@ -27,23 +26,7 @@ builtins._molt_intrinsics = {{
         "_specialized_opmap": {{"LOAD_CONST_SPECIAL": 201}},
         "_specializations": {{"LOAD_CONST": ["LOAD_CONST_SPECIAL"]}},
     }}),
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 def _load_module(name, path_text):

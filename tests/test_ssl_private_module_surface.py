@@ -10,10 +10,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 _STATE = {{
     "next_context": 0,
@@ -54,7 +53,7 @@ def _sock(handle):
     return _STATE["sockets"][handle]
 
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_ssl_protocol_tls_client": lambda: 16,
     "molt_ssl_protocol_tls_server": lambda: 17,
     "molt_ssl_cert_none": lambda: 0,
@@ -84,23 +83,7 @@ builtins._molt_intrinsics = {{
     "molt_ssl_socket_unwrap": lambda _handle: "raw-socket",
     "molt_ssl_socket_close": lambda _handle: None,
     "molt_ssl_socket_drop": lambda _handle: None,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 def _load_module(name, path_text):

@@ -10,13 +10,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import email
 import importlib.util
 import io
 import os
 import sys
 import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 def _load_module(name, path_text):
@@ -28,31 +28,14 @@ def _load_module(name, path_text):
     return module
 
 
-builtins._molt_intrinsics = {{
-    "molt_capabilities_has": lambda name: True,
+install_registry({{
     "molt_email_utils_make_msgid": lambda domain=None: "<molt@example.test>",
     "molt_email_utils_getaddresses": lambda fieldvalues: [("Alice", "alice@example.test")],
     "molt_email_utils_parsedate_tz": lambda date: (2026, 3, 18, 12, 0, 0, 0, 78, -1, 0),
     "molt_email_utils_format_datetime": lambda dt: "Tue, 18 Mar 2026 12:00:00 +0000",
     "molt_email_utils_parsedate_to_datetime": lambda data: ("parsed", data),
     "molt_email_message_as_string": lambda handle: "Subject: test\\n\\nbody",
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 mime_pkg = types.ModuleType("email.mime")
 mime_pkg.__path__ = [{str(STDLIB_ROOT / "email" / "mime")!r}]
