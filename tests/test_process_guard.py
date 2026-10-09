@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from molt import process_guard
+from tests.process_guard_common import install_module_view
 
 
 def test_guard_loader_rejects_preloaded_foreign_module(monkeypatch, tmp_path):
@@ -83,7 +84,9 @@ def test_bounded_unguarded_probe_preserves_subprocess_contract(monkeypatch) -> N
         calls.append((command, kwargs))
         return subprocess.CompletedProcess(command, 0, "head\n", "")
 
-    monkeypatch.setattr(process_guard.subprocess, "run", fake_run)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, process_guard, run=fake_run
+    )
 
     result = process_guard.run_completed_command(
         ["git", "rev-parse", "HEAD"],
@@ -118,7 +121,9 @@ def test_cargo_metadata_probe_normalizes_wrapper_incremental_conflict(
         calls.append(kwargs)
         return subprocess.CompletedProcess([], 0, "{}", "")
 
-    monkeypatch.setattr(process_guard.subprocess, "run", fake_run)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, process_guard, run=fake_run
+    )
     process_guard.run_completed_command(
         ["cargo", "metadata", "--locked", "--format-version", "1"],
         env={wrapper_env: "sccache", "CARGO_INCREMENTAL": "1"},

@@ -38,6 +38,7 @@ from molt.wasi_sdk_identity import (
     wasi_sdk_tree_identity,
 )
 from tests.executable_test_support import write_mock_executable
+from tests.process_guard_common import install_module_view
 from molt import wasm_artifact
 from molt._wasm_runtime_exports import (
     wasm_split_runtime_export_name_for_import,
@@ -1439,7 +1440,9 @@ def test_stable_snapshot_rejects_midstream_source_change(
             return self._inner.hexdigest()
 
     monkeypatch.setattr(identity_authority, "_STABLE_SNAPSHOT_CHUNK_BYTES", 4)
-    monkeypatch.setattr(identity_authority.hashlib, "sha256", ChangingHasher)
+    install_module_view(
+        monkeypatch, "hashlib", hashlib, identity_authority, sha256=ChangingHasher
+    )
 
     with pytest.raises(
         identity_authority.StableRegularFileChangedError,
@@ -5232,6 +5235,65 @@ def test_tree_shake_runtime_reuses_cached_result(
     assert next((cache_root / "wasm_link").rglob("artifact.wasm")).read_bytes() == first
     assert not (target_root / "session-a" / ".molt_state" / "wasm_link_cache").exists()
     assert not (target_root / "session-b" / ".molt_state" / "wasm_link_cache").exists()
+
+
+def test_split_app_cache_key_keeps_every_component_boundary() -> None:
+    def key(app: bytes, reference: bytes | None) -> str | None:
+        return wasm_link_optimizer_policy._split_app_optimize_cache_key(
+            app_data=app,
+            reference_data=reference,
+            optimize=False,
+            optimize_level="Oz",
+            contract_keep_set={"molt_main"},
+            facts_authority_digest="0" * 64,
+        )
+
+    head = b"\x00asm\x01\x00\x00\x00head"
+    # Raw concatenation gave both splits of one byte string the same key.
+    assert key(head + b"\0reference\0tail", b"ref") != key(
+        head, b"tail\0reference\0ref"
+    )
+    assert key(head, None) != key(head, b"")
+
+
+def test_tree_shake_cache_miss_names_the_component_that_differs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _build_exported_runtime_module("molt_exception_pending")
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(
+        wasm_link_optimizer_policy,
+        "_post_link_optimize",
+        lambda _data, **_kwargs: b"\x00asm\x01\x00\x00\x00shaken",
+    )
+    for preserve_debug in (False, True):
+        wasm_link_optimizer_policy._tree_shake_runtime(
+            module,
+            {"exception_pending"},
+            facts_provider=_facts_provider,
+            preserve_debug=preserve_debug,
+        )
+
+    reports = [
+        line
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith("Runtime tree-shake cache missing: key ")
+    ]
+    assert len(reports) == 2
+    first, second = (
+        dict(part.split(" ") for part in report.split("(", 1)[1][:-1].split(", "))
+        for report in reports
+    )
+    assert set(first) == {
+        "exports",
+        "facts_authority",
+        "preserve_debug",
+        "runtime_sha256",
+        "tool",
+    }
+    assert {name for name in first if first[name] != second[name]} == {"preserve_debug"}
 
 
 def test_tree_shake_runtime_single_flights_concurrent_producers(

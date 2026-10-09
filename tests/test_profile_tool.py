@@ -10,6 +10,8 @@ from tests.runtime_profile_fixtures import (
     process_profile_payload,
     profile_epoch_payload,
 )
+import shutil
+from tests.process_guard_common import install_module_view
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -108,7 +110,9 @@ def test_profile_tool_preserves_labeled_epoch_delta_sections() -> None:
 
 
 def test_profile_tool_auto_falls_back_to_portable_wall_backend(monkeypatch) -> None:
-    monkeypatch.setattr(profile_tool.shutil, "which", lambda _name: None)
+    install_module_view(
+        monkeypatch, "shutil", shutil, profile_tool, which=lambda _name: None
+    )
     monkeypatch.setattr(profile_tool, "_time_binary_optional", lambda: None)
 
     assert profile_tool._pick_cpu_tool("auto") == "wall"
@@ -116,7 +120,9 @@ def test_profile_tool_auto_falls_back_to_portable_wall_backend(monkeypatch) -> N
 
 
 def test_profile_tool_auto_keeps_gnu_time_when_available(monkeypatch) -> None:
-    monkeypatch.setattr(profile_tool.shutil, "which", lambda _name: None)
+    install_module_view(
+        monkeypatch, "shutil", shutil, profile_tool, which=lambda _name: None
+    )
     monkeypatch.setattr(profile_tool, "_time_binary_optional", lambda: "/usr/bin/time")
 
     assert profile_tool._pick_cpu_tool("auto") == "time"

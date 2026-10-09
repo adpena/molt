@@ -10,10 +10,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
 import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 class Dialect:
@@ -42,25 +42,9 @@ _fake_csv.unregister_dialect = lambda name: name
 _fake_csv.writer = lambda target, *args, **kwargs: ("writer", target)
 sys.modules["csv"] = _fake_csv
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_csv_runtime_ready": lambda: None,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 def _load_module(name, path_text):

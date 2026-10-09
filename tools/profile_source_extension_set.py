@@ -15,16 +15,23 @@ import platform
 import sys
 from pathlib import Path
 
-from molt.cli.source_package_seal import verify_source_package_seal
-from molt.cli.source_extension_set_registry import (
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
+
+bind_repository_imports(__file__)
+
+from molt.cli.source_package_seal import verify_source_package_seal  # noqa: E402
+from molt.cli.source_extension_set_registry import (  # noqa: E402
     SourceExtensionVariant,
     load_source_extension_registry,
     source_extension_set,
     source_extension_set_root,
 )
-from molt.cli.source_extension_target import resolve_source_extension_target_plan
-from molt.target_python import _parse_target_python_version
-from tools.perf_calibration import run_and_measure
+from molt.cli.source_extension_target import resolve_source_extension_target_plan  # noqa: E402
+from molt.target_python import _parse_target_python_version  # noqa: E402
+from tools.perf_calibration import run_and_measure  # noqa: E402
 
 try:
     from tools.command_execution import CommandExecutor

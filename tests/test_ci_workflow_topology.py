@@ -657,10 +657,10 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
     environment["GITHUB_JOB"] = "wasm-build" if wasm else family.replace("_", "-")
     # Only this synthetic workspace has synthetic Git identity. Concurrent
     # custody observers retain real checkout observation for their own roots.
-    checkout_head = dx._git_checkout_head
+    checkout_head = dx.git_checkout_head
     monkeypatch.setattr(
         dx,
-        "_git_checkout_head",
+        "git_checkout_head",
         lambda root: (
             environment["GITHUB_SHA"] if root == workspace else checkout_head(root)
         ),

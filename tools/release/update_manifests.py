@@ -6,10 +6,19 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 
-from molt.compiler_distribution import COMPILER_BUNDLE_DIRECTORIES
-from molt.exact_json import read_exact
-from tools.release.release_model import validate_release_manifest
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.compiler_distribution import COMPILER_BUNDLE_DIRECTORIES  # noqa: E402
+from molt.exact_json import read_exact  # noqa: E402
+from tools.release.release_model import validate_release_manifest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = ROOT / "packaging" / "templates"

@@ -3,7 +3,10 @@ from __future__ import annotations
 import __future__ as future_module
 import ast
 import os
+import random
+import time
 import types
+from collections.abc import Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -16,6 +19,8 @@ from molt.frontend._types import (
     CodeSlotDeclaration,
     _SCCP_OVERDEFINED,
 )
+from molt.frontend.lowering import midend_pipeline
+from tests.process_guard_common import install_module_view
 from molt.frontend.cfg_analysis import (
     BasicBlock,
     CFGEdgeKind,
@@ -2219,7 +2224,7 @@ def test_loop_bound_solver_extracts_monotonic_tuple_and_proof() -> None:
 
 
 def _reachable_without_node(
-    successors: list[list[int]], entry: int, excluded: int | None
+    successors: Sequence[Sequence[int]], entry: int, excluded: int | None
 ) -> set[int]:
     """Independent dominance oracle: remove a node and search remaining paths."""
     reached: set[int] = set()
@@ -2234,7 +2239,7 @@ def _reachable_without_node(
 
 
 def _assert_dominance_matches_path_removal(
-    successors: list[list[int]], entry: int, dominance: DominatorTree
+    successors: Sequence[Sequence[int]], entry: int, dominance: DominatorTree
 ) -> None:
     reached = _reachable_without_node(successors, entry, None)
     without = [
@@ -2346,7 +2351,7 @@ def test_cfg_dominance_respects_resume_bypass() -> None:
     yielding = cfg.index_to_block[2]
     resume = cfg.index_to_block[3]
     assert cfg.edge_kinds[switch, resume] & CFGEdgeKind.RESUME
-    assert cfg.successors[yielding] == []
+    assert cfg.successors[yielding] == ()
     assert cfg.dominance.dominates(switch, resume)
     assert not cfg.dominance.dominates(definition, resume)
     _assert_dominance_matches_path_removal(
@@ -5593,7 +5598,6 @@ def test_sccp_new_executable_edge_revisits_phi_with_equal_predecessor_states() -
         },
         predecessors={0: [], 1: [0], 2: [0], 3: [2], 4: [1, 3]},
         reachable={0, 1, 2, 3, 4},
-        dominance=DominatorTree.compute([[1, 2], [4], [3], [4], []]),
     )
     join = cfg.label_to_block["join"]
     gen = SimpleTIRGenerator()
@@ -5907,9 +5911,10 @@ def test_midend_policy_budget_ms_does_not_gate_on_wall_clock(
         return tick["value"]
 
     # The midend wall-clock reads live in
-    # molt.frontend.lowering.midend_pipeline, which calls the stdlib
-    # ``time.perf_counter`` directly — patch it at its one authority.
-    monkeypatch.setattr("time.perf_counter", fake_perf_counter)
+    # molt.frontend.lowering.midend_pipeline; only its view of ``time`` moves.
+    install_module_view(
+        monkeypatch, "time", time, midend_pipeline, perf_counter=fake_perf_counter
+    )
 
     out = gen.map_ops_to_json(ops, function_name="slow_func")
 
@@ -6396,3 +6401,145 @@ def test_runtime_guard_mismatch_continues_sccp_and_preserves_source_type(
     # The guard's result may propagate, but its mismatch event remains.
     lowered = _lower_ops(ops)
     assert any(op.get("kind") == kind.lower() for op in lowered)
+
+
+def test_sccp_guard_tag_establishes_no_type_fact() -> None:
+    # A runtime guard returns its source unchanged even on a mismatch; it
+    # neither proves the source's tag nor traps the block, so SCCP must not
+    # fold a later TYPE_OF or comparison from it.
+    gen = SimpleTIRGenerator()
+    obj, expected = MoltValue("obj"), MoltValue("expected")
+    ops = [
+        MoltOp(kind="MISSING", args=[], result=obj),
+        MoltOp(kind="CONST", args=[1], result=expected),
+        MoltOp(kind="GUARD_TAG", args=[obj, expected], result=MoltValue("none")),
+        MoltOp(kind="TYPE_OF", args=[obj], result=MoltValue("observed")),
+        MoltOp(
+            kind="EQ",
+            args=[MoltValue("observed"), expected],
+            result=MoltValue("matches"),
+        ),
+    ]
+    gen._op_by_result = {op.result.name: op for op in ops if op.result.name != "none"}
+    cfg = build_cfg(ops)
+    sccp = gen._compute_sccp(ops, cfg)
+    state = sccp.out_values[cfg.index_to_block[len(ops) - 1]]
+    assert "__tag__:obj" not in state
+    assert state["observed"] is _SCCP_OVERDEFINED
+    assert state["matches"] is _SCCP_OVERDEFINED
+
+
+def _jump_label_ops(target: int, label: int, constant: int) -> list[MoltOp]:
+    # Blocks: 0 CONST, 1 JUMP, 2 CONST, 3 LABEL, 4 ret_void.
+    return [
+        MoltOp(kind="CONST", args=[constant], result=MoltValue("v0")),
+        MoltOp(kind="JUMP", args=[target], result=MoltValue("none")),
+        MoltOp(kind="CONST", args=[constant + 1], result=MoltValue("v1")),
+        MoltOp(kind="LABEL", args=[label], result=MoltValue("none")),
+        MoltOp(kind="ret_void", args=[], result=MoltValue("none")),
+    ]
+
+
+def test_cfg_is_shared_by_op_lists_with_equal_control() -> None:
+    # Operands the CFG never reads may differ; the graph is the same object.
+    first = build_cfg(_jump_label_ops(1, 1, constant=10))
+    second = build_cfg(_jump_label_ops(1, 1, constant=20))
+
+    assert second is first
+    assert first.successors[1] == (3,)
+
+
+def test_cfg_differs_when_a_label_operand_differs() -> None:
+    to_label = build_cfg(_jump_label_ops(1, 1, constant=10))
+    to_nowhere = build_cfg(_jump_label_ops(2, 1, constant=10))
+
+    assert to_nowhere is not to_label
+    assert to_label.successors[1] == (3,)
+    assert to_nowhere.successors[1] == ()
+
+
+def test_shared_cfg_cannot_be_mutated() -> None:
+    cfg = build_cfg(_jump_label_ops(1, 1, constant=10))
+
+    with pytest.raises(TypeError):
+        cfg.successors[0] = (1,)  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        cfg.successors[0].append(1)  # type: ignore[attr-defined]
+    with pytest.raises(TypeError):
+        cfg.label_to_block["1"] = 0  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        cfg.reachable.add(3)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("seed", range(300))
+def test_cfg_dominance_matches_the_path_definition(seed: int) -> None:
+    # Extend the exhaustive four-node oracle to larger, seeded cyclic graphs.
+    # Unreachable nodes cannot establish a value-availability proof.
+    rng = random.Random(seed)
+    count = rng.randint(1, 24)
+    successors = [
+        sorted(rng.sample(range(count), rng.randint(0, min(3, count))))
+        for _ in range(count)
+    ]
+    _assert_dominance_matches_path_removal(
+        successors, 0, DominatorTree.compute(successors)
+    )
+
+
+def test_shared_cfg_computes_dominance_only_on_demand(tmp_path: Path) -> None:
+    label = str(tmp_path / "lazy_dominance")
+
+    def ops(constant: int) -> list[MoltOp]:
+        return [
+            MoltOp("CONST", [constant], MoltValue("value")),
+            MoltOp("JUMP", [label], MoltValue("none")),
+            MoltOp("LABEL", [label], MoltValue("none")),
+            MoltOp("ret_void", [], MoltValue("none")),
+        ]
+
+    first = build_cfg(ops(1))
+    assert "dominance" not in first.__dict__
+    dominance = first.dominance
+    second = build_cfg(ops(2))
+    assert second is first
+    assert second.dominance is dominance
+    assert dominance.dominates(0, first.index_to_block[3])
+
+
+def test_shared_cfg_keeps_exception_handler_identity() -> None:
+    def ops(handler: str) -> list[MoltOp]:
+        return [
+            MoltOp("TRY_START", [handler], MoltValue("none")),
+            MoltOp("ret_void", [], MoltValue("none")),
+            MoltOp("LABEL", ["first"], MoltValue("none")),
+            MoltOp("ret_void", [], MoltValue("none")),
+            MoltOp("LABEL", ["second"], MoltValue("none")),
+            MoltOp("ret_void", [], MoltValue("none")),
+        ]
+
+    first, second = build_cfg(ops("first")), build_cfg(ops("second"))
+    assert first is not second
+    start = first.index_to_block[0]
+    first_handler, second_handler = first.index_to_block[2], first.index_to_block[4]
+    assert first.edge_kinds[start, first_handler] == CFGEdgeKind.EXCEPTION
+    assert (start, second_handler) not in first.edge_kinds
+    assert second.edge_kinds[start, second_handler] == CFGEdgeKind.EXCEPTION
+    assert (start, first_handler) not in second.edge_kinds
+
+
+def test_shared_cfg_keeps_resume_edge_kind() -> None:
+    def ops(terminator: str) -> list[MoltOp]:
+        return [
+            MoltOp("STATE_SWITCH", [], MoltValue("none")),
+            MoltOp(terminator, [], MoltValue("none")),
+            MoltOp("CONST", [1], MoltValue("resumed")),
+            MoltOp("ret_void", [], MoltValue("none")),
+        ]
+
+    suspending, returning = build_cfg(ops("STATE_YIELD")), build_cfg(ops("ret_void"))
+    assert suspending is not returning
+    target = suspending.index_to_block[2]
+    assert suspending.edge_kinds[0, target] == CFGEdgeKind.RESUME
+    assert target in suspending.reachable
+    assert target not in returning.reachable
+    assert (0, returning.index_to_block[2]) not in returning.edge_kinds

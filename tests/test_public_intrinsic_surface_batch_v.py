@@ -10,11 +10,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import enum
 import importlib.util
 import sys
 import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 def _load_module(name, path_text):
@@ -26,8 +26,7 @@ def _load_module(name, path_text):
     return module
 
 
-builtins._molt_intrinsics = {{
-    "molt_stdlib_probe": lambda: True,
+install_registry({{
     "molt_http_parse_header_pairs": lambda data: [("Host", "example.test")],
     "molt_http_server_read_request": lambda handler: True,
     "molt_http_server_compute_close_connection": lambda *args, **kwargs: False,
@@ -68,23 +67,7 @@ builtins._molt_intrinsics = {{
     "molt_pprint_isreadable": lambda obj: True,
     "molt_pprint_isrecursive": lambda obj: False,
     "molt_pprint_format_object": lambda *args, **kwargs: repr(args[0]) if args else "",
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 http_pkg = types.ModuleType("http")
 

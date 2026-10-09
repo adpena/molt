@@ -10,10 +10,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
 import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 _fake_contextlib = types.ModuleType("contextlib")
 _fake_contextlib.contextmanager = lambda fn: fn
@@ -35,25 +35,7 @@ class ReferenceType:
 _fake_weakref.ReferenceType = ReferenceType
 sys.modules["weakref"] = _fake_weakref
 
-builtins._molt_intrinsics = {{
-    "molt_capabilities_has": lambda name: True,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+install_registry()
 
 
 def _load_module(name, path_text):

@@ -10,12 +10,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import hmac as _host_hmac
 import hashlib as _host_hashlib
 import importlib.util
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 _handles = {{}}
 _next_handle = [0]
@@ -54,8 +53,7 @@ def _molt_hash_drop(handle):
     _handles.pop(handle, None)
 
 
-builtins._molt_intrinsics = {{
-    "molt_capabilities_has": lambda _name=None: True,
+install_registry({{
     "molt_hash_new": _molt_hash_new,
     "molt_hash_update": _molt_hash_update,
     "molt_hash_copy": _molt_hash_copy,
@@ -64,23 +62,7 @@ builtins._molt_intrinsics = {{
     "molt_compare_digest": _host_hmac.compare_digest,
     "molt_pbkdf2_hmac": _host_hashlib.pbkdf2_hmac,
     "molt_scrypt": _host_hashlib.scrypt,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 _hashlib_spec = importlib.util.spec_from_file_location(
     "hashlib", {str(STDLIB_ROOT / "hashlib.py")!r}

@@ -162,24 +162,24 @@ def test_installed_source_closure_fails_closed(installation, damage):
 
 
 @pytest.mark.parametrize(
-    "recorded,installed,accepted",
+    "recorded,actual,accepted",
     [
+        (0o100644, 0o644, True),
         (0o100644, 0o640, True),
-        (0o100644, 0o600, True),
         (0o100755, 0o750, True),
-        (0o100755, 0o700, True),
+        # Under umask 002 a checkout and a pip install both write 664 or 775.
+        (0o100644, 0o664, True),
+        (0o100755, 0o775, True),
+        # The executable bit and the special bits are what Git's mode binds.
         (0o100644, 0o755, False),
-        (0o100644, 0o664, False),
-        (0o100755, 0o775, False),
         (0o100755, 0o644, False),
         (0o100755, 0o4755, False),
         (0o100644, 0o2644, False),
+        (0o100644, 0o1644, False),
     ],
 )
-def test_installed_source_mode_accepts_umask_not_added_access(
-    recorded, installed, accepted
-):
-    assert distribution._source_mode_matches_git(installed, recorded) is accepted
+def test_source_mode_follows_git_semantics(recorded, actual, accepted):
+    assert distribution._source_mode_matches_git(actual, recorded) is accepted
 
 
 def test_guest_project_discovery_starts_at_entry_without_launcher_override(

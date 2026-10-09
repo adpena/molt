@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,6 +24,7 @@ from molt.cli.runtime_build_python import BuildPythonAdmission
 import molt.cli as cli
 from molt.cli import backend_output_pipeline as cli_backend_output_pipeline
 from molt.cli import build_pipeline as cli_build_pipeline
+from tests.process_guard_common import install_module_view
 
 
 _BACKEND_OUTPUT_PIPELINE_NAMES = {
@@ -43,7 +45,17 @@ def terminal_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ):
     clock = SimpleNamespace(now=10.0)
-    monkeypatch.setattr(build_diagnostics.time, "perf_counter", lambda: clock.now)
+    # Every module that times a phase of this pipeline reads one fake clock.
+    install_module_view(
+        monkeypatch,
+        "time",
+        time,
+        backend_pipeline,
+        build_diagnostics,
+        cli_backend_output_pipeline,
+        cli_build_pipeline,
+        perf_counter=lambda: clock.now,
+    )
     monkeypatch.setattr(
         build_diagnostics, "_runtime_wasm_cache_diagnostics_snapshot", lambda: None
     )
@@ -563,7 +575,9 @@ def test_payload_uses_one_terminal_clock_cutoff(terminal_build, monkeypatch):
         assert len(calls) == 1
         return 19.0
 
-    monkeypatch.setattr(build_diagnostics.time, "perf_counter", cutoff)
+    install_module_view(
+        monkeypatch, "time", time, build_diagnostics, perf_counter=cutoff
+    )
     payload, path = build_diagnostics._build_build_diagnostics_payload(case.context)
     assert path == case.diagnostics_file
     assert payload["total_sec"] == 19.0

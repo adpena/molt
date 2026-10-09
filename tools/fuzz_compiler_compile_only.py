@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from random import Random
 
-from tools.fuzz_compiler_execution import _build_env, compile_molt
+from tools.fuzz_compiler_execution import fuzz_build_env, compile_molt
 from tools.fuzz_compiler_reporting import _log, _save_failure
 from tools.fuzz_compiler_types import FuzzResult, FuzzSummary
 
@@ -37,7 +37,7 @@ class CompileOnlyFuzzer:
             summary.total = 0
             return summary
 
-        env = _build_env()
+        env = fuzz_build_env()
         summary = FuzzSummary()
         ext_tmp = os.environ.get("MOLT_DIFF_TMPDIR") or os.environ.get("TMPDIR")
         tmpdir_base = (

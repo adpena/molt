@@ -80,6 +80,7 @@ CANONICALIZATION_METRICS = frozenset(
 )
 STRUCTURAL_AUDIT_METRICS = frozenset(
     {
+        "build_failure_test_skips",
         "critical_hand_classifications",
         "debt_markers_total",
         "duplicate_authorities",
@@ -90,11 +91,13 @@ STRUCTURAL_AUDIT_METRICS = frozenset(
         "max_kitchen_sink_structural_score",
         "max_undecomposed_file_lines",
         "native_scalar_plan_authority_violations",
+        "process_wide_test_patches",
         "python_stub_surfaces_total",
         "repr_name_scalar_authority_violations",
         "rust_backend_lowering_gaps_total",
         "rust_backend_rejection_applicability_total",
         "rust_stub_surfaces_total",
+        "stdlib_raw_intrinsic_bindings",
         "undecomposed_god_files",
     }
 )

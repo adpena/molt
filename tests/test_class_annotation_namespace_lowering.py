@@ -183,7 +183,9 @@ def test_conditional_annotation_items_reload_shared_lexical_cells():
         lexical_cells.append(enclosing_cell(cell_name))
     assert lexical_cells[0] == lexical_cells[1]
     value_cell = definitions[lexical_cells[0]]
-    assert value_cell["kind"] == "call" and value_cell["s_value"] == "molt_cell_new"
+    # The enclosing value's cell lives in its frame home; its operand is the
+    # initial value.
+    assert value_cell["kind"] == "frame_home_cell"
 
     def initial_value(value):
         while definitions[value]["kind"] in {"binding_alias", "identity_alias"}:

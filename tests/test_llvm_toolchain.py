@@ -1,5 +1,5 @@
 from __future__ import annotations
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import install_module_view, run_guarded_test_process
 
 from dataclasses import asdict
 from pathlib import Path
@@ -34,6 +34,7 @@ from molt.wasi_sdk_identity import (
     render_wasi_sdk_install_receipt,
     wasi_sdk_tree_identity,
 )
+import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -199,7 +200,7 @@ def test_mlir_environment_projects_one_prefix_to_every_binding(
     monkeypatch,
 ) -> None:
     # Prefix mapping only; the darwin SDK projection has its own test.
-    monkeypatch.setattr(llvm_toolchain.sys, "platform", "linux")
+    install_module_view(monkeypatch, "sys", sys, llvm_toolchain, platform="linux")
     _write_facade(tmp_path, '"molt-backend-native/llvm"')
     _write_native(tmp_path, '"llvm22-1"', "221.0.1")
     prefix = tmp_path / "llvm 22"
@@ -461,10 +462,7 @@ def _mock_tool_process_versions(monkeypatch: pytest.MonkeyPatch) -> None:
             output = "LLVM (test):\n  LLVM version 22.1.8\n"
         return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
-    monkeypatch.setattr(
-        "molt.llvm_toolchain.subprocess.run",
-        run,
-    )
+    install_module_view(monkeypatch, "subprocess", subprocess, llvm_toolchain, run=run)
 
 
 def _mock_llvm_config(
@@ -566,7 +564,7 @@ def test_prefix_verifier_preserves_external_llvm_config_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Prefix identity only; the darwin SDK projection has its own test.
-    monkeypatch.setattr(llvm_toolchain.sys, "platform", "linux")
+    install_module_view(monkeypatch, "sys", sys, llvm_toolchain, platform="linux")
     prefix = tmp_path / "usr" / "lib" / "llvm-22"
     llvm_config = tmp_path / "usr" / "bin" / "llvm-config-22"
     _write_complete_llvm_prefix(prefix)
@@ -1482,7 +1480,7 @@ def test_verifier_refuses_manifest_release_with_mixed_patch_tools(
         )
         return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
-    monkeypatch.setattr("molt.llvm_toolchain.subprocess.run", run)
+    install_module_view(monkeypatch, "subprocess", subprocess, llvm_toolchain, run=run)
     with pytest.raises(LlvmToolchainConfigError, match="expected exactly 22.1.8"):
         verify_llvm_toolchain_prefix(
             ROOT,
@@ -1570,9 +1568,12 @@ def test_complete_prefix_verifier_rejects_mismatched_tool_version(
     prefix = tmp_path / "llvm"
     _write_complete_llvm_prefix(prefix)
     _mock_llvm_config(prefix, monkeypatch)
-    monkeypatch.setattr(
-        "molt.llvm_toolchain.subprocess.run",
-        lambda command, **_kwargs: SimpleNamespace(
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        llvm_toolchain,
+        run=lambda command, **_kwargs: SimpleNamespace(
             returncode=0,
             stdout=(
                 "21.1.7\n"
@@ -1617,7 +1618,7 @@ def test_canonical_prefix_requires_exact_patch_for_every_companion_tool(
         )
         return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
-    monkeypatch.setattr("molt.llvm_toolchain.subprocess.run", run)
+    install_module_view(monkeypatch, "subprocess", subprocess, llvm_toolchain, run=run)
     with pytest.raises(LlvmToolchainConfigError, match="expected exactly 22.1.8"):
         verify_llvm_toolchain_prefix(
             ROOT,
@@ -1651,7 +1652,7 @@ def test_compile_link_probe_uses_verified_host_linker_by_absolute_path(
         commands.append((command, kwargs["env"]))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("molt.llvm_toolchain.subprocess.run", run)
+    install_module_view(monkeypatch, "subprocess", subprocess, llvm_toolchain, run=run)
     monkeypatch.setattr(
         "molt.platform_toolchain.select_darwin_toolchain",
         lambda _env: SimpleNamespace(environment=lambda: {"SDKROOT": "/pinned-sdk"}),
@@ -1752,7 +1753,7 @@ def test_complete_prefix_verifier_requires_real_compile_link_probe(
         )
         return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
-    monkeypatch.setattr("molt.llvm_toolchain.subprocess.run", run)
+    install_module_view(monkeypatch, "subprocess", subprocess, llvm_toolchain, run=run)
     with pytest.raises(LlvmToolchainConfigError, match="compile and link together"):
         verify_llvm_toolchain_prefix(
             ROOT,
@@ -1988,7 +1989,7 @@ def test_projection_hands_bindgen_the_selected_macos_sdk_only_on_darwin(
                 "MACOSX_DEPLOYMENT_TARGET": "26.5",
             }
 
-    monkeypatch.setattr(llvm_toolchain.sys, "platform", platform)
+    install_module_view(monkeypatch, "sys", sys, llvm_toolchain, platform=platform)
     monkeypatch.setattr(
         platform_toolchain, "select_darwin_toolchain", lambda _env: Selected()
     )

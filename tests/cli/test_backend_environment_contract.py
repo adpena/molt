@@ -14,6 +14,10 @@ from molt.cli.backend_artifact_contract import (
 )
 from molt.cli.backend_execution import _backend_codegen_env_digest
 
+# These cases build synthetic projects and assert developer-host roots;
+# hosted custody has its own cases in tests/test_dx_run_context.py.
+pytestmark = pytest.mark.usefixtures("developer_host_context")
+
 
 def test_emitter_and_presence_gated_pass_inputs_invalidate_frontend_identity():
     baseline = _backend_codegen_env_digest(is_wasm=False, env={})
@@ -58,6 +62,12 @@ def test_compilation_diagnostics_bypass_backend_candidates_and_synced_outputs(
 ):
     for name in environment_keys("diagnostic", "observation"):
         monkeypatch.delenv(name, raising=False)
+    # WASM reuse also needs the provisioned structural validator, which a
+    # build-free unit cell lacks; this case checks only the diagnostics bypass.
+    monkeypatch.setattr(
+        "molt.cli.runtime_wasm_validation._reusable_wasm_artifact_validation_error",
+        lambda _path: None,
+    )
     candidate = tmp_path / "cached.wasm"
     wasm_bytes = b"\x00asm\x01\x00\x00\x00"
     candidate.write_bytes(wasm_bytes)

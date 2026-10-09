@@ -78,6 +78,11 @@ percentages. Required conformance and release matrix gates still apply.
   and blanket skips that hide supported cells. Simulated coordinates test policy
   selection, not execution on that OS/architecture/interpreter. Unexecuted cells
   remain unverified; explicit exclusions need a contract reason.
+- **Never write into the checkout.** A test puts files, generator outputs and
+  scratch state in `tmp_path` or a fixture checkout; a gate that scans the
+  repository takes `--root` so its teeth test can plant a violation there. The
+  proof executor attests the checkout after every command, so even a file that
+  lives for seconds fails every command running beside it.
 - **Budget the execution, not the coverage.** Use the smallest fixture and
   dependency closure that preserves the invariant. Profile slow setup/build/run
   stages before optimizing. Reuse immutable fixture inputs without sharing
@@ -246,6 +251,36 @@ To test Tier 1:
 - **Differential**: run `uv run --python 3.12 python tests/molt_diff.py <case.py>` for curated parity cases (expand over time).
 - **Benchmarks**: `tools/bench.py` for local validation; add CI regression gates as they stabilize.
 
+Hosted jobs export process-wide state that local runs lack: the hosted checkout
+custody contract (`MOLT_CI_EPHEMERAL_CUSTODY_ROOT` and the GitHub provenance
+fields `molt.dx` verifies) and the resource plan from `tools/ci_resource_env.py`
+(RSS caps, Cargo jobs, xdist workers). To reproduce a failure that appears only
+in CI, load the same state for the local checkout and rerun the test:
+
+```bash
+eval "$(python3 tools/hosted_ci_env.py --runner-temp /tmp/molt-runner)"
+```
+
+CI starts each partition through the proof plan, whose guarded executor roots
+`MOLT_EXT_ROOT`, `TMPDIR` and the Cargo targets in the custody root. For the
+same launch path, put the project venv first on `PATH` (the plan requires its
+pinned Python) and run
+`python3 tools/proof_plan.py --run-command <command-id> --receipt <file>`. Keep
+the runner temp short: the backend daemon socket path derives from it.
+
+A unit test that builds a synthetic project or asserts developer-host roots or
+guard limits must not inherit that state: it uses the shared
+`developer_host_context` and `no_ambient_guard_caps` fixtures from
+`tests/conftest.py`. Hosted custody itself has its own cases in
+`tests/test_dx_run_context.py`.
+
+A host test that exercises Molt stdlib sources loads them by path, through
+`tests/stdlib_intrinsic_registry.py` or `tests/helpers/tinygrad_stdlib_loader.py`,
+or runs them in a child interpreter. It never puts `src/molt/stdlib` on the
+host `sys.path`: Molt's stdlib would then shadow CPython's (`asyncio`,
+`concurrent`, `datetime`) for every later test on the worker and every child it
+spawns. `tests/conftest.py` fails the module or test that leaves it there.
+
 ### Execution acceptance and deadline controls
 
 An execution with incomplete process custody or guard infrastructure failure
@@ -305,9 +340,12 @@ Global cancellation covers unsafe memory pressure, missing or invalid guard
 metrics, unresolved guard or Cargo-quarantine ownership, uncertain descendant
 closure, source changes, guard or child signals and host exceptions, lost
 executor outcomes, dependency deadlock, and operator or control-plane
-interruption. Exit code 124 alone does not establish a
-safe deadline: the guard must attest its timeout and completed process closure,
-and any Cargo recovery must have completed with exact ownership and no errors.
+interruption. A source-change stop names the dirty Git status entries in its
+failure reason, and a failed run prints each failing command with its reason,
+so the log identifies the cause without the receipt. Exit code 124 alone does
+not establish a safe deadline: the guard must attest its timeout and completed
+process closure, and any Cargo recovery must have completed with exact
+ownership and no errors.
 A complete birth-custodied native interruption inventory with no active
 incremental compiler records recovery as unnecessary and retains completed
 caches only with a native process-birth fence through termination. Windows Job

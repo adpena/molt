@@ -35,7 +35,6 @@ authoritative when a design claim drifts.
 - 0017 Type System And Specialization: [docs/spec/areas/compiler/0017_TYPE_SYSTEM_AND_SPECIALIZATION.md](areas/compiler/0017_TYPE_SYSTEM_AND_SPECIALIZATION.md)
 - 0019 Bytecode Lowering Matrix: [docs/spec/areas/compiler/0019_BYTECODE_LOWERING_MATRIX.md](areas/compiler/0019_BYTECODE_LOWERING_MATRIX.md)
 - 0100 Molt IR: [docs/spec/areas/compiler/0100_MOLT_IR.md](areas/compiler/0100_MOLT_IR.md)
-- 0100 Molt IR Implementation Coverage 2026-02-11: [docs/spec/areas/compiler/0100_MOLT_IR_IMPLEMENTATION_COVERAGE_2026-02-11.md](areas/compiler/0100_MOLT_IR_IMPLEMENTATION_COVERAGE_2026-02-11.md)
 - 0190 Lowering Rules: [docs/spec/areas/compiler/0190_LOWERING_RULES.md](areas/compiler/0190_LOWERING_RULES.md)
 - 0191 Deopt And Guard Model: [docs/spec/areas/compiler/0191_DEOPT_AND_GUARD_MODEL.md](areas/compiler/0191_DEOPT_AND_GUARD_MODEL.md)
 - 0192 Idioms And Semantic Patterns: [docs/spec/areas/compiler/0192_IDIOMS_AND_SEMANTIC_PATTERNS.md](areas/compiler/0192_IDIOMS_AND_SEMANTIC_PATTERNS.md)

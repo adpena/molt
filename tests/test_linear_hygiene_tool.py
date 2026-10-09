@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 import tools.linear_hygiene as linear_hygiene
+from tests.process_guard_common import install_module_view
+from tools import harness_memory_guard
 
 
 def test_sanitize_issue_title_removes_trailing_noise() -> None:
@@ -104,10 +106,12 @@ def test_run_formal_suite_warns_on_runtime_mismatch(
             "quint": {"diagnostics": {"runtime_mismatch_detected": True}, "errors": []}
         },
     }
-    monkeypatch.setattr(
-        linear_hygiene.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(
+    install_module_view(
+        monkeypatch,
+        "harness_memory_guard",
+        harness_memory_guard,
+        linear_hygiene,
+        guarded_completed_process=lambda *args, **kwargs: SimpleNamespace(
             returncode=1,
             stdout=json.dumps(payload),
             stderr="",

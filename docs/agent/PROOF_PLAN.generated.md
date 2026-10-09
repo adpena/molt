@@ -43,10 +43,10 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2100 s | 120 s | 1380 s | `repository-policy` | none | `docs-gates` needs none | 1 |
-| `wasm` | pr, main | yes | `github-job` | 263 min | 15600 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 24 |
-| `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 60 s | 540 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
-| `python_unit` | pre-push, pr, main | yes | `github-matrix` | 21 min | 1200 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2340 s | 120 s | 1140 s | `repository-policy` | none | `docs-gates` needs none | 1 |
+| `wasm` | pr, main | yes | `github-job` | 263 min | 15600 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 23 |
+| `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
+| `python_unit` | pre-push, pr, main | yes | `github-matrix` | 41 min | 2400 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `native_integration` | pr, main | yes | `github-job` | 43 min | 2400 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 19 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 254 min | 15000 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
 | `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 38 |
@@ -66,7 +66,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `nightly_differential` | `differential-aggregate` | 900 s | 600 s | 300 s | 0 s | `scheduled-suite` | 1 |
 | `nightly_regrtest` | `regrtest-aggregate` | 900 s | 600 s | 300 s | 0 s | `scheduled-suite` | 1 |
 | `nightly_shard_profile_feedback` | `shard-profile-feedback` | 600 s | 300 s | 300 s | 0 s | `scheduled-suite` | 1 |
-| `nightly_determinism` | `determinism-sweep` | 3600 s | 3300 s | 300 s | 0 s | `scheduled-suite` | 3 |
+| `nightly_determinism` | `determinism-sweep` | 5700 s | 5400 s | 300 s | 0 s | `scheduled-suite` | 4 |
 | `nightly_verification_t3` | `verification-gate-t3` | 5400 s | 4800 s | 600 s | 0 s | `scheduled-suite` | 6 |
 | `runtime_candidate_costs` | `candidate-runtime-costs` | 10800 s | 9000 s | 1800 s | 0 s | `compiler-build-resource` | 1 |
 
@@ -156,19 +156,20 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 
 | Command ID | Family | Cell | Budget | Timeout | Resource | Parents |
 |---|---|---|---|---:|---|---:|
+| `nightly.determinism.ir-hashseed` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `explicit` | 1800 s | `scheduled-suite` | 0 |
 | `nightly.shards.prepare` | `nightly_shard_prepare` | `linux-x86_64-py312-native-dev` | `explicit` | 3300 s | `scheduled-suite` | 0 |
 | `nightly.conformance.aggregate` | `nightly_conformance` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 0 |
 | `nightly.differential.aggregate` | `nightly_differential` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 0 |
 | `nightly.regrtest.aggregate` | `nightly_regrtest` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 0 |
 | `nightly.shards.profile-feedback` | `nightly_shard_profile_feedback` | `linux-x86_64-py312-native-dev` | `explicit` | 300 s | `scheduled-suite` | 0 |
-| `nightly.determinism.runtime-build` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
-| `nightly.determinism.runtime` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `explicit` | 1200 s | `scheduled-suite` | 1 |
-| `nightly.determinism.ir` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `explicit` | 900 s | `scheduled-suite` | 1 |
-| `nightly.verification-t3.runtime-build` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
-| `nightly.verification-t3.reproducibility` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 1 |
-| `nightly.verification-t3.fuzz-compiler` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 1 |
+| `nightly.determinism.compiler-prewarm` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `nightly.determinism.runtime` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `explicit` | 2400 s | `scheduled-suite` | 1 |
+| `nightly.determinism.ir` | `nightly_determinism` | `linux-x86_64-py312-native-dev` | `explicit` | 1800 s | `scheduled-suite` | 2 |
+| `nightly.verification-t3.compiler-prewarm` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `nightly.verification-t3.reproducibility` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 3300 s | `scheduled-suite` | 1 |
+| `nightly.verification-t3.fuzz-compiler` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 2700 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.mutation` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 3600 s | `scheduled-suite` | 1 |
-| `nightly.verification-t3.translation` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 1800 s | `scheduled-suite` | 1 |
+| `nightly.verification-t3.translation` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 3300 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.model-based` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 1 |
 | `portability.completion.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `portability.queue.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
@@ -188,6 +189,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.benchmark-docs.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.docs.architecture` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.ecosystem.compatibility` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
+| `repository.fail-closed-gate` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
+| `repository.dead-code-ratchet` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.differential.layout` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.suite.honesty` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.cargo-test.truth` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
@@ -204,7 +207,10 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.call-fact-coverage` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.release-supply-chain` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 600 s | `repository-policy` | 5 |
+| `repository.tooling-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 600 s | `repository-policy` | 0 |
+| `repository.agent-coordination` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 600 s | `repository-policy` | 0 |
 | `wasm.build.backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
+| `wasm.host.runner-fixtures` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 600 s | `python-tests` | 1 |
 | `wasm.build.host` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `wasm.build.shared-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `wasm.build.split-runtime-release` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
@@ -229,12 +235,19 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `wasm.test.finally-pending-observer-parity` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 3 |
 | `wasm.test.import-from-codec-parity` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 2 |
 | `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | `explicit` | 300 s | `python-static` | 0 |
+| `python.static.stdlib-intrinsics` | `python_static` | `linux-x86_64-py312-static` | `explicit` | 600 s | `python-static` | 0 |
 | `python.unit.harness` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.harness.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.python-custody` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
 | `python.unit.python-custody.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
 | `python.unit.binding-authority` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
 | `python.unit.binding-authority.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
+| `python.unit.frontend-lowering` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
+| `python.unit.frontend-lowering.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
+| `python.unit.cli` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
+| `python.unit.cli.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
+| `python.unit.surface-contracts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
+| `python.unit.surface-contracts.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.runtime-artifacts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.runtime-artifacts.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.runtime-library-boundary` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 120 s | `python-tests` | 0 |

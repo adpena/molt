@@ -31,10 +31,17 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from molt.exact_json import canonical_json_bytes, loads_exact
-from molt.release_matrix import RELEASE_TARGETS, SUPPORTED_CPYTHON_VERSIONS
-from molt.cli.entrypoint_parser import _build_entrypoint_parser
-from tools import phase_exit_manifest as pem
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
+
+bind_repository_imports(__file__)
+
+from molt.exact_json import canonical_json_bytes, loads_exact  # noqa: E402
+from molt.release_matrix import RELEASE_TARGETS, SUPPORTED_CPYTHON_VERSIONS  # noqa: E402
+from molt.cli.entrypoint_parser import _build_entrypoint_parser  # noqa: E402
+from tools import phase_exit_manifest as pem  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 DECLARATION_PATH = ROOT / "config" / "public_contract_v1.toml"

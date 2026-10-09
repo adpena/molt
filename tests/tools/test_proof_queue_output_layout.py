@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import sqlite3
 import sys
 from types import SimpleNamespace
@@ -34,6 +35,7 @@ from tools.proof_queue_pkg import (
     supervisor_custody,
     state,
 )
+from tests.process_guard_common import install_module_view
 
 
 pytestmark = pytest.mark.usefixtures("cargo_output_implementation_source")
@@ -133,7 +135,7 @@ def test_actual_supervisor_provisioning_checks_target_before_launch(
 ):
     target = tmp_path / ("long-supervisor-output-" * 10)
     calls = []
-    monkeypatch.setattr(layout.sys, "platform", "win32")
+    install_module_view(monkeypatch, "sys", sys, layout, platform="win32")
     monkeypatch.setattr(
         supervisor_custody.command_identity,
         "_run_captured",
@@ -580,10 +582,14 @@ def test_shared_environment_boundary_refuses_toolchain_overlap_before_provision(
         result_root=tmp_path / "receipts", declaration=layout.declare_root(str(root))
     )
     env = {authority: str(root / "tools")} if authority.isupper() else {}
-    monkeypatch.setattr(
-        layout.shutil,
-        "which",
-        lambda name, **kwargs: str(root / "bin" / name) if name == authority else None,
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        layout,
+        which=lambda name, **kwargs: (
+            str(root / "bin" / name) if name == authority else None
+        ),
     )
     with pytest.raises(ValueError, match="overlaps protected"):
         selected.validate_environment(env)

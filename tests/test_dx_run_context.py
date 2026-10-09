@@ -21,16 +21,12 @@ from molt.path_custody import (
     host_path_is_within,
     pure_path_is_within,
 )
-from tools import run_context_env
+from tools import hosted_ci_env, run_context_env
 
 
-@pytest.fixture(autouse=True)
-def _isolate_unit_paths_from_hosted_checkout_contract(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Unit cases create independent synthetic project roots.  The process-wide
-    # hosted checkout contract belongs to GITHUB_WORKSPACE, not those fixtures.
-    monkeypatch.delenv(dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV, raising=False)
+# Unit cases create independent synthetic project roots. The process-wide
+# hosted checkout contract belongs to GITHUB_WORKSPACE, not those fixtures.
+pytestmark = pytest.mark.usefixtures("developer_host_context")
 
 
 def _clear_run_context_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -50,54 +46,24 @@ def _without_compiler_wasm_toolchain(monkeypatch: pytest.MonkeyPatch) -> None:
 def _github_actions_custody_env(
     repo_root: Path, runner_temp: Path, *, sha: str = "a" * 40
 ) -> dict[str, str]:
-    repository = "adpena/molt"
     workflow = repo_root / ".github" / "workflows" / "ci.yml"
     workflow.parent.mkdir(parents=True, exist_ok=True)
     workflow.write_text("name: test\n", encoding="utf-8")
-    runner_temp.mkdir(parents=True, exist_ok=True)
     runner_tool_cache = runner_temp.parent / "runner-tool-cache"
     runner_tool_cache.mkdir(parents=True, exist_ok=True)
-    event_path = runner_temp / "event.json"
-    event_path.write_text(
-        json.dumps({"repository": {"full_name": repository}}),
-        encoding="utf-8",
+    env = hosted_ci_env.hosted_job_env(
+        repo_root,
+        runner_temp,
+        sha=sha,
+        event_name="push",
+        ref="refs/heads/main",
+        job="platform-portability",
+        run_id="12345",
+        run_attempt="2",
     )
-    runner_arch = {
-        "amd64": "X64",
-        "x86_64": "X64",
-        "aarch64": "ARM64",
-        "arm64": "ARM64",
-        "x86": "X86",
-        "i386": "X86",
-        "i686": "X86",
-    }[dx.platform.machine().lower()]
-    return {
-        dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV: str(runner_temp / "molt-custody"),
-        "GITHUB_ACTIONS": "true",
-        "CI": "true",
-        "GITHUB_REPOSITORY": repository,
-        "GITHUB_SERVER_URL": "https://github.com",
-        "GITHUB_API_URL": "https://api.github.com",
-        "GITHUB_WORKSPACE": str(repo_root.resolve()),
-        "GITHUB_WORKFLOW_REF": (
-            f"{repository}/.github/workflows/ci.yml@refs/heads/main"
-        ),
-        "GITHUB_WORKFLOW_SHA": sha,
-        "GITHUB_EVENT_PATH": str(event_path),
-        "GITHUB_EVENT_NAME": "push",
-        "GITHUB_REF": "refs/heads/main",
-        "GITHUB_SHA": sha,
-        "GITHUB_RUN_ID": "12345",
-        "GITHUB_RUN_ATTEMPT": "2",
-        "GITHUB_JOB": "platform-portability",
-        "RUNNER_TEMP": str(runner_temp.resolve()),
-        "RUNNER_TOOL_CACHE": str(runner_tool_cache.resolve()),
-        "RUNNER_OS": "Windows"
-        if os.name == "nt"
-        else ("macOS" if dx.sys.platform == "darwin" else "Linux"),
-        "RUNNER_ARCH": runner_arch,
-        "PATH": os.environ.get("PATH", ""),
-    }
+    env["RUNNER_TOOL_CACHE"] = str(runner_tool_cache.resolve())
+    env["PATH"] = os.environ.get("PATH", "")
+    return env
 
 
 def test_run_context_installs_repo_local_defaults(tmp_path: Path) -> None:
@@ -992,7 +958,7 @@ def test_verified_github_checkout_separates_source_from_execution_custody(
     runner_temp = tmp_path / "runner-temp"
     sha = "b" * 40
     env = _github_actions_custody_env(repo_root, runner_temp, sha=sha)
-    monkeypatch.setattr(dx, "_git_checkout_head", lambda _root: sha)
+    monkeypatch.setattr(dx, "git_checkout_head", lambda _root: sha)
 
     custody = dx.checkout_custody(repo_root, env)
     resolved = RunContext(
@@ -1109,7 +1075,7 @@ def test_github_checkout_custody_rejects_mismatched_reserved_facts(
     sha = "d" * 40
     env = _github_actions_custody_env(repo_root, runner_temp, sha=sha)
     env[key] = value
-    monkeypatch.setattr(dx, "_git_checkout_head", lambda _root: sha)
+    monkeypatch.setattr(dx, "git_checkout_head", lambda _root: sha)
 
     with pytest.raises(dx.DxConfigError, match=message):
         dx.checkout_custody(repo_root, env)
@@ -1124,7 +1090,7 @@ def test_github_checkout_custody_rejects_root_outside_runner_temp(
     sha = "e" * 40
     env = _github_actions_custody_env(repo_root, runner_temp, sha=sha)
     env[dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV] = str(tmp_path / "outside")
-    monkeypatch.setattr(dx, "_git_checkout_head", lambda _root: sha)
+    monkeypatch.setattr(dx, "git_checkout_head", lambda _root: sha)
 
     with pytest.raises(dx.DxConfigError, match="child of RUNNER_TEMP"):
         dx.checkout_custody(repo_root, env)
@@ -1148,7 +1114,7 @@ def test_ephemeral_checkout_rejects_canonical_root_inside_source_tree(
         except OSError as exc:
             pytest.skip(f"directory symlinks are unavailable: {exc}")
     env[key] = str(selected / "artifacts")
-    monkeypatch.setattr(dx, "_git_checkout_head", lambda _root: sha)
+    monkeypatch.setattr(dx, "git_checkout_head", lambda _root: sha)
 
     with pytest.raises(dx.DxConfigError, match=f"cannot own {key}"):
         RunContext(repo_root).canonical_env(env, create_dirs=False)
@@ -1169,7 +1135,7 @@ def test_verified_github_checkout_on_d_is_source_only(
     env[dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV] = str(
         runner_temp / "molt-proof-queue-12345-2-windows-2022"
     )
-    monkeypatch.setattr(dx, "_git_checkout_head", lambda _root: sha)
+    monkeypatch.setattr(dx, "git_checkout_head", lambda _root: sha)
 
     custody = dx._github_actions_checkout_custody(
         source_root, env, require_exists=False
@@ -1190,7 +1156,7 @@ def test_verified_windows_ci_keeps_d_toolchain_cache_ephemeral(
     sha = "2" * 40
     env = _github_actions_custody_env(repo_root, tmp_path / "runner-temp", sha=sha)
     env["RUNNER_TOOL_CACHE"] = r"D:\hostedtoolcache\windows"
-    monkeypatch.setattr(dx, "_git_checkout_head", lambda _root: sha)
+    monkeypatch.setattr(dx, "git_checkout_head", lambda _root: sha)
 
     custody = dx.checkout_custody(repo_root, env, require_exists=False)
 

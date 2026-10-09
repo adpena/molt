@@ -1869,6 +1869,9 @@ class RepoProcessMemorySentinel:
         # Guards trip/kill authority: exit sets _stop under it, and a scan acts
         # on violations only while holding it with _stop clear.
         self._authority = threading.Lock()
+        # Set while an owner fakes process data in this process (unit tests
+        # that patch sampling): the background scan neither reads nor acts.
+        self._paused = threading.Event()
         self._thread: threading.Thread | None = None
         self._daemon_suite_lease = None
         self._daemon_suite_lease_previous = None
@@ -1973,6 +1976,19 @@ class RepoProcessMemorySentinel:
                     )
             if self._suppress_auto_guard:
                 _note_auto_sentinel_suppressor_exited()
+
+    @contextlib.contextmanager
+    def paused(self) -> Iterator[None]:
+        """Withhold scanning and kill authority while the process fakes its data.
+
+        A scan already in flight finishes without acting on what it saw.
+        """
+        with self._authority:
+            self._paused.set()
+        try:
+            yield
+        finally:
+            self._paused.clear()
 
     def _record(self, payload: dict[str, object]) -> None:
         payload.setdefault("label", self._label)
@@ -2096,6 +2112,8 @@ class RepoProcessMemorySentinel:
         # cheap scans keep the exact configured cadence.
         wait_s = self._limits.poll_interval
         while not self._stop.wait(wait_s):
+            if self._paused.is_set():
+                continue
             scan_started = time.monotonic()
             self.scan_once()
             wait_s = memory_guard.paced_poll_interval(
@@ -2253,7 +2271,7 @@ class RepoProcessMemorySentinel:
             if not violations:
                 return
             with self._authority:
-                if self._stop.is_set():
+                if self._stop.is_set() or self._paused.is_set():
                     return
                 self.tripped = True
                 global_total_kb = sum(group.total_rss_kb for group in groups)

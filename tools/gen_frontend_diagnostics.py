@@ -31,16 +31,54 @@ class Diagnostic:
     impact: str
 
 
-def load_diagnostics(path: Path = SOURCE) -> tuple[Diagnostic, ...]:
+@dataclass(frozen=True, slots=True)
+class RetiredDiagnostic:
+    name: str
+    code: str
+    reason: str
+
+
+def _code_number(name: str, code: str) -> int:
+    match = CODE_RE.fullmatch(code)
+    if not NAME_RE.fullmatch(name):
+        raise ValueError(f"invalid diagnostic name: {name!r}")
+    if match is None:
+        raise ValueError(f"invalid diagnostic code: {code!r}")
+    return int(match.group(1))
+
+
+def load_authority(
+    path: Path = SOURCE,
+) -> tuple[tuple[Diagnostic, ...], tuple[RetiredDiagnostic, ...]]:
+    """Active diagnostics in code order, and the retired codes they reserve.
+
+    Active and retired codes together are MOLT-FE001..N with no gap, so a
+    retired code is never reused for a different meaning.
+    """
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     if raw.get("schema_version") != 1:
         raise ValueError("frontend diagnostic schema_version must be 1")
     rows = raw.get("diagnostic")
     if not isinstance(rows, list) or not rows:
         raise ValueError("frontend diagnostic authority must define diagnostics")
+    retired_rows = raw.get("retired", [])
+    if not isinstance(retired_rows, list):
+        raise ValueError("retired frontend diagnostics must be an array of tables")
     diagnostics: list[Diagnostic] = []
+    retired: list[RetiredDiagnostic] = []
+    numbers: dict[int, str] = {}
     names: set[str] = set()
-    codes: set[str] = set()
+
+    def claim(name: str, code: str) -> int:
+        number = _code_number(name, code)
+        if name in names:
+            raise ValueError(f"duplicate diagnostic name: {name}")
+        if number in numbers:
+            raise ValueError(f"duplicate diagnostic code: {code}")
+        names.add(name)
+        numbers[number] = name
+        return number
+
     for index, row in enumerate(rows, 1):
         if not isinstance(row, dict):
             raise ValueError(f"diagnostic row {index} must be a table")
@@ -51,34 +89,46 @@ def load_diagnostics(path: Path = SOURCE) -> tuple[Diagnostic, ...]:
             tier=str(row.get("tier", "")),
             impact=str(row.get("impact", "")),
         )
-        code_match = CODE_RE.fullmatch(diagnostic.code)
-        if not NAME_RE.fullmatch(diagnostic.name):
-            raise ValueError(f"invalid diagnostic name: {diagnostic.name!r}")
-        if code_match is None:
-            raise ValueError(f"invalid diagnostic code: {diagnostic.code!r}")
+        number = claim(diagnostic.name, diagnostic.code)
+        if diagnostics and number < _code_number(
+            diagnostics[-1].name, diagnostics[-1].code
+        ):
+            raise ValueError(f"{diagnostic.name}: diagnostics must be in code order")
         if not diagnostic.title:
             raise ValueError(f"{diagnostic.name}: title must not be empty")
         if diagnostic.tier not in VALID_TIERS:
             raise ValueError(f"{diagnostic.name}: invalid tier {diagnostic.tier!r}")
         if diagnostic.impact not in VALID_IMPACTS:
             raise ValueError(f"{diagnostic.name}: invalid impact {diagnostic.impact!r}")
-        if diagnostic.name in names:
-            raise ValueError(f"duplicate diagnostic name: {diagnostic.name}")
-        if diagnostic.code in codes:
-            raise ValueError(f"duplicate diagnostic code: {diagnostic.code}")
-        expected_number = len(diagnostics) + 1
-        if int(code_match.group(1)) != expected_number:
-            raise ValueError(
-                f"{diagnostic.name}: expected MOLT-FE{expected_number:03d}, "
-                f"got {diagnostic.code}"
-            )
-        names.add(diagnostic.name)
-        codes.add(diagnostic.code)
         diagnostics.append(diagnostic)
-    return tuple(diagnostics)
+    for index, row in enumerate(retired_rows, 1):
+        if not isinstance(row, dict):
+            raise ValueError(f"retired row {index} must be a table")
+        entry = RetiredDiagnostic(
+            name=str(row.get("name", "")),
+            code=str(row.get("code", "")),
+            reason=str(row.get("reason", "")),
+        )
+        claim(entry.name, entry.code)
+        if not entry.reason:
+            raise ValueError(f"{entry.name}: a retired diagnostic must state why")
+        retired.append(entry)
+    missing = sorted(set(range(1, len(numbers) + 1)) - set(numbers))
+    if missing:
+        raise ValueError(
+            "frontend diagnostic codes must run MOLT-FE001..N without a gap; "
+            f"missing {', '.join(f'MOLT-FE{number:03d}' for number in missing)}"
+        )
+    return tuple(diagnostics), tuple(retired)
 
 
-def render(diagnostics: tuple[Diagnostic, ...]) -> str:
+def load_diagnostics(path: Path = SOURCE) -> tuple[Diagnostic, ...]:
+    return load_authority(path)[0]
+
+
+def render(
+    diagnostics: tuple[Diagnostic, ...], retired: tuple[RetiredDiagnostic, ...]
+) -> str:
     lines = [
         "# @generated by tools/gen_frontend_diagnostics.py from",
         "# src/molt/frontend/frontend_diagnostics.toml. DO NOT EDIT.",
@@ -121,7 +171,12 @@ def render(diagnostics: tuple[Diagnostic, ...]) -> str:
         lines.append(f"        tier={json.dumps(diagnostic.tier)},")
         lines.append(f"        impact={json.dumps(diagnostic.impact)},")
         lines.append("    ),")
-    lines.extend(["}", ""])
+    lines.extend(["}", "", "# Reserved codes: never reuse one for a new meaning."])
+    lines.extend(["RETIRED_FRONTEND_DIAGNOSTIC_CODES: Final = frozenset(", "    {"])
+    lines.extend(
+        f"        {json.dumps(entry.code)},  # {entry.name}" for entry in retired
+    )
+    lines.extend(["    }", ")", ""])
     return "\n".join(lines)
 
 
@@ -214,9 +269,9 @@ def validate_consumers(
 
 def generated_outputs() -> dict[Path, str]:
     """Each output path mapped to its exact generated text."""
-    diagnostics = load_diagnostics()
+    diagnostics, retired = load_authority()
     validate_consumers(diagnostics)
-    return {OUTPUT: render(diagnostics)}
+    return {OUTPUT: render(diagnostics, retired)}
 
 
 def main(argv: list[str] | None = None) -> int:

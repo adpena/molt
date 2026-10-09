@@ -110,7 +110,7 @@ before splitting `molt-runtime` into focused modules.
 ### WASM Host Calls
 - Owner: runtime
 - Current location: `runtime/molt-runtime/src/lib.rs` (entrypoints + wasm table
-  indices) + `wit/molt-runtime.wit`.
+  indices) + `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` (import names and types).
 - Notes: runtime ABI for wasm targets and host bindings.
 
 ### WASM Parity Checklist (In Progress)

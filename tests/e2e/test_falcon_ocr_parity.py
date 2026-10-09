@@ -54,10 +54,7 @@ KL_THRESH = 1e-6  # KL divergence threshold for softmax distributions
 def _falcon_ocr_runtime_available() -> bool:
     """Check if the Falcon OCR runtime modules are importable."""
     try:
-        stdlib_path = os.path.join(_project_root, "src", "molt", "stdlib")
         src_path = os.path.join(_project_root, "src")
-        if stdlib_path not in sys.path:
-            sys.path.insert(0, stdlib_path)
         if src_path not in sys.path:
             sys.path.insert(0, src_path)
         from molt.gpu import Buffer, alloc  # noqa: F401
@@ -587,10 +584,7 @@ class TestForwardBlockParity:
 
     @pytest.fixture(autouse=True)
     def _setup_paths(self):
-        stdlib_path = os.path.join(_project_root, "src", "molt", "stdlib")
         src_path = os.path.join(_project_root, "src")
-        if stdlib_path not in sys.path:
-            sys.path.insert(0, stdlib_path)
         if src_path not in sys.path:
             sys.path.insert(0, src_path)
 
@@ -652,10 +646,7 @@ class TestFullInferenceParity:
 
     @pytest.fixture(autouse=True)
     def _setup_paths(self):
-        stdlib_path = os.path.join(_project_root, "src", "molt", "stdlib")
         src_path = os.path.join(_project_root, "src")
-        if stdlib_path not in sys.path:
-            sys.path.insert(0, stdlib_path)
         if src_path not in sys.path:
             sys.path.insert(0, src_path)
 
@@ -713,10 +704,7 @@ class TestPerformanceBaseline:
 
     @pytest.fixture(autouse=True)
     def _setup_paths(self):
-        stdlib_path = os.path.join(_project_root, "src", "molt", "stdlib")
         src_path = os.path.join(_project_root, "src")
-        if stdlib_path not in sys.path:
-            sys.path.insert(0, stdlib_path)
         if src_path not in sys.path:
             sys.path.insert(0, src_path)
 

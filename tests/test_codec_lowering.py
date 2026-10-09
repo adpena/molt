@@ -196,6 +196,8 @@ def test_positional_dynamic_call_uses_live_callable_without_argument_builder(hin
 
 def test_dynamic_keyword_call_keeps_runtime_argument_binding():
     generator = SimpleTIRGenerator()
+    # The argument builder chooses CALL or CALL_FUNCTION_EX from module facts.
+    generator._populate_sema_state(ast.Module(body=[], type_ignores=[]))
     callee = MoltValue("live_callable", type_hint="Any")
     result = generator._emit_dynamic_call(
         ast.parse("callee(value=1)", mode="eval").body, callee

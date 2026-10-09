@@ -201,7 +201,7 @@ def qjl_error_correction(
 # ---------------------------------------------------------------------------
 #
 # Block-based format: each block of elements shares a single 8-bit exponent.
-#   MXFP8: 16 elements/block, 8-bit mantissa per element
+#   MXFP8: 32 elements/block, 8-bit mantissa per element
 #   MXFP4: 32 elements/block, 4-bit mantissa per element
 #
 # Per-block encoding:

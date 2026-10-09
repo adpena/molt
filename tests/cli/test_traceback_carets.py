@@ -138,8 +138,9 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
         )
 
         if build_result.returncode != 0:
-            pytest.skip(
-                f"molt build failed (infrastructure): {build_result.stderr[:500]}"
+            pytest.fail(
+                f"molt build failed (exit {build_result.returncode}): "
+                f"{build_result.stderr[-2000:]}"
             )
 
         try:

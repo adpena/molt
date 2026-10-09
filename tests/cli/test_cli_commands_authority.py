@@ -22,6 +22,8 @@ _COMMAND_AUTHORITIES = {
         "_apply_run_capability_policy",
         "_deploy",
         "_run_script_cross",
+        "_wasm_node_runner",
+        "_wasm_run_build_args",
         "compare",
         "diff",
         "parity_run",

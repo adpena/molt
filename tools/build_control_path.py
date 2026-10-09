@@ -6,9 +6,16 @@ from collections.abc import Mapping
 import os
 from pathlib import Path
 
-from molt.backend_daemon_custody import backend_daemon_build_state_root_from_env
-from molt.memory_guard_paths import memory_guard_state_root, pytest_guard_summary_dir
-from tools.harness_memory_guard import canonical_harness_env, command_profile_log_path
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
+
+bind_repository_imports(__file__)
+
+from molt.memory_guard_paths import memory_guard_state_root, pytest_guard_summary_dir  # noqa: E402
+from molt.backend_daemon_custody import backend_daemon_build_state_root_from_env  # noqa: E402
+from tools.harness_memory_guard import canonical_harness_env, command_profile_log_path  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 

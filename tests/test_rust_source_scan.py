@@ -535,3 +535,21 @@ def test_scan_memo_failed_compute_never_publishes():
         assert (
             scan._memoized("failure-oracle", None, "source", lambda: marker) is marker
         )
+
+
+def test_prewarmed_item_projections_fill_the_memo_with_the_lazy_results() -> None:
+    from molt import rust_source_scan as scan
+
+    texts = [
+        "#[cfg(test)]\nmod tests;\nfn production() {}\n",
+        "mod child;\n#[cfg(test)]\nmod fixture {\n    fn helper() {}\n}\n",
+        "struct Plain;\n",
+    ]
+    with pytest.raises(RuntimeError, match="active scan_memo"):
+        scan.prewarm_rust_item_projections(texts, workers=2)
+    with scan.scan_memo():
+        scan.prewarm_rust_item_projections(texts, workers=2)
+        # Stored by the workers before any consumer asked for them.
+        assert all(("items", None, text) in scan._SCAN_STATE.memo for text in texts)
+        warmed = [scan._rust_item_projection(text) for text in texts]
+    assert warmed == [scan._compute_rust_item_projection(text) for text in texts]

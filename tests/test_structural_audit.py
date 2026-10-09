@@ -2681,3 +2681,138 @@ def test_audit_concurrent_run_scopes_do_not_leak_or_resurrect(tmp_path, monkeypa
     assert [f.location for f in results["b"]] == ["src/b.py:1"]
     (right / "src/b.py").write_text("# finished\n", encoding="utf-8")
     assert [f.location for f in SA.probe_debt_markers(right)] == ["src/a.py:1"]
+
+
+def _process_wide_patch_count(tmp_path: Path, body: str) -> int:
+    tests = tmp_path / "tests"
+    tests.mkdir(parents=True, exist_ok=True)
+    (tests / "test_fixture.py").write_text(body, encoding="utf-8")
+    return sum(int(f.metric) for f in SA.probe_process_wide_test_patches(tmp_path))
+
+
+def test_process_wide_patch_probe_counts_rebinding_a_shared_module(tmp_path: Path):
+    body = (
+        "import subprocess\n"
+        "def test_a(monkeypatch):\n"
+        "    monkeypatch.setattr(mod.os, 'getpid', lambda: 1)\n"
+        "    monkeypatch.setattr(\n"
+        "        mod.subprocess,\n"
+        "        'run',\n"
+        "        fake,\n"
+        "    )\n"
+        "    monkeypatch.setattr(subprocess, 'Popen', fake)\n"
+        "    monkeypatch.setattr('pkg.mod.time.monotonic', fake)\n"
+    )
+    assert _process_wide_patch_count(tmp_path, body) == 4
+
+
+def test_process_wide_patch_probe_accepts_patches_of_an_installed_view(
+    tmp_path: Path,
+):
+    body = (
+        "def test_a(monkeypatch):\n"
+        "    install_module_view(monkeypatch, 'os', os, mod, getpid=fake)\n"
+        "    monkeypatch.setattr(mod.os, 'kill', fake)\n"
+        "    install_module_os_view(monkeypatch, other, name='nt')\n"
+        "    monkeypatch.setattr(other.os, 'getpid', fake)\n"
+    )
+    assert _process_wide_patch_count(tmp_path, body) == 0
+
+
+def test_process_wide_patch_probe_does_not_extend_a_view_to_other_modules(
+    tmp_path: Path,
+):
+    body = (
+        "def test_a(monkeypatch):\n"
+        "    install_module_view(monkeypatch, 'os', os, mod, getpid=fake)\n"
+        "    monkeypatch.setattr(helper.os, 'getpid', fake)\n"
+        "def test_b(monkeypatch):\n"
+        "    monkeypatch.setattr(mod.os, 'kill', fake)\n"
+    )
+    assert _process_wide_patch_count(tmp_path, body) == 2
+
+
+def test_process_wide_patch_probe_ignores_process_wide_by_nature(tmp_path: Path):
+    body = (
+        "def test_a(monkeypatch):\n"
+        "    monkeypatch.setattr(mod.sys, 'argv', ['molt'])\n"
+        "    monkeypatch.setattr(sys, 'path', [])\n"
+        "    monkeypatch.setattr(mod.os, 'environ', {})\n"
+        "    monkeypatch.setattr(mod, 'helper', fake)\n"
+    )
+    assert _process_wide_patch_count(tmp_path, body) == 0
+
+
+def _raw_intrinsic_binding_count(tmp_path: Path, relative: str, body: str) -> int:
+    path = tmp_path / "src" / "molt" / "stdlib" / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return sum(int(f.metric) for f in SA.probe_stdlib_raw_intrinsic_names(tmp_path))
+
+
+def test_raw_intrinsic_probe_counts_module_scope_bindings(tmp_path: Path):
+    body = (
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        "molt_spawn = _require_intrinsic('molt_spawn')\n"
+        "_MOLT_PRIVATE = _require_intrinsic('molt_private')\n"
+        "_require_intrinsic('molt_injected', globals())\n"
+        "from asyncio import molt_block_on\n"
+        "try:\n"
+        "    molt_guarded = _require_intrinsic('molt_guarded')\n"
+        "except RuntimeError:\n"
+        "    pass\n"
+        "if TYPE_CHECKING:\n"
+        "    def molt_declared() -> None: ...\n"
+        "def helper():\n"
+        "    molt_local = _require_intrinsic('molt_local')\n"
+        "    return molt_local\n"
+    )
+    # molt_spawn, the injected name, the import and the guarded binding leak;
+    # a private name, a type-checking declaration and a local do not.
+    assert _raw_intrinsic_binding_count(tmp_path, "mod.py", body) == 4
+
+
+def test_raw_intrinsic_probe_ignores_code_outside_the_stdlib(tmp_path: Path):
+    body = "molt_spawn = object()\n"
+    stdlib_count = _raw_intrinsic_binding_count(tmp_path, "mod.py", body)
+    outside = tmp_path / "src" / "molt" / "cli.py"
+    outside.write_text(body, encoding="utf-8")
+    assert (
+        sum(int(f.metric) for f in SA.probe_stdlib_raw_intrinsic_names(tmp_path))
+        == stdlib_count
+        == 1
+    )
+
+
+def _build_failure_skip_count(tmp_path: Path, body: str) -> int:
+    path = tmp_path / "tests" / "test_sample.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return sum(int(f.metric) for f in SA.probe_build_failure_test_skips(tmp_path))
+
+
+def test_build_failure_skip_probe_counts_skips_that_hide_a_failed_build(
+    tmp_path: Path,
+):
+    body = (
+        "import pytest\n"
+        "def test_a(result):\n"
+        "    if result.returncode:\n"
+        "        pytest.skip(f'Compilation failed: {result.stderr[:300]}')\n"
+        "    pytest.skip('Build/run error: x')\n"
+        "    pytest.skip('one or both builds failed')\n"
+        "    pytest.skip('Backend killed during compilation (stale daemon)')\n"
+    )
+    assert _build_failure_skip_count(tmp_path, body) == 4
+
+
+def test_build_failure_skip_probe_keeps_capability_skips(tmp_path: Path):
+    body = (
+        "import pytest\n"
+        "def test_a():\n"
+        "    pytest.skip('cargo is required for backend compilation.')\n"
+        "    pytest.skip('clang is required for target C data-model compilation')\n"
+        "    pytest.skip(reason)\n"
+        "    pytest.fail('Compilation failed')\n"
+    )
+    assert _build_failure_skip_count(tmp_path, body) == 0

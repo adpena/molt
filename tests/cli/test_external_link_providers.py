@@ -4,6 +4,7 @@ from pathlib import Path
 from contextlib import contextmanager
 from collections import OrderedDict
 import os
+import sys
 
 import pytest
 
@@ -13,6 +14,7 @@ from tests.cli.native_link_test_support import (
     single_member_archive_symbol_facts,
     static_archive_bytes,
 )
+from tests.process_guard_common import install_module_view
 
 
 def test_archive_symbol_facts_use_central_cache_without_toolchain_sidecar(
@@ -172,7 +174,9 @@ def test_nm_symbol_normalization_uses_artifact_target_not_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = "00000000 T __molt_runtime\n         U _Py_None\n"
-    monkeypatch.setattr(native_symbol_inspection.sys, "platform", "darwin")
+    install_module_view(
+        monkeypatch, "sys", sys, native_symbol_inspection, platform="darwin"
+    )
 
     wasm_defined, wasm_undefined = (
         native_symbol_inspection._parse_native_nm_global_symbol_sets(

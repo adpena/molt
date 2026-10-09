@@ -10,13 +10,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import json as _host_json
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_json_dumps_ex": lambda obj, skipkeys, ensure_ascii, check_circular, allow_nan, sort_keys, indent, item_sep, key_sep, default: _host_json.dumps(
         obj,
         skipkeys=skipkeys,
@@ -33,23 +32,7 @@ builtins._molt_intrinsics = {{
     "molt_json_encode_basestring_obj": _host_json.encoder.encode_basestring,
     "molt_json_encode_basestring_ascii_obj": _host_json.encoder.encode_basestring_ascii,
     "molt_json_scanstring_obj": _host_json.decoder.scanstring,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 def _load_module(name, path_text):

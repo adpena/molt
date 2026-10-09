@@ -8,6 +8,7 @@ GitHub YAML never duplicates compiler, source-custody, or partition policy.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ for import_root in (ROOT, SRC):
         sys.path.insert(0, str(import_root))
 
 from molt.artifact_publication import atomic_write_json  # noqa: E402
+from molt.dx import development_artifact_env  # noqa: E402
 from tools.command_execution import CommandExecutor, bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
@@ -50,9 +52,16 @@ def prepare(
     *,
     output_root: Path,
     cpython_dir: Path,
-    target_root: Path,
+    build_env: Mapping[str, str],
     github_output: Path | None,
 ) -> dict[str, object]:
+    """Build the runtime once and bundle it from the target that build used.
+
+    ``build_env`` is the DX-resolved environment for the smoke build; its
+    ``CARGO_TARGET_DIR`` is where that build leaves the runtime and backend,
+    so the bundle reads the same root by construction.
+    """
+    target_root = Path(build_env["CARGO_TARGET_DIR"])
     output_root.mkdir(parents=True, exist_ok=True)
     log_path = output_root / "cpython-provision.log"
     sources = cpython_regrtest.load_cpython_sources()
@@ -88,6 +97,7 @@ def prepare(
             str(smoke_output),
         ],
         cwd=ROOT,
+        env=build_env,
         timeout=3600,
     )
     if completed.returncode != 0 or not smoke_output.is_file():
@@ -137,7 +147,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--target-root",
         type=Path,
-        default=Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")),
+        default=None,
+        help="Cargo target root; the DX authority chooses it by default",
     )
     parser.add_argument(
         "--github-output",
@@ -147,11 +158,14 @@ def main(argv: list[str] | None = None) -> int:
         else None,
     )
     args = parser.parse_args(argv)
+    build_env = development_artifact_env(ROOT, session_prefix="nightly")
+    if args.target_root is not None:
+        build_env["CARGO_TARGET_DIR"] = str(args.target_root.resolve())
     try:
         summary = prepare(
             output_root=args.output_root.resolve(),
             cpython_dir=args.cpython_dir.resolve(),
-            target_root=args.target_root.resolve(),
+            build_env=build_env,
             github_output=args.github_output,
         )
     except (OSError, RuntimeError, ValueError) as exc:

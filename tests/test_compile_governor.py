@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import tools.compile_governor as compile_governor
+from tests.process_guard_common import install_module_view
 
 
 def test_compile_governor_authority_is_not_duplicated_in_runtime_async() -> None:
@@ -39,12 +40,14 @@ def test_load_1m_returns_none_on_oserror(monkeypatch) -> None:
     def boom():
         raise OSError("load average unobtainable")
 
-    monkeypatch.setattr(os, "getloadavg", boom, raising=False)
+    install_module_view(monkeypatch, "os", os, compile_governor, getloadavg=boom)
     assert compile_governor._load_1m() is None
 
 
 def test_load_1m_reads_first_component_when_available(monkeypatch) -> None:
-    monkeypatch.setattr(os, "getloadavg", lambda: (1.5, 2.0, 3.0), raising=False)
+    install_module_view(
+        monkeypatch, "os", os, compile_governor, getloadavg=lambda: (1.5, 2.0, 3.0)
+    )
     assert compile_governor._load_1m() == pytest.approx(1.5)
 
 
@@ -192,7 +195,7 @@ def test_governor_default_target_matches_cli_and_daemon_with_artifact_root(
 
 
 def test_compile_slot_defaults_use_resource_pressure_plan(monkeypatch) -> None:
-    monkeypatch.setattr(compile_governor.os, "cpu_count", lambda: 16)
+    install_module_view(monkeypatch, "os", os, compile_governor, cpu_count=lambda: 16)
     env = {
         "MOLT_COMPILE_GUARD_MEMORY_TOTAL_GB": "64",
         "MOLT_COMPILE_GUARD_MEMORY_AVAILABLE_GB": "8",

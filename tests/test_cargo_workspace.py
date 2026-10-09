@@ -10,6 +10,8 @@ from molt.cargo_workspace import (
     workspace_member_manifests,
     workspace_package_names,
 )
+import shutil
+from tests.process_guard_common import install_module_view
 
 
 def _manifest(root: Path, directory: str, name: str) -> Path:
@@ -127,7 +129,9 @@ def test_lock_validation_rejects_bad_membership_before_cache_or_cargo(
     from molt.cli import lockfiles
 
     (tmp_path / "Cargo.toml").write_text("invalid [", encoding="utf-8")
-    monkeypatch.setattr(lockfiles.shutil, "which", lambda _tool: "cargo")
+    install_module_view(
+        monkeypatch, "shutil", shutil, lockfiles, which=lambda _tool: "cargo"
+    )
     monkeypatch.setattr(
         lockfiles,
         "_lock_check_inputs",
@@ -317,7 +321,9 @@ def test_lock_cache_invalidates_when_excluded_dependency_manifest_changes(
     support = _manifest(tmp_path, "support", "support")
     cached: dict = {}
     commands: list = []
-    monkeypatch.setattr(lockfiles.shutil, "which", lambda _tool: "cargo")
+    install_module_view(
+        monkeypatch, "shutil", shutil, lockfiles, which=lambda _tool: "cargo"
+    )
     monkeypatch.setattr(
         lockfiles,
         "_is_lock_check_cache_valid",

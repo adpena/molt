@@ -122,7 +122,6 @@ def test_parse_rows_reads_the_log_table_and_skips_headers() -> None:
         "## Log\n"
         "| lane | agent-id | UTC (ISO) | status | note / evidence |\n"
         "|------|----------|-----------|--------|-----------------|\n"
-        "| _(none yet)_ | | | | |\n"
         f"| A | ag | {_ts(1)} | CLAIMED | started |\n"
         f"| A | ag | {_ts(0.5)} | FALSIFIED | premise disproven: no such symbol |\n"
         f"| B | bg | {_ts(0.5)} | COMPLETE | landed deadbeef | with | pipes |\n"
@@ -201,3 +200,47 @@ def test_cli_live_report_is_warn_only(tmp_path: Path) -> None:
     assert proc.returncode == 0
     assert "1 stale" in proc.stdout
     assert "STALE-LANE" in proc.stdout
+
+
+# --- the vocabulary is closed --------------------------------------------------
+
+
+def test_a_row_outside_the_vocabulary_refuses_the_log() -> None:
+    # Skipping the BLOCKED row would report L as CLAIMED by its older row.
+    claims = (
+        "## Log\n"
+        "| lane | agent-id | UTC (ISO) | status | note |\n"
+        "|------|----------|-----------|--------|------|\n"
+        f"| L | a | {_ts(9)} | CLAIMED | start |\n"
+        f"| L | a | {_ts(1)} | BLOCKED | stopped |\n"
+    )
+    with pytest.raises(
+        cs.ClaimsLogError, match=r"line 5: lane 'L' has status 'BLOCKED'"
+    ):
+        cs.parse_rows(claims)
+
+
+def test_the_repository_log_uses_only_the_vocabulary() -> None:
+    rows = cs.parse_rows((ROOT / cs.CLAIMS_REL).read_text(encoding="utf-8"))
+    assert rows, "the claims log has no rows"
+    assert {row.status for row in rows} <= cs.ALL_STATUSES
+
+
+def test_cli_report_fails_on_a_row_outside_the_vocabulary(tmp_path: Path) -> None:
+    claims = tmp_path / "CLAIMS.md"
+    claims.write_text(
+        f"## Log\n| L | a | {_ts(1)} | DROPPED | gone |\n", encoding="utf-8"
+    )
+    proc = run_guarded_test_process(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "claims_status.py"),
+            "--path",
+            str(claims),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(ROOT),
+    )
+    assert proc.returncode == 1
+    assert "'DROPPED'" in proc.stderr

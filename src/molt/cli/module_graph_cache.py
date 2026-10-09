@@ -4,7 +4,8 @@ import functools
 import hashlib
 import os
 import sys
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, cast, get_args
 
@@ -242,6 +243,69 @@ def _stdlib_intrinsic_source_facts(
             file=sys.stderr,
         )
     return facts
+
+
+# A worker costs about 0.3 s to start and import the analysis; a module costs
+# about 25 ms to analyze. At 32 modules a worker, start-up stays under a third.
+_INTRINSIC_FACTS_MODULES_PER_WORKER = 32
+# One worker holds one module analysis; a whole serial run peaks near 300 MB.
+_INTRINSIC_FACTS_BYTES_PER_WORKER = 256 * 1024 * 1024
+_INTRINSIC_FACTS_MEMORY_HEADROOM_BYTES = 1024 * 1024 * 1024
+
+
+def _warm_stdlib_intrinsic_source_facts_batch(
+    project_root: str,
+    batch: tuple[tuple[str, str], ...],
+    target_python: TargetPythonVersion,
+) -> None:
+    # One transaction captures the tooling fingerprint once for the batch.
+    with _source_tree_fingerprint_transaction():
+        for module_name, path in batch:
+            _stdlib_intrinsic_source_facts(
+                Path(project_root), module_name, Path(path), target_python=target_python
+            )
+
+
+def warm_stdlib_intrinsic_source_facts(
+    project_root: Path,
+    module_paths: Mapping[str, Path],
+    *,
+    target_python: TargetPythonVersion,
+) -> None:
+    """Fill the per-module facts cache in parallel when the set is large.
+
+    Each module's facts depend only on its own bytes, so workers may compute
+    them in any order; the caller then classifies from the cache. A set too
+    small to amortize worker start-up is left to the caller's serial pass.
+    """
+    from molt.dx import _memory_bounded_worker_count
+
+    work = [
+        (name, os.fspath(path))
+        for name, path in sorted(module_paths.items())
+        if path.suffix == ".py"
+    ]
+    workers = min(
+        len(work) // _INTRINSIC_FACTS_MODULES_PER_WORKER,
+        _memory_bounded_worker_count(
+            bytes_per_worker=_INTRINSIC_FACTS_BYTES_PER_WORKER,
+            headroom_bytes=_INTRINSIC_FACTS_MEMORY_HEADROOM_BYTES,
+        ),
+    )
+    if workers <= 1:
+        return
+    # One interleaved batch a worker spreads the large modules across workers.
+    batches = [tuple(work[index::workers]) for index in range(workers)]
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        for _ in pool.map(
+            functools.partial(
+                _warm_stdlib_intrinsic_source_facts_batch,
+                os.fspath(project_root),
+                target_python=target_python,
+            ),
+            batches,
+        ):
+            pass
 
 
 @functools.lru_cache(maxsize=4096)

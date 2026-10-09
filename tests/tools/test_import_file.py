@@ -287,3 +287,88 @@ def test_sibling_package_loader_restores_parent_after_failure(tmp_path) -> None:
     finally:
         sys.modules.pop(module_name, None)
         sys.modules.pop(package_name, None)
+
+
+# Scripts that still fail to import when launched by path. The set may only
+# shrink: the release and proof-queue files carry concurrent WIP, and the
+# landing hook is imported by its dispatcher.
+_SCRIPT_LAUNCH_BACKLOG = frozenset(
+    {
+        "tools/hooks/landing_gate.py",
+        "tools/proof_queue_pkg/evidence.py",
+        "tools/release/build_bundle.py",
+        "tools/release/release_authority.py",
+        "tools/release/verify_consumer.py",
+        "tools/runtime_wasm_final_preflight.py",
+    }
+)
+
+
+def _resolves_beside(script: Path, module: str) -> bool:
+    head = module.split(".", 1)[0]
+    return (script.parent / f"{head}.py").is_file() or (script.parent / head).is_dir()
+
+
+def _script_launch_failure(script: Path) -> str | None:
+    """The first import a by-path launch of ``script`` cannot resolve.
+
+    A launch puts only the script's directory first on ``sys.path``: ``tools``
+    resolves after ``bind_repository_imports``, a fallback must name a file
+    beside the script, and a relative import never resolves.
+    """
+    import ast
+
+    tree = ast.parse(script.read_text(encoding="utf-8"))
+    bound = False
+    for node in tree.body:
+        calls = {
+            ast.unparse(call.func)
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+        }
+        # Binding the repository, or putting a root on sys.path, makes
+        # later tools imports resolve.
+        if calls & {"bind_repository_imports", "sys.path.insert", "sys.path.append"}:
+            bound = True
+            if not isinstance(node, (ast.Import, ast.ImportFrom, ast.Try, ast.If)):
+                continue
+        if isinstance(node, ast.ImportFrom) and node.level:
+            return f"line {node.lineno}: relative import"
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = (
+                [alias.name for alias in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module or ""]
+            )
+            if not bound and any(name.split(".")[0] == "tools" for name in names):
+                return f"line {node.lineno}: tools import before binding"
+        guarded = isinstance(node, ast.Try) or (
+            isinstance(node, ast.If) and "__package__" in ast.unparse(node.test)
+        )
+        if guarded and not bound:
+            fallbacks = (
+                [stmt for handler in node.handlers for stmt in handler.body]
+                if isinstance(node, ast.Try)
+                else node.body
+            )
+            for stmt in fallbacks:
+                if isinstance(stmt, ast.ImportFrom) and stmt.level == 0:
+                    module = stmt.module or ""
+                    if module.split(".")[0] != "tools" and not _resolves_beside(
+                        script, module
+                    ):
+                        if (ROOT / "tools" / f"{module.split('.')[0]}.py").is_file():
+                            return f"line {stmt.lineno}: fallback {module} is not beside it"
+    return None
+
+
+def test_tool_scripts_import_when_launched_by_path() -> None:
+    failures = {}
+    for script in sorted((ROOT / "tools").rglob("*.py")):
+        source = script.read_text(encoding="utf-8")
+        if 'if __name__ == "__main__"' not in source:
+            continue
+        failure = _script_launch_failure(script)
+        if failure is not None:
+            failures[script.relative_to(ROOT).as_posix()] = failure
+    assert set(failures) == _SCRIPT_LAUNCH_BACKLOG, failures

@@ -15,6 +15,9 @@ from tools import memory_guard_custody as cli
 from tools.memory_guard_core import active_custody as custody
 from tools.memory_guard_core import process_model, windows_snapshot
 
+# These tests fake process data the session sentinel also reads.
+pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
+
 
 def _sample(pid=99, birth=9900, pgid=None):
     return SimpleNamespace(pid=pid, started_at_ns=birth, pgid=pgid)

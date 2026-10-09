@@ -519,6 +519,13 @@ establish CPython-version, OS, architecture, or backend matrix closure.
 
 **The existence proof that F2's target shape is reachable** lives in the same package today: `cfg_analysis.py` has free functions (`build_cfg`, `_collect_control_maps`) over frozen dataclasses (`BasicBlock`, `ControlMaps`, `CFGGraph`) taking an `OpLike` protocol. Zero `self`, zero god-object state, fully testable in isolation. F2 makes the rest of the frontend look like `cfg_analysis.py`.
 
+`build_cfg` shares immutable graphs through a 128-entry LRU keyed by the exact
+control projection: every operation kind plus the label operand consumed by
+labels, jumps, exception routing and try markers. Reachability is available
+immediately; `CFGGraph.dominance` derives the immutable tree on first use.
+The entry count bounds retained generations, not bytes independently of input
+size. Cold/warm lowering and retained-cache memory require actual measurements.
+
 Frontend CFG dominance is owned by `DominatorTree` in that module. It computes
 immediate dominators over reachable reverse postorder and answers dominance
 through tree intervals, following TIR's `IndexedDominance` contract. Retained

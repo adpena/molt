@@ -204,8 +204,7 @@ mixed unproved owners, and unanchored forwarding cycles remain unadmitted.
 ### Standard First Commands
 Run these first to establish current state:
 ```bash
-python3 tools/sync_stdlib_top_level_stubs.py
-python3 tools/sync_stdlib_submodule_stubs.py
+python3 tools/gen_stdlib_stubs.py --check
 python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 python3 tools/check_stdlib_intrinsics.py --critical-allowlist
 cat tools/stdlib_intrinsics_ratchet.json
@@ -247,7 +246,7 @@ uv run --python 3.12 pytest -q \
 ### Failure String -> Copy-Paste Response
 `stdlib intrinsics lint failed: stdlib top-level coverage gate violated`
 ```bash
-python3 tools/sync_stdlib_top_level_stubs.py --write
+python3 tools/gen_stdlib_stubs.py --write
 python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 ```
 
@@ -287,7 +286,7 @@ PY
 
 `stdlib intrinsics lint failed: stdlib submodule coverage gate violated`
 ```bash
-python3 tools/sync_stdlib_submodule_stubs.py --write
+python3 tools/gen_stdlib_stubs.py --write
 python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 ```
 
@@ -398,8 +397,7 @@ python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 `stdlib intrinsics lint failed: zero non-intrinsic gate violated`
 ```bash
 python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
-python3 tools/sync_stdlib_top_level_stubs.py --write
-python3 tools/sync_stdlib_submodule_stubs.py --write
+python3 tools/gen_stdlib_stubs.py --write
 ```
 
 `stdlib intrinsics lint failed: intrinsic-partial ratchet gate violated`
@@ -482,8 +480,7 @@ python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 `stdlib intrinsics lint failed: ...` (dynamic message, e.g. baseline invalid/missing)
 ```bash
 python3 tools/gen_stdlib_module_union.py --write
-python3 tools/sync_stdlib_top_level_stubs.py --write
-python3 tools/sync_stdlib_submodule_stubs.py --write
+python3 tools/gen_stdlib_stubs.py --write
 python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 ```
 

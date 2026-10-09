@@ -22,8 +22,15 @@ def test_manifest_env_var_propagation():
     )
     env = m.to_env_vars()
     caps = set(env["MOLT_CAPABILITIES"].split(","))
-    # "net" profile expands to net + websocket.connect + websocket.listen
-    assert "net" in caps
+    # The "net" profile expands to concrete capabilities; the runtime checks
+    # those, never the profile name.
+    assert "net" not in caps
+    assert {
+        "net.connect",
+        "net.listen",
+        "websocket.connect",
+        "websocket.listen",
+    } <= caps
     assert env["MOLT_RESOURCE_MAX_MEMORY"] == "1048576"
     assert env["MOLT_RESOURCE_MAX_DURATION_MS"] == "5000"
     assert env["MOLT_AUDIT_ENABLED"] == "1"
@@ -39,7 +46,7 @@ def test_manifest_env_vars_with_deny():
     env = m.to_env_vars()
     caps = env["MOLT_CAPABILITIES"].split(",")
     assert "fs.write" not in caps
-    assert "net" in caps
+    assert "net.connect" in caps
     assert "fs.read" in caps
 
 

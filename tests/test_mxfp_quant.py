@@ -61,7 +61,8 @@ def _max_relative_error(original, reconstructed):
 
 
 def test_block_sizes():
-    assert MXFP8_BLOCK_SIZE == 16
+    # OCP MX Spec v1.0 Table 1: every concrete MX format uses k = 32.
+    assert MXFP8_BLOCK_SIZE == 32
     assert MXFP4_BLOCK_SIZE == 32
 
 
@@ -111,17 +112,17 @@ def test_shared_exponent_negative_values():
 
 
 def test_mxfp8_roundtrip_zeros():
-    data = [0.0] * 16
+    data = [0.0] * MXFP8_BLOCK_SIZE
     mantissas, exponents = quantize_mxfp8(data)
     recon = dequantize_mxfp8(mantissas, exponents)
-    assert len(mantissas) == 16
+    assert len(mantissas) == MXFP8_BLOCK_SIZE
     assert len(exponents) == 1
     for v in recon:
         assert v == 0.0
 
 
 def test_mxfp8_roundtrip_ones():
-    data = [1.0] * 16
+    data = [1.0] * MXFP8_BLOCK_SIZE
     mantissas, exponents = quantize_mxfp8(data)
     recon = dequantize_mxfp8(mantissas, exponents)
     for v in recon:
@@ -152,32 +153,32 @@ def test_mxfp8_roundtrip_negative():
 
 
 def test_mxfp8_padding():
-    """Non-multiple-of-16 input should be zero-padded."""
+    """Input that is not a whole number of blocks is zero-padded."""
     data = [1.0] * 10
     mantissas, exponents = quantize_mxfp8(data)
-    # Padded to 16 elements
-    assert len(mantissas) == 16
+    assert len(mantissas) == MXFP8_BLOCK_SIZE
     assert len(exponents) == 1
     recon = dequantize_mxfp8(mantissas, exponents)
     for i in range(10):
         assert abs(recon[i] - 1.0) < 0.02
     # Padded positions should be ~0
-    for i in range(10, 16):
+    for i in range(10, MXFP8_BLOCK_SIZE):
         assert abs(recon[i]) < 0.02
 
 
 def test_mxfp8_multi_block():
     """Multiple blocks should each get their own exponent."""
-    data = [1.0] * 16 + [100.0] * 16
+    block = MXFP8_BLOCK_SIZE
+    data = [1.0] * block + [100.0] * block
     mantissas, exponents = quantize_mxfp8(data)
-    assert len(mantissas) == 32
+    assert len(mantissas) == 2 * block
     assert len(exponents) == 2
     # Exponents should differ (different magnitudes per block)
     assert exponents[0] != exponents[1]
     recon = dequantize_mxfp8(mantissas, exponents)
-    for i in range(16):
+    for i in range(block):
         assert abs(recon[i] - 1.0) < 0.02
-    for i in range(16, 32):
+    for i in range(block, 2 * block):
         assert abs(recon[i] - 100.0) < 2.0  # 2% of 100
 
 

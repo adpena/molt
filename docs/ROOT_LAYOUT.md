@@ -31,7 +31,7 @@ Root is reserved for:
   - `.cargo/`
   - other small root-scoped config files
 - canonical source/workspace directories
-  - `src/`, `runtime/`, `crates/`, `tests/`, `tools/`, `docs/`, `examples/`, `demo/`, `bench/`, `ops/`, `packaging/`, `vendor/`, `include/`, `formal/`, `fuzz/`, `wasm/`, `wit/`
+  - `src/`, `runtime/`, `crates/`, `tests/`, `tools/`, `docs/`, `examples/`, `demo/`, `bench/`, `ops/`, `packaging/`, `vendor/`, `include/`, `formal/`, `fuzz/`, `wasm/`
 - canonical artifact roots already documented by repo policy
   - `target/`, `tmp/`, `logs/`, `build/`, `dist/`
 

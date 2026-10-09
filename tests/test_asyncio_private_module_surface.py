@@ -10,10 +10,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
 import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 class _AsyncFuture:
@@ -37,7 +37,7 @@ sys.modules["asyncio"] = _fake_asyncio
 
 _state = {{"running_loop": None, "event_loop": "event-loop", "current": "current-task"}}
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_asyncio_running_loop_get": lambda: _state["running_loop"],
     "molt_asyncio_running_loop_set": lambda loop: _state.__setitem__("running_loop", loop),
     "molt_asyncio_event_loop_get": lambda: _state["event_loop"],
@@ -48,23 +48,7 @@ builtins._molt_intrinsics = {{
     "molt_asyncio_leave_task": lambda loop, task: _state.__setitem__("current", None),
     "molt_asyncio_register_task": lambda task: None,
     "molt_asyncio_unregister_task": lambda task: None,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 def _load_module(name, path_text):

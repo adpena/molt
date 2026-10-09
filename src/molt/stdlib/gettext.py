@@ -683,3 +683,5 @@ def npgettext(context: str, msgid1: str, msgid2: str, n: int) -> str:
 
 # James Henstridge's Catalog alias
 Catalog = translation
+
+globals().pop("_require_intrinsic", None)

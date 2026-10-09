@@ -116,3 +116,24 @@ def test_live_takeover_by_other_refused(repo: Path) -> None:
     _set_claims(repo, _row("L1", "owner", now, "CLAIMED"))
     res = _run(repo, "L1", "--append", "PROGRESS", "--agent", "intruder")
     assert res.returncode == 1 and "REFUSED" in res.stdout
+
+
+def test_check_refuses_a_log_with_an_unknown_status(repo: Path) -> None:
+    # The old reader skipped the newest row and reported the older CLAIMED one.
+    now = dt.datetime.now(dt.timezone.utc)
+    _set_claims(
+        repo,
+        _row("L1", "other", now - dt.timedelta(hours=1), "CLAIMED")
+        + _row("L1", "other", now, "BLOCKED"),
+    )
+    res = _run(repo, "L1", "--check")
+    assert res.returncode == 2, res.stdout
+    assert "'BLOCKED'" in res.stderr
+
+
+def test_append_refuses_a_note_that_breaks_the_table(repo: Path) -> None:
+    before = _git(repo, "rev-parse", "origin/main")
+    res = _run(repo, "L1", "--claim", "--agent", "me", "--note", "a | b")
+    assert res.returncode == 2 and "--note" in res.stdout
+    _git(repo, "fetch", "origin", "--quiet")
+    assert _git(repo, "rev-parse", "origin/main") == before

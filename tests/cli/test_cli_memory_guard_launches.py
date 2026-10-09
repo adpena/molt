@@ -7,9 +7,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 import molt.cli as cli
 from molt.cli import link_pipeline as cli_link_pipeline
 from molt.cli import typecheck as cli_typecheck
+from tests.process_guard_common import install_module_view
 
 BACKEND_EXECUTION = importlib.import_module("molt.cli.backend_execution")
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
@@ -349,7 +351,9 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
     monkeypatch.setattr(
         COMMAND_RUNTIME, "_load_cli_harness_memory_guard", lambda cwd: FakeHarness()
     )
-    monkeypatch.setattr(BACKEND_EXECUTION.subprocess, "Popen", fake_popen)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, BACKEND_EXECUTION, Popen=fake_popen
+    )
     monkeypatch.setattr(
         BACKEND_EXECUTION,
         "_backend_daemon_wait_until_ready",

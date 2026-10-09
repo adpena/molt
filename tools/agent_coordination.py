@@ -1042,14 +1042,15 @@ def _claims_context(
     relative = Path(claims_status.CLAIMS_REL)
     path = repo_root / relative
     try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
+        rows = claims_status.parse_rows(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, claims_status.ClaimsLogError) as exc:
+        kind = (
+            "invalid_status"
+            if isinstance(exc, claims_status.ClaimsLogError)
+            else "read_error"
+        )
         errors.append(
-            _context_error(
-                "claims.records",
-                "read_error",
-                f"{relative.as_posix()}: {exc}",
-            )
+            _context_error("claims.records", kind, f"{relative.as_posix()}: {exc}")
         )
         return {
             "source": relative.as_posix(),
@@ -1057,10 +1058,7 @@ def _claims_context(
             "live": [],
             "stale": [],
         }
-    summary = claims_status.summarize(
-        claims_status.parse_rows(text),
-        datetime.now(UTC),
-    ).as_dict()
+    summary = claims_status.summarize(rows, datetime.now(UTC)).as_dict()
 
     def active_claim(record: object) -> dict[str, object]:
         if not isinstance(record, dict):

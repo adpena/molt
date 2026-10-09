@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import errno
 from pathlib import Path
 import sys
@@ -12,8 +13,36 @@ from molt import file_locks as build_locks
 from tests.process_guard_common import run_custody_subject_process
 
 
+@dataclass(frozen=True)
+class _HeldLocks:
+    """The process-wide lock state at one moment."""
+
+    registry: frozenset[str]
+    handles: frozenset[int]
+
+    @classmethod
+    def now(cls) -> _HeldLocks:
+        return cls(
+            frozenset(build_locks._IN_PROCESS_LOCK_REGISTRY),
+            frozenset(build_locks._LIVE_FILE_LOCK_HANDLES),
+        )
+
+
+@pytest.fixture
+def held_before() -> _HeldLocks:
+    """Locks held when the test starts.
+
+    A session can hold locks for its whole life (the backend-daemon suite
+    lease, for one), so a test proves it leaves no lock of its own by
+    comparing against this snapshot, not by expecting empty registries.
+    """
+    return _HeldLocks.now()
+
+
 @pytest.mark.parametrize("contents", [None, b"", b"old advisory PID\n"])
-def test_file_lock_ownership_never_mutates_file_contents(tmp_path, contents):
+def test_file_lock_ownership_never_mutates_file_contents(
+    tmp_path, contents, held_before
+):
     lock_path = tmp_path / "shared.lock"
     if contents is not None:
         lock_path.write_bytes(contents)
@@ -21,10 +50,12 @@ def test_file_lock_ownership_never_mutates_file_contents(tmp_path, contents):
     assert handle is not None
     build_locks._release_file_lock(handle)
     assert lock_path.read_bytes() == (contents or b"")
-    assert not build_locks._IN_PROCESS_LOCK_REGISTRY
+    assert _HeldLocks.now().registry == held_before.registry
 
 
-def test_empty_file_interprocess_contention_reaches_os_lock_without_writing(tmp_path):
+def test_empty_file_interprocess_contention_reaches_os_lock_without_writing(
+    tmp_path, held_before
+):
     lock_path = tmp_path / "shared.lock"
     # Hold byte zero beyond EOF, exactly as in the retired holder-PID truncate
     # window. A separate interpreter cannot be protected by our process mutex.
@@ -49,7 +80,7 @@ def test_empty_file_interprocess_contention_reaches_os_lock_without_writing(tmp_
             )
             assert completed.returncode == 0, completed.stdout + completed.stderr
             assert lock_path.stat().st_size == 0
-            assert not build_locks._IN_PROCESS_LOCK_REGISTRY
+            assert _HeldLocks.now().registry == held_before.registry
         finally:
             build_locks._unlock_file_handle(holder)
     handle = build_locks._try_acquire_file_lock(lock_path)
@@ -88,7 +119,7 @@ def test_windows_lock_only_classifies_contention_errors(
 
 @pytest.mark.parametrize("phase", ["open", "lock"])
 def test_file_lock_failures_propagate_and_release_process_reservation(
-    tmp_path, monkeypatch, phase
+    tmp_path, monkeypatch, phase, held_before
 ):
     calls = []
     error = OSError(errno.EACCES if phase == "open" else errno.EIO, "fixture failure")
@@ -107,7 +138,7 @@ def test_file_lock_failures_propagate_and_release_process_reservation(
             build_locks._try_acquire_file_lock(tmp_path / "shared.lock")
         assert raised.value is error
     assert calls == [phase]
-    assert not build_locks._IN_PROCESS_LOCK_REGISTRY
+    assert _HeldLocks.now().registry == held_before.registry
     handle = build_locks._try_acquire_file_lock(tmp_path / "shared.lock")
     assert handle is not None
     build_locks._release_file_lock(handle)
@@ -116,6 +147,7 @@ def test_file_lock_failures_propagate_and_release_process_reservation(
 def test_file_lock_serializes_when_platform_lock_is_process_reentrant(
     tmp_path: Path,
     monkeypatch,
+    held_before,
 ) -> None:
     """The in-process authority must not depend on OS same-process semantics."""
     monkeypatch.setattr(build_locks, "_try_lock_file_handle", lambda _handle: True)
@@ -130,17 +162,18 @@ def test_file_lock_serializes_when_platform_lock_is_process_reentrant(
     assert second is not None
     build_locks._release_file_lock(second)
 
-    assert not build_locks._IN_PROCESS_LOCK_REGISTRY
+    assert _HeldLocks.now().registry == held_before.registry
 
 
 def test_file_lock_releases_registry_reservation_when_platform_is_contended(
     tmp_path: Path,
     monkeypatch,
+    held_before,
 ) -> None:
     monkeypatch.setattr(build_locks, "_try_lock_file_handle", lambda _handle: False)
 
     assert build_locks._try_acquire_file_lock(tmp_path / "shared.lock") is None
-    assert not build_locks._IN_PROCESS_LOCK_REGISTRY
+    assert _HeldLocks.now().registry == held_before.registry
 
 
 def test_file_lock_registry_key_canonicalizes_path_aliases(tmp_path: Path) -> None:
@@ -152,19 +185,39 @@ def test_file_lock_registry_key_canonicalizes_path_aliases(tmp_path: Path) -> No
     )
 
 
-def test_file_lock_registry_is_reinitialized_after_fork() -> None:
-    prior_registry = build_locks._IN_PROCESS_LOCK_REGISTRY
-    prior_guard = build_locks._IN_PROCESS_LOCK_REGISTRY_GUARD
-    prior_registry["inherited"] = build_locks._InProcessLockEntry(
-        mutex=threading.Lock(),
-        users=1,
+# The child-side fork reset rewrites process-wide lock state and closes every
+# live handle's stream. In the test process it would also close the locks the
+# session holds, and a guard thread that locks while it runs would register in
+# the reset state; these cases therefore run in a fresh interpreter.
+_CHILD_RESET_TIMEOUT_S = 30
+
+
+def _run_child_reset_script(script: str, *args: str) -> str:
+    completed = run_custody_subject_process(
+        [sys.executable, "-c", script, *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=_CHILD_RESET_TIMEOUT_S,
     )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    return completed.stdout
 
-    build_locks._reset_in_process_lock_registry_after_fork()
 
-    assert build_locks._IN_PROCESS_LOCK_REGISTRY == {}
-    assert build_locks._IN_PROCESS_LOCK_REGISTRY is not prior_registry
-    assert build_locks._IN_PROCESS_LOCK_REGISTRY_GUARD is not prior_guard
+def test_file_lock_registry_is_reinitialized_after_fork() -> None:
+    script = """
+import threading
+from molt import file_locks as locks
+prior_registry = locks._IN_PROCESS_LOCK_REGISTRY
+prior_guard = locks._IN_PROCESS_LOCK_REGISTRY_GUARD
+prior_registry["inherited"] = locks._InProcessLockEntry(mutex=threading.Lock(), users=1)
+locks._reset_in_process_lock_registry_after_fork()
+assert locks._IN_PROCESS_LOCK_REGISTRY == {}
+assert locks._IN_PROCESS_LOCK_REGISTRY is not prior_registry
+assert locks._IN_PROCESS_LOCK_REGISTRY_GUARD is not prior_guard
+print("REINITIALIZED")
+"""
+    assert "REINITIALIZED" in _run_child_reset_script(script)
 
 
 def test_file_lock_and_proof_cache_imports_do_not_load_cli_or_frontend():
@@ -187,7 +240,9 @@ def test_file_lock_and_proof_cache_imports_do_not_load_cli_or_frontend():
     assert completed.returncode == 0, completed.stderr
 
 
-def test_live_lock_owner_rejects_copied_handle_and_release_is_idempotent(tmp_path):
+def test_live_lock_owner_rejects_copied_handle_and_release_is_idempotent(
+    tmp_path, held_before
+):
     from dataclasses import replace
 
     handle = build_locks._try_acquire_file_lock(tmp_path / "owned.lock")
@@ -200,8 +255,8 @@ def test_live_lock_owner_rejects_copied_handle_and_release_is_idempotent(tmp_pat
     build_locks._release_file_lock(handle)
     build_locks._release_file_lock(handle)
     assert not build_locks._file_lock_is_owned(handle)
-    assert not build_locks._LIVE_FILE_LOCK_HANDLES
-    assert not build_locks._IN_PROCESS_LOCK_REGISTRY
+    assert _HeldLocks.now().handles == held_before.handles
+    assert _HeldLocks.now().registry == held_before.registry
 
 
 def test_inherited_owner_cannot_unlock_or_drop_parent_reservation(
@@ -224,23 +279,29 @@ def test_inherited_owner_cannot_unlock_or_drop_parent_reservation(
     build_locks._release_file_lock(handle)
 
 
-def test_child_fork_cleanup_closes_stream_without_unlock(tmp_path, monkeypatch):
-    handle = build_locks._try_acquire_file_lock(tmp_path / "owned.lock")
-    assert handle is not None
-    monkeypatch.setattr(
-        build_locks,
-        "_unlock_file_handle",
-        lambda _: pytest.fail("child unlocked parent"),
-    )
-    build_locks._before_file_lock_fork()
-    build_locks._reset_in_process_lock_registry_after_fork()
-    assert handle.file.closed
-    assert handle.released
-    assert not build_locks._LIVE_FILE_LOCK_HANDLES
-    assert not build_locks._IN_PROCESS_LOCK_REGISTRY
-    build_locks._release_file_lock(handle)
-    build_locks._before_file_lock_fork()
-    build_locks._after_file_lock_fork_parent()
+def test_child_fork_cleanup_closes_stream_without_unlock(tmp_path) -> None:
+    script = """
+import sys
+from pathlib import Path
+from molt import file_locks as locks
+handle = locks._try_acquire_file_lock(Path(sys.argv[1]) / "owned.lock")
+assert handle is not None
+def forbidden(_file):
+    raise AssertionError("child unlocked parent")
+locks._unlock_file_handle = forbidden
+locks._before_file_lock_fork()
+locks._reset_in_process_lock_registry_after_fork()
+assert handle.file.closed
+assert handle.released
+assert not locks._LIVE_FILE_LOCK_HANDLES
+assert not locks._IN_PROCESS_LOCK_REGISTRY
+locks._release_file_lock(handle)
+locks._before_file_lock_fork()
+locks._after_file_lock_fork_parent()
+print("CHILD_CLEANUP_CLOSED_WITHOUT_UNLOCK")
+"""
+    stdout = _run_child_reset_script(script, str(tmp_path))
+    assert "CHILD_CLEANUP_CLOSED_WITHOUT_UNLOCK" in stdout
 
 
 def test_fork_guard_serializes_descriptor_birth_and_registration(tmp_path, monkeypatch):
@@ -257,6 +318,7 @@ def test_fork_guard_serializes_descriptor_birth_and_registration(tmp_path, monke
         return stream
 
     monkeypatch.setattr(build_locks, "_open_file_lock_handle", delayed_open)
+    owned_key = build_locks._in_process_lock_key(tmp_path / "owned.lock")
     acquire = threading.Thread(
         target=lambda: result.append(
             build_locks._try_acquire_file_lock(tmp_path / "owned.lock")
@@ -268,7 +330,12 @@ def test_fork_guard_serializes_descriptor_birth_and_registration(tmp_path, monke
     def fork_protocol():
         build_locks._before_file_lock_fork()
         try:
-            assert len(build_locks._LIVE_FILE_LOCK_HANDLES) == 1
+            # Other threads may hold locks of their own; this lock must be
+            # registered once the fork gate has drained descriptor births.
+            assert owned_key in {
+                handle.registry_key
+                for handle in build_locks._LIVE_FILE_LOCK_HANDLES.values()
+            }
             fork_ready.set()
         finally:
             build_locks._after_file_lock_fork_parent()
@@ -315,7 +382,46 @@ def test_actual_fork_child_release_cannot_unlock_parent(tmp_path):
         build_locks._release_file_lock(handle)
 
 
-def test_concurrent_duplicate_release_drops_reservation_once(tmp_path):
+def test_duplicate_release_returns_only_after_the_lock_is_free(tmp_path, monkeypatch):
+    path = tmp_path / "owned.lock"
+    handle = build_locks._try_acquire_file_lock(path)
+    assert handle is not None
+    unlocking = threading.Event()
+    finish_unlock = threading.Event()
+    original = build_locks._unlock_file_handle
+
+    def held_unlock(file):
+        unlocking.set()
+        assert finish_unlock.wait(5)
+        original(file)
+
+    monkeypatch.setattr(build_locks, "_unlock_file_handle", held_unlock)
+    first = threading.Thread(target=build_locks._release_file_lock, args=(handle,))
+    first.start()
+    assert unlocking.wait(5)
+    second_returned = threading.Event()
+
+    def second_release():
+        build_locks._release_file_lock(handle)
+        second_returned.set()
+
+    second = threading.Thread(target=second_release)
+    second.start()
+    try:
+        # The first release has marked the handle released but still holds
+        # the lock; a caller whose release returns may acquire it next.
+        assert not second_returned.wait(0.2)
+    finally:
+        finish_unlock.set()
+        first.join(5)
+        second.join(5)
+    assert second_returned.is_set()
+    contender = build_locks._try_acquire_file_lock(path)
+    assert contender is not None
+    build_locks._release_file_lock(contender)
+
+
+def test_concurrent_duplicate_release_drops_reservation_once(tmp_path, held_before):
     handle = build_locks._try_acquire_file_lock(tmp_path / "owned.lock")
     assert handle is not None
     ready = threading.Barrier(5)
@@ -337,8 +443,8 @@ def test_concurrent_duplicate_release_drops_reservation_once(tmp_path):
     assert all(not thread.is_alive() for thread in threads)
     assert not errors
     assert handle.entry.users == 0
-    assert not build_locks._LIVE_FILE_LOCK_HANDLES
-    assert not build_locks._IN_PROCESS_LOCK_REGISTRY
+    assert _HeldLocks.now().handles == held_before.handles
+    assert _HeldLocks.now().registry == held_before.registry
 
 
 def test_owned_operation_blocks_other_thread_release_without_global_mutex(tmp_path):

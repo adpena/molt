@@ -39,6 +39,10 @@ from molt.compiler_analysis.python_imports import (
 from molt.compiler_analysis.python_lexical_scope import python_eager_nodes
 
 
+# PEP 3147's bytecode cache directory; Python writes it, sources never live there.
+_BYTECODE_CACHE_DIR = "__pycache__"
+
+
 @dataclass(frozen=True)
 class PythonImportPolicy:
     """Resolution policy for one import-closure consumer.
@@ -316,7 +320,10 @@ class LocalPythonModuleResolver:
                                 name = entry.name
                                 if entry.is_file() and name.endswith(".py"):
                                     name = name[:-3]
-                                elif not entry.is_dir():
+                                elif not entry.is_dir() or name == _BYTECODE_CACHE_DIR:
+                                    # Python creates its bytecode cache on first
+                                    # import; as a namespace member it would
+                                    # change the domain identity mid-run.
                                     continue
                                 # A dotted filename is not one PathFinder segment.
                                 if name and "." not in name:

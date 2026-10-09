@@ -10,10 +10,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
 import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 class _SocketType:
@@ -50,7 +50,7 @@ _fake_socket.setdefaulttimeout = lambda value: None
 _fake_socket.socketpair = lambda: ("a", "b")
 sys.modules["socket"] = _fake_socket
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_socket_constants": lambda: None,
     "molt_os_close": lambda fd: ("close", fd),
     "molt_os_dup": lambda fd: fd + 1,
@@ -68,23 +68,7 @@ builtins._molt_intrinsics = {{
     "molt_socket_htonl": lambda value: value,
     "molt_socket_ntohl": lambda value: value,
     "molt_socket_sethostname": lambda name: None,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 def _load_module(name, path_text):

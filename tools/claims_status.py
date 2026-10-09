@@ -32,7 +32,8 @@ custody cannot silently block a lane.
 Two modes:
   * default (warn-only, wired into ci_gate as ``claims-status-warn``): parse the
     real CLAIMS.md, print live / retired / stale counts + any stale CLAIMED rows.
-    ALWAYS exits 0 -- a stale claim is flagged, never a hard CI failure.
+    A stale claim is flagged, never a hard CI failure; a log row with a status
+    outside the vocabulary exits 1, because no reader can classify its lane.
   * ``--check`` (falsifiable self-test, wired into ci_gate tier-1 + a
     check_gate_liveness canary): feed the PURE classifier synthetic fixtures and
     fail (exit 1) if a FALSIFIED row is not RETIRED, a stale CLAIMED is not
@@ -157,32 +158,41 @@ class Summary:
 # ------------------------------- pure parsing --------------------------------
 
 
+class ClaimsLogError(ValueError):
+    """A ``## Log`` row whose status is outside ``ALL_STATUSES``."""
+
+
 def parse_rows(claims_text: str) -> list[Row]:
     """Parse every ``## Log`` table row (all lanes), oldest -> newest.
 
-    Mirrors ``tools/claim_lane.py`` cell-splitting but keeps ALL lanes and rejoins
-    any note cells that themselves contained a ``|`` so a pipe in the evidence
-    note does not truncate it.
+    Note cells that contain a ``|`` are rejoined, so a pipe in the evidence
+    does not truncate it. A row with a status outside ``ALL_STATUSES`` raises
+    ``ClaimsLogError``: skipping it would report the lane's previous row as its
+    current state.
     """
     rows: list[Row] = []
+    invalid: list[str] = []
     in_log = False
-    for line in claims_text.splitlines():
+    for number, line in enumerate(claims_text.splitlines(), start=1):
         if line.startswith("## Log"):
             in_log = True
             continue
         if not in_log or not line.startswith("|"):
             continue
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 4:
-            continue
-        if cells[0].lower() in {"lane", "------"} or cells[0].startswith("-"):
-            continue
-        status = cells[3]
-        if status not in ALL_STATUSES:  # header / placeholder / free-text row
+        if cells[0].lower() == "lane" or cells[0].startswith("-"):
+            continue  # the table header and its separator
+        status = cells[3] if len(cells) >= 4 else ""
+        if status not in ALL_STATUSES:
+            invalid.append(f"line {number}: lane {cells[0]!r} has status {status!r}")
             continue
         note = " | ".join(cells[4:]) if len(cells) > 4 else ""
         rows.append(
             Row(lane=cells[0], agent=cells[1], utc=cells[2], status=status, note=note)
+        )
+    if invalid:
+        raise ClaimsLogError(
+            "; ".join(invalid) + f" (valid statuses: {', '.join(sorted(ALL_STATUSES))})"
         )
     return rows
 
@@ -327,6 +337,14 @@ def _run_selftest() -> tuple[int, list[str]]:
             "CLAIMED lane (got "
             f"live={len(summ.live)} stale={len(summ.stale)} retired={len(summ.retired)})"
         )
+    # A row outside the vocabulary must refuse the log, not hide behind the
+    # lane's previous row.
+    try:
+        parse_rows("## Log\n| X | a | 2026-07-11T11:00:00Z | BLOCKED | x |\n")
+    except ClaimsLogError:
+        pass
+    else:
+        failures.append("unknown status: a BLOCKED row must raise ClaimsLogError")
     return (1 if failures else 0), failures
 
 
@@ -362,11 +380,15 @@ def main(argv: list[str] | None = None) -> int:
                 "vocabulary / staleness classifier has silently rotted (M34/M42)."
             )
         else:
-            print(f"All {len(_selftest_cases()) + 1} claims_status self-tests pass.")
+            print(f"All {len(_selftest_cases()) + 2} claims_status self-tests pass.")
         return code
 
-    text = _read_claims(args.path)
-    summary = summarize(parse_rows(text), _dt.datetime.now(_dt.timezone.utc))
+    try:
+        rows = parse_rows(_read_claims(args.path))
+    except ClaimsLogError as exc:
+        print(f"claims_status: {args.path}: {exc}", file=sys.stderr)
+        return 1
+    summary = summarize(rows, _dt.datetime.now(_dt.timezone.utc))
     if args.json:
         print(json.dumps(summary.as_dict(), indent=2, sort_keys=True))
     else:

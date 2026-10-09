@@ -12,8 +12,15 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from molt.artifact_publication import atomic_write_json
-from tools import nightly_shard_profile, nightly_sharding
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
+
+bind_repository_imports(__file__)
+
+from molt.artifact_publication import atomic_write_json  # noqa: E402
+from tools import nightly_shard_profile, nightly_sharding  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]

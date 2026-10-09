@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 import molt.cli as cli
+import molt.cli_entry as cli_entry
 from molt.cli import build_output_layout as cli_build_output_layout
 
 from tests.cli.process_guard import run_cli_test_process
@@ -459,20 +460,20 @@ def test_cli_hash_seed_windows_handoff_waits_for_restarted_process(
         raise AssertionError(f"os._exit({code}) skips atexit custody handshakes")
 
     monkeypatch.delenv("PYTHONHASHSEED", raising=False)
-    monkeypatch.delenv(cli._HASH_SEED_SENTINEL_ENV, raising=False)
-    monkeypatch.setenv(cli._HASH_SEED_OVERRIDE_ENV, "123")
-    monkeypatch.setattr(cli, "_is_windows_process_model", lambda: True)
+    monkeypatch.delenv(cli_entry.HASH_SEED_SENTINEL_ENV, raising=False)
+    monkeypatch.setenv(cli_entry.HASH_SEED_OVERRIDE_ENV, "123")
+    monkeypatch.setattr(cli_entry, "_is_windows_process_model", lambda: True)
     monkeypatch.setattr(
-        cli,
-        "_cli_hash_seed_reexec_argv",
+        cli_entry,
+        "hash_seed_reexec_argv",
         lambda: [sys.executable, "-m", "molt.cli", "doctor"],
     )
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
-    monkeypatch.setattr(cli.os, "execvpe", fake_execvpe)
-    monkeypatch.setattr(cli.os, "_exit", fake_exit)
+    monkeypatch.setattr(cli_entry.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_entry.os, "execvpe", fake_execvpe)
+    monkeypatch.setattr(cli_entry.os, "_exit", fake_exit)
 
     try:
-        cli._ensure_cli_hash_seed()
+        cli_entry.ensure_hash_seed()
     except SystemExit as exc:
         assert exc.code == 81
     else:  # pragma: no cover
@@ -482,22 +483,22 @@ def test_cli_hash_seed_windows_handoff_waits_for_restarted_process(
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["PYTHONHASHSEED"] == "123"
-    assert env[cli._HASH_SEED_SENTINEL_ENV] == "1"
+    assert env[cli_entry.HASH_SEED_SENTINEL_ENV] == "1"
     assert captured["check"] is False
 
 
 def test_cli_hash_seed_reexec_argv_uses_active_python_executable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cli.sys, "executable", "venv-python")
+    monkeypatch.setattr(cli_entry.sys, "executable", "venv-python")
     monkeypatch.setattr(
-        cli.sys,
+        cli_entry.sys,
         "orig_argv",
         ["uv-base-python", "-m", "molt.cli", "doctor"],
         raising=False,
     )
 
-    assert cli._cli_hash_seed_reexec_argv() == [
+    assert cli_entry.hash_seed_reexec_argv() == [
         "venv-python",
         "-m",
         "molt.cli",
@@ -513,17 +514,33 @@ def test_cli_hash_seed_sentinel_requires_applied_seed(
         raise AssertionError(f"os._exit({code}) skips atexit custody handshakes")
 
     monkeypatch.setenv("PYTHONHASHSEED", "random")
-    monkeypatch.setenv(cli._HASH_SEED_SENTINEL_ENV, "1")
-    monkeypatch.setenv(cli._HASH_SEED_OVERRIDE_ENV, "123")
-    monkeypatch.setattr(cli.os, "_exit", hard_exit)
+    monkeypatch.setenv(cli_entry.HASH_SEED_SENTINEL_ENV, "1")
+    monkeypatch.setenv(cli_entry.HASH_SEED_OVERRIDE_ENV, "123")
+    monkeypatch.setattr(cli_entry.os, "_exit", hard_exit)
 
     with pytest.raises(SystemExit) as exc_info:
-        cli._ensure_cli_hash_seed()
+        cli_entry.ensure_hash_seed()
 
     assert exc_info.value.code == 127
     assert (
         "deterministic PYTHONHASHSEED restart did not apply" in capsys.readouterr().err
     )
+
+
+def test_cli_launcher_restarts_before_loading_the_cli() -> None:
+    # The restart happens before the CLI package loads, so a molt process
+    # imports the CLI once, in its final interpreter.
+    probe = run_cli_test_process(
+        [
+            sys.executable,
+            "-c",
+            "import sys, molt.cli_entry; print('molt.cli' in sys.modules)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert probe.stdout.strip() == "False"
 
 
 def test_cli_doctor_json() -> None:

@@ -10,6 +10,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from tests.process_guard_common import install_module_view
 
 ROOT = Path(__file__).resolve().parents[1]
 GEN_WASM_ABI = ROOT / "tools" / "gen_wasm_abi.py"
@@ -967,7 +968,7 @@ def test_rustfmt_many_materializes_cached_sibling_modules(monkeypatch) -> None:
         mod_path.write_text("mod child;\n", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(gen.subprocess, "run", fake_run)
+    install_module_view(monkeypatch, "subprocess", subprocess, gen, run=fake_run)
 
     rendered = gen._rustfmt_many(modules)
 

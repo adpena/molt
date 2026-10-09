@@ -4,8 +4,10 @@ import json
 from pathlib import Path
 import importlib.util
 import sys
+import os
 
 import pytest
+from tests.process_guard_common import install_module_view
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -137,7 +139,7 @@ def test_main_json_dry_run_does_not_write_github_env(
     monkeypatch.setattr(
         module.memory_guard, "adaptive_memory_budget", lambda *a: budget
     )
-    monkeypatch.setattr(module.os, "cpu_count", lambda: 4)
+    install_module_view(monkeypatch, "os", os, module, cpu_count=lambda: 4)
 
     assert module.main(["--github-env", str(env_path), "--dry-run", "--json"]) == 0
 

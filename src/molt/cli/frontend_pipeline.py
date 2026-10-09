@@ -429,7 +429,8 @@ def _prepare_frontend_lowering_config(
                 module_chunk_max_ops = max(0, int(env_chunk_ops))
             except ValueError:
                 warnings.append(
-                    "Invalid MOLT_WASM_MODULE_CHUNK_OPS; using default of 2000."
+                    "Invalid MOLT_WASM_MODULE_CHUNK_OPS; "
+                    f"using default of {module_chunk_max_ops}."
                 )
     # Also support module chunking for native builds via MOLT_MODULE_CHUNK_OPS.
     # Large stdlib modules like _collections_abc have init functions that balloon
@@ -452,7 +453,10 @@ def _prepare_frontend_lowering_config(
             try:
                 module_chunk_max_ops = max(0, int(env_native_chunk_ops))
             except ValueError:
-                warnings.append("Invalid MOLT_MODULE_CHUNK_OPS; using default of 3000.")
+                warnings.append(
+                    "Invalid MOLT_MODULE_CHUNK_OPS; "
+                    f"using default of {module_chunk_max_ops}."
+                )
     module_chunking = module_chunk_max_ops > 0
     frontend_parallel_config = _frontend_parallel._resolve_frontend_parallel_config(
         module_count=len(module_graph),

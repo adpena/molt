@@ -97,18 +97,12 @@ class GitSourceSnapshot:
             "files": [item.as_record() for item in self.files],
         }
 
-    def verify(
-        self,
-        root: Path,
-        *,
-        verify_modes: bool | None = None,
-    ) -> Path:
+    def verify(self, root: Path) -> Path:
         """Verify that *root* is the exact regular-file projection of this snapshot."""
 
         return verify_source_inventory(
             root,
             tuple(item.as_record() for item in self.files),
-            verify_modes=verify_modes,
         )
 
 
@@ -121,11 +115,10 @@ class GitIndexSourceSnapshot:
     index_path: Path
     files: tuple[GitSourceFile, ...]
 
-    def verify(self, root: Path, *, verify_modes: bool | None = None) -> Path:
+    def verify(self, root: Path) -> Path:
         return verify_source_inventory(
             root,
             tuple(item.as_record() for item in self.files),
-            verify_modes=verify_modes,
         )
 
     def verify_index(

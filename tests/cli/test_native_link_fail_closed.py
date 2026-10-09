@@ -3,11 +3,14 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 import subprocess
+import platform
+import sys
 
 import pytest
 
 from molt.cli import backend_output_pipeline, extension_commands, native_toolchain
 from molt.cli import link_pipeline, native_link_command
+from tests.process_guard_common import install_module_view
 
 
 def test_native_link_has_one_attempt_and_no_post_failure_fallback() -> None:
@@ -62,8 +65,10 @@ def test_bolt_success_without_optimized_artifact_fails_closed(
     binary = tmp_path / "program"
     binary.write_bytes(b"input")
     monkeypatch.setattr(native_toolchain, "_compiler_root", lambda: tmp_path)
-    monkeypatch.setattr(native_toolchain.sys, "platform", "linux")
-    monkeypatch.setattr(native_toolchain.platform, "machine", lambda: "x86_64")
+    install_module_view(monkeypatch, "sys", sys, native_toolchain, platform="linux")
+    install_module_view(
+        monkeypatch, "platform", platform, native_toolchain, machine=lambda: "x86_64"
+    )
     monkeypatch.setattr(
         native_toolchain,
         "_run_completed_command",
@@ -103,8 +108,10 @@ def test_bolt_finalizes_candidate_before_atomic_publication(
     )
     received: dict[str, object] = {}
     monkeypatch.setattr(native_toolchain, "_compiler_root", lambda: tmp_path)
-    monkeypatch.setattr(native_toolchain.sys, "platform", "linux")
-    monkeypatch.setattr(native_toolchain.platform, "machine", lambda: "x86_64")
+    install_module_view(monkeypatch, "sys", sys, native_toolchain, platform="linux")
+    install_module_view(
+        monkeypatch, "platform", platform, native_toolchain, machine=lambda: "x86_64"
+    )
     monkeypatch.setattr(
         native_toolchain,
         "_run_completed_command",
@@ -150,8 +157,10 @@ def test_bolt_helper_never_emits_json_outside_build_result_authority(
     binary = tmp_path / "program"
     binary.write_bytes(b"input")
     monkeypatch.setattr(native_toolchain, "_compiler_root", lambda: tmp_path)
-    monkeypatch.setattr(native_toolchain.sys, "platform", "linux")
-    monkeypatch.setattr(native_toolchain.platform, "machine", lambda: "x86_64")
+    install_module_view(monkeypatch, "sys", sys, native_toolchain, platform="linux")
+    install_module_view(
+        monkeypatch, "platform", platform, native_toolchain, machine=lambda: "x86_64"
+    )
 
     assert (
         native_toolchain._run_bolt_post_link(

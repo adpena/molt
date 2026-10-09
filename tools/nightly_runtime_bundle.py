@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from molt.backend_executable_names import backend_executable_name  # noqa: E402
 from molt.cli.native_link_manifest import (  # noqa: E402
     NativeLinkDependencyManifestError,
     native_link_dependency_manifest_path,
@@ -234,8 +235,9 @@ def _runtime_archive_name(identity: BundleIdentity) -> str:
 
 
 def _backend_executable_name(identity: BundleIdentity) -> str:
-    return (
-        "molt-backend.exe" if identity.platform_system == "windows" else "molt-backend"
+    """The Cargo output the build leaves in the profile directory."""
+    return backend_executable_name(
+        os_name="nt" if identity.platform_system == "windows" else "posix"
     )
 
 

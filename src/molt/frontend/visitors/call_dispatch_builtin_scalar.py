@@ -37,9 +37,7 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
             return res
         if func_id == "isinstance":
             if len(node.args) != 2:
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE, "isinstance expects 2 arguments"
-                )
+                return CALL_NOT_HANDLED
             obj = self.visit(node.args[0])
             clsinfo = self.visit(node.args[1])
             if obj is None or clsinfo is None:
@@ -51,9 +49,7 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
             return res
         if func_id == "issubclass":
             if len(node.args) != 2:
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE, "issubclass expects 2 arguments"
-                )
+                return CALL_NOT_HANDLED
             sub = self.visit(node.args[0])
             clsinfo = self.visit(node.args[1])
             if sub is None or clsinfo is None:
@@ -65,17 +61,13 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
             return res
         if func_id == "object":
             if node.args:
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE, "object expects 0 arguments"
-                )
+                return CALL_NOT_HANDLED
             res = MoltValue(self.next_var(), type_hint="object")
             self.emit(MoltOp(kind="OBJECT_NEW", args=[], result=res))
             return res
         if func_id == "id":
             if node.keywords or len(node.args) != 1:
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE, "id expects 1 argument"
-                )
+                return CALL_NOT_HANDLED
             arg = self.visit(node.args[0])
             if arg is None:
                 raise FrontendRejection(
@@ -86,9 +78,7 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
             return res
         if func_id == "ord":
             if node.keywords or len(node.args) != 1:
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE, "ord expects 1 argument"
-                )
+                return CALL_NOT_HANDLED
             raw_arg = node.args[0]
             if isinstance(raw_arg, ast.Subscript) and not isinstance(
                 raw_arg.slice, ast.Slice
@@ -113,9 +103,7 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
             return res
         if func_id == "chr":
             if node.keywords or len(node.args) != 1:
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE, "chr expects 1 argument"
-                )
+                return CALL_NOT_HANDLED
             arg = self.visit(node.args[0])
             if arg is None:
                 raise FrontendRejection(
@@ -126,9 +114,7 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
             return res
         if func_id == "repr":
             if node.keywords or len(node.args) != 1:
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE, "repr expects 1 argument"
-                )
+                return CALL_NOT_HANDLED
             arg = self.visit(node.args[0])
             if arg is None:
                 raise FrontendRejection(
@@ -137,9 +123,7 @@ class CallNamedBuiltinScalarDispatchMixin(GeneratorMixinBase):
             return self._emit_repr_from_obj(arg)
         if func_id == "callable":
             if node.keywords or len(node.args) != 1:
-                raise FrontendRejection(
-                    Diagnostic.CALL_SIGNATURE, "callable expects 1 argument"
-                )
+                return CALL_NOT_HANDLED
             arg = self.visit(node.args[0])
             if arg is None:
                 raise FrontendRejection(
