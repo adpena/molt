@@ -65,7 +65,7 @@ pub struct SimpleNameTable {
 }
 
 impl SimpleNameTable {
-    fn for_ops(ops: &[OpIR]) -> Self {
+    pub(crate) fn for_ops(ops: &[OpIR]) -> Self {
         let mut table = Self::default();
         for op in ops {
             visit_simple_ir_reads(op, |read| table.intern(read.name));
@@ -74,7 +74,7 @@ impl SimpleNameTable {
         table
     }
 
-    fn intern(&mut self, name: &str) {
+    pub(crate) fn intern(&mut self, name: &str) {
         if self.ids.contains_key(name) {
             return;
         }
@@ -111,7 +111,7 @@ pub struct SimpleNameSet {
 }
 
 impl SimpleNameSet {
-    fn empty(names: usize) -> Self {
+    pub(crate) fn empty(names: usize) -> Self {
         Self {
             words: vec![0; names.div_ceil(64)],
         }
@@ -136,7 +136,7 @@ impl SimpleNameSet {
         })
     }
 
-    fn insert(&mut self, id: u32) {
+    pub(crate) fn insert(&mut self, id: u32) {
         let (word, bit) = Self::bit(id);
         self.words[word] |= bit;
     }
@@ -146,9 +146,15 @@ impl SimpleNameSet {
         self.words[word] &= !bit;
     }
 
-    fn union_with(&mut self, other: &Self) {
+    pub(crate) fn union_with(&mut self, other: &Self) {
         for (bits, other) in self.words.iter_mut().zip(&other.words) {
             *bits |= other;
+        }
+    }
+
+    pub(crate) fn intersect_with(&mut self, other: &Self) {
+        for (bits, other) in self.words.iter_mut().zip(&other.words) {
+            *bits &= other;
         }
     }
 
