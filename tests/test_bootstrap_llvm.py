@@ -128,19 +128,21 @@ def test_explicit_targets_parse_before_unknown_host_default(
 
 
 @pytest.mark.usefixtures("developer_host_context")
-def test_managed_paths_share_checkout_family_custody() -> None:
+def test_managed_paths_share_checkout_family_custody(tmp_path: Path) -> None:
+    # A checkout family: the main checkout and a worktree beside it. Where CI
+    # checks this repository out is not such a family.
+    family = tmp_path / "Molt"
+    main_checkout = family / "molt-src"
+    worktree = family / "worktrees" / "feature"
     pin = bootstrap_llvm.required_llvm_backend_pin(ROOT)
     assert pin is not None
-    paths = managed_llvm_paths(ROOT, pin)
-    worktree_paths = managed_llvm_paths(
-        ROOT.parent / "independent-checkout",
-        pin,
-    )
+
+    paths = managed_llvm_paths(main_checkout, pin)
+    worktree_paths = managed_llvm_paths(worktree, pin)
 
     assert paths == worktree_paths
-    assert paths.root.name == "toolchains"
-    assert paths.root.parent.name == "target-root"
-    assert ROOT not in paths.prefix.parents
+    assert paths.root == family.resolve() / "target-root" / "toolchains"
+    assert main_checkout.resolve() not in paths.prefix.parents
 
 
 def test_native_backend_inkwell_mapping_matches_arch_contract_exactly() -> None:

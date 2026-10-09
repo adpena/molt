@@ -62,6 +62,12 @@ def test_compilation_diagnostics_bypass_backend_candidates_and_synced_outputs(
 ):
     for name in environment_keys("diagnostic", "observation"):
         monkeypatch.delenv(name, raising=False)
+    # WASM reuse also needs the provisioned structural validator, which a
+    # build-free unit cell lacks; this case checks only the diagnostics bypass.
+    monkeypatch.setattr(
+        "molt.cli.runtime_wasm_validation._reusable_wasm_artifact_validation_error",
+        lambda _path: None,
+    )
     candidate = tmp_path / "cached.wasm"
     wasm_bytes = b"\x00asm\x01\x00\x00\x00"
     candidate.write_bytes(wasm_bytes)
