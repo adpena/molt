@@ -271,13 +271,13 @@ def test_linux_root_watch_is_installed_before_recursive_enumeration(
 
     monkeypatch.setattr(execution_custody.ctypes, "CDLL", lambda *_a, **_k: FakeLibc())
     monkeypatch.setattr(Path, "rglob", asserting_rglob)
-    monkeypatch.setattr(execution_custody.os, "O_NONBLOCK", 0x800, raising=False)
-    monkeypatch.setattr(execution_custody.os, "O_CLOEXEC", 0x80000, raising=False)
     install_module_view(
         monkeypatch,
         "os",
         os,
         execution_custody,
+        O_NONBLOCK=0x800,
+        O_CLOEXEC=0x80000,
         read=lambda *_a, **_k: (_ for _ in ()).throw(BlockingIOError()),
     )
     monitor._stop.set()

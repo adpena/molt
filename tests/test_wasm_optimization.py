@@ -265,7 +265,9 @@ class TestWasmOptReduction:
         expected.write_bytes(b"manifest-owned-binaryen")
         monkeypatch.delenv("MOLT_WASM_OPT", raising=False)
         monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path))
-        monkeypatch.setattr(identity.shutil, "which", lambda _name: None)
+        install_module_view(
+            monkeypatch, "shutil", shutil, identity, which=lambda _name: None
+        )
         asset = SimpleNamespace(
             archive_root="binaryen-version_130",
             executable=f"bin/{executable_name}",
@@ -299,7 +301,9 @@ class TestWasmOptReduction:
         )
         monkeypatch.delenv("MOLT_WASM_OPT", raising=False)
         monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path))
-        monkeypatch.setattr(identity.shutil, "which", lambda _name: None)
+        install_module_view(
+            monkeypatch, "shutil", shutil, identity, which=lambda _name: None
+        )
         monkeypatch.setattr(identity, "binaryen_host_asset", lambda _root: asset)
 
         assert identity.find_wasm_opt() is None

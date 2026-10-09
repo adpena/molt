@@ -1,6 +1,7 @@
 """Tests for individual harness layer implementations."""
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ from molt.harness_layers import (
     get_layers_for_profile,
 )
 from molt.harness_report import LayerStatus
+from tests.process_guard_common import install_module_view
 
 
 def test_cargo_layers_execute_from_root_membership(monkeypatch, tmp_path: Path):
@@ -72,7 +74,7 @@ def test_size_uses_compiler_target_profile_and_archive_authorities(
     target = tmp_path / "selected-target"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
     monkeypatch.setenv("MOLT_RELEASE_CARGO_PROFILE", profile)
-    monkeypatch.setattr(layers.shutil, "which", lambda _name: None)
+    install_module_view(monkeypatch, "shutil", shutil, layers, which=lambda _name: None)
     artifact = target / folder / _runtime_lib_archive_names()[0]
     artifact.parent.mkdir(parents=True)
     artifact.write_bytes(b"selected")
