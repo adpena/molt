@@ -152,13 +152,13 @@ pub extern "C" fn __molt_gpu_exact_scalar_kind(bits: u64) -> i32 {
         {
             return -1;
         }
-        if let Some(ptr) = obj.as_ptr() {
-            if matches!(
+        if let Some(ptr) = obj.as_ptr()
+            && matches!(
                 unsafe { crate::object_type_id(ptr) },
                 crate::TYPE_ID_BIGINT | crate::TYPE_ID_FLOAT
-            ) {
-                return -1;
-            }
+            )
+        {
+            return -1;
         }
         0
     })
@@ -687,12 +687,11 @@ pub extern "C" fn __molt_gpu_function_binding(function: u64, name: *const u8, le
                 Ok(None) => (),
             }
             let mut builtins = crate::object::layout::function_builtins_bits(function);
-            if let Some(ptr) = crate::obj_from_bits(builtins).as_ptr() {
-                if crate::object_type_id(ptr) == crate::TYPE_ID_MODULE
-                    && crate::object_class_bits(ptr) == crate::builtin_classes(py).module
-                {
-                    builtins = crate::module_dict_bits(ptr);
-                }
+            if let Some(ptr) = crate::obj_from_bits(builtins).as_ptr()
+                && crate::object_type_id(ptr) == crate::TYPE_ID_MODULE
+                && crate::object_class_bits(ptr) == crate::builtin_classes(py).module
+            {
+                builtins = crate::module_dict_bits(ptr);
             }
             gpu_namespace_value(py, builtins, name)
         }

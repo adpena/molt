@@ -132,17 +132,58 @@ permission to omit cells or raise every timeout without diagnosis.
    named by each WASM execution manifest, and outputs to the exact candidate.
    The separate worker archive is extracted and executed as its sole command
    owner; the compiler bundle does not contain another copy. Installation is
-   private to the consumer; uninstall checks prove no ambient
-   import or console script remains. With the bundle, worker and private
-   environments removed, every native executable is re-identified and run again
-   with the same arguments and output. This is an installed smoke closure: one
-   build and run per cell proves neither artifact reproducibility nor
-   verified-subset determinism, and WASM execution after uninstall is not
-   claimed because its Node runner ships in the bundle. Schema versions are
-   checked against their producers by the public-contract gate rather than
-   restated here.
+   private to the consumer; uninstall checks prove no ambient Molt import or
+   console script remains. All native and WASM products, including the pip-built
+   native product, are then replayed from one sealed Linux root after removing
+   the installed owners. The root contains only those bound products, the
+   source-bound Node runner closure, the canonical native supervisor, and loader,
+   library and Node bytes extracted from exact pinned archives. Reference/build
+   CPython remains outside this root. No package scripts or package installation
+   run in it. A missing archive, unsupported filesystem adapter, missing engine
+   capability, changed input, unexpected executable, incomplete process closure
+   or wrong output prevents admission; there is no host replay fallback.
+
+   `--execution-archive-cache` names explicitly provisioned inputs from
+   `config/release_execution_roots.toml` and the existing Node tool-release pins.
+   The explicit development command `python -m tools.release.provision_execution_archives
+   --target <release-target-id> --execution-archive-cache <cache>` populates that
+   cache through the same pinned archive transfer owner used by tool provisioning.
+   CI runs it before candidate builds and passes the identical cache to verification.
+   Transfers are bounded by the source size, restricted to admitted HTTPS origins,
+   and published only after exact digest validation; no package scripts, payload
+   executables or Docker pulls run during this step. All five cache inputs (four Debian providers and Node) then
+   pass the consumer's same stable-descriptor archive reader, followed by the
+   shared ELF dependency closure audit over the admitted payload bytes. Unsupported platform
+   adapters fail this preflight rather than silently selecting a Linux payload.
+   The verifier never fetches missing inputs or pulls a Docker image. It imports
+   the exact retained root tar through `tools/cross_run.py`, checks the resulting
+   uncompressed layer digest, and creates a fresh read-only, offline, private
+   namespace container for each cell. The local Linux Docker engine and runc
+   are execution providers whose identities and effective settings are retained.
+   Their private proc/dev/sys mounts, bounded tmpfs mounts and generated
+   `/etc/hosts`, `/etc/hostname` and `/etc/resolv.conf` are explicit provider
+   inputs; host directories and Docker sockets are not guest mounts. Guest PATH
+   and HOME name absent directories; loader, Python and Node selectors are absent.
+
+   Native receipt/event export is bounded and verified through the one native
+   supervisor, including COMPLETE, successful root exit and closed accounting.
+   Native and WASM staging retains the identities of the actual copied bytes
+   through root sealing. Manifest decoding, verified loader assets, tar members
+   and ZIP extraction remain bound to their consumed bytes. The receiver also
+   joins receipt and policy captures to the native verifier's consumed-input
+   digests; local read-only mode alone is not an immutability claim.
+   Raw capture, policy, provider identities, pinned archives, root bytes and every
+   receipt/event stream are retained in a candidate-specific consumer evidence
+   ZIP and covered by the release manifest/checksum/SBOM/attestation projection.
+   Receiver admission rechecks those retained bytes and never executes guests.
+   This installed smoke closure does not prove artifact reproducibility or the
+   full verified subset. Linux x86_64/aarch64 are implemented source paths pending
+   actual engine, ptrace and native/WASM qualification; macOS and Windows have no
+   admitted filesystem adapter and therefore cannot pass this release gate yet.
+   Public schema declarations must move with their producer versions.
+
 6. Only after every target passes does one index job create the collision-free
-   v3 manifest, SHA256SUMS, and SPDX 2.3 SBOM, including the evidence ZIP and any
+   release manifest, SHA256SUMS, and SPDX 2.3 SBOM, including the evidence ZIP and any
    required H0 manifest and signature bundle. GitHub's pinned attestation action
    signs SLSA provenance and the SBOM using a keyless Sigstore OIDC certificate.
 7. One protected promotion job rechecks the pinned draft id, original evidence

@@ -19,6 +19,104 @@ fn runtime_root_type_allocation_slots_remain_executable() {
         }
     });
 }
+// CPython v3.12.13 Objects/tupleobject.c::tuplerichcompare is the oracle.
+// Managed comparison belongs to the runtime: exercise the exported C entry
+// with real storage and hooks instead of a fixture implementing tuple equality.
+#[test]
+fn ufunc_frontier_tuple_structural_richcompare() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    with_gil(|_py| unsafe {
+        use molt_cpython_abi::api::numbers::PyLong_FromLong;
+        use molt_cpython_abi::api::sequences::{PyTuple_New, PyTuple_SetItem};
+        use molt_cpython_abi::api::typeobj::PyObject_RichCompareBool;
+        const PY_EQ: std::os::raw::c_int = 2;
+
+        let mk = || {
+            let t = PyTuple_New(3);
+            for i in 0..3 {
+                // steals the ref; fresh int per slot
+                assert_eq!(PyTuple_SetItem(t, i, PyLong_FromLong(7)), 0);
+            }
+            t
+        };
+        const PY_NE: std::os::raw::c_int = 3;
+        const PY_LT: std::os::raw::c_int = 0;
+
+        let a = mk();
+        let b = mk();
+        assert!(!a.is_null() && !b.is_null(), "PyTuple_New returned NULL");
+        assert_ne!(a, b, "must be two distinct tuple objects");
+        let eq = PyObject_RichCompareBool(a, b, PY_EQ);
+        eprintln!(
+            "UFUNC-FRONTIER: (7,7,7)==(7,7,7) over distinct ABI tuples -> \
+             RichCompareBool={eq}  (CPython 3.12 -> 1)"
+        );
+        assert_eq!(
+            eq, 1,
+            "equal tuple contents must match through the real managed C comparison owner"
+        );
+
+        // Faithful get_info_no_cast shape: the registered DType tuple and the
+        // freshly-built lookup tuple hold the SAME repeated element object (as
+        // `PyArray_DTypeFromTypeNum(NPY_BYTE)` does). Distinct tuple objects,
+        // equal contents → must match.
+        let elem = PyLong_FromLong(11);
+        let mk_same = |e: *mut _| {
+            let t = PyTuple_New(3);
+            for i in 0..3 {
+                molt_cpython_abi::api::refcount::Py_INCREF(e);
+                assert_eq!(PyTuple_SetItem(t, i, e), 0);
+            }
+            t
+        };
+        let reg = mk_same(elem);
+        let look = mk_same(elem);
+        assert_ne!(reg, look, "distinct tuple objects expected");
+        assert_eq!(
+            PyObject_RichCompareBool(reg, look, PY_EQ),
+            1,
+            "get_info_no_cast lookup must match the registered loop tuple"
+        );
+
+        // Discriminator: distinct contents must NOT match — otherwise
+        // PyUFunc_AddLoop(ignore_duplicate=1) would silently drop a real loop.
+        let c = PyTuple_New(3);
+        assert_eq!(PyTuple_SetItem(c, 0, PyLong_FromLong(7)), 0);
+        assert_eq!(PyTuple_SetItem(c, 1, PyLong_FromLong(7)), 0);
+        assert_eq!(PyTuple_SetItem(c, 2, PyLong_FromLong(8)), 0); // differs from (7,7,7)
+        assert_eq!(
+            PyObject_RichCompareBool(a, c, PY_EQ),
+            0,
+            "distinct tuples must compare unequal"
+        );
+        assert_eq!(
+            PyObject_RichCompareBool(a, c, PY_NE),
+            1,
+            "distinct tuples must compare != as True"
+        );
+        // Ordering path stays correct: (7,7,7) < (7,7,8).
+        assert_eq!(
+            PyObject_RichCompareBool(a, c, PY_LT),
+            1,
+            "lexicographic tuple ordering must hold"
+        );
+
+        // Length difference decides when a prefix matches: (7,7,7) != (7,7).
+        let short = PyTuple_New(2);
+        assert_eq!(PyTuple_SetItem(short, 0, PyLong_FromLong(7)), 0);
+        assert_eq!(PyTuple_SetItem(short, 1, PyLong_FromLong(7)), 0);
+        assert_eq!(
+            PyObject_RichCompareBool(a, short, PY_EQ),
+            0,
+            "tuples of different length must compare unequal"
+        );
+        for tuple in [a, b, reg, look, c, short] {
+            molt_cpython_abi::api::refcount::Py_DECREF(tuple);
+        }
+        molt_cpython_abi::api::refcount::Py_DECREF(elem);
+    });
+}
+
 use molt_cpython_abi::api::{errors, object, refcount};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 

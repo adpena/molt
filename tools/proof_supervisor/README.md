@@ -140,6 +140,29 @@ authentic `INCOMPLETE`/`REJECTED` receipt) and 79 for a well-formed but invalid
 receipt. Integration must require successful verification plus
 `state == "COMPLETE" && complete == true`.
 
+Both `verify` and `verify-rooted` return `receipt_sha256`/`receipt_bytes` and
+`policy_input_sha256`/`policy_input_bytes` for the exact buffers decoded by the
+native verifier. Python admission compares those fields with its own bounded
+captures before accepting receipt semantics; a later pathname read is not the
+verification result. `protocol.json` owns the 16 MiB policy input allowance,
+enforced before parsing by every run, inventory and verification entrypoint.
+
+Policy, receipt, event and export inputs use one retained direct regular-file
+owner. Unix opens use no-follow and nonblocking flags before descriptor type
+admission; Windows reuses the publication namespace owner, opens the final
+reparse point itself and rejects reparse or non-disk handles. Reads stop at the
+admitted extent plus one growth probe and check the retained generation and
+current pathname before acceptance. Export performs that fence before emitting
+its final footer. These bounds prevent special-file rendezvous and unbounded
+append reads; they are not a deadline guarantee for arbitrary filesystem I/O.
+
+Fixed-image path hashing and the macOS mapped-vnode pathname reader use that
+same admission. Linux executable observation deliberately follows the kernel's
+`/proc/<pid>/exe` magiclink; Windows observation receives the debugger's image
+handle. Their platform identity checks remain authoritative, and the shared
+executable hash cache bounds an uncached read by its initial seekable extent.
+Directory sync and kernel process-metadata reads retain their distinct semantics.
+
 ## Compact durable evidence
 
 `protocol.json` owns the policy, capability, receipt and event schemas. Cargo
@@ -218,3 +241,23 @@ stable OS file identity plus a mutation token from the same open handle. Linux
 uses device/inode with size/mtime/ctime; Windows uses volume/file index with
 size, last-write time, and non-user-restorable change time. Identity and token
 are re-read after hashing (and on hits); any change fails closed.
+
+
+### Retained guest roots and export
+
+`verify-rooted --rootfs DIR --policy FILE --receipt FILE` verifies Linux guest
+policy/receipt/event identities against retained filesystem bytes without
+launching anything. Fixed leaf/declared-tree policies are supported; inventory
+and derived roots fail. Guest logical paths and policy hashes are unchanged;
+all executable and cwd components must be exact regular files/directories with
+no links or traversal aliases. A validated offline policy cannot be launched.
+
+`run-export --policy FILE --receipt FILE` runs the same supervisor and exports
+its exact terminal receipt and events after guest stderr, followed by the final
+length footer declared in `protocol.json`. Stdout is unchanged. Protocol limits
+bound receipt/event payloads, not arbitrary guest output. Receivers must bind
+raw export bytes to retained evidence and run the native verifier. Verification
+success means consistency; workload acceptance additionally requires COMPLETE,
+zero root exit, no errors/violations, closed accounting and the owning command,
+output, root and provider checks. Release replay owns the complete filesystem
+and trusted engine boundary; the supervisor alone does not establish it.

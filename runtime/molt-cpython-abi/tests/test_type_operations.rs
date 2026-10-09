@@ -9,8 +9,8 @@ use molt_cpython_abi::abi_types::*;
 use std::ffi::CStr;
 use std::ptr;
 
-fn init() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+fn init() -> support::AbiTestThreadStateTransaction {
+    support::enter_abi_test(support::stub_runtime_hooks())
 }
 
 // ---------------------------------------------------------------------------
@@ -19,7 +19,7 @@ fn init() {
 
 #[test]
 fn test_type_ready_null_returns_error() {
-    init();
+    let _abi_test = init();
     let result = unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(ptr::null_mut()) };
     assert_eq!(result, -1);
 }
@@ -32,7 +32,7 @@ fn test_type_ready_fails_closed_when_tp_dict_alloc_fails() {
     // marking a half-initialized type ready. (A real runtime supplies alloc_dict;
     // the fully-readied hierarchy is covered by the runtime module
     // cpython_abi_hooks::native_namespace_tests::readiness.)
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     tp.ob_base.ob_base.ob_refcnt = 1;
@@ -63,7 +63,7 @@ fn test_ready_flag_without_namespace_reenters_readiness_and_fails_closed() {
     // Static shells initialize C slots before a runtime dictionary exists.
     // READY alone cannot hide declarations behind a permanently NULL tp_dict.
     // Stub dictionary allocation fails, so this incomplete shell stays unready.
-    init();
+    let _abi_test = init();
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     tp.ob_base.ob_base.ob_refcnt = 1;
     tp.ob_base.ob_base.ob_type = &raw mut PyType_Type;
@@ -92,7 +92,7 @@ fn test_ready_flag_without_namespace_reenters_readiness_and_fails_closed() {
 
 #[test]
 fn test_generic_alloc_null_type_returns_null() {
-    init();
+    let _abi_test = init();
     let result = unsafe { molt_cpython_abi::api::typeobj::PyType_GenericAlloc(ptr::null_mut(), 0) };
     assert!(result.is_null());
     assert_eq!(
@@ -105,7 +105,7 @@ fn test_generic_alloc_null_type_returns_null() {
 #[test]
 fn test_variable_allocation_overflow_sets_memory_error_across_all_entrypoints() {
     use molt_cpython_abi::api::{errors, memory, typeobj};
-    init();
+    let _abi_test = init();
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     tp.tp_basicsize = std::mem::size_of::<PyVarObject>() as Py_ssize_t;
     // Exercise checked multiplication and checked addition independently, without
@@ -132,7 +132,7 @@ fn test_variable_allocation_overflow_sets_memory_error_across_all_entrypoints() 
 
 #[test]
 fn test_native_gc_allocation_rejects_missing_traversal_with_an_exception() {
-    init();
+    let _abi_test = init();
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     tp.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
     tp.tp_flags = Py_TPFLAGS_HAVE_GC;
@@ -147,7 +147,7 @@ fn test_native_gc_allocation_rejects_missing_traversal_with_an_exception() {
 
 #[test]
 fn test_generic_alloc_returns_object_with_refcount_one() {
-    init();
+    let _abi_test = init();
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     let obj = unsafe { molt_cpython_abi::api::typeobj::PyType_GenericAlloc(&mut tp, 0) };
     assert!(!obj.is_null());
@@ -158,7 +158,7 @@ fn test_generic_alloc_returns_object_with_refcount_one() {
 
 #[test]
 fn test_generic_alloc_initializes_var_object_size() {
-    init();
+    let _abi_test = init();
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     tp.tp_basicsize = std::mem::size_of::<PyVarObject>() as Py_ssize_t;
     tp.tp_itemsize = std::mem::size_of::<*mut PyObject>() as Py_ssize_t;
@@ -177,7 +177,7 @@ fn test_generic_alloc_initializes_var_object_size() {
 
 #[test]
 fn test_generic_new_null_type_returns_null() {
-    init();
+    let _abi_test = init();
     let result = unsafe {
         molt_cpython_abi::api::typeobj::PyType_GenericNew(
             ptr::null_mut(),
@@ -195,7 +195,7 @@ fn test_generic_new_null_type_returns_null() {
 
 #[test]
 fn test_generic_new_returns_valid_object() {
-    init();
+    let _abi_test = init();
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
     let obj = unsafe {
         molt_cpython_abi::api::typeobj::PyType_GenericNew(&mut tp, ptr::null_mut(), ptr::null_mut())
@@ -211,7 +211,7 @@ fn test_generic_new_returns_valid_object() {
 
 #[test]
 fn test_static_types_have_names() {
-    init();
+    let _abi_test = init();
     unsafe {
         let name = CStr::from_ptr(PyLong_Type.tp_name);
         assert_eq!(name.to_str().unwrap(), "int");
@@ -247,7 +247,7 @@ fn test_static_types_have_names() {
 
 #[test]
 fn test_static_types_have_ready_flag() {
-    init();
+    let _abi_test = init();
     unsafe {
         assert_ne!(PyLong_Type.tp_flags & Py_TPFLAGS_READY, 0);
         assert_ne!(PyFloat_Type.tp_flags & Py_TPFLAGS_READY, 0);
@@ -333,7 +333,7 @@ fn test_type_tag_discriminants() {
 
 #[test]
 fn test_py_true_has_bool_type() {
-    init();
+    let _abi_test = init();
     unsafe {
         assert!(std::ptr::eq(Py_True.ob_base.ob_type, &raw mut PyBool_Type));
     }
@@ -341,7 +341,7 @@ fn test_py_true_has_bool_type() {
 
 #[test]
 fn test_py_false_has_bool_type() {
-    init();
+    let _abi_test = init();
     unsafe {
         assert!(std::ptr::eq(Py_False.ob_base.ob_type, &raw mut PyBool_Type));
     }
@@ -353,7 +353,7 @@ fn test_py_false_has_bool_type() {
 
 #[test]
 fn test_int_ob_type_is_pylong_type() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
     assert!(!py.is_null());
     let tp = unsafe { (*py).ob_type };
@@ -363,7 +363,7 @@ fn test_int_ob_type_is_pylong_type() {
 
 #[test]
 fn test_float_ob_type_is_pyfloat_type() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(1.5) };
     assert!(!py.is_null());
     let tp = unsafe { (*py).ob_type };

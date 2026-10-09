@@ -28,6 +28,7 @@ from tools.release.platform_wheel import write_platform_wheel
 from tools.release.verify_consumer import rust_toolchain_absent_environment
 from tests.tools.test_release_supply_chain import (
     _runtime_cells,
+    consumer_transport_boundary,
     release_evidence_inputs,
     release_inputs,
     release_source,
@@ -318,6 +319,7 @@ def _admit(release_inputs, mutate):
         source_sha=release_inputs["source_sha"],
         source_date_epoch=release_inputs["source_date_epoch"],
         wheel_record=candidate["wheel"],
+        supervisor=Path("/fixture-supervisor"),
     )
 
 
@@ -349,6 +351,21 @@ def _set(path, value):
 )
 def test_pip_consumer_admission_binds_one_plain_pip_install(release_inputs, mutate):
     assert _admit(release_inputs, lambda proof: None)
+    with pytest.raises(ValueError, match="release consumer"):
+        _admit(release_inputs, mutate)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        *[_set(("commands", index, "argv"), []) for index in range(5)],
+        _set(("commands", 0, "duration_seconds"), True),
+        _set(("commands", 2, "duration_seconds"), -1),
+        _set(("commands", 3, "duration_seconds"), "0.125"),
+        _set(("commands", 2, "argv", -1), "/consumer/source\x00.py"),
+    ],
+)
+def test_pip_command_records_share_typed_admission(release_inputs, mutate):
     with pytest.raises(ValueError, match="release consumer"):
         _admit(release_inputs, mutate)
 

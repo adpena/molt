@@ -439,15 +439,22 @@ def provision(*, cwd: Path, env: Mapping[str, str]) -> tuple[Path, dict[str, obj
         file_locks._release_file_lock(lock)
 
 
-def publish_receipt(
-    telemetry: Mapping[str, object], *, cas_root: Path
+def read_generation(
+    telemetry: Mapping[str, object],
 ) -> dict[str, object]:
-    """Copy the immutable generation record into this execution's evidence."""
+    """Read the provisioner's bounded, content-addressed generation record."""
     raw = telemetry.get("generation_artifact")
     if not isinstance(raw, Mapping):
         raise ValueError("supervisor provisioning has no immutable generation")
     shared_cas = Path(str(telemetry["build_target_dir"])).parent / "custody-cas"
-    generation = custody_cas.read_ref(raw, expected_root=shared_cas)
+    return custody_cas.read_ref(raw, expected_root=shared_cas)
+
+
+def publish_receipt(
+    telemetry: Mapping[str, object], *, cas_root: Path
+) -> dict[str, object]:
+    """Copy the immutable generation record into this execution's evidence."""
+    generation = read_generation(telemetry)
     return {
         **telemetry,
         "generation_artifact": custody_cas.put_json(cas_root, generation).as_dict(),

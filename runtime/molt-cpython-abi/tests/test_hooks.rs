@@ -7,8 +7,8 @@ mod support;
 use molt_cpython_abi::hooks::{DecodedHandleResult, hooks_or_stubs};
 use std::ptr;
 
-fn init() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+fn init() -> support::AbiTestThreadStateTransaction {
+    support::enter_abi_test(support::stub_runtime_hooks())
 }
 
 // ---------------------------------------------------------------------------
@@ -17,7 +17,7 @@ fn init() {
 
 #[test]
 fn test_hooks_or_stubs_returns_stubs() {
-    init();
+    let _abi_test = init();
     let h = hooks_or_stubs();
     // The test transaction changes only lifecycle custody. All object hooks
     // retain the fail-closed stub behavior verified below.
@@ -90,7 +90,7 @@ fn test_hooks_or_stubs_returns_stubs() {
 
 #[test]
 fn test_stub_list_operations() {
-    init();
+    let _abi_test = init();
     let h = hooks_or_stubs();
 
     // list_len / list_item on nonexistent list
@@ -105,7 +105,7 @@ fn test_stub_list_operations() {
 
 #[test]
 fn test_stub_tuple_operations() {
-    init();
+    let _abi_test = init();
     let h = hooks_or_stubs();
 
     let len = unsafe { h.tuple_len(0) };
@@ -122,7 +122,7 @@ fn test_stub_tuple_operations() {
 
 #[test]
 fn test_stub_dict_operations() {
-    init();
+    let _abi_test = init();
     let h = hooks_or_stubs();
 
     let len = unsafe { (h.dict_len)(0) };
@@ -139,7 +139,7 @@ fn test_stub_dict_operations() {
 
 #[test]
 fn test_stub_str_data() {
-    init();
+    let _abi_test = init();
     let h = hooks_or_stubs();
     let mut len: usize = 999;
     let ptr = unsafe { (h.str_data)(0, &mut len) };
@@ -149,7 +149,7 @@ fn test_stub_str_data() {
 
 #[test]
 fn test_stub_bytes_data() {
-    init();
+    let _abi_test = init();
     let h = hooks_or_stubs();
     let mut len: usize = 999;
     let ptr = unsafe { (h.bytes_data)(0, &mut len) };
@@ -159,7 +159,7 @@ fn test_stub_bytes_data() {
 
 #[test]
 fn test_stub_str_data_null_out_len() {
-    init();
+    let _abi_test = init();
     let h = hooks_or_stubs();
     // Should not crash when out_len is null
     let ptr = unsafe { (h.str_data)(0, ptr::null_mut()) };
@@ -168,7 +168,7 @@ fn test_stub_str_data_null_out_len() {
 
 #[test]
 fn test_stub_bytes_data_null_out_len() {
-    init();
+    let _abi_test = init();
     let h = hooks_or_stubs();
     let ptr = unsafe { (h.bytes_data)(0, ptr::null_mut()) };
     assert!(ptr.is_null());
@@ -176,7 +176,7 @@ fn test_stub_bytes_data_null_out_len() {
 
 #[test]
 fn test_stub_buffer_hooks_fail_closed_and_clear_view() {
-    init();
+    let _abi_test = init();
     let h = hooks_or_stubs();
     let mut view = molt_cpython_abi::hooks::MoltBufferView {
         data: std::ptr::dangling_mut::<u8>(),
@@ -192,7 +192,7 @@ fn test_stub_buffer_hooks_fail_closed_and_clear_view() {
 
 #[test]
 fn test_stub_classify_heap() {
-    init();
+    let _abi_test = init();
     let h = hooks_or_stubs();
     let tag = unsafe { h.classify_heap(0) };
     assert_eq!(tag, molt_cpython_abi::abi_types::MoltTypeTag::Other as u8);
@@ -200,7 +200,7 @@ fn test_stub_classify_heap() {
 
 #[test]
 fn test_stub_inc_dec_ref_no_crash() {
-    init();
+    let _abi_test = init();
     let h = hooks_or_stubs();
     // Should be noops
     unsafe { (h.inc_ref)(0) };
@@ -218,7 +218,7 @@ fn test_stub_inc_dec_ref_no_crash() {
 
 #[test]
 fn test_stub_number_hooks_fail_closed() {
-    init();
+    let _abi_test = init();
     let h = hooks_or_stubs();
     // Every discriminant must return the typed error status under the stub table.
     for op in 0..12u32 {
@@ -245,7 +245,7 @@ fn test_stub_number_hooks_fail_closed() {
 
 #[test]
 fn test_stub_dict_op_hook_fails_closed() {
-    init();
+    let _abi_test = init();
     let h = hooks_or_stubs();
     for op in 0..3u32 {
         assert_eq!(unsafe { (h.dict_op)(op, 0) }, 0);
@@ -262,7 +262,7 @@ fn test_stub_dict_op_hook_fails_closed() {
 
 #[test]
 fn test_pyarg_parse_missing_required_arg_fails_closed() {
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     // args tuple is 0 (empty / None under stubs); format "i" wants one int.
     let mut out_slot: std::os::raw::c_int = 4242;
@@ -304,4 +304,54 @@ fn numeric_mode_and_semantic_target_are_strict_hook_contracts() {
     let mut prior = support::stub_runtime_hooks();
     prior.abi_version = RUNTIME_HOOKS_ABI_VERSION - 1;
     assert!(!unsafe { molt_cpython_abi::try_set_runtime_hooks(prior) });
+}
+
+#[test]
+fn test_abi_transaction_cleanup_reports_leaks_and_preserves_primary_failure() {
+    use molt_cpython_abi::api::object;
+    use std::cell::Cell;
+    use std::panic::{catch_unwind, panic_any};
+
+    #[derive(Debug)]
+    struct PrimaryFailure;
+
+    for primary_failure in [false, true] {
+        let marker = 0_u8;
+        let address = std::ptr::from_ref(&marker) as usize;
+        let registered = Cell::new(false);
+        let outcome = catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _transaction = init();
+            assert!(object::runtime_execution_thread_is_attached());
+            assert_eq!(unsafe { hooks_or_stubs().native_gc_allocate(address) }, 0);
+            registered.set(true);
+            if primary_failure {
+                panic_any(PrimaryFailure);
+            }
+            // Leave this test-owned marker in the real fixture ledger so Drop
+            // encounters an ownership failure at the lexical test boundary.
+        }));
+        if registered.get() {
+            // Retire only the deliberate fault, after cleanup has detected it.
+            unsafe { (hooks_or_stubs().native_gc_deallocate)(address) };
+        }
+        let failure = outcome.expect_err("the cleanup fault must be observable");
+        if primary_failure {
+            assert!(failure.downcast_ref::<PrimaryFailure>().is_some());
+        } else {
+            let message = failure
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| failure.downcast_ref::<&str>().copied())
+                .expect("cleanup failure must retain its diagnostic");
+            assert!(message.contains("leaked native GC identities"));
+        }
+        assert!(!object::runtime_execution_thread_is_attached());
+        assert!(!object::current_thread_has_retained_runtime_state());
+        {
+            let _transaction = init();
+            assert!(object::runtime_execution_thread_is_attached());
+        }
+        assert!(!object::runtime_execution_thread_is_attached());
+        assert!(!object::current_thread_has_retained_runtime_state());
+    }
 }

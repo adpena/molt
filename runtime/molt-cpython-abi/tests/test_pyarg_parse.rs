@@ -27,12 +27,13 @@ use molt_cpython_abi::abi_types::{PyObject, PyTypeObject};
 use molt_cpython_abi::api::refcount::OwnedPyObject;
 use std::ffi::{c_char, c_int, c_void};
 
-fn install_hooks() {
+fn install_hooks() -> support::AbiTestThreadStateTransaction {
     let mut hooks = support::stub_runtime_hooks();
-    support::fake_runtime::wire_numeric(&mut hooks);
+    // Diagnostic assertions need the same owned string/class transport as values.
+    support::fake_runtime::wire(&mut hooks);
     hooks.numeric_identity_new = Some(parse_numeric_identity);
     hooks.target_python_minor = numeric_target_minor;
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 fn args_with(items: &[i64]) -> OwnedPyObject {
@@ -124,7 +125,7 @@ fn parse_numeric<T: Copy + PartialEq + std::fmt::Debug>(
 
 #[test]
 fn numeric_units_read_physical_values_without_runtime_adoption() {
-    install_hooks();
+    let _abi_test = install_hooks();
     // A real foreign physical prefix has no adopted runtime identity. The
     // hook denial is per-thread because the binary installs one hook table.
     let mut integer = molt_cpython_abi::abi_types::PyLongObject {
@@ -159,7 +160,7 @@ fn numeric_units_read_physical_values_without_runtime_adoption() {
 
 #[test]
 fn numeric_mask_units_keep_wide_low_bits_and_signed_units_preserve_errors() {
-    install_hooks();
+    let _abi_test = install_hooks();
     // Rust's fixed-width integer arithmetic supplies the independent oracle;
     // inputs pass the actual C byte constructor, tuple and variadic shim.
     for minor in [12, 13, 14] {
@@ -191,7 +192,7 @@ fn numeric_mask_units_keep_wide_low_bits_and_signed_units_preserve_errors() {
             );
             parse_numeric(&args, b'K', 77u64, value as u64, 1);
             parse_numeric(&args, b'd', 77f64, value as f64, 1);
-            for code in [b'b', b'h', b'i', b'l', b'L', b'n'] {
+            for &code in b"bhilLn" {
                 // Each failure must leave every output byte intact. A wide slot
                 // is safe for all these output pointer widths on all targets.
                 parse_numeric(&args, code, 77u64, 77, 0);
@@ -256,7 +257,7 @@ unsafe extern "C" fn parse_float(_object: *mut PyObject) -> *mut PyObject {
 
 #[test]
 fn numeric_format_units_preserve_protocol_and_target_version_admission() {
-    install_hooks();
+    let _abi_test = install_hooks();
     let mut methods: Box<molt_cpython_abi::abi_types::PyNumberMethods> =
         Box::new(unsafe { std::mem::zeroed() });
     methods.nb_index = parse_index as *mut c_void;
@@ -277,7 +278,7 @@ fn numeric_format_units_preserve_protocol_and_target_version_admission() {
     for minor in [12, 13, 14] {
         NUMERIC_TARGET_MINOR.with(|value| value.set(minor));
         let before = INDEX_CALLS.with(std::cell::Cell::get);
-        for code in [b'k', b'K'] {
+        for &code in b"kK" {
             if minor < 14 {
                 parse_numeric(&args, code, 77u64, 77, 0);
                 assert!(err_is(
@@ -310,9 +311,7 @@ fn numeric_format_units_preserve_protocol_and_target_version_admission() {
     assert_eq!(FLOAT_CALLS.with(std::cell::Cell::get), 2);
     assert_eq!(INDEX_CALLS.with(std::cell::Cell::get), before);
     INDEX_FAILS.with(|value| value.set(true));
-    for code in [
-        b'b', b'B', b'h', b'H', b'i', b'I', b'l', b'k', b'L', b'K', b'n',
-    ] {
+    for &code in b"bBhHiIlkLKn" {
         parse_numeric(&args, code, 77u64, 77, 0);
         assert!(err_is(
             (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast()
@@ -328,7 +327,7 @@ fn numeric_format_units_preserve_protocol_and_target_version_admission() {
 
 #[test]
 fn format_owned_numeric_rejections_keep_argument_location_and_custom_message() {
-    install_hooks();
+    let _abi_test = install_hooks();
     let number = unsafe {
         OwnedPyObject::from_owned(molt_cpython_abi::api::numbers::PyFloat_FromDouble(1.5))
     };
@@ -373,7 +372,7 @@ fn format_owned_numeric_rejections_keep_argument_location_and_custom_message() {
 
 #[test]
 fn pyarg_b_stores_one_byte_not_four() {
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     let args = args_with(&[0x05]);
     // Guard bytes frame the 1-byte target: a 4-byte store would zero them.
@@ -390,7 +389,7 @@ fn pyarg_b_stores_one_byte_not_four() {
 
 #[test]
 fn pyarg_H_stores_two_bytes_not_four() {
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     let args = args_with(&[0x1234]);
     // A real u16 field preserves the C output's alignment on every target.
@@ -415,7 +414,7 @@ fn pyarg_H_stores_two_bytes_not_four() {
 
 #[test]
 fn pyarg_b_range_checks_raise_overflow() {
-    install_hooks();
+    let _abi_test = install_hooks();
 
     clear_err();
     let args = args_with(&[256]);
@@ -441,7 +440,7 @@ fn pyarg_b_range_checks_raise_overflow() {
 
 #[test]
 fn pyarg_o_bang_does_not_clobber_type_header_and_fills_dest() {
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
 
     // A sentinel "type" whose header (ob_refcnt) the pre-fix O! grammar would
@@ -530,7 +529,7 @@ fn PyTypeObject_zeroed() -> PyTypeObject {
 
 #[test]
 fn pyarg_s_rejects_non_string_argument() {
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     // An int passed to 's' must be a TypeError, not a fabricated empty string
     // (the theater the pre-fix `molt_str_ptr` produced).
@@ -560,7 +559,7 @@ fn pyarg_s_rejects_non_string_argument() {
 
 #[test]
 fn pyarg_surplus_positional_args_raise_typeerror() {
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     // format "i" consumes ONE unit; a 2-item tuple is one too many.
     let args = args_with(&[1, 2]);
@@ -576,7 +575,7 @@ fn pyarg_surplus_positional_args_raise_typeerror() {
 
 #[test]
 fn pyarg_multi_output_unit_keeps_following_output_independent() {
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     let args = args_with(&[0, 17]);
     assert_eq!(
@@ -617,7 +616,7 @@ fn pyarg_multi_output_unit_keeps_following_output_independent() {
 
 #[test]
 fn given_exception_matches_tuple_candidates() {
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     // A candidate tuple (KeyError, LookupError). A pending IndexError matches
     // via the LookupError member's subclass walk; TypeError does not match.
@@ -688,7 +687,7 @@ fn assert_converter_refusal<T: Copy + PartialEq + std::fmt::Debug>(
 
 #[test]
 fn converter_diagnostics_bound_type_bytes_and_distinguish_none_identity() {
-    install_hooks();
+    let _abi_test = install_hooks();
     let mut long_type = Box::new(PyTypeObject_zeroed());
     long_type.tp_name =
         c"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_Type".as_ptr();
@@ -781,7 +780,7 @@ fn converter_diagnostics_bound_type_bytes_and_distinguish_none_identity() {
 
 #[test]
 fn long_typename_converter_refusal_stops_at_admission_and_preserves_callback_errors() {
-    install_hooks();
+    let _abi_test = install_hooks();
     let mut methods: Box<molt_cpython_abi::abi_types::PyNumberMethods> =
         Box::new(unsafe { std::mem::zeroed() });
     methods.nb_index = parse_index as *mut c_void;

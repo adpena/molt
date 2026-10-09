@@ -46,7 +46,7 @@ fn test_guard() -> MutexGuard<'static, ()> {
 
 const BIG_U64_VALUE: u64 = u64::MAX - 3;
 
-fn install_hooks() {
+fn install_hooks() -> support::AbiTestThreadStateTransaction {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     if BIG_U64_BITS.load(Ordering::SeqCst) == 0 {
         BIG_U64_BITS.store(
@@ -62,7 +62,7 @@ fn install_hooks() {
     support::fake_runtime::wire(&mut hooks);
 
     hooks.type_lookup_borrowed = mock_type_lookup;
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 fn proxy(bits: u64) -> *mut PyObject {
@@ -133,7 +133,7 @@ fn unpack(slice: &PhysicalSlice) -> (i32, isize, isize, isize) {
 #[test]
 fn unpack_float_bound_raises_typeerror() {
     let _g = test_guard();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     // slice(1.5) — CPython: TypeError from _PyEval_SliceIndex.
     let s = new_slice(float_obj(1.5), none(), none());
@@ -157,7 +157,7 @@ fn unpack_float_bound_raises_typeerror() {
 #[test]
 fn unpack_float_step_raises_typeerror_not_reverse_direction() {
     let _g = test_guard();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     // The ledger case: a non-index STEP flipped iteration direction via the
     // silent -1. Must fail loud instead.
@@ -174,7 +174,7 @@ fn unpack_float_step_raises_typeerror_not_reverse_direction() {
 #[test]
 fn unpack_big_positive_stop_clamps_to_ssize_max() {
     let _g = test_guard();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     // The (i64::MAX, u64::MAX] band: > isize on every host → clamp MAX.
     let s = new_slice(
@@ -201,7 +201,7 @@ fn unpack_big_positive_stop_clamps_to_ssize_max() {
 #[test]
 fn unpack_huge_negative_start_clamps_to_ssize_min() {
     let _g = test_guard();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     // Beyond -2^64: sign resolves through the direct runtime authority.
     let s = new_slice(
@@ -227,7 +227,7 @@ fn unpack_huge_negative_start_clamps_to_ssize_min() {
 #[test]
 fn unpack_zero_step_still_valueerror_and_defaults_hold() {
     let _g = test_guard();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     let s = new_slice(none(), none(), int_obj(0));
     let (rc, ..) = unpack(&s);
@@ -249,7 +249,7 @@ fn unpack_zero_step_still_valueerror_and_defaults_hold() {
 #[test]
 fn get_indices_ex_propagates_typeerror_for_bad_bound() {
     let _g = test_guard();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     let s = new_slice(float_obj(0.5), none(), none());
     let (mut start, mut stop, mut step, mut len) = (0isize, 0isize, 0isize, 0isize);
@@ -274,7 +274,7 @@ fn get_indices_ex_propagates_typeerror_for_bad_bound() {
 #[test]
 fn legacy_get_indices_rejects_out_of_range_and_non_long() {
     let _g = test_guard();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
 
     // stop > length must return -1 (the pre-fix GetIndicesEx delegation

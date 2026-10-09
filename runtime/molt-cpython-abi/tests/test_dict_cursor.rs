@@ -209,7 +209,7 @@ unsafe extern "C" fn fx_dict_op(op: u32, dict: u64) -> u64 {
     }
 }
 
-fn install() {
+fn install() -> support::AbiTestThreadStateTransaction {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
     hooks.mappingproxy_new = fx_mappingproxy_new;
@@ -222,7 +222,7 @@ fn install() {
     hooks.dict_len = fx_dict_len;
     hooks.dict_op = fx_dict_op;
     hooks.foreign_new = fx_foreign_new;
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 // Only these explicit probes use the scripted cursor model. Native type and
@@ -257,7 +257,7 @@ fn handle_of(p: *mut PyObject) -> u64 {
 
 #[test]
 fn setdefaultref_optional_sink_preserves_status_and_reference_ownership() {
-    install();
+    let _abi_test = install();
     PRESENT.lock().unwrap().clear();
     SETS.lock().unwrap().clear();
     let dict = register(fake_dict_handle());
@@ -375,7 +375,7 @@ fn setdefaultref_optional_sink_preserves_status_and_reference_ownership() {
 
 #[test]
 fn next_skips_sparse_slots_and_publishes_physical_positions() {
-    install();
+    let _abi_test = install();
     let (k1, v1) = (
         MoltObject::from_int(0x1111).bits(),
         MoltObject::from_int(0x2222).bits(),
@@ -419,7 +419,7 @@ fn next_skips_sparse_slots_and_publishes_physical_positions() {
 
 #[test]
 fn next_preserves_sentinels_and_supports_nullable_outputs() {
-    install();
+    let _abi_test = install();
     let key_bits = MoltObject::from_int(11).bits();
     let value_bits = MoltObject::from_int(22).bits();
     *ENTRIES.lock().unwrap() = vec![None, Some((key_bits, value_bits)), None];
@@ -475,7 +475,7 @@ fn next_preserves_sentinels_and_supports_nullable_outputs() {
 
 #[test]
 fn merge_populates_target_override() {
-    install();
+    let _abi_test = install();
     let (k1, v1) = (
         MoltObject::from_int(0x1a1a).bits(),
         MoltObject::from_int(0x2b2b).bits(),
@@ -520,7 +520,7 @@ fn merge_populates_target_override() {
 
 #[test]
 fn update_overwrites_and_clear_empties() {
-    install();
+    let _abi_test = install();
     let key = MoltObject::from_int(0x55).bits();
     let old_value = MoltObject::from_int(0x66).bits();
     let new_value = MoltObject::from_int(0x77).bits();
@@ -554,7 +554,7 @@ fn update_overwrites_and_clear_empties() {
 
 #[test]
 fn dict_proxy_is_read_only() {
-    install();
+    let _abi_test = install();
     let dict = register(fake_dict_handle());
     let proxy = unsafe { molt_cpython_abi::api::mapping::PyDictProxy_New(dict) };
     assert!(!proxy.is_null());
@@ -585,7 +585,7 @@ fn dict_proxy_is_read_only() {
 
 #[test]
 fn test_dict_getitem_preserves_entry_error_and_routes_foreign_key() {
-    install();
+    let _abi_test = install();
     LOOKUP_KEYS.lock().unwrap().clear();
     PRESENT.lock().unwrap().clear();
 

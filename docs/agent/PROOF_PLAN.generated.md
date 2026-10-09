@@ -44,7 +44,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---|---|---|---:|
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2100 s | 1500 s | `repository-policy` | none | `docs-gates` needs none | 1 |
-| `wasm` | pr, main | yes | `github-job` | 160 min | 9600 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 18 |
+| `wasm` | pr, main | yes | `github-job` | 240 min | 14400 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 20 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 20 min | 1200 s per cell | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `native_integration` | pr, main | yes | `github-job` | 40 min | 2400 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 19 |
@@ -53,7 +53,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 180 min | 10800 s per cell | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 115 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 180 min | 10800 s per cell | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 119 |
 
 ## Scheduled families
 
@@ -106,6 +106,9 @@ Executable identities bind resolved path, version text, and the repository-relat
 | Toolchain | Identity kind | Provider | Required version | Probe cwd | Setup value | Setup evidence |
 |---|---|---|---|---|---|---:|
 | `python` | `executable` | — | `^Python 3\.12\.15$` | `.` | `3.12.15` | 2 |
+| `bash` | `executable` | — | `^GNU bash, version [0-9]+\.[0-9]+\.` | `.` | `Ubuntu hosted shell package` | 1 |
+| `fish` | `executable` | — | `^fish, version [0-9]+\.[0-9]+\.` | `.` | `Ubuntu hosted shell package` | 1 |
+| `zsh` | `executable` | — | `^zsh [0-9]+\.[0-9]+` | `.` | `Ubuntu hosted shell package` | 1 |
 | `source-extension` | `target-derived` | `source-extension` | `^molt-source-extension-toolchain-v4$` | — | — | — |
 | `uv` | `executable` | — | `^uv 0\.12\.23\b` | `.` | `0.12.23` | 1 |
 | `node` | `executable` | — | `^v26\.10\.0$` | `.` | `26.10.0` | 3 |
@@ -167,6 +170,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `nightly.verification-t3.mutation` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 3600 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.translation` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 1800 s | `scheduled-suite` | 1 |
 | `nightly.verification-t3.model-based` | `nightly_verification_t3` | `linux-x86_64-py312-native-dev` | `explicit` | 600 s | `scheduled-suite` | 1 |
+| `portability.completion.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `portability.queue.linux` | `platform_portability` | `linux-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
 | `portability.queue.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
 | `portability.queue.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 1800 s | `python-tests` | 0 |
@@ -212,10 +216,15 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `luau.compile.comprehension` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 1 |
 | `wasm.compile.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
 | `wasm.run.sieve` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 300 s | `wasm-runtime` | 2 |
+| `wasm.test.startup-lifecycle` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 120 s | `python-tests` | 0 |
 | `wasm.test.linker-admission` | `wasm` | `linux-x86_64-py312-wasm-dev` | `explicit` | 120 s | `python-tests` | 0 |
 | `wasm.test.control-flow` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 3 |
-| `wasm.integration.split-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 3 |
-| `wasm.integration.host-exports` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 4 |
+| `wasm.integration.split-runtime` | `wasm` | `linux-x86_64-py312-wasm-dev` | `warm` | 300 s | `compiler-build-resource` | 2 |
+| `wasm.integration.host-exports.gpu-kernel` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
+| `wasm.integration.host-exports.attribute-error` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 2 |
+| `wasm.integration.host-exports.tinygrad-dtype` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
+| `wasm.integration.host-exports.tinygrad-tensor` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
+| `wasm.integration.host-exports.tensor-row-ops` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 1 |
 | `wasm.test.freestanding-e2e` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
 | `wasm.test.finally-pending-observer-parity` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 3 |
 | `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | `explicit` | 300 s | `python-static` | 0 |

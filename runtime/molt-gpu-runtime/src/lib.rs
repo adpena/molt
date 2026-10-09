@@ -129,6 +129,25 @@ struct ByteView {
     len: usize,
 }
 
+/// Operation admission for configured Python kernels. Tensor backends have
+/// separate implementations and do not establish descriptor execution support.
+enum PythonKernelExecutor {
+    Sequential,
+    Metal,
+    WebGpu,
+}
+
+impl PythonKernelExecutor {
+    fn for_backend(backend: Option<GpuBackend>) -> Result<Self, GpuBackend> {
+        match backend {
+            None => Ok(Self::Sequential),
+            Some(GpuBackend::Metal) => Ok(Self::Metal),
+            Some(GpuBackend::WebGpu) => Ok(Self::WebGpu),
+            Some(backend @ (GpuBackend::Cuda | GpuBackend::Hip)) => Err(backend),
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct GpuLaunchContext {
     thread_id: i64,
@@ -1811,16 +1830,13 @@ impl RuntimeMetalDevice {
 }
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
-fn try_dispatch_metal_kernel(
+fn dispatch_metal_kernel(
     _py: &PyToken,
     callable_bits: u64,
     grid: i64,
     threads: i64,
     builder_bits: u64,
-) -> Result<Option<u64>, u64> {
-    if requested_gpu_backend() != Some(GpuBackend::Metal) {
-        return Ok(None);
-    }
+) -> Result<u64, u64> {
     if trace_gpu_backend_enabled() {
         eprintln!("[molt gpu backend] metal");
     }
@@ -1922,38 +1938,32 @@ fn try_dispatch_metal_kernel(
         }
     }
     plan.publish(_py, &outputs, &args_map)?;
-    Ok(Some(MoltObject::none().bits()))
+    Ok(MoltObject::none().bits())
 }
 
 #[cfg(not(all(target_os = "macos", feature = "metal-backend")))]
-fn try_dispatch_metal_kernel(
+fn dispatch_metal_kernel(
     _py: &PyToken,
     _callable_bits: u64,
     _grid: i64,
     _threads: i64,
     _builder_bits: u64,
-) -> Result<Option<u64>, u64> {
-    if requested_gpu_backend() == Some(GpuBackend::Metal) {
-        return Err(raise_exception::<_>(
-            _py,
-            "RuntimeError",
-            "metal gpu backend requested but molt-gpu was built without metal-backend",
-        ));
-    }
-    Ok(None)
+) -> Result<u64, u64> {
+    Err(raise_exception::<_>(
+        _py,
+        "RuntimeError",
+        "metal gpu backend requested but molt-gpu was built without metal-backend",
+    ))
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "webgpu-backend"))]
-fn try_dispatch_webgpu_kernel(
+fn dispatch_webgpu_kernel(
     _py: &PyToken,
     callable_bits: u64,
     grid: i64,
     threads: i64,
     builder_bits: u64,
-) -> Result<Option<u64>, u64> {
-    if requested_gpu_backend() != Some(GpuBackend::WebGpu) {
-        return Ok(None);
-    }
+) -> Result<u64, u64> {
     if trace_gpu_backend_enabled() {
         eprintln!("[molt gpu backend] webgpu");
     }
@@ -2060,20 +2070,17 @@ fn try_dispatch_webgpu_kernel(
         .check_failure()
         .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
     plan.publish(_py, &outputs, &args_map)?;
-    Ok(Some(MoltObject::none().bits()))
+    Ok(MoltObject::none().bits())
 }
 
 #[cfg(target_arch = "wasm32")]
-fn try_dispatch_webgpu_kernel(
+fn dispatch_webgpu_kernel(
     _py: &PyToken,
     callable_bits: u64,
     grid: i64,
     threads: i64,
     builder_bits: u64,
-) -> Result<Option<u64>, u64> {
-    if requested_gpu_backend() != Some(GpuBackend::WebGpu) {
-        return Ok(None);
-    }
+) -> Result<u64, u64> {
     if trace_gpu_backend_enabled() {
         eprintln!("[molt gpu backend] webgpu");
     }
@@ -2175,28 +2182,25 @@ fn try_dispatch_webgpu_kernel(
         .filter(|(index, _)| plan.writable(*index))
         .collect();
     plan.publish(_py, &outputs, &args_map)?;
-    Ok(Some(MoltObject::none().bits()))
+    Ok(MoltObject::none().bits())
 }
 
 #[cfg(not(any(
     target_arch = "wasm32",
     all(not(target_arch = "wasm32"), feature = "webgpu-backend")
 )))]
-fn try_dispatch_webgpu_kernel(
+fn dispatch_webgpu_kernel(
     _py: &PyToken,
     _callable_bits: u64,
     _grid: i64,
     _threads: i64,
     _builder_bits: u64,
-) -> Result<Option<u64>, u64> {
-    if requested_gpu_backend() == Some(GpuBackend::WebGpu) {
-        return Err(raise_exception::<u64>(
-            _py,
-            "RuntimeError",
-            "webgpu backend requested but molt-gpu was built without webgpu-backend",
-        ));
-    }
-    Ok(None)
+) -> Result<u64, u64> {
+    Err(raise_exception::<u64>(
+        _py,
+        "RuntimeError",
+        "webgpu backend requested but molt-gpu was built without webgpu-backend",
+    ))
 }
 
 fn bytes_like_view(_py: &PyToken, bits: u64, role: &str) -> Result<ByteView, u64> {
@@ -2440,11 +2444,13 @@ pub extern "C" fn molt_gpu_grid_dim() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gpu_barrier() -> u64 {
+    // This callable runs on the sequential host executor. Admitted hardware
+    // descriptors lower gpu_barrier to the device's real collective operation.
     molt_runtime_core::with_core_gil!(_py, {
         raise_exception::<u64>(
             _py,
-            "NotImplementedError",
-            "GPU barriers require a parallel hardware kernel",
+            "RuntimeError",
+            "GPU barrier requires a parallel hardware kernel execution context",
         )
     })
 }
@@ -2473,28 +2479,31 @@ pub extern "C" fn molt_gpu_kernel_launch(
                 "GPU launch geometry exceeds signed 64-bit indices",
             );
         };
-        // Tensor device implementations are a different capability. This
-        // configured Python-kernel descriptor has only Metal/WebGPU dispatchers;
-        // an explicit request must never silently run the sequential CPU lane.
-        if matches!(
-            requested_gpu_backend(),
-            Some(GpuBackend::Cuda | GpuBackend::Hip)
-        ) {
-            return raise_exception::<u64>(
-                _py,
-                "NotImplementedError",
-                "requested CUDA/HIP Python-kernel descriptor execution is unavailable; tensor device support is separate",
-            );
-        }
-        match try_dispatch_metal_kernel(_py, callable_bits, grid, threads, builder_bits) {
-            Ok(Some(bits)) => return bits,
-            Ok(None) => {}
-            Err(err) => return err,
-        }
-        match try_dispatch_webgpu_kernel(_py, callable_bits, grid, threads, builder_bits) {
-            Ok(Some(bits)) => return bits,
-            Ok(None) => {}
-            Err(err) => return err,
+        // Geometry errors retain precedence. Capture the operation's target
+        // once, before any kernel argument binding or device work. Dispatch
+        // cannot reread selection or turn a failed explicit request into CPU.
+        let executor = match PythonKernelExecutor::for_backend(requested_gpu_backend()) {
+            Ok(executor) => executor,
+            Err(backend) => {
+                return raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    &format!(
+                        "requested {backend:?} Python-kernel descriptor execution is unavailable; tensor device support is separate"
+                    ),
+                );
+            }
+        };
+        match executor {
+            PythonKernelExecutor::Metal => {
+                return dispatch_metal_kernel(_py, callable_bits, grid, threads, builder_bits)
+                    .unwrap_or_else(std::convert::identity);
+            }
+            PythonKernelExecutor::WebGpu => {
+                return dispatch_webgpu_kernel(_py, callable_bits, grid, threads, builder_bits)
+                    .unwrap_or_else(std::convert::identity);
+            }
+            PythonKernelExecutor::Sequential => {}
         }
         let block_dim = threads;
         for tid in 0..total_threads {

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -73,8 +75,9 @@ def test_repository_manifest_pins_node_from_the_official_distribution() -> None:
         f"https://nodejs.org/dist/v{release.version}/SHASUMS256.txt"
     )
     assert release.provenance.release_id is None
-    assert set(release.assets) >= {
+    assert set(release.assets) == {
         "x86_64-windows",
+        "aarch64-windows",
         "x86_64-linux",
         "aarch64-linux",
         "x86_64-macos",
@@ -182,17 +185,27 @@ def test_manifest_refuses_unpinned_or_escaping_assets(tmp_path: Path) -> None:
             tool_releases.load_tool_releases(tmp_path)
 
 
+def _tool_fixture_archive(path: Path, member: str, payload: bytes) -> None:
+    if path.name.endswith(".zip"):
+        _zip_archive(path, member, payload)
+    else:
+        with tarfile.open(path, "w:xz") as archive:
+            entry = tarfile.TarInfo(member)
+            entry.size = len(payload)
+            archive.addfile(entry, io.BytesIO(payload))
+
+
 def _pinned_release(
-    tmp_path: Path, payload: bytes
+    tmp_path: Path, payload: bytes, *, archive_kind: str = "zip"
 ) -> tuple[tool_releases.ToolRelease, Path]:
     exe = "demo.exe" if os.name == "nt" else "demo"
-    archive = tmp_path / "demo-1.2.3.zip"
-    _zip_archive(archive, f"demo-1.2.3/{exe}", payload)
+    archive = tmp_path / f"demo-1.2.3.{archive_kind}"
+    _tool_fixture_archive(archive, f"demo-1.2.3/{exe}", payload)
     data = archive.read_bytes()
     _write_manifest(
         tmp_path,
         {
-            "url": "https://github.com/o/r/releases/download/v1.2.3/demo-1.2.3.zip",
+            "url": f"https://github.com/o/r/releases/download/v1.2.3/{archive.name}",
             "size": len(data),
             "sha256": _sha256(data),
             "archive_member": f"demo-1.2.3/{exe}",
@@ -271,6 +284,12 @@ def test_download_that_disagrees_with_the_pin_is_refused(
         def __exit__(self, *_exc: object) -> None:
             return None
 
+        status = 200
+        headers = {}
+
+        def geturl(self):
+            return next(iter(release.assets.values())).url
+
         def read(self, size: int = -1) -> bytes:
             data, self._data = (
                 self._data[:size] if size > 0 else self._data,
@@ -279,7 +298,11 @@ def test_download_that_disagrees_with_the_pin_is_refused(
             return data
 
     monkeypatch.setattr(
-        tool_releases.urllib.request, "urlopen", lambda url, timeout: Response()
+        tool_releases.urllib.request,
+        "build_opener",
+        lambda *_: type(
+            "Opener", (), {"open": lambda self, request, timeout: Response()}
+        )(),
     )
     downloads = tmp_path / "downloads"
     with pytest.raises(tool_releases.ToolReleaseError, match="pinned identity"):
@@ -461,3 +484,345 @@ def test_cli_exports_only_attested_tool_directory(tmp_path: Path, monkeypatch) -
         == 1
     )
     assert output.read_bytes() == before
+
+
+class _ArchiveBody(io.BytesIO):
+    status = 200
+
+    def __init__(self, data, url, headers=None):
+        super().__init__(data)
+        self.url = url
+        self.headers = {} if headers is None else headers
+        self.read_sizes = []
+
+    def geturl(self):
+        return self.url
+
+    def read(self, size=-1):
+        assert size > 0, "archive transfer must use finite reads"
+        self.read_sizes.append(size)
+        return super().read(size)
+
+
+def _archive_network(monkeypatch, body, *, before_open=None):
+    calls = []
+
+    class Opener:
+        def open(self, request, timeout):
+            calls.append(request.full_url)
+            assert timeout == 180
+            assert request.get_header("Authorization") is None
+            if before_open:
+                before_open()
+            return body
+
+    monkeypatch.setattr(
+        tool_releases.urllib.request, "build_opener", lambda *_: Opener()
+    )
+    return calls
+
+
+@pytest.mark.parametrize("archive_kind", ["zip", "tar.xz"])
+def test_archive_provisioning_and_tool_install_share_one_verified_cache(
+    tmp_path, monkeypatch, archive_kind
+):
+    release, original = _pinned_release(
+        tmp_path, b"exact binary", archive_kind=archive_kind
+    )
+    asset = next(iter(release.assets.values()))
+    body = _ArchiveBody(original.read_bytes(), asset.url)
+    calls = _archive_network(monkeypatch, body)
+    cache = tmp_path / "cache"
+    result = tool_releases.provision_archive(
+        url=asset.url, size=asset.size, sha256=asset.sha256, downloads=cache
+    )
+    assert result.read_bytes() == original.read_bytes()
+    installed = tool_releases.provision_tool(
+        release, tmp_path / "toolchains", downloads=cache
+    )
+    assert installed.executable.read_bytes() == b"exact binary"
+    assert calls == [asset.url]
+    assert all(n <= 1024 * 1024 for n in body.read_sizes)
+    assert not any(child.is_dir() for child in cache.iterdir())
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "short",
+        "long",
+        "digest",
+        "length",
+        "encoding",
+        "status",
+        "network",
+        "publication",
+    ],
+)
+def test_archive_failure_never_replaces_existing_generation(
+    tmp_path, monkeypatch, defect
+):
+    expected = b"expected archive"
+    data = {
+        "short": expected[:-1],
+        "long": expected + b"x" * 100000,
+        "digest": b"X" * len(expected),
+    }.get(defect, expected)
+    url = "https://nodejs.org/dist/v1/archive.tar.xz"
+    headers = (
+        {"Content-Length": str(len(expected) + 1)}
+        if defect == "length"
+        else {"Content-Encoding": "gzip"}
+        if defect == "encoding"
+        else {}
+    )
+    body = _ArchiveBody(data, url, headers)
+    if defect == "status":
+        body.status = 206
+
+    def fail_network():
+        if defect == "network":
+            raise TimeoutError("fixture transport interruption")
+
+    _archive_network(monkeypatch, body, before_open=fail_network)
+    if defect == "publication":
+
+        def failed_publication(*_):
+            raise OSError("independent publication interruption")
+
+        monkeypatch.setattr(tool_releases, "durable_replace", failed_publication)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    original = cache / "archive.tar.xz"
+    original.write_bytes(b"previous generation")
+    with pytest.raises((tool_releases.ToolReleaseError, OSError)):
+        tool_releases.provision_archive(
+            url=url, size=len(expected), sha256=_sha256(expected), downloads=cache
+        )
+    assert original.read_bytes() == b"previous generation"
+    assert not any(child.is_dir() for child in cache.iterdir())
+    if defect == "long":
+        assert body.read_sizes == [len(expected) + 1]
+
+
+def test_archive_refuses_to_overwrite_concurrent_cache_replacement(
+    tmp_path, monkeypatch
+):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    path = cache / "archive.tar.xz"
+    path.write_bytes(b"old generation")
+    expected = b"expected archive"
+    url = "https://nodejs.org/dist/v1/archive.tar.xz"
+
+    def replace():
+        new = tmp_path / "replacement"
+        new.write_bytes(b"someone else's generation")
+        os.replace(new, path)
+
+    _archive_network(monkeypatch, _ArchiveBody(expected, url), before_open=replace)
+    with pytest.raises(tool_releases.ToolReleaseError, match="changed"):
+        tool_releases.provision_archive(
+            url=url, size=len(expected), sha256=_sha256(expected), downloads=cache
+        )
+    assert path.read_bytes() == b"someone else's generation"
+
+
+def test_archive_rejects_indirect_cache_leaf_before_network(tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"keep")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "archive.tar.xz").symlink_to(outside)
+    monkeypatch.setattr(
+        tool_releases.urllib.request,
+        "build_opener",
+        lambda *_: pytest.fail("indirect cache must fail before network"),
+    )
+    with pytest.raises(tool_releases.ToolReleaseError, match="indirect"):
+        tool_releases.provision_archive(
+            url="https://nodejs.org/dist/v1/archive.tar.xz",
+            size=4,
+            sha256=_sha256(b"keep"),
+            downloads=cache,
+        )
+    assert outside.read_bytes() == b"keep"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://nodejs.org/a",
+        "https://user:password@nodejs.org/a",
+        "https://nodejs.org:8443/a",
+        "https://nodejs.org/a#hidden",
+        "https://nodejs.org/a\n",
+        "https://nodejs.org/%2e%2e",
+        "https://nodejs.org/a?selector=other",
+    ],
+)
+def test_archive_rejects_unadmitted_source_urls_without_network(
+    tmp_path, monkeypatch, url
+):
+    monkeypatch.setattr(
+        tool_releases.urllib.request,
+        "build_opener",
+        lambda *_: pytest.fail("invalid URL must fail before network"),
+    )
+    with pytest.raises((ValueError, tool_releases.ToolReleaseError)):
+        tool_releases.provision_archive(
+            url=url, size=1, sha256=_sha256(b"x"), downloads=tmp_path / "cache"
+        )
+
+
+def test_archive_redirects_admit_only_same_origin_and_exact_github_asset_host():
+    start = "https://github.com/o/r/releases/download/v1/archive.zip"
+    policy = tool_releases._ArchiveRedirects(start)
+    request = tool_releases.urllib.request.Request(start)
+    for target in (
+        start + "?download=1",
+        "https://release-assets.githubusercontent.com/asset?sig=provider-signature",
+    ):
+        assert (
+            policy.redirect_request(request, None, 302, "Found", {}, target).full_url
+            == target
+        )
+    for target in (
+        "http://github.com/asset",
+        "https://objects.githubusercontent.com/asset",
+        "https://release-assets.githubusercontent.com.evil.invalid/asset",
+        "https://user@release-assets.githubusercontent.com/asset",
+        "https://release-assets.githubusercontent.com:444/asset",
+        "https://127.0.0.1/asset",
+        "file:///host/file",
+    ):
+        with pytest.raises(tool_releases.ToolReleaseError):
+            policy.redirect_request(request, None, 302, "Found", {}, target)
+    for start in (
+        "https://nodejs.org/dist/v1/node.tar.xz",
+        "https://deb.debian.org/pool/libc.deb",
+    ):
+        policy = tool_releases._ArchiveRedirects(start)
+        with pytest.raises(tool_releases.ToolReleaseError):
+            policy.admit("https://release-assets.githubusercontent.com/asset")
+
+
+@pytest.mark.parametrize(
+    "mutation", ["replace-before-open", "replace-after-pin", "overwrite-after-pin"]
+)
+@pytest.mark.parametrize("archive_kind", ["zip", "tar.xz"])
+def test_tool_extraction_cannot_attest_an_archive_substitution(
+    tmp_path, monkeypatch, mutation, archive_kind
+):
+    release, original = _pinned_release(
+        tmp_path, b"expected tool executable", archive_kind=archive_kind
+    )
+    asset = next(iter(release.assets.values()))
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    path = cache / original.name
+    path.write_bytes(original.read_bytes())
+    forged = tmp_path / f"forged.{archive_kind}"
+    _tool_fixture_archive(forged, asset.archive_member, b"unadmitted replacement tool")
+    if mutation == "replace-before-open":
+        actual_provision = tool_releases.provision_archive
+
+        def replace_after_provision(**kwargs):
+            admitted = actual_provision(**kwargs)
+            os.replace(forged, path)
+            return admitted
+
+        monkeypatch.setattr(tool_releases, "provision_archive", replace_after_provision)
+    else:
+        real_identity = tool_releases.stable_regular_file_handle_identity
+        # Corrupt-cache discovery is a separate read: mutate only extraction.
+        count = 0
+
+        def mutate_after_pin(opened, **kwargs):
+            nonlocal count
+            identity = real_identity(opened, **kwargs)
+            if opened.path == path:
+                count += 1
+                if count == 2:
+                    if mutation == "replace-after-pin":
+                        os.replace(forged, path)
+                    else:
+                        path.write_bytes(forged.read_bytes())
+            return identity
+
+        monkeypatch.setattr(
+            tool_releases, "stable_regular_file_handle_identity", mutate_after_pin
+        )
+    toolchain = tmp_path / "toolchains"
+    with pytest.raises(
+        (
+            ValueError,
+            OSError,
+            zipfile.BadZipFile,
+            tarfile.TarError,
+            tool_releases.ToolReleaseError,
+        )
+    ):
+        tool_releases.provision_tool(release, toolchain, downloads=cache)
+    prefix = tool_releases.tool_prefix(toolchain, release)
+    assert not tool_releases.tool_executable(prefix, release).exists()
+    assert not (prefix / tool_releases.TOOL_ATTESTATION_FILENAME).exists()
+
+
+def test_archive_lock_timeout_is_typed_but_programming_errors_propagate(
+    tmp_path, monkeypatch
+):
+    def busy(_path, **kwargs):
+        raise RuntimeError(kwargs["timeout_message"])
+
+    monkeypatch.setattr(tool_releases, "_acquire_file_lock", busy)
+    arguments = dict(
+        url="https://nodejs.org/dist/v1/archive.zip",
+        size=1,
+        sha256=_sha256(b"x"),
+        downloads=tmp_path,
+    )
+    with pytest.raises(
+        tool_releases.ToolReleaseError, match="cache is busy"
+    ) as refusal:
+        tool_releases.provision_archive(**arguments)
+    assert type(refusal.value.__cause__) is RuntimeError
+    failure = RuntimeError("independent programming defect")
+
+    def broken(*_, **__):
+        raise failure
+
+    monkeypatch.setattr(tool_releases, "_acquire_file_lock", broken)
+    with pytest.raises(RuntimeError) as observed:
+        tool_releases.provision_archive(**arguments)
+    assert observed.value is failure
+
+
+def test_dx_records_actual_archive_custody_refusal_once(tmp_path, monkeypatch):
+    from molt import dx
+
+    release, archive = _pinned_release(tmp_path, b"demo binary")
+    root = tmp_path / "tools"
+    cache = root / TOOLCHAINS_DIRNAME / tool_releases.DOWNLOADS_DIRNAME
+    cache.mkdir(parents=True)
+    (cache / archive.name).symlink_to(archive)
+    monkeypatch.setattr(dx, "_sccache_download_failed", False)
+    monkeypatch.setattr(dx, "_sccache_provision_error", None)
+    monkeypatch.setattr(tool_releases, "tool_release", lambda _: release)
+    monkeypatch.setattr(
+        tool_releases.urllib.request,
+        "build_opener",
+        lambda *_: pytest.fail("indirect cache must not fetch"),
+    )
+    assert dx._provision_sccache(root) is None
+    assert dx._sccache_download_failed is True
+    assert (
+        "ToolReleaseError" in dx._sccache_provision_error
+        and "indirect" in dx._sccache_provision_error
+    )
+    monkeypatch.setattr(
+        tool_releases,
+        "tool_release",
+        lambda _: pytest.fail("memoized refusal must not retry"),
+    )
+    assert dx._provision_sccache(root) is None

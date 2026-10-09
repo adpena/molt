@@ -5,9 +5,13 @@ from _intrinsics import runtime_active, require_intrinsic, load_intrinsic
 from molt.gpu import thread_id as imported_thread_id
 
 
+kernel_entries = []
+
+
 @gpu.kernel
 def vector_add(a, b, c, n):
     tid = gpu.thread_id()
+    kernel_entries.append(tid)
     if tid < n:
         c[tid] = a[tid] + b[tid]
 
@@ -15,7 +19,39 @@ def vector_add(a, b, c, n):
 a = gpu.to_device([1.0, 2.0, 3.0, 4.0])
 b = gpu.to_device([10.0, 20.0, 30.0, 40.0])
 c = gpu.alloc(4, float)
-vector_add[1, 4](a, b, c, 4)
+if runtime_active():
+    raw_launch = require_intrinsic("molt_gpu_kernel_launch_python")
+    # Public launch argument failures precede backend capability admission,
+    # including when this same binary runs under explicit CUDA/HIP selection.
+    for grid, threads, error_name in (
+        (True, 1, "TypeError"),
+        (1, True, "TypeError"),
+        (0, 1, "ValueError"),
+        (1, 0, "ValueError"),
+        (1 << 62, 4, "OverflowError"),
+    ):
+        try:
+            raw_launch(vector_add._func, grid, threads, (a, b, c, 4))
+        except Exception as exc:
+            assert type(exc).__name__ == error_name
+        else:
+            raise AssertionError("invalid raw geometry launched")
+    assert kernel_entries == []
+    assert gpu.from_device(c) == [0.0, 0.0, 0.0, 0.0]
+try:
+    vector_add[1, 4](a, b, c, 4)
+except RuntimeError:
+    assert kernel_entries == []
+    assert gpu.from_device(c) == [0.0, 0.0, 0.0, 0.0]
+    assert (gpu.thread_id(), gpu.block_id(), gpu.block_dim(), gpu.grid_dim()) == (
+        0,
+        0,
+        1,
+        1,
+    )
+    print("GPU capability refused before kernel execution")
+    raise
+assert kernel_entries == [0, 1, 2, 3]
 print(gpu.from_device(c))
 
 
@@ -153,18 +189,35 @@ capture = Replacement()
 assert capture[3, 5](41) == 42
 
 
+barrier_entries = []
+
+
 @gpu.kernel
 def collective():
+    barrier_entries.append("before")
     gpu.barrier()
+    barrier_entries.append("after")
 
 
 try:
     collective[1, 2]()
-except NotImplementedError:
-    pass
+except RuntimeError as exc:
+    assert (
+        str(exc) == "GPU barrier requires a parallel hardware kernel execution context"
+    )
 else:
     raise AssertionError("sequential barrier silently succeeded")
+assert barrier_entries == ["before"]
 assert gpu.thread_id() == 0 and gpu.block_dim() == 1
+
+try:
+    gpu.barrier()
+except RuntimeError as exc:
+    assert (
+        str(exc) == "GPU barrier requires a parallel hardware kernel execution context"
+    )
+else:
+    raise AssertionError("barrier outside a hardware kernel silently succeeded")
 
 
 # Geometry boxes through the canonical full-range integer owner. Abort at the

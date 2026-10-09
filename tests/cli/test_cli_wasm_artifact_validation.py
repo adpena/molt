@@ -250,6 +250,7 @@ def test_internal_runtime_wasm_build_cli_routes_to_runtime_prebuild(
     assert (
         entrypoint_dispatch._dispatch_entrypoint_command(
             args,
+            parser=parser,
             build_fn=lambda **_: 0,
             config_root=tmp_path,
             config={},

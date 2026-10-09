@@ -1370,3 +1370,25 @@ def test_fixture_release_admission_still_rejects_unbound_profiles(
     with pytest.raises(ValueError, match="invalid E2 scoreboard") as rejected:
         _release_bundle(workspace, board, tmp_path / "unbound-dist")
     assert diagnostic in str(rejected.value)
+
+
+def test_phase_input_allocation_does_not_reserve_policy_headroom(tmp_path, monkeypatch):
+    import gc
+    import tracemalloc
+
+    path = tmp_path / "small-phase-input.json"
+    raw = b'{"phase":"C0"}'
+    path.write_bytes(raw)
+    peaks = []
+    for allowance in (1024 * 1024, 8 * 1024 * 1024):
+        monkeypatch.setattr(pem, "_MAX_JSON_BYTES", allowance)
+        gc.collect()
+        tracemalloc.start()
+        try:
+            assert pem._read_bytes(path, label="phase fixture") == raw
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        peaks.append(peak)
+    # A seven-MiB increase in permission must not allocate that unused space.
+    assert peaks[1] - peaks[0] < 256 * 1024

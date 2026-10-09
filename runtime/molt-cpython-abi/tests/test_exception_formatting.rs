@@ -118,7 +118,7 @@ fn text_ingress_and_publication_preserve_allocation_failures() {
     hooks.classify_heap = Some(text_classify);
     hooks.runtime_class_borrowed = Some(text_runtime_class);
     hooks.dec_ref = text_release;
-    support::prepare_abi_test_thread(hooks);
+    let _abi_test = support::enter_abi_test(hooks);
     unsafe {
         for (index, class) in [&raw mut PyType_Type, &raw mut PyUnicode_Type]
             .into_iter()

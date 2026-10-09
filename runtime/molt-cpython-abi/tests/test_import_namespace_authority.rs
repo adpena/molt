@@ -335,7 +335,7 @@ fn imports_share_one_namespace_and_publication_is_transactional() {
     hooks.module_get_dict_borrowed = module_get_dict_borrowed;
     hooks.import_add_module_borrowed = import_add_module_borrowed;
     hooks.import_module = import_module;
-    support::prepare_abi_test_thread(hooks);
+    let _abi_test = support::enter_abi_test(hooks);
 
     let modules = unsafe { molt_cpython_abi::api::imports::PyImport_GetModuleDict() };
     assert_eq!(bits_of(modules), sys_modules);

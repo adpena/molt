@@ -96,6 +96,7 @@ def _model(tmp_path, monkeypatch, *, during_build=None):
     return {"CARGO_TARGET_DIR": str(target)}, source, binary, calls
 
 
+@pytest.mark.usefixtures("admitted_build_capacity")
 def test_distinct_results_share_cargo_freshness_and_immutable_image(
     tmp_path, monkeypatch
 ):
@@ -131,6 +132,7 @@ def test_distinct_results_share_cargo_freshness_and_immutable_image(
         )
 
 
+@pytest.mark.usefixtures("admitted_build_capacity")
 def test_source_and_environment_bind_generation_without_selecting_a_new_target(
     tmp_path, monkeypatch
 ):
@@ -157,6 +159,7 @@ def test_source_and_environment_bind_generation_without_selecting_a_new_target(
     )
 
 
+@pytest.mark.usefixtures("admitted_build_capacity")
 def test_mutating_input_cannot_publish_a_generation(tmp_path, monkeypatch):
     env, source, mutable, calls = _model(
         tmp_path,
@@ -168,6 +171,7 @@ def test_mutating_input_cannot_publish_a_generation(tmp_path, monkeypatch):
     assert not (mutable.parents[2] / "custody-cas").exists()
 
 
+@pytest.mark.usefixtures("admitted_build_capacity")
 def test_failed_cargo_cannot_reuse_a_prior_generation(tmp_path, monkeypatch):
     env, source, mutable, calls = _model(tmp_path, monkeypatch)
     image, receipt = generation.provision(cwd=tmp_path, env=env)
@@ -183,6 +187,7 @@ def test_failed_cargo_cannot_reuse_a_prior_generation(tmp_path, monkeypatch):
     assert image.read_bytes() == b"immutable supervisor image"
 
 
+@pytest.mark.usefixtures("admitted_build_capacity")
 def test_substituted_generation_cannot_bind_another_executable(tmp_path, monkeypatch):
     env, source, mutable, calls = _model(tmp_path, monkeypatch)
     image, telemetry = generation.provision(cwd=tmp_path, env=env)
@@ -203,6 +208,7 @@ def test_substituted_generation_cannot_bind_another_executable(tmp_path, monkeyp
         )
 
 
+@pytest.mark.usefixtures("admitted_build_capacity")
 def test_shared_cargo_target_has_one_provision_owner(tmp_path, monkeypatch):
     lock = threading.Lock()
     active = maximum = 0

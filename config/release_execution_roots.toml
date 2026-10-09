@@ -1,0 +1,101 @@
+# Files are read from already-provisioned, digest-pinned archives only.
+# No package manager, maintainer script, network fetch, or host library search.
+schema = "molt.release-execution-roots.v1"
+
+[[linux.x86_64.packages]]
+name = "libc6"
+filename = "libc6_2.41-12+deb13u4_amd64.deb"
+url = "https://deb.debian.org/debian/pool/main/g/glibc/libc6_2.41-12+deb13u4_amd64.deb"
+provenance = "https://packages.debian.org/trixie/amd64/libc6/download"
+size = 2846580
+sha256 = "967aa62605721081c3eb2a17650611a792aa802d76a6511d1840242623d204c9"
+members = [
+  { archive = "usr/lib/x86_64-linux-gnu/libc.so.6", guest = "lib/x86_64-linux-gnu/libc.so.6" },
+  { archive = "usr/lib/x86_64-linux-gnu/libm.so.6", guest = "lib/x86_64-linux-gnu/libm.so.6" },
+  { archive = "usr/lib/x86_64-linux-gnu/libdl.so.2", guest = "lib/x86_64-linux-gnu/libdl.so.2" },
+  { archive = "usr/lib/x86_64-linux-gnu/libpthread.so.0", guest = "lib/x86_64-linux-gnu/libpthread.so.0" },
+  { archive = "usr/lib/x86_64-linux-gnu/librt.so.1", guest = "lib/x86_64-linux-gnu/librt.so.1" },
+  { archive = "usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2", guest = "lib64/ld-linux-x86-64.so.2" },
+]
+
+[[linux.x86_64.packages]]
+name = "libgcc-s1"
+filename = "libgcc-s1_14.2.0-19_amd64.deb"
+url = "https://deb.debian.org/debian/pool/main/g/gcc-14/libgcc-s1_14.2.0-19_amd64.deb"
+provenance = "https://packages.debian.org/trixie/amd64/libgcc-s1/download"
+size = 72772
+sha256 = "3c71917b490d1a17aed43196a2787a256ecf060526cdb20216a74bedc061b150"
+members = [
+  { archive = "usr/lib/x86_64-linux-gnu/libgcc_s.so.1", guest = "lib/x86_64-linux-gnu/libgcc_s.so.1" },
+]
+
+[[linux.x86_64.packages]]
+name = "libstdc++6"
+filename = "libstdc++6_14.2.0-19_amd64.deb"
+url = "https://deb.debian.org/debian/pool/main/g/gcc-14/libstdc++6_14.2.0-19_amd64.deb"
+provenance = "https://packages.debian.org/trixie/amd64/libstdc++6/download"
+size = 713628
+sha256 = "ab1fa05837aa7a92aae748fd07a18a35f7d18bb4a71c4724fe2bbf0e32089de0"
+members = [
+  { archive = "usr/lib/x86_64-linux-gnu/libstdc++.so.6", guest = "lib/x86_64-linux-gnu/libstdc++.so.6" },
+]
+
+[[linux.x86_64.packages]]
+name = "libatomic1"
+filename = "libatomic1_14.2.0-19_amd64.deb"
+url = "https://deb.debian.org/debian/pool/main/g/gcc-14/libatomic1_14.2.0-19_amd64.deb"
+provenance = "https://packages.debian.org/trixie/amd64/libatomic1/download"
+size = 9308
+sha256 = "212b399aae2f7299203d261a57e49372e09565a9a5ea971905f94a3960366c05"
+members = [
+  { archive = "usr/lib/x86_64-linux-gnu/libatomic.so.1", guest = "lib/x86_64-linux-gnu/libatomic.so.1" },
+]
+
+[[linux.aarch64.packages]]
+name = "libc6"
+filename = "libc6_2.41-12+deb13u4_arm64.deb"
+url = "https://deb.debian.org/debian/pool/main/g/glibc/libc6_2.41-12+deb13u4_arm64.deb"
+provenance = "https://packages.debian.org/trixie/arm64/libc6/download"
+size = 2483572
+sha256 = "8784eda966b189c777a384dac5ce009e8fc9b52d006926c5a013e7fa8aa688cc"
+members = [
+  { archive = "usr/lib/aarch64-linux-gnu/libc.so.6", guest = "lib/aarch64-linux-gnu/libc.so.6" },
+  { archive = "usr/lib/aarch64-linux-gnu/libm.so.6", guest = "lib/aarch64-linux-gnu/libm.so.6" },
+  { archive = "usr/lib/aarch64-linux-gnu/libdl.so.2", guest = "lib/aarch64-linux-gnu/libdl.so.2" },
+  { archive = "usr/lib/aarch64-linux-gnu/libpthread.so.0", guest = "lib/aarch64-linux-gnu/libpthread.so.0" },
+  { archive = "usr/lib/aarch64-linux-gnu/librt.so.1", guest = "lib/aarch64-linux-gnu/librt.so.1" },
+  { archive = "usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1", guest = "lib/ld-linux-aarch64.so.1" },
+]
+
+[[linux.aarch64.packages]]
+name = "libgcc-s1"
+filename = "libgcc-s1_14.2.0-19_arm64.deb"
+url = "https://deb.debian.org/debian/pool/main/g/gcc-14/libgcc-s1_14.2.0-19_arm64.deb"
+provenance = "https://packages.debian.org/trixie/arm64/libgcc-s1/download"
+size = 54104
+sha256 = "1108bc87879833d6d9a145f22a4a15cddb34e065b4b5f4b97bee586adbac2851"
+members = [
+  { archive = "usr/lib/aarch64-linux-gnu/libgcc_s.so.1", guest = "lib/aarch64-linux-gnu/libgcc_s.so.1" },
+]
+
+[[linux.aarch64.packages]]
+name = "libstdc++6"
+filename = "libstdc++6_14.2.0-19_arm64.deb"
+url = "https://deb.debian.org/debian/pool/main/g/gcc-14/libstdc++6_14.2.0-19_arm64.deb"
+provenance = "https://packages.debian.org/trixie/arm64/libstdc++6/download"
+size = 637536
+sha256 = "6669b0c52a2e7c6af9adfdabce3ff6e286065cdfbc7b85280862b5f799daebee"
+members = [
+  { archive = "usr/lib/aarch64-linux-gnu/libstdc++.so.6", guest = "lib/aarch64-linux-gnu/libstdc++.so.6" },
+]
+
+[[linux.aarch64.packages]]
+name = "libatomic1"
+filename = "libatomic1_14.2.0-19_arm64.deb"
+url = "https://deb.debian.org/debian/pool/main/g/gcc-14/libatomic1_14.2.0-19_arm64.deb"
+provenance = "https://packages.debian.org/trixie/arm64/libatomic1/download"
+size = 10128
+sha256 = "7ccff90234484bf21ae5ecb79d25b6a84b2f4038f65dd139085b2e3a937cd8dc"
+members = [
+  { archive = "usr/lib/aarch64-linux-gnu/libatomic.so.1", guest = "lib/aarch64-linux-gnu/libatomic.so.1" },
+]

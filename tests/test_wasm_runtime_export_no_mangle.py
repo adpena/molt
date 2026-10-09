@@ -16,9 +16,10 @@ asserting, statically, that every required export has a real ``no_mangle`` owner
 
 The inverse bug class is equally structural: adding ``no_mangle`` to both a
 ``molt-runtime`` export wrapper and its extracted implementation crate creates
-duplicate native symbols during Rust tests. The runtime wrapper owns the ABI
-export when it exists; extracted crates own implementation, not duplicate export
-symbols.
+duplicate native symbols during Rust tests. Ownership is per feature and target:
+a disabled-feature fallback or WASM-only diagnostic provider cannot supply the
+native feature-enabled symbol.
+A wrapper and extracted implementation must not both export in the same cell.
 
 The required-export set is sourced from the same authorities the runtime build
 and the export-link args use (`molt._wasm_runtime_exports` /
@@ -27,9 +28,13 @@ and the export-link args use (`molt._wasm_runtime_exports` /
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 from pathlib import Path
 
+import pytest
+
+from molt._runtime_feature_gates import feature_gate_for_symbol
 from molt._wasm_abi_generated import (
     WASM_IMPORT_REGISTRY,
     WASM_RUNTIME_HOST_EXPORTS,
@@ -58,16 +63,110 @@ def _required_export_symbols() -> set[str]:
     return required
 
 
-def _has_no_mangle_above(lines: list[str], def_idx: int) -> bool:
-    """True if a `no_mangle` attribute precedes the def through the contiguous
-    attribute/doc/comment/blank block."""
-
+def _attributes_above(lines: list[str], def_idx: int) -> str:
     idx = def_idx - 1
+    attributes = []
     while idx >= 0 and _ATTR_OR_DOC_RE.match(lines[idx]):
-        if "no_mangle" in lines[idx]:
-            return True
+        if lines[idx].strip().startswith("#["):
+            attributes.append(lines[idx].strip())
         idx -= 1
-    return False
+    return "\n".join(reversed(attributes))
+
+
+@dataclass(frozen=True)
+class ExportDefinition:
+    no_mangle: bool
+    path: Path
+    line: int
+    attributes: str
+
+    def exports_in(self, cell: str) -> bool:
+        if self.no_mangle:
+            return True
+        # This current source form supplies an exact C symbol only on WASM.
+        # A Rust-callable native definition is not a native C-export promise.
+        return cell.endswith("/wasm32") and (
+            '#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]'
+            in self.attributes.splitlines()
+        )
+
+    @property
+    def disabled_feature(self) -> str | None:
+        match = re.search(r'#\[cfg\(not\(feature = "([^\"]+)"\)\)\]', self.attributes)
+        return match[1] if match else None
+
+
+def _lzma_target_owners() -> dict[Path, str]:
+    """Recognize the two source-declared LZMA modules, failing on gate drift.
+
+    This is a bounded projection of the current module gates, not a Rust cfg
+    evaluator. Keep the exact gates checked before treating owners as disjoint.
+    """
+    owners = {}
+    for parent, expected_cfg, expected_path, target in (
+        (
+            RUNTIME_ROOT / "molt-runtime-compression/src/lib.rs",
+            '#[cfg(not(target_arch = "wasm32"))]',
+            "lzma.rs",
+            "native",
+        ),
+        (
+            RUNTIME_ROOT / "molt-runtime/src/builtins/mod.rs",
+            '#[cfg(all(feature = "stdlib_compression", target_arch = "wasm32"))]',
+            "lzma_wasm.rs",
+            "wasm32",
+        ),
+    ):
+        lines = parent.read_text(encoding="utf-8").splitlines()
+        declarations = [
+            idx
+            for idx, line in enumerate(lines)
+            if re.fullmatch(r"pub(?:\(crate\))? mod lzma;", line.strip())
+        ]
+        assert len(declarations) == 1, f"LZMA module owner changed: {parent}"
+        attributes = _attributes_above(lines, declarations[0])
+        cfgs = [line for line in attributes.splitlines() if line.startswith("#[cfg")]
+        assert cfgs == [expected_cfg], f"LZMA target gate changed: {parent}: {cfgs}"
+        path_attribute = re.search(r'#\[path = "([^\"]+)"\]', attributes)
+        filename = path_attribute[1] if path_attribute else "lzma.rs"
+        assert filename == expected_path, f"LZMA module path changed: {parent}"
+        owners[parent.parent / filename] = target
+    return owners
+
+
+def _owner_cells(
+    symbol: str, definitions: list[ExportDefinition], targets: dict[Path, str]
+) -> dict[str, list[ExportDefinition]]:
+    enabled = [
+        definition for definition in definitions if not definition.disabled_feature
+    ]
+    # The required set is a WASM ABI authority. The explicitly target-split
+    # LZMA modules additionally own the native C surface checked above; do not
+    # infer a native C-export requirement for every Rust callable in the set.
+    target_cells = (
+        ("native", "wasm32")
+        if any(definition.path in targets for definition in definitions)
+        else ("wasm32",)
+    )
+    cells = {
+        f"feature-enabled/{target}": [
+            definition
+            for definition in enabled
+            if targets.get(definition.path, target) == target
+        ]
+        for target in target_cells
+    }
+    for definition in definitions:
+        feature = definition.disabled_feature
+        if feature is None:
+            continue
+        # The canonical symbol gate or a direct positive cfg must establish the
+        # counterpart. An arbitrary negative annotation is not an exemption.
+        assert feature_gate_for_symbol(symbol) == feature or any(
+            f'#[cfg(feature = "{feature}")]' in owner.attributes for owner in enabled
+        ), f"unmatched disabled-feature owner: {symbol}: {definition}"
+        cells.setdefault(f"{feature}-disabled/wasm32", []).append(definition)
+    return cells
 
 
 def _is_shipped_runtime_source(path: Path) -> bool:
@@ -76,11 +175,11 @@ def _is_shipped_runtime_source(path: Path) -> bool:
     return path.name not in {"test_host.rs", "bridge_test_stubs.rs"}
 
 
-def _extern_c_fn_definitions() -> dict[str, list[tuple[bool, Path, int]]]:
+def _extern_c_fn_definitions() -> dict[str, list[ExportDefinition]]:
     """Map every shipped `pub extern "C" fn molt_*` definition to its export
     ownership bit and source location."""
 
-    found: dict[str, list[tuple[bool, Path, int]]] = {}
+    found: dict[str, list[ExportDefinition]] = {}
     for path in sorted(RUNTIME_ROOT.rglob("*.rs")):
         posix = path.as_posix()
         if "/target/" in posix or not _is_shipped_runtime_source(path):
@@ -90,10 +189,16 @@ def _extern_c_fn_definitions() -> dict[str, list[tuple[bool, Path, int]]]:
             match = _EXTERN_C_FN_RE.search(line)
             if match:
                 found.setdefault(match.group(1), []).append(
-                    (
-                        _has_no_mangle_above(lines, line_idx),
+                    ExportDefinition(
+                        bool(
+                            re.search(
+                                r"#\[(?:unsafe\()?no_mangle\)?\]",
+                                _attributes_above(lines, line_idx),
+                            )
+                        ),
                         path,
                         line_idx + 1,
+                        _attributes_above(lines, line_idx),
                     )
                 )
     return found
@@ -104,69 +209,207 @@ def _is_molt_runtime_crate_source(path: Path) -> bool:
 
 
 def test_required_wasm_runtime_exports_have_no_mangle() -> None:
-    required = _required_export_symbols()
     defined = _extern_c_fn_definitions()
-
-    missing = sorted(
-        symbol
-        for symbol in required
-        if symbol in defined
-        and not any(has_no_mangle for has_no_mangle, _, _ in defined[symbol])
-    )
-
-    detail = "\n".join(
-        f"  {symbol}: "
-        + ", ".join(
-            f"{path.relative_to(REPO_ROOT).as_posix()}:{line}"
-            for _, path, line in defined[symbol]
-        )
-        for symbol in missing
-    )
+    targets = _lzma_target_owners()
+    missing = []
+    for symbol in sorted(_required_export_symbols() & defined.keys()):
+        for cell, definitions in _owner_cells(symbol, defined[symbol], targets).items():
+            if not any(definition.exports_in(cell) for definition in definitions):
+                locations = ", ".join(
+                    f"{definition.path.relative_to(REPO_ROOT)}:{definition.line}"
+                    for definition in definitions
+                )
+                missing.append(f"  {symbol} [{cell}]: {locations or 'no definition'}")
     assert not missing, (
-        'WASM-required runtime exports are defined as `pub extern "C"` but lack '
-        "`#[unsafe(no_mangle)]`, so the linker cannot export them and no program "
-        f"can link to WASM:\n{detail}\n"
-        "Add `#[unsafe(no_mangle)]` to the export-owning definition; the symbol "
-        "name is the link contract."
+        'Required runtime `pub extern "C"` definitions lack an unmangled owner '
+        "in their feature/target cell, so the linker cannot export them:\n"
+        + "\n".join(missing)
     )
 
 
 def test_extracted_runtime_crates_do_not_duplicate_wrapper_exports() -> None:
-    required = _required_export_symbols()
     defined = _extern_c_fn_definitions()
-
-    duplicate_owned = []
-    for symbol in sorted(required):
-        defs = defined.get(symbol, [])
-        runtime_owners = [
-            (path, line)
-            for has_no_mangle, path, line in defs
-            if has_no_mangle and _is_molt_runtime_crate_source(path)
-        ]
-        extracted_owners = [
-            (path, line)
-            for has_no_mangle, path, line in defs
-            if has_no_mangle and not _is_molt_runtime_crate_source(path)
-        ]
-        if runtime_owners and extracted_owners:
-            duplicate_owned.append((symbol, runtime_owners, extracted_owners))
-
-    detail = "\n".join(
-        f"  {symbol}: runtime="
-        + ", ".join(
-            f"{path.relative_to(REPO_ROOT).as_posix()}:{line}" for path, line in runtime
-        )
-        + " extracted="
-        + ", ".join(
-            f"{path.relative_to(REPO_ROOT).as_posix()}:{line}"
-            for path, line in extracted
-        )
-        for symbol, runtime, extracted in duplicate_owned
+    targets = _lzma_target_owners()
+    duplicates = []
+    for symbol in sorted(_required_export_symbols() & defined.keys()):
+        for cell, definitions in _owner_cells(symbol, defined[symbol], targets).items():
+            runtime = [
+                definition
+                for definition in definitions
+                if definition.exports_in(cell)
+                and _is_molt_runtime_crate_source(definition.path)
+            ]
+            extracted = [
+                definition
+                for definition in definitions
+                if definition.exports_in(cell)
+                and not _is_molt_runtime_crate_source(definition.path)
+            ]
+            if runtime and extracted:
+                locations = ", ".join(
+                    f"{definition.path.relative_to(REPO_ROOT)}:{definition.line}"
+                    for definition in runtime + extracted
+                )
+                duplicates.append(f"  {symbol} [{cell}]: {locations}")
+    assert not duplicates, (
+        "Runtime wrappers and extracted implementations both own no_mangle "
+        "in the same feature/target cell, creating duplicate symbols:\n"
+        + "\n".join(duplicates)
     )
-    assert not duplicate_owned, (
-        "`molt-runtime` wrapper exports and extracted implementation crates both "
-        "own `#[unsafe(no_mangle)]` for the same WASM-required symbol, which "
-        f"creates native duplicate symbols:\n{detail}\n"
-        "Keep `no_mangle` on the ABI wrapper when one exists; leave extracted "
-        "crates as implementation authority."
+
+
+@pytest.fixture
+def export_owner_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Path]:
+    # Independent Rust fragments exercise the actual scanner and assertions.
+    # These are source-guard controls; they are never compiled as runtime code.
+    runtime = tmp_path / "runtime"
+    files = {
+        "native-module": (
+            "molt-runtime-compression/src/lib.rs",
+            '#[cfg(not(target_arch = "wasm32"))]\npub mod lzma;\n',
+        ),
+        "wasm-module": (
+            "molt-runtime/src/builtins/mod.rs",
+            '#[cfg(all(feature = "stdlib_compression", target_arch = "wasm32"))]\n'
+            '#[path = "lzma_wasm.rs"]\npub(crate) mod lzma;\n',
+        ),
+        "raw": (
+            "molt-runtime-compression/src/zlib.rs",
+            '#[unsafe(no_mangle)]\npub extern "C" fn molt_deflate_raw(a: u64, b: u64) -> u64 { 0 }\n',
+        ),
+        "fallback": (
+            "molt-runtime/src/builtins/micro_stubs.rs",
+            '#[cfg(not(feature = "stdlib_compression"))]\n#[unsafe(no_mangle)]\n'
+            'pub extern "C" fn molt_deflate_raw(a: u64, b: u64) -> u64 { 0 }\n',
+        ),
+        "native-lzma": (
+            "molt-runtime-compression/src/lzma.rs",
+            '#[unsafe(no_mangle)]\npub extern "C" fn molt_lzma_format_auto() -> u64 { 0 }\n',
+        ),
+        "wasm-lzma": (
+            "molt-runtime/src/builtins/lzma_wasm.rs",
+            '#[unsafe(no_mangle)]\npub extern "C" fn molt_lzma_format_auto() -> u64 { 0 }\n',
+        ),
+    }
+    paths = {}
+    for role, (relative, text) in files.items():
+        path = runtime / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        paths[role] = path
+    monkeypatch.setitem(globals(), "REPO_ROOT", tmp_path)
+    monkeypatch.setitem(globals(), "RUNTIME_ROOT", runtime)
+    return paths
+
+
+@pytest.mark.parametrize(
+    ("role", "symbol", "cell"),
+    [
+        ("raw", "molt_deflate_raw", "feature-enabled/wasm32"),
+        ("native-lzma", "molt_lzma_format_auto", "feature-enabled/native"),
+    ],
+)
+def test_export_owner_guard_does_not_borrow_incompatible_providers(
+    export_owner_sources: dict[str, Path], role: str, symbol: str, cell: str
+) -> None:
+    test_required_wasm_runtime_exports_have_no_mangle()
+    test_extracted_runtime_crates_do_not_duplicate_wrapper_exports()
+    path = export_owner_sources[role]
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("#[unsafe(no_mangle)]\n", ""),
+        encoding="utf-8",
     )
+    with pytest.raises(AssertionError) as missing:
+        test_required_wasm_runtime_exports_have_no_mangle()
+    assert f"{symbol} [{cell}]" in str(missing.value)
+    assert "stdlib_compression-disabled" not in str(missing.value)
+    if role == "native-lzma":
+        assert "feature-enabled/wasm32" not in str(missing.value)
+
+
+def test_export_owner_guard_rejects_unmatched_negative_feature(
+    export_owner_sources: dict[str, Path],
+) -> None:
+    path = export_owner_sources["fallback"]
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "stdlib_compression", "unmatched_feature"
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(AssertionError, match="unmatched disabled-feature owner"):
+        test_required_wasm_runtime_exports_have_no_mangle()
+
+
+@pytest.mark.parametrize("role", ["native-module", "wasm-module"])
+def test_export_owner_guard_rejects_target_gate_drift(
+    export_owner_sources: dict[str, Path], role: str
+) -> None:
+    path = export_owner_sources[role]
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            'target_arch = "wasm32"', 'target_arch = "aarch64"'
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(AssertionError, match="LZMA target gate changed"):
+        test_required_wasm_runtime_exports_have_no_mangle()
+
+
+def test_export_owner_guard_rejects_real_wrapper_duplicate(
+    export_owner_sources: dict[str, Path],
+) -> None:
+    path = export_owner_sources["fallback"].with_name("wrapper.rs")
+    path.write_text(
+        '#[cfg(feature = "stdlib_compression")]\n#[unsafe(no_mangle)]\n'
+        'pub extern "C" fn molt_deflate_raw(a: u64, b: u64) -> u64 { 0 }\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(AssertionError, match="creating duplicate symbols") as duplicate:
+        test_extracted_runtime_crates_do_not_duplicate_wrapper_exports()
+    assert "molt_deflate_raw [feature-enabled/wasm32]" in str(duplicate.value)
+    assert "stdlib_compression-disabled" not in str(duplicate.value)
+
+
+def test_export_owner_guard_honors_wasm_conditional_symbol_name(
+    export_owner_sources: dict[str, Path],
+) -> None:
+    path = export_owner_sources["raw"]
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "#[unsafe(no_mangle)]",
+            '#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]',
+        ),
+        encoding="utf-8",
+    )
+    test_required_wasm_runtime_exports_have_no_mangle()
+    test_extracted_runtime_crates_do_not_duplicate_wrapper_exports()
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            'target_arch = "wasm32"', 'target_arch = "aarch64"'
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        AssertionError, match=r"molt_deflate_raw \[feature-enabled/wasm32\]"
+    ):
+        test_required_wasm_runtime_exports_have_no_mangle()
+
+
+def test_export_owner_guard_does_not_promote_conditional_name_to_native(
+    export_owner_sources: dict[str, Path],
+) -> None:
+    path = export_owner_sources["native-lzma"]
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "#[unsafe(no_mangle)]",
+            '#[cfg_attr(target_arch = "wasm32", unsafe(no_mangle))]',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        AssertionError, match=r"molt_lzma_format_auto \[feature-enabled/native\]"
+    ):
+        test_required_wasm_runtime_exports_have_no_mangle()

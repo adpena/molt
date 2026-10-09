@@ -1181,3 +1181,52 @@ def test_compiler_lock_dependency_identity_resolves_same_name_version_by_source(
         _cargo_locked_dependency_digest(tmp_path, tmp_path / "runtime/molt-backend")
         == before
     )
+
+
+def test_cargo_document_capture_bounds_actual_growth_before_parse(
+    tmp_path, monkeypatch
+):
+    from contextlib import contextmanager
+    from dataclasses import replace
+    from molt import toolchain_identity
+    from molt.cli.cargo_source_closure import _read_cargo_document
+    from tests.operation_probe import same_thread_probe
+
+    path = tmp_path / "Cargo.toml"
+    raw = b'[package]\nname = "fixture"\nversion = "0.1.0"\n'
+    path.write_bytes(raw)
+    assert _read_cargo_document(path) == {
+        "package": {"name": "fixture", "version": "0.1.0"}
+    }
+    original = toolchain_identity.open_stable_regular_file
+    consumed = []
+    attempts = []
+
+    class GrowingStream:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def read(self, size=-1):
+            attempts.append(path)
+            with path.open("ab") as writer:
+                writer.write(b"# later source bytes\n" * 10000)
+            data = self.stream.read(size)
+            consumed.append(len(data))
+            return data
+
+    @contextmanager
+    def growing_open(selected, **kwargs):
+        with original(selected, **kwargs) as opened:
+            yield replace(opened, stream=GrowingStream(opened.stream))
+
+    monkeypatch.setattr(
+        toolchain_identity,
+        "open_stable_regular_file",
+        same_thread_probe(original, growing_open),
+    )
+    with pytest.raises(
+        toolchain_identity.StableRegularFileChangedError, match="changed"
+    ):
+        _read_cargo_document(path)
+    assert attempts == [path]
+    assert sum(consumed) <= len(raw) + 1

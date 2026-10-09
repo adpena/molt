@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use molt_lang_obj_model::MoltObject;
 
-fn init() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+fn init() -> support::AbiTestThreadStateTransaction {
+    support::enter_abi_test(support::stub_runtime_hooks())
 }
 
 // A hook table whose `alloc_list` SUCCEEDS (so PyList_New returns a non-null
@@ -25,10 +25,10 @@ unsafe extern "C" fn fake_alloc_list() -> u64 {
     MoltObject::from_ptr(ptr::with_exposed_provenance_mut(address)).bits()
 }
 
-fn init_with_working_list_alloc() {
+fn init_with_working_list_alloc() -> support::AbiTestThreadStateTransaction {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.alloc_list = fake_alloc_list;
-    support::prepare_abi_test_thread(hooks);
+    support::enter_abi_test(hooks)
 }
 
 // ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ fn test_dict_new_fails_closed_on_alloc_failure() {
     // F4 teeth: with stub hooks, alloc_dict returns 0 (allocation failure).
     // PyDict_New MUST fail closed with NULL + a set MemoryError, NOT a non-NULL
     // Py_None placeholder that defeats the caller's `if (dict == NULL)` guard.
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let py = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
     assert!(
@@ -61,7 +61,7 @@ fn test_dict_copy_keys_values_fail_closed_without_runtime() {
     // dict/list (silent data loss). Without runtime hooks the dict_op hook
     // returns 0, so each must fail closed with NULL + an exception, never a
     // fabricated empty result.
-    init();
+    let _abi_test = init();
     type DictOpFn = unsafe extern "C" fn(
         *mut molt_cpython_abi::abi_types::PyObject,
     ) -> *mut molt_cpython_abi::abi_types::PyObject;
@@ -98,7 +98,7 @@ fn test_dict_items_fails_closed_without_runtime() {
     // would now allocate to a NON-null value and this assertion would fail —
     // giving the burndown real mutation teeth (a fail-closed-under-stubs-only test
     // cannot tell the two apart, since PyList_New(0) itself fails closed there).
-    init_with_working_list_alloc();
+    let _abi_test = init_with_working_list_alloc();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let result = unsafe { molt_cpython_abi::api::mapping::PyDict_Items(ptr::null_mut()) };
     assert!(
@@ -119,7 +119,7 @@ fn test_mapping_items_fails_closed_without_runtime() {
     // and must fail closed with NULL + an exception. alloc_list works here so a
     // regression to the PyList_New(0) placeholder would return non-null and be
     // caught (mutation teeth) — see test_dict_items_fails_closed_without_runtime.
-    init_with_working_list_alloc();
+    let _abi_test = init_with_working_list_alloc();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let result =
         unsafe { molt_cpython_abi::api::abstract_mapping::PyMapping_Items(ptr::null_mut()) };
@@ -140,7 +140,7 @@ fn test_mapping_items_fails_closed_without_runtime() {
 
 #[test]
 fn test_dict_setitem_null_dict_returns_error() {
-    init();
+    let _abi_test = init();
     let key = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(2) };
     let result =
@@ -159,7 +159,7 @@ fn test_dict_setitem_null_dict_returns_error() {
 
 #[test]
 fn test_dict_setitem_null_key_returns_error() {
-    init();
+    let _abi_test = init();
     let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(2) };
     let result =
@@ -178,7 +178,7 @@ fn test_dict_setitem_null_key_returns_error() {
 
 #[test]
 fn test_dict_setitem_null_value_returns_error() {
-    init();
+    let _abi_test = init();
     let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
     let key = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let result =
@@ -197,7 +197,7 @@ fn test_dict_setitem_null_value_returns_error() {
 
 #[test]
 fn test_dict_setitem_all_null_returns_error() {
-    init();
+    let _abi_test = init();
     let result = unsafe {
         molt_cpython_abi::api::mapping::PyDict_SetItem(
             ptr::null_mut(),
@@ -219,7 +219,7 @@ fn test_dict_setitem_all_null_returns_error() {
 
 #[test]
 fn test_dict_setitemstring_null_dict_returns_error() {
-    init();
+    let _abi_test = init();
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let result = unsafe {
         molt_cpython_abi::api::mapping::PyDict_SetItemString(ptr::null_mut(), c"key".as_ptr(), val)
@@ -230,7 +230,7 @@ fn test_dict_setitemstring_null_dict_returns_error() {
 
 #[test]
 fn test_dict_setitemstring_null_key_returns_error() {
-    init();
+    let _abi_test = init();
     let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
     let val = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let result =
@@ -244,7 +244,7 @@ fn test_dict_setitemstring_null_key_returns_error() {
 
 #[test]
 fn test_dict_setitemstring_null_value_returns_error() {
-    init();
+    let _abi_test = init();
     let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
     let result = unsafe {
         molt_cpython_abi::api::mapping::PyDict_SetItemString(dict, c"key".as_ptr(), ptr::null_mut())
@@ -259,7 +259,7 @@ fn test_dict_setitemstring_null_value_returns_error() {
 
 #[test]
 fn test_dict_getitem_null_dict_returns_null() {
-    init();
+    let _abi_test = init();
     let key = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1) };
     let result = unsafe { molt_cpython_abi::api::mapping::PyDict_GetItem(ptr::null_mut(), key) };
     assert!(result.is_null());
@@ -268,7 +268,7 @@ fn test_dict_getitem_null_dict_returns_null() {
 
 #[test]
 fn test_dict_getitem_null_key_returns_null() {
-    init();
+    let _abi_test = init();
     let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
     let result = unsafe { molt_cpython_abi::api::mapping::PyDict_GetItem(dict, ptr::null_mut()) };
     assert!(result.is_null());
@@ -277,7 +277,7 @@ fn test_dict_getitem_null_key_returns_null() {
 
 #[test]
 fn test_dict_getitem_both_null_returns_null() {
-    init();
+    let _abi_test = init();
     let result =
         unsafe { molt_cpython_abi::api::mapping::PyDict_GetItem(ptr::null_mut(), ptr::null_mut()) };
     assert!(result.is_null());
@@ -289,7 +289,7 @@ fn test_dict_getitem_both_null_returns_null() {
 
 #[test]
 fn test_dict_getitemstring_null_dict_returns_null() {
-    init();
+    let _abi_test = init();
     let result = unsafe {
         molt_cpython_abi::api::mapping::PyDict_GetItemString(ptr::null_mut(), c"key".as_ptr())
     };
@@ -298,7 +298,7 @@ fn test_dict_getitemstring_null_dict_returns_null() {
 
 #[test]
 fn test_dict_getitemstring_null_key_returns_null() {
-    init();
+    let _abi_test = init();
     let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
     let result = unsafe { molt_cpython_abi::api::mapping::PyDict_GetItemString(dict, ptr::null()) };
     assert!(result.is_null());
@@ -311,7 +311,7 @@ fn test_dict_getitemstring_null_key_returns_null() {
 
 #[test]
 fn test_dict_delitemstring_null_dict_returns_error() {
-    init();
+    let _abi_test = init();
     let result = unsafe {
         molt_cpython_abi::api::mapping::PyDict_DelItemString(ptr::null_mut(), c"key".as_ptr())
     };
@@ -320,7 +320,7 @@ fn test_dict_delitemstring_null_dict_returns_error() {
 
 #[test]
 fn test_dict_delitemstring_null_key_returns_error() {
-    init();
+    let _abi_test = init();
     let dict = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
     let result = unsafe { molt_cpython_abi::api::mapping::PyDict_DelItemString(dict, ptr::null()) };
     assert_eq!(result, -1);
@@ -335,7 +335,7 @@ fn test_dict_delitemstring_null_key_returns_error() {
 fn test_dict_size_null_sets_error_and_returns_minus_one() {
     // CPython: PyDict_Size(non-dict/NULL) → PyErr_BadInternalCall() + return -1,
     // NOT a fabricated 0 (which PyDict_Merge read as "empty"). Sentinel sweep.
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let size = unsafe { molt_cpython_abi::api::mapping::PyDict_Size(ptr::null_mut()) };
     assert_eq!(size, -1, "PyDict_Size(NULL) must be -1, not a fabricated 0");
@@ -352,14 +352,14 @@ fn test_dict_size_null_sets_error_and_returns_minus_one() {
 
 #[test]
 fn test_dict_check_null_returns_zero() {
-    init();
+    let _abi_test = init();
     let result = unsafe { molt_cpython_abi::api::mapping::PyDict_Check(ptr::null_mut()) };
     assert_eq!(result, 0);
 }
 
 #[test]
 fn test_dict_check_on_int_returns_zero() {
-    init();
+    let _abi_test = init();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(5) };
     let result = unsafe { molt_cpython_abi::api::mapping::PyDict_Check(py) };
     assert_eq!(result, 0);

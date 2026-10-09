@@ -61,6 +61,7 @@ def test_compiled_gpu_kernel_vector_add_matches_interpreted_semantics(
     )
 
     env = _gpu_env()
+    env["MOLT_GPU_BACKEND"] = ""
     build = run_native_test_process(
         [
             sys.executable,
@@ -108,8 +109,14 @@ def test_compiled_gpu_kernel_vector_add_matches_interpreted_semantics(
             timeout=60,
         )
         assert refused.returncode != 0, refused.stdout + refused.stderr
-        assert "NotImplementedError" in refused.stderr
-        assert "Python-kernel descriptor execution is unavailable" in refused.stderr
+        assert "RuntimeError" in refused.stderr
+        assert (
+            f"requested {backend.capitalize()} Python-kernel descriptor execution is unavailable"
+            in refused.stderr
+        )
+        assert (
+            refused.stdout.strip() == "GPU capability refused before kernel execution"
+        )
         assert "launch semantics ok" not in refused.stdout
 
 

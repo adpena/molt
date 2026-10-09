@@ -82,8 +82,7 @@ from molt.cli.wasm_host import resolve_molt_wasm_host_binary  # noqa: E402
 from molt.node_runtime import resolve_node_runtime  # noqa: E402
 from molt.browser_asset_closure import (  # noqa: E402
     BROWSER_HOST_ENTRY_ASSETS,
-    canonical_wasm_loader_asset_bytes,
-    wasm_loader_asset_closure,
+    wasm_loader_asset_payloads,
 )
 from molt.wasm_artifact import read_wasm_imports, wasm_runtime_manifest_path  # noqa: E402
 
@@ -742,13 +741,12 @@ _BROWSER_HARNESS_HTML = r"""<!doctype html>
 def _stage_browser_static_assets(site: Path) -> tuple[str, ...]:
     """Stage the canonical browser-host dependency closure into ``site``."""
 
-    assets = wasm_loader_asset_closure(WASM_DIR, BROWSER_HOST_ENTRY_ASSETS)
-    for src_name in assets:
-        src = WASM_DIR.joinpath(*Path(src_name).parts)
+    assets = wasm_loader_asset_payloads(WASM_DIR, BROWSER_HOST_ENTRY_ASSETS)
+    for src_name, data in assets.items():
         dst = site.joinpath(*Path(src_name).parts)
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(canonical_wasm_loader_asset_bytes(src))
-    return assets
+        dst.write_bytes(data)
+    return tuple(assets)
 
 
 def _run_browser(

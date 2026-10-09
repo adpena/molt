@@ -75,13 +75,25 @@ fn descriptor(py: &PyToken<'_>, class: u64, dict: *mut u8, name: &str, operation
     dec_ref_bits(py, desc);
     ok
 }
+fn layout<T>(shape: ObjectShapeId, weakref: bool) -> RuntimeClassLayout {
+    RuntimeClassLayout {
+        semantics: ClassSemanticPolicy::static_type(false),
+        // The shared class lifecycle owns the trailing dictionary word even
+        // when Python attributes are forbidden. It must not alias T's fields.
+        layout_size: (std::mem::size_of::<T>() + std::mem::size_of::<u64>()) as i64,
+        instance_shape: Some(shape),
+        native_slots: Some(ClassSlotPolicy {
+            allows_dict: false,
+            allows_weakref: weakref,
+            variable_sized: false,
+        }),
+    }
+}
 fn class(
     py: &PyToken<'_>,
     slot: &AtomicU64,
     name: &str,
-    size: usize,
-    shape: ObjectShapeId,
-    weakref: bool,
+    layout: RuntimeClassLayout,
     methods: &[Method<'_>],
     properties: &[(&str, u32)],
     extra: impl FnOnce(u64, *mut u8) -> bool,
@@ -93,25 +105,19 @@ fn class(
     if cached != 0 {
         return cached;
     }
+    let context_shape = layout.instance_shape.filter(|shape| {
+        matches!(
+            shape,
+            ObjectShapeId::Context | ObjectShapeId::ContextVar | ObjectShapeId::ContextToken
+        )
+    });
     let bits = crate::builtins::types::init_cached_runtime_class_configured(
         py,
         slot,
         name,
-        RuntimeClassLayout {
-            semantics: ClassSemanticPolicy::static_type(false),
-            layout_size: size as i64,
-            instance_shape: Some(shape),
-            native_slots: Some(ClassSlotPolicy {
-                allows_dict: false,
-                allows_weakref: weakref,
-                variable_sized: false,
-            }),
-        },
+        layout,
         |bits, dict| {
-            if matches!(
-                shape,
-                ObjectShapeId::Context | ObjectShapeId::ContextVar | ObjectShapeId::ContextToken
-            ) {
+            if context_shape.is_some() {
                 let module = text(py, "_contextvars");
                 let ok = put(py, dict, "__module__", module);
                 dec_ref_bits(py, module);
@@ -131,10 +137,7 @@ fn class(
         },
     );
     if bits != 0
-        && matches!(
-            shape,
-            ObjectShapeId::Context | ObjectShapeId::ContextVar | ObjectShapeId::ContextToken
-        )
+        && let Some(shape) = context_shape
         && !crate::cpython_abi_hooks::bind_context_class(py, bits, shape)
     {
         // A failed C projection must not leave a cached class that later calls
@@ -233,9 +236,7 @@ pub(crate) fn context_class(py: &PyToken<'_>) -> u64 {
         py,
         &runtime_state(py).types.context_class,
         "Context",
-        std::mem::size_of::<Context>(),
-        ObjectShapeId::Context,
-        true,
+        layout::<Context>(ObjectShapeId::Context, true),
         &methods,
         &[],
         |_, dict| put(py, dict, "__hash__", none()),
@@ -288,9 +289,7 @@ pub(crate) fn variable_class(py: &PyToken<'_>) -> u64 {
         py,
         &runtime_state(py).types.context_var_class,
         "ContextVar",
-        std::mem::size_of::<Variable>(),
-        ObjectShapeId::ContextVar,
-        false,
+        layout::<Variable>(ObjectShapeId::ContextVar, false),
         &methods,
         &[("name", 1)],
         |_, _| true,
@@ -337,9 +336,7 @@ pub(crate) fn token_class(py: &PyToken<'_>) -> u64 {
         py,
         &runtime_state(py).types.context_token_class,
         "Token",
-        std::mem::size_of::<Token>(),
-        ObjectShapeId::ContextToken,
-        false,
+        layout::<Token>(ObjectShapeId::ContextToken, false),
         &methods[..count],
         &[("var", 2), ("old_value", 3)],
         |_, dict| {
@@ -371,9 +368,7 @@ fn missing(py: &PyToken<'_>) -> u64 {
             py,
             &state.context_missing_class,
             "Token.MISSING",
-            0,
-            ObjectShapeId::Plain,
-            false,
+            layout::<()>(ObjectShapeId::Plain, false),
             &methods,
             &[],
             |_, _| true,
@@ -415,9 +410,7 @@ fn iterator_class(py: &PyToken<'_>, mode: u64) -> u64 {
         py,
         slot,
         &format!("{name}_iterator"),
-        std::mem::size_of::<ContextIterator>(),
-        ObjectShapeId::ContextIterator,
-        false,
+        layout::<ContextIterator>(ObjectShapeId::ContextIterator, false),
         &methods,
         &[],
         |_, _| true,

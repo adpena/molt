@@ -92,7 +92,7 @@ fn numeric_identity_admission_preserves_origins_and_failed_sources() {
         hooks.int_from_u64 = unexpected_u64;
         hooks.int_from_bytes = from_bytes;
         hooks.try_mark_abi_view = mark;
-        support::prepare_runtime_class_abi_test_thread(hooks);
+        let _abi_test = support::enter_runtime_class_abi_test(hooks);
         let initial_live = support::fake_runtime::live_numeric_count();
 
         let pending_source = numbers::PyLong_FromLong(1000);

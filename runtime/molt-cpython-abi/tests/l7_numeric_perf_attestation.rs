@@ -255,7 +255,7 @@ unsafe extern "C" fn counted_mark(bits: u64, present: i32) -> i32 {
     }
 }
 
-fn initialize_hooks() {
+fn initialize_hooks() -> support::AbiTestThreadStateTransaction {
     molt_cpython_abi_test_support::link();
     let mut hooks = STUB_HOOKS;
     hooks.try_mark_abi_view = counted_mark;
@@ -274,7 +274,7 @@ fn initialize_hooks() {
     hooks.classify_heap = Some(counted_classify);
     hooks.inc_ref = counted_inc_ref;
     hooks.dec_ref = counted_dec_ref;
-    support::prepare_abi_test_thread(hooks);
+    support::enter_abi_test(hooks)
 }
 
 #[derive(Clone, Copy)]
@@ -874,7 +874,7 @@ fn enforce_allocation_free_cases(cases: &[CaseResult]) {
 
 #[test]
 fn compiled_prebuilt_direct_refcount_retains_identity_until_zero() {
-    initialize_hooks();
+    let _abi_test = initialize_hooks();
     let backing = Box::new(0u64);
     let bits = MoltObject::from_ptr((&raw const *backing).cast_mut().cast::<u8>()).bits();
     prebuilt_direct_refcount_lifetime_witness(bits);
@@ -889,7 +889,7 @@ fn l7_numeric_performance_attestation() {
         "L7 numeric attestation is release-only"
     );
     let affinity_mask = enforce_current_thread_affinity(&required_env("MOLT_L7_AFFINITY_MASK"));
-    initialize_hooks();
+    let _abi_test = initialize_hooks();
 
     let mut cases = Vec::new();
     for digits in [25, 37, 256, 4096, 4300] {

@@ -184,3 +184,76 @@ fn test_range_builtin_one_arg() {
     let r = molt_runtime::molt_range_builtin(int(5), missing(), missing());
     assert_ne!(r, none()); // range(5) should succeed
 }
+
+// Resolve through exact C names, not Rust reexports. These references make the
+// test binary's linker reject a missing ABI symbol without running a compressor.
+// Run this owner with and without stdlib_compression; no nested native build.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_raw_compression_c_exports_are_linkable() {
+    unsafe extern "C" {
+        fn molt_deflate_raw(data: u64, level: u64) -> u64;
+        fn molt_inflate_raw(data: u64) -> u64;
+    }
+    let deflate = std::hint::black_box(molt_deflate_raw as unsafe extern "C" fn(u64, u64) -> u64);
+    let inflate = std::hint::black_box(molt_inflate_raw as unsafe extern "C" fn(u64) -> u64);
+    assert_ne!(deflate as usize, 0);
+    assert_ne!(inflate as usize, 0);
+    #[cfg(feature = "stdlib_compression")]
+    {
+        assert_eq!(
+            deflate as usize,
+            molt_runtime::molt_deflate_raw as *const () as usize
+        );
+        assert_eq!(
+            inflate as usize,
+            molt_runtime::molt_inflate_raw as *const () as usize
+        );
+    }
+}
+
+#[cfg(all(feature = "stdlib_compression", not(target_arch = "wasm32")))]
+#[test]
+fn test_native_lzma_c_exports_resolve_to_extracted_owners() {
+    macro_rules! check_export {
+        ($name:ident($($arg:ty),*)) => {{
+            unsafe extern "C" {
+                fn $name($(_: $arg),*) -> u64;
+            }
+            let exported: unsafe extern "C" fn($($arg),*) -> u64 = $name;
+            let implementation: extern "C" fn($($arg),*) -> u64 = molt_runtime::$name;
+            assert_eq!(
+                std::hint::black_box(exported) as usize,
+                implementation as usize,
+                stringify!($name),
+            );
+        }};
+    }
+    check_export!(molt_lzma_format_auto());
+    check_export!(molt_lzma_format_xz());
+    check_export!(molt_lzma_format_alone());
+    check_export!(molt_lzma_format_raw());
+    check_export!(molt_lzma_check_none());
+    check_export!(molt_lzma_check_crc32());
+    check_export!(molt_lzma_check_crc64());
+    check_export!(molt_lzma_check_sha256());
+    check_export!(molt_lzma_preset_default());
+    check_export!(molt_lzma_preset_extreme());
+    check_export!(molt_lzma_compress(u64, u64, u64, u64));
+    check_export!(molt_lzma_decompress(u64, u64, u64));
+    check_export!(molt_lzma_compressor_new(u64, u64, u64));
+    check_export!(molt_lzma_compressor_compress(u64, u64));
+    check_export!(molt_lzma_compressor_flush(u64));
+    check_export!(molt_lzma_compressor_drop(u64));
+    check_export!(molt_lzma_decompressor_new(u64, u64));
+    check_export!(molt_lzma_decompressor_decompress(u64, u64, u64));
+    check_export!(molt_lzma_decompressor_eof(u64));
+    check_export!(molt_lzma_decompressor_needs_input(u64));
+    check_export!(molt_lzma_decompressor_unused_data(u64));
+    check_export!(molt_lzma_decompressor_drop(u64));
+    check_export!(molt_lzma_file_open(u64, u64, u64, u64, u64));
+    check_export!(molt_lzma_file_read(u64, u64));
+    check_export!(molt_lzma_file_write(u64, u64));
+    check_export!(molt_lzma_file_close(u64));
+    check_export!(molt_lzma_file_drop(u64));
+}

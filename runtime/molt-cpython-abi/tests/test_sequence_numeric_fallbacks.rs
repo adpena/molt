@@ -107,18 +107,19 @@ impl ForeignSequence {
     }
 }
 
-fn reset() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+fn reset() -> support::AbiTestThreadStateTransaction {
+    let transaction = support::enter_abi_test(support::stub_runtime_hooks());
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     unsafe { errors::PyErr_Clear() };
     LAST_SLOT.store(0, Ordering::SeqCst);
     LAST_COUNT.store(isize::MIN, Ordering::SeqCst);
+    transaction
 }
 
 #[test]
 fn concat_and_repeat_use_the_shared_numeric_slot_authority() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    reset();
+    let _abi_test = reset();
     let mut left = ForeignSequence::new();
     let mut right = ForeignSequence::new();
 
@@ -136,7 +137,7 @@ fn concat_and_repeat_use_the_shared_numeric_slot_authority() {
 #[test]
 fn inplace_sequence_operations_prefer_the_shared_inplace_numeric_slots() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    reset();
+    let _abi_test = reset();
     let mut left = ForeignSequence::new();
     let mut right = ForeignSequence::new();
 
@@ -210,7 +211,7 @@ unsafe extern "C" fn failing_numeric(_a: *mut PyObject, _b: *mut PyObject) -> *m
 fn number_then_sequence_and_sequence_first_apis_have_distinct_order() {
     use molt_cpython_abi::api::abstract_number as number;
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    reset();
+    let _abi_test = reset();
     let mut left = ForeignSequence::new();
     let mut right = ForeignSequence::new();
     left._number.nb_add = declining_numeric as *mut c_void;
@@ -258,7 +259,7 @@ fn number_then_sequence_and_sequence_first_apis_have_distinct_order() {
 fn number_repeat_converts_index_once_and_never_mutates_right_sequence() {
     use molt_cpython_abi::api::abstract_number as number;
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    reset();
+    let _abi_test = reset();
     let mut sequence = ForeignSequence::new();
     sequence._number.nb_multiply = declining_numeric as *mut c_void;
     sequence._number.nb_inplace_multiply = declining_inplace as *mut c_void;
@@ -291,7 +292,7 @@ fn number_repeat_converts_index_once_and_never_mutates_right_sequence() {
 fn inplace_repeat_does_not_cross_an_existing_empty_left_sequence_table() {
     use molt_cpython_abi::api::abstract_number as number;
     let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-    reset();
+    let _abi_test = reset();
     let mut left = ForeignSequence::new();
     let mut right = ForeignSequence::new();
     left._number.nb_multiply = declining_numeric as *mut c_void;

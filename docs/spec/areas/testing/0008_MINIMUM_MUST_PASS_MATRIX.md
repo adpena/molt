@@ -102,9 +102,15 @@ Use these lanes for import-system, package-entry, and bootstrap regressions. The
 
 Configured Python kernels currently have three hardware descriptor consumers:
 native Metal, native WebGPU, and browser-host WebGPU. Explicit CUDA/HIP kernel
-requests fail before dispatch; their tensor/device facilities do not establish
-this separate descriptor capability. Auto selection may use compiled Molt CPU
-execution. This is runtime execution in the produced binary, never host Python.
+requests fail with a backend-specific `RuntimeError` before dispatch; their
+tensor/device facilities do not establish this separate descriptor capability.
+The shared launch fixture checks geometry-error precedence, no kernel-body
+entry, unchanged output and restored geometry for those refusals. Auto selection
+may use compiled Molt CPU execution; it is not a retry after a selected backend
+fails. This is runtime execution in the produced binary, never host Python.
+Sequential/reference barrier controls require an explicit execution-context
+`RuntimeError`, with no continuation or later logical-thread execution. Hardware
+collective emission and actual device qualification remain separate controls.
 
 GPU completion qualification also requires the existing device-owner tests
 `webgpu_device_tests::actual_device_errors_precede_readback_publication` and

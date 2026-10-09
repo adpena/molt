@@ -2983,6 +2983,103 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "stdlib_itertools")]
+    fn groupby_borrowed_grouper_identity_is_not_shared_dictionary_ownership() {
+        use crate::object::weakref::WeakBorrow;
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for keep_grouper in [true, false] {
+                let value = iterator_owned_list(py, &[7]);
+                let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &[value, value])).bits();
+                let parent = crate::molt_itertools_groupby(sequence, MoltObject::none().bits());
+                let pair = crate::molt_itertools_groupby_next(parent);
+                assert!(!crate::exception_pending(py));
+                let pair_ptr = obj_from_bits(pair).as_ptr().unwrap();
+                assert_eq!(
+                    unsafe { crate::object::seq_access::item(pair_ptr, 0) },
+                    Some(value)
+                );
+                let grouper = unsafe { crate::object::seq_access::item(pair_ptr, 1) }.unwrap();
+                let pointer = obj_from_bits(parent).as_ptr().unwrap();
+                let parent_watch = WeakBorrow::new(py, parent).unwrap();
+                let grouper_watch = WeakBorrow::new(py, grouper).unwrap();
+                let value_watch = WeakBorrow::new(py, value).unwrap();
+                unsafe {
+                    // Five owned values, one state word, and one borrowed
+                    // identity precede backing owned by the common lifecycle.
+                    let dictionary = crate::object::instance_dict_bits_ptr(pointer);
+                    assert!(!dictionary.is_null());
+                    assert!(
+                        dictionary as usize >= pointer as usize + 7 * std::mem::size_of::<u64>()
+                    );
+                    assert_eq!(*dictionary, 0);
+                    let class = obj_from_bits(crate::object::object_class_bits(pointer))
+                        .as_ptr()
+                        .unwrap();
+                    assert!(
+                        crate::object::layout::class_cached_layout_size(class).unwrap()
+                            >= 8 * std::mem::size_of::<u64>()
+                    );
+                    let mut edges = Vec::new();
+                    crate::object::heap_lifecycle::visit_owned_values(py, pointer, &mut |bits| {
+                        edges.push(bits)
+                    });
+                    assert!(
+                        !edges.contains(&grouper),
+                        "active grouper is a borrowed identity"
+                    );
+                }
+                if keep_grouper {
+                    inc_ref_bits(py, grouper);
+                }
+                dec_ref_bits(py, pair);
+                if keep_grouper {
+                    dec_ref_bits(py, parent);
+                } else {
+                    assert!(grouper_watch.upgrade_owned().is_none());
+                }
+                dec_ref_bits(py, sequence);
+                dec_ref_bits(py, value);
+                unsafe { crate::object::gc::collect_cycles(py) };
+                for watch in [&parent_watch, &value_watch] {
+                    let retained = watch
+                        .upgrade_owned()
+                        .expect("remaining external owner retains the group");
+                    dec_ref_bits(py, retained);
+                }
+                if keep_grouper {
+                    let retained = grouper_watch
+                        .upgrade_owned()
+                        .expect("caller still owns the grouper");
+                    dec_ref_bits(py, retained);
+                    for _ in 0..2 {
+                        let item = crate::molt_itertools_groupby_iter_next(grouper);
+                        assert!(!crate::exception_pending(py));
+                        assert_eq!(item, value);
+                        iterator_owned_assert_list(item, &[7]);
+                        dec_ref_bits(py, item);
+                    }
+                    iterator_owned_drain(py, grouper, 0, true);
+                    dec_ref_bits(py, grouper);
+                } else {
+                    // Parent traversal must not retain or dereference the
+                    // former grouper's stale identity after its owner dies.
+                    unsafe {
+                        assert_eq!(*crate::object::instance_dict_bits_ptr(pointer), 0);
+                    }
+                    iterator_owned_drain(py, parent, 0, true);
+                    dec_ref_bits(py, parent);
+                }
+                unsafe { crate::object::gc::collect_cycles(py) };
+                assert!(parent_watch.upgrade_owned().is_none());
+                assert!(grouper_watch.upgrade_owned().is_none());
+                assert!(value_watch.upgrade_owned().is_none());
+                assert!(!crate::exception_pending(py));
+            }
+        });
+    }
+
+    #[test]
     fn groupby_owned_keys_groups_and_values_survive_parent_advancement() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {

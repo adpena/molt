@@ -77,7 +77,7 @@ _COMMANDS = CommandExecutor.for_file(__file__)
 
 CANDIDATE_SCHEMA = "molt.release-candidate.v5"
 CONSUMER_EXPECTED_OUTPUT = "MOLT_RELEASE_CONSUMER_OK"
-CONSUMER_SCHEMA = "molt.release-consumer-proof.v6"
+CONSUMER_SCHEMA = "molt.release-consumer-proof.v7"
 # The installed guest matrix for every declared Python coordinate, in receipt
 # order: each shipped target with each program profile.
 CONSUMER_GUEST_CELLS = (
@@ -100,6 +100,7 @@ _CONSUMER_CELL_FIELDS = frozenset(
         "compiler_sha256",
         "compiler_fingerprint",
         "artifact",
+        "manifest",
     }
 )
 
@@ -162,17 +163,12 @@ def consumer_guest_command(
 
 
 def consumer_command_roles() -> tuple[str, ...]:
-    """Installed setup, every guest cell, then native reruns after uninstall."""
+    """Installed setup and cells; sealed post-uninstall replay has its own evidence."""
     roles = ["environment", "cli_setup", "cli_help", "worker_help"]
     for target, profile in CONSUMER_GUEST_CELLS:
         if target == "native":
             roles.append(f"build_native_{profile}")
         roles.append(f"run_{target}_{profile}")
-    roles.extend(
-        f"standalone_native_{profile}"
-        for target, profile in CONSUMER_GUEST_CELLS
-        if target == "native"
-    )
     return tuple(roles)
 
 
@@ -626,10 +622,9 @@ def _load_candidate(path: Path) -> dict[str, Any]:
 
 
 def _validate_consumer_command_records(
-    commands: object,
+    commands: object, *, roles: tuple[str, ...]
 ) -> dict[str, dict[str, Any]]:
-    """Admit the exact ordered roles and typed successful command records."""
-    roles = consumer_command_roles()
+    """Admit bundle or pip roles through one typed command-record boundary."""
     if not isinstance(commands, list) or len(commands) != len(roles):
         raise ValueError("release consumer command evidence is incomplete")
     by_role: dict[str, dict[str, Any]] = {}
@@ -772,6 +767,24 @@ def _validate_consumer_guest_cells(
             or artifact["size"] <= 0
         ):
             raise ValueError(f"release consumer {name} cell is invalid")
+        manifest = cell["manifest"]
+        if target == "native":
+            if manifest is not None:
+                raise ValueError(
+                    f"release consumer {name} must not claim a WASM execution manifest"
+                )
+        elif (
+            not isinstance(manifest, dict)
+            or set(manifest) != {"path", "filename", "sha256", "size"}
+            or manifest["filename"] != "manifest.json"
+            or not isinstance(manifest["path"], str)
+            or path_type(manifest["path"])
+            != path_type(cell["output"]).parent / "manifest.json"
+            or not _valid_sha256(manifest["sha256"])
+            or type(manifest["size"]) is not int
+            or manifest["size"] <= 0
+        ):
+            raise ValueError(f"release consumer {name} manifest identity is invalid")
         command = consumer_guest_command(
             launcher,
             target=target,
@@ -784,14 +797,11 @@ def _validate_consumer_guest_cells(
         output = path_type(cell["output"])
         run = by_role[f"run_{target}_{profile}"]
         if target == "native":
-            # The requested executable runs installed and again after uninstall.
+            # The installed executable binds to the later sealed replay by bytes.
             guest = [cell["output"], *guest_argv]
-            standalone = by_role[f"standalone_native_{profile}"]
             bound = (
                 by_role[f"build_native_{profile}"]["argv"] == command
                 and run["argv"] == guest
-                and standalone["argv"] == guest
-                and standalone["stdout_sha256"] == expected_stdout
                 and path_type(artifact["path"]) == output
             )
         else:
@@ -861,7 +871,13 @@ def _validate_consumer_python_identity(
     return python["executable"]
 
 
-def validate_consumer_proof(consumer: object, candidate: dict[str, Any]) -> None:
+def validate_consumer_proof(
+    consumer: object,
+    candidate: dict[str, Any],
+    *,
+    evidence_root: Path,
+    supervisor: Path,
+) -> None:
     """Admit the exact installed Python x target x profile execution closure."""
     coordinates, policy_sha256 = consumer_python_policy()
     count = len(coordinates) * len(CONSUMER_GUEST_CELLS)
@@ -888,6 +904,7 @@ def validate_consumer_proof(consumer: object, candidate: dict[str, Any]) -> None
             "python_policy_sha256",
             "python_proofs",
             "uninstall_verified",
+            "standalone",
         }
         or consumer.get("schema") != CONSUMER_SCHEMA
         or consumer.get("candidate") != "candidate.json"
@@ -947,7 +964,9 @@ def validate_consumer_proof(consumer: object, candidate: dict[str, Any]) -> None
             proof["execution"], target=candidate["target"], reference_python=reference
         )
         interpreter_paths.add(executable)
-        commands = _validate_consumer_command_records(proof["commands"])
+        commands = _validate_consumer_command_records(
+            proof["commands"], roles=consumer_command_roles()
+        )
         launcher = _validate_consumer_command_bindings(
             commands,
             windows=windows,
@@ -981,6 +1000,18 @@ def validate_consumer_proof(consumer: object, candidate: dict[str, Any]) -> None
             "and build into separate output directories"
         )
     _validate_consumer_pip_proof(consumer["pip_proof"], candidate)
+    from . import consumer_replay
+
+    consumer_replay.validate(
+        consumer["standalone"],
+        evidence_root=evidence_root,
+        candidate=candidate,
+        proofs=proofs,
+        pip_proof=consumer["pip_proof"],
+        supervisor=supervisor,
+        argv=CONSUMER_GUEST_ARGV,
+        expected_stdout=CONSUMER_EXPECTED_STDOUT,
+    )
 
 
 _CONSUMER_PIP_ROLES = (
@@ -1023,32 +1054,9 @@ def _validate_consumer_pip_proof(proof: object, candidate: dict[str, Any]) -> No
         raise ValueError(
             "release consumer pip proof is not bound to the candidate wheel"
         )
-    commands = proof["commands"]
-    fields = {
-        "role",
-        "argv",
-        "returncode",
-        "duration_seconds",
-        "stdout_sha256",
-        "stderr_sha256",
-    }
-    if (
-        not isinstance(commands, list)
-        or [c.get("role") if isinstance(c, dict) else None for c in commands]
-        != list(_CONSUMER_PIP_ROLES)
-        or any(
-            set(command) != fields
-            or type(command["returncode"]) is not int
-            or command["returncode"] != 0
-            or not isinstance(command["argv"], list)
-            or not all(isinstance(item, str) and item for item in command["argv"])
-            or not _valid_sha256(command["stdout_sha256"])
-            or not _valid_sha256(command["stderr_sha256"])
-            for command in commands
-        )
-    ):
-        raise ValueError("release consumer pip commands are incomplete")
-    by_role = {command["role"]: command for command in commands}
+    by_role = _validate_consumer_command_records(
+        proof["commands"], roles=_CONSUMER_PIP_ROLES
+    )
     environment = by_role["pip_environment"]["argv"]
     install = by_role["pip_install"]["argv"]
     build = by_role["pip_build_native_release"]["argv"]
@@ -1098,6 +1106,7 @@ def _admit_candidate(
     source_sha: str,
     source_date_epoch: int,
     wheel_record: dict[str, object],
+    supervisor: Path,
 ) -> list[dict[str, Any]]:
     """Bind a typed candidate and its clean-consumer proof to one release cell."""
     if candidate["version"] != version or candidate["source_sha"] != source_sha:
@@ -1122,7 +1131,11 @@ def _admit_candidate(
     consumer = read_exact(
         consumer_path, max_bytes=1024 * 1024, label="release consumer proof"
     )
-    validate_consumer_proof(consumer, candidate)
+    from . import consumer_replay
+
+    validate_consumer_proof(
+        consumer, candidate, evidence_root=candidate_dir, supervisor=supervisor
+    )
     artifacts = candidate["artifacts"]
     if {record["name"] for record in artifacts} != {
         "molt",
@@ -1135,7 +1148,12 @@ def _admit_candidate(
     for record in artifacts:
         if (record["platform"], record["arch"]) != (target.platform, target.arch):
             raise ValueError(f"release candidate artifact target differs: {target.id}")
-    return artifacts
+    return [
+        *artifacts,
+        consumer_replay.admit_archive(
+            candidate_dir=candidate_dir, candidate=candidate, supervisor=supervisor
+        ),
+    ]
 
 
 def _copy_verified_release_file(
@@ -1326,6 +1344,9 @@ def _stage_candidate_assets(
     validate_artifact_record(wheel_record, version=version)
     _copy_verified_release_file(wheel, output / wheel.name, wheel_record)
     seen_names = {wheel.name}
+    from . import consumer_replay
+
+    supervisor, _generation = consumer_replay.provision_verifier()
     for candidate_dir, candidate in candidates_by_id.values():
         artifacts = _admit_candidate(
             candidate,
@@ -1334,6 +1355,7 @@ def _stage_candidate_assets(
             source_sha=source_sha,
             source_date_epoch=source_date_epoch,
             wheel_record=wheel_record,
+            supervisor=supervisor,
         )
         for record in artifacts:
             filename = record["filename"]

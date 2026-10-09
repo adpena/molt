@@ -17,6 +17,7 @@ from typing import Any
 
 from tools.command_execution import CommandExecutor
 
+from . import consumer_replay
 from .archive import extract_zip_strict
 from .build_bundle import RELEASE_BUNDLE_ARCHIVE_POLICY
 from .release_authority import (
@@ -653,6 +654,17 @@ def _verify_python_coordinate(
                 "compiler_sha256": compiler_sha256,
                 "compiler_fingerprint": fingerprint,
                 "artifact": artifact,
+                "manifest": (
+                    {
+                        "path": str(wasm_runtime_manifest_path(output)),
+                        **stable_regular_file_content_identity(
+                            wasm_runtime_manifest_path(output),
+                            label="installed consumer execution manifest",
+                        ),
+                    }
+                    if guest_target == "wasm"
+                    else None
+                ),
             }
         )
     if (
@@ -680,15 +692,18 @@ def _verify_python_coordinate(
     }
 
 
-def _uninstall_and_replay_native(
+def _uninstall_and_replay(
     *,
     root: Path,
     bundle_root: Path,
     worker_root: Path,
     coordinates: tuple[tuple[str, str], ...],
     proofs: list[dict[str, Any]],
-) -> None:
-    """Remove every installed owner before replaying the exact native products."""
+    evidence: Path,
+    replay: dict[str, Any],
+    supervisor: Path,
+) -> dict[str, object]:
+    """Remove installed owners, then execute exact products in the sealed root."""
     durable_remove_path(bundle_root, retirement_scope="consumer-uninstall")
     durable_remove_path(worker_root, retirement_scope="consumer-uninstall")
     for minor, _ in coordinates:
@@ -706,39 +721,39 @@ def _uninstall_and_replay_native(
         raise RuntimeError(
             "Molt or worker remained installed after portable bundle removal"
         )
-    for (minor, _), proof in zip(coordinates, proofs, strict=True):
-        coordinate_root = root / f"python-{minor}"
-        standalone_env = _consumer_environment(coordinate_root)
+    for proof in proofs:
         for cell in proof["cells"]:
-            if cell["target"] != "native":
-                continue
-            executable = Path(cell["output"])
-            identity = executable_content_identity(
-                executable, label="release consumer standalone executable"
+            identity = stable_regular_file_content_identity(
+                Path(cell["artifact"]["path"]), label="release standalone artifact"
             )
             if (identity["sha256"], identity["size"]) != (
                 cell["artifact"]["sha256"],
                 cell["artifact"]["size"],
             ):
-                raise RuntimeError(
-                    f"{minor}/native/{cell['profile']}: guest executable "
-                    "changed before its standalone run"
-                )
-            proof["commands"].append(
-                _run(
-                    [str(executable), *CONSUMER_GUEST_ARGV],
-                    cwd=coordinate_root / "project",
-                    env=standalone_env,
-                    timeout=60,
-                    role=f"standalone_native_{cell['profile']}",
-                    expected_stdout=CONSUMER_EXPECTED_STDOUT,
-                )
-            )
+                raise RuntimeError("guest artifact changed before its standalone run")
+    return consumer_replay.execute(
+        evidence=evidence,
+        replay=replay,
+        supervisor=supervisor,
+        expected_stdout=CONSUMER_EXPECTED_STDOUT,
+    )
 
 
-def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
+def verify(
+    candidate_dir: Path, receipt: Path, *, archive_cache: Path | None = None
+) -> dict[str, object]:
+    if receipt != candidate_dir / "consumer-verification.json":
+        raise ValueError("consumer receipt must be beside its candidate")
     candidate_path = candidate_dir / "candidate.json"
     candidate = _load_candidate(candidate_path)
+    if (
+        receipt.exists()
+        or (receipt.parent / "consumer-evidence").exists()
+        or (candidate_dir / consumer_replay.archive_filename(candidate)).exists()
+    ):
+        raise ValueError(
+            "consumer evidence destination already exists; use a fresh candidate output"
+        )
     if current_host_coordinate() != (
         candidate["target"]["platform"],
         candidate["target"]["arch"],
@@ -846,6 +861,19 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
             policy_sha256,
         ):
             raise ValueError("Bundle Python policy differs from release authority")
+        if archive_cache is None:
+            raise ValueError(
+                "standalone replay requires --execution-archive-cache with the pinned OS/Node archives; no automatic fetch"
+            )
+        if candidate["target"]["platform"] != "linux":
+            raise ValueError(
+                "standalone replay has no filesystem adapter for this target; host replay is forbidden"
+            )
+        # Source/provenance admission precedes consumer work and any guest launch.
+        consumer_replay.execution_root.support_payloads(
+            archive_cache, arch=candidate["target"]["arch"]
+        )
+        supervisor, generation = consumer_replay.provision_verifier()
         proofs = [
             _verify_python_coordinate(
                 root=root / f"python-{minor}",
@@ -874,12 +902,27 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
             wheel_tag=wheel_tag,
             evidence_dir=evidence_dir,
         )
-        _uninstall_and_replay_native(
+        standalone_evidence = receipt.parent / "consumer-evidence"
+        replay = consumer_replay.prepare(
+            evidence=standalone_evidence,
+            candidate=candidate,
+            proofs=proofs,
+            pip_proof=pip_proof,
+            bundle_source=bundle_root / "source",
+            archive_cache=archive_cache,
+            supervisor=supervisor,
+            generation=generation,
+            argv=CONSUMER_GUEST_ARGV,
+        )
+        standalone = _uninstall_and_replay(
             root=root,
             bundle_root=bundle_root,
             worker_root=worker_root,
             coordinates=coordinates,
             proofs=proofs,
+            evidence=standalone_evidence,
+            replay=replay,
+            supervisor=supervisor,
         )
 
         count = len(coordinates) * len(CONSUMER_GUEST_CELLS)
@@ -903,9 +946,15 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
             "python_policy_sha256": policy_sha256,
             "python_proofs": proofs,
             "uninstall_verified": True,
+            "standalone": standalone,
         }
-        validate_consumer_proof(payload, candidate)
+        validate_consumer_proof(
+            payload, candidate, evidence_root=receipt.parent, supervisor=supervisor
+        )
         write_json(receipt, payload)
+        consumer_replay.publish_archive(
+            candidate_dir=candidate_dir, receipt=receipt, candidate=candidate
+        )
         return payload
 
 
@@ -913,8 +962,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--execution-archive-cache", type=Path, required=True)
     args = parser.parse_args()
-    payload = verify(args.candidate, args.receipt)
+    payload = verify(
+        args.candidate, args.receipt, archive_cache=args.execution_archive_cache
+    )
     print(json.dumps(payload, sort_keys=True))
 
 

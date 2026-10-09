@@ -254,6 +254,26 @@ def test_release_candidate_admits_both_installed_guest_targets() -> None:
         if "tools.release.verify_consumer" in str(step.get("run", ""))
     )
     assert steps.index(setups[0]) < consumer_index
+    provision_index = next(
+        index
+        for index, step in enumerate(steps)
+        if "tools.release.provision_execution_archives" in str(step.get("run", ""))
+    )
+    build_index = next(
+        index
+        for index, step in enumerate(steps)
+        if "tools.release.build_compiler" in str(step.get("run", ""))
+    )
+    assert steps.index(setups[0]) < provision_index < build_index < consumer_index
+    provision = steps[provision_index]
+    consumer = steps[consumer_index]
+    assert "if" not in provision and not provision.get("continue-on-error", False)
+    assert '--target "${{ matrix.id }}"' in provision["run"]
+    cache = (
+        '--execution-archive-cache "${{ runner.temp }}/molt-release-execution-archives"'
+    )
+    assert cache in provision["run"] and cache in consumer["run"]
+    assert "tools/guarded_exec.py --prefix MOLT_RELEASE --" in provision["run"]
 
 
 @pytest.mark.parametrize(
@@ -497,6 +517,7 @@ def test_ci_command_diagnostics_survive_missing_final_receipts(family: str) -> N
         assert paths == [
             "proof-receipts/evidence/cargo-test-truth-runs/",
             "proof-receipts/evidence/runtime-gate-runs/",
+            "proof-receipts/evidence/runtime-extension-admission/",
             "${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}",
         ]
     else:
@@ -1332,6 +1353,38 @@ def test_platform_portability_is_one_generated_cross_os_authority() -> None:
         "macos-arm64-py312-queue-portability",
         "windows-x86_64-py312-queue-portability",
     }
+
+
+def test_shell_completion_qualification_requires_actual_shells_in_existing_linux_job():
+    plan = tomllib.loads(_read("tools/proof_plan.toml"))
+    command = next(
+        row for row in plan["command"] if row["id"] == "portability.completion.linux"
+    )
+    assert command["family"] == "platform_portability"
+    assert command["cell"] == "linux-x86_64-py312-queue-portability"
+    assert set(command["tiers"]) == {"pr", "main"}
+    assert {"bash", "fish", "zsh"} <= set(command["toolchains"])
+    assert command["argv"][-1] == (
+        "tests/cli/test_cli_smoke.py::test_cli_completion_uses_parser_commands_flags_and_positional_semantics"
+    )
+    policies = {row["name"]: row for row in plan["toolchain_policy"]}
+    for shell in ("bash", "fish", "zsh"):
+        assert policies[shell]["executable"] == shell
+        assert policies[shell]["version_args"] == ["--version"]
+    steps = yaml.safe_load(_read(".github/workflows/ci.yml"))["jobs"][
+        "platform-portability"
+    ]["steps"]
+    setup = next(
+        row for row in steps if row.get("name") == "Install completion test shells"
+    )
+    execute = next(
+        row
+        for row in steps
+        if row.get("name") == "Execute selected platform portability partition"
+    )
+    assert setup["if"] == "matrix.cell == 'linux-x86_64-py312-queue-portability'"
+    assert "apt-get install --no-install-recommends --yes fish zsh" in setup["run"]
+    assert steps.index(setup) < steps.index(execute)
 
 
 def test_python_unit_runs_one_receipted_job_per_generated_cell() -> None:

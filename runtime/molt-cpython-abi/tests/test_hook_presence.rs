@@ -35,7 +35,7 @@ fn installed_stub_equivalent_producers_never_select_physical_fallback() {
     hooks.register_c_function = Some(reject_cfunction);
     hooks.method_new = Some(reject_method);
     hooks.numeric_identity_new = Some(reject_numeric);
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    let _abi_test = support::enter_runtime_class_abi_test(hooks);
     unsafe {
         let mut definition = PyMethodDef {
             ml_name: c"rejected".as_ptr(),

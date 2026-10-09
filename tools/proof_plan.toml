@@ -417,6 +417,33 @@ setup_value = "3.12.15"
 setup_evidence = [".python-version::3.12.15", ".github/actions/setup-project/action.yml::bash .github/actions/setup-project/provision-python.sh"]
 
 [[toolchain_policy]]
+name = "bash"
+executable = "bash"
+version_args = ["--version"]
+# Completion probes exercise the hosted shells; capture their exact images and versions.
+setup_value = "Ubuntu hosted shell package"
+version_pattern = '^GNU bash, version [0-9]+\.[0-9]+\.'
+setup_evidence = [".github/workflows/ci.yml::Install completion test shells"]
+
+[[toolchain_policy]]
+name = "fish"
+executable = "fish"
+version_args = ["--version"]
+# Completion probes exercise the hosted shells; capture their exact images and versions.
+setup_value = "Ubuntu hosted shell package"
+version_pattern = '^fish, version [0-9]+\.[0-9]+\.'
+setup_evidence = [".github/workflows/ci.yml::Install completion test shells"]
+
+[[toolchain_policy]]
+name = "zsh"
+executable = "zsh"
+version_args = ["--version"]
+# Completion probes exercise the hosted shells; capture their exact images and versions.
+setup_value = "Ubuntu hosted shell package"
+version_pattern = '^zsh [0-9]+\.[0-9]+'
+setup_evidence = [".github/workflows/ci.yml::Install completion test shells"]
+
+[[toolchain_policy]]
 name = "source-extension"
 identity_provider = "source-extension"
 version_pattern = '^molt-source-extension-toolchain-v4$'
@@ -905,7 +932,7 @@ dependencies = []
 [[ci_family]]
 name = "wasm"
 description = "WASM backend, shared runtime, linked artifact, Luau sibling, and control-flow proof."
-inputs = [".github/workflows/molt-wasm-ci.yml", ".python-version", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "runtime/**", "src/**", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/venv_exec.py", "tools/wasm_*.py", "tests/test_wasm_*.py", "tests/cli/test_native_symbol_authority.py", "tests/wasm_harness.py", "tests/wasm_linked_runner.py", "wasm/**", "examples/*.py"]
+inputs = [".github/workflows/molt-wasm-ci.yml", ".python-version", "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "runtime/**", "src/**", "tools/guarded_exec.py", "tools/harness_memory_guard.py", "tools/memory_guard.py", "tools/venv_exec.py", "tools/wasm_*.py", "tests/test_wasm_*.py", "tests/test_generate_worker.py", "tests/test_browser_asset_closure.py", "tests/cli/test_native_symbol_authority.py", "tests/wasm_harness.py", "tests/wasm_linked_runner.py", "wasm/**", "examples/*.py"]
 executor = "github-job"
 workflow = ".github/workflows/molt-wasm-ci.yml"
 job = "wasm-build"
@@ -914,7 +941,7 @@ admission_job = "wasm-validation"
 admission_needs = ["classify-changes"]
 tiers = ["pr", "main"]
 required = true
-timeout_minutes = 160
+timeout_minutes = 240
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -1054,7 +1081,7 @@ dependencies = []
 [[ci_family]]
 name = "platform_portability"
 description = "Hosted Linux, macOS, and Windows queue, process, path, and source-build custody proof, plus Rust workspace lint/compile and runtime test truth on macOS."
-inputs = [
+inputs = ["src/molt/cli/completion.py", "src/molt/cli/arg_helpers.py", "src/molt/cli/entrypoint.py", "tests/cli/test_cli_smoke.py",
   "include/molt/**",
   "tests/cli/test_c_api_headers.py",
   ".github/actions/setup-project/**",
@@ -1439,6 +1466,18 @@ cache_domain = "pytest"
 dependencies = ["nightly.verification-t3.runtime-build"]
 argv = ["uv", "run", "python3", "-m", "pytest", "tests/model_based", "-x", "-q"]
 toolchains = ["python", "uv"]
+
+[[command]]
+id = "portability.completion.linux"
+family = "platform_portability"
+cell = "linux-x86_64-py312-queue-portability"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 120
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-q", "tests/cli/test_cli_smoke.py::test_cli_completion_uses_parser_commands_flags_and_positional_semantics"]
+toolchains = ["python", "uv", "bash", "fish", "zsh"]
 
 # The three queue cells share one argv. `-n auto` takes its worker count from
 # PYTEST_XDIST_AUTO_NUM_WORKERS, which the CI resource plan sizes per runner.
@@ -1862,7 +1901,7 @@ resource_class = "repository-policy"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/tools/test_release_supply_chain.py", "tests/tools/test_release_matrix_acceptance.py", "tests/tools/test_release_matrix_consumer.py", "tests/tools/test_release_archive.py", "tests/tools/test_release_remote.py", "tests/tools/test_provision_wasi_sdk.py"]
+argv = ["uv", "run", "python3", "-m", "pytest", "-q", "tests/tools/test_release_supply_chain.py", "tests/tools/test_release_sealed_replay.py", "tests/tools/test_release_matrix_acceptance.py", "tests/tools/test_release_matrix_consumer.py", "tests/tools/test_release_archive.py", "tests/tools/test_release_remote.py", "tests/tools/test_provision_wasi_sdk.py"]
 toolchains = ["python", "uv"]
 
 [[command]]
@@ -2041,6 +2080,21 @@ dependencies = ["wasm.compile.sieve", "wasm.build.host"]
 argv = ["python3", "tools/venv_exec.py", "python3", "tools/run_wasm_host.py", "--cargo-profile", "dev-fast", "--", "/tmp/molt-wasm-ci/sieve/manifest.json"]
 toolchains = ["python"]
 
+# Shared loader lifecycle and publication consumers execute real JavaScript
+# without compiling a runtime. Keep this Node admission separate from Cargo.
+[[command]]
+id = "wasm.test.startup-lifecycle"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "python-tests"
+timeout_seconds = 120
+timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "pytest"
+dependencies = []
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_startup_failures.py", "tests/test_generate_worker.py", "tests/test_browser_asset_closure.py", "tests/test_wasm_reserved_callable_arity.py"]
+toolchains = ["python", "uv", "node"]
+
 [[command]]
 id = "wasm.test.linker-admission"
 family = "wasm"
@@ -2073,17 +2127,22 @@ toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-ar", "llvm-nm", "
 id = "wasm.integration.split-runtime"
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
-tiers = ["main"]
+tiers = ["pr", "main"]
 resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.split-runtime-release"]
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts::test_repeated_build_preserves_complete_generation_and_executes", "tests/test_browser_vfs.py"]
+dependencies = ["wasm.build.backend", "wasm.build.split-runtime-release"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts", "tests/test_wasm_split_runtime.py::TestWorkerJsContent", "tests/test_wasm_split_runtime.py::TestManifestJson", "tests/test_wasm_split_runtime.py::TestRuntimeCacheability", "tests/test_browser_vfs.py"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
+# Each isolated application may start cold. Keep its own existing cold bound
+# and receipt; a sibling timeout must not consume its execution window.
+# These Node consumers do not precompile with the native WASM host. GPU/tinygrad
+# imports select their exact runtime feature generation inside the cold build;
+# the micro prebuild cannot supply it. AttributeError reuses the dev micro pair.
 [[command]]
-id = "wasm.integration.host-exports"
+id = "wasm.integration.host-exports.gpu-kernel"
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
@@ -2091,9 +2150,61 @@ resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime", "wasm.build.split-runtime-release"]
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output", "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module", "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"]
-toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
+dependencies = ["wasm.build.backend"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"]
+
+[[command]]
+id = "wasm.integration.host-exports.attribute-error"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend", "wasm.build.shared-runtime"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"]
+
+[[command]]
+id = "wasm.integration.host-exports.tinygrad-dtype"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"]
+
+[[command]]
+id = "wasm.integration.host-exports.tinygrad-tensor"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"]
+
+[[command]]
+id = "wasm.integration.host-exports.tensor-row-ops"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang"]
 
 [[command]]
 id = "wasm.test.freestanding-e2e"
@@ -2403,9 +2514,11 @@ dependencies = []
 # Libtest ORs these family filters. Do not include ignored runtime GC benchmarks.
 # Public ownership/memory contracts link the ordinary pass library in a separate
 # target; its tir:: namespace keeps the same family filter and proof custody.
+# Select the raw C-symbol witness in the same compression-disabled runtime build;
+# default-truth owns feature-enabled native and the two-cell WASM artifact target.
 # Emit assertion detail immediately; a later fatal ownership check must not
 # erase the earlier mismatch diagnostics held by libtest's output capture.
-argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set", "--", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "--nocapture", "--test-threads=1"]
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set", "--", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "test_raw_compression_c_exports_are_linkable", "--nocapture", "--test-threads=1"]
 toolchains = ["cargo", "node", "wasm-ld"]
 
 [[command]]

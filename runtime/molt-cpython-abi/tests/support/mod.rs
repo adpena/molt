@@ -31,8 +31,6 @@ struct NativeGcState {
 thread_local! {
     static NATIVE_GC_NODES: RefCell<HashMap<usize, NativeGcState>> =
         RefCell::new(HashMap::new());
-    static ABI_TEST_THREAD_STATE: RefCell<Option<AbiTestThreadStateTransaction>> =
-        const { RefCell::new(None) };
 }
 
 unsafe extern "C" fn runtime_is_initialized() -> std::os::raw::c_int {
@@ -172,20 +170,36 @@ impl AbiTestThreadStateTransaction {
 
 impl Drop for AbiTestThreadStateTransaction {
     fn drop(&mut self) {
-        unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
-        // Use the production root-retirement authority while hooks and the
-        // execution attachment still exist. This does not sweep native nodes:
-        // fixture-owned leaks must still fail the unchanged ledger assertion.
-        unsafe { molt_cpython_abi::abi_types::retire_builtin_static_type_runtime_state() };
-        molt_cpython_abi::api::object::detach_runtime_execution_thread();
-        molt_cpython_abi::api::object::clear_runtime_execution_thread_state();
-        NATIVE_GC_NODES.with(|nodes| {
-            let nodes = nodes.borrow();
-            assert!(
-                nodes.is_empty(),
-                "ABI integration test leaked native GC identities: {nodes:?}"
-            );
-        });
+        let primary_failure = std::thread::panicking();
+        let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+            // Retire roots while hooks and the execution attachment still exist.
+            // This does not sweep fixture-owned nodes or forgive leaked edges.
+            unsafe { molt_cpython_abi::abi_types::retire_builtin_static_type_runtime_state() };
+            molt_cpython_abi::api::object::detach_runtime_execution_thread();
+            molt_cpython_abi::api::object::clear_runtime_execution_thread_state();
+            NATIVE_GC_NODES.with(|nodes| {
+                let nodes = nodes.borrow();
+                assert!(
+                    nodes.is_empty(),
+                    "ABI integration test leaked native GC identities: {nodes:?}"
+                );
+            });
+        }));
+        if let Err(failure) = cleanup {
+            if !primary_failure {
+                std::panic::resume_unwind(failure);
+            }
+            // Keep cleanup evidence even when the original test silences its
+            // panic hook. The original failure continues unwinding unchanged.
+            use std::io::Write;
+            let message = failure
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| failure.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string cleanup panic");
+            let _ = writeln!(std::io::stderr(), "ABI test cleanup also failed: {message}");
+        }
     }
 }
 
@@ -244,32 +258,21 @@ pub fn stub_runtime_hooks() -> RuntimeHooks {
     molt_cpython_abi::hooks::STUB_HOOKS
 }
 
-/// Enter the transaction once per test-harness thread. Rust's integration-test
-/// harness gives each running test its own native thread, so this keeps the
-/// transaction alive for the complete test and drops it before the ABI crate's
-/// TLS sentinels.
+/// Own the transaction in the test's lexical scope, before its fixture values.
+/// A cleanup assertion then belongs to that test instead of aborting the entire
+/// integration binary from a thread-local destructor.
 #[allow(dead_code)]
-pub fn prepare_abi_test_thread(hooks: RuntimeHooks) {
-    // Strict initialization order is part of the proof: ledger first, ABI TLS
-    // inside the constructor second, holder last. TLS teardown reverses that
-    // order, so the transaction drains its state while every dependency lives.
+pub fn enter_abi_test(hooks: RuntimeHooks) -> AbiTestThreadStateTransaction {
     NATIVE_GC_NODES.with(|_| {});
-    let transaction = AbiTestThreadStateTransaction::new(hooks);
-    ABI_TEST_THREAD_STATE.with(|holder| {
-        let mut slot = holder.borrow_mut();
-        assert!(
-            slot.is_none(),
-            "ABI test initialized its TLS transaction twice"
-        );
-        *slot = Some(transaction);
-    });
+    AbiTestThreadStateTransaction::new(hooks)
 }
 
 #[allow(dead_code)]
-pub fn prepare_runtime_class_abi_test_thread(mut hooks: RuntimeHooks) {
+pub fn enter_runtime_class_abi_test(mut hooks: RuntimeHooks) -> AbiTestThreadStateTransaction {
     fake_runtime::wire_class_identity(&mut hooks);
-    prepare_abi_test_thread(hooks);
+    let transaction = enter_abi_test(hooks);
     fake_runtime::prepare_class_bindings();
+    transaction
 }
 
 /// Consume the exact pending exception and render its normalized instance.

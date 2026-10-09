@@ -349,9 +349,22 @@ fn scalar_results_and_lifetime_use_single_provenance_authorities() {
     let root = repo_root();
     let numbers = std::fs::read_to_string(root.join("runtime/molt-cpython-abi/src/api/numbers.rs"))
         .expect("read numeric ABI authority");
-    assert!(
-        !numbers.contains("GLOBAL_BRIDGE.owned_handle_to_pyobj"),
-        "a public numeric result bypasses the concrete scalar carrier"
+    // Runtime numeric results enter the shared publication owner through one
+    // materializer. That owner selects NumericAllocation before publication;
+    // public numeric APIs must not introduce another direct crossing.
+    let delegation = "GLOBAL_BRIDGE.owned_handle_to_pyobj";
+    let materializer = numbers
+        .split_once("pub(crate) unsafe fn materialize_numeric_owned_handle(")
+        .expect("canonical numeric materializer")
+        .1
+        .split_once("\n}\n")
+        .expect("complete numeric materializer")
+        .0;
+    assert_eq!(materializer.matches(delegation).count(), 1);
+    assert_eq!(
+        numbers.matches(delegation).count(),
+        1,
+        "numeric results must share the canonical materializer"
     );
     assert!(!numbers.contains("PyObject_Free(op.cast())"));
     let protocol =

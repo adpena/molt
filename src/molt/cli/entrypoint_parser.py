@@ -2009,6 +2009,9 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
             "  molt install add requests            Add and persist a dependency\n"
         ),
     )
+    # This leading literal selects persistence without restricting package names.
+    # Dispatch and completion consume the same parser-owned value.
+    install_parser.set_defaults(_install_add_command="add")
     install_parser.add_argument(
         "packages",
         nargs="*",

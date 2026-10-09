@@ -54,12 +54,26 @@ unsafe extern "C" fn list_set(bits: u64, index: usize, value: u64) -> OwnedHandl
     }
 }
 unsafe extern "C" fn list_append(bits: u64, value: u64, pointer: *mut PyObject) -> i32 {
-    let index = {
+    unsafe { list_insert(bits, isize::MAX, value, pointer) }
+}
+
+unsafe extern "C" fn list_insert(
+    bits: u64,
+    index: isize,
+    value: u64,
+    pointer: *mut PyObject,
+) -> i32 {
+    let length = {
         let values = VALUES.lock().unwrap();
         match values.get(&bits).map(|entry| &entry.value) {
             Some(Value::List(items)) => items.len(),
             _ => return -1,
         }
+    };
+    let index = if index < 0 {
+        length.saturating_sub(index.unsigned_abs())
+    } else {
+        (index as usize).min(length)
     };
     let Some(prepared) = GLOBAL_BRIDGE.prepare_list_insert_from_pyobj(bits, value, pointer) else {
         return -1;
@@ -70,7 +84,7 @@ unsafe extern "C" fn list_append(bits: u64, value: u64, pointer: *mut PyObject) 
         let Value::List(items) = &mut values.get_mut(&bits).unwrap().value else {
             unreachable!()
         };
-        items.push(value);
+        items.insert(index, value);
     }
     assert!(
         unsafe { prepared.publish_insert(index) },
@@ -297,6 +311,7 @@ pub(super) fn wire(hooks: &mut RuntimeHooks) {
     hooks.list_item = list_item;
     hooks.list_set = list_set;
     hooks.list_append = list_append;
+    hooks.list_insert = list_insert;
     hooks.alloc_tuple = Some(alloc_tuple);
     hooks.tuple_len = Some(tuple_len);
     hooks.tuple_item = Some(tuple_item);

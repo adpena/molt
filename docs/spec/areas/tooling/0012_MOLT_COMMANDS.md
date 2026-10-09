@@ -324,7 +324,23 @@ Purpose: Show merged Molt config defaults and resolved build/run/test/diff setti
 ### 4.7 `molt completion`
 **Status:** Implemented (initial).
 
-Purpose: Emit shell completion scripts for bash/zsh/fish.
+Purpose: Emit shell completion scripts for bash/zsh/fish from the same parser
+instance that selected the command. Visible command trees, exact option
+spellings and declared positional/value choices have one parser authority;
+completion has no separate command inventory. The parser also owns the leading
+`install add` literal consumed by dispatch. Projection runs only for an explicit
+completion request, and the emitted script does not invoke Python per completion.
+
+Free-form value discovery, option abbreviations, short-flag clusters and inline
+`--option=value` value completion are outside this finite projection. Forwarded
+arguments and `--` stop Molt suggestions. Bash restores completed arguments
+by joining adjacent configured data word-break fragments using their original
+whitespace boundaries, while preserving shell syntax and current argument
+ownership. Matching uses the shell callback prefix before the cursor, independently
+of the full current token and later words. A current inline token distinguishes
+the option name before `=` from the value after it using Bash cursor coordinates.
+It does not evaluate input or change shared `COMP_WORDBREAKS` or locale.
+Custom word breaks inside option names are outside this projection.
 
 ---
 

@@ -105,6 +105,88 @@ def test_supervisor_policy_cannot_publish_nonfinite_json(tmp_path: Path) -> None
     assert not policy.exists()
 
 
+@pytest.mark.parametrize("rooted", [False, True])
+@pytest.mark.parametrize("changed", [None, "receipt", "policy"])
+def test_verified_result_binds_exact_receipt_and_policy_generations(
+    tmp_path, monkeypatch, rooted, changed
+):
+    # Protocol consumer test: this fixture does not attest native verification.
+    receipt_path, policy_path = tmp_path / "receipt.json", tmp_path / "policy.json"
+    original = {
+        "schema": supervisor_custody.SUPERVISOR_RECEIPT_SCHEMA,
+        "root_exit_code": 7,
+    }
+    receipt_bytes = json.dumps(original).encode()
+    policy_bytes = b'{"fixture":"original policy"}'
+    receipt_path.write_bytes(receipt_bytes)
+    policy_path.write_bytes(policy_bytes)
+    binding = {
+        "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+        "receipt_bytes": len(receipt_bytes),
+        "policy_input_sha256": hashlib.sha256(policy_bytes).hexdigest(),
+        "policy_input_bytes": len(policy_bytes),
+    }
+    commands = []
+
+    def verifier_result(command, **kwargs):
+        commands.append(command)
+        if changed == "receipt":
+            receipt_path.write_text(
+                json.dumps({**original, "root_exit_code": 0}), encoding="utf-8"
+            )
+        elif changed == "policy":
+            policy_path.write_bytes(b'{"fixture":"replaced policy"}')
+        return subprocess.CompletedProcess(command, 0, json.dumps(binding), "")
+
+    monkeypatch.setattr(
+        supervisor_custody.command_identity, "_run_captured", verifier_result
+    )
+    kwargs = dict(
+        binary=tmp_path / "fixture-verifier",
+        policy_path=policy_path,
+        receipt_path=receipt_path,
+        cwd=tmp_path,
+        env={},
+        rootfs=tmp_path if rooted else None,
+    )
+    if changed:
+        with pytest.raises(
+            ValueError, match="verified different receipt or policy bytes"
+        ):
+            supervisor_custody._validated_supervisor_receipt(**kwargs)
+    else:
+        assert supervisor_custody._validated_supervisor_receipt(**kwargs) == original
+    assert len(commands) == 1
+    assert commands[0][1] == ("verify-rooted" if rooted else "verify")
+
+
+@pytest.mark.parametrize(
+    "result", ["{}", "", '{"receipt_bytes":true,"policy_input_bytes":true}']
+)
+def test_verification_success_without_exact_input_binding_is_not_admitted(
+    tmp_path, monkeypatch, result
+):
+    receipt, policy = tmp_path / "receipt.json", tmp_path / "policy.json"
+    receipt.write_text(
+        json.dumps({"schema": supervisor_custody.SUPERVISOR_RECEIPT_SCHEMA}),
+        encoding="utf-8",
+    )
+    policy.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        supervisor_custody.command_identity,
+        "_run_captured",
+        lambda *a, **k: subprocess.CompletedProcess([], 0, result, ""),
+    )
+    with pytest.raises(ValueError, match="verification binding|verified different"):
+        supervisor_custody._validated_supervisor_receipt(
+            binary=tmp_path / "fixture-verifier",
+            policy_path=policy,
+            receipt_path=receipt,
+            cwd=tmp_path,
+            env={},
+        )
+
+
 @functools.lru_cache(maxsize=1)
 def _test_proof_supervisor_binary() -> Path:
     binary, _receipt = supervisor_generation.provision(

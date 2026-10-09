@@ -93,7 +93,7 @@ unsafe extern "C" fn mock_number_unary_op(
     unsafe { support::fake_numbers::unary(operation, bits) }
 }
 
-fn install_hooks() {
+fn install_hooks() -> support::AbiTestThreadStateTransaction {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     if BIG_U64_BITS.load(Ordering::SeqCst) == 0 {
         // These fixtures now have physical numeric payloads and real retained
@@ -124,7 +124,7 @@ fn install_hooks() {
 
     hooks.number_binary_op = mock_number_binary_op;
     hooks.number_unary_op = mock_number_unary_op;
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 fn proxy(bits: u64) -> *mut PyObject {
@@ -151,7 +151,7 @@ fn err_is(exc: *mut PyObject) -> bool {
 #[test]
 fn as_ssize_t_non_int_raises_typeerror_not_silent_minus_one() {
     let _g = TEST_LOCK.lock().unwrap();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     let f = float_obj(1.5);
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsSsize_t(f) };
@@ -177,7 +177,7 @@ fn as_ssize_t_non_int_raises_typeerror_not_silent_minus_one() {
 #[test]
 fn as_ssize_t_beyond_range_raises_overflow() {
     let _g = TEST_LOCK.lock().unwrap();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     // BIG (u64::MAX-1) exceeds isize on every host.
     let big = proxy(BIG_U64_BITS.load(Ordering::SeqCst));
@@ -195,7 +195,7 @@ fn as_ssize_t_beyond_range_raises_overflow() {
 #[test]
 fn as_long_non_int_raises_via_index_dispatch() {
     let _g = TEST_LOCK.lock().unwrap();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     let f = float_obj(2.5);
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(f) };
@@ -210,7 +210,7 @@ fn as_long_non_int_raises_via_index_dispatch() {
 #[test]
 fn as_long_beyond_c_long_raises_overflow() {
     let _g = TEST_LOCK.lock().unwrap();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     let big = proxy(BIG_U64_BITS.load(Ordering::SeqCst));
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsLong(big) };
@@ -231,7 +231,7 @@ fn as_long_beyond_c_long_raises_overflow() {
 #[test]
 fn as_int_2_pow_40_raises_overflow_everywhere() {
     let _g = TEST_LOCK.lock().unwrap();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     let big = int_obj(1 << 40); // inline int, > i32 on all hosts
     let v = unsafe { molt_cpython_abi::api::numbers::_PyLong_AsInt(big) };
@@ -260,7 +260,7 @@ fn as_int_2_pow_40_raises_overflow_everywhere() {
 #[test]
 fn as_unsigned_long_negative_raises_overflow_not_wrap() {
     let _g = TEST_LOCK.lock().unwrap();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     let neg = int_obj(-1);
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsUnsignedLong(neg) };
@@ -284,7 +284,7 @@ fn as_unsigned_long_negative_raises_overflow_not_wrap() {
 #[test]
 fn as_unsigned_long_long_contracts() {
     let _g = TEST_LOCK.lock().unwrap();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
 
     // Non-int → TypeError (strict; no __index__ per longobject.c).
@@ -317,7 +317,7 @@ fn as_unsigned_long_long_contracts() {
 #[test]
 fn as_long_long_and_overflow_returns_minus_one_not_clamp() {
     let _g = TEST_LOCK.lock().unwrap();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     let big = proxy(BIG_U64_BITS.load(Ordering::SeqCst));
     let mut overflow = 0;
@@ -344,7 +344,7 @@ fn as_long_long_and_overflow_returns_minus_one_not_clamp() {
 #[test]
 fn signed_boundaries_and_negative_overflow_match_cpython() {
     let _g = TEST_LOCK.lock().unwrap();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
 
     for (bits, value) in [
@@ -386,7 +386,7 @@ fn signed_boundaries_and_negative_overflow_match_cpython() {
 #[test]
 fn unsigned_masks_truncate_without_setting_overflow() {
     let _g = TEST_LOCK.lock().unwrap();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
 
     let negative_one = int_obj(-1);
@@ -421,7 +421,7 @@ fn unsigned_masks_truncate_without_setting_overflow() {
 #[test]
 fn as_native_bytes_reports_true_minimal_width() {
     let _g = TEST_LOCK.lock().unwrap();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     let five = int_obj(5);
     let mut buf = [0xAAu8; 8];
@@ -460,7 +460,7 @@ fn as_native_bytes_reports_true_minimal_width() {
 #[test]
 fn float_as_double_non_number_raises_typeerror_not_nan() {
     let _g = TEST_LOCK.lock().unwrap();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     let v = unsafe { molt_cpython_abi::api::numbers::PyFloat_AsDouble(&raw mut Py_None) };
     assert_eq!(
@@ -485,7 +485,7 @@ fn float_as_double_non_number_raises_typeerror_not_nan() {
 #[test]
 fn long_as_double_routes_beyond_u64_through_the_authority() {
     let _g = TEST_LOCK.lock().unwrap();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     let huge = proxy(HUGE_BITS.load(Ordering::SeqCst));
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_AsDouble(huge) };
@@ -511,7 +511,7 @@ fn long_as_double_routes_beyond_u64_through_the_authority() {
 #[test]
 fn complex_imag_as_double_non_complex_is_clean_zero() {
     let _g = TEST_LOCK.lock().unwrap();
-    install_hooks();
+    let _abi_test = install_hooks();
     clear_err();
     let nine = int_obj(9);
     let imag = unsafe { molt_cpython_abi::api::numbers::PyComplex_ImagAsDouble(nine) };
@@ -531,7 +531,7 @@ fn complex_imag_as_double_non_complex_is_clean_zero() {
 #[test]
 fn pylong_check_true_is_one_and_bignum_is_int() {
     let _g = TEST_LOCK.lock().unwrap();
-    install_hooks();
+    let _abi_test = install_hooks();
     assert_eq!(
         unsafe {
             molt_cpython_abi::api::numbers::PyLong_Check((&raw mut Py_True).cast::<PyObject>())

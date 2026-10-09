@@ -18,10 +18,10 @@ use std::ptr;
 use std::sync::Mutex;
 
 // The shared fixture supplies real string/numeric payload and edge ownership.
-fn install() {
+fn install() -> support::AbiTestThreadStateTransaction {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 unsafe fn read_str(py: *mut PyObject) -> Vec<u8> {
     let mut length = 0;
@@ -50,7 +50,7 @@ fn make_instance(ty: *mut PyTypeObject) -> *mut PyObject {
 
 #[test]
 fn issubtype_base_chain_and_object_terminal() {
-    install();
+    let _abi_test = install();
     let object = &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type;
     let mut a = new_type();
     a.tp_base = object;
@@ -93,7 +93,7 @@ fn issubtype_base_chain_and_object_terminal() {
 
 #[test]
 fn type_check_accepts_metaclass_subclass_instances() {
-    install();
+    let _abi_test = install();
     let type_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
     // A metaclass M whose base is `type`.
     let mut meta = new_type();
@@ -126,7 +126,7 @@ fn type_check_accepts_metaclass_subclass_instances() {
 
 #[test]
 fn get_name_strips_dotted_module_prefix() {
-    install();
+    let _abi_test = install();
     let mut ty = new_type();
     ty.tp_name = c"numpy.dtypes.BoolDType".as_ptr();
     let ty = leak_type(ty);
@@ -144,7 +144,7 @@ fn get_name_strips_dotted_module_prefix() {
 
 #[test]
 fn hash_of_native_int_is_its_value() {
-    install();
+    let _abi_test = install();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1234) };
     assert_eq!(
         unsafe { molt_cpython_abi::api::typeobj::PyObject_Hash(py) },
@@ -154,7 +154,7 @@ fn hash_of_native_int_is_its_value() {
 
 #[test]
 fn hash_of_unhashable_foreign_raises_typeerror() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut ty = new_type();
     ty.tp_name = c"Unhashable".as_ptr();
@@ -185,7 +185,7 @@ unsafe extern "C" fn custom_alloc(_t: *mut PyTypeObject, _n: isize) -> *mut PyOb
 
 #[test]
 fn generic_new_dispatches_custom_tp_alloc() {
-    install();
+    let _abi_test = install();
     *ALLOC_CALLED.lock().unwrap() = false;
     let mut ty = new_type();
     ty.tp_alloc = Some(custom_alloc);
@@ -219,7 +219,7 @@ fn member(type_: c_int, offset: isize) -> PyMemberDef {
 
 #[test]
 fn set_one_writes_int_member() {
-    install();
+    let _abi_test = install();
     let mut storage: [u8; 32] = [0; 32];
     let mut m = member(T_INT, 0);
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(999) };
@@ -236,7 +236,7 @@ fn set_one_writes_int_member() {
 
 #[test]
 fn set_one_bool_rejects_non_bool() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut storage: [u8; 8] = [0; 8];
     let mut m = member(T_BOOL, 0);
@@ -261,7 +261,7 @@ fn set_one_bool_rejects_non_bool() {
 
 #[test]
 fn set_one_char_requires_single_char_string() {
-    install();
+    let _abi_test = install();
     let mut storage: [u8; 8] = [0; 8];
     let mut m = member(T_CHAR, 0);
     let v = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"Q".as_ptr()) };
@@ -274,7 +274,7 @@ fn set_one_char_requires_single_char_string() {
 
 #[test]
 fn set_one_delete_numeric_is_typeerror() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut storage: [u8; 8] = [0; 8];
     let mut m = member(T_INT, 0);
@@ -323,7 +323,7 @@ unsafe fn assert_member_error(exception: *mut PyObject, message: &str) {
 
 #[test]
 fn member_relative_offset_is_rejected_before_other_admission() {
-    install_member_protocol();
+    let _abi_test = install_member_protocol();
     unsafe {
         for minor in [12, 13, 14] {
             MEMBER_TARGET.with(|target| target.set(minor));
@@ -381,7 +381,7 @@ fn member_relative_offset_is_rejected_before_other_admission() {
 
 #[test]
 fn member_inline_string_reads_storage_and_preserves_readonly_precedence() {
-    install_member_protocol();
+    let _abi_test = install_member_protocol();
     unsafe {
         for minor in [12, 13, 14] {
             MEMBER_TARGET.with(|target| target.set(minor));
@@ -458,7 +458,7 @@ fn member_inline_string_reads_storage_and_preserves_readonly_precedence() {
 
 #[test]
 fn member_missing_object_and_unknown_type_use_pinned_diagnostics() {
-    install_member_protocol();
+    let _abi_test = install_member_protocol();
     #[repr(C)]
     struct Record {
         base: PyObject,
@@ -597,17 +597,18 @@ unsafe extern "C" fn member_result_finalizer(_object: *mut PyObject) {
     };
 }
 
-fn install_member_protocol() {
+fn install_member_protocol() -> support::AbiTestThreadStateTransaction {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
     hooks.target_python_minor = member_target_minor;
     hooks.import_module = support::warnings::import_module;
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    let transaction = support::enter_runtime_class_abi_test(hooks);
     MEMBER_TARGET.with(|value| value.set(12));
     MEMBER_RESULT.with(|value| value.set(0));
     MEMBER_ERROR.with(|value| value.set(0));
     MEMBER_TRANSFER_RESULT.with(|value| value.set(false));
     MEMBER_FINALIZERS.with(|value| value.set(0));
+    transaction
 }
 
 unsafe fn member_integer(value: i128) -> refcount::OwnedPyObject {
@@ -664,7 +665,7 @@ fn assert_member_warning(message: &str, expected: [u8; 24]) {
 
 #[test]
 fn member_narrow_boundaries_warn_after_write_including_warning_errors() {
-    install_member_protocol();
+    let _abi_test = install_member_protocol();
     support::warnings::with_provider(|| unsafe {
         support::warnings::set_observer(Some(observe_member_warning));
         for minor in [12, 13, 14] {
@@ -754,7 +755,7 @@ fn member_narrow_boundaries_warn_after_write_including_warning_errors() {
 
 #[test]
 fn member_unsigned_index_once_full_width_and_c_long_negative_boundary() {
-    install_member_protocol();
+    let _abi_test = install_member_protocol();
     support::warnings::with_provider(|| unsafe {
         support::warnings::set_observer(Some(observe_member_warning));
         let mut slots: member_abi::PyNumberMethods = std::mem::zeroed();
@@ -845,7 +846,7 @@ fn member_unsigned_index_once_full_width_and_c_long_negative_boundary() {
 
 #[test]
 fn member_converter_errors_preserve_identity_and_versioned_write_order() {
-    install_member_protocol();
+    let _abi_test = install_member_protocol();
     support::warnings::with_provider(|| unsafe {
         let mut slots: member_abi::PyNumberMethods = std::mem::zeroed();
         slots.nb_index = member_index as *const () as *mut c_void;
@@ -928,7 +929,7 @@ fn member_converter_errors_preserve_identity_and_versioned_write_order() {
 
 #[test]
 fn member_wide_signed_boundaries_and_legitimate_minus_one() {
-    install_member_protocol();
+    let _abi_test = install_member_protocol();
     support::warnings::with_provider(|| unsafe {
         for minor in [12, 13, 14] {
             MEMBER_TARGET.with(|value| value.set(minor));
@@ -985,7 +986,7 @@ fn member_wide_signed_boundaries_and_legitimate_minus_one() {
 
 #[test]
 fn member_index_subtype_warning_precedes_release_write_and_negative_warning() {
-    install_member_protocol();
+    let _abi_test = install_member_protocol();
     support::warnings::with_provider(|| unsafe {
         support::warnings::set_observer(Some(observe_member_warning));
         let mut slots: member_abi::PyNumberMethods = std::mem::zeroed();
@@ -1107,7 +1108,7 @@ const PY_LT: c_int = 0;
 
 #[test]
 fn richcompare_reflected_subtype_priority() {
-    install();
+    let _abi_test = install();
     // Base with a slot that says False; Sub (subtype of Base) with a slot that
     // says True. Comparing base_inst == sub_inst must consult Sub's reflected
     // slot FIRST (subtype priority), yielding True.
@@ -1133,7 +1134,7 @@ fn richcompare_reflected_subtype_priority() {
 
 #[test]
 fn richcompare_both_notimplemented_resolves_identity_and_ordering() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut ty = new_type();
     ty.tp_base = &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type;
@@ -1162,7 +1163,7 @@ fn richcompare_both_notimplemented_resolves_identity_and_ordering() {
 
 #[test]
 fn richcompare_propagates_slot_error() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut ty = new_type();
     ty.tp_base = &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type;
@@ -1181,7 +1182,7 @@ fn richcompare_propagates_slot_error() {
 
 #[test]
 fn richcomparebool_identity_shortcut() {
-    install();
+    let _abi_test = install();
     let mut ty = new_type();
     ty.tp_base = &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type;
     // A slot that would say NotEqual, to prove the identity shortcut wins.
@@ -1199,7 +1200,7 @@ fn richcomparebool_identity_shortcut() {
 fn heap_names_use_distinct_live_unicode_fields() {
     use molt_cpython_abi::abi_types::{Py_TPFLAGS_HEAPTYPE, PyHeapTypeObject};
     use molt_cpython_abi::api::{refcount, strings, typeobj};
-    install();
+    let _abi_test = install();
     let heap = unsafe {
         typeobj::PyType_GenericAlloc(&raw mut molt_cpython_abi::abi_types::PyType_Type, 0)
     }
@@ -1227,8 +1228,10 @@ fn heap_names_use_distinct_live_unicode_fields() {
         let renamed = typeobj::PyType_GetName(tp);
         assert_eq!(read_str(renamed), raw_name);
         refcount::Py_DECREF(renamed);
-        refcount::Py_DECREF(heap.ht_name);
-        refcount::Py_DECREF(heap.ht_qualname);
-        molt_cpython_abi::api::memory::PyObject_GC_Del((heap as *mut PyHeapTypeObject).cast());
+        // Release the allocated heap type and all owned roots through its
+        // clear/deallocation slots, not raw storage.
+        let object = (heap as *mut PyHeapTypeObject).cast();
+        assert_eq!(typeobj::molt_type_clear(object), 0);
+        refcount::Py_DECREF(object);
     }
 }

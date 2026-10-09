@@ -35,8 +35,8 @@ from molt.cli.app_export_contract import load_app_export_contract
 from molt.browser_asset_closure import (
     BROWSER_WASM_ENTRY_ASSETS,
     browser_asset_manifest_keys,
-    canonical_wasm_loader_asset_bytes,
     wasm_loader_asset_closure,
+    wasm_loader_asset_payloads,
 )
 from molt.cli import link_fingerprints
 from molt.cli.wasm_final_link_cache import (
@@ -1681,17 +1681,12 @@ def _prepare_non_native_build_result_in_generation(
                 wasm_asset_root / TARGET_FEATURE_MANIFEST_ASSET_NAME
             )
             try:
-                browser_asset_names = wasm_loader_asset_closure(
+                browser_asset_payloads = wasm_loader_asset_payloads(
                     wasm_asset_root,
                     BROWSER_WASM_ENTRY_ASSETS,
                 )
+                browser_asset_names = tuple(browser_asset_payloads)
                 browser_asset_keys = browser_asset_manifest_keys(browser_asset_names)
-                browser_asset_payloads = {
-                    name: canonical_wasm_loader_asset_bytes(
-                        wasm_asset_root.joinpath(*Path(name).parts)
-                    )
-                    for name in browser_asset_names
-                }
                 browser_assets = {
                     browser_asset_keys[name]: _bytes_asset(payload, name)
                     for name, payload in browser_asset_payloads.items()

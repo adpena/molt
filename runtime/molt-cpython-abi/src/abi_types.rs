@@ -3242,10 +3242,17 @@ mod unresolved_pyobject_tests {
     #[test]
     fn type_static_ptrs_are_distinct_and_nonnull() {
         // Canonical builtin shells, including the internal managed carrier
-        // and CMethod/WrapperDescr types (43 statics). Guards
+        // and all three Context-family types (45 statics). Guards
         // against an accidental drop/duplicate when the type static list changes.
         let ptrs = type_static_ptrs();
-        assert_eq!(ptrs.len(), 43, "type static count drifted");
+        assert_eq!(ptrs.len(), 45, "type static count drifted");
+        for required in [
+            &raw mut PyContextVar_Type,
+            &raw mut PyContext_Type,
+            &raw mut PyContextToken_Type,
+        ] {
+            assert!(ptrs.contains(&required.cast::<PyObject>()));
+        }
         for p in &ptrs {
             assert!(!p.is_null());
         }
@@ -3254,7 +3261,7 @@ mod unresolved_pyobject_tests {
         addrs.dedup();
         assert_eq!(
             addrs.len(),
-            43,
+            ptrs.len(),
             "duplicate type static in type_static_ptrs()"
         );
     }

@@ -211,7 +211,7 @@ unsafe extern "C" fn num_bits(bits: u64, out: *mut usize) -> i32 {
     0
 }
 
-fn init() {
+fn init() -> support::AbiTestThreadStateTransaction {
     #[cfg(feature = "l7-test-probe")]
     molt_cpython_abi_test_support::link();
     molt_cpython_abi::bridge::molt_cpython_abi_init();
@@ -235,7 +235,7 @@ fn init() {
     hooks.complex_parts = support::fake_complex::parts;
     hooks.complex_from_doubles = support::fake_complex::from_doubles;
     hooks.object_hash = support::fake_complex::hash;
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 fn proxy(value: i128) -> *mut PyObject {
@@ -249,7 +249,7 @@ fn clear_error() {
 #[test]
 fn from_string_has_shared_prefix_underscore_base_zero_and_pend_semantics() {
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     let mut end: *mut c_char = std::ptr::null_mut();
     let source = c"  -0x_FF  ";
     let value = unsafe {
@@ -330,7 +330,7 @@ fn from_string_has_shared_prefix_underscore_base_zero_and_pend_semantics() {
 #[test]
 fn unicode_integer_transform_accepts_decimal_digits_and_space_but_rejects_bytes() {
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     let source = std::ffi::CString::new("\u{2003}\u{0661}\u{0662}\u{ff13}\u{3000}").unwrap();
     let unicode = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(source.as_ptr()) };
     assert!(!unicode.is_null());
@@ -357,7 +357,7 @@ fn unicode_integer_transform_accepts_decimal_digits_and_space_but_rejects_bytes(
 #[test]
 fn from_ssize_t_preserves_llp64_width() {
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     for value in [1isize << 40, -(1isize << 40)] {
         let obj = unsafe { molt_cpython_abi::api::numbers::PyLong_FromSsize_t(value) };
         assert!(!obj.is_null());
@@ -371,7 +371,7 @@ fn from_ssize_t_preserves_llp64_width() {
 #[test]
 fn compact_and_num_bits_cover_bridge_and_foreign_layouts_without_proxy_dereference() {
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     for (value, expected) in [
         ((1i128 << 30) - 1, 1),
         (1i128 << 30, 0),
@@ -414,7 +414,7 @@ fn compact_and_num_bits_cover_bridge_and_foreign_layouts_without_proxy_dereferen
 #[test]
 fn byte_arrays_are_arbitrary_width_endian_signed_and_partial_fill_correct() {
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     let value = (1i128 << 80) | 0x1234_5678_9abc_def0;
     let obj = proxy(value);
     let mut short = [0xaa; 8];
@@ -518,7 +518,7 @@ fn byte_arrays_are_arbitrary_width_endian_signed_and_partial_fill_correct() {
 fn size_t_and_all_unsigned_converters_preserve_outputs_on_error() {
     use molt_cpython_abi::api::{errors, numbers, refcount::OwnedPyObject};
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     let assert_error = |class: *mut PyObject, message: &str| {
         assert_eq!(unsafe { errors::PyErr_ExceptionMatches(class) }, 1);
         assert_eq!(support::take_current_error_text().as_deref(), Some(message));
@@ -657,7 +657,7 @@ unsafe extern "C" {
 #[test]
 fn float_pack_unpack_covers_ieee_edges_endian_and_info_authority() {
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     let mut bytes = [0u8; 8];
     assert_eq!(
         unsafe {
@@ -753,7 +753,7 @@ fn float_pack_unpack_covers_ieee_edges_endian_and_info_authority() {
 #[test]
 fn complex_primitives_use_scaled_math_and_real_c_errno() {
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     let a = Py_complex {
         real: 3.0,
         imag: 4.0,
@@ -865,7 +865,7 @@ fn bool_public_names_are_pointer_aliases_of_sole_canonical_storage() {
 #[test]
 fn number_conversions_preserve_exact_carriers_and_normalize_bool() {
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     // A mortal carrier is required to prove the new-reference increment;
     // cached small integers are immortal and intentionally ignore INCREF.
     let integer = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1000) };
@@ -906,7 +906,7 @@ fn number_conversions_preserve_exact_carriers_and_normalize_bool() {
 #[cfg(feature = "l7-test-probe")]
 fn overlay_compiled_numeric_roundtrip_uses_the_abi_bridge_representation() {
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     assert_eq!(unsafe { molt_l7_overlay_numeric_probe() }, 0);
     let integer = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(73) };
     let text =
@@ -930,7 +930,7 @@ fn overlay_compiled_numeric_roundtrip_uses_the_abi_bridge_representation() {
 #[cfg(feature = "l7-test-probe")]
 fn overlay_compiled_tuple_set_and_direct_get_share_the_canonical_sidecar() {
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     let tuple_bits = bits_for_tuple(vec![bits_for_value(1)]);
     let tuple = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(tuple_bits) };
     let value = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
@@ -962,7 +962,7 @@ fn integer_projection_writes_final_digits_in_place_and_preserves_failure_owners(
     use molt_cpython_abi::api::numbers;
     use molt_cpython_abi::api::refcount::OwnedPyObject;
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     for (value, native_width) in [
         (i128::MIN, 16),
         (i128::MAX, 16),
@@ -1053,7 +1053,7 @@ fn integer_projection_writes_final_digits_in_place_and_preserves_failure_owners(
 fn integer_zero_width_c_exports_follow_signed_complement_boundary() {
     use molt_cpython_abi::api::{numbers, refcount::OwnedPyObject};
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     for value in [-129, -1, 0, 1, 128] {
         let op = unsafe { numbers::PyLong_FromLong(value) };
         let _owner = unsafe { OwnedPyObject::from_owned(op) };

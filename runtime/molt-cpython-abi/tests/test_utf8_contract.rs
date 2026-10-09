@@ -94,7 +94,7 @@ unsafe extern "C" fn classify_heap(bits: u64) -> u8 {
 
 unsafe extern "C" fn noop_ref(_bits: u64) {}
 
-fn init() {
+fn init() -> support::AbiTestThreadStateTransaction {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.alloc_str = Some(alloc_str);
     hooks.alloc_bytes = alloc_bytes;
@@ -103,13 +103,13 @@ fn init() {
     hooks.classify_heap = Some(classify_heap);
     hooks.inc_ref = noop_ref;
     hooks.dec_ref = noop_ref;
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 #[test]
 fn as_utf8_is_cached_and_nul_terminated() {
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     let input = "na?ve".as_bytes();
     let unicode = unsafe {
         molt_cpython_abi::api::strings::PyUnicode_FromStringAndSize(
@@ -144,7 +144,7 @@ fn as_utf8_is_cached_and_nul_terminated() {
 #[test]
 fn from_string_and_size_rejects_invalid_utf8_before_allocation() {
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let invalid = [0xff_u8];
     let unicode = unsafe {
@@ -176,7 +176,7 @@ fn from_string_and_size_rejects_invalid_utf8_before_allocation() {
 #[test]
 fn check_accepts_subclasses_while_exact_identity_rejects_them() {
     let _guard = TEST_LOCK.lock().unwrap();
-    init();
+    let _abi_test = init();
     let mut unicode_subtype: PyTypeObject = unsafe { std::mem::zeroed() };
     unicode_subtype.tp_flags = Py_TPFLAGS_UNICODE_SUBCLASS;
     unicode_subtype.tp_base = &raw mut PyUnicode_Type;
