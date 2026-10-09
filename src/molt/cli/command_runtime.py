@@ -110,7 +110,7 @@ def _run_subprocess_captured_to_tempfiles(
     """Run a subprocess while capturing stdout/stderr via temporary files."""
     harness_memory_guard = _load_cli_harness_memory_guard(compiler_source_root())
     with _progress.subprocess_status(progress_label) as keepalive_label:
-        return harness_memory_guard.guarded_completed_process_to_tempfiles(
+        result = harness_memory_guard.guarded_completed_process_to_tempfiles(
             cmd,
             prefix=memory_guard_prefix,
             input=input,
@@ -119,3 +119,5 @@ def _run_subprocess_captured_to_tempfiles(
             timeout=timeout,
             progress_label=keepalive_label,
         )
+    _process_guard.raise_for_guard_outcome(cmd, result, timeout=timeout)
+    return result

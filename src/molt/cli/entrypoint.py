@@ -14,10 +14,12 @@ from molt.cli.entrypoint_dispatch import _dispatch_entrypoint_command
 from molt.cli.entrypoint_parser import _build_entrypoint_parser
 from molt.cli.project_roots import _find_project_root
 from molt.cli_entry import ensure_hash_seed
+from molt.cli.output import fail
 from molt.environment_registry import (
     EnvironmentRegistryError,
     check_process_environment,
 )
+from molt.process_guard import GuardInfrastructureError, guard_infrastructure_exit_code
 
 
 def main(build_fn: Callable[..., int] | None = None) -> int:
@@ -54,20 +56,30 @@ def main(build_fn: Callable[..., int] | None = None) -> int:
     publish_cfg = _resolve_command_config(config, "publish")
     cfg_capabilities = _resolve_capabilities_config(config)
 
-    return _dispatch_entrypoint_command(
-        args,
-        build_fn=build_fn,
-        config_root=config_root,
-        config=config,
-        build_cfg=build_cfg,
-        run_cfg=run_cfg,
-        compare_cfg=compare_cfg,
-        test_cfg=test_cfg,
-        diff_cfg=diff_cfg,
-        extension_cfg=extension_cfg,
-        publish_cfg=publish_cfg,
-        cfg_capabilities=cfg_capabilities,
-    )
+    try:
+        return _dispatch_entrypoint_command(
+            args,
+            build_fn=build_fn,
+            config_root=config_root,
+            config=config,
+            build_cfg=build_cfg,
+            run_cfg=run_cfg,
+            compare_cfg=compare_cfg,
+            test_cfg=test_cfg,
+            diff_cfg=diff_cfg,
+            extension_cfg=extension_cfg,
+            publish_cfg=publish_cfg,
+            cfg_capabilities=cfg_capabilities,
+        )
+    except GuardInfrastructureError as exc:
+        # The guard failed, not the command it ran: report it as such, with
+        # the guard's own exit code, wherever the failure surfaced.
+        return fail(
+            str(exc),
+            bool(getattr(args, "json", False)),
+            code=guard_infrastructure_exit_code(),
+            command=str(args.command),
+        )
 
 
 if __name__ == "__main__":

@@ -1587,15 +1587,25 @@ def test_cli_install_uses_memory_guard_for_venv_and_uv(
     assert calls[1]["cwd"] == tmp_path
 
 
+@pytest.mark.parametrize("guard_timeout", [True, False])
 def test_cli_debug_eval_command_uses_guarded_timeout(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, guard_timeout: bool
 ) -> None:
+    """Only the guard's TimeoutExpired is a timeout; an exit status of 124 is not.
+
+    The old evaluator also read a returned 124 with a guard-like stderr line as
+    a timeout, so a command that printed that line and exited 124 was misread.
+    """
     from molt import cli
 
     calls: list[dict[str, object]] = []
 
     def fake_run_completed(cmd, **kwargs):
         calls.append({"cmd": list(cmd), **kwargs})
+        if guard_timeout:
+            raise subprocess.TimeoutExpired(
+                cmd, 1, output="", stderr="memory_guard: timeout after 1.00s\n"
+            )
         return subprocess.CompletedProcess(
             cmd,
             124,
@@ -1614,7 +1624,7 @@ def test_cli_debug_eval_command_uses_guarded_timeout(
     )
 
     assert result["returncode"] == 124
-    assert result["timed_out"] is True
+    assert result["timed_out"] is guard_timeout
     assert calls == [
         {
             "cmd": ["python3", "-c", "pass"],

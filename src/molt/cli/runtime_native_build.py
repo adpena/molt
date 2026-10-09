@@ -189,7 +189,7 @@ def _record_native_runtime_failure(
         cargo_execution_evidence(cargo_result)
         if cargo_result is not None
         else {
-            "schema": "molt.cargo-execution.v1",
+            "schema": "molt.cargo-execution.v2",
             "attempt_count": 0,
             "retry_reason": None,
             "timed_out": timed_out,

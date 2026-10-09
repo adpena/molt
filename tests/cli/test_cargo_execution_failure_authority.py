@@ -50,6 +50,26 @@ def _completed(
     return result
 
 
+def _guard_infrastructure_error(
+    command: list[str],
+    *,
+    child_returncode: int,
+    stderr: str = "",
+) -> Exception:
+    """The typed error the guarded runner raises for a guard-owned failure."""
+    from molt.process_guard import GuardInfrastructureError
+    from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+
+    result = _completed(
+        list(command), 125 if child_returncode == 0 else child_returncode, stderr=stderr
+    )
+    result.child_returncode = child_returncode  # type: ignore[attr-defined]
+    result.infrastructure_failure = GuardInfrastructureFailure(  # type: ignore[attr-defined]
+        "temporary_artifact_custody", ("receipt unavailable",)
+    )
+    return GuardInfrastructureError(command, result)
+
+
 @pytest.mark.parametrize(
     ("output", "expected_counters"),
     [
@@ -118,9 +138,7 @@ def test_sccache_stats_uses_the_selected_context_and_cumulative_json_counters(
 
 
 @pytest.mark.parametrize("caller", ["resolved_plan", "retry"])
-@pytest.mark.parametrize(
-    "outcome", ["success", "cargo_failure", "json", "no_wrapper", "infrastructure"]
-)
+@pytest.mark.parametrize("outcome", ["success", "cargo_failure", "json", "no_wrapper"])
 def test_both_cargo_callers_bind_stats_to_the_actual_build_environment(
     runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
@@ -164,16 +182,10 @@ def test_both_cargo_callers_bind_stats_to_the_actual_build_environment(
             expected_environment["CARGO_INCREMENTAL"] = "0"
     terminal = _completed(
         command,
-        7 if outcome == "cargo_failure" else 125 if outcome == "infrastructure" else 0,
+        7 if outcome == "cargo_failure" else 0,
         stdout="original build output",
         stderr="original build diagnostic",
     )
-    if outcome == "infrastructure":
-        from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
-
-        terminal.infrastructure_failure = GuardInfrastructureFailure(
-            "temporary_artifact_custody", ("independent fixture failure",)
-        )
     calls = []
 
     def run(actual_command, **kwargs):
@@ -346,13 +358,7 @@ def test_failed_sccache_probe_has_no_counter_attestation(
             raise subprocess.TimeoutExpired(command, 15)
         result = _completed(command, 4 if failure == "nonzero" else 0, stdout="{")
         if failure == "infrastructure":
-            from tools.memory_guard_core.process_custody import (
-                GuardInfrastructureFailure,
-            )
-
-            result.infrastructure_failure = GuardInfrastructureFailure(
-                "temporary_artifact_custody", ("probe receipt unavailable",)
-            )
+            raise _guard_infrastructure_error(command, child_returncode=0)
         return result
 
     monkeypatch.setattr(CARGO, "_run_completed_command", run)
@@ -503,32 +509,45 @@ def test_empty_or_untyped_attempts_fall_back_to_one_typed_terminal_record() -> N
     assert attempts[0]["stderr"] == "error: terminal cargo failure"
 
 
+@pytest.mark.parametrize("caller", ["resolved_plan", "retry"])
 @pytest.mark.parametrize("child_returncode", [0, 7])
-@pytest.mark.parametrize("json_output", [False, True])
 def test_guard_infrastructure_is_not_wrapper_retry_or_cargo_failure(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caller: str,
     child_returncode: int,
-    json_output: bool,
 ) -> None:
-    from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+    """A guard failure leaves Cargo as the typed error, never as a Cargo result.
 
-    failure = GuardInfrastructureFailure(
-        "temporary_artifact_custody", ("receipt unavailable",)
-    )
-    command = ["cargo", "rustc"]
-    terminal = _completed(
-        command,
-        125 if child_returncode == 0 else child_returncode,
-        stderr="sccache: error: cache unavailable\nsignal: 9, SIGKILL",
-    )
-    terminal.child_returncode = child_returncode
-    terminal.infrastructure_failure = failure
+    The stderr below names sccache and a signal. On the old contract the guard's
+    125 reached the Cargo layer as a result, where a returncode reader blamed
+    Cargo. Now no attempt, retry or cache probe sees it.
+    """
+    from molt.process_guard import GuardInfrastructureError
+
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    environment = _cargo_env(tmp_path / "cargo-target", RUSTC_WRAPPER="sccache")
+    if caller == "resolved_plan":
+        plan = runtime_cargo_plan(
+            project,
+            fixture_root=runtime_fixture_root,
+            env=environment,
+            cargo_command=("cargo", "rustc"),
+        )
+        command = list(plan.command)
+    else:
+        command = ["cargo", "rustc"]
     calls = []
 
-    def run(_cmd, **kwargs):
-        calls.append(kwargs)
-        return terminal
+    def run(actual_command, **_kwargs):
+        calls.append(list(actual_command))
+        raise _guard_infrastructure_error(
+            actual_command,
+            child_returncode=child_returncode,
+            stderr="sccache: error: cache unavailable\nsignal: 9, SIGKILL",
+        )
 
     monkeypatch.setattr(CARGO, "_run_completed_command", run)
 
@@ -538,27 +557,26 @@ def test_guard_infrastructure_is_not_wrapper_retry_or_cargo_failure(
         pytest.fail("infrastructure failure must not launch cache probes")
 
     monkeypatch.setattr(CARGO, "_attest_sccache_stats", reject_stats)
-    result = CARGO._run_cargo_with_sccache_retry(
-        command,
-        cwd=Path.cwd(),
-        env=_cargo_env(tmp_path / "cargo-target", RUSTC_WRAPPER="sccache"),
-        timeout=1,
-        json_output=json_output,
-        label="Runtime build",
-    )
-    assert len(calls) == 1
-    assert result.retry_reason is None
-    assert result.child_returncode == child_returncode
-    assert result.infrastructure_failure is failure
-    for candidate in (terminal, result):
-        evidence = CARGO.cargo_execution_evidence(candidate)
-        assert evidence["child_returncode"] == child_returncode
-        assert evidence["infrastructure_failure"] == failure.json_payload()
-        assert evidence["signal"] is None
-        [attempt] = evidence["attempts"]
-        assert attempt["failure_kind"] == "infrastructure_error"
-        assert attempt["child_returncode"] == child_returncode
-        assert attempt["infrastructure_failure"] == failure.json_payload()
+    with pytest.raises(GuardInfrastructureError) as raised:
+        if caller == "resolved_plan":
+            CARGO._run_resolved_cargo_plan(
+                plan, timeout=1.0, json_output=False, label="Runtime build"
+            )
+        else:
+            CARGO._run_cargo_with_sccache_retry(
+                command,
+                cwd=project,
+                env=environment,
+                timeout=1,
+                json_output=False,
+                label="Runtime build",
+            )
+    assert calls == [command]
+    error = raised.value
+    assert not hasattr(error, "returncode")
+    assert error.child_returncode == child_returncode
+    assert error.phase == "temporary_artifact_custody"
+    assert f"the child exited with {child_returncode}" in str(error)
 
 
 @pytest.mark.parametrize(
@@ -940,14 +958,14 @@ def test_native_failure_receipt_carries_attempts_signal_timing_and_rss(
     assert payload["schema"] == "molt.native-runtime-build-failure.v2"
     assert payload["schema_version"] == 2
     execution = payload["cargo_execution"]
-    assert execution["schema"] == "molt.cargo-execution.v1"
+    assert execution["schema"] == "molt.cargo-execution.v2"
     assert execution["attempt_count"] == 2
     assert execution["retry_reason"] == "explicit-sccache-error"
     assert payload["duration_seconds"] == pytest.approx(3.75)
     assert payload["peak_process_rss_bytes"] == 300 * 1024
     assert payload["peak_tree_rss_bytes"] == 400 * 1024
     assert payload["signal"]["name"] == "SIGKILL"
-    assert execution["attempts"][0]["schema"] == "molt.cargo-attempt.v1"
+    assert execution["attempts"][0]["schema"] == "molt.cargo-attempt.v2"
     assert "sccache: error" in execution["attempts"][0]["stderr"]
     assert "could not compile" in execution["attempts"][1]["stderr"]
     assert failure.json_payload()["attempt_count"] == 2

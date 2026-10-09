@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -34,6 +35,71 @@ _MEMORY_GUARD_ENV_SUFFIXES = (
 )
 
 GuardLoader = Callable[[Path | None], Any]
+
+
+class GuardInfrastructureError(subprocess.SubprocessError):
+    """The memory guard failed around a child it ran.
+
+    This is not the child's exit status. The guard reports its own failure (for
+    example incomplete temporary-artifact custody) with exit code 125, so a
+    caller that reads ``returncode`` would blame the child. This error carries
+    no ``returncode``: ``child_returncode`` is what the child itself returned,
+    or None when the guard did not observe it.
+    """
+
+    def __init__(self, command: Sequence[str], result: Any) -> None:
+        failure = result.infrastructure_failure
+        self.command = tuple(str(part) for part in command)
+        self.phase: str = failure.phase
+        self.details: tuple[str, ...] = tuple(failure.details)
+        self.child_returncode: int | None = result.child_returncode
+        # Telemetry consumers keep the guard's complete terminal record.
+        self.guarded_result = result
+        child = (
+            "the child's exit status is unknown"
+            if self.child_returncode is None
+            else f"the child exited with {self.child_returncode}"
+        )
+        super().__init__(
+            f"memory guard infrastructure failure ({self.phase}) while running "
+            f"{shlex.join(self.command)}: {'; '.join(self.details)}; "
+            f"{child}"
+        )
+
+
+def guard_infrastructure_exit_code() -> int:
+    """The guard's own exit code for its infrastructure failures."""
+    return int(load_harness_memory_guard(None).memory_guard.INFRASTRUCTURE_RETURN_CODE)
+
+
+def raise_for_guard_outcome(
+    command: Sequence[str], result: Any, *, timeout: float | None
+) -> None:
+    """Raise for outcomes the guard owns, so returncode stays the child's.
+
+    The guard reports a timeout as 124 and its own failure as 125. A caller of
+    a subprocess-compatible runner must never read either as the child's exit
+    status, so both become exceptions here: ``subprocess.TimeoutExpired`` and
+    ``GuardInfrastructureError``. Each carries the guard's terminal record as
+    ``guarded_result`` (Cargo test receipts and benchmarks read its RSS samples).
+    """
+    command = [str(part) for part in command]
+    if bool(getattr(result, "timed_out", False)):
+        if timeout is None:
+            raise RuntimeError(
+                "guarded subprocess reported a timeout without a requested "
+                "timeout; timeout custody is inconsistent"
+            )
+        error = subprocess.TimeoutExpired(
+            command,
+            timeout,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+        setattr(error, "guarded_result", result)
+        raise error
+    if getattr(result, "infrastructure_failure", None) is not None:
+        raise GuardInfrastructureError(command, result)
 
 
 def _molt_repo_root() -> Path:
@@ -207,24 +273,7 @@ def run_completed_command(
         result.stderr = None
     if stdout == subprocess.DEVNULL:
         result.stdout = None
-    if bool(getattr(result, "timed_out", False)):
-        if timeout is None:
-            raise RuntimeError(
-                "guarded subprocess reported a timeout without a requested "
-                "timeout; timeout custody is inconsistent"
-            )
-        error = subprocess.TimeoutExpired(
-            command,
-            timeout,
-            output=result.stdout,
-            stderr=result.stderr,
-        )
-        # Preserve the canonical guard result for callers that need terminal
-        # telemetry (notably per-binary Cargo test receipts).  TimeoutExpired
-        # keeps the subprocess-compatible boundary while this attachment avoids
-        # discarding the guard's RSS samples and exact terminal record.
-        setattr(error, "guarded_result", result)
-        raise error
+    raise_for_guard_outcome(command, result, timeout=timeout)
     if check and result.returncode != 0:
         error = subprocess.CalledProcessError(
             result.returncode,
@@ -232,8 +281,8 @@ def run_completed_command(
             output=result.stdout,
             stderr=result.stderr,
         )
-        # Match TimeoutExpired above: subprocess compatibility remains intact,
-        # while callers retain the guard's child and infrastructure outcomes.
+        # As in raise_for_guard_outcome: subprocess compatibility remains
+        # intact, while callers retain the guard's terminal record.
         setattr(error, "guarded_result", result)
         raise error
     return result
