@@ -2747,6 +2747,86 @@ def probe_process_wide_test_patches(root: Path) -> list[Finding]:
     return findings
 
 
+_BUILD_SKIP_PREFILTER = re.compile(r"\.skip\(")
+# A skip message that reports a failed build, as opposed to a missing tool
+# ("cargo is required for backend compilation").
+_BUILD_FAILURE_SKIP_MESSAGE = re.compile(
+    r"\b(?:builds?|compil\w*)\b.*\b(?:fail\w*|error)\b|killed during compilation",
+    re.IGNORECASE,
+)
+
+
+def _skip_message_text(node: ast.expr) -> str | None:
+    """The literal text of a skip message, with f-string fields dropped."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(
+            part.value
+            for part in node.values
+            if isinstance(part, ast.Constant) and isinstance(part.value, str)
+        )
+    return None
+
+
+def _build_failure_skip_lines(tree: ast.AST) -> list[int]:
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "skip"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "pytest"
+            and node.args
+        ):
+            continue
+        text = _skip_message_text(node.args[0])
+        if text is not None and _BUILD_FAILURE_SKIP_MESSAGE.search(text):
+            lines.append(node.lineno)
+    return sorted(lines)
+
+
+@_audit_probe
+def probe_build_failure_test_skips(root: Path) -> list[Finding]:
+    """Tests that turn a failed build into a skip.
+
+    ``pytest.skip(f"Compilation failed: ...")`` makes a compiler regression
+    read as green. A missing tool is a capability skip and does not count.
+    Reported per file, ratcheted in aggregate.
+    """
+    findings: list[Finding] = []
+    for path in _iter_test_files(root):
+        try:
+            text = _source_text(path)
+        except OSError:
+            continue
+        if not _BUILD_SKIP_PREFILTER.search(text):
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        lines = _build_failure_skip_lines(tree)
+        if not lines:
+            continue
+        rel = path.relative_to(root).as_posix()
+        findings.append(
+            Finding(
+                probe="build_failure_test_skip",
+                severity="medium",
+                title=f"{len(lines)} skips on a failed build",
+                location=f"{rel}:{lines[0]}",
+                detail=", ".join(f"L{line}" for line in lines[:8]),
+                suggested_action="fail on a build error; name a program that is "
+                "unsupported on purpose in an expected-failure list",
+                class_retired="fail-open-build-skip",
+                metric=len(lines),
+            )
+        )
+    return findings
+
+
 def _is_type_checking_guard(test: ast.expr) -> bool:
     return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
         isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
@@ -2865,6 +2945,7 @@ PROBES = (
     probe_duplicate_authorities,
     probe_registry_reconciliation,
     probe_process_wide_test_patches,
+    probe_build_failure_test_skips,
     probe_stdlib_raw_intrinsic_names,
 )
 
@@ -2947,6 +3028,7 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     repr_name_scalar = [f for f in findings if f.probe == "repr_name_scalar_authority"]
     dup = [f for f in findings if f.probe == "duplicate_authority"]
     process_wide_patches = [f for f in findings if f.probe == "process_wide_test_patch"]
+    build_failure_skips = [f for f in findings if f.probe == "build_failure_test_skip"]
     raw_intrinsic_names = [
         f for f in findings if f.probe == "stdlib_raw_intrinsic_name"
     ]
@@ -2995,6 +3077,9 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         "duplicate_authorities": float(len(dup)),
         "process_wide_test_patches": float(
             sum(int(f.metric) for f in process_wide_patches)
+        ),
+        "build_failure_test_skips": float(
+            sum(int(f.metric) for f in build_failure_skips)
         ),
         "stdlib_raw_intrinsic_bindings": float(
             sum(int(f.metric) for f in raw_intrinsic_names)

@@ -2782,3 +2782,37 @@ def test_raw_intrinsic_probe_ignores_code_outside_the_stdlib(tmp_path: Path):
         == stdlib_count
         == 1
     )
+
+
+def _build_failure_skip_count(tmp_path: Path, body: str) -> int:
+    path = tmp_path / "tests" / "test_sample.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return sum(int(f.metric) for f in SA.probe_build_failure_test_skips(tmp_path))
+
+
+def test_build_failure_skip_probe_counts_skips_that_hide_a_failed_build(
+    tmp_path: Path,
+):
+    body = (
+        "import pytest\n"
+        "def test_a(result):\n"
+        "    if result.returncode:\n"
+        "        pytest.skip(f'Compilation failed: {result.stderr[:300]}')\n"
+        "    pytest.skip('Build/run error: x')\n"
+        "    pytest.skip('one or both builds failed')\n"
+        "    pytest.skip('Backend killed during compilation (stale daemon)')\n"
+    )
+    assert _build_failure_skip_count(tmp_path, body) == 4
+
+
+def test_build_failure_skip_probe_keeps_capability_skips(tmp_path: Path):
+    body = (
+        "import pytest\n"
+        "def test_a():\n"
+        "    pytest.skip('cargo is required for backend compilation.')\n"
+        "    pytest.skip('clang is required for target C data-model compilation')\n"
+        "    pytest.skip(reason)\n"
+        "    pytest.fail('Compilation failed')\n"
+    )
+    assert _build_failure_skip_count(tmp_path, body) == 0
