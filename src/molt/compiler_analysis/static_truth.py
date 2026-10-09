@@ -11,7 +11,7 @@ import ast
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 import math
-from typing import Literal, TypeAlias, TypedDict, cast
+from typing import Final, Literal, TypeAlias, TypedDict, cast
 
 from molt.compiler_analysis.literal_identity import (
     literal_identity_key,
@@ -25,6 +25,20 @@ from molt.compiler_analysis.python_value_identity import (
 )
 
 from molt.compiler_analysis.python_source_keys import PythonSourceKey
+
+# Fixed identity masks as plain ints: hot paths test them per call, and
+# IntFlag arithmetic builds a pseudo-member on every composition.
+# Values that expose the current module's global namespace.
+_GLOBAL_NAMESPACE_IDENTITIES: Final = int(
+    PythonIdentity.CURRENT_GLOBALS | PythonIdentity.CURRENT_MODULE
+)
+# Alternatives and inert facts that name no value symbol.
+_NON_SYMBOL_IDENTITIES: Final = int(
+    PythonIdentity.OTHER
+    | PythonIdentity.UNBOUND
+    | PythonIdentity.INERT_VALUE
+    | PythonIdentity.STATIC_FALSE
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,10 +219,7 @@ class StaticExpressionResult:
         object.__setattr__(self, "exposed_deferred", exposed)
         exposes_globals = (
             self.exposes_module_globals
-            or bool(
-                self.identities
-                & int(PythonIdentity.CURRENT_GLOBALS | PythonIdentity.CURRENT_MODULE)
-            )
+            or bool(self.identities & _GLOBAL_NAMESPACE_IDENTITIES)
             or any(item.result.exposes_module_globals for item in self.items or ())
             or self.element_result is not None
             and self.element_result.exposes_module_globals
@@ -380,12 +391,7 @@ def expression_result_without_value_facts(
         projected = None if child is None else completed[id(child)]
         if projected == UNKNOWN_EXPRESSION_RESULT:
             projected = None
-        symbols = current.identities & ~int(
-            PythonIdentity.OTHER
-            | PythonIdentity.UNBOUND
-            | PythonIdentity.INERT_VALUE
-            | PythonIdentity.STATIC_FALSE
-        )
+        symbols = current.identities & ~_NON_SYMBOL_IDENTITIES
         completed[identity] = (
             UNKNOWN_EXPRESSION_RESULT
             if not symbols
