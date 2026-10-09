@@ -13,8 +13,8 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 - `compile-error`: `7`
 - `implemented-exact`: `196`
 - `implemented-target-limited`: `15`
-- `not-admitted`: `206`
-- `total`: `424`
+- `not-admitted`: `205`
+- `total`: `423`
 
 ## Matrix
 
@@ -42,7 +42,6 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `bit_not` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `bit_or` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `bit_xor` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
-| `block_on` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `bool_const` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `bor` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `borrow` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
