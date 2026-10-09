@@ -90,6 +90,7 @@ STRUCTURAL_AUDIT_METRICS = frozenset(
         "max_kitchen_sink_structural_score",
         "max_undecomposed_file_lines",
         "native_scalar_plan_authority_violations",
+        "process_wide_test_patches",
         "python_stub_surfaces_total",
         "repr_name_scalar_authority_violations",
         "rust_backend_lowering_gaps_total",

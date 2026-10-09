@@ -2588,6 +2588,164 @@ def probe_registry_reconciliation(root: Path) -> list[Finding]:
     return findings
 
 
+# --- process-wide stdlib patches in tests (HF-43) -------------------------
+
+# Shared stdlib modules whose attributes every caller in a pytest process reads,
+# the suite-lease and sentinel threads among them.
+_SHARED_STDLIB_MODULES = frozenset(
+    {"os", "sys", "platform", "subprocess", "hashlib", "shutil", "threading", "time"}
+)
+# Process-wide by nature: the interpreter itself reads these, so a test that
+# changes them means to change them for the process.
+_PROCESS_WIDE_ATTRIBUTES = frozenset(
+    {
+        ("sys", "argv"),
+        ("sys", "path"),
+        ("sys", "stdin"),
+        ("sys", "stdout"),
+        ("sys", "stderr"),
+        ("sys", "modules"),
+        ("os", "environ"),
+    }
+)
+_PROCESS_WIDE_PATCH_PREFILTER = re.compile(
+    r"setattr\(\s*(?:\"[\w.]*\b(?:"
+    + "|".join(sorted(_SHARED_STDLIB_MODULES))
+    + r")\.|[\w.]*\b(?:"
+    + "|".join(sorted(_SHARED_STDLIB_MODULES))
+    + r")\s*,)"
+)
+
+
+def _process_wide_patch_lines(tree: ast.AST) -> list[int]:
+    """Lines of ``monkeypatch.setattr`` calls that rebind a shared stdlib module.
+
+    A patch of ``module.os`` after the same function installed a module view
+    for ``module`` and ``os`` rebinds that view, not the process-wide module.
+    """
+    lines: list[int] = []
+    for function in ast.walk(tree):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        views: set[tuple[str, str]] = set()
+        calls = sorted(
+            (node for node in ast.walk(function) if isinstance(node, ast.Call)),
+            key=lambda node: (node.lineno, node.col_offset),
+        )
+        for call in calls:
+            func = call.func
+            name = func.id if isinstance(func, ast.Name) else None
+            if name == "install_module_view" and len(call.args) >= 4:
+                stdlib = call.args[1]
+                if isinstance(stdlib, ast.Constant) and isinstance(stdlib.value, str):
+                    views.update(
+                        (ast.unparse(module), stdlib.value) for module in call.args[3:]
+                    )
+                continue
+            if name == "install_module_os_view":
+                views.update((ast.unparse(module), "os") for module in call.args[1:])
+                continue
+            if not (
+                isinstance(func, ast.Attribute)
+                and func.attr == "setattr"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "monkeypatch"
+                and call.args
+            ):
+                continue
+            target = call.args[0]
+            if isinstance(target, ast.Constant) and isinstance(target.value, str):
+                parts = target.value.split(".")
+                if len(parts) >= 2 and parts[-2] in _SHARED_STDLIB_MODULES:
+                    if (parts[-2], parts[-1]) not in _PROCESS_WIDE_ATTRIBUTES:
+                        lines.append(call.lineno)
+                continue
+            if len(call.args) < 2 or not (
+                isinstance(call.args[1], ast.Constant)
+                and isinstance(call.args[1].value, str)
+            ):
+                continue
+            attribute = call.args[1].value
+            if isinstance(target, ast.Name) and target.id in _SHARED_STDLIB_MODULES:
+                stdlib_name = target.id
+                owner = None
+            elif (
+                isinstance(target, ast.Attribute)
+                and target.attr in _SHARED_STDLIB_MODULES
+            ):
+                stdlib_name = target.attr
+                owner = ast.unparse(target.value)
+            else:
+                continue
+            if (stdlib_name, attribute) in _PROCESS_WIDE_ATTRIBUTES:
+                continue
+            if owner is not None and (owner, stdlib_name) in views:
+                continue
+            lines.append(call.lineno)
+    return sorted(set(lines))
+
+
+def _iter_test_files(root: Path) -> list[Path]:
+    base = root / "tests"
+    scope = _source_scope(root)
+    if scope is not None:
+        return [
+            root / rel
+            for rel in sorted(scope)
+            if rel.startswith("tests/")
+            and rel.endswith(".py")
+            and (root / rel).is_file()
+            and not _is_excluded(root / rel, root)
+        ]
+    if not base.is_dir():
+        return []
+    return sorted(
+        _iter_pruned_files(base, root, (".py",)),
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
+
+
+@_audit_probe
+def probe_process_wide_test_patches(root: Path) -> list[Finding]:
+    """Tests that fake a shared stdlib attribute for the whole process.
+
+    ``monkeypatch.setattr(module.os, "getpid", fake)`` changes ``os.getpid``
+    for every thread of the pytest process while the test runs. A module view
+    (``tests/process_guard_common.install_module_view``) confines the fake to
+    the modules under test. Reported per file, ratcheted in aggregate.
+    """
+    findings: list[Finding] = []
+    for path in _iter_test_files(root):
+        try:
+            text = _source_text(path)
+        except OSError:
+            continue
+        if not _PROCESS_WIDE_PATCH_PREFILTER.search(text):
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        lines = _process_wide_patch_lines(tree)
+        if not lines:
+            continue
+        rel = path.relative_to(root).as_posix()
+        findings.append(
+            Finding(
+                probe="process_wide_test_patch",
+                severity="medium" if len(lines) >= 10 else "low",
+                title=f"{len(lines)} process-wide stdlib patches",
+                location=f"{rel}:{lines[0]}",
+                detail=", ".join(f"L{line}" for line in lines[:8]),
+                suggested_action="install a module view over every module that "
+                "reads the attribute (tests/process_guard_common.install_module_view)",
+                class_retired="process-wide-test-fake",
+                metric=len(lines),
+            )
+        )
+    return findings
+
+
 PROBES = (
     probe_semantic_fallthroughs,
     probe_large_source_files,
@@ -2601,6 +2759,7 @@ PROBES = (
     probe_repr_name_scalar_authority,
     probe_duplicate_authorities,
     probe_registry_reconciliation,
+    probe_process_wide_test_patches,
 )
 
 
@@ -2645,6 +2804,7 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     ]
     repr_name_scalar = [f for f in findings if f.probe == "repr_name_scalar_authority"]
     dup = [f for f in findings if f.probe == "duplicate_authority"]
+    process_wide_patches = [f for f in findings if f.probe == "process_wide_test_patch"]
     kitchen_sink_files = float(len(kitchen_sink))
     max_kitchen_sink_structural_score = float(
         max((f.metric for f in kitchen_sink), default=0)
@@ -2688,6 +2848,9 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
             sum(int(f.metric) for f in repr_name_scalar)
         ),
         "duplicate_authorities": float(len(dup)),
+        "process_wide_test_patches": float(
+            sum(int(f.metric) for f in process_wide_patches)
+        ),
     }
 
     if set(metrics) != release_receipt.STRUCTURAL_AUDIT_METRICS:
