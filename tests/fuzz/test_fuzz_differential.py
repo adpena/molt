@@ -2,8 +2,8 @@
 
 Each test class generates programs that exercise a particular optimization
 pass (constant folding, dead-code elimination, CSE, LICM) and verifies that
-the generated program produces correct output under CPython.  When Molt is
-available, it also compiles and compares Molt output against CPython.
+the generated program produces correct output under CPython. It also compiles
+targeted programs with Molt and compares their output against CPython.
 
 These are *targeted* fuzz tests -- they combine hand-crafted templates with
 randomized parameters rather than being fully random.
@@ -17,16 +17,16 @@ from random import Random
 
 import pytest
 
+from molt.cargo_execution_policy import default_nested_process_timeout_seconds
 from tests.native_process_guard import run_native_test_process
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_REPO_ROOT / "tools"))
+from tools.fuzz_compiler_execution import compile_molt, fuzz_build_env, run_molt_binary
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 _TIMEOUT = 10
+_RUN_TIMEOUT_SECONDS = 30
 
 
 def _run_cpython(source: str) -> tuple[str, int]:
@@ -40,49 +40,25 @@ def _run_cpython(source: str) -> tuple[str, int]:
     return result.stdout, result.returncode
 
 
-def _molt_available() -> bool:
-    try:
-        result = run_native_test_process(
-            [sys.executable, "-m", "molt.cli", "--help"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            cwd=str(_REPO_ROOT),
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
-
-
 def _run_molt(source: str, tmp_path: Path, tag: str) -> tuple[str | None, str]:
-    """Compile and run *source* with Molt, returning (stdout, error_msg).
+    """Compile *source* with Molt and run the binary: ``(stdout, error)``.
 
-    Returns ``(None, reason)`` when compilation or execution fails.
+    Builds and runs through the compiler fuzzer's own execution authority, so
+    both read program output the same way. Returns ``(None, reason)`` when the
+    build or the run fails.
     """
     src_file = tmp_path / f"diff_{tag}.py"
     src_file.write_text(source, encoding="utf-8")
-    build = run_native_test_process(
-        [
-            sys.executable,
-            "-m",
-            "molt.cli",
-            "build",
-            "--profile",
-            "debug",
-            "--deterministic",
-            "--json",
-            str(src_file),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        cwd=str(_REPO_ROOT),
+    env = fuzz_build_env()
+    binary, error = compile_molt(
+        str(src_file), "dev", default_nested_process_timeout_seconds("build"), env
     )
-    if build.returncode != 0:
-        return None, f"Molt build failed: {build.stderr[:300]}"
-    # For now just return None -- full binary extraction requires JSON
-    # parsing identical to fuzz_compiler.py which we don't duplicate here.
-    return None, "binary extraction not implemented in differential tests"
+    if binary is None:
+        return None, error
+    stdout, stderr, returncode = run_molt_binary(binary, _RUN_TIMEOUT_SECONDS, env)
+    if returncode != 0:
+        return None, f"Molt binary exited {returncode}: {stderr[:300]}"
+    return stdout, ""
 
 
 # ---------------------------------------------------------------------------
@@ -334,22 +310,17 @@ class TestDifferentialLICM:
 class TestDifferentialMoltVsCPython:
     """When Molt is available, compile targeted programs and compare output."""
 
-    @pytest.fixture(autouse=True)
-    def _skip_unless_molt(self) -> None:
-        if not _molt_available():
-            pytest.skip("molt CLI not available")
-
     @pytest.mark.parametrize("seed", range(10))
     def test_arithmetic_molt_matches(self, seed: int, tmp_path: Path) -> None:
         source = TestDifferentialArithmetic._make_program(seed)
         cpython_out, rc = _run_cpython(source)
         assert rc == 0
         molt_out, err = _run_molt(source, tmp_path, f"arith_{seed}")
-        if molt_out is not None:
-            assert molt_out.strip() == cpython_out.strip(), (
-                f"seed={seed}: Molt output differs from CPython\n"
-                f"CPython: {cpython_out[:200]}\nMolt: {molt_out[:200]}"
-            )
+        assert molt_out is not None, f"seed={seed}: {err}"
+        assert molt_out.strip() == cpython_out.strip(), (
+            f"seed={seed}: Molt output differs from CPython\n"
+            f"CPython: {cpython_out[:200]}\nMolt: {molt_out[:200]}"
+        )
 
     @pytest.mark.parametrize("seed", range(10))
     def test_dce_molt_matches(self, seed: int, tmp_path: Path) -> None:
@@ -357,6 +328,6 @@ class TestDifferentialMoltVsCPython:
         cpython_out, rc = _run_cpython(source)
         assert rc == 0
         molt_out, err = _run_molt(source, tmp_path, f"dce_{seed}")
-        if molt_out is not None:
-            assert molt_out.strip() == cpython_out.strip()
-            assert "DEAD CODE REACHED" not in molt_out
+        assert molt_out is not None, f"seed={seed}: {err}"
+        assert molt_out.strip() == cpython_out.strip()
+        assert "DEAD CODE REACHED" not in molt_out

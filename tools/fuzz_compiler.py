@@ -96,7 +96,7 @@ from tools.fuzz_compiler_driver import (  # noqa: E402
     run_safe_fuzzer,
 )
 from tools.fuzz_compiler_execution import (  # noqa: E402
-    _build_env,
+    fuzz_build_env,
     _extract_binary,
     _repo_root,
     compile_molt,
@@ -152,7 +152,7 @@ __all__ = [
     "T_SET_INT",
     "T_STR",
     "T_TUPLE",
-    "_build_env",
+    "fuzz_build_env",
     "_extract_binary",
     "_fuzz_one_program",
     "_log",
