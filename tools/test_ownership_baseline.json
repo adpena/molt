@@ -121,7 +121,6 @@
   "tests/tools/test_perf_history.py",
   "tests/tools/test_perf_release_integrity.py",
   "tests/tools/test_proof_supervisor_generation.py",
-  "tests/tools/test_signed_ratio.py",
   "tests/tools/test_target_derived_toolchains.py"
  ]
 }

@@ -5728,7 +5728,7 @@ def test_summary_json_reports_incomplete_sampling_without_fabricating_incident(
         "max_process_rows": 0,
         "observer_wall_time_s": 0.0,
         "observer_cpu_time_s": 0.0,
-        "observer_cpu_duty_cycle": 0.0,
+        "observer_cpu_duty_cycle": None,
     }
 
 
