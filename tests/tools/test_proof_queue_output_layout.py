@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import sqlite3
 import sys
 from types import SimpleNamespace
@@ -510,10 +511,14 @@ def test_shared_environment_boundary_refuses_toolchain_overlap_before_provision(
         result_root=tmp_path / "receipts", declaration=layout.declare_root(str(root))
     )
     env = {authority: str(root / "tools")} if authority.isupper() else {}
-    monkeypatch.setattr(
-        layout.shutil,
-        "which",
-        lambda name, **kwargs: str(root / "bin" / name) if name == authority else None,
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        layout,
+        which=lambda name, **kwargs: (
+            str(root / "bin" / name) if name == authority else None
+        ),
     )
     with pytest.raises(ValueError, match="overlaps protected"):
         selected.validate_environment(env)

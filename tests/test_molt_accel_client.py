@@ -3,13 +3,16 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
+import molt_accel.client as client_module
 from molt_accel.client import MoltClient, MoltClientPool
 from molt_accel.codec import decode_payload, encode_payload
 from molt_accel.errors import MoltBusy, MoltCancelled, MoltInvalidInput, MoltTimeout
+from tests.process_guard_common import install_module_view
 
 
 def _worker_cmd() -> list[str]:
@@ -106,7 +109,7 @@ def test_client_retry_on_timeout_with_backoff(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(client, "_call_once", fake_call_once)
     monkeypatch.setattr(client, "close", fake_close)
-    monkeypatch.setattr("molt_accel.client.time.sleep", sleeps.append)
+    install_module_view(monkeypatch, "time", time, client_module, sleep=sleeps.append)
 
     result = client.call(
         entry="echo",

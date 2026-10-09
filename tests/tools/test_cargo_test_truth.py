@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests import runtime_descendant_test_support as descendants
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import install_module_view, run_guarded_test_process
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "tools" / "check_cargo_test_truth.py"
@@ -1944,7 +1944,9 @@ def test_binary_runner_diagnostics_share_one_absolute_binary_deadline(
             return result(argv, 0, "".join(f"{identity}: test\n" for identity in tests))
         return result(argv, -6)
 
-    monkeypatch.setattr(binary_runner.time, "monotonic", lambda: clock[0])
+    install_module_view(
+        monkeypatch, "time", time, binary_runner, monotonic=lambda: clock[0]
+    )
     monkeypatch.setattr(binary_runner, "execute_binary", fake_execute)
     diagnosis, executions = binary_runner.diagnose_abnormal_exit(
         "molt_runtime-hash",
@@ -2038,7 +2040,9 @@ def test_binary_runner_reserves_attribution_inside_one_binary_deadline(
         assert binary_runner._remaining(deadline) == pytest.approx(2.0)
         return {"kind": "budget-reserved"}, []
 
-    monkeypatch.setattr(binary_runner.time, "monotonic", lambda: clock[0])
+    install_module_view(
+        monkeypatch, "time", time, binary_runner, monotonic=lambda: clock[0]
+    )
     monkeypatch.setattr(binary_runner, "execute_binary", fake_execute)
     monkeypatch.setattr(binary_runner, "diagnose_abnormal_exit", fake_diagnose)
 

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -1140,10 +1141,12 @@ def test_llvm_alone_requires_atl_after_shared_msvc_activation(tmp_path):
 def test_resource_preflight_rejects_insufficient_disk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        bootstrap_llvm.shutil,
-        "disk_usage",
-        lambda _path: SimpleNamespace(free=10 * 1024**3),
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        bootstrap_llvm,
+        disk_usage=lambda _path: SimpleNamespace(free=10 * 1024**3),
     )
 
     with pytest.raises(SystemExit, match="only 10.0 GiB is available"):
@@ -1157,10 +1160,12 @@ def test_resource_preflight_rejects_insufficient_disk(
 def test_resource_preflight_rejects_insufficient_memory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        bootstrap_llvm.shutil,
-        "disk_usage",
-        lambda _path: SimpleNamespace(free=100 * 1024**3),
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        bootstrap_llvm,
+        disk_usage=lambda _path: SimpleNamespace(free=100 * 1024**3),
     )
     monkeypatch.setattr(
         bootstrap_llvm,

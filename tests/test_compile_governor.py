@@ -40,12 +40,14 @@ def test_load_1m_returns_none_on_oserror(monkeypatch) -> None:
     def boom():
         raise OSError("load average unobtainable")
 
-    monkeypatch.setattr(os, "getloadavg", boom, raising=False)
+    install_module_view(monkeypatch, "os", os, compile_governor, getloadavg=boom)
     assert compile_governor._load_1m() is None
 
 
 def test_load_1m_reads_first_component_when_available(monkeypatch) -> None:
-    monkeypatch.setattr(os, "getloadavg", lambda: (1.5, 2.0, 3.0), raising=False)
+    install_module_view(
+        monkeypatch, "os", os, compile_governor, getloadavg=lambda: (1.5, 2.0, 3.0)
+    )
     assert compile_governor._load_1m() == pytest.approx(1.5)
 
 
