@@ -188,7 +188,24 @@ def test_export_requires_an_admitted_runtime(
     producer = checkout(tmp_path, monkeypatch, "producer")
     producer.activate(monkeypatch)
 
-    with pytest.raises(transfer.NativeToolchainTransferError, match="runtime"):
+    with pytest.raises(
+        transfer.NativeToolchainTransferError, match="no admitted generation"
+    ):
+        transfer.export_native_toolchain(producer.selection)
+
+
+def test_export_names_a_generation_built_from_other_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    producer = checkout(tmp_path, monkeypatch, "producer")
+    producer.build(monkeypatch)
+    producer.runtime_seed = "edited-after-build"
+    producer.activate(monkeypatch)
+
+    with pytest.raises(
+        transfer.NativeToolchainTransferError,
+        match="generation built from other inputs",
+    ):
         transfer.export_native_toolchain(producer.selection)
 
 

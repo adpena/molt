@@ -23,6 +23,7 @@ from molt.cli.build_inputs import _resolve_backend_compiler_profile
 from molt.cli.cargo_profiles import _resolve_cargo_profile_name
 from molt.cli.native_link_custody import NativeLinkCustodyError
 from molt.cli.native_link_manifest import NativeLinkDependencyManifestError
+from molt.cli.runtime_build_python import build_python_scope
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.runtime_native_build import (
     canonical_native_runtime_coordinate,
@@ -108,15 +109,21 @@ class NativeToolchainSelection:
         )
 
     def runtime_build_identity(self) -> RuntimeBuildIdentity:
-        """This checkout's current runtime inputs; never a receipt's claim."""
+        """This checkout's current runtime inputs; never a receipt's claim.
+
+        The capture runs in the build-Python scope a ``molt build`` opens, so
+        it records the same build interpreter as the build it is compared to.
+        """
         try:
-            return current_native_runtime_build_identity(
-                self.project_root,
-                self.runtime_lib,
-                target_triple=None,
-                cargo_profile=self.runtime_cargo_profile,
-                stdlib_profile=STDLIB_PROFILE,
-            )
+            with build_python_scope(None) as build_python_admission:
+                return current_native_runtime_build_identity(
+                    self.project_root,
+                    self.runtime_lib,
+                    target_triple=None,
+                    cargo_profile=self.runtime_cargo_profile,
+                    stdlib_profile=STDLIB_PROFILE,
+                    build_python_admission=build_python_admission,
+                )
         except (OSError, ValueError) as exc:
             raise NativeToolchainTransferError(
                 f"cannot capture the native runtime build identity: {exc}"
@@ -129,6 +136,7 @@ def export_native_toolchain(
     """The admitted runtime generation and backend files, in transfer order."""
     identity = selection.runtime_build_identity()
     members: list[TransferMember] | None = None
+    checked: list[str] = []
     for coordinate in native_runtime_generation_coordinates(
         selection.runtime_lib,
         project_root=selection.project_root,
@@ -139,6 +147,16 @@ def export_native_toolchain(
             coordinate,
             cargo_profile=selection.runtime_cargo_profile,
             target_triple=None,
+        )
+        checked.append(
+            f"{coordinate}: "
+            + (
+                "no admitted generation"
+                if generation is None
+                else "generation built from other inputs"
+                if generation.build_identity != identity
+                else "admitted"
+            )
         )
         if generation is not None and generation.build_identity == identity:
             members = [
@@ -156,7 +174,7 @@ def export_native_toolchain(
     if members is None:
         raise NativeToolchainTransferError(
             "no native runtime generation is admitted for this checkout's inputs; "
-            f"build {selection.runtime_lib.name} first"
+            f"build {selection.runtime_lib.name} first ({'; '.join(checked)})"
         )
     try:
         backend, receipt = admitted_backend_binary(
