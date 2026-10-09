@@ -665,6 +665,71 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
 }
 
 #[test]
+fn native_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
+    // These two stable ABI values are independent of the lowering helper.
+    for (symbol, expected_key) in [
+        ("molt_async_sleep_poll", Some(0xFFFF_FF00_0000_0101_u64)),
+        ("molt_promise_poll", Some(0xFFFF_FF00_0000_0104_u64)),
+        ("ordinary_poll", None),
+    ] {
+        for kind in ["alloc_task", "call_async"] {
+            let mut functions = vec![FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                name: "task_identity_probe".into(),
+                ops: vec![
+                    OpIR {
+                        kind: kind.into(),
+                        out: Some("task".into()),
+                        s_value: Some(symbol.into()),
+                        value: Some(16),
+                        task_kind: (kind == "alloc_task").then(|| "future".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret".into(),
+                        args: Some(vec!["task".into()]),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            }];
+            if expected_key.is_none() {
+                functions.push(FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Value,
+                    name: symbol.into(),
+                    params: vec!["task".into()],
+                    ops: vec![OpIR {
+                        kind: "ret".into(),
+                        args: Some(vec!["task".into()]),
+                        ..OpIR::default()
+                    }],
+                    ..FunctionIR::default()
+                });
+            }
+            let compiled = compile_function_to_clif_with_imports(functions, "task_identity_probe");
+            let function = &compiled.function;
+            let calls = call_sites_for_import(function, compiled.import_ids[MOLT_TASK_NEW.name]);
+            assert_eq!(calls.len(), 1);
+            let poll = function.dfg.inst_args(calls[0].1)[0];
+            assert_eq!(
+                constant(function, poll).map(|key| key as u64),
+                expected_key,
+                "{kind}/{symbol}: {}",
+                function.display()
+            );
+            if expected_key.is_none() {
+                assert_eq!(
+                    function.dfg.insts[definition(function, poll).unwrap()].opcode(),
+                    Opcode::FuncAddr,
+                    "{}",
+                    function.display()
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn task_guard_carries_non_entry_owned_cleanup_to_its_merge() {
     for guarded_kind in ["alloc_task", "call_async"] {
         let guarded_is_alloc = guarded_kind == "alloc_task";
@@ -1492,8 +1557,7 @@ fn marked_finally_observer_imports_only_the_fused_runtime_projection() {
     };
 
     let output = SimpleBackend::new().compile(ir);
-    let undefined =
-        crate::test_support::native_object_symbols(&output.bytes).undefined;
+    let undefined = crate::test_support::native_object_symbols(&output.bytes).undefined;
 
     assert!(
         undefined.contains("molt_async_work_poll_and_exception_last_pending"),
@@ -1517,7 +1581,7 @@ fn native_runtime_helper_import_descriptors_are_unique() {
     assert!(names.contains("molt_dec_ref_obj"));
     assert!(names.contains("molt_task_new"));
     assert!(names.contains("molt_cancel_token_get_current"));
-    assert!(names.contains("molt_task_register_token_owned"));
+    assert!(names.contains("molt_task_register_execution"));
     assert!(names.contains("molt_asyncgen_new"));
 }
 

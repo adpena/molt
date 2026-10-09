@@ -2233,6 +2233,166 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_contextvars_contains",
+        arity: 2,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_copy",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_copy_current",
+        arity: 0,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_eq",
+        arity: 2,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_get",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_getitem",
+        arity: 2,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_items",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_items_new",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_iter_next",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_iter_self",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_keys",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_keys_new",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_len",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_missing_new",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_missing_repr",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_ne",
+        arity: 2,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_new",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_property",
+        arity: 2,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_run",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_token_enter",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_token_exit",
+        arity: 4,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_token_new",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_token_repr",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_types",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_values",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_values_new",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_var_get",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_var_hash",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_var_new",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_var_repr",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_var_reset",
+        arity: 2,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_contextvars_var_set",
+        arity: 2,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_copy_copy",
         arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -4638,6 +4798,21 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_gpu_barrier",
+        arity: 0,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_gpu_block_dim",
+        arity: 0,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_gpu_block_id",
+        arity: 0,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_gpu_broadcast_binary_contiguous",
         arity: 8,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -4648,6 +4823,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_gpu_grid_dim",
+        arity: 0,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_gpu_interop_decode_bf16_bytes_to_f32",
         arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -4655,6 +4835,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     RuntimeCallableAbi {
         symbol: "molt_gpu_interop_decode_f16_bytes_to_f32",
         arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_gpu_kernel_launch_python",
+        arity: 4,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -4745,6 +4930,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     RuntimeCallableAbi {
         symbol: "molt_gpu_tensor_from_parts",
         arity: 8,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_gpu_thread_id",
+        arity: 0,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -11283,8 +11473,8 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_task_register_token_owned",
-        arity: 2,
+        symbol: "molt_task_register_execution",
+        arity: 3,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -13054,4 +13244,42 @@ pub fn runtime_callable_abi(symbol: &str) -> Option<&'static RuntimeCallableAbi>
         .binary_search_by_key(&symbol, |abi| abi.symbol)
         .ok()?;
     Some(&RUNTIME_CALLABLE_ABIS[index])
+}
+
+/// Native task constructors take stable keys for runtime polls and code
+/// addresses for compiled polls. Select the domain during lowering.
+pub fn runtime_poll_native_key(symbol: &str) -> Option<u64> {
+    const BASE: u64 = 0xFFFFFF0000000100;
+    match symbol {
+        "molt_async_sleep_poll" => Some(BASE + 1),
+        "molt_anext_default_poll" => Some(BASE + 2),
+        "molt_asyncgen_poll" => Some(BASE + 3),
+        "molt_promise_poll" => Some(BASE + 4),
+        "molt_io_wait" => Some(BASE + 5),
+        "molt_thread_poll" => Some(BASE + 6),
+        "molt_process_poll" => Some(BASE + 7),
+        "molt_ws_wait" => Some(BASE + 8),
+        "molt_asyncio_socket_reader_read_poll" => Some(BASE + 9),
+        "molt_asyncio_socket_reader_readline_poll" => Some(BASE + 10),
+        "molt_asyncio_stream_reader_read_poll" => Some(BASE + 11),
+        "molt_asyncio_stream_reader_readline_poll" => Some(BASE + 12),
+        "molt_asyncio_stream_send_all_poll" => Some(BASE + 13),
+        "molt_asyncio_sock_recv_poll" => Some(BASE + 14),
+        "molt_asyncio_sock_connect_poll" => Some(BASE + 15),
+        "molt_asyncio_sock_accept_poll" => Some(BASE + 16),
+        "molt_asyncio_sock_recv_into_poll" => Some(BASE + 17),
+        "molt_asyncio_sock_sendall_poll" => Some(BASE + 18),
+        "molt_asyncio_sock_recvfrom_poll" => Some(BASE + 19),
+        "molt_asyncio_sock_recvfrom_into_poll" => Some(BASE + 20),
+        "molt_asyncio_sock_sendto_poll" => Some(BASE + 21),
+        "molt_asyncio_fd_watcher_poll" => Some(BASE + 22),
+        "molt_asyncio_server_accept_loop_poll" => Some(BASE + 23),
+        "molt_contextlib_asyncgen_enter_poll" => Some(BASE + 24),
+        "molt_contextlib_asyncgen_exit_poll" => Some(BASE + 25),
+        "molt_contextlib_async_exitstack_exit_poll" => Some(BASE + 26),
+        "molt_contextlib_async_exitstack_enter_context_poll" => Some(BASE + 27),
+        "molt_await_iterator_poll" => Some(BASE + 28),
+        "molt_coroutine_wrapper_poll" => Some(BASE + 29),
+        _ => None,
+    }
 }

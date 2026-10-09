@@ -77,7 +77,6 @@ from .registration import validate_registration
 from .frontend_validate import (
     _frontend_effect_class_map,  # noqa: F401 - generator facade export
     _frontend_effect_from_opcode,  # noqa: F401 - generator facade export
-    _frontend_wire_spelling_to_op_kind,  # noqa: F401 - generator facade export
     _simpleir_registered_runtime_kinds,
     _validate_frontend_tables,
 )
@@ -980,9 +979,9 @@ def load_table(table_path: Path = TABLE) -> dict:
 
     comparison_warning_pairs(data)
 
+    validate_registration(data)
     frontend_operator_map(data)
     _validate_frontend_tables(data, opcodes)
-    validate_registration(data)
 
     unknown_requirement_carriers = set(
         requirement_carriers

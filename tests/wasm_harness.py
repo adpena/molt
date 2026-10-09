@@ -10112,7 +10112,12 @@ BASE_IMPORTS = """\
     taskFrameContextCapture(addr, pollFn);
     return boxPtrAddr(addr);
   },
-  task_register_token_owned: (taskBits, tokenBits) => {
+  // This compiler-unit mock supports raw inherited generator polling. Context
+  // semantics are exercised by wasm_linked_runner with the real runtime owner.
+  task_register_execution: (taskBits, tokenBits, contextBits) => {
+    if (contextBits !== boxNone()) {
+      throw new Error("Context-bearing scheduling requires the linked Molt runtime");
+    }
     if (!isPtr(taskBits) || heap.has(taskBits & POINTER_MASK)) {
       const exc = exceptionNew(
         boxPtr({ type: 'str', value: 'TypeError' }),

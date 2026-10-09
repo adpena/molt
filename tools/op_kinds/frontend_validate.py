@@ -3,17 +3,12 @@ from __future__ import annotations
 import ast
 
 from .errors import OpKindTableError
+from .registration import frontend_kinds_for_wire_kind
 from .runtime_requirements import (
     registered_runtime_kinds as _simpleir_registered_runtime_kinds,
 )
 from .schema import _FRONTEND_EFFECT_VALUES
 from .primitive_effects import PRIMITIVE_FRONTEND_TYPES, frontend_operator_map
-
-
-def _frontend_wire_spelling_to_op_kind(spelling: str) -> str:
-    """Map a wire-kind spelling to the frontend's pre-serialization op.kind."""
-
-    return spelling.upper()
 
 
 def _frontend_effect_from_opcode(row: dict) -> str:
@@ -43,7 +38,8 @@ def _frontend_effect_class_map(data: dict) -> dict[str, str]:
         opcode = opcodes_by_name[opcode_name]
         effect = _frontend_effect_from_opcode(opcode)
         for spelling in [row["canonical"], *row.get("aliases", [])]:
-            effects[_frontend_wire_spelling_to_op_kind(spelling)] = effect
+            for kind in frontend_kinds_for_wire_kind(data, spelling):
+                effects[kind] = effect
 
     # [[frontend_raising_kind]] is the may-raise axis, not the memory axis.
     # Memory classes come from opcode facts above or explicit
@@ -62,7 +58,8 @@ def _frontend_effect_class_map(data: dict) -> dict[str, str]:
                 "conditional_branch",
             )
         ):
-            effects[_frontend_wire_spelling_to_op_kind(row["kind"])] = "control"
+            for kind in frontend_kinds_for_wire_kind(data, row["kind"]):
+                effects[kind] = "control"
 
     for row in data.get("frontend_check_exception_skip", []):
         kind = row["kind"]
@@ -78,8 +75,9 @@ def _frontend_effect_class_map(data: dict) -> dict[str, str]:
 def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
     """Structurally validate the frontend `op.kind` tables.
 
-    These describe the FRONTEND's UPPERCASE pre-serialization `op.kind`
-    vocabulary (distinct from the wire `[[kind]]` spellings). The validation is
+    These describe the frontend's pre-serialization `op.kind` vocabulary.
+    Explicit lowering rows own non-default spellings, including lowercase
+    returns; other wire spellings project to uppercase. The validation is
     the structural kill for the frontend⇄backend dual raising-oracle drift:
 
       * Every `[[frontend_raising_kind]]` row carrying `opcode = X` is
@@ -209,12 +207,12 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
         if row.get("mapper_opcode") not in predicates:
             continue
         for spelling in [row["canonical"], *row.get("aliases", [])]:
-            kind = _frontend_wire_spelling_to_op_kind(spelling)
-            if kind not in seen_raising or kind in seen_skip:
-                raise OpKindTableError(
-                    f"predicate frontend kind {kind} requires a raising observer "
-                    "and cannot skip CHECK_EXCEPTION"
-                )
+            for kind in frontend_kinds_for_wire_kind(data, spelling):
+                if kind not in seen_raising or kind in seen_skip:
+                    raise OpKindTableError(
+                        f"predicate frontend kind {kind} requires a raising observer "
+                        "and cannot skip CHECK_EXCEPTION"
+                    )
 
     # -- [[binary_op]] (EXHAUSTIVE over ast.operator) -----------------------
     binary = data.get("binary_op", [])
@@ -254,10 +252,11 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
         raise OpKindTableError("table has no [[frontend_effect_kind]] rows")
     seen_effect: set[str] = set()
     mapped_kinds = {
-        spelling.upper()
+        kind
         for row in data.get("kind", [])
         if row.get("mapper_opcode")
         for spelling in (row["canonical"], *row.get("aliases", []))
+        for kind in frontend_kinds_for_wire_kind(data, spelling)
     }
     for row in frontend_effect_rows:
         kind = row.get("kind")
@@ -383,9 +382,17 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
                 f"got {actual}"
             )
 
-    # Both vocabularies have semantic owners. A frontend optimizer token cannot
-    # also be a runtime wire spelling; do not infer one from casing the other.
-    overlap = _simpleir_registered_runtime_kinds(data).intersection(effect_map)
+    # Both vocabularies have semantic owners. Shared spellings require an
+    # explicit identity lowering; an effect token cannot grant wire admission.
+    identity_lowerings = {
+        row["kind"]
+        for row in data.get("frontend_lowering_kind", ())
+        if row["kind"] == row["wire_kind"]
+    }
+    overlap = (
+        _simpleir_registered_runtime_kinds(data).intersection(effect_map)
+        - identity_lowerings
+    )
     if overlap:
         raise OpKindTableError(
             "frontend effect tokens leak into runtime wire vocabulary: "

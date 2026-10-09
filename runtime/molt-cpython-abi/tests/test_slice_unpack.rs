@@ -46,19 +46,6 @@ fn test_guard() -> MutexGuard<'static, ()> {
 
 const BIG_U64_VALUE: u64 = u64::MAX - 3;
 
-unsafe extern "C" fn mock_int_as_i64_checked(_bits: u64, _out: *mut i64) -> std::os::raw::c_int {
-    -1
-}
-
-unsafe extern "C" fn mock_int_as_u64_checked(bits: u64, out: *mut u64) -> std::os::raw::c_int {
-    if bits == BIG_U64_BITS.load(Ordering::SeqCst) {
-        unsafe { *out = BIG_U64_VALUE };
-        0
-    } else {
-        -1
-    }
-}
-
 fn install_hooks() {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     if BIG_U64_BITS.load(Ordering::SeqCst) == 0 {
@@ -73,8 +60,7 @@ fn install_hooks() {
     }
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
-    hooks.int_as_i64_checked = mock_int_as_i64_checked;
-    hooks.int_as_u64_checked = mock_int_as_u64_checked;
+
     hooks.type_lookup_borrowed = mock_type_lookup;
     support::prepare_runtime_class_abi_test_thread(hooks);
 }

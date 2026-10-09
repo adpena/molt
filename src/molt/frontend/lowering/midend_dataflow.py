@@ -330,7 +330,7 @@ class MidendDataflowMixin(GeneratorMixinBase):
                             failures.append((op_idx, op.kind, name))
                         continue
                     def_block = definition_block[name]
-                    if def_block not in cfg.dominators.get(block_id, set()):
+                    if not cfg.dominance.dominates(def_block, block_id):
                         failures.append((op_idx, op.kind, name))
                         continue
                     if def_block == block_id and def_idx >= op_idx:

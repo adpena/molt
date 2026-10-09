@@ -16,7 +16,13 @@ from molt.frontend._types import (
     CodeSlotDeclaration,
     _SCCP_OVERDEFINED,
 )
-from molt.frontend.cfg_analysis import BasicBlock, CFGEdgeKind, CFGGraph, build_cfg
+from molt.frontend.cfg_analysis import (
+    BasicBlock,
+    CFGEdgeKind,
+    CFGGraph,
+    DominatorTree,
+    build_cfg,
+)
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
     SIMPLEIR_RUNTIME_REQUIREMENT_IMPORT_PROTOCOL,
@@ -82,7 +88,7 @@ def test_operator_callbacks_invalidate_unrelated_heap_read_cse(
                 kind=kind, args=operands, result=MoltValue("callback_result", "int")
             ),
             MoltOp(kind="LEN", args=[MoltValue("observed")], result=MoltValue("after")),
-            MoltOp(kind="RETURN", args=[MoltValue("after")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("after")], result=MoltValue("none")),
         ]
     )
     reads = [op for op in lowered if op.get("kind") == "len"]
@@ -144,7 +150,7 @@ def test_native_len_cse_uses_exact_constructor_not_annotation(constructor: str) 
                 MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("first")),
                 MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("second")),
                 MoltOp(
-                    kind="RETURN", args=[MoltValue("second")], result=MoltValue("none")
+                    kind="ret", args=[MoltValue("second")], result=MoltValue("none")
                 ),
             ]
         )
@@ -176,7 +182,7 @@ def test_native_index_cse_requires_exact_integer_index() -> None:
                     result=MoltValue("second"),
                 ),
                 MoltOp(
-                    kind="RETURN", args=[MoltValue("second")], result=MoltValue("none")
+                    kind="ret", args=[MoltValue("second")], result=MoltValue("none")
                 ),
             ]
         )
@@ -247,7 +253,7 @@ def test_callback_boundary_invalidates_type_of_read_and_guard_tag_fact() -> None
                 args=[MoltValue("first"), MoltValue("second")],
                 result=MoltValue("types"),
             ),
-            MoltOp(kind="RETURN", args=[MoltValue("types")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("types")], result=MoltValue("none")),
         ]
     )
     assert sum(op["kind"] == "type_of" for op in lowered) == 2
@@ -321,7 +327,7 @@ def test_exact_container_provenance_rejects_malformed_shapes(
 
 @pytest.mark.parametrize("callback_result", ["unused", "none"])
 @pytest.mark.parametrize("callback_is_primitive", [False, True])
-def test_sccp_callback_kills_current_type_but_keeps_observed_tag(
+def test_sccp_callback_kills_cached_type_fact_but_keeps_exact_scalar_observations(
     callback_result: str, callback_is_primitive: bool
 ) -> None:
     gen = SimpleTIRGenerator()
@@ -329,14 +335,13 @@ def test_sccp_callback_kills_current_type_but_keeps_observed_tag(
     expected = MoltValue("expected")
     old, current = MoltValue("old"), MoltValue("current")
     ops = [
-        MoltOp(kind="MISSING", args=[], result=obj),
+        MoltOp(kind="CONST", args=[7], result=obj),
         MoltOp(
             kind="CONST" if callback_is_primitive else "MISSING",
             args=[7] if callback_is_primitive else [],
             result=callback,
         ),
         MoltOp(kind="CONST", args=[1], result=expected),
-        MoltOp(kind="GUARD_TAG", args=[obj, expected], result=MoltValue("none")),
         MoltOp(kind="TYPE_OF", args=[obj], result=old),
         MoltOp(kind="NEG", args=[callback], result=MoltValue(callback_result)),
         MoltOp(kind="EQ", args=[old, expected], result=MoltValue("old_matches")),
@@ -349,13 +354,13 @@ def test_sccp_callback_kills_current_type_but_keeps_observed_tag(
     state = sccp.out_values[cfg.index_to_block[len(ops) - 1]]
     assert state["old"] == 1
     assert state["old_matches"] is True
+    # A literal proves exactness; profiling guards cannot establish this fact.
+    # The callback invalidates cached heap relations, not immutable scalar values.
+    assert state["current"] == 1
+    assert state["now_matches"] is True
     if callback_is_primitive:
-        assert state["current"] == 1
-        assert state["now_matches"] is True
         assert state["__tag__:obj"] == 1
     else:
-        assert state["current"] is _SCCP_OVERDEFINED
-        assert state["now_matches"] is _SCCP_OVERDEFINED
         assert "__tag__:obj" not in state
 
 
@@ -384,7 +389,7 @@ def test_sccp_heap_facts_must_survive_every_join_predecessor() -> None:
         MoltOp(kind="CONST", args=[0], result=MoltValue("branch_marker")),
         MoltOp(kind="END_IF", args=[], result=MoltValue("none")),
         MoltOp(kind="TYPE_OF", args=[obj], result=MoltValue("current")),
-        MoltOp(kind="RETURN", args=[MoltValue("current")], result=MoltValue("none")),
+        MoltOp(kind="ret", args=[MoltValue("current")], result=MoltValue("none")),
     ]
     gen._op_by_result = {op.result.name: op for op in ops if op.result.name != "none"}
     cfg = build_cfg(ops)
@@ -446,7 +451,7 @@ def test_callback_invalidates_all_heap_read_keys_and_current_type_guards() -> No
             MoltOp(kind="GUARD_TAG", args=[obj, expected], result=MoltValue("none")),
             MoltOp(kind="NEG", args=[MoltValue("callback")], result=MoltValue("none")),
             MoltOp(kind="GUARD_TAG", args=[obj, expected], result=MoltValue("none")),
-            MoltOp(kind="RETURN", args=[obj], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[obj], result=MoltValue("none")),
         ]
     )
     assert sum(op["kind"] == "guard_tag" for op in lowered) == 2
@@ -459,7 +464,7 @@ def test_dynamic_abs_calls_are_not_common_subexpressions() -> None:
             MoltOp(kind="MISSING", args=[], result=operand),
             MoltOp(kind="ABS", args=[operand], result=MoltValue("first", "int")),
             MoltOp(kind="ABS", args=[operand], result=MoltValue("second", "int")),
-            MoltOp(kind="RETURN", args=[MoltValue("second")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("second")], result=MoltValue("none")),
         ]
     )
     assert len([op for op in lowered if op.get("kind") == "abs"]) == 2, (
@@ -495,7 +500,7 @@ def test_pure_concatenation_cse_preserves_operand_order(kind, left, right) -> No
                 args=[forward.result, reverse.result],
                 result=MoltValue("pair"),
             ),
-            MoltOp(kind="RETURN", args=[MoltValue("pair")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("pair")], result=MoltValue("none")),
         ]
     )
     assert [op["args"] for op in lowered if op["kind"] == "add"] == [
@@ -551,7 +556,7 @@ def test_bytes_warning_comparisons_are_observable_heap_barriers(
                 args=[before, after, first.result, second.result],
                 result=MoltValue("pair"),
             ),
-            MoltOp(kind="RETURN", args=[MoltValue("pair")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("pair")], result=MoltValue("none")),
         ]
     )
     assert len([op for op in lowered if op.get("kind") == kind.lower()]) == 2, (
@@ -883,7 +888,7 @@ def test_canonicalization_uses_current_unique_producers_and_restores_emitter_ind
         MoltOp(kind="MISSING", args=[], result=obj),
         MoltOp(kind="LEN", args=[obj], result=MoltValue("first")),
         MoltOp(kind="LEN", args=[obj], result=MoltValue("second")),
-        MoltOp(kind="RETURN", args=[MoltValue("second")], result=MoltValue("none")),
+        MoltOp(kind="ret", args=[MoltValue("second")], result=MoltValue("none")),
     ]
     rewritten = gen._canonicalize_control_aware_ops(ops)
     assert sum(op.kind == "LEN" for op in rewritten) == 2
@@ -1227,12 +1232,13 @@ def test_source_line_serializes_and_survives_split_field_rewrites() -> None:
                 end_col_offset=14,
             ),
             MoltOp(kind="CONST", args=[1], result=MoltValue("value")),
-            MoltOp(kind="RETURN", args=[MoltValue("value")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("value")], result=MoltValue("none")),
         ]
     )
 
     const_op = next(op for op in lowered if op.get("kind") == "const")
-    ret_op = next(op for op in lowered if op.get("kind") == "ret_void")
+    ret_op = next(op for op in lowered if op.get("kind") == "ret")
+    assert ret_op["args"] == [const_op["out"]]
     assert const_op["source_line"] == 17
     assert ret_op["source_line"] == 17
 
@@ -1318,7 +1324,7 @@ def _build_sccp_growth_ops(depth: int, *, constant_cond: bool | None) -> list[Mo
             )
         )
         ops.append(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-    ops.append(MoltOp(kind="RETURN", args=[MoltValue("acc")], result=MoltValue("none")))
+    ops.append(MoltOp(kind="ret", args=[MoltValue("acc")], result=MoltValue("none")))
     return ops
 
 
@@ -1393,9 +1399,9 @@ def _eval_simple_ops(ops: list[MoltOp]) -> int | None:
             assert target in label_to_pc
             pc = label_to_pc[target] + 1
             continue
-        if op.kind == "RETURN":
-            if not op.args:
-                return None
+        if op.kind == "ret_void":
+            return None
+        if op.kind == "ret":
             ret = op.args[0]
             if isinstance(ret, MoltValue):
                 return int(env[ret.name])
@@ -1495,7 +1501,7 @@ def _two_stage_alias_ops() -> list[MoltOp]:
             args=[MoltValue("dup_a"), MoltValue("dup_b")],
             result=MoltValue("pair"),
         ),
-        MoltOp(kind="RETURN", args=[MoltValue("pair")], result=MoltValue("none")),
+        MoltOp(kind="ret", args=[MoltValue("pair")], result=MoltValue("none")),
     ]
 
 
@@ -1514,7 +1520,7 @@ def test_trivial_phi_elides_and_rewrites_users() -> None:
                 args=[MoltValue("y"), MoltValue("one")],
                 result=MoltValue("sum"),
             ),
-            MoltOp(kind="RETURN", args=[MoltValue("sum")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("sum")], result=MoltValue("none")),
         ]
     )
 
@@ -1755,7 +1761,7 @@ def test_cfg_const_dedupe_reuses_existing_constant_value() -> None:
                 args=[MoltValue("b"), MoltValue("one")],
                 result=MoltValue("sum"),
             ),
-            MoltOp(kind="RETURN", args=[MoltValue("sum")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("sum")], result=MoltValue("none")),
         ]
     )
 
@@ -1832,9 +1838,9 @@ def test_sccp_retains_declared_handler_edges_without_textual_try_inference(
         MoltOp("CONST", [3], MoltValue("rhs")),
         MoltOp("ADD", [MoltValue("lhs"), MoltValue("rhs")], MoltValue("sum")),
         MoltOp("TRY_END", [99], MoltValue("none")),
-        MoltOp("RETURN", [MoltValue("sum")], MoltValue("none")),
+        MoltOp("ret", [MoltValue("sum")], MoltValue("none")),
         MoltOp("LABEL", [99], MoltValue("none")),
-        MoltOp("RETURN", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
     ]
     cfg = build_cfg(ops)
     result = SimpleTIRGenerator()._compute_sccp(ops, cfg)
@@ -1895,7 +1901,7 @@ def test_cfg_gvn_reuses_pure_int_arithmetic() -> None:
                 args=[MoltValue("y"), MoltValue("one")],
                 result=MoltValue("sum"),
             ),
-            MoltOp(kind="RETURN", args=[MoltValue("sum")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("sum")], result=MoltValue("none")),
         ]
     )
 
@@ -1969,7 +1975,7 @@ def test_sccp_prunes_constant_if_else_region() -> None:
             MoltOp(kind="ELSE", args=[], result=MoltValue("none")),
             MoltOp(kind="CONST", args=[99], result=MoltValue("dropped")),
             MoltOp(kind="END_IF", args=[], result=MoltValue("none")),
-            MoltOp(kind="RETURN", args=[MoltValue("kept")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("kept")], result=MoltValue("none")),
         ]
     )
 
@@ -1997,7 +2003,7 @@ def test_sccp_folds_comparison_condition_for_branch_pruning() -> None:
             MoltOp(kind="ELSE", args=[], result=MoltValue("none")),
             MoltOp(kind="CONST", args=[999], result=MoltValue("dead")),
             MoltOp(kind="END_IF", args=[], result=MoltValue("none")),
-            MoltOp(kind="RETURN", args=[MoltValue("kept")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("kept")], result=MoltValue("none")),
         ]
     )
 
@@ -2023,7 +2029,7 @@ def test_sccp_type_of_eq_chain_prunes_branch() -> None:
             MoltOp(kind="ELSE", args=[], result=MoltValue("none")),
             MoltOp(kind="CONST", args=[77], result=MoltValue("dead")),
             MoltOp(kind="END_IF", args=[], result=MoltValue("none")),
-            MoltOp(kind="RETURN", args=[MoltValue("kept")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("kept")], result=MoltValue("none")),
         ]
     )
 
@@ -2091,7 +2097,7 @@ def test_cfg_gvn_reuses_type_of_and_is() -> None:
                 args=[MoltValue("t1"), MoltValue("t2")],
                 result=MoltValue("cmp"),
             ),
-            MoltOp(kind="RETURN", args=[MoltValue("cmp")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("cmp")], result=MoltValue("none")),
         ]
     )
 
@@ -2108,7 +2114,7 @@ def test_cfg_prunes_unreachable_loop_region_after_jump() -> None:
             MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")),
             MoltOp(kind="LABEL", args=[2], result=MoltValue("none")),
             MoltOp(kind="CONST", args=[7], result=MoltValue("kept")),
-            MoltOp(kind="RETURN", args=[MoltValue("kept")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("kept")], result=MoltValue("none")),
         ]
     )
 
@@ -2125,7 +2131,7 @@ def test_cfg_prunes_dead_data_but_retains_region_metadata_after_jump() -> None:
             MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
             MoltOp(kind="LABEL", args=[3], result=MoltValue("none")),
             MoltOp(kind="CONST", args=[5], result=MoltValue("kept")),
-            MoltOp(kind="RETURN", args=[MoltValue("kept")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("kept")], result=MoltValue("none")),
         ]
     )
 
@@ -2142,7 +2148,7 @@ def test_cfg_prunes_noop_jump_and_dead_label() -> None:
             MoltOp(kind="JUMP", args=[1], result=MoltValue("none")),
             MoltOp(kind="LABEL", args=[1], result=MoltValue("none")),
             MoltOp(kind="CONST", args=[1], result=MoltValue("x")),
-            MoltOp(kind="RETURN", args=[MoltValue("x")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("x")], result=MoltValue("none")),
         ]
     )
 
@@ -2163,7 +2169,7 @@ def test_sccp_threads_loop_break_if_edges() -> None:
             MoltOp(kind="CONST", args=[123], result=MoltValue("dead_inside_loop")),
             MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")),
             MoltOp(kind="CONST", args=[9], result=MoltValue("out")),
-            MoltOp(kind="RETURN", args=[MoltValue("out")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("out")], result=MoltValue("none")),
         ]
     )
 
@@ -2212,6 +2218,146 @@ def test_loop_bound_solver_extracts_monotonic_tuple_and_proof() -> None:
     assert gen._prove_monotonic_loop_compare(fact) is False
 
 
+def _reachable_without_node(
+    successors: list[list[int]], entry: int, excluded: int | None
+) -> set[int]:
+    """Independent dominance oracle: remove a node and search remaining paths."""
+    reached: set[int] = set()
+    pending = [entry]
+    while pending:
+        node = pending.pop()
+        if node == excluded or node in reached:
+            continue
+        reached.add(node)
+        pending.extend(successors[node])
+    return reached
+
+
+def _assert_dominance_matches_path_removal(
+    successors: list[list[int]], entry: int, dominance: DominatorTree
+) -> None:
+    reached = _reachable_without_node(successors, entry, None)
+    without = [
+        _reachable_without_node(successors, entry, node)
+        for node in range(len(successors))
+    ]
+    for usage in range(len(successors)):
+        assert dominance.is_reachable(usage) == (usage in reached)
+        proper_dominators = []
+        for definition in range(len(successors)):
+            expected = usage in reached and usage not in without[definition]
+            assert dominance.dominates(definition, usage) == expected, (
+                successors,
+                entry,
+                definition,
+                usage,
+            )
+            if expected and definition != usage:
+                proper_dominators.append(definition)
+        # The closest proper dominator is itself dominated by every other one.
+        closest = [
+            node
+            for node in proper_dominators
+            if all(node not in without[other] for other in proper_dominators)
+        ]
+        assert len(closest) <= 1
+        assert dominance.immediate_dominator(usage) == (closest[0] if closest else None)
+
+
+@pytest.mark.parametrize("kind", ["ret", "ret_void"])
+def test_frontend_return_terminators_close_reachability(kind: str) -> None:
+    value = MoltValue("result")
+    ops = [
+        MoltOp("CONST", [7], value),
+        MoltOp(kind, [value] if kind == "ret" else [], MoltValue("none")),
+        MoltOp("CONST", [99], MoltValue("unreachable")),
+    ]
+    cfg = build_cfg(ops)
+    assert cfg.index_to_block[2] not in cfg.reachable
+    assert not cfg.successors[cfg.index_to_block[1]]
+    lowered = _lower_ops(ops)
+    assert lowered[-1]["kind"] == kind
+    assert all(op.get("value") != 99 for op in lowered)
+
+
+def test_cfg_dominance_matches_exhaustive_path_removal() -> None:
+    # All directed four-node graphs without self edges: diamonds, backedges,
+    # irreducible loops, crossed DFS siblings and unreachable predecessors.
+    edges = [
+        (source, dest) for source in range(4) for dest in range(4) if source != dest
+    ]
+    for mask in range(1 << len(edges)):
+        successors: list[list[int]] = [[] for _ in range(4)]
+        for bit, (source, dest) in enumerate(edges):
+            if mask & (1 << bit):
+                successors[source].append(dest)
+        _assert_dominance_matches_path_removal(
+            successors, 0, DominatorTree.compute(successors)
+        )
+
+
+def test_cfg_dominance_nonzero_entry_self_edges_and_absent_nodes() -> None:
+    successors = [[0, 1, 1], [1], [0, 3], [1, 3], [2]]
+    dominance = DominatorTree.compute(successors, entry=2)
+    _assert_dominance_matches_path_removal(successors, 2, dominance)
+    for node in (-1, 4, 5):
+        assert not dominance.is_reachable(node)
+        assert not dominance.dominates(node, node)
+        assert not dominance.dominates(2, node)
+        assert not dominance.dominates(node, 2)
+        assert dominance.immediate_dominator(node) is None
+    empty = build_cfg([])
+    assert empty.reachable == set()
+    assert not empty.dominance.dominates(0, 0)
+    assert empty.dominance.immediate_dominator(0) is None
+    for entry in (-1, len(successors)):
+        absent = DominatorTree.compute(successors, entry=entry)
+        for node in range(len(successors)):
+            assert not absent.is_reachable(node)
+            assert not absent.dominates(node, node)
+            assert absent.immediate_dominator(node) is None
+
+
+def test_cfg_dominance_handles_deep_chain_without_recursive_traversal() -> None:
+    # Exercise the real CFG producer with depth well above Python's call stack.
+    ops = [MoltOp("LABEL", [index], MoltValue("none")) for index in range(8192)]
+    ops.append(MoltOp("ret_void", [], MoltValue("none")))
+    cfg = build_cfg(ops)
+    last = cfg.index_to_block[len(ops) - 1]
+    assert cfg.reachable == set(range(len(cfg.blocks)))
+    assert cfg.dominance.immediate_dominator(0) is None
+    for block in range(1, len(cfg.blocks)):
+        assert cfg.dominance.immediate_dominator(block) == block - 1
+        assert cfg.dominance.dominates(0, block)
+        assert cfg.dominance.dominates(block, last)
+        assert not cfg.dominance.dominates(block, block - 1)
+
+
+def test_cfg_dominance_respects_resume_bypass() -> None:
+    ops = [
+        MoltOp("STATE_SWITCH", [], MoltValue("none")),
+        MoltOp("CONST", [1], MoltValue("before_yield")),
+        MoltOp("STATE_YIELD", [], MoltValue("none")),
+        MoltOp("ret", [MoltValue("before_yield")], MoltValue("none")),
+    ]
+    cfg = build_cfg(ops)
+    switch = cfg.index_to_block[0]
+    definition = cfg.index_to_block[1]
+    yielding = cfg.index_to_block[2]
+    resume = cfg.index_to_block[3]
+    assert cfg.edge_kinds[switch, resume] & CFGEdgeKind.RESUME
+    assert cfg.successors[yielding] == []
+    assert cfg.dominance.dominates(switch, resume)
+    assert not cfg.dominance.dominates(definition, resume)
+    _assert_dominance_matches_path_removal(
+        [cfg.successors[block.id] for block in cfg.blocks], 0, cfg.dominance
+    )
+    failures = SimpleTIRGenerator()._verify_definite_assignment_in_ops(
+        ops, predefined_value_names=set()
+    )
+    assert (3, "ret", "before_yield") in failures
+
+
 def test_cfg_models_check_exception_target_edge() -> None:
     ops = [
         MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
@@ -2219,12 +2365,21 @@ def test_cfg_models_check_exception_target_edge() -> None:
         MoltOp(kind="CONST", args=[1], result=MoltValue("x")),
         MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[7], result=MoltValue("none")),
-        MoltOp(kind="RETURN", args=[MoltValue("x")], result=MoltValue("none")),
+        MoltOp(kind="ret", args=[MoltValue("x")], result=MoltValue("none")),
     ]
     cfg = build_cfg(ops)
     check_block = cfg.index_to_block[1]
     label_block = cfg.label_to_block["7"]
     assert label_block in cfg.successors.get(check_block, [])
+    assert cfg.edge_kinds[check_block, label_block] & CFGEdgeKind.EXCEPTION
+    assert not cfg.dominance.dominates(cfg.index_to_block[2], label_block)
+    _assert_dominance_matches_path_removal(
+        [cfg.successors[block.id] for block in cfg.blocks], 0, cfg.dominance
+    )
+    failures = SimpleTIRGenerator()._verify_definite_assignment_in_ops(
+        ops, predefined_value_names=set()
+    )
+    assert (5, "ret", "x") in failures
 
 
 def test_cfg_tracks_path_local_try_closes_without_changing_if_structure() -> None:
@@ -2232,12 +2387,12 @@ def test_cfg_tracks_path_local_try_closes_without_changing_if_structure() -> Non
         MoltOp("TRY_START", [11], MoltValue("none")),
         MoltOp("IF", [MoltValue("cond")], MoltValue("none")),
         MoltOp("TRY_END", [11], MoltValue("none")),
-        MoltOp("RETURN", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
         MoltOp("END_IF", [], MoltValue("none")),
         MoltOp("TRY_END", [11], MoltValue("none")),
-        MoltOp("RETURN", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
         MoltOp("LABEL", [11], MoltValue("none")),
-        MoltOp("RETURN", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
     ]
     cfg = build_cfg(ops)
     assert cfg.control.if_to_end == {1: 4}
@@ -2252,12 +2407,12 @@ def test_structural_validator_preserves_alternative_region_closes_verbatim() -> 
         MoltOp("LOOP_START", [], MoltValue("none")),
         MoltOp("IF", [MoltValue("cond")], MoltValue("none")),
         MoltOp("TRY_END", [11], MoltValue("none")),
-        MoltOp("RETURN", [MoltValue("value")], MoltValue("none")),
+        MoltOp("ret", [MoltValue("value")], MoltValue("none")),
         MoltOp("END_IF", [], MoltValue("none")),
         MoltOp("LOOP_END", [], MoltValue("none")),
         MoltOp("TRY_END", [11], MoltValue("none")),
         MoltOp("LABEL", [11], MoltValue("none")),
-        MoltOp("RETURN", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
     ]
     rewritten, repairs = SimpleTIRGenerator()._ensure_structural_cfg_validity(
         ops, stage="path_local_close"
@@ -2274,11 +2429,11 @@ def test_label_threading_preserves_region_handler_identity(
         MoltOp("TRY_START", [10], MoltValue("none")),
         MoltOp("CHECK_EXCEPTION", [10], MoltValue("none")),
         MoltOp("TRY_END", [10], MoltValue("none")),
-        MoltOp("RETURN", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
         MoltOp("LABEL", [10], MoltValue("none")),
         MoltOp("JUMP", [20], MoltValue("none")),
         MoltOp("LABEL", [20], MoltValue("none")),
-        MoltOp("RETURN", [], MoltValue("none")),
+        MoltOp("ret_void", [], MoltValue("none")),
     ]
     gen = SimpleTIRGenerator()
     cfg = build_cfg(ops)
@@ -2346,7 +2501,7 @@ def test_structural_cfg_validator_canonicalizes_unbalanced_regions() -> None:
         MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")),
         MoltOp(kind="CONST", args=[2], result=MoltValue("y")),
         MoltOp(kind="END_IF", args=[], result=MoltValue("none")),
-        MoltOp(kind="RETURN", args=[MoltValue("x")], result=MoltValue("none")),
+        MoltOp(kind="ret", args=[MoltValue("x")], result=MoltValue("none")),
     ]
 
     rewritten, rewrites = gen._ensure_structural_cfg_validity(ops, stage="unit_test")
@@ -2380,7 +2535,7 @@ def test_structural_cfg_validator_rejects_missing_control_target(kind: str) -> N
         MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
         MoltOp(kind=kind, args=[404], result=MoltValue("none")),
         MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
-        MoltOp(kind="RETURN", args=[], result=MoltValue("none")),
+        MoltOp(kind="ret_void", args=[], result=MoltValue("none")),
     ]
 
     with pytest.raises(RuntimeError, match="unknown label"):
@@ -2415,9 +2570,9 @@ def test_aggregate_construction_preserves_its_exception_edge(kind: str) -> None:
     assert not gen._op_instance_cannot_raise(constructed, {})
     ops = [
         *gen.current_ops,
-        MoltOp("RETURN", [MoltValue("aggregate")], MoltValue("none")),
+        MoltOp("ret", [MoltValue("aggregate")], MoltValue("none")),
         MoltOp("LABEL", [99], MoltValue("none")),
-        MoltOp("RETURN", [MoltValue("none")], MoltValue("none")),
+        MoltOp("ret", [MoltValue("none")], MoltValue("none")),
     ]
     cfg = build_cfg(ops)
     sccp = gen._compute_sccp(ops, cfg)
@@ -2456,9 +2611,9 @@ def test_guard_mismatch_preserves_pending_exception_routing() -> None:
         ),
         MoltOp("CHECK_EXCEPTION", [99], MoltValue("none")),
         MoltOp("TRY_END", [99], MoltValue("none")),
-        MoltOp("RETURN", [MoltValue("value")], MoltValue("none")),
+        MoltOp("ret", [MoltValue("value")], MoltValue("none")),
         MoltOp("LABEL", [99], MoltValue("none")),
-        MoltOp("RETURN", [MoltValue("value")], MoltValue("none")),
+        MoltOp("ret", [MoltValue("value")], MoltValue("none")),
     ]
     cfg = build_cfg(ops)
     gen = SimpleTIRGenerator()
@@ -2556,9 +2711,9 @@ def test_try_check_exception_threads_through_nested_label_trampoline() -> None:
         MoltOp(kind="LABEL", args=[20], result=MoltValue("none")),
         MoltOp(kind="JUMP", args=[30], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[30], result=MoltValue("none")),
-        MoltOp(kind="RETURN", args=[MoltValue("value")], result=MoltValue("none")),
+        MoltOp(kind="ret", args=[MoltValue("value")], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[90], result=MoltValue("none")),
-        MoltOp(kind="RETURN", args=[MoltValue("value")], result=MoltValue("none")),
+        MoltOp(kind="ret", args=[MoltValue("value")], result=MoltValue("none")),
     ]
     gen = SimpleTIRGenerator()
     cfg = build_cfg(ops)
@@ -2588,7 +2743,7 @@ def test_try_except_join_normalization_threads_nested_label_trampolines() -> Non
         MoltOp(kind="CONST", args=[1], result=MoltValue("x")),
         MoltOp(kind="JUMP", args=[40], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[40], result=MoltValue("none")),
-        MoltOp(kind="RETURN", args=[MoltValue("x")], result=MoltValue("none")),
+        MoltOp(kind="ret", args=[MoltValue("x")], result=MoltValue("none")),
     ]
     gen = SimpleTIRGenerator()
     cfg = build_cfg(ops)
@@ -2616,7 +2771,7 @@ def test_nested_try_except_join_normalization_runs_before_cse_rounds() -> None:
             MoltOp(kind="CONST", args=[1], result=MoltValue("y")),
             MoltOp(kind="JUMP", args=[40], result=MoltValue("none")),
             MoltOp(kind="LABEL", args=[40], result=MoltValue("none")),
-            MoltOp(kind="RETURN", args=[MoltValue("x")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("x")], result=MoltValue("none")),
         ]
     )
 
@@ -2643,7 +2798,7 @@ def test_try_except_join_normalization_threads_deep_check_ladders() -> None:
         MoltOp(kind="CONST", args=[1], result=MoltValue("x")),
         MoltOp(kind="JUMP", args=[90], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[90], result=MoltValue("none")),
-        MoltOp(kind="RETURN", args=[MoltValue("x")], result=MoltValue("none")),
+        MoltOp(kind="ret", args=[MoltValue("x")], result=MoltValue("none")),
     ]
     gen = SimpleTIRGenerator()
     cfg = build_cfg(ops)
@@ -2695,7 +2850,7 @@ def test_sccp_preserves_non_raising_region_metadata_for_tir() -> None:
             MoltOp(kind="TRY_START", args=[], result=MoltValue("none")),
             MoltOp(kind="CONST", args=[5], result=MoltValue("x")),
             MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
-            MoltOp(kind="RETURN", args=[MoltValue("x")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("x")], result=MoltValue("none")),
         ]
     )
 
@@ -2740,7 +2895,7 @@ def test_try_exception_edge_keeps_markers_when_check_exception_is_pretrap() -> N
             MoltOp(kind="CONST", args=[404], result=MoltValue("dead_after_raise")),
             MoltOp(kind="TRY_END", args=[], result=MoltValue("none")),
             MoltOp(kind="LABEL", args=[99], result=MoltValue("none")),
-            MoltOp(kind="RETURN", args=[MoltValue("exc")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("exc")], result=MoltValue("none")),
         ]
     )
 
@@ -2772,7 +2927,7 @@ def test_sccp_folds_range_index_condition() -> None:
             MoltOp(kind="ELSE", args=[], result=MoltValue("none")),
             MoltOp(kind="CONST", args=[999], result=MoltValue("dead")),
             MoltOp(kind="END_IF", args=[], result=MoltValue("none")),
-            MoltOp(kind="RETURN", args=[MoltValue("kept")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("kept")], result=MoltValue("none")),
         ]
     )
 
@@ -2801,7 +2956,7 @@ def test_sccp_uses_type_of_eq_implication_for_branch_fold() -> None:
             MoltOp(kind="ELSE", args=[], result=MoltValue("none")),
             MoltOp(kind="CONST", args=[999], result=MoltValue("dead")),
             MoltOp(kind="END_IF", args=[], result=MoltValue("none")),
-            MoltOp(kind="RETURN", args=[MoltValue("kept")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("kept")], result=MoltValue("none")),
         ]
     )
 
@@ -2823,7 +2978,7 @@ def test_branch_tail_merge_collapses_identical_line_suffix() -> None:
             MoltOp(kind="LINE", args=[100], result=MoltValue("none")),
             MoltOp(kind="END_IF", args=[], result=MoltValue("none")),
             MoltOp(kind="CONST", args=[1], result=MoltValue("x")),
-            MoltOp(kind="RETURN", args=[MoltValue("x")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("x")], result=MoltValue("none")),
         ]
     )
 
@@ -2840,7 +2995,7 @@ def test_dynamic_len_is_not_cse_eligible_without_exact_provenance() -> None:
             MoltOp(kind="MISSING", args=[], result=MoltValue("obj")),
             MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("l1")),
             MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("l2")),
-            MoltOp(kind="RETURN", args=[MoltValue("l2")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("l2")], result=MoltValue("none")),
         ]
     )
 
@@ -2854,7 +3009,7 @@ def test_exact_builtin_len_remains_cse_eligible_without_writes() -> None:
             MoltOp(kind="LIST_NEW", args=[], result=MoltValue("obj")),
             MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("l1")),
             MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("l2")),
-            MoltOp(kind="RETURN", args=[MoltValue("l2")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("l2")], result=MoltValue("none")),
         ]
     )
 
@@ -2869,7 +3024,7 @@ def test_effect_aware_cse_does_not_reuse_heap_read_across_call_boundary() -> Non
             MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("l1")),
             MoltOp(kind="CALL_INTERNAL", args=["unknown_fn"], result=MoltValue("tmp")),
             MoltOp(kind="LEN", args=[MoltValue("obj")], result=MoltValue("l2")),
-            MoltOp(kind="RETURN", args=[MoltValue("l2")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("l2")], result=MoltValue("none")),
         ]
     )
 
@@ -2884,7 +3039,7 @@ def test_effect_aware_cse_invalidates_immutable_len_across_call_boundary() -> No
             MoltOp(kind="LEN", args=[MoltValue("t")], result=MoltValue("l1")),
             MoltOp(kind="CALL_INTERNAL", args=["unknown_fn"], result=MoltValue("tmp")),
             MoltOp(kind="LEN", args=[MoltValue("t")], result=MoltValue("l2")),
-            MoltOp(kind="RETURN", args=[MoltValue("l2")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("l2")], result=MoltValue("none")),
         ]
     )
 
@@ -2907,7 +3062,7 @@ def test_constructor_callback_projection_preserves_only_safe_unrelated_reads(
             ),
             MoltOp(kind=constructor, args=[], result=MoltValue("fresh")),
             MoltOp(kind="LEN", args=[MoltValue("observed")], result=MoltValue("after")),
-            MoltOp(kind="RETURN", args=[MoltValue("after")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("after")], result=MoltValue("none")),
         ]
     )
     assert len([op for op in lowered if op.get("kind") == "len"]) == expected_reads
@@ -2933,7 +3088,7 @@ def test_effect_alias_classes_keep_dict_len_cse_across_list_write() -> None:
                 result=MoltValue("none"),
             ),
             MoltOp(kind="LEN", args=[MoltValue("d")], result=MoltValue("l2")),
-            MoltOp(kind="RETURN", args=[MoltValue("l2")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("l2")], result=MoltValue("none")),
         ]
     )
 
@@ -2968,7 +3123,7 @@ def test_dict_write_does_not_claim_callback_free_list_index_reuse() -> None:
                 args=[MoltValue("lst"), MoltValue("idx")],
                 result=MoltValue("b"),
             ),
-            MoltOp(kind="RETURN", args=[MoltValue("b")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("b")], result=MoltValue("none")),
         ]
     )
 
@@ -2989,7 +3144,7 @@ def test_callback_read_invalidates_unrelated_exact_heap_read() -> None:
                 result=MoltValue("ignored"),
             ),
             MoltOp(kind="LEN", args=[MoltValue("items")], result=MoltValue("l2")),
-            MoltOp(kind="RETURN", args=[MoltValue("l2")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("l2")], result=MoltValue("none")),
         ]
     )
 
@@ -3012,7 +3167,7 @@ def test_module_get_attr_is_not_cse_eligible() -> None:
                 args=[MoltValue("mod"), MoltValue("name")],
                 result=MoltValue("b"),
             ),
-            MoltOp(kind="RETURN", args=[MoltValue("b")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("b")], result=MoltValue("none")),
         ]
     )
 
@@ -3274,7 +3429,7 @@ def test_module_metadata_follows_builtin_capture_and_owns_attempt_cleanup(
         end = next(
             index
             for index in range(start + 1, len(ops))
-            if ops[index].kind in {"RET", "RET_VOID", "ret", "ret_void"}
+            if ops[index].kind in {"ret", "ret_void"}
         )
         handler = kinds[start:end]
         assert handler.count("MODULE_CACHE_DEL") == 1
@@ -3665,10 +3820,19 @@ def test_runtime_callable_capability_is_preserved_at_every_frontend_acquisition(
         # callable through actual SSA copies/local slots to its invocation.
         acquired: set[str] = set()
         slots: set[str] = set()
+        home_slots: set[int] = set()
         target_calls: list[int] = []
         for index, op in enumerate(function_ops):
             args = op.get("args", [])
             if op in acquisitions:
+                acquired.add(op["out"])
+            elif op["kind"] == "frame_home_store":
+                if args and args[0] in acquired:
+                    home_slots.add(op["value"])
+                    acquired.add(op["out"])
+                else:
+                    home_slots.discard(op["value"])
+            elif op["kind"] == "frame_home_load" and op["value"] in home_slots:
                 acquired.add(op["out"])
             elif op["kind"] == "store_var":
                 if args and args[0] in acquired:
@@ -3677,7 +3841,9 @@ def test_runtime_callable_capability_is_preserved_at_every_frontend_acquisition(
                     slots.discard(op["var"])
             elif op["kind"] == "load_var" and op.get("var") in slots:
                 acquired.add(op["out"])
-            elif op["kind"] == "copy" and args and args[0] in acquired:
+            elif (
+                op["kind"] in {"copy", "binding_alias"} and args and args[0] in acquired
+            ):
                 acquired.add(op["out"])
             elif op["kind"] in {"call_bind", "call_indirect", "call_func"}:
                 if args and args[0] in acquired:
@@ -4698,12 +4864,24 @@ def f(callback):
     callback()
     return value
 """
-    slot = _cpython_code_slots(source, "f").index("value")
+    slots = _cpython_code_slots(source, "f")
     ops = _lowered_function(source, "__f", target_python=target_python)["ops"]
     loads = _home_slots(ops, "frame_home_load")
     if target_python >= (3, 13):
-        # A PEP 667 frame proxy may have rebound it during the callback.
-        assert loads == {slot}
+        # The global object callable may rebind callback through a PEP 667 frame
+        # proxy; that callback may then rebind value. Each later read needs its home.
+        assert loads == {slots.index("callback"), slots.index("value")}
+        object_call, callback_call = [
+            i for i, op in enumerate(ops) if op["kind"] == "call_func"
+        ]
+        callback_load, value_load = [
+            (i, op["value"])
+            for i, op in enumerate(ops)
+            if op["kind"] == "frame_home_load"
+        ]
+        assert object_call < callback_load[0] < callback_call < value_load[0]
+        assert callback_load[1] == slots.index("callback")
+        assert value_load[1] == slots.index("value")
     else:
         assert loads == set()
 
@@ -4882,8 +5060,11 @@ value = Point(3)
     assert all(op.get("effect_proof") is None for op in reads)
 
 
+@pytest.mark.parametrize("target_python", [(3, 12), (3, 13), (3, 14)])
 @pytest.mark.parametrize("loop", ["while i < 3:", "for i in range(3):"])
-def test_function_loop_class_lookup_stays_on_executed_path(loop: str) -> None:
+def test_function_loop_class_lookup_stays_on_executed_path(
+    loop: str, target_python: tuple[int, int]
+) -> None:
     source = """
 class Point:
     def __init__(self, x):
@@ -4895,7 +5076,7 @@ def main():
         point = Point(i)
         i += 1
 """
-    gen = SimpleTIRGenerator(module_name="__main__")
+    gen = SimpleTIRGenerator(module_name="__main__", target_python=target_python)
     gen.visit(ast.parse(source.replace("LOOP", loop)))
     ir = gen.to_json()
     func_ops = next(
@@ -4909,16 +5090,29 @@ def main():
         and str(op.get("var", "")).startswith("__molt_static_class_")
     ]
     assert not cache_vars
-    loop_start = next(
-        i for i, op in enumerate(func_ops) if op.get("kind") == "loop_start"
-    )
     assert not _module_attr_reads_named(func_ops, "Point")
-    (callee,) = _module_global_reads_named(func_ops, "Point")
-    assert func_ops.index(callee) > loop_start
-    assert any(
-        op["kind"] == "call_func" and op.get("args", [None])[0] == callee["out"]
-        for op in func_ops[loop_start + 1 :]
-    )
+    callees = _module_global_reads_named(func_ops, "Point")
+    assert callees
+    # Loop specialization may clone the body. Every lookup and its invocation
+    # must remain inside its own loop, after the condition's exit check.
+    loop_exits: list[bool] = []
+    checked_callees: set[str] = set()
+    called_callees: set[str] = set()
+    for op in func_ops:
+        kind = op["kind"]
+        if kind == "loop_start":
+            loop_exits.append(False)
+        elif kind == "loop_end":
+            loop_exits.pop()
+        elif kind in {"loop_break_if_false", "loop_break_if_true"}:
+            loop_exits[-1] = True
+        elif op in callees:
+            assert loop_exits and loop_exits[-1]
+            checked_callees.add(op["out"])
+        elif kind == "call_func" and op.get("args", [None])[0] in checked_callees:
+            assert loop_exits and loop_exits[-1]
+            called_callees.add(op["args"][0])
+    assert called_callees == {op["out"] for op in callees}
 
 
 def test_dynamic_getattr_generic_obj_cannot_be_reused_without_callback_proof() -> None:
@@ -4935,7 +5129,7 @@ def test_dynamic_getattr_generic_obj_cannot_be_reused_without_callback_proof() -
                 args=[MoltValue("obj"), "value"],
                 result=MoltValue("b"),
             ),
-            MoltOp(kind="RETURN", args=[MoltValue("b")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("b")], result=MoltValue("none")),
         ]
     )
 
@@ -4958,7 +5152,7 @@ def test_dynamic_getattr_name_cannot_be_reused_without_callback_proof() -> None:
                 args=[MoltValue("obj"), MoltValue("name")],
                 result=MoltValue("b"),
             ),
-            MoltOp(kind="RETURN", args=[MoltValue("b")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("b")], result=MoltValue("none")),
         ]
     )
 
@@ -4981,7 +5175,7 @@ def test_sccp_folds_contains_constant_branch() -> None:
             MoltOp(kind="ELSE", args=[], result=MoltValue("none")),
             MoltOp(kind="CONST", args=[999], result=MoltValue("dead")),
             MoltOp(kind="END_IF", args=[], result=MoltValue("none")),
-            MoltOp(kind="RETURN", args=[MoltValue("kept")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("kept")], result=MoltValue("none")),
         ]
     )
 
@@ -5002,7 +5196,7 @@ def test_midend_pipeline_is_idempotent_on_second_round() -> None:
         MoltOp(
             kind="ADD", args=[MoltValue("c"), MoltValue("c")], result=MoltValue("sum")
         ),
-        MoltOp(kind="RETURN", args=[MoltValue("sum")], result=MoltValue("none")),
+        MoltOp(kind="ret", args=[MoltValue("sum")], result=MoltValue("none")),
     ]
     first = gen._run_ir_midend_passes(input_ops)
     second = gen._run_ir_midend_passes(first)
@@ -5022,7 +5216,7 @@ def test_retired_midend_disable_env_does_not_skip_pipeline(
             MoltOp(kind="ELSE", args=[], result=MoltValue("none")),
             MoltOp(kind="CONST", args=[999], result=MoltValue("dead")),
             MoltOp(kind="END_IF", args=[], result=MoltValue("none")),
-            MoltOp(kind="RETURN", args=[MoltValue("kept")], result=MoltValue("none")),
+            MoltOp(kind="ret", args=[MoltValue("kept")], result=MoltValue("none")),
         ]
     )
 
@@ -5291,7 +5485,7 @@ def test_midend_idempotence_probe_has_no_env_or_budget_bypass() -> None:
                     [
                         MoltOp(kind="CONST", args=[1], result=MoltValue("x")),
                         MoltOp(
-                            kind="RETURN",
+                            kind="ret",
                             args=[MoltValue("x")],
                             result=MoltValue("none"),
                         ),
@@ -5373,7 +5567,7 @@ def test_sccp_new_executable_edge_revisits_phi_with_equal_predecessor_states() -
             args=[MoltValue("one"), MoltValue("two")],
             result=MoltValue("joined"),
         ),
-        MoltOp(kind="RETURN", args=[MoltValue("joined")], result=MoltValue("none")),
+        MoltOp(kind="ret", args=[MoltValue("joined")], result=MoltValue("none")),
     ]
     blocks = [
         BasicBlock(0, 0, 4),
@@ -5399,7 +5593,7 @@ def test_sccp_new_executable_edge_revisits_phi_with_equal_predecessor_states() -
         },
         predecessors={0: [], 1: [0], 2: [0], 3: [2], 4: [1, 3]},
         reachable={0, 1, 2, 3, 4},
-        dominators={0: {0}, 1: {0, 1}, 2: {0, 2}, 3: {0, 2, 3}, 4: {0, 4}},
+        dominance=DominatorTree.compute([[1, 2], [4], [3], [4], []]),
     )
     join = cfg.label_to_block["join"]
     gen = SimpleTIRGenerator()
@@ -5597,7 +5791,7 @@ def test_midend_pass_timing_and_policy_outcome_are_recorded() -> None:
         _ = gen.map_ops_to_json(
             [
                 MoltOp(
-                    kind="RETURN",
+                    kind="ret",
                     args=[MoltValue("none")],
                     result=MoltValue("none"),
                 ),
@@ -5949,7 +6143,7 @@ def test_sccp_is_op_does_not_fold_through_missing_sentinels() -> None:
             args=[MoltValue("a"), MoltValue("b")],
             result=MoltValue("cmp"),
         ),
-        MoltOp(kind="RETURN", args=[MoltValue("cmp")], result=MoltValue("none")),
+        MoltOp(kind="ret", args=[MoltValue("cmp")], result=MoltValue("none")),
     ]
     cfg = build_cfg(ops)
     sccp = gen._compute_sccp(ops, cfg)
@@ -5982,7 +6176,7 @@ def test_sccp_comparison_ops_do_not_fold_through_missing() -> None:
             result=MoltValue("ne_result"),
         ),
         MoltOp(
-            kind="RETURN",
+            kind="ret",
             args=[MoltValue("eq_result")],
             result=MoltValue("none"),
         ),
@@ -6023,7 +6217,7 @@ def test_missing_taint_propagates_through_phi_to_call() -> None:
             args=["some_func", MoltValue("joined")],
             result=MoltValue("ret"),
         ),
-        MoltOp(kind="RETURN", args=[MoltValue("ret")], result=MoltValue("none")),
+        MoltOp(kind="ret", args=[MoltValue("ret")], result=MoltValue("none")),
     ]
     # The verifier should flag the CALL because "joined" is MISSING-tainted
     # transitively through the PHI.
@@ -6048,7 +6242,7 @@ def test_missing_taint_does_not_flag_direct_missing_at_call() -> None:
             args=["some_func", MoltValue("sentinel")],
             result=MoltValue("ret"),
         ),
-        MoltOp(kind="RETURN", args=[MoltValue("ret")], result=MoltValue("none")),
+        MoltOp(kind="ret", args=[MoltValue("ret")], result=MoltValue("none")),
     ]
     failures = gen._verify_definite_assignment_in_ops(ops, predefined_value_names=set())
     # There should be no transitive-MISSING-taint failures for direct uses.
@@ -6088,7 +6282,7 @@ def test_full_pipeline_rejects_missing_leak_through_phi() -> None:
             result=MoltValue("call_ret"),
         ),
         MoltOp(
-            kind="RETURN",
+            kind="ret",
             args=[MoltValue("call_ret")],
             result=MoltValue("none"),
         ),
@@ -6147,14 +6341,14 @@ def test_cse_projected_inputs_invalidate_predecessor_signature() -> None:
         MoltOp(kind="CONST", args=[1], result=b),
         MoltOp(kind="JUMP", args=[1], result=MoltValue("none")),
         MoltOp(kind="LABEL", args=[1], result=MoltValue("none")),
-        MoltOp(kind="RETURN", args=[b], result=MoltValue("none")),
+        MoltOp(kind="ret", args=[b], result=MoltValue("none")),
     ]
     # Single-predecessor cloning preserves a cached signature; the must-fact
     # projection removes its alias before this block's transfer executes.
     lowered, _ = CheckedInputs()._run_cse_canonicalization_round(
         ops, allow_cross_block_const_dedupe=False
     )
-    assert lowered[-1].kind == "RETURN"
+    assert lowered[-1].kind == "ret"
     assert lowered[-1].args == [a]
 
 
@@ -6169,9 +6363,7 @@ def test_proven_runtime_guard_keeps_a_used_alias_result(kind: str) -> None:
                 args=[MoltValue("source"), MoltValue("tag")],
                 result=MoltValue("checked"),
             ),
-            MoltOp(
-                kind="RETURN", args=[MoltValue("checked")], result=MoltValue("none")
-            ),
+            MoltOp(kind="ret", args=[MoltValue("checked")], result=MoltValue("none")),
         ]
     )
     assert any(
@@ -6189,7 +6381,7 @@ def test_runtime_guard_mismatch_continues_sccp_and_preserves_source_type(
         MoltOp("CONST", [BUILTIN_TYPE_TAGS["float"]], tag),
         MoltOp(kind, [source, tag], checked),
         MoltOp("CONST", [11], later),
-        MoltOp("RETURN", [later], MoltValue("none")),
+        MoltOp("ret", [later], MoltValue("none")),
     ]
     gen = SimpleTIRGenerator()
     cfg = build_cfg(ops)

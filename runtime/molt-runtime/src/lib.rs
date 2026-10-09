@@ -399,6 +399,8 @@ pub(crate) use crate::concurrency::locks::{
 pub(crate) use crate::concurrency::{
     GilGuard, GilReleaseGuard, PyToken, gil_assert, gil_held, with_gil,
 };
+#[cfg(feature = "molt_gpu_primitives")]
+pub use crate::gpu_bridge::{molt_gpu_kernel_descriptor_set, molt_gpu_kernel_launch_python};
 #[allow(unused_imports)]
 pub(crate) use crate::state::RuntimeState;
 pub use crate::wasm_abi_exports::{
@@ -423,10 +425,10 @@ pub use molt_gpu::primitives_ffi::{
 };
 #[cfg(feature = "molt_gpu_primitives")]
 pub use molt_gpu_runtime::{
-    molt_gpu_broadcast_binary_contiguous, molt_gpu_buffer_to_list,
-    molt_gpu_interop__load_safetensors, molt_gpu_interop_decode_bf16_bytes_to_f32,
-    molt_gpu_interop_decode_f16_bytes_to_f32, molt_gpu_linear_contiguous,
-    molt_gpu_linear_split_last_dim_contiguous,
+    molt_gpu_barrier, molt_gpu_block_dim, molt_gpu_block_id, molt_gpu_broadcast_binary_contiguous,
+    molt_gpu_buffer_to_list, molt_gpu_grid_dim, molt_gpu_interop__load_safetensors,
+    molt_gpu_interop_decode_bf16_bytes_to_f32, molt_gpu_interop_decode_f16_bytes_to_f32,
+    molt_gpu_linear_contiguous, molt_gpu_linear_split_last_dim_contiguous,
     molt_gpu_linear_squared_relu_gate_interleaved_contiguous, molt_gpu_matmul_contiguous,
     molt_gpu_permute_contiguous, molt_gpu_repeat_axis_contiguous,
     molt_gpu_rms_norm_last_axis_contiguous, molt_gpu_rope_apply_contiguous,
@@ -438,7 +440,7 @@ pub use molt_gpu_runtime::{
     molt_gpu_tensor__tensor_scaled_dot_product_attention, molt_gpu_tensor__tensor_scatter_rows,
     molt_gpu_tensor__tensor_softmax_last_axis, molt_gpu_tensor__tensor_take_rows,
     molt_gpu_tensor__zeros, molt_gpu_tensor_from_buffer, molt_gpu_tensor_from_parts,
-    molt_gpu_turboquant_attention_packed,
+    molt_gpu_thread_id, molt_gpu_turboquant_attention_packed,
 };
 #[allow(unused_imports)]
 pub(crate) use molt_obj_model::MoltObject;
@@ -560,6 +562,7 @@ pub(crate) use crate::builtins::context::{
     generator_context_stack_take,
 };
 pub use crate::builtins::contextlib::*;
+pub use crate::builtins::contextvars::*;
 pub use crate::builtins::copy_mod::*;
 pub use crate::builtins::dbm_dumb::*;
 pub use crate::builtins::enum_ext::*;

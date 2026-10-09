@@ -1,6 +1,6 @@
 use super::super::*;
 use crate::runtime_import_abi::{
-    MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_NEW, MOLT_TASK_REGISTER_TOKEN_OWNED,
+    MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_NEW, MOLT_TASK_REGISTER_EXECUTION,
 };
 use crate::tir::simple_def_use::simple_ir_out_result;
 use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
@@ -194,20 +194,13 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let size = builder.ins().iconst(types::I64, closure_size);
 
             let poll_func_name = op.s_value.as_ref().expect("alloc_task target missing");
-            let mut poll_sig = module.make_signature();
-            poll_sig.params.push(AbiParam::new(types::I64));
-            poll_sig.returns.push(AbiParam::new(types::I64));
-
             let poll_linkage = if defined_functions.contains(poll_func_name.as_str()) {
                 Linkage::Export
             } else {
                 Linkage::Import
             };
-            let poll_func_id = module
-                .declare_function(poll_func_name, poll_linkage, &poll_sig)
-                .unwrap();
-            let poll_func_ref = module.declare_func_in_func(poll_func_id, builder.func);
-            let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
+            let poll_addr =
+                SimpleBackend::task_poll_identity(module, builder, poll_func_name, poll_linkage);
 
             let task_callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
@@ -254,10 +247,13 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 let reg_callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
                     &mut *import_ids,
-                    MOLT_TASK_REGISTER_TOKEN_OWNED,
+                    MOLT_TASK_REGISTER_EXECUTION,
                 );
                 let reg_local = module.declare_func_in_func(reg_callee, builder.func);
-                builder.ins().call(reg_local, &[obj, current_token]);
+                let inherited = builder.ins().iconst(types::I64, box_none());
+                builder
+                    .ins()
+                    .call(reg_local, &[obj, current_token, inherited]);
             }
 
             jump_block(builder, initialized, &[]);

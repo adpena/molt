@@ -633,15 +633,6 @@ pub struct RuntimeHooks {
     pub int_from_i64: unsafe extern "C" fn(value: i64) -> u64,
     /// Allocate an int object from an unsigned 64-bit value. Returns handle bits, 0 on failure.
     pub int_from_u64: unsafe extern "C" fn(value: u64) -> u64,
-    /// Convert an int-compatible object to i64. Returns -1 on failure.
-    pub int_as_i64: unsafe extern "C" fn(bits: u64) -> i64,
-    /// Checked int-compatible object conversion to i64. Returns 0 on success, -1 on failure.
-    pub int_as_i64_checked: unsafe extern "C" fn(bits: u64, out: *mut i64) -> std::os::raw::c_int,
-    /// Checked int-compatible object conversion to u64. Returns 0 on success, -1 on failure.
-    pub int_as_u64_checked: unsafe extern "C" fn(bits: u64, out: *mut u64) -> std::os::raw::c_int,
-    /// Return the low `width` bits of an int-compatible object. Returns 0 on success.
-    pub int_as_u64_mask:
-        unsafe extern "C" fn(bits: u64, width: u32, out: *mut u64) -> std::os::raw::c_int,
     /// Allocate an arbitrary-width int from a fixed-width byte string.
     pub int_from_bytes: unsafe extern "C" fn(
         data: *const u8,
@@ -1181,7 +1172,7 @@ pub struct RuntimeHooks {
     /// reference custody (`Py_INCREF` on the C object) is handled by the bridge
     /// caller, not this hook.
     pub foreign_new: unsafe extern "C" fn(c_ptr: usize) -> u64,
-    /// Append-only L7 tail: construct one arbitrary-width integer from
+    /// Construct one arbitrary-width integer from
     /// validated numeric digits in one owned allocation.
     pub int_from_digits: unsafe extern "C" fn(
         digits: *const u8,
@@ -1194,8 +1185,6 @@ pub struct RuntimeHooks {
     pub complex_parts:
         unsafe extern "C" fn(bits: u64, real: *mut f64, imag: *mut f64) -> std::os::raw::c_int,
     pub complex_from_doubles: unsafe extern "C" fn(real: f64, imag: f64) -> OwnedHandleResult,
-    pub int_signed_byte_width:
-        unsafe extern "C" fn(bits: u64, out: *mut usize) -> std::os::raw::c_int,
     /// Report an already-captured C-API exception through the runtime's sole
     /// unraisable transaction. `message` is UTF-8 and borrowed for this call.
     pub report_unraisable: unsafe extern "C" fn(
@@ -1394,15 +1383,31 @@ pub struct RuntimeHooks {
     /// Python containment protocol on borrowed operands: 1/0, or -1 with an
     /// exception. The runtime owns special lookup and builtin membership.
     pub object_contains: unsafe extern "C" fn(container: u64, needle: u64) -> std::os::raw::c_int,
+    /// Context objects and bindings have one runtime owner. Optional values use
+    /// an explicit presence flag; float +0.0 is a valid successful value.
+    /// Admit a known public Context static shell through its lazy class owner.
+    /// Zero means canonically bound; -1 means failure with a pending error.
+    pub context_type_admit: unsafe extern "C" fn(usize) -> i32,
+    pub context_new: unsafe extern "C" fn() -> OwnedHandleResult,
+    pub context_copy_current: unsafe extern "C" fn() -> OwnedHandleResult,
+    pub context_copy: unsafe extern "C" fn(u64) -> OwnedHandleResult,
+    pub context_enter: unsafe extern "C" fn(u64) -> i32,
+    pub context_exit: unsafe extern "C" fn(u64) -> i32,
+    pub context_var_new: unsafe extern "C" fn(u64, u64, i32) -> OwnedHandleResult,
+    pub context_var_get: unsafe extern "C" fn(u64, u64, i32) -> OwnedHandleResult,
+    pub context_var_set: unsafe extern "C" fn(u64, u64) -> OwnedHandleResult,
+    pub context_var_reset: unsafe extern "C" fn(u64, u64) -> i32,
 }
 
 pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
+// Version 60 removes obsolete integer-read hooks; physical PyLong digits own reads.
 // Version 59 adds borrowed vector call ingress without dictionary transport.
 // Version 58 replaces ordinal dictionary reads with a physical cursor pointer.
 // Version 57 carries numeric operation mode and the runtime semantic target.
 // Version 56 added the NativeProtocolSlots type-metadata domain. Callback
 // domains are ABI even when the pointer-sized table layout is unchanged.
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 59;
+// Version 61 adds the sole Context owner and cold static-shell admission.
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 61;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -1571,8 +1576,10 @@ pub enum NumberUnaryOp {
     Float = 4,
     /// PyFloat_AsDouble: float payload, then numeric slots, never text.
     FloatAsDouble = 5,
-    /// PyNumber_Index: type-only __index__, producing an exact integer.
+    /// Private _PyNumber_Index: validated owned integer; preserve subtypes.
     Index = 6,
+    /// PyNumber_Long / int(): exact identity, numeric protocols, then text.
+    Long = 7,
 }
 
 /// Global hook table, set once by `molt-lang-runtime` at init time.
@@ -1820,22 +1827,6 @@ unsafe extern "C" fn stub_int_from_i64(_value: i64) -> u64 {
 unsafe extern "C" fn stub_int_from_u64(_value: u64) -> u64 {
     0
 }
-unsafe extern "C" fn stub_int_as_i64(_bits: u64) -> i64 {
-    -1
-}
-unsafe extern "C" fn stub_int_as_i64_checked(_bits: u64, _out: *mut i64) -> std::os::raw::c_int {
-    -1
-}
-unsafe extern "C" fn stub_int_as_u64_checked(_bits: u64, _out: *mut u64) -> std::os::raw::c_int {
-    -1
-}
-unsafe extern "C" fn stub_int_as_u64_mask(
-    _bits: u64,
-    _width: u32,
-    _out: *mut u64,
-) -> std::os::raw::c_int {
-    -1
-}
 
 unsafe extern "C" fn stub_int_from_bytes(
     _data: *const u8,
@@ -1861,13 +1852,6 @@ unsafe extern "C" fn stub_int_from_f64_trunc(_value: f64) -> u64 {
 
 unsafe extern "C" fn stub_int_sign(_bits: u64) -> std::os::raw::c_int {
     0
-}
-
-unsafe extern "C" fn stub_int_signed_byte_width(
-    _bits: u64,
-    _out: *mut usize,
-) -> std::os::raw::c_int {
-    -1
 }
 
 unsafe extern "C" fn stub_int_to_bytes(
@@ -2584,6 +2568,28 @@ unsafe extern "C" fn stub_builtin_slot_owner(
 }
 
 // Optional callback fields are the sole authority for capability absence.
+unsafe extern "C" fn stub_context_type_admit(_: usize) -> i32 {
+    -1
+}
+unsafe extern "C" fn stub_context_new() -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
+unsafe extern "C" fn stub_context_copy(_: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
+unsafe extern "C" fn stub_context_transition(_: u64) -> i32 {
+    -1
+}
+unsafe extern "C" fn stub_context_optional(_: u64, _: u64, _: i32) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
+unsafe extern "C" fn stub_context_set(_: u64, _: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
+}
+unsafe extern "C" fn stub_context_reset(_: u64, _: u64) -> i32 {
+    -1
+}
+
 pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     abi_magic: RUNTIME_HOOKS_ABI_MAGIC,
     abi_version: RUNTIME_HOOKS_ABI_VERSION,
@@ -2605,14 +2611,11 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     float_payload: stub_float_payload,
     int_from_i64: stub_int_from_i64,
     int_from_u64: stub_int_from_u64,
-    int_as_i64: stub_int_as_i64,
-    int_as_i64_checked: stub_int_as_i64_checked,
-    int_as_u64_checked: stub_int_as_u64_checked,
-    int_as_u64_mask: stub_int_as_u64_mask,
+
     int_from_digits: stub_int_from_digits,
     int_from_f64_trunc: stub_int_from_f64_trunc,
     int_sign: stub_int_sign,
-    int_signed_byte_width: stub_int_signed_byte_width,
+
     int_from_bytes: stub_int_from_bytes,
     int_to_bytes: stub_int_to_bytes,
     int_num_bits: stub_int_num_bits,
@@ -2762,6 +2765,16 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     slice_new: stub_slice_new,
     slice_item: stub_tuple_item,
     object_contains: stub_object_contains,
+    context_type_admit: stub_context_type_admit,
+    context_new: stub_context_new,
+    context_copy_current: stub_context_new,
+    context_copy: stub_context_copy,
+    context_enter: stub_context_transition,
+    context_exit: stub_context_transition,
+    context_var_new: stub_context_optional,
+    context_var_get: stub_context_optional,
+    context_var_set: stub_context_set,
+    context_var_reset: stub_context_reset,
 };
 
 /// Return the registered hooks or the typed fail-closed bootstrap table.

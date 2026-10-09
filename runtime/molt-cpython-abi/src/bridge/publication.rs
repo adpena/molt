@@ -17,6 +17,40 @@ thread_local! {
 
 }
 
+// Fault injection belongs to the existing fallible publication admission, not
+// the runtime exception/class hooks. No state or branch exists in normal builds.
+#[cfg(feature = "runtime-test-support")]
+thread_local! {
+    static DENIED_PUBLICATION: std::cell::Cell<Option<(usize, AbiHandle, usize)>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[cfg(feature = "runtime-test-support")]
+impl ObjectBridge {
+    /// Exercise the real reservation-failure branch for one cold runtime view.
+    /// The caller owns the handle and the runtime test transaction throughout.
+    pub fn with_denied_publication_for_test<T>(
+        &self,
+        bits: AbiHandle,
+        operation: impl FnOnce() -> T,
+    ) -> (T, usize) {
+        struct Restore(Option<(usize, AbiHandle, usize)>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                DENIED_PUBLICATION.with(|state| state.set(self.0));
+            }
+        }
+        assert_ne!(bits, 0);
+        let previous = DENIED_PUBLICATION
+            .with(|state| state.replace(Some((std::ptr::from_ref(self).addr(), bits, 0))));
+        let _restore = Restore(previous);
+        let result = operation();
+        let attempts = DENIED_PUBLICATION.with(|state| state.get().unwrap().2);
+        (result, attempts)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum PublicationState {
     Building { owner: std::thread::ThreadId },
@@ -81,6 +115,19 @@ impl<'a> PublicationBuildGuard<'a> {
             let mut stack = stack.borrow_mut();
             if stack.find(bridge, bits).is_some() {
                 return Err(false);
+            }
+            #[cfg(feature = "runtime-test-support")]
+            if DENIED_PUBLICATION.with(|state| {
+                let Some((address, target, attempts)) = state.get() else {
+                    return false;
+                };
+                if address != std::ptr::from_ref(bridge).addr() || target != bits {
+                    return false;
+                }
+                state.set(Some((address, target, attempts + 1)));
+                true
+            }) {
+                return Err(true);
             }
             if stack.frames.try_reserve(1).is_err() || stack.active.try_reserve(1).is_err() {
                 return Err(true);

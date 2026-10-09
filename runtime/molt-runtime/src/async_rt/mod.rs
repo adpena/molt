@@ -41,10 +41,10 @@ pub(crate) fn spawned_task_count() -> usize {
 pub(crate) use cancellation::{
     CURRENT_TOKEN, CancelTokenEntry, NEXT_CANCEL_TOKEN_ID, cancel_tokens, clear_task_token,
     current_token_id, default_cancel_tokens, ensure_task_token, raise_cancelled_with_message,
-    register_task_token, release_token, retain_token, set_current_token, task_cancel_message_clear,
-    task_cancel_message_set, task_cancel_pending, task_cancellation_detach, task_has_token,
-    task_set_cancel_pending, task_take_cancel_pending, token_id_from_bits, token_is_cancelled,
-    wake_tasks_for_cancelled_tokens,
+    register_task_execution, release_token, retain_token, set_current_token,
+    task_cancel_message_clear, task_cancel_message_set, task_cancel_pending,
+    task_cancellation_detach, task_has_token, task_set_cancel_pending, task_take_cancel_pending,
+    token_id_from_bits, token_is_cancelled, wake_tasks_for_cancelled_tokens,
 };
 
 #[allow(unused_imports)]

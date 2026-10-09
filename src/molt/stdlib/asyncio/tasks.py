@@ -55,7 +55,7 @@ from asyncio import (
     molt_cancel_token_new,
     molt_cancel_token_set_current,
     molt_spawn,
-    molt_task_register_token_owned,
+    molt_task_register_execution,
 )
 
 if TYPE_CHECKING:
@@ -237,29 +237,26 @@ class Task(Future):
         self._cancel_message: Any | None = None
         if context is None:
             context = _contextvars.copy_context()
+        if not isinstance(context, _contextvars.Context):
+            raise TypeError("context must be a Context")
         self._context = context
-        _contextvars._set_context_for_token(  # type: ignore[unresolved-attribute]
-            self._token.token_id(),
-            context,
-        )
         _task_registry_set(self._token.token_id(), self)
         self._fut_waiter = None
         token_id = self._token.token_id()
-        if molt_task_register_token_owned is not None:  # type: ignore[name-defined]
-            molt_task_register_token_owned(self._coro, token_id)  # type: ignore[name-defined]
+        if molt_task_register_execution is not None:  # type: ignore[name-defined]
+            molt_task_register_execution(self._coro, token_id, None)  # type: ignore[name-defined]
         prev_id = _swap_current_token(self._token)
         try:
             runner = self._runner(self._coro)
             self._runner_task = runner
-            if molt_task_register_token_owned is not None:  # type: ignore[name-defined]
-                molt_task_register_token_owned(  # type: ignore[name-defined]
-                    runner, token_id
+            if molt_task_register_execution is not None:  # type: ignore[name-defined]
+                molt_task_register_execution(  # type: ignore[name-defined]
+                    runner, token_id, context
                 )
             self._loop._spawn_task(runner)
         except BaseException:
             self._runner_task = None
             _task_registry_pop(token_id)
-            _contextvars._clear_context_for_token(token_id)
             raise
         finally:
             _restore_token_id(prev_id)
@@ -341,9 +338,6 @@ class Task(Future):
         _task_registry_pop(self._token.token_id())
         if extra_token_id is not None:
             _task_registry_pop(extra_token_id)
-        _contextvars._clear_context_for_token(  # type: ignore[unresolved-attribute]
-            self._token.token_id()
-        )
         self._runner_task = None
 
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):

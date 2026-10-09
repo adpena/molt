@@ -86,6 +86,9 @@ unsafe fn slice_index(v: *mut PyObject, out: &mut Py_ssize_t) -> bool {
     }
     // Foreign objects: the `__index__` protocol, exactly _PyEval_SliceIndex.
     if unsafe { crate::api::abstract_number::PyIndex_Check(v) } == 0 {
+        if crate::api::errors::raised_error_pending() {
+            return false;
+        }
         unsafe {
             crate::api::errors::PyErr_SetString(
                 (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
@@ -94,12 +97,12 @@ unsafe fn slice_index(v: *mut PyObject, out: &mut Py_ssize_t) -> bool {
         }
         return false;
     }
-    let index = unsafe { crate::api::abstract_number::PyNumber_Index(v) };
+    let index = unsafe { crate::api::abstract_number::number_index(v) };
     if index.is_null() {
         return false;
     }
     let value = crate::api::numbers::py_long_as_ssize_clamped(index);
-    unsafe { crate::api::refcount::Py_DECREF(index) };
+    unsafe { crate::api::errors::release_preserving_error(&[index]) };
     match value {
         Some(x) => {
             *out = x;

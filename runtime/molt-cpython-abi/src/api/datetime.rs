@@ -474,7 +474,7 @@ unsafe fn timestamp_arg(args: *mut PyObject, index: Py_ssize_t) -> Option<f64> {
     }
     unsafe { crate::api::errors::PyErr_Clear() };
     let t = unsafe { crate::api::numbers::PyFloat_AsDouble(arg) };
-    if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+    if crate::api::errors::raised_error_pending() {
         return None;
     }
     Some(t)

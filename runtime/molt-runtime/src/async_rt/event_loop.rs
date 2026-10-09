@@ -73,10 +73,10 @@ enum ReadyWork {
 }
 
 impl ReadyWork {
-    fn owned_bits(&self) -> u64 {
+    fn into_owned_bits(self) -> u64 {
         match self {
-            Self::Handle(bits) => *bits,
-            Self::Task(task) | Self::WakeTask(task) => MoltObject::from_ptr(task.future_ptr).bits(),
+            Self::Handle(bits) => bits,
+            Self::Task(task) | Self::WakeTask(task) => task.into_owned_bits(),
         }
     }
 }
@@ -300,12 +300,12 @@ impl EventLoopRegistry {
 fn drain_event_loop_state_refs(state: &mut EventLoopState) -> Vec<u64> {
     let mut refs = Vec::new();
     for work in state.ready.drain(..) {
-        refs.push(work.owned_bits());
+        refs.push(work.into_owned_bits());
     }
     refs.extend(
         std::mem::take(&mut state.timers)
             .into_values()
-            .map(|work| work.owned_bits()),
+            .map(|work| work.into_owned_bits()),
     );
     state.timer_deadlines.clear();
     for (_, entry) in state.readers.drain() {
@@ -433,19 +433,23 @@ pub(super) fn enqueue_loop_task(
     _py: &crate::PyToken<'_>,
     loop_handle: u64,
     task: super::scheduler::MoltTask,
-) -> bool {
+) -> Result<(), super::scheduler::MoltTask> {
+    let mut task = Some(task);
     let Some((accepted, parked)) = with_loop(_py, loop_handle, |state| {
         if state.is_closed() {
             return (false, None);
         }
-        inc_ref_bits(_py, MoltObject::from_ptr(task.future_ptr).bits());
-        state.ready.push_back(ReadyWork::Task(task));
+        state.ready.push_back(ReadyWork::Task(task.take().unwrap()));
         (true, state.claim_parked_for_ready())
     }) else {
-        return false;
+        return Err(task.take().unwrap());
     };
     signal_claimed(parked);
-    accepted
+    if accepted {
+        Ok(())
+    } else {
+        Err(task.take().unwrap())
+    }
 }
 
 /// All loop-owned delays share callback clock/order and one cancellation index.
@@ -461,12 +465,9 @@ pub(super) fn register_loop_sleep(
             return None;
         }
         let ordered = (deadline, state.next_timer_seq());
-        inc_ref_bits(py, MoltObject::from_ptr(task_ptr).bits());
         state.timers.insert(
             ordered,
-            ReadyWork::WakeTask(super::scheduler::MoltTask {
-                future_ptr: task_ptr,
-            }),
+            ReadyWork::WakeTask(super::scheduler::MoltTask::new(py, task_ptr)),
         );
         state.timer_deadlines.insert(key, ordered);
         state.claim_parked_for_deadline(deadline)
@@ -485,7 +486,10 @@ pub(super) fn take_loop_sleep(
         let ordered = state
             .timer_deadlines
             .remove(&TimerKey::Task(crate::PtrSlot(task_ptr)))?;
-        state.timers.remove(&ordered).map(|work| work.owned_bits())
+        state
+            .timers
+            .remove(&ordered)
+            .map(|work| work.into_owned_bits())
     })
     .flatten()
 }
@@ -668,7 +672,10 @@ pub extern "C" fn molt_event_loop_cancel_timer(loop_handle: u64, timer_id_bits: 
         let timer_id = crate::to_i64(crate::obj_from_bits(timer_id_bits)).unwrap_or(-1) as u64;
         let Some(callback) = with_loop(_py, loop_handle, |state| {
             let ordered = state.timer_deadlines.remove(&TimerKey::Handle(timer_id))?;
-            state.timers.remove(&ordered).map(|work| work.owned_bits())
+            state
+                .timers
+                .remove(&ordered)
+                .map(|work| work.into_owned_bits())
         }) else {
             return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
         };
@@ -857,15 +864,14 @@ pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
         };
         let mut callbacks_run = 0;
         while let Some(work) = batch.pop_front() {
-            let owned_bits = work.owned_bits();
             match work {
                 ReadyWork::Handle(handle) => unsafe {
                     run_event_loop_handle(_py, handle);
+                    dec_ref_bits(_py, handle);
                 },
                 ReadyWork::Task(task) => runtime_state(_py).scheduler().execute_loop_task(task),
                 ReadyWork::WakeTask(task) => super::scheduler::wake_task_ptr(_py, task.future_ptr),
             }
-            dec_ref_bits(_py, owned_bits);
             callbacks_run += 1;
             if exception_pending(_py) {
                 // Handle._run reports ordinary callback errors. Fatal exceptions
@@ -875,7 +881,7 @@ pub extern "C" fn molt_event_loop_run_once(loop_handle: u64) -> u64 {
                     std::mem::swap(&mut state.ready, &mut batch);
                 });
                 for remaining in batch {
-                    dec_ref_bits(_py, remaining.owned_bits());
+                    dec_ref_bits(_py, remaining.into_owned_bits());
                 }
                 return MoltObject::none().bits();
             }
@@ -1037,8 +1043,9 @@ pub extern "C" fn molt_event_loop_close(loop_handle: u64) -> u64 {
         // a parked thread keeps its own reference until it wakes.
         signal_claimed(parked);
         drop(parker);
-        // Dec-ref all freed callbacks outside the lock.
-        for cb in callbacks_to_free {
+        let spawn_roots = super::cancellation::take_loop_spawn_roots(_py, loop_handle);
+        // All registries/flags are detached before callback-bearing releases.
+        for cb in callbacks_to_free.into_iter().chain(spawn_roots) {
             dec_ref_bits(_py, cb);
         }
         MoltObject::none().bits()
@@ -1635,14 +1642,12 @@ mod park_tests {
             // Transfer the scheduler's admitted Send handle, not a raw-pointer
             // field captured separately by the closure. The caller's task
             // reference stays live until the worker has joined.
-            let scheduled = super::super::scheduler::MoltTask {
-                future_ptr: crate::ptr_from_bits(task),
-            };
+            let scheduled = super::super::scheduler::MoltTask::new(py, crate::ptr_from_bits(task));
             let waker = std::thread::spawn(move || {
                 crate::state::run_runtime_worker(|| {
                     std::thread::sleep(Duration::from_millis(50));
                     crate::with_gil_entry_nopanic!(worker_py, {
-                        assert!(enqueue_loop_task(worker_py, handle, scheduled));
+                        assert!(enqueue_loop_task(worker_py, handle, scheduled).is_ok());
                     });
                 })
             });

@@ -1774,7 +1774,7 @@ unsafe fn sequence_index_from_key(
             (&raw mut crate::abi_types::PyExc_IndexError).cast::<crate::abi_types::PyObject>(),
         )
     };
-    if idx == -1 && !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+    if idx == -1 && exception_already_pending() {
         return Err(crate::ErrorIndicatorSet);
     }
     // Negative-index adjustment via sq_length (CPython PySequence_GetItem/SetItem).
@@ -1831,7 +1831,7 @@ unsafe fn foreign_get_item(o: *mut PyObject, key: *mut PyObject) -> *mut PyObjec
                 Err(crate::ErrorIndicatorSet) => {
                     // A pending exception (conversion / sq_length) is the real
                     // error; otherwise the key is not index-like.
-                    if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                    if exception_already_pending() {
                         return ptr::null_mut();
                     }
                     let message = format!("sequence index must be integer, not '{}'", unsafe {
@@ -1889,7 +1889,7 @@ unsafe fn foreign_set_item(o: *mut PyObject, key: *mut PyObject, v: *mut PyObjec
             let idx = match unsafe { sequence_index_from_key(o, key, seq) } {
                 Ok(i) => i,
                 Err(crate::ErrorIndicatorSet) => {
-                    if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                    if exception_already_pending() {
                         return -1;
                     }
                     let message = format!("sequence index must be integer, not '{}'", unsafe {
@@ -2045,7 +2045,7 @@ unsafe fn foreign_del_item(o: *mut PyObject, key: *mut PyObject) -> c_int {
                 let idx = match unsafe { sequence_index_from_key(o, key, seq) } {
                     Ok(i) => i,
                     Err(crate::ErrorIndicatorSet) => {
-                        if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+                        if exception_already_pending() {
                             return -1;
                         }
                         let message = format!("sequence index must be integer, not '{}'", unsafe {
@@ -2564,6 +2564,12 @@ pub(crate) unsafe fn runtime_call_authority(
     if callable.is_null() {
         return false;
     }
+    // Cold static Context types have the same runtime constructor authority as
+    // their warm bindings. Admission failure also stays on this path so it
+    // cannot fall through to a foreign C constructor or overwrite the error.
+    if GLOBAL_BRIDGE.admit_lazy_static_type(callable) != Ok(false) {
+        return true;
+    }
     if GLOBAL_BRIDGE.managed_handle_for_pyobj(callable).is_some() {
         let physical = unsafe { (*callable).ob_type };
         return !std::ptr::eq(physical, &raw mut crate::abi_types::PyCFunction_Type)
@@ -2706,7 +2712,7 @@ pub(crate) unsafe fn molt_tuple_bits_from_c_tuple(args: *mut PyObject) -> Option
     let h = hooks_or_stubs();
     let tuple_bits = unsafe { h.alloc_tuple(n) };
     if tuple_bits == 0 {
-        if !crate::api::errors::transfer_runtime_pending_to_current() {
+        if !exception_already_pending() {
             unsafe { crate::api::errors::PyErr_NoMemory() };
         }
         return None;
@@ -2721,7 +2727,7 @@ pub(crate) unsafe fn molt_tuple_bits_from_c_tuple(args: *mut PyObject) -> Option
             crate::hooks::DecodedHandleResult::Ok(_)
             | crate::hooks::DecodedHandleResult::Missing => {}
             crate::hooks::DecodedHandleResult::Error => {
-                if !crate::api::errors::transfer_runtime_pending_to_current() {
+                if !exception_already_pending() {
                     unsafe { crate::api::errors::PyErr_BadInternalCall() };
                 }
                 return None;
@@ -4133,7 +4139,6 @@ struct ThreadStateRecord {
     attached: bool,
     state_dict: *mut PyObject,
     current_error: Option<OwnedCError>,
-    context: HashMap<usize, usize>,
     tearing_down: bool,
 }
 
@@ -4215,7 +4220,6 @@ impl ThreadStateRecord {
             attached: false,
             state_dict: ptr::null_mut(),
             current_error: None,
-            context: HashMap::new(),
             tearing_down: false,
         });
         record.state.exc_info = &raw mut record.state.exc_state;
@@ -4241,7 +4245,7 @@ impl Drop for ThreadStateRecord {
         assert!(!self.attached, "dropping an attached PyThreadState");
         assert!(!self.tearing_down, "dropping a draining PyThreadState");
         assert!(
-            self.state_dict.is_null() && self.current_error.is_none() && self.context.is_empty(),
+            self.state_dict.is_null() && self.current_error.is_none(),
             "dropping PyThreadState before managed-edge drain completed"
         );
         let ptr = (&raw mut self.state) as usize;
@@ -4382,26 +4386,6 @@ pub(crate) fn thread_state_error_type() -> Option<*mut PyObject> {
     })
 }
 
-pub(crate) fn with_thread_state_context<R>(f: impl FnOnce(&mut HashMap<usize, usize>) -> R) -> R {
-    MOLT_THREAD_STATE.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        let record = slot
-            .as_deref_mut()
-            .expect("thread-state context used before runtime TLS lifetime preparation");
-        f(&mut record.context)
-    })
-}
-
-pub(crate) fn with_existing_thread_state_context<R>(
-    f: impl FnOnce(&mut HashMap<usize, usize>) -> R,
-) -> Option<R> {
-    MOLT_THREAD_STATE.with(|slot| {
-        slot.borrow_mut()
-            .as_deref_mut()
-            .map(|record| f(&mut record.context))
-    })
-}
-
 fn destroy_current_thread_state(
     panic_boundary: ThreadStatePanicBoundary,
     custody_mode: ThreadStateDropCustodyMode,
@@ -4439,11 +4423,9 @@ fn destroy_current_thread_state(
 
 fn current_thread_state_has_managed_edges() -> bool {
     MOLT_THREAD_STATE.with(|slot| {
-        slot.borrow().as_deref().is_some_and(|record| {
-            !record.state_dict.is_null()
-                || record.current_error.is_some()
-                || !record.context.is_empty()
-        })
+        slot.borrow()
+            .as_deref()
+            .is_some_and(|record| !record.state_dict.is_null() || record.current_error.is_some())
     })
 }
 
@@ -4501,7 +4483,7 @@ fn drain_current_thread_state_managed_edges(
         }
     });
     loop {
-        // Keep Molt TLS and the CPython error/context/dict domain inside one
+        // Keep Molt TLS and the CPython error/dict domain inside one
         // quiescence loop. C-edge destruction below may run a finalizer that
         // repopulates Molt TLS; a non-empty pass forces another cleanup before
         // the next C managed-edge pass.
@@ -4514,10 +4496,9 @@ fn drain_current_thread_state_managed_edges(
             (
                 std::mem::replace(&mut record.state_dict, ptr::null_mut()),
                 record.current_error.take(),
-                std::mem::take(&mut record.context),
             )
         });
-        let empty = owned.0.is_null() && owned.1.is_none() && owned.2.is_empty();
+        let empty = owned.0.is_null() && owned.1.is_none();
         #[cfg(feature = "runtime-test-support")]
         if !empty {
             let hook = THREAD_STATE_DRAIN_REENTRY_TEST_HOOK.lock().unwrap().take();
@@ -4527,9 +4508,6 @@ fn drain_current_thread_state_managed_edges(
         }
         unsafe { crate::api::refcount::Py_XDECREF(owned.0) };
         drop(owned.1);
-        for value in owned.2.into_values() {
-            unsafe { crate::api::refcount::Py_DECREF(value as *mut PyObject) };
-        }
         if crate::api::errors::raised_error_pending() {
             // A foreign finalizer must not leak an exception out of TLS
             // teardown. The unraisable transaction consumes and reports it;
@@ -4545,11 +4523,7 @@ fn drain_current_thread_state_managed_edges(
         let record = slot
             .as_deref_mut()
             .expect("PyThreadState disappeared after managed-edge drain");
-        assert!(
-            record.state_dict.is_null()
-                && record.current_error.is_none()
-                && record.context.is_empty()
-        );
+        assert!(record.state_dict.is_null() && record.current_error.is_none());
     });
     true
 }
@@ -5431,13 +5405,8 @@ mod thread_state_tests {
             ob_refcnt: 4,
             ob_type: ptr::null_mut(),
         });
-        let mut context_value = Box::new(PyObject {
-            ob_refcnt: 2,
-            ob_type: ptr::null_mut(),
-        });
         let dict_ptr = &raw mut *dict;
         let error_ptr = &raw mut *error;
-        let context_ptr = &raw mut *context_value;
 
         assert_eq!(thread_state_dict_or_insert_with(|| dict_ptr), dict_ptr);
         assert!(
@@ -5448,9 +5417,6 @@ mod thread_state_tests {
             }))
             .is_none()
         );
-        with_thread_state_context(|context| {
-            assert!(context.insert(0xC0FFEE, context_ptr as usize).is_none());
-        });
 
         drop(thread_state);
         assert!(existing_current_thread_state().is_none());
@@ -5458,10 +5424,6 @@ mod thread_state_tests {
         assert_eq!(
             error.ob_refcnt, 1,
             "the exact C error triple must release all three owned edges"
-        );
-        assert_eq!(
-            context_value.ob_refcnt, 1,
-            "current-context binding owner must be released once"
         );
     }
 
@@ -5473,9 +5435,10 @@ mod thread_state_tests {
             ob_type: ptr::null_mut(),
         });
         let context_ptr = &raw mut *context_value;
-        with_thread_state_context(|context| {
-            assert!(context.insert(0xD0A1, context_ptr as usize).is_none());
-        });
+        assert_eq!(
+            thread_state_dict_or_insert_with(|| context_ptr),
+            context_ptr
+        );
         let cleanup_calls = Cell::new(0);
 
         destroy_current_thread_state(
@@ -5500,7 +5463,7 @@ mod thread_state_tests {
         );
         assert_eq!(
             context_value.ob_refcnt, 1,
-            "the C context edge must be released inside the shared drain"
+            "the C dictionary edge must be released inside the shared drain"
         );
         drop(thread_state);
     }

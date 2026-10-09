@@ -39,50 +39,6 @@ const NEG_HUGE_LOW_U64: u64 = 7;
 /// Independently rounded binary64 for (2**80 + 0x123456789abcdef0).
 const HUGE_AS_F64: f64 = 1.2089271313830967e24;
 
-unsafe extern "C" fn mock_int_as_i64_checked(bits: u64, out: *mut i64) -> std::os::raw::c_int {
-    if bits == MIN_I64_BITS.load(Ordering::SeqCst) {
-        unsafe { *out = i64::MIN };
-        0
-    } else if bits == MAX_I64_BITS.load(Ordering::SeqCst) {
-        unsafe { *out = i64::MAX };
-        0
-    } else {
-        -1
-    }
-}
-
-unsafe extern "C" fn mock_int_as_u64_checked(bits: u64, out: *mut u64) -> std::os::raw::c_int {
-    if bits == BIG_U64_BITS.load(Ordering::SeqCst) {
-        unsafe { *out = BIG_U64_VALUE };
-        0
-    } else {
-        -1 // HUGE exceeds u64 too
-    }
-}
-
-unsafe extern "C" fn mock_int_as_u64_mask(
-    bits: u64,
-    width: u32,
-    out: *mut u64,
-) -> std::os::raw::c_int {
-    let value = if bits == BIG_U64_BITS.load(Ordering::SeqCst) {
-        BIG_U64_VALUE
-    } else if bits == HUGE_BITS.load(Ordering::SeqCst) {
-        HUGE_LOW_U64
-    } else if bits == NEG_HUGE_BITS.load(Ordering::SeqCst) {
-        NEG_HUGE_LOW_U64
-    } else {
-        return -1;
-    };
-    let mask = if width == 64 {
-        u64::MAX
-    } else {
-        (1u64 << width) - 1
-    };
-    unsafe { *out = value & mask };
-    0
-}
-
 /// The runtime numeric authority stand-in: `HUGE / 1` (TrueDivide) yields the
 /// exact float; everything else fails closed.
 unsafe extern "C" fn mock_number_binary_op(
@@ -165,9 +121,7 @@ fn install_hooks() {
     }
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
-    hooks.int_as_i64_checked = mock_int_as_i64_checked;
-    hooks.int_as_u64_checked = mock_int_as_u64_checked;
-    hooks.int_as_u64_mask = mock_int_as_u64_mask;
+
     hooks.number_binary_op = mock_number_binary_op;
     hooks.number_unary_op = mock_number_unary_op;
     support::prepare_runtime_class_abi_test_thread(hooks);

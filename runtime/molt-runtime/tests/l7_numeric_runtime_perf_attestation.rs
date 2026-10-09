@@ -10,7 +10,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(clippy::undocumented_unsafe_blocks)]
 
-use molt_cpython_abi::api::errors::PyErr_Occurred;
+use molt_cpython_abi::api::errors::{PyErr_ExceptionMatches, PyErr_Occurred};
 use molt_cpython_abi::api::numbers::{
     _PyLong_AsByteArray, _PyLong_FromByteArray, _PyLong_NumBits, PyFloat_AsDouble,
     PyFloat_FromDouble, PyLong_AsLong, PyLong_FromLong, PyLong_FromString,
@@ -425,7 +425,9 @@ fn l7_numeric_runtime_performance_attestation() {
         "L7 numeric runtime attestation is release-only"
     );
     let affinity_mask = enforce_current_thread_affinity(&required_env("MOLT_L7_AFFINITY_MASK"));
-    initialize_runtime();
+    // Execute the allocation/failure contract in this exact admitted image
+    // before collecting costs; its preparation is outside every timed loop.
+    integer_byte_encoder_runs_with_allocation_denied_after_preparation();
     let mut cases = Vec::new();
     for digits in [25, 37, 256, 4096, 4300] {
         cases.push(decimal_case(digits));
@@ -798,4 +800,105 @@ fn shared_hash_storage_performance_attestation() {
             "cases": cases
         })
     );
+}
+
+#[test]
+fn integer_byte_encoder_runs_with_allocation_denied_after_preparation() {
+    use std::alloc::{Layout, alloc, dealloc};
+    initialize_runtime();
+    let hooks = molt_cpython_abi::hooks::hooks().expect("real numeric hooks");
+    let source = [0x35u8; 33];
+    let bits = unsafe { (hooks.int_from_bytes)(source.as_ptr(), source.len(), 1, 0) };
+    assert_ne!(bits, 0);
+    let mut output = [0u8; 33];
+    // Warm the same execution/GIL path before denying allocations; source and
+    // caller buffer already exist. The positive denial control avoids a no-op probe.
+    assert_eq!(
+        unsafe { (hooks.int_to_bytes)(bits, output.as_mut_ptr(), output.len(), 1, 0) },
+        0
+    );
+    let layout = Layout::from_size_align(17, 1).unwrap();
+    let denial = attestation_probe::deny_allocations();
+    let refused = unsafe { alloc(layout) };
+    drop(denial);
+    if !refused.is_null() {
+        unsafe { dealloc(refused, layout) };
+    }
+    assert!(refused.is_null());
+    assert_eq!(attestation_probe::denied_allocations(), 1);
+    let denial = attestation_probe::deny_allocations();
+    let heap_status =
+        unsafe { (hooks.int_to_bytes)(bits, output.as_mut_ptr(), output.len(), 1, 0) };
+    let mut word = [0u8; 8];
+    let word_status = unsafe {
+        (hooks.int_to_bytes)(
+            molt_obj_model::MoltObject::from_int(-129).bits(),
+            word.as_mut_ptr(),
+            word.len(),
+            0,
+            1,
+        )
+    };
+    drop(denial);
+    assert_eq!(attestation_probe::denied_allocations(), 0);
+    assert_eq!(heap_status, 0);
+    assert_eq!(word_status, 0);
+    assert_eq!(output, source);
+    assert_eq!(word, [255, 255, 255, 255, 255, 255, 255, 127]);
+    // The Python method writes its single final bytes allocation directly.
+    unsafe extern "C" {
+        fn molt_int_to_bytes(value: u64, length: u64, byteorder: u64, signed: u64) -> u64;
+    }
+    let order = unsafe { hooks.alloc_str(b"little".as_ptr(), 6) };
+    let length = molt_obj_model::MoltObject::from_int(33).bits();
+    let signed = molt_obj_model::MoltObject::from_bool(false).bits();
+    let warm = unsafe { molt_int_to_bytes(bits, length, order, signed) };
+    unsafe { (hooks.dec_ref)(warm) };
+    assert_no_pending_exception();
+    attestation_probe::reset();
+    attestation_probe::set_tracking(true);
+    let result = unsafe { molt_int_to_bytes(bits, length, order, signed) };
+    attestation_probe::set_tracking(false);
+    assert_eq!(
+        attestation_probe::snapshot().allocations,
+        1,
+        "only final immutable bytes storage"
+    );
+    let mut size = 0usize;
+    let data = unsafe { (hooks.bytes_data)(result, &raw mut size) };
+    assert_eq!(size, source.len());
+    assert_eq!(unsafe { std::slice::from_raw_parts(data, size) }, source);
+    unsafe { (hooks.dec_ref)(result) };
+    let denial = attestation_probe::deny_allocations();
+    let refused_result = unsafe { molt_int_to_bytes(bits, length, order, signed) };
+    drop(denial);
+    assert!(molt_obj_model::MoltObject::from_bits(refused_result).is_none());
+    assert_eq!(
+        attestation_probe::denied_allocations(),
+        1,
+        "only final result allocation was attempted"
+    );
+    assert_eq!(
+        unsafe {
+            PyErr_ExceptionMatches((&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast())
+        },
+        1,
+        "refusing the final allocation must raise MemoryError"
+    );
+    unsafe { molt_exception_clear() };
+    let recovered = unsafe { molt_int_to_bytes(bits, length, order, signed) };
+    assert_no_pending_exception();
+    let recovered_data = unsafe { (hooks.bytes_data)(recovered, &raw mut size) };
+    assert_eq!(size, source.len());
+    assert!(!recovered_data.is_null());
+    assert_eq!(
+        unsafe { std::slice::from_raw_parts(recovered_data, size) },
+        source
+    );
+    unsafe {
+        (hooks.dec_ref)(recovered);
+        (hooks.dec_ref)(order);
+        (hooks.dec_ref)(bits);
+    };
+    assert_no_pending_exception();
 }

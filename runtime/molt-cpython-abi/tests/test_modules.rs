@@ -122,32 +122,7 @@ unsafe extern "C" fn fake_int_from_i64(value: i64) -> u64 {
 unsafe extern "C" fn fake_int_from_u64(value: u64) -> u64 {
     support::fake_runtime::heap_integer(i128::from(value))
 }
-unsafe extern "C" fn fake_int_as_i64(_bits: u64) -> i64 {
-    -1
-}
-unsafe extern "C" fn fake_int_as_i64_checked(_bits: u64, out: *mut i64) -> std::os::raw::c_int {
-    if !out.is_null() {
-        unsafe {
-            *out = -1;
-        }
-    }
-    0
-}
-unsafe extern "C" fn fake_int_as_u64_checked(_bits: u64, out: *mut u64) -> std::os::raw::c_int {
-    if !out.is_null() {
-        unsafe {
-            *out = 0;
-        }
-    }
-    0
-}
-unsafe extern "C" fn fake_int_as_u64_mask(
-    _bits: u64,
-    _width: u32,
-    _out: *mut u64,
-) -> std::os::raw::c_int {
-    -1
-}
+
 unsafe extern "C" fn fake_int_from_digits(
     _digits: *const u8,
     _len: usize,
@@ -159,20 +134,6 @@ unsafe extern "C" fn fake_int_from_digits(
 
 unsafe extern "C" fn fake_int_from_f64_trunc(value: f64) -> u64 {
     unsafe { fake_int_from_i64(value.trunc() as i64) }
-}
-
-unsafe extern "C" fn fake_int_signed_byte_width(bits: u64, out: *mut usize) -> i32 {
-    let value = unsafe { fake_int_as_i64(bits) };
-    unsafe {
-        *out = ((65
-            - if value >= 0 {
-                value.leading_zeros()
-            } else {
-                (!value).leading_zeros()
-            }) as usize)
-            .div_ceil(8)
-    };
-    0
 }
 
 unsafe extern "C" fn fake_int_max_str_digits() -> usize {
@@ -644,14 +605,11 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     float_payload: support::fake_runtime::float_payload,
     int_from_i64: fake_int_from_i64,
     int_from_u64: fake_int_from_u64,
-    int_as_i64: fake_int_as_i64,
-    int_as_i64_checked: fake_int_as_i64_checked,
-    int_as_u64_checked: fake_int_as_u64_checked,
-    int_as_u64_mask: fake_int_as_u64_mask,
+
     int_from_digits: fake_int_from_digits,
     int_from_f64_trunc: fake_int_from_f64_trunc,
     int_sign: support::fake_runtime::int_sign,
-    int_signed_byte_width: fake_int_signed_byte_width,
+
     int_from_bytes: support::fake_runtime::int_from_bytes,
     int_to_bytes: support::fake_runtime::int_to_bytes,
     int_num_bits: support::fake_runtime::int_num_bits,

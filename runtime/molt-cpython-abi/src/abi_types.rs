@@ -270,17 +270,6 @@ unsafe impl Send for PyGenericAliasObject {}
 unsafe impl Sync for PyGenericAliasObject {}
 
 #[repr(C)]
-pub struct PyContextVarObject {
-    pub ob_base: PyObject,
-    pub name: *mut PyObject,
-    pub default_value: *mut PyObject,
-    pub current_value: *mut PyObject,
-}
-
-unsafe impl Send for PyContextVarObject {}
-unsafe impl Sync for PyContextVarObject {}
-
-#[repr(C)]
 pub struct PyTypeObject {
     pub ob_base: PyVarObject,
     pub tp_name: *const c_char,
@@ -1373,6 +1362,12 @@ pub static mut Py_GenericAliasType: PyTypeObject = unsafe { std::mem::zeroed() }
 pub static mut PyContextVar_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
+pub static mut PyContext_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyContextToken_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PySet_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
@@ -1881,6 +1876,8 @@ pub(crate) unsafe fn initialize_static_type_storage() {
         set_name!(PyDictProxy_Type, b"mappingproxy\0");
         set_name!(Py_GenericAliasType, b"types.GenericAlias\0");
         set_name!(PyContextVar_Type, b"_contextvars.ContextVar\0");
+        set_name!(PyContext_Type, b"_contextvars.Context\0");
+        set_name!(PyContextToken_Type, b"_contextvars.Token\0");
         set_name!(PySet_Type, b"set\0");
         set_name!(PyBool_Type, b"bool\0");
         set_name!(PyModule_Type, b"module\0");
@@ -2050,8 +2047,9 @@ pub(crate) unsafe fn initialize_static_type_storage() {
         Py_GenericAliasType.tp_basicsize =
             std::mem::size_of::<PyGenericAliasObject>() as Py_ssize_t;
         Py_GenericAliasType.tp_dealloc = Some(crate::api::object::molt_generic_alias_dealloc);
-        PyContextVar_Type.tp_basicsize = std::mem::size_of::<PyContextVarObject>() as Py_ssize_t;
-        PyContextVar_Type.tp_dealloc = Some(crate::api::contextvars::molt_contextvar_dealloc);
+        PyContextVar_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+        PyContext_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+        PyContextToken_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
         PyCapsule_Type.tp_dealloc = Some(crate::api::capsule::molt_capsule_dealloc);
         // Exact slices have one runtime owner and a concrete bridge projection.
         // The collector traverses runtime fields; C field mirrors add no graph edges.
@@ -2417,6 +2415,8 @@ pub fn type_static_ptrs() -> Vec<*mut PyObject> {
         &raw mut PyCapsule_Type as *mut PyObject,
         &raw mut PyComplex_Type as *mut PyObject,
         &raw mut PyContextVar_Type as *mut PyObject,
+        &raw mut PyContext_Type as *mut PyObject,
+        &raw mut PyContextToken_Type as *mut PyObject,
         &raw mut PyDateTime_DateTimeType as *mut PyObject,
         &raw mut PyDateTime_DateType as *mut PyObject,
         &raw mut PyDateTime_DeltaType as *mut PyObject,

@@ -137,6 +137,86 @@ mod tests {
         }
     }
 
+    fn assert_memory_error(py: &PyToken<'_>) {
+        assert!(exception_pending(py));
+        let exception = crate::builtins::exceptions::molt_exception_last_pending();
+        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+            py,
+            exception,
+            "MemoryError"
+        ));
+        clear_exception(py);
+        dec_ref_bits(py, exception);
+    }
+
+    #[test]
+    fn sequence_bridge_empty_failure_and_owned_success_have_distinct_statuses() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let value_ptr = alloc_list(py, &[]);
+            assert!(!value_ptr.is_null());
+            let value = MoltObject::from_ptr(value_ptr).bits();
+            // Exercise both the mutable-list and immutable-tuple access paths.
+            for tuple in [false, true] {
+                let empty = if tuple {
+                    alloc_tuple(py, &[])
+                } else {
+                    alloc_list(py, &[])
+                };
+                assert!(!empty.is_null());
+                let mut ptr = std::ptr::dangling();
+                let mut len = 99;
+                let reset = TrackerReset;
+                set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                    max_allocations: Some(0),
+                    ..ResourceLimits::default()
+                })));
+                let result = molt_seq_snapshot(empty, &mut ptr, &mut len);
+                drop(reset);
+                assert_eq!(result, 1, "empty export does not allocate");
+                assert!(ptr.is_null());
+                assert_eq!(len, 0);
+                assert!(!exception_pending(py));
+                dec_ref_bits(py, MoltObject::from_ptr(empty).bits());
+
+                let expected = [value, value];
+                let sequence = if tuple {
+                    alloc_tuple(py, &expected)
+                } else {
+                    alloc_list(py, &expected)
+                };
+                assert!(!sequence.is_null());
+                assert_eq!(owners(value), 3);
+                let reset = TrackerReset;
+                set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                    max_allocations: Some(0),
+                    ..ResourceLimits::default()
+                })));
+                ptr = std::ptr::dangling();
+                len = 99;
+                let result = molt_seq_snapshot(sequence, &mut ptr, &mut len);
+                drop(reset);
+                assert_eq!(result, 0);
+                assert!(ptr.is_null());
+                assert_eq!(len, 0);
+                assert_eq!(owners(value), 3, "failed export must not retain handles");
+                assert_memory_error(py);
+
+                assert_eq!(molt_seq_snapshot(sequence, &mut ptr, &mut len), 1);
+                let snapshot = unsafe { molt_runtime_core::bridge_owned_handle_snapshot(ptr, len) };
+                assert_eq!(&*snapshot, &expected);
+                assert_eq!(owners(value), 5);
+                dec_ref_bits(py, MoltObject::from_ptr(sequence).bits());
+                assert_eq!(owners(value), 3);
+                assert_eq!(&*snapshot, &expected);
+                drop(snapshot);
+                assert_eq!(owners(value), 1);
+                assert!(!exception_pending(py));
+            }
+            dec_ref_bits(py, value);
+        });
+    }
+
     #[test]
     fn dictionary_bridge_snapshot_pins_sparse_order_until_consumer_release() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
@@ -208,10 +288,9 @@ mod tests {
                 assert_eq!(result, 0);
                 assert!(ptr.is_null());
                 assert_eq!(len, 0);
-                assert!(exception_pending(py));
                 assert_eq!(owners(value), 2);
                 assert_eq!(unsafe { dict_len(dict) }, 1);
-                clear_exception(py);
+                assert_memory_error(py);
             }
             dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
             dec_ref_bits(py, value);

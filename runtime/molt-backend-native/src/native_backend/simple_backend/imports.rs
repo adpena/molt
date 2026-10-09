@@ -20,6 +20,29 @@ impl ImportSignatureShape {
 
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
+    /// Runtime polls use manifest keys; compiled polls use raw code addresses.
+    /// Resolve the domain here so task construction and dispatch need no scan.
+    pub(crate) fn task_poll_identity(
+        module: &mut ObjectModule,
+        builder: &mut FunctionBuilder<'_>,
+        name: &str,
+        linkage: Linkage,
+    ) -> Value {
+        if let Some(key) = molt_ir::runtime_callable_abi_generated::runtime_poll_native_key(name) {
+            return builder.ins().iconst(types::I64, key as i64);
+        }
+        let mut signature = module.make_signature();
+        signature.params.push(AbiParam::new(types::I64));
+        signature.returns.push(AbiParam::new(types::I64));
+        let function = module
+            .declare_function(name, linkage, &signature)
+            .unwrap_or_else(|error| {
+                panic!("task poll target `{name}` must have ABI (i64) -> i64: {error}")
+            });
+        let local = module.declare_func_in_func(function, builder.func);
+        builder.ins().func_addr(types::I64, local)
+    }
+
     pub(crate) fn intern_data_segment(
         module: &mut ObjectModule,
         data_pool: &mut BTreeMap<Vec<u8>, cranelift_module::DataId>,

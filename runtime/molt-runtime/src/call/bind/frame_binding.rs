@@ -429,40 +429,96 @@ pub(super) unsafe fn call_function_with_arguments(
             return binding.call(_py, func_bits, func_ptr, &view);
         }
 
-        let arg_names_bits = function_attr_bits(
-            _py,
-            func_ptr,
+        let arg_names = match python_argument_names(_py, func_ptr) {
+            Ok(Some(names)) => names,
+            Ok(None) => {
+                if let Some(bound_args) =
+                    builtin_args::bind_positional_builtin_call(_py, func_bits, func_ptr, &view)
+                {
+                    return call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
+                }
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
+                return raise_exception::<_>(_py, "TypeError", "call expects function object");
+            }
+            Err(error) => return error,
+        };
+        match bind_python_frame(_py, func_ptr, args, arg_names) {
+            Ok(frame) => frame.invoke(func_bits),
+            Err(error) => error,
+        }
+    }
+}
+
+/// A successfully bound Python frame. The canonical slot owner preserves the
+/// target-version release order; instruction owners end after those slots.
+struct BoundPythonFrame<'a, 'py> {
+    slots: BoundCallSlots<'a, 'py>,
+    _instruction_owners: Option<CallArguments<'a, 'py>>,
+    values: Vec<u64>,
+}
+
+impl BoundPythonFrame<'_, '_> {
+    unsafe fn invoke(mut self, func_bits: u64) -> u64 {
+        unsafe {
+            if function_bits_adopt_arguments(func_bits) {
+                self.slots.surrender_to_entry();
+                call_function_obj_moved(self.slots.py, func_bits, &self.values)
+            } else {
+                call_function_obj_bound_vec(self.slots.py, func_bits, &self.values)
+            }
+        }
+    }
+}
+
+unsafe fn python_argument_names<'a, 'py>(
+    py: &'a PyToken<'py>,
+    function: *mut u8,
+) -> Result<Option<crate::object::seq_access::PinnedTuple<'a, 'py>>, u64> {
+    unsafe {
+        let bits = function_attr_bits(
+            py,
+            function,
             intern_static_name(
-                _py,
-                &runtime_state(_py).interned.molt_arg_names,
+                py,
+                &runtime_state(py).interned.molt_arg_names,
                 FunctionBindingField::ArgumentNames.name(),
             ),
         );
-        let arg_names = if let Some(bits) = arg_names_bits {
-            let arg_names_ptr = obj_from_bits(bits).as_ptr();
-            let Some(arg_names_ptr) = arg_names_ptr else {
-                return raise_exception::<_>(_py, "TypeError", "call expects function object");
-            };
-            if object_type_id(arg_names_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "call expects function object");
-            }
-            // Pin immutable metadata without allocating. The guard keeps
-            // this exact tuple alive if another thread replaces the
-            // function attribute while a future gilless binder is active.
-            crate::object::seq_access::pin_tuple(_py, arg_names_ptr)
-                .expect("type-checked argument-name tuple must be pinnable")
-        } else {
-            if let Some(bound_args) =
-                builtin_args::bind_positional_builtin_call(_py, func_bits, func_ptr, &view)
-            {
-                return call_function_obj_bound_vec(_py, func_bits, bound_args.as_slice());
-            }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            return raise_exception::<_>(_py, "TypeError", "call expects function object");
+        if exception_pending(py) {
+            return Err(MoltObject::none().bits());
+        }
+        let Some(bits) = bits else {
+            return Ok(None);
         };
+        let Some(pointer) = obj_from_bits(bits).as_ptr() else {
+            return Err(raise_exception::<u64>(
+                py,
+                "TypeError",
+                "call expects function object",
+            ));
+        };
+        let Some(names) = crate::object::seq_access::pin_tuple(py, pointer) else {
+            return Err(raise_exception::<u64>(
+                py,
+                "TypeError",
+                "call expects function object",
+            ));
+        };
+        Ok(Some(names))
+    }
+}
 
+/// Bind using the same metadata, defaults, keyword matching and owner ordering
+/// as ordinary invocation. This operation does not run the function body.
+unsafe fn bind_python_frame<'a, 'py>(
+    _py: &'a PyToken<'py>,
+    func_ptr: *mut u8,
+    args: CallArguments<'a, 'py>,
+    arg_names: crate::object::seq_access::PinnedTuple<'a, 'py>,
+) -> Result<BoundPythonFrame<'a, 'py>, u64> {
+    unsafe {
         let posonly_bits = function_attr_bits(
             _py,
             func_ptr,
@@ -489,10 +545,18 @@ pub(super) unsafe fn call_function_with_arguments(
             None
         } else {
             let Some(kw_ptr) = obj_from_bits(kwonly_bits).as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "call expects function object");
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "call expects function object",
+                ));
             };
             if object_type_id(kw_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "call expects function object");
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "call expects function object",
+                ));
             }
             Some(
                 crate::object::seq_access::pin_tuple(_py, kw_ptr)
@@ -552,7 +616,7 @@ pub(super) unsafe fn call_function_with_arguments(
         let total_pos = layout.positional;
         let slots = match BoundCallSlots::new(_py, layout) {
             Ok(slots) => slots,
-            Err(error) => return error,
+            Err(error) => return Err(error),
         };
         // T2: an inlined CALL frame takes the call's arguments over; any other
         // binding gives the frame its own references (`Admission`).
@@ -563,7 +627,7 @@ pub(super) unsafe fn call_function_with_arguments(
         let varkw_ptr = if has_varkw {
             let dictionary = alloc_dict_with_pairs(_py, &[]);
             if dictionary.is_null() {
-                return MoltObject::none().bits();
+                return Err(MoltObject::none().bits());
             }
             binding
                 .slots
@@ -582,7 +646,7 @@ pub(super) unsafe fn call_function_with_arguments(
                 }
                 if has_vararg {
                     let Some(tuple_bits) = binding.arguments.take_positional_tuple() else {
-                        return MoltObject::none().bits();
+                        return Err(MoltObject::none().bits());
                     };
                     binding.slots.set_owned(layout.vararg_slot(), tuple_bits);
                 } else {
@@ -599,7 +663,7 @@ pub(super) unsafe fn call_function_with_arguments(
                 }
                 if has_vararg {
                     let Some(tuple_bits) = binding.arguments.copy_positional_tuple(bound) else {
-                        return MoltObject::none().bits();
+                        return Err(MoltObject::none().bits());
                     };
                     binding.slots.set_owned(layout.vararg_slot(), tuple_bits);
                 }
@@ -634,7 +698,7 @@ pub(super) unsafe fn call_function_with_arguments(
                             break;
                         }
                         crate::object::ops_compare::CompareBoolOutcome::False => {}
-                        _ => return MoltObject::none().bits(),
+                        _ => return Err(MoltObject::none().bits()),
                     }
                 }
             }
@@ -642,11 +706,11 @@ pub(super) unsafe fn call_function_with_arguments(
                 if binding.slots[slot].is_some() {
                     let name =
                         string_obj_to_owned(obj_from_bits(name)).expect("validated keyword string");
-                    return raise_exception::<_>(
+                    return Err(raise_exception::<_>(
                         _py,
                         "TypeError",
                         &format!("got multiple values for argument '{name}'"),
-                    );
+                    ));
                 }
                 let owned = match admission {
                     Admission::Move => binding.arguments.take_keyword(index),
@@ -662,7 +726,7 @@ pub(super) unsafe fn call_function_with_arguments(
                 // positional arity checks and live default resolution.
                 crate::dict_set_in_place(_py, dictionary, name, value);
                 if exception_pending(_py) {
-                    return MoltObject::none().bits();
+                    return Err(MoltObject::none().bits());
                 }
                 // The dictionary retained its own entry; a moved edge ends here.
                 if admission == Admission::Move {
@@ -685,7 +749,7 @@ pub(super) unsafe fn call_function_with_arguments(
                                 break;
                             }
                             crate::object::ops_compare::CompareBoolOutcome::False => {}
-                            _ => return MoltObject::none().bits(),
+                            _ => return Err(MoltObject::none().bits()),
                         }
                     }
                 }
@@ -693,22 +757,22 @@ pub(super) unsafe fn call_function_with_arguments(
                     let function = function_name_bits(_py, func_ptr);
                     let function = string_obj_to_owned(obj_from_bits(function))
                         .unwrap_or_else(|| "function".to_string());
-                    return raise_exception::<_>(
+                    return Err(raise_exception::<_>(
                         _py,
                         "TypeError",
                         &format!(
                             "{function}() got some positional-only arguments passed as keyword arguments: '{}'",
                             conflicts.join(", "),
                         ),
-                    );
+                    ));
                 }
                 let name =
                     string_obj_to_owned(obj_from_bits(name)).expect("validated keyword string");
-                return raise_exception::<_>(
+                return Err(raise_exception::<_>(
                     _py,
                     "TypeError",
                     &format!("got an unexpected keyword '{name}'"),
-                );
+                ));
             }
         }
 
@@ -740,7 +804,7 @@ pub(super) unsafe fn call_function_with_arguments(
                 has_vararg,
                 has_varkw,
             );
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return Err(raise_exception::<_>(_py, "TypeError", &msg));
         }
 
         let defaults_bits = function_attr_bits(
@@ -754,16 +818,24 @@ pub(super) unsafe fn call_function_with_arguments(
         )
         .unwrap_or_else(|| MoltObject::none().bits());
         if exception_pending(_py) {
-            return MoltObject::none().bits();
+            return Err(MoltObject::none().bits());
         }
         let defaults_pin = if obj_from_bits(defaults_bits).is_none() {
             None
         } else {
             let Some(def_ptr) = obj_from_bits(defaults_bits).as_ptr() else {
-                return raise_exception::<_>(_py, "TypeError", "call expects function object");
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "call expects function object",
+                ));
             };
             if object_type_id(def_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(_py, "TypeError", "call expects function object");
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "call expects function object",
+                ));
             }
             Some(
                 crate::object::seq_access::pin_tuple(_py, def_ptr)
@@ -808,7 +880,7 @@ pub(super) unsafe fn call_function_with_arguments(
                 );
             }
             let msg = format!("missing required argument '{name}'");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return Err(raise_exception::<_>(_py, "TypeError", &msg));
         }
 
         // Each bound slot now owns its default. Do not retain unrelated
@@ -823,7 +895,7 @@ pub(super) unsafe fn call_function_with_arguments(
             }
             let default = match function_kwdefault_owned(_py, func_ptr, name_bits) {
                 Ok(value) => value,
-                Err(error) => return error,
+                Err(error) => return Err(error),
             };
             if let Some(val) = default {
                 binding.slots.set_owned(slot_idx, val);
@@ -837,41 +909,78 @@ pub(super) unsafe fn call_function_with_arguments(
             let name =
                 string_obj_to_owned(obj_from_bits(name_bits)).unwrap_or_else(|| "?".to_string());
             let msg = format!("missing required keyword-only argument '{name}'");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return Err(raise_exception::<_>(_py, "TypeError", &msg));
         }
 
         let mut final_args: Vec<u64> = Vec::with_capacity(binding.slots.len());
         for slot in &binding.slots.values {
             let Some(val) = *slot else {
-                return raise_exception::<_>(_py, "TypeError", "call binding failed");
+                return Err(raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "call binding failed",
+                ));
             };
             final_args.push(val);
         }
-        let (arguments, mut slots) = binding.into_parts();
-        let inlined_frame = arguments.custody() == ArgumentCustody::Frame;
-        // The inlined frame owns its parameters before the callee runs: a
-        // CALL's vector keeps only keyword names, and a CALL_FUNCTION_EX's
-        // tuple and mapping end here, as `_PyEvalFramePushAndInit_Ex` releases
-        // them. A callee without an inlined frame borrows the call's arguments,
-        // whose owners end after the frame it bound.
+        let (arguments, slots) = binding.into_parts();
         let mut instruction_owners = Some(arguments);
-        if inlined_frame {
+        if instruction_owners
+            .as_ref()
+            .is_some_and(|args| args.custody() == ArgumentCustody::Frame)
+        {
             drop(instruction_owners.take());
         }
-        // The bound slots are the callee frame's parameters: the moved call
-        // arguments (`Admission::Move`) or the frame's own references
-        // (`Admission::Copy`). An adopting entry takes them over and releases
-        // them in frame order at its own exit; for a borrowing entry they end
-        // in frame order when it returns.
-        let result = if function_bits_adopt_arguments(func_bits) {
-            slots.surrender_to_entry();
-            call_function_obj_moved(_py, func_bits, final_args.as_slice())
-        } else {
-            call_function_obj_bound_vec(_py, func_bits, final_args.as_slice())
+        Ok(BoundPythonFrame {
+            slots,
+            _instruction_owners: instruction_owners,
+            values: final_args,
+        })
+    }
+}
+
+/// Device lowering consumes the canonical bound ABI slots, never a raw argv
+/// length/zip approximation. The returned tuple owns every value independently.
+#[cfg(feature = "molt_gpu_primitives")]
+pub(crate) unsafe fn bind_python_frame_tuple(
+    py: &PyToken<'_>,
+    function_bits: u64,
+    positional: &[u64],
+) -> u64 {
+    unsafe {
+        let Some(function) = obj_from_bits(function_bits).as_ptr() else {
+            return raise_exception::<u64>(py, "TypeError", "GPU kernel must be a Python function");
         };
-        drop(slots);
-        drop(instruction_owners);
-        result
+        if object_type_id(function) != TYPE_ID_FUNCTION {
+            return raise_exception::<u64>(py, "TypeError", "GPU kernel must be a Python function");
+        }
+        let mut arguments = match CallArguments::retained(py, None, positional, &[], &[]) {
+            Ok(arguments) => arguments,
+            Err(error) => return error,
+        };
+        arguments.admit_custody(callee_custody(py, function_bits, arguments.form));
+        let names = match python_argument_names(py, function) {
+            Ok(Some(names)) => names,
+            Ok(None) => {
+                return raise_exception::<u64>(
+                    py,
+                    "TypeError",
+                    "GPU kernel lacks a Python signature",
+                );
+            }
+            Err(error) => return error,
+        };
+        match bind_python_frame(py, function, arguments, names) {
+            Ok(frame) => {
+                let tuple = alloc_tuple(py, &frame.values);
+                if tuple.is_null() {
+                    MoltObject::none().bits()
+                } else {
+                    MoltObject::from_ptr(tuple).bits()
+                }
+            }
+            Err(error) => error,
+        }
     }
 }
 

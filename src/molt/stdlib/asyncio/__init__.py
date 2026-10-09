@@ -202,7 +202,7 @@ if TYPE_CHECKING:
 
     def molt_cancel_token_get_current() -> int: ...
 
-    def molt_task_register_token_owned(_task: Any, _token_id: int) -> None: ...
+    def molt_task_register_execution(_task: Any, _token_id: int, _context: Any) -> None: ...
 
     def molt_future_cancel(_future: Any) -> None: ...
 
@@ -881,8 +881,8 @@ molt_cancel_token_get_current = _intrinsic_require(
 molt_promise_new = _intrinsic_require("molt_promise_new", globals())
 molt_promise_set_exception = _intrinsic_require("molt_promise_set_exception", globals())
 molt_promise_set_result = _intrinsic_require("molt_promise_set_result", globals())
-molt_task_register_token_owned = _intrinsic_require(
-    "molt_task_register_token_owned", globals()
+molt_task_register_execution = _intrinsic_require(
+    "molt_task_register_execution", globals()
 )
 molt_future_cancel = _intrinsic_require("molt_future_cancel", globals())
 molt_asyncio_cancel_pending = _intrinsic_require(

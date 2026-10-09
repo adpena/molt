@@ -1157,36 +1157,32 @@ type = 5
 runtime_name = "molt_function_set_defaults"
 callable_arity = 3
 
+# Compiler metadata publication is a direct ABI, never a Python intrinsic.
+# No runtime_name/callable_arity: the public resolver cannot materialize it.
+[[import]]
+name = "gpu_kernel_descriptor_set"
+boxed_call = true
+type = 3
+
 [[import]]
 name = "gpu_thread_id"
-return_contract = "owned_object"
 type = 0
 
 [[import]]
 name = "gpu_block_id"
-return_contract = "owned_object"
 type = 0
 
 [[import]]
 name = "gpu_block_dim"
-return_contract = "owned_object"
 type = 0
 
 [[import]]
 name = "gpu_grid_dim"
-return_contract = "owned_object"
 type = 0
 
 [[import]]
 name = "gpu_barrier"
-return_contract = "owned_object"
 type = 0
-
-# `kernel[grid, threads](*args)` lowers to a direct call of the launcher.
-[[import]]
-name = "gpu_kernel_launch"
-return_contract = "owned_object"
-type = 7
 
 [[import]]
 name = "require_intrinsic_runtime"
@@ -1995,8 +1991,8 @@ return_contract = "owned_object"
 type = 5
 
 [[import]]
-name = "task_register_token_owned"
-type = 3
+name = "task_register_execution"
+type = 5
 
 [[import]]
 name = "recursion_guard_enter"
@@ -8089,3 +8085,227 @@ type = 3
 runtime_name = "molt_generator_throw_method"
 callable_arity = 2
 shared_runtime_callable = true
+
+[[import]]
+name = "contextvars_types"
+runtime_name = "molt_contextvars_types"
+callable_arity = 1
+shared_runtime_callable = true
+type = 2
+
+[[import]]
+name = "contextvars_copy_current"
+runtime_name = "molt_contextvars_copy_current"
+callable_arity = 0
+shared_runtime_callable = true
+type = 0
+
+[[import]]
+name = "contextvars_new"
+runtime_name = "molt_contextvars_new"
+callable_arity = 3
+shared_runtime_callable = true
+type = 5
+
+[[import]]
+name = "contextvars_token_new"
+runtime_name = "molt_contextvars_token_new"
+callable_arity = 3
+shared_runtime_callable = true
+type = 5
+
+[[import]]
+name = "contextvars_missing_new"
+runtime_name = "molt_contextvars_missing_new"
+callable_arity = 3
+shared_runtime_callable = true
+type = 5
+
+[[import]]
+name = "contextvars_keys_new"
+runtime_name = "molt_contextvars_keys_new"
+callable_arity = 3
+shared_runtime_callable = true
+type = 5
+
+[[import]]
+name = "contextvars_values_new"
+runtime_name = "molt_contextvars_values_new"
+callable_arity = 3
+shared_runtime_callable = true
+type = 5
+
+[[import]]
+name = "contextvars_items_new"
+runtime_name = "molt_contextvars_items_new"
+callable_arity = 3
+shared_runtime_callable = true
+type = 5
+
+[[import]]
+name = "contextvars_var_new"
+runtime_name = "molt_contextvars_var_new"
+callable_arity = 3
+shared_runtime_callable = true
+type = 5
+
+[[import]]
+name = "contextvars_var_get"
+runtime_name = "molt_contextvars_var_get"
+callable_arity = 3
+shared_runtime_callable = true
+type = 5
+
+[[import]]
+name = "contextvars_var_set"
+runtime_name = "molt_contextvars_var_set"
+callable_arity = 2
+shared_runtime_callable = true
+type = 3
+
+[[import]]
+name = "contextvars_var_reset"
+runtime_name = "molt_contextvars_var_reset"
+callable_arity = 2
+shared_runtime_callable = true
+type = 3
+
+[[import]]
+name = "contextvars_var_hash"
+runtime_name = "molt_contextvars_var_hash"
+callable_arity = 1
+shared_runtime_callable = true
+type = 2
+
+[[import]]
+name = "contextvars_copy"
+runtime_name = "molt_contextvars_copy"
+callable_arity = 1
+shared_runtime_callable = true
+type = 2
+
+[[import]]
+name = "contextvars_len"
+runtime_name = "molt_contextvars_len"
+callable_arity = 1
+shared_runtime_callable = true
+type = 2
+
+[[import]]
+name = "contextvars_getitem"
+runtime_name = "molt_contextvars_getitem"
+callable_arity = 2
+shared_runtime_callable = true
+type = 3
+
+[[import]]
+name = "contextvars_contains"
+runtime_name = "molt_contextvars_contains"
+callable_arity = 2
+shared_runtime_callable = true
+type = 3
+
+[[import]]
+name = "contextvars_get"
+runtime_name = "molt_contextvars_get"
+callable_arity = 3
+shared_runtime_callable = true
+type = 5
+
+[[import]]
+name = "contextvars_run"
+runtime_name = "molt_contextvars_run"
+callable_arity = 3
+shared_runtime_callable = true
+type = 5
+
+[[import]]
+name = "contextvars_keys"
+runtime_name = "molt_contextvars_keys"
+callable_arity = 1
+shared_runtime_callable = true
+type = 2
+
+[[import]]
+name = "contextvars_values"
+runtime_name = "molt_contextvars_values"
+callable_arity = 1
+shared_runtime_callable = true
+type = 2
+
+[[import]]
+name = "contextvars_items"
+runtime_name = "molt_contextvars_items"
+callable_arity = 1
+shared_runtime_callable = true
+type = 2
+
+[[import]]
+name = "contextvars_iter_self"
+runtime_name = "molt_contextvars_iter_self"
+callable_arity = 1
+shared_runtime_callable = true
+type = 2
+
+[[import]]
+name = "contextvars_iter_next"
+runtime_name = "molt_contextvars_iter_next"
+callable_arity = 1
+shared_runtime_callable = true
+type = 2
+
+[[import]]
+name = "contextvars_eq"
+runtime_name = "molt_contextvars_eq"
+callable_arity = 2
+shared_runtime_callable = true
+type = 3
+
+[[import]]
+name = "contextvars_ne"
+runtime_name = "molt_contextvars_ne"
+callable_arity = 2
+shared_runtime_callable = true
+type = 3
+
+[[import]]
+name = "contextvars_property"
+runtime_name = "molt_contextvars_property"
+callable_arity = 2
+shared_runtime_callable = true
+type = 3
+
+[[import]]
+name = "contextvars_token_enter"
+runtime_name = "molt_contextvars_token_enter"
+callable_arity = 1
+shared_runtime_callable = true
+type = 2
+
+[[import]]
+name = "contextvars_token_exit"
+runtime_name = "molt_contextvars_token_exit"
+callable_arity = 4
+shared_runtime_callable = true
+type = 7
+
+[[import]]
+name = "contextvars_var_repr"
+runtime_name = "molt_contextvars_var_repr"
+callable_arity = 1
+shared_runtime_callable = true
+type = 2
+
+[[import]]
+name = "contextvars_token_repr"
+runtime_name = "molt_contextvars_token_repr"
+callable_arity = 1
+shared_runtime_callable = true
+type = 2
+
+[[import]]
+name = "contextvars_missing_repr"
+runtime_name = "molt_contextvars_missing_repr"
+callable_arity = 1
+shared_runtime_callable = true
+type = 2

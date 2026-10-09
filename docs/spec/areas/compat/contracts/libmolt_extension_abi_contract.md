@@ -1218,6 +1218,56 @@ C view. Runtime inline results keep the existing inline-key publication policy.
 Parsed arbitrary-width numeric construction continues to use the runtime
 arithmetic producer; it does not introduce a second parser in the C bridge.
 
+Integer byte emission borrows the admitted integer payload and writes directly
+into its caller's buffer. Signed overflow retains the low requested bytes;
+unsigned-negative refusal leaves the output untouched. Zero-width signed `-1`
+and zero follow CPython's empty representation. Physical C extraction remains
+independent of runtime adoption. Integer subtypes use their stored value without
+calling conversion overrides; integral floats are not integer byte receivers.
+The runtime's C-view projection stages bytes in its final digit allocation and
+repacks toward lower addresses without overlapping unread input. Python
+`int.to_bytes` fills its final immutable bytes storage under the existing owner,
+with allocation failure and overflow releasing that unpublished result once.
+These are allocation and lifetime contracts, not comparative timing claims.
+
+C integer readers use the same physical `PyLong` digits for runtime projections,
+C-created integers, bool and int subtypes. Width, sign, masking, floating-point
+rounding and byte extraction do not reacquire a runtime integer or invoke its
+numeric callbacks. Only APIs that accept a non-int index operand call
+`PyNumber_Index`; they consume its physical result before releasing it. The
+obsolete signed/unsigned scalar-read, mask and signed-byte-width hook fields are
+removed from the exact-version runtime hook contract, together with their providers.
+Unsigned extraction classifies negative values before width overflow, including
+negative values wider than 64 bits. Converter helpers retain CPython's ValueError
+for negatives and leave outputs untouched on failure. Short/int converters first
+admit the platform's unsigned-long width, then apply their narrower limit, with
+the exception and diagnostic belonging to the stage that actually rejected it.
+
+The `PyArg` numeric format family uses these same physical C readers. Checked
+byte/short/int formats first extract C long; bitfield formats mask at their real C
+width without an intermediate signed limit. `n` applies index admission before
+the platform ssize limit; existing physical integer subtypes need no exact-type
+copy. Float formats use the shared float protocol, with callback failures and
+output storage preserved. `k`/`K` require int through Python 3.13 and admit index
+objects from Python 3.14, selected by the runtime target-version authority.
+Parser-owned conversion diagnostics retain argument/item location and format
+suffixes; callback exceptions keep their original identity. Diagnostic strings
+are built only on failure. These rules follow the versioned
+[CPython argument parser](https://github.com/python/cpython/blob/v3.14.8/Python/getargs.c).
+
+Storage extraction and Python conversion have distinct admission rules.
+`int()` and `PyNumber_Long` preserve exact integer identity and dispatch subtype
+`__int__` before `__index__`; a numeric storage tag cannot bypass those methods.
+Their runtime path shares integer-result validation, subtype warnings and exact
+result ownership with index conversion. `operator.index` and explicit integer
+base descriptors read existing integer storage without invoking overrides. A
+sealed subtype's exact integer payload can be retained directly instead of
+cloned and reboxed. Python 3.12/3.13 retain deprecated `__trunc__` delegation,
+with warning failure preceding the callback; Python 3.14 removes that path.
+These rules follow [CPython's numeric protocols](https://github.com/python/cpython/blob/v3.14.8/Objects/abstract.c).
+String and generic-buffer acceptance remain separately qualified parser surfaces;
+numeric protocol tests do not certify their completeness.
+
 Adoption validates the source record and counts, reserves insertion storage,
 and acquires the runtime view mark before atomically publishing. Failure retains
 the original usable C allocation and releases only newly staged runtime owners.

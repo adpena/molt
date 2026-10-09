@@ -934,7 +934,6 @@ def test_full_profile_feature_receipt_matches_exact_combined_cargo_command(
         "stdlib_crypto",
         "stdlib_compression",
         "stdlib_logging_ext",
-        "builtin_contextvars",
         "stdlib_micro",
     } <= features
     assert not {"molt_gpu_primitives", "sqlite"} & features

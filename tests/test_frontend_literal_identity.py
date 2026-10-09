@@ -11,7 +11,13 @@ from molt.compiler_analysis.literal_identity import (
 from molt.compiler_analysis.static_truth import _same_scalar_value
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
 from molt.frontend._types import _SCCP_OVERDEFINED, _SCCP_UNKNOWN
-from molt.frontend.cfg_analysis import BasicBlock, CFGEdgeKind, CFGGraph, build_cfg
+from molt.frontend.cfg_analysis import (
+    BasicBlock,
+    CFGEdgeKind,
+    CFGGraph,
+    DominatorTree,
+    build_cfg,
+)
 from molt.frontend.lowering.midend_dataflow import _same_sccp_state
 from molt.frontend.lowering.serialization_context import SerializationContext
 
@@ -135,7 +141,7 @@ def _phi_result(left: object, right: object) -> dict[str, object]:
         MoltOp("JUMP", ["join"], MoltValue("none")),
         MoltOp("PHI", [MoltValue("left"), MoltValue("right")], MoltValue("joined")),
         MoltOp("TYPE_OF", [MoltValue("joined")], MoltValue("joined_type")),
-        MoltOp("RETURN", [MoltValue("joined")], MoltValue("none")),
+        MoltOp("ret", [MoltValue("joined")], MoltValue("none")),
     ]
     blocks = [
         BasicBlock(0, 0, 4),
@@ -159,7 +165,7 @@ def _phi_result(left: object, right: object) -> dict[str, object]:
         },
         predecessors={0: [], 1: [0], 2: [0], 3: [1, 2]},
         reachable={0, 1, 2, 3},
-        dominators={0: {0}, 1: {0, 1}, 2: {0, 2}, 3: {0, 3}},
+        dominance=DominatorTree.compute([[1, 2], [3], [3], []]),
     )
     gen = SimpleTIRGenerator()
     result = gen._compute_sccp(ops, cfg)
@@ -204,7 +210,7 @@ def test_region_markers_preserve_immutable_lattice_admission() -> None:
         MoltOp("CONST", [0], MoltValue("index")),
         MoltOp("INDEX", [MoltValue("mutable"), MoltValue("index")], MoltValue("item")),
         MoltOp("TRY_END", [], MoltValue("none")),
-        MoltOp("RETURN", [MoltValue("item")], MoltValue("none")),
+        MoltOp("ret", [MoltValue("item")], MoltValue("none")),
     ]
     cfg = build_cfg(ops)
     result = SimpleTIRGenerator()._compute_sccp(ops, cfg)
@@ -253,7 +259,7 @@ def test_sccp_is_never_uses_host_interning(
         MoltOp("CONST", [left], MoltValue("left")),
         MoltOp("CONST", [right], MoltValue("right")),
         MoltOp("IS", [MoltValue("left"), MoltValue("right")], MoltValue("identity")),
-        MoltOp("RETURN", [MoltValue("identity")], MoltValue("none")),
+        MoltOp("ret", [MoltValue("identity")], MoltValue("none")),
     ]
     result = SimpleTIRGenerator()._compute_sccp(ops, build_cfg(ops))
     assert result.out_values[0]["identity"] is expected

@@ -213,6 +213,12 @@ contract is defined in `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`.
   A poll address alone does not make an ordinary generator, async generator,
   or coroutine iterator wrapper awaitable. Flagged iterable coroutines retain
   their code-owned protocol admission; user awaitables use the class protocol.
+  Compiled polls receive a raw payload address; runtime polls receive a tagged
+  object word. The WASM ABI manifest owns the runtime poll identities on both
+  native and WASM targets. Native compiler producers lower runtime poll symbols
+  to their canonical callable keys; compiled polls retain their code addresses.
+  Constructors select lifecycle shape from that identity, and polling dispatches
+  by its domain without depending on the debug pointer registry.
 - **Async (host services)**: `molt-worker` and `molt-db` use tokio/tokio-postgres
   where OS-level I/O is required.
 

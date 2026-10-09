@@ -281,7 +281,6 @@ fn cargo_cdylib_selection_reports_runtime_wasm_with_fixed_abi_surface() {
         "builtin_set",
         "builtin_complex",
         "builtin_memoryview",
-        "builtin_contextvars",
         "builtin_fcntl",
     ];
 

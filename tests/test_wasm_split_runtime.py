@@ -443,19 +443,9 @@ def test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output(
 ) -> None:
     src = tmp_path / "gpu_kernel_smoke.py"
     src.write_text(
-        "import molt.gpu as gpu\n"
-        "\n"
-        "@gpu.kernel\n"
-        "def vector_add(a, b, c, n):\n"
-        "    tid = gpu.thread_id()\n"
-        "    if tid < n:\n"
-        "        c[tid] = a[tid] + b[tid]\n"
-        "\n"
-        "a = gpu.to_device([1.0, 2.0, 3.0, 4.0])\n"
-        "b = gpu.to_device([10.0, 20.0, 30.0, 40.0])\n"
-        "c = gpu.alloc(4, float)\n"
-        "vector_add[1, 4](a, b, c, 4)\n"
-        "print(gpu.from_device(c))\n",
+        (ROOT / "tests" / "fixtures" / "gpu_launch_semantics.py").read_text(
+            encoding="utf-8"
+        ),
         encoding="utf-8",
     )
     out_dir = tmp_path / "out"
@@ -466,7 +456,7 @@ def test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output(
 
     run = _run_split_direct(out_dir, timeout=120)
     assert run.returncode == 0, run.stdout + run.stderr
-    assert run.stdout.strip() == "[11.0, 22.0, 33.0, 44.0]"
+    assert run.stdout.strip() == "[11.0, 22.0, 33.0, 44.0]\nlaunch semantics ok"
 
 
 def test_hostfed_call_bundle_parses_profile_and_classifies_timeout(

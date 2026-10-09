@@ -975,19 +975,162 @@ fn is_runtime_materialization(
     }
 }
 
+/// Callback-free proof of an already materialized intrinsic. This does not
+/// create or publish a callable and never consults mutable public names.
+#[cfg(feature = "molt_gpu_primitives")]
+pub(crate) fn is_named_runtime_materialization(py: &PyToken<'_>, bits: u64, name: &str) -> bool {
+    let Some(spec) = find_spec(name) else {
+        return false;
+    };
+    let Some(target) = try_app_resolve_symbol(spec.symbol) else {
+        return false;
+    };
+    is_runtime_materialization(py, bits, target, spec.arity, spec.defaults)
+}
+
+/// Recognize a positional Python builtin dependency from the existing builtin
+/// publication table. This does not accept an arbitrary same-named function or
+/// materialize a new callable. The caller uses only the declared exact arity.
+#[cfg(feature = "molt_gpu_primitives")]
+pub(crate) fn is_named_python_builtin_materialization(
+    py: &PyToken<'_>,
+    bits: u64,
+    name: &str,
+) -> bool {
+    let Some(spec) = crate::builtins::functions::PYTHON_BUILTIN_FUNCTIONS
+        .iter()
+        .find(|spec| spec.python_module == "builtins" && spec.python_name == name)
+    else {
+        return false;
+    };
+    // Only default-free positional dependencies are needed by the admitted
+    // bodies. All other shapes retain their ordinary Python call path.
+    if !spec.defaults.is_empty()
+        || !spec.kw_defaults.is_empty()
+        || !spec.kwonly_params.is_empty()
+        || spec.vararg.is_some()
+        || spec.varkw.is_some()
+        || spec.bind_kind.is_some()
+    {
+        return false;
+    }
+    let Some(target) = try_app_resolve_symbol(spec.runtime_name) else {
+        return false;
+    };
+    let Some(function) = obj_from_bits(bits).as_ptr() else {
+        return false;
+    };
+    unsafe {
+        object_type_id(function) == TYPE_ID_FUNCTION
+            && crate::object_class_bits(function)
+                == crate::builtin_classes(py).builtin_function_or_method
+            && crate::function_fn_ptr(function)
+                == crate::builtins::functions::canonicalize_runtime_callable_key(target)
+            && crate::function_arity(function) == spec.arity
+            && crate::function_call_abi(function) == crate::FunctionCallAbi::Positional
+            && crate::function_mutation_version(function) == 0
+            && function_default_bits_are(function, 0, |_| unreachable!())
+            && !crate::call::bind::function_raw_positional_call_needs_binding(
+                py,
+                function,
+                spec.arity as usize,
+            )
+    }
+}
+
+/// Callback-free identity of a compiler-admitted Python body. The compiler
+/// compares the selected source generation with its captured reference and
+/// retains the actual compiled symbol in the existing app resolver. This guard
+/// checks the current executable/code/default shape, not a module/class name.
+#[cfg(feature = "molt_gpu_primitives")]
+pub(crate) fn is_compiled_body_materialization(
+    py: &PyToken<'_>,
+    bits: u64,
+    symbol: &str,
+    arity: u64,
+    code_slot: u64,
+    defaults: &[u64],
+) -> bool {
+    use crate::object::function_metadata::FunctionMetadataField;
+    let Some(target) = try_app_resolve_runtime_callable(symbol) else {
+        return false;
+    };
+    let Some(function) = obj_from_bits(bits).as_ptr() else {
+        return false;
+    };
+    unsafe {
+        if object_type_id(function) != TYPE_ID_FUNCTION
+            || crate::object_class_bits(function) != crate::builtin_classes(py).function
+            || crate::function_mutation_version(function) != 0
+            || crate::function_fn_ptr(function) != target
+            || crate::function_arity(function) != arity
+            || crate::function_call_abi(function) != crate::FunctionCallAbi::Positional
+        {
+            return false;
+        }
+        let Some(code) = obj_from_bits(crate::function_code_bits(function)).as_ptr() else {
+            return false;
+        };
+        if object_type_id(code) != crate::TYPE_ID_CODE
+            || crate::object::layout::code_frame_slot_id(code) != Some(code_slot)
+        {
+            return false;
+        }
+        let Some(identity) = crate::object::layout::code_callable_identity(code) else {
+            return false;
+        };
+        if identity.fn_ptr != target
+            || identity.arity != arity
+            || identity.call_abi != crate::function_call_abi(function)
+            || identity.custody != crate::function_entry_custody(function)
+            || identity.trampoline_ptr != crate::function_trampoline_ptr(function)
+            || !function_default_bits_are(function, defaults.len(), |i| defaults[i])
+        {
+            return false;
+        }
+        // The admitted reference cohort has no keyword-only defaults. A newly
+        // constructed FunctionType can otherwise change them without changing
+        // the code object or borrowing another function's mutation counter.
+        let keyword_defaults = FunctionMetadataField::KeywordDefaults
+            .load(function)
+            .unwrap_or(MoltObject::none().bits());
+        if obj_from_bits(keyword_defaults).is_none() {
+            return true;
+        }
+        obj_from_bits(keyword_defaults)
+            .as_ptr()
+            .is_some_and(|dict| {
+                crate::object::object_is_exact_builtin_dict(py, dict) && crate::dict_len(dict) == 0
+            })
+    }
+}
+
 /// Whether a function binds exactly these canonical `__defaults__`, decided
-/// without allocation or Python equality.
+/// without allocation or Python equality. Both materialization families use
+/// this owner; their caller supplies the admitted immutable default bits.
 unsafe fn function_defaults_are(
     _py: &PyToken<'_>,
     function: *mut u8,
     defaults: &[IntrinsicDefaultValue],
 ) -> bool {
     unsafe {
+        function_default_bits_are(function, defaults.len(), |i| {
+            intrinsic_default_bits(defaults[i])
+        })
+    }
+}
+
+unsafe fn function_default_bits_are(
+    function: *mut u8,
+    len: usize,
+    expected: impl Fn(usize) -> u64,
+) -> bool {
+    unsafe {
         let defaults_bits = crate::object::function_metadata::FunctionMetadataField::Defaults
             .load(function)
             .unwrap_or(MoltObject::none().bits());
         if obj_from_bits(defaults_bits).is_none() {
-            return defaults.is_empty();
+            return len == 0;
         }
         let Some(tuple) = obj_from_bits(defaults_bits).as_ptr() else {
             return false;
@@ -996,11 +1139,11 @@ unsafe fn function_defaults_are(
             return false;
         }
         crate::object::seq_access::with_immutable_tuple_slice(tuple, |items| {
-            items.len() == defaults.len()
+            items.len() == len
                 && items
                     .iter()
-                    .zip(defaults)
-                    .all(|(&item, &default)| item == intrinsic_default_bits(default))
+                    .enumerate()
+                    .all(|(i, &item)| item == expected(i))
         })
         .unwrap_or(false)
     }

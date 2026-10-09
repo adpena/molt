@@ -80,9 +80,7 @@ fn admit_foreign_pyobject(ptr: *mut PyObject) -> Option<()> {
     if unsafe { (crate::hooks::hooks_or_stubs().private_c_heap_contains)(ptr.addr()) } == 0 {
         return Some(());
     }
-    if unsafe { crate::api::errors::PyErr_Occurred() }.is_null()
-        && !crate::api::errors::transfer_runtime_pending_to_current()
-    {
+    if !crate::api::errors::raised_error_pending() {
         unsafe {
             crate::api::errors::PyErr_SetString(
                 (&raw mut crate::abi_types::PyExc_TypeError).cast(),
@@ -330,6 +328,43 @@ impl ObjectBridge {
         self.managed_handle_for_pyobj(ptr).map(MoltValueHandle)
     }
 
+    /// The three public Context shells are process-lived physical projections
+    /// of lazy runtime classes. Admit before foreign identity publication or
+    /// call/type observation. Pure reference membership remains nonallocating.
+    pub(crate) fn admit_lazy_static_type(&self, pointer: *mut PyObject) -> Result<bool, ()> {
+        let known = std::ptr::eq(pointer, (&raw mut crate::abi_types::PyContext_Type).cast())
+            || std::ptr::eq(
+                pointer,
+                (&raw mut crate::abi_types::PyContextVar_Type).cast(),
+            )
+            || std::ptr::eq(
+                pointer,
+                (&raw mut crate::abi_types::PyContextToken_Type).cast(),
+            );
+        if !known {
+            return Ok(false);
+        }
+        if self.molt_handle_for_pyobj(pointer).is_some() {
+            return Ok(true);
+        }
+        let _gil = crate::hooks::RuntimeGilGuard::ensure();
+        if self.molt_handle_for_pyobj(pointer).is_some() {
+            return Ok(true);
+        }
+        if crate::api::errors::raised_error_pending() {
+            return Err(());
+        }
+        if unsafe { (crate::hooks::hooks_or_stubs().context_type_admit)(pointer.addr()) } != 0 {
+            unsafe { ensure_result_error(c"Context static type has no runtime owner") };
+            return Err(());
+        }
+        if self.molt_handle_for_pyobj(pointer).is_none() {
+            unsafe { ensure_result_error(c"Context static type admission did not bind its owner") };
+            return Err(());
+        }
+        Ok(true)
+    }
+
     /// Typed semantic ingress. Numeric adoption failure is not a membership
     /// miss and can never license foreign wrapping. Pure membership stays
     /// nonallocating for refcount/GC/layout checks.
@@ -340,6 +375,7 @@ impl ObjectBridge {
         if let Some(bits) = pyobj_to_handle_static(pointer) {
             return Ok(Some(MoltValueHandle(bits)));
         }
+        self.admit_lazy_static_type(pointer)?;
         let address = self.address_shard(pointer.addr()).lock();
         let record = address.numeric_carriers.get(&pointer.addr()).copied();
         let Some(record) = record else {
