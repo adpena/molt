@@ -1,4 +1,6 @@
 from __future__ import annotations
+import shutil
+from tests.process_guard_common import install_module_view
 
 import subprocess
 from pathlib import Path
@@ -162,7 +164,9 @@ def test_docker_transport_run_uses_memory_guard(monkeypatch, tmp_path: Path) -> 
 def test_docker_prepare_rejects_mutable_or_malformed_image_without_pull(
     monkeypatch, reference
 ):
-    monkeypatch.setattr(cross_run.shutil, "which", lambda name: "/usr/bin/docker")
+    install_module_view(
+        monkeypatch, "shutil", shutil, cross_run, which=lambda name: "/usr/bin/docker"
+    )
     calls = []
     monkeypatch.setattr(cross_run, "_guarded_run", lambda *a, **k: calls.append(a))
     transport = cross_run.DockerTransport(
@@ -179,7 +183,9 @@ def test_docker_prepare_rejects_mutable_or_malformed_image_without_pull(
 
 
 def test_docker_prepare_missing_pin_never_pulls(monkeypatch):
-    monkeypatch.setattr(cross_run.shutil, "which", lambda name: "/usr/bin/docker")
+    install_module_view(
+        monkeypatch, "shutil", shutil, cross_run, which=lambda name: "/usr/bin/docker"
+    )
     calls = []
 
     def run(command, **kwargs):

@@ -389,6 +389,13 @@ def render_py(data: dict) -> str:
             "FRONTEND_REGISTERED_KINDS", sorted(registered_frontend_kinds(data))
         )
     )
+    out.append("# Explicit frontend spellings replacing the uppercase wire default.\n")
+    out.append("FRONTEND_LOWERING_KINDS_BY_WIRE: dict[str, tuple[str, ...]] = {\n")
+    for wire in sorted(
+        {row["wire_kind"] for row in data.get("frontend_lowering_kind", ())}
+    ):
+        out.append(f"    {wire!r}: {frontend_kinds_for_wire_kind(data, wire)!r},\n")
+    out.append("}\n\n")
     out.append(
         _render_py_frozenset(
             "SIMPLEIR_STRUCTURAL_KINDS",

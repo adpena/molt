@@ -7,13 +7,22 @@ no payload is installed or executed here, and no Docker image is fetched.
 from __future__ import annotations
 
 import argparse
+import sys
 import json
 from pathlib import Path
 from typing import Any
 
-from molt.tool_releases import provision_archive
-from . import execution_root
-from .release_model import ROOT, target_by_id
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.tool_releases import provision_archive  # noqa: E402
+from tools.release import execution_root  # noqa: E402
+from tools.release.release_model import ROOT, target_by_id  # noqa: E402
 
 
 def provision(

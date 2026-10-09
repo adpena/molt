@@ -43,7 +43,48 @@ instances and missing qualification into the existing owning open requirement;
 retain the historical repair evidence without treating it as release acceptance.
 
 Current integration evidence (2026-10-09 UTC): draft PR119 is not merged into
-main. The working successor now unifies the installed and source release-lane
+main. Candidate `5a6758e90` fails Docs Gates, both Python unit cells, native
+integration and Windows portability in CI `37974432198`; Rust and WASM results
+are still pending. Static, LLVM, security, formal and the other portability jobs
+pass. The working successor repairs the development-side consumer failures:
+six file entrypoints bind the existing repository import authority before project
+imports; the import audit examines actual module guards; twenty shared-stdlib
+test patches use isolated module views; and the test-only dead-code inventory
+matches its renamed/shared support owners. The affected policy cohort passes
+558 checks with 35 platform skips and both policy audits pass.
+
+The IR inventory now projects explicit frontend spelling changes from the
+canonical operation table instead of manufacturing uppercase wire names.
+Installed admission defers the process launcher until a real rustup selection
+probe needs it; its eager source closure drops from 1,403 to 36 files without
+weakening source-coverage rules. All eleven rustup fixture consumers patch the
+actual deferred boundary. The retired automatic-download fixture now proves
+read-only selection leaves the indirect download cache untouched. WASI binary128
+and C++ integration remain required in their existing provisioned WASM row and
+are removed from two Python-only rows. The broader affected cohort reports
+934 passes and four stale rustup fixture failures; those failures and their
+sibling consumers pass all 32 focused checks after migration. These cohorts
+overlap and do not establish full hosted or target qualification.
+
+Windows reports successful tests and closed process descendants but fails
+temporary-directory retirement on real trailing-dot/space entries. The working
+deletion authority preserves verbatim root spelling through the existing
+recursive traversal, including read-only hardlinks; actual Windows replay
+remains required. Native integration exits with signal 11 during a timed Python
+stack dump. That cause is unproven and was not reproduced locally. The optional
+periodic dump is retired while fatal diagnostics, live test/output evidence,
+guard telemetry and the cold command budget remain; the real native row still
+requires replay.
+
+The reviewed GC/isolate/process-worker proposal remains private and unqualified.
+Its joined-service successor must close the complete scheduler, timer, I/O and
+pool ownership family. Review also finds that process-global shared-call tokens
+can collide across the two Python thread APIs or isolates, replacing and later
+consuming a callable under the wrong runtime owner. Complete payload-identity
+and service migration, compiled execution and cost qualification remain required
+before this family can land.
+
+The working successor now unifies the installed and source release-lane
 inventory, includes LLVM in the production compiler feature tuple, and carries
 the admitted static LLVM SDK through build, packaging, identity and installed
 consumer replay. Its 11 logical lanes share the existing four native and three

@@ -179,6 +179,46 @@ def test_ir_inventory_detects_unregistered_ops_and_stale_aliases() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "spec_op,frontend,manufactured",
+    [
+        ("Iter", "ITER_NEW", "ITER"),
+        ("ClosureLoad", "LOAD_CLOSURE", "CLOSURE_LOAD"),
+        ("ClosureStore", "STORE_CLOSURE", "CLOSURE_STORE"),
+    ],
+)
+def test_ir_inventory_requires_real_lowering_names(spec_op, frontend, manufactured):
+    from molt.frontend.lowering.op_kinds_generated import FRONTEND_REGISTERED_KINDS
+
+    module = _load_verify_module()
+    spec_ops = module._parse_spec_ops(module._read_backend_texts()[0])
+    registered = (FRONTEND_REGISTERED_KINDS - {frontend}) | {manufactured}
+    assert module.check_ir_inventory(spec_ops, registered) == [
+        f"IR op has no registered frontend kind: {spec_op} ({frontend})"
+    ]
+
+
+def test_ir_inventory_requires_every_declared_lowering(monkeypatch):
+    from molt.frontend.lowering import op_kinds_generated as registry
+
+    module = _load_verify_module()
+    spec_ops = module._parse_spec_ops(module._read_backend_texts()[0])
+    monkeypatch.setitem(
+        registry.FRONTEND_LOWERING_KINDS_BY_WIRE,
+        "iter",
+        ("ITER_NEW", "ALTERNATIVE_ITER"),
+    )
+    assert module.check_ir_inventory(spec_ops, registry.FRONTEND_REGISTERED_KINDS) == [
+        "IR op has no registered frontend kind: Iter (ALTERNATIVE_ITER)"
+    ]
+    assert (
+        module.check_ir_inventory(
+            spec_ops, registry.FRONTEND_REGISTERED_KINDS | {"ALTERNATIVE_ITER"}
+        )
+        == []
+    )
+
+
 def test_scan_backend_kinds_parses_alternating_match_arms() -> None:
     module = _load_verify_module()
     kinds = module._scan_backend_kinds(

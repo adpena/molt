@@ -15,7 +15,6 @@ import sys
 import tomllib
 from typing import Iterator, Mapping, Sequence
 
-from molt import process_guard
 from molt.exact_json import string_keyed_mapping
 from molt.toolchain_identity import (
     executable_environment_value,
@@ -109,6 +108,8 @@ def resolve_rustup_proxy(
             ):
                 if selected.sha256 != proxy.sha256:
                     continue
+                from molt import process_guard
+
                 result = process_guard.run_completed_command(
                     [os.fspath(entrypoint), "which", role],
                     cwd=root,

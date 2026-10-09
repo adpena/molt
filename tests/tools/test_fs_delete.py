@@ -356,3 +356,62 @@ def test_windows_sharing_failure_preserves_readonly_source_then_recovers(
     file_deletion.unlink_file(link)
     assert not link.exists()
     assert attributes() == before
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="actual Windows verbatim filesystem entries"
+)
+@pytest.mark.parametrize("suffix", [".", " "])
+@pytest.mark.parametrize("ancestor", [False, True])
+@pytest.mark.parametrize("owner_kind", ["tree", "allocation"])
+def test_recursive_deletion_keeps_verbatim_child_names(
+    tmp_path, readonly_file_source, suffix, ancestor, owner_kind
+):
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+
+    # The hardlink's external source and its live attribute observation remain
+    # independent of deletion. The owned tree includes ordinary and verbatim
+    # siblings, exactly as real tool-image admission fixtures can create them.
+    source, attributes = readonly_file_source
+    original_attributes = attributes()
+    owner = OwnedTemporaryDirectory(prefix="verbatim-", dir=tmp_path)
+    tree = Path(owner.name)
+    ordinary_directory = tree / "tools"
+    ordinary_directory.mkdir()
+    ordinary = ordinary_directory / "tool.exe"
+    ordinary.write_bytes(b"ordinary sibling")
+    if ancestor:
+        special_directory = Path("\\\\?\\" + str(ordinary_directory) + suffix)
+        special_directory.mkdir()
+        selected = special_directory / "tool.exe"
+    else:
+        selected = Path("\\\\?\\" + str(ordinary) + suffix)
+    os.link(source, selected)
+    assert selected.read_bytes() == b"external source must survive cleanup"
+    assert ordinary.read_bytes() == b"ordinary sibling"
+    if owner_kind == "tree":
+        ok, error = file_deletion.delete_path(tree)
+        assert ok, error
+        owner.cleanup()
+    else:
+        owner.cleanup()
+    assert not tree.exists()
+    assert not selected.exists()
+    assert source.read_bytes() == b"external source must survive cleanup"
+    assert attributes() == original_attributes
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="actual Windows verbatim filesystem entries"
+)
+@pytest.mark.parametrize("suffix", [".", " "])
+def test_verbatim_subtree_deletion_preserves_ordinary_sibling(tmp_path, suffix):
+    ordinary = tmp_path / "owned"
+    ordinary.mkdir()
+    (ordinary / "keep").write_bytes(b"outside selected entry")
+    selected = Path("\\\\?\\" + str(ordinary) + suffix)
+    selected.mkdir()
+    (selected / "remove").write_bytes(b"owned selected entry")
+    assert file_deletion.delete_path(selected) == (True, "")
+    assert not selected.exists()
+    assert (ordinary / "keep").read_bytes() == b"outside selected entry"

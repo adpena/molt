@@ -514,7 +514,7 @@ def test_environment_rust_proxy_component_reaches_both_custody_consumers(
     tmp_path, monkeypatch, selector
 ):
     import subprocess
-    from molt import rust_toolchain
+    from molt import process_guard
     from tools.proof_queue_pkg import (
         execution_environment,
         toolchain_capture,
@@ -535,7 +535,7 @@ def test_environment_rust_proxy_component_reaches_both_custody_consumers(
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, str(physical) + "\n", "")
 
-    monkeypatch.setattr(rust_toolchain.process_guard, "run_completed_command", which)
+    monkeypatch.setattr(process_guard, "run_completed_command", which)
     captured = execution_environment._execution_environment_executable_identities(
         {selector: str(proxy)}, cwd=tmp_path
     )

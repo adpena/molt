@@ -798,31 +798,29 @@ def test_archive_lock_timeout_is_typed_but_programming_errors_propagate(
     assert observed.value is failure
 
 
-def test_dx_records_actual_archive_custody_refusal_once(tmp_path, monkeypatch):
+def test_dx_discovery_leaves_indirect_download_cache_untouched(tmp_path, monkeypatch):
     from molt import dx
 
     release, archive = _pinned_release(tmp_path, b"demo binary")
+    original_archive = archive.read_bytes()
     root = tmp_path / "tools"
     cache = root / TOOLCHAINS_DIRNAME / tool_releases.DOWNLOADS_DIRNAME
     cache.mkdir(parents=True)
     (cache / archive.name).symlink_to(archive)
-    monkeypatch.setattr(dx, "_sccache_download_failed", False)
-    monkeypatch.setattr(dx, "_sccache_provision_error", None)
     monkeypatch.setattr(tool_releases, "tool_release", lambda _: release)
     monkeypatch.setattr(
-        tool_releases.urllib.request,
-        "build_opener",
-        lambda *_: pytest.fail("indirect cache must not fetch"),
-    )
-    assert dx._provision_sccache(root) is None
-    assert dx._sccache_download_failed is True
-    assert (
-        "ToolReleaseError" in dx._sccache_provision_error
-        and "indirect" in dx._sccache_provision_error
+        tool_releases,
+        "provision_tool",
+        lambda *_args, **_kwargs: pytest.fail("discovery must not provision"),
     )
     monkeypatch.setattr(
         tool_releases,
-        "tool_release",
-        lambda _: pytest.fail("memoized refusal must not retry"),
+        "provision_archive",
+        lambda *_args, **_kwargs: pytest.fail("discovery must not read download cache"),
     )
-    assert dx._provision_sccache(root) is None
+    env = {"MOLT_TARGET_ROOT": str(root)}
+    assert dx.pinned_sccache(env) is None
+    assert dx.pinned_sccache(env) is None
+    assert (cache / archive.name).is_symlink()
+    assert archive.read_bytes() == original_archive
+    assert not tool_releases.tool_prefix(root, release).exists()

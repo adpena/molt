@@ -3,9 +3,8 @@
 
 from __future__ import annotations
 
-from molt.temporary_artifacts import OwnedTemporaryDirectory
-
 import argparse
+import sys
 import hashlib
 import json
 import math
@@ -15,30 +14,44 @@ import shutil
 import tomllib
 from typing import Any
 
-from molt.exact_json import canonical_json_sha256, read_exact
-from molt.compiler_distribution import (
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
+
+from molt.exact_json import canonical_json_sha256, read_exact  # noqa: E402
+from molt.compiler_distribution import (  # noqa: E402
     validate_compiler_record,
     validate_launcher_record,
     validate_runtime_inventory,
 )
-from molt.file_publication import durable_publish_directory_exclusive
-from molt.python_identity_common import _valid_sha256
-from molt.toolchain_identity import snapshot_stable_regular_file
-from molt.verified_subset import capture_verified_subset_policy
-from molt.release_lanes import ReleaseLane, capture_release_lanes
-from tools.command_execution import CommandExecutor
-from tools.git_identity import clean_checkout_status_arguments, require_git_object_id
+from molt.file_publication import durable_publish_directory_exclusive  # noqa: E402
+from molt.python_identity_common import _valid_sha256  # noqa: E402
+from molt.toolchain_identity import snapshot_stable_regular_file  # noqa: E402
+from molt.verified_subset import capture_verified_subset_policy  # noqa: E402
+from molt.release_lanes import ReleaseLane, capture_release_lanes  # noqa: E402
+from tools.command_execution import CommandExecutor  # noqa: E402
+from tools.git_identity import clean_checkout_status_arguments, require_git_object_id  # noqa: E402
 
-from .build_bundle import build_bundle
-from .compiler_payload import compiler_record, launcher_record, source_snapshot
-from .runtime_cells import read_runtime_inventory
-from .native_build import (
+from tools.release.build_bundle import build_bundle  # noqa: E402
+from tools.release.compiler_payload import (  # noqa: E402
+    compiler_record,
+    launcher_record,
+    source_snapshot,
+)
+from tools.release.runtime_cells import read_runtime_inventory  # noqa: E402
+from tools.release.native_build import (  # noqa: E402
     read_native_build,
     snapshot_rust_channel,
     validate_receipt as validate_native_receipt,
 )
-from . import release_evidence
-from .release_remote import (
+from tools.release import release_evidence  # noqa: E402
+from tools.release.release_remote import (  # noqa: E402
     download_evidence,
     download_release,
     promote_release,
@@ -47,7 +60,7 @@ from .release_remote import (
     stage_release,
     verify_remote_tag,
 )
-from .release_model import (
+from tools.release.release_model import (  # noqa: E402
     ROOT,
     ATTESTATION_POLICY,
     FILE_FIELDS,
@@ -1019,7 +1032,7 @@ def validate_consumer_proof(
             "and build into separate output directories"
         )
     _validate_consumer_pip_proof(consumer["pip_proof"], candidate)
-    from . import consumer_replay
+    from tools.release import consumer_replay
 
     consumer_replay.validate(
         consumer["standalone"],
@@ -1144,7 +1157,7 @@ def _admit_candidate(
     consumer = read_exact(
         consumer_path, max_bytes=1024 * 1024, label="release consumer proof"
     )
-    from . import consumer_replay
+    from tools.release import consumer_replay
 
     validate_consumer_proof(
         consumer, candidate, evidence_root=candidate_dir, supervisor=supervisor
@@ -1358,7 +1371,7 @@ def _stage_candidate_assets(
     validate_artifact_record(wheel_record, version=version)
     _copy_verified_release_file(wheel, output / wheel.name, wheel_record)
     seen_names = {wheel.name}
-    from . import consumer_replay
+    from tools.release import consumer_replay
 
     supervisor, _generation = consumer_replay.provision_verifier()
     llvm_inputs = {}

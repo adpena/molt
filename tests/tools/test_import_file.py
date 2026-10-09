@@ -9,6 +9,7 @@ from types import ModuleType
 
 import pytest
 
+from tests.process_guard_common import run_guarded_test_process
 from tools.import_file import (
     bind_repository_imports,
     load_module_from_path,
@@ -289,21 +290,6 @@ def test_sibling_package_loader_restores_parent_after_failure(tmp_path) -> None:
         sys.modules.pop(package_name, None)
 
 
-# Scripts that still fail to import when launched by path. The set may only
-# shrink: the release and proof-queue files carry concurrent WIP, and the
-# landing hook is imported by its dispatcher.
-_SCRIPT_LAUNCH_BACKLOG = frozenset(
-    {
-        "tools/hooks/landing_gate.py",
-        "tools/proof_queue_pkg/evidence.py",
-        "tools/release/build_bundle.py",
-        "tools/release/release_authority.py",
-        "tools/release/verify_consumer.py",
-        "tools/runtime_wasm_final_preflight.py",
-    }
-)
-
-
 def _resolves_beside(script: Path, module: str) -> bool:
     head = module.split(".", 1)[0]
     return (script.parent / f"{head}.py").is_file() or (script.parent / head).is_dir()
@@ -319,6 +305,18 @@ def _script_launch_failure(script: Path) -> str | None:
     import ast
 
     tree = ast.parse(script.read_text(encoding="utf-8"))
+    # Generated script text and nested guards do not turn their owning module
+    # into a path entrypoint. Inspect the executable module body itself.
+    if not any(
+        isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and len(node.test.ops) == 1
+        and isinstance(node.test.ops[0], ast.Eq)
+        and {ast.unparse(node.test.left), ast.unparse(node.test.comparators[0])}
+        == {"__name__", "'__main__'"}
+        for node in tree.body
+    ):
+        return None
     bound = False
     for node in tree.body:
         calls = {
@@ -366,9 +364,54 @@ def test_tool_scripts_import_when_launched_by_path() -> None:
     failures = {}
     for script in sorted((ROOT / "tools").rglob("*.py")):
         source = script.read_text(encoding="utf-8")
-        if 'if __name__ == "__main__"' not in source:
+        if "__main__" not in source:
             continue
         failure = _script_launch_failure(script)
         if failure is not None:
             failures[script.relative_to(ROOT).as_posix()] = failure
-    assert set(failures) == _SCRIPT_LAUNCH_BACKLOG, failures
+    assert not failures, failures
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "tools/release/build_bundle.py",
+        "tools/release/release_authority.py",
+        "tools/release/verify_consumer.py",
+        "tools/release/provision_execution_archives.py",
+        "tools/hooks/landing_gate.py",
+        "tools/runtime_wasm_final_preflight.py",
+    ],
+)
+def test_repository_entrypoint_launches_outside_checkout(
+    tmp_path: Path, relative: str
+) -> None:
+    result = run_guarded_test_process(
+        [sys.executable, "-I", str(ROOT / relative), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("body", "is_entrypoint"),
+    [
+        ("generated = 'if __name__ == \"__main__\": run()'\n", False),
+        ('def wrapper():\n    if __name__ == "__main__": run()\n', False),
+        ('if __name__ == "__main__": run()\n', True),
+        ('if "__main__" == __name__: run()\n', True),
+    ],
+)
+def test_script_launch_scan_uses_executable_module_guard(
+    tmp_path: Path, body: str, is_entrypoint: bool
+) -> None:
+    script = tmp_path / "command.py"
+    script.write_text("from . import sibling\n" + body, encoding="utf-8")
+    failure = _script_launch_failure(script)
+    assert (failure is not None) is is_entrypoint
+    if is_entrypoint:
+        assert failure == "line 1: relative import"

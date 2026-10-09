@@ -7787,6 +7787,7 @@ def test_explicit_frontend_lowerings_replace_manufactured_spellings():
         "ret_void": "ret_void",
     }
     for wire, frontend in lowerings.items():
+        assert namespace["FRONTEND_LOWERING_KINDS_BY_WIRE"][wire] == (frontend,)
         namespace["validate_frontend_kind"](frontend, "producer")
         namespace["validate_serialized_kind"](wire)
         with pytest.raises(ValueError, match="unregistered frontend op kind"):
@@ -7834,6 +7835,16 @@ def test_frontend_lowering_projection_preserves_declared_alternatives():
         "return_a": False,
         "RETURN_B": False,
     }
+    full_table = _gen().load_table()
+    full_table["frontend_lowering_kind"].append(
+        {"kind": "ALTERNATIVE_ITER", "wire_kind": "iter"}
+    )
+    namespace = {}
+    exec(_gen().render_py(full_table), namespace)
+    assert namespace["FRONTEND_LOWERING_KINDS_BY_WIRE"]["iter"] == (
+        "ITER_NEW",
+        "ALTERNATIVE_ITER",
+    )
 
 
 @pytest.mark.parametrize("run_midend", [False, True])

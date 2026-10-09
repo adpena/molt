@@ -1096,6 +1096,8 @@ def test_cli_tool_selectors_are_pinned_after_original_overrides(
 def test_rustup_proxy_is_pinned_but_custom_compiler_is_preserved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from molt import process_guard
+
     suffix = ".exe" if os.name == "nt" else ""
     proxy = tmp_path / ("rustup" + suffix)
     selector = tmp_path / ("rustc" + suffix)
@@ -1111,7 +1113,7 @@ def test_rustup_proxy_is_pinned_but_custom_compiler_is_preserved(
             command, 0, stdout=str(compiler) + "\n", stderr=""
         )
 
-    monkeypatch.setattr(rust_toolchain.process_guard, "run_completed_command", run)
+    monkeypatch.setattr(process_guard, "run_completed_command", run)
     monkeypatch.setattr(
         rust_toolchain, "resolve_executable", lambda value, **kwargs: Path(value)
     )

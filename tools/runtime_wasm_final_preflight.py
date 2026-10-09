@@ -16,31 +16,36 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from molt.cli.atomic_io import _atomic_write_text
-from molt.cli.cargo_profiles import _resolve_cargo_profile_name
-from molt.cli.runtime_paths import (
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.cli.atomic_io import _atomic_write_text  # noqa: E402
+from molt.cli.cargo_profiles import _resolve_cargo_profile_name  # noqa: E402
+from molt.cli.runtime_paths import (  # noqa: E402
     _build_state_root,
     _runtime_wasm_artifact_path_from_env,
 )
-from molt.cli.runtime_wasm_build_spec import (
+from molt.cli.runtime_wasm_build_spec import (  # noqa: E402
     _compute_runtime_wasm_build_spec,
     _resolved_runtime_wasm_family_identities,
     _resolve_runtime_wasm_cargo_specs,
     _runtime_wasm_toolchain_manifest_path,
 )
-from molt.cli.runtime_wasm_generation import runtime_wasm_generation_path
-from molt.dx import checkout_custody, development_artifact_env
-from molt.path_custody import (
+from molt.cli.runtime_wasm_generation import runtime_wasm_generation_path  # noqa: E402
+from molt.dx import checkout_custody, development_artifact_env  # noqa: E402
+from molt.path_custody import (  # noqa: E402
     PathCustodyError,
     canonical_host_path,
     host_path_is_within,
 )
-from tools.memory_guard_core.active_custody import read_marker_records
+from tools.memory_guard_core.active_custody import read_marker_records  # noqa: E402
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
+from tools.command_execution import CommandExecutor  # noqa: E402
 
 
 SCHEMA = "molt.runtime-wasm-final-preflight.v2"

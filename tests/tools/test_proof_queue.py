@@ -4323,7 +4323,7 @@ def test_guarded_rust_capture_failure_preserves_primary_error_and_durable_detail
 def test_rustup_role_content_resolution_tracks_physical_component_before_reuse(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str, retarget: bool
 ) -> None:
-    from molt import rust_toolchain
+    from molt import process_guard, rust_toolchain
 
     suffix = ".exe" if os.name == "nt" else ""
     proxy_dir = tmp_path / "proxies"
@@ -4358,7 +4358,7 @@ def test_rustup_role_content_resolution_tracks_physical_component_before_reuse(
             argv, 0, f"{role} 1.99.0\nhost: x86_64-unknown-linux-gnu\n", ""
         )
 
-    monkeypatch.setattr(rust_toolchain.process_guard, "run_completed_command", resolve)
+    monkeypatch.setattr(process_guard, "run_completed_command", resolve)
     monkeypatch.setattr(command_identity, "_run_captured", version)
     from types import SimpleNamespace
     from tests.tools.test_toolchain_capture import _rust_metadata_probe

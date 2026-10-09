@@ -3,9 +3,8 @@
 
 from __future__ import annotations
 
-from molt.temporary_artifacts import OwnedTemporaryDirectory
-
 import argparse
+import sys
 import hashlib
 import json
 import os
@@ -15,12 +14,22 @@ import tarfile
 import time
 from typing import Any
 
-from tools.command_execution import CommandExecutor
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from . import consumer_replay
-from .archive import extract_zip_strict
-from .build_bundle import RELEASE_BUNDLE_ARCHIVE_POLICY
-from .release_authority import (
+from tools.import_file import bind_repository_imports  # noqa: E402
+
+bind_repository_imports(__file__)
+
+from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
+
+from tools.command_execution import CommandExecutor  # noqa: E402
+
+from tools.release import consumer_replay  # noqa: E402
+from tools.release.archive import extract_zip_strict  # noqa: E402
+from tools.release.build_bundle import RELEASE_BUNDLE_ARCHIVE_POLICY  # noqa: E402
+from tools.release.release_authority import (  # noqa: E402
     CONSUMER_EXPECTED_STDOUT,
     CONSUMER_GUEST_ARGV,
     consumer_lanes,
@@ -31,30 +40,30 @@ from .release_authority import (
     _load_candidate,
     validate_consumer_proof,
 )
-from molt.compiler_distribution import InstalledCompiler, installed_compiler
-from molt.release_lanes import ReleaseLane, capture_release_lanes
-from molt.source_root import PACKAGED_DISTRIBUTION_PATH
-from molt.exact_json import canonical_json_sha256, loads_exact
-from molt.file_publication import durable_remove_path
-from molt.python_interpreter import probe_python_command
-from molt.rust_toolchain import rust_channel
-from molt.toolchain_identity import (
+from molt.compiler_distribution import InstalledCompiler, installed_compiler  # noqa: E402
+from molt.release_lanes import ReleaseLane, capture_release_lanes  # noqa: E402
+from molt.source_root import PACKAGED_DISTRIBUTION_PATH  # noqa: E402
+from molt.exact_json import canonical_json_sha256, loads_exact  # noqa: E402
+from molt.file_publication import durable_remove_path  # noqa: E402
+from molt.python_interpreter import probe_python_command  # noqa: E402
+from molt.rust_toolchain import rust_channel  # noqa: E402
+from molt.toolchain_identity import (  # noqa: E402
     executable_candidates,
     executable_content_identity,
     stable_regular_file_content_identity,
 )
-from molt.verified_subset import current_host_coordinate, host_coordinate
-from molt.wasm_artifact import (
+from molt.verified_subset import current_host_coordinate, host_coordinate  # noqa: E402
+from molt.wasm_artifact import (  # noqa: E402
     wasm_runtime_manifest_entry_path,
     wasm_runtime_manifest_path,
 )
-from .release_model import sha256_file, write_json
-from .binary_compatibility import (
+from tools.release.release_model import sha256_file, write_json  # noqa: E402
+from tools.release.binary_compatibility import (  # noqa: E402
     WheelCompatibilityError,
     audit_linked_executable,
     audit_wheel,
 )
-from .runtime_cells import declared_cell_keys, inventory_cell_keys
+from tools.release.runtime_cells import declared_cell_keys, inventory_cell_keys  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -857,7 +866,7 @@ def verify(
             != candidate["native_build"]["policy"]["rust_channel"]
         ):
             raise ValueError("Bundle Rust channel differs from native build receipt")
-        from .native_build import llvm_policy_sha256
+        from tools.release.native_build import llvm_policy_sha256
 
         if (
             llvm_policy_sha256(compiler.files)

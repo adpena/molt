@@ -338,7 +338,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "7c93276c9bc70fef407ffa9c9d69833ab88a823a2b846386cb135d95e58e96ae",
+  "authority_sha256": "bb070cecd2abe6a98004450b644fe709165658884520b409d6e3bc2039cf6da8",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -4861,7 +4861,6 @@
         "tests/test_wasm_importlib_smoke.py",
         "tests/test_wasm_linking_symbols.py",
         "tests/test_wasm_list_dict_ops.py",
-        "tests/test_wasm_longdouble_printf_link.py",
         "tests/test_wasm_memoryview_ops.py",
         "tests/test_wasm_optimization_policy.py",
         "tests/test_wasm_pickle_class_dataclass_roundtrip.py",
@@ -5229,7 +5228,6 @@
         "tests/test_wasm_importlib_smoke.py",
         "tests/test_wasm_linking_symbols.py",
         "tests/test_wasm_list_dict_ops.py",
-        "tests/test_wasm_longdouble_printf_link.py",
         "tests/test_wasm_memoryview_ops.py",
         "tests/test_wasm_optimization_policy.py",
         "tests/test_wasm_pickle_class_dataclass_roundtrip.py",
@@ -5662,8 +5660,6 @@
         "pytest",
         "-vv",
         "-s",
-        "-o",
-        "faulthandler_timeout=30",
         "--durations=0",
         "tests/test_manifest_pipeline_e2e.py::test_molt_build_with_manifest",
         "tests/tools/test_proof_queue_native_receipts.py",
