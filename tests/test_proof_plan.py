@@ -879,10 +879,10 @@ def test_cargo_toolchain_declares_complete_process_dependency_closure() -> None:
     cargo_command = next(
         command for command in PLAN.commands if command.argv[:2] == ("cargo", "build")
     )
-    assert PLAN.required_toolchains(cargo_command) == (
-        *cargo_command.toolchains,
-        "git",
-    )
+    required = PLAN.required_toolchains(cargo_command)
+    assert set(required) == {*cargo_command.toolchains, "git"}
+    assert len(required) == len(set(required))
+    assert required.index("git") > required.index("cargo")
     rustc = next(policy for policy in PLAN.toolchain_policies if policy.name == "rustc")
     assert rustc.data["linker_build_tools"] == {
         "link.exe": {
@@ -1773,6 +1773,7 @@ def _receipt_for(
         "cargo": "cargo {}",
         "lune": "lune {}",
         "clang": "clang version {}",
+        "ld.lld": "LLD {} (compatible with GNU linkers)",
         "llvm-config": "{}",
         "mlir-opt": "LLVM version {}",
         "lean": "Lean (version {})",

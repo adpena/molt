@@ -150,11 +150,17 @@ def extract_artifact_path(build_json: dict, prefer_object: bool = False) -> str:
     )
 
 
+# A measured build starts from a warm compiler (the proof plan prewarms it) but
+# compiles the program and its stdlib objects into a fresh cache.
+DEFAULT_BUILD_TIMEOUT_SECONDS = 300
+
+
 def _build_once(
     source: str,
     cache_dir: str,
     profile: str,
     prefer_object: bool,
+    build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> tuple[str | None, str]:
     """Build a source file once, returning (artifact_path, error_msg)."""
     env = os.environ.copy()
@@ -184,11 +190,11 @@ def _build_once(
             capture_output=True,
             text=True,
             env=env,
-            timeout=120,
+            timeout=build_timeout,
             limits=limits,
         )
     except subprocess.TimeoutExpired:
-        return None, "build timed out"
+        return None, f"build timed out after {build_timeout:g} s"
 
     if result.returncode != 0:
         return None, f"build failed (exit {result.returncode}): {result.stderr[:500]}"
@@ -261,6 +267,7 @@ def _build_repeated_and_compare(
     prefer_object: bool,
     verbose: bool,
     runs: int,
+    build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
 ) -> tuple[bool, dict]:
     """Build a source repeatedly in isolated caches and compare all outputs."""
     if runs < 2:
@@ -270,7 +277,9 @@ def _build_repeated_and_compare(
     artifacts: list[str] = []
     for run in range(runs):
         with tempfile.TemporaryDirectory(prefix=f"repro_{run}_") as cache:
-            artifact, error = _build_once(source, cache, profile, prefer_object)
+            artifact, error = _build_once(
+                source, cache, profile, prefer_object, build_timeout
+            )
             if artifact is None:
                 return False, {
                     "source": source,
@@ -426,6 +435,15 @@ def main() -> int:
         help="Independent observations per source (minimum and default: 2)",
     )
     parser.add_argument(
+        "--build-timeout",
+        type=float,
+        default=DEFAULT_BUILD_TIMEOUT_SECONDS,
+        help=(
+            "Timeout in seconds per build from a warm compiler "
+            f"(default: {DEFAULT_BUILD_TIMEOUT_SECONDS})"
+        ),
+    )
+    parser.add_argument(
         "--audit-ir",
         action="store_true",
         help="Also compare canonical frontend IR across fresh processes",
@@ -468,6 +486,7 @@ def main() -> int:
                 args.object,
                 args.verbose,
                 args.runs,
+                args.build_timeout,
             )
             results.append(details)
 
@@ -546,6 +565,7 @@ def main() -> int:
             args.object,
             verbose=True,
             runs=args.runs,
+            build_timeout=args.build_timeout,
         )
 
         if "error" in details:
