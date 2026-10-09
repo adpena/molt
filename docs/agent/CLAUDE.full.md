@@ -708,7 +708,7 @@ owns `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`, `MOLT_DIFF_CARGO_TARGET_DIR`,
 `UV_PROJECT_ENVIRONMENT`, `PIP_CACHE_DIR`, `PYTHONPYCACHEPREFIX`, `TMPDIR`,
 `TMP`, `TEMP`, and DX-only `UV_LINK_MODE`. Ordinary Cargo output is the
 persistent `$MOLT_EXT_ROOT/target`; caller-pinned `MOLT_SESSION_ID` or
-`--session-id` opts into `$MOLT_EXT_ROOT/target/sessions/$MOLT_SESSION_ID` for
+`--session-id` opts into `$MOLT_EXT_ROOT/target/sessions/<session component>` for
 deliberate isolation. Explicit `CARGO_TARGET_DIR` remains an operator-owned
 override. Defaults use the checkout-family custody root on every OS.
 Explicit `MOLT_TARGET_ROOT` remains authoritative; otherwise toolchains use

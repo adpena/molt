@@ -136,8 +136,38 @@ class CheckoutCustody:
         return self.kind == "github-actions-ephemeral"
 
 
+# A session's Cargo target (`target/sessions/<component>`) and its backend-daemon
+# sidecar label share one path component. It must be injective: two sessions
+# that map to one component share one "isolated" build and one daemon label.
+_SESSION_COMPONENT_SAFE = re.compile(r"[A-Za-z0-9_-]{1,32}")
+_SESSION_COMPONENT_UNSAFE_CHAR = re.compile(r"[^A-Za-z0-9_-]")
+_SESSION_COMPONENT_PREFIX_CHARS = 15
+_SESSION_COMPONENT_DIGEST_CHARS = 16
+_SESSION_COMPONENT_DIGEST_FORM = re.compile(
+    rf"[A-Za-z0-9_-]{{0,{_SESSION_COMPONENT_PREFIX_CHARS}}}"
+    rf"-[0-9a-f]{{{_SESSION_COMPONENT_DIGEST_CHARS}}}"
+)
+
+
 def session_artifact_component(session_id: str) -> str:
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)[:32]
+    """Return the path component that names one session's artifacts.
+
+    An ID of 1 to 32 ASCII letters, digits, `-` or `_` is its own component.
+    Any other ID becomes its first 15 characters, each unsafe one replaced by
+    `_`, then `-` and 16 hex digits of the SHA-256 of the whole ID. An ID that
+    already has that digest shape also takes the digest form, so the two forms
+    never meet. Every component has at most 32 characters.
+    """
+
+    if _SESSION_COMPONENT_SAFE.fullmatch(
+        session_id
+    ) and not _SESSION_COMPONENT_DIGEST_FORM.fullmatch(session_id):
+        return session_id
+    digest = hashlib.sha256(session_id.encode("utf-8", "surrogatepass")).hexdigest()
+    prefix = _SESSION_COMPONENT_UNSAFE_CHAR.sub(
+        "_", session_id[:_SESSION_COMPONENT_PREFIX_CHARS]
+    )
+    return f"{prefix}-{digest[:_SESSION_COMPONENT_DIGEST_CHARS]}"
 
 
 def generated_session_id(env: Mapping[str, str]) -> bool:

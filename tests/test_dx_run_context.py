@@ -152,6 +152,52 @@ def test_target_dir_stable_by_default_session_scoped_only_when_pinned(
     assert "MOLT_SESSION_ID_GENERATED" not in pinned
 
 
+def test_pinned_sessions_sharing_a_long_prefix_get_distinct_targets(
+    tmp_path: Path,
+) -> None:
+    # Agent lanes are named `agent-<task>-<pid>`; a long task name pushes the
+    # PID past character 32, where the old component cut every ID.
+    first = "agent-unit-agent-440e87baa421421f9c0d6f2e-67518"
+    second = "agent-unit-agent-440e87baa421421f9c0d6f2e-67519"
+    assert first[:32] == second[:32]
+    ctx = RunContext(tmp_path, session_prefix="test")
+
+    targets = {
+        ctx.canonical_env(
+            {"PATH": "/usr/bin", "MOLT_SESSION_ID": session}, create_dirs=False
+        )["CARGO_TARGET_DIR"]
+        for session in (first, second)
+    }
+
+    assert len(targets) == 2
+    for target in targets:
+        path = Path(target)
+        assert path.parent == tmp_path.resolve() / "target" / "sessions"
+        assert len(path.name) <= 32
+        assert set(path.name) <= set(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+        )
+
+
+@pytest.mark.parametrize(
+    ("session_id", "component"),
+    [
+        ("shard-7", "shard-7"),
+        ("a" * 32, "a" * 32),
+        # Rewritten IDs keep 15 sanitized characters, then 16 hex digits of
+        # sha256(session ID): printf %s 'alpha/session:beta' | shasum -a 256.
+        ("alpha/session:beta", "alpha_session_b-575cb2aec94ffa27"),
+        # A safe ID that already has the digest shape cannot pass through, or
+        # it could name another session's directory.
+        ("dev-0123456789abcdef", "dev-0123456789a-f728f81103144400"),
+    ],
+)
+def test_session_artifact_component_keeps_short_safe_ids_and_digests_the_rest(
+    session_id: str, component: str
+) -> None:
+    assert dx.session_artifact_component(session_id) == component
+
+
 def test_explicit_development_session_overrides_outer_generated_provenance(
     tmp_path: Path,
 ) -> None:
