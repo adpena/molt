@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "1b0d5790d9fc12b5ceea4abf7a59a3cf00d5ca1167b377b800d1ea40aa19a3d5",
+  "authority_sha256": "ee636670ec35b291bd3cd65a400f9e55af200d1a6923df642983be27da9d85f3",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -4416,7 +4416,12 @@
         "tests/cloudflare/test_demo_endpoint_fuzz.py",
         "tests/test_manifest_enforcement.py",
         "tests/test_mxfp_quant.py",
-        "tests/test_lean_python_correspondence.py"
+        "tests/test_lean_python_correspondence.py",
+        "tests/gpu/dflash/test_dflash_fidelity.py",
+        "tests/e2e/test_falcon_ocr_parity.py",
+        "tests/e2e/test_falcon_ocr_micro.py",
+        "tests/e2e/test_binary_size.py",
+        "tests/e2e/test_gpu_quality.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -4773,7 +4778,12 @@
         "tests/cloudflare/test_demo_endpoint_fuzz.py",
         "tests/test_manifest_enforcement.py",
         "tests/test_mxfp_quant.py",
-        "tests/test_lean_python_correspondence.py"
+        "tests/test_lean_python_correspondence.py",
+        "tests/gpu/dflash/test_dflash_fidelity.py",
+        "tests/e2e/test_falcon_ocr_parity.py",
+        "tests/e2e/test_falcon_ocr_micro.py",
+        "tests/e2e/test_binary_size.py",
+        "tests/e2e/test_gpu_quality.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
