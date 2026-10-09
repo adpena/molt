@@ -45,10 +45,8 @@ def _custom_section(name: str, payload: bytes = b"") -> bytes:
 
 
 def test_registry_loads_and_has_long_double_marker() -> None:
-    _run_gate()  # no args -> argparse usage error (exit 2 from argparse)
-    # A real load-failure would be exit 3; here we just assert the registry parses
-    # by invoking with a clean artifact below. Sanity: the marker string is in the
-    # registry file verbatim.
+    # The clean-artifact case below proves the registry parses; the marker
+    # string must also appear in it verbatim.
     assert LONG_DOUBLE_MARKER.decode() in REGISTRY.read_text(encoding="utf-8")
 
 
@@ -59,9 +57,10 @@ def test_gate_fails_on_poisoned_runtime(tmp_path: Path) -> None:
         b"...garbage..." + LONG_DOUBLE_MARKER + b"...more...",
     )
     proc = _run_gate(poisoned)
-    assert proc.returncode == 2, proc.stdout
-    assert "long_double_not_supported" in proc.stdout
-    assert "configured != effective" in proc.stdout or "M34" in proc.stdout
+    # Failures are diagnostics, so they go to stderr.
+    assert proc.returncode == 2, proc.stderr
+    assert "long_double_not_supported" in proc.stderr
+    assert "configured != effective" in proc.stderr
 
 
 def test_gate_passes_on_clean_runtime(tmp_path: Path) -> None:
@@ -77,13 +76,15 @@ def test_gate_scans_multiple_artifacts_and_reports_the_poisoned_one(
     clean = _fake_wasm(tmp_path, "app.wasm", b"clean app")
     poisoned = _fake_wasm(tmp_path, "molt_runtime.wasm", LONG_DOUBLE_MARKER)
     proc = _run_gate(clean, poisoned)
-    assert proc.returncode == 2, proc.stdout
-    assert "molt_runtime.wasm" in proc.stdout
+    assert proc.returncode == 2, proc.stderr
+    assert "molt_runtime.wasm" in proc.stderr
+    assert "app.wasm" not in proc.stderr
 
 
 def test_gate_errors_on_missing_artifact(tmp_path: Path) -> None:
     proc = _run_gate(tmp_path / "does_not_exist.wasm")
-    assert proc.returncode == 3, proc.stdout
+    assert proc.returncode == 3, proc.stderr
+    assert "no such artifact" in proc.stderr
 
 
 def test_gate_fails_on_planted_unstripped_publication_sections(tmp_path: Path) -> None:
@@ -98,12 +99,9 @@ def test_gate_fails_on_planted_unstripped_publication_sections(tmp_path: Path) -
 
     proc = _run_gate(artifact)
 
-    assert proc.returncode == 2, proc.stdout
-    assert "PUBLICATION CRUFT" in proc.stdout
-    assert "linking" in proc.stdout
-    assert "reloc.CODE" in proc.stdout
-    assert ".debug_info" in proc.stdout
-    assert "name" in proc.stdout
+    assert proc.returncode == 2, proc.stderr
+    assert "PUBLICATION CRUFT" in proc.stderr
+    assert "sections:   linking, reloc.CODE, .debug_info, name" in proc.stderr
 
 
 def test_debug_knob_never_allows_link_time_metadata(tmp_path: Path) -> None:
@@ -124,6 +122,5 @@ def test_debug_knob_never_allows_link_time_metadata(tmp_path: Path) -> None:
         check=False,
     )
 
-    assert proc.returncode == 2, proc.stdout
-    assert "linking" in proc.stdout
-    assert "sections:   linking" in proc.stdout
+    assert proc.returncode == 2, proc.stderr
+    assert "sections:   linking" in proc.stderr

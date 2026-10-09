@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "acf03c0010963872d0b57041afa58e7b54da89fb4fa48cd94a40186d8b0e9580",
+  "authority_sha256": "71e7bbebb7ec2dd43ac9f5748b2cd59f1f8f93e435724ff109383602263c67ec",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2596,7 +2596,8 @@
         "tests/test_wasm_profile_tool.py",
         "tests/tools/test_fuzz_compiler_reporting.py",
         "tests/tools/test_new_agent_task.py",
-        "tests/tools/test_proof_queue_disk_capacity.py"
+        "tests/tools/test_proof_queue_disk_capacity.py",
+        "tests/test_artifact_poison_gate.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -4521,7 +4522,8 @@
         "tests/test_generate_worker.py",
         "tests/test_tinygrad_tokenizer_contract.py",
         "tests/test_nemotron_ocr_boundaries.py",
-        "tests/test_wasm_build_policy_authority.py"
+        "tests/test_wasm_build_policy_authority.py",
+        "tests/test_runtime_state_ownership.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -4889,7 +4891,8 @@
         "tests/test_generate_worker.py",
         "tests/test_tinygrad_tokenizer_contract.py",
         "tests/test_nemotron_ocr_boundaries.py",
-        "tests/test_wasm_build_policy_authority.py"
+        "tests/test_wasm_build_policy_authority.py",
+        "tests/test_runtime_state_ownership.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
