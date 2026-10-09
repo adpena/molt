@@ -42,27 +42,68 @@ failures must be traced to their shared cause as well. Reconcile uncovered
 instances and missing qualification into the existing owning open requirement;
 retain the historical repair evidence without treating it as release acceptance.
 
-Current integration evidence (2026-10-09 UTC): draft PR119 is pushed through
-`1b0177d00`; it is not merged into main. CI run `37878702081` passes Linux and
-macOS Python units, native integration, LLVM, queue portability, Python/Rust
-security and the formal checks observed so far. Rust Clippy on macOS/Linux ARM
-rejects two test-only non-Drop snapshot disposals; their direct field-clearing
-correction is not yet qualified. Windows exposes a remaining canonical-path to
-raw-locator receipt comparison before its minimal Cargo consumer; migrate that
-join without weakening receipt hashing or alias identity. The integrated join
-correction and its existing three-platform PR scheduling pass 222 focused
-consumer/plan checks with three platform or filesystem capability skips; all 26
-generators are current, with unchanged proof inputs and closed descendants.
-Actual Windows execution and Rust Clippy still require the corrected candidate.
-Repository policy, Rust execution and WASM execution are still running. The complete numeric
-identity/storage migration, native survivor diagnosis and performance acceptance
-remain open. These results do not establish V1 release acceptance.
+Current integration evidence (2026-10-09 UTC): draft PR119 is not merged into
+main. Completed CI run `37878702081` at `1b0177d00` passes Linux and macOS
+Python units, native integration, LLVM, Linux/macOS queue portability,
+Python/Rust security and formal checks. It fails repository policy, Windows
+queue portability, Rust and WASM execution; none is waived. The Windows
+locator/receipt join and Clippy field-disposal corrections are committed locally
+in `861b0241b`, with 222 focused consumer/plan passes and three platform or
+filesystem skips. Actual corrected Windows and Rust execution remain required.
+
+The current source also replaces three stale WASM host execution paths and two
+duplicate host locators with the existing selected-output authority. CI actually
+built the host and linked hello before the stale execution path failed. The
+corrected development consumers pass 105 checks with four skips; the
+subsequent relative-target/cwd and environment cohort passes 26 checks. All 26
+generators are current, the explicit-encoding gate has zero violations, and the
+two previously unowned host test files now run in the existing proof plan.
+A final 301-test proof-plan, WASM CLI and environment batch passes, together
+with Python static, Rust formatting and documentation checks. These checks do
+not qualify actual Wasmtime execution. The internal public surface snapshot now
+includes the already-implemented runtime-feature option.
+
+Rust execution retains the numeric in-place mode-loss failure, an ordinary
+transaction fixture that used C error state before TLS admission, and recursive
+normalization in a partial bootstrap fixture. The ordinary fixture now enters
+through the existing runtime execution guard. The callback presence family must
+use the existing hook fields with explicit absence rather than function-address
+equality, which can conflate absent and installed producers. That correction is
+integrated with the complete numeric identity/storage migration. The
+exception-transfer family includes assertion-unwind owners and a developer
+discovery diagnostic that lost its fetched references and original printer
+input. That ownership correction is integrated in source; 315 receipt, runtime
+gate and witness consumer tests pass with one skip. Cargo resolves and verifies
+the locked graph with only two added discovery-test dependency edges. The
+actual Rust children and ownership negative controls remain unexecuted. These
+source corrections are not release acceptance or evidence of a universal
+performance improvement.
+
+The complete numeric/storage source family now moves physical C-origin identity,
+ordinary/in-place dispatch, sparse dictionary/set storage, cached hashes, cursors,
+owned snapshots, method/vectorcall consumers and satellite bridges together.
+C-only numeric values acquire a runtime owner at their first semantic crossing.
+A shared pending-error completion fix retires owned results for all 20 affected
+hook callers while preserving both error channels. The exact 200-path source
+reconciliation preserves current-main and exception-transfer fixes; the replaced
+borrowed dictionary exports are removed. Independent source review, 182 human
+Rust formatting checks and 610 integrated header/layout/attestation/proof-plan/
+receipt consumer tests pass, with one skip. All 26 reproducible generators are
+current. Three previously unowned header/layout/attestation test files now run
+in existing CI jobs. Actual Rust compilation, lifecycle and C-ABI execution,
+WASM target execution and performance qualification remain required. The earlier
+59-case shared-storage measurement is not a compatible L7 numeric baseline;
+current cost collection must remain evidence-only until a valid comparison is
+available. The existing L7 and list cost probes remain the measurement owners.
 
 Every change must distinguish development/compiler work from execution in the
 shipped end-user binary. Source custody, proof instrumentation and release
 evidence belong on the development side. Additional runtime work must implement
 a concrete runtime requirement and justify its measured cost; do not charge
 development validation to guest startup, allocations or execution.
+Eager work requires a concrete correctness requirement or reproducible evidence
+that it improves the relevant workload. Otherwise defer it to its first real
+consumer, preserve failure atomicity, and avoid duplicate ownership or caches.
 
 CPython source at the declared reference version is the semantic source of
 truth. Source-grounded implementation and version-matched independent execution

@@ -18,10 +18,10 @@
     "molt-private": 46,
     "private": 63,
     "private-representation": 1,
-    "public-version-specific": 161,
+    "public-version-specific": 162,
     "stable-abi": 466,
     "stable-values-version-specific-layout": 1,
-    "total": 749,
+    "total": 750,
     "unstable": 9,
     "version-specific-public": 2
   },
@@ -156,6 +156,13 @@
       "stability": "stable-abi",
       "surface": "type-object",
       "symbol": "PyBaseObject_Type",
+      "verified_at": "3.12"
+    },
+    {
+      "source": "runtime/molt-cpython-abi/src/api/numbers.rs",
+      "stability": "public-version-specific",
+      "surface": "function",
+      "symbol": "PyBool_Check",
       "verified_at": "3.12"
     },
     {

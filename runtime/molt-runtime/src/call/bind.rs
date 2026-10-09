@@ -26,14 +26,14 @@ use crate::{
     call_class_init_with_args, call_function_obj_bound_vec, class_attr_lookup_raw_mro,
     class_layout_version_bits, class_name_bits, class_name_for_error, code_filename_bits,
     code_name_bits, dec_ref_bits, dict_fromkeys_method, dict_get_in_place, dict_get_method,
-    dict_order, dict_setdefault_method, dict_update_method, dict_update_set_via_store,
-    exception_pending, function_arity, function_arity_usize, function_attr_bits,
-    function_execution_closure_bits, function_fn_ptr, function_name_bits, function_trampoline_ptr,
-    generic_alias_origin_bits, has_capability, header_from_obj_ptr, inc_ref_bits,
-    intern_static_name, is_builtin_class_bits, is_trusted, is_truthy, issubclass_bits,
-    maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice, molt_bytearray_decode,
-    molt_bytearray_endswith_slice, molt_bytearray_find_slice, molt_bytearray_hex,
-    molt_bytearray_index_slice, molt_bytearray_pop, molt_bytearray_rfind_slice,
+    dict_len, dict_live_entries, dict_setdefault_method, dict_update_method,
+    dict_update_set_via_store, exception_pending, function_arity, function_arity_usize,
+    function_attr_bits, function_execution_closure_bits, function_fn_ptr, function_name_bits,
+    function_trampoline_ptr, generic_alias_origin_bits, has_capability, header_from_obj_ptr,
+    inc_ref_bits, intern_static_name, is_builtin_class_bits, is_trusted, is_truthy,
+    issubclass_bits, maybe_ptr_from_bits, missing_bits, molt_bytearray_count_slice,
+    molt_bytearray_decode, molt_bytearray_endswith_slice, molt_bytearray_find_slice,
+    molt_bytearray_hex, molt_bytearray_index_slice, molt_bytearray_pop, molt_bytearray_rfind_slice,
     molt_bytearray_rindex_slice, molt_bytearray_rsplit_max, molt_bytearray_split_max,
     molt_bytearray_splitlines, molt_bytearray_startswith_slice, molt_bytes_count_slice,
     molt_bytes_decode, molt_bytes_endswith_slice, molt_bytes_find_slice, molt_bytes_hex,
@@ -68,10 +68,10 @@ mod frame_binding;
 #[cfg(test)]
 mod test_support;
 
-use arguments::{Admission, ArgumentCustody, CallArguments, callee_custody};
+use arguments::{Admission, ArgumentCustody, callee_custody};
 pub(crate) use arguments::{
-    CallBindRuntimeState, CallForm, EntryArguments, callargs_detach_owned, callargs_ptr,
-    callargs_visit_owned, release_stack_arguments,
+    CallArguments, CallBindRuntimeState, CallForm, EntryArguments, callargs_detach_owned,
+    callargs_ptr, callargs_visit_owned, release_stack_arguments,
 };
 #[cfg(feature = "molt_gpu_primitives")]
 pub(crate) use arguments::{callargs_positional_snapshot, clone_callargs_builder_bits};
@@ -179,6 +179,41 @@ pub(crate) unsafe fn call_bind_borrowed(
     }
 }
 
+/// Public dictionary-call ingress. The existing argument owner retains the
+/// mapping through redispatch and performs zero-hash unpacking for vector users.
+pub(crate) unsafe fn call_bind_capi(
+    py: &PyToken<'_>,
+    callable: u64,
+    receiver: Option<u64>,
+    positional: &[u64],
+    mapping: u64,
+) -> u64 {
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    match CallArguments::capi(py, receiver, positional, mapping) {
+        Ok(arguments) => unsafe { call_bind_with_arguments(py, callable, arguments) },
+        Err(error) => error,
+    }
+}
+
+/// Public vector ingress enters the same dispatcher without a temporary dict.
+pub(crate) unsafe fn call_bind_capi_vector(
+    py: &PyToken<'_>,
+    callable: u64,
+    positional: &[u64],
+    names: &[u64],
+    values: &[u64],
+) -> u64 {
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    match CallArguments::capi_vector(py, positional, names, values) {
+        Ok(arguments) => unsafe { call_bind_with_arguments(py, callable, arguments) },
+        Err(error) => error,
+    }
+}
+
 /// Route a call on a `TYPE_ID_FOREIGN` wrapper through the wrapped C object's
 /// own `tp_call`. Materializes the call's positional arguments into a Molt
 /// tuple and passes its keyword mapping, then hands them to the ABI bridge
@@ -256,7 +291,7 @@ pub extern "C" fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64 {
 /// Dispatch a call that owns its argument vector. Custody is decided from the
 /// original callee; callee resolution and every redispatch pass the same owner
 /// onward, and nothing returns to a builder.
-unsafe fn call_bind_with_arguments(
+pub(crate) unsafe fn call_bind_with_arguments(
     _py: &PyToken<'_>,
     call_bits: u64,
     mut args: CallArguments<'_, '_>,
@@ -348,10 +383,23 @@ unsafe fn call_bind_with_arguments(
         }
         let mut func_bits = call_bits;
         let mut self_bits = None;
+        // A public dictionary call lends its mapping directly to native tp_call
+        // and tuple-based C methods. Vector C conventions validate after unpack;
+        // source CALL still validates at its original instruction boundary.
+        let native_capi_mapping = args.capi_mapping().is_some()
+            && match object_type_id(call_ptr) {
+                TYPE_ID_FOREIGN => true,
+                TYPE_ID_FUNCTION => crate::cpython_abi_hooks::is_cext_callable(call_ptr),
+                TYPE_ID_BOUND_METHOD => obj_from_bits(bound_method_func_bits(call_ptr))
+                    .as_ptr()
+                    .is_some_and(|function| crate::cpython_abi_hooks::is_cext_callable(function)),
+                _ => false,
+            };
         if matches!(
             object_type_id(call_ptr),
             TYPE_ID_FUNCTION | TYPE_ID_BOUND_METHOD | TYPE_ID_TYPE | TYPE_ID_FOREIGN
-        ) && !args.validate_keywords()
+        ) && !native_capi_mapping
+            && !args.validate_keywords()
         {
             return MoltObject::none().bits();
         }

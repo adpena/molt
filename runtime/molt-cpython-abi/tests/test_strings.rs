@@ -29,8 +29,8 @@ unsafe extern "C" fn classify(bits: u64) -> u8 {
 fn init() {
     let mut hooks = support::stub_runtime_hooks();
     support::fake_strings::wire(&mut hooks);
-    hooks.alloc_str = alloc_string;
-    hooks.classify_heap = classify;
+    hooks.alloc_str = Some(alloc_string);
+    hooks.classify_heap = Some(classify);
     support::prepare_runtime_class_abi_test_thread(hooks);
 }
 

@@ -66,7 +66,7 @@ fn arguments(py: &PyToken<'_>, carrier: u64) -> Option<ThrowArguments> {
 /// alive until the entry returns, including through a warnings callback.
 pub(crate) fn parse_throw_call(py: &PyToken<'_>, args: u64, kwargs: u64) -> Option<(u64, u64)> {
     let args = crate::builtins::types::call_vararg_args(py, "throw", args)?;
-    let (_, keywords) = crate::builtins::types::call_vararg_kwargs(py, "throw", kwargs)?;
+    let keywords = crate::builtins::types::call_vararg_kwargs(py, "throw", kwargs)?;
     let Some((&receiver, args)) = args.split_first() else {
         return raise_exception::<_>(py, "TypeError", "descriptor 'throw' needs an argument");
     };

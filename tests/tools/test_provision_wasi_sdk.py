@@ -482,10 +482,10 @@ def test_v1_receipt_upgrade_verifies_once_and_preserves_sdk_payload(
     custody = tmp_path / "custody"
     prefix = provisioner.provision_wasi_sdk(custody, downloads=tmp_path / "downloads")
     receipt_path = prefix / INSTALL_RECEIPT_FILENAME
-    original = json.loads(receipt_path.read_text())
+    original = json.loads(receipt_path.read_text(encoding="utf-8"))
     legacy = {key: value for key, value in original.items() if key != "facts"}
     legacy["schema"] = "molt.wasi-sdk-install.v1"
-    receipt_path.write_text(json.dumps(legacy))
+    receipt_path.write_text(json.dumps(legacy), encoding="utf-8")
     legacy_bytes = receipt_path.read_bytes()
     with pytest.raises(llvm_toolchain.LlvmToolchainConfigError, match="v2"):
         llvm_toolchain.load_wasi_sdk_installation(
@@ -520,7 +520,7 @@ def test_v1_receipt_upgrade_verifies_once_and_preserves_sdk_payload(
         assert receipt_path.read_bytes() == legacy_bytes
     else:
         assert provisioner.provision_wasi_sdk(custody) == prefix
-        assert json.loads(receipt_path.read_text()) == original
+        assert json.loads(receipt_path.read_text(encoding="utf-8")) == original
     assert observed == [sdk]
     assert len(downloads) == 1
     assert before == {
@@ -544,7 +544,9 @@ def test_receipt_facts_use_captured_tree_without_reopening_members(
     prefix = provisioner.provision_wasi_sdk(tmp_path / "custody")
     sdk = prefix / "sdk"
     captured = wasi_sdk_tree_identity(sdk)
-    expected = json.loads((prefix / INSTALL_RECEIPT_FILENAME).read_text())
+    expected = json.loads(
+        (prefix / INSTALL_RECEIPT_FILENAME).read_text(encoding="utf-8")
+    )
     (sdk / "bin" / executable_filename("clang", asset.id)).write_bytes(
         b"different generation"
     )

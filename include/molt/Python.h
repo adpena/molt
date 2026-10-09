@@ -310,6 +310,11 @@ typedef struct PyCriticalSection {
 #define PyState_AddModule ((int (*)(PyObject *, PyModuleDef *))_molt_host_abi_symbol("PyState_AddModule"))
 #define PyState_FindModule ((PyObject *(*)(PyModuleDef *))_molt_host_abi_symbol("PyState_FindModule"))
 #define PyState_RemoveModule ((int (*)(PyModuleDef *))_molt_host_abi_symbol("PyState_RemoveModule"))
+#define PyMethod_Type (*(PyTypeObject *)_molt_host_abi_symbol("PyMethod_Type"))
+#define PyMethod_New ((PyObject *(*)(PyObject *, PyObject *))_molt_host_abi_symbol("PyMethod_New"))
+#define PyMethod_Check ((int (*)(PyObject *))_molt_host_abi_symbol("PyMethod_Check"))
+#define PyMethod_GET_FUNCTION ((PyObject *(*)(PyObject *))_molt_host_abi_symbol("PyMethod_GET_FUNCTION"))
+#define PyMethod_GET_SELF ((PyObject *(*)(PyObject *))_molt_host_abi_symbol("PyMethod_GET_SELF"))
 #define PyCFunction_New ((PyObject *(*)(PyMethodDef *, PyObject *))_molt_host_abi_symbol("PyCFunction_New"))
 #define PyCFunction_NewEx ((PyObject *(*)(PyMethodDef *, PyObject *, PyObject *))_molt_host_abi_symbol("PyCFunction_NewEx"))
 #define PyCMethod_New ((PyObject *(*)(PyMethodDef *, PyObject *, PyObject *, PyTypeObject *))_molt_host_abi_symbol("PyCMethod_New"))
@@ -1231,32 +1236,6 @@ extern int PyByteArray_CheckExact(PyObject *obj);
 PyAPI_DATA(PyTypeObject) PyNone_Type;
 
 #include "shared/_object_observation_exports.h"
-
-static inline PyObject *PyMethod_New(PyObject *func, PyObject *self) {
-    PyObject *types_mod;
-    PyObject *method_type;
-    PyObject *result;
-    if (func == NULL) {
-        PyErr_SetString(PyExc_TypeError, "function must not be NULL");
-        return NULL;
-    }
-    if (self == NULL) {
-        Py_INCREF(func);
-        return func;
-    }
-    types_mod = PyImport_ImportModule("types");
-    if (types_mod == NULL) {
-        return NULL;
-    }
-    method_type = PyObject_GetAttrString(types_mod, "MethodType");
-    Py_DECREF(types_mod);
-    if (method_type == NULL) {
-        return NULL;
-    }
-    result = PyObject_CallFunctionObjArgs(method_type, func, self, NULL);
-    Py_DECREF(method_type);
-    return result;
-}
 
 static inline PyObject *Py_GenericAlias(PyObject *origin, PyObject *args) {
     PyObject *types_mod;

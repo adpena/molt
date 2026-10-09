@@ -27,6 +27,7 @@ if str(SRC_ROOT) not in sys.path:
 import bench_suites  # noqa: E402
 import harness_memory_guard  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
+from molt.cli.wasm_host import resolve_molt_wasm_host_binary  # noqa: E402
 from molt.node_runtime import resolve_node_runtime  # noqa: E402
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
@@ -202,6 +203,7 @@ def _run_cmd(
     log: TextIO | None,
     timeout_s: float | None = None,
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
+    cwd: Path | None = None,
 ) -> _RunResult:
     resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
     if tty and not capture:
@@ -216,6 +218,7 @@ def _run_cmd(
         cmd,
         prefix="MOLT_BENCH",
         env=env,
+        cwd=cwd,
         capture_output=True,
         text=True,
         timeout=timeout_s,
@@ -1039,19 +1042,19 @@ def _resolve_runner(
         return cmd
     if runner != "wasmtime":
         raise ValueError(f"Unsupported wasm runner: {runner}")
-    host_override = os.environ.get("MOLT_WASM_HOST_PATH")
-    if host_override:
-        host_path = Path(host_override).expanduser()
-        if not host_path.exists():
-            raise RuntimeError(f"MOLT_WASM_HOST_PATH does not exist: {host_path}")
-        return [str(host_path)]
-    target = _cargo_target_root() / "release" / "molt-wasm-host"
-    if not target.exists():
+    target_dir = _cargo_target_root()
+    host = resolve_molt_wasm_host_binary(
+        REPO_ROOT, cargo_profile="release", target_dir=target_dir
+    )
+    if host is None:
+        if os.environ.get("MOLT_WASM_HOST_BIN", "").strip():
+            raise RuntimeError("MOLT_WASM_HOST_BIN is not a regular file")
         build_env = os.environ.copy()
-        build_env.setdefault("CARGO_TARGET_DIR", str(_cargo_target_root()))
+        build_env["CARGO_TARGET_DIR"] = str(target_dir)
         res = _run_cmd(
-            ["cargo", "build", "--release", "--package", "molt-wasm-host"],
+            ["cargo", "build", "--locked", "--release", "--package", "molt-wasm-host"],
             env=build_env,
+            cwd=REPO_ROOT,
             capture=not tty,
             tty=tty,
             log=log,
@@ -1060,12 +1063,14 @@ def _resolve_runner(
         if res.returncode != 0:
             err = (res.stderr or res.stdout).strip()
             raise RuntimeError(f"Failed to build molt-wasm-host: {err}")
-    if target.exists():
-        return [str(target)]
-    path = shutil.which("molt-wasm-host")
-    if path:
-        return [path]
-    raise RuntimeError("molt-wasm-host binary not found after build")
+        host = resolve_molt_wasm_host_binary(
+            REPO_ROOT, cargo_profile="release", target_dir=target_dir
+        )
+    if host is None:
+        raise RuntimeError(
+            "molt-wasm-host binary not found in selected target after build"
+        )
+    return [host]
 
 
 def _node_has_websocket(

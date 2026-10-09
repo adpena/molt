@@ -640,6 +640,32 @@ pub(crate) unsafe fn bytearray_data(ptr: *mut u8) -> *const u8 {
     unsafe { bytearray_vec_ref(ptr).as_ptr() }
 }
 
+/// Extra state exists only for the canonical dict/set iterator classes. The
+/// retained class edge, rather than the mutable target, admits this tail.
+#[repr(C)]
+pub(crate) struct HashIteratorState {
+    pub(crate) expected: usize,
+    pub(crate) remaining: isize,
+}
+pub(crate) const HASH_ITER_BASE: usize =
+    std::mem::size_of::<u64>() + std::mem::size_of::<usize>() + std::mem::size_of::<*mut u8>();
+pub(crate) const HASH_REVERSED_BASE: usize =
+    std::mem::size_of::<u64>() + std::mem::size_of::<usize>();
+pub(crate) unsafe fn hash_iterator_state(
+    ptr: *mut u8,
+    reverse: bool,
+) -> &'static mut HashIteratorState {
+    unsafe {
+        &mut *ptr
+            .add(if reverse {
+                HASH_REVERSED_BASE
+            } else {
+                HASH_ITER_BASE
+            })
+            .cast()
+    }
+}
+
 pub(crate) unsafe fn iter_target_bits(ptr: *mut u8) -> u64 {
     unsafe { *(ptr as *const u64) }
 }

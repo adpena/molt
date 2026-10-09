@@ -528,7 +528,7 @@ pub extern "C" fn molt_enum_member(cls_bits: u64, value_bits: u64) -> u64 {
         }
 
         // __members__ should be a dict; iterate its key/value pairs looking
-        // for a value match.  Dict order stores [key0, val0, key1, val1, ...].
+        // for a value match while retaining the complete observation through equality callbacks.
         let members_obj = obj_from_bits(members_bits);
         let Some(dict_ptr) = members_obj.as_ptr() else {
             dec_ref_bits(_py, members_bits);
@@ -541,18 +541,18 @@ pub extern "C" fn molt_enum_member(cls_bits: u64, value_bits: u64) -> u64 {
                 return MoltObject::none().bits();
             }
             let mut found = MoltObject::none().bits();
-            let mut i = 0;
-            loop {
-                let pair = {
-                    let order = dict_order(dict_ptr);
-                    if i + 1 >= order.len() {
-                        break;
-                    }
-                    let pair = (order[i], order[i + 1]);
-                    inc_ref_bits(_py, pair.0);
-                    inc_ref_bits(_py, pair.1);
-                    pair
-                };
+            let Some(entries) = crate::object::ops_dict::dict_snapshot(
+                _py,
+                dict_ptr,
+                crate::object::ops_dict::DictSnapshotKind::Entries,
+            ) else {
+                dec_ref_bits(_py, members_bits);
+                return MoltObject::none().bits();
+            };
+            for row in entries.chunks_exact(2) {
+                let pair = (row[0], row[1]);
+                inc_ref_bits(_py, pair.0);
+                inc_ref_bits(_py, pair.1);
                 let outcome = crate::object::ops_compare::compare_object_eq_bool(
                     _py,
                     obj_from_bits(pair.1),
@@ -573,7 +573,6 @@ pub extern "C" fn molt_enum_member(cls_bits: u64, value_bits: u64) -> u64 {
                         dec_ref_bits(_py, pair.0);
                     }
                 }
-                i += 2;
             }
             found
         };

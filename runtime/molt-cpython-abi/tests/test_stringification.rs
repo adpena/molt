@@ -36,9 +36,9 @@ unsafe fn runtime_stringify(bits: u64, repr: bool) -> molt_cpython_abi::hooks::O
     match STRINGIFY_MODE.with(std::cell::Cell::get) {
         StringifyMode::Scalars => unsafe {
             if repr {
-                support::fake_strings::object_repr(bits)
+                support::fake_runtime::object_repr(bits)
             } else {
-                support::fake_strings::object_str(bits)
+                support::fake_runtime::object_str(bits)
             }
         },
         StringifyMode::ProtocolProbe => {
@@ -48,7 +48,7 @@ unsafe fn runtime_stringify(bits: u64, repr: bool) -> molt_cpython_abi::hooks::O
                 b"runtime str"
             };
             OwnedHandleResult::ok(unsafe {
-                support::fake_strings::alloc_str(text.as_ptr(), text.len())
+                support::fake_runtime::alloc_str(text.as_ptr(), text.len())
             })
         }
         StringifyMode::Failure => {
@@ -79,22 +79,12 @@ unsafe extern "C" {
 // Fake strings supply protocol transport fixtures, not a formatting oracle.
 // Runtime-backed tests prove the real Python rendering semantics.
 
-unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
-    use molt_cpython_abi::abi_types::MoltTypeTag;
-    if support::fake_strings::contains(bits) {
-        MoltTypeTag::Str as u8
-    } else {
-        MoltTypeTag::Other as u8
-    }
-}
-
 fn install() {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.classify_heap = fake_classify_heap;
-    support::fake_strings::wire(&mut hooks);
+    support::fake_runtime::wire(&mut hooks);
     hooks.object_str = runtime_str;
     hooks.object_repr = runtime_repr;
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 /// Read the UTF-8 bytes backing a Molt-native `str` result.

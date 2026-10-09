@@ -973,7 +973,7 @@ def test_wasm_ci_profile_rejects_mismatched_or_incomplete_sdk(
     tmp_path: Path, version_text: str, include_llvm_nm: bool, message: str
 ) -> None:
     prefix = _write_wasi_sdk_installation(tmp_path)
-    (prefix / "sdk/VERSION").write_text(version_text)
+    (prefix / "sdk/VERSION").write_text(version_text, encoding="utf-8")
     if not include_llvm_nm:
         (
             prefix
@@ -2152,7 +2152,9 @@ def test_wasi_c_abi_projection_matches_independent_wire(tmp_path: Path) -> None:
     plan = runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path))
     # Literal role/header order is an independent wire oracle also exercised by
     # runtime/molt-runtime/tests/wasm_cdylib_exports.rs.
-    receipt = json.loads((plan.sdk.parent / INSTALL_RECEIPT_FILENAME).read_text())
+    receipt = json.loads(
+        (plan.sdk.parent / INSTALL_RECEIPT_FILENAME).read_text(encoding="utf-8")
+    )
     fields = [
         "molt.wasi-c-abi.v2",
         "wasm32-wasip1",

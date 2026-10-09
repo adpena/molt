@@ -51,7 +51,7 @@ unsafe extern "C" fn list_item_hook(
 fn init_hooks() {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.classify_heap = list_classify;
+    hooks.classify_heap = Some(list_classify);
     hooks.list_len = list_len_hook;
     hooks.list_item = list_item_hook;
     hooks.object_length = object_length_hook;

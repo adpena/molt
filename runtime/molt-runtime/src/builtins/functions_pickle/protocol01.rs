@@ -202,7 +202,14 @@ fn pickle_dump_obj(
     if type_id == TYPE_ID_DICT {
         out.push('(');
         out.push('d');
-        let pairs = unsafe { crate::dict_order(ptr).clone() };
+        let pairs = unsafe {
+            crate::object::ops_dict::dict_snapshot(
+                _py,
+                ptr,
+                crate::object::ops_dict::DictSnapshotKind::Entries,
+            )
+        }
+        .ok_or_else(|| MoltObject::none().bits())?;
         let mut idx = 0usize;
         while idx + 1 < pairs.len() {
             pickle_dump_obj(_py, pairs[idx], protocol, out)?;
@@ -215,8 +222,9 @@ fn pickle_dump_obj(
     if type_id == crate::TYPE_ID_SET {
         pickle_dump_global(out, "builtins", "set");
         out.push('(');
-        let values = unsafe { crate::set_order(ptr).clone() };
-        pickle_dump_list_payload(_py, values.as_slice(), protocol, out)?;
+        let values = unsafe { crate::object::ops_set::set_snapshot(_py, ptr) }
+            .ok_or_else(|| MoltObject::none().bits())?;
+        pickle_dump_list_payload(_py, &values, protocol, out)?;
         out.push('t');
         out.push('R');
         return Ok(());
@@ -224,8 +232,9 @@ fn pickle_dump_obj(
     if type_id == crate::TYPE_ID_FROZENSET {
         pickle_dump_global(out, "builtins", "frozenset");
         out.push('(');
-        let values = unsafe { crate::set_order(ptr).clone() };
-        pickle_dump_list_payload(_py, values.as_slice(), protocol, out)?;
+        let values = unsafe { crate::object::ops_set::set_snapshot(_py, ptr) }
+            .ok_or_else(|| MoltObject::none().bits())?;
+        pickle_dump_list_payload(_py, &values, protocol, out)?;
         out.push('t');
         out.push('R');
         return Ok(());
@@ -505,7 +514,7 @@ pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
                         Ok(value) => value,
                         Err(err_bits) => return err_bits,
                     };
-                    let tuple_ptr = alloc_tuple(_py, values.as_slice());
+                    let tuple_ptr = alloc_tuple(_py, &values);
                     if tuple_ptr.is_null() {
                         return MoltObject::none().bits();
                     }
@@ -522,7 +531,7 @@ pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
                         Ok(value) => value,
                         Err(err_bits) => return err_bits,
                     };
-                    let list_ptr = alloc_list_with_capacity(_py, values.as_slice(), values.len());
+                    let list_ptr = alloc_list_with_capacity(_py, &values, values.len());
                     if list_ptr.is_null() {
                         return MoltObject::none().bits();
                     }
@@ -542,7 +551,7 @@ pub extern "C" fn molt_pickle_loads_protocol01(data_bits: u64) -> u64 {
                     if values.len() % 2 != 0 {
                         return pickle_raise(_py, "pickle.loads: dict has odd number of items");
                     }
-                    let dict_ptr = alloc_dict_with_pairs(_py, values.as_slice());
+                    let dict_ptr = alloc_dict_with_pairs(_py, &values);
                     if dict_ptr.is_null() {
                         return MoltObject::none().bits();
                     }

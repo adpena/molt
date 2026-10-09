@@ -747,7 +747,6 @@ PyAPI_DATA(PyTypeObject) PyType_Type;
 PyAPI_DATA(PyTypeObject) PyBaseObject_Type;
 PyAPI_DATA(PyTypeObject) PyNone_Type;
 PyAPI_DATA(PyTypeObject) PyNotImplemented_Type;
-PyAPI_DATA(PyTypeObject) PyMethod_Type;
 PyAPI_DATA(PyTypeObject) PyCapsule_Type;
 PyAPI_DATA(PyTypeObject) PyTraceBack_Type;
 
@@ -1198,10 +1197,6 @@ extern int       PyContextVar_Get      (PyObject *var, PyObject *default_value, 
 extern PyObject *PyContextVar_Set      (PyObject *var, PyObject *value);
 
 /* Function objects */
-extern PyObject *PyMethod_New(PyObject *func, PyObject *self);
-extern int PyMethod_Check(PyObject *op);
-extern PyObject *PyMethod_GET_FUNCTION(PyObject *op);
-extern PyObject *PyMethod_GET_SELF(PyObject *op);
 
 /* Capsules */
 typedef void (*PyCapsule_Destructor)(PyObject *);

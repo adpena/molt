@@ -341,13 +341,13 @@ pub(crate) unsafe fn class_apply_descriptor_names(_py: &PyToken<'_>, class_ptr: 
         let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
             return false;
         };
-        let entries = dict_order(dict_ptr).clone();
-        // Retain every pair before the first descriptor can delete a later one.
-        let snapshot = alloc_tuple(_py, &entries);
-        if snapshot.is_null() {
+        let Some(entries) = crate::object::ops_dict::dict_snapshot(
+            _py,
+            dict_ptr,
+            crate::object::ops_dict::DictSnapshotKind::Entries,
+        ) else {
             return false;
-        }
-        let _snapshot_owner = crate::PtrDropGuard::new(snapshot);
+        };
         for pair in entries.as_chunks::<2>().0 {
             let name_bits = pair[0];
             let value_bits = pair[1];
@@ -524,9 +524,16 @@ unsafe fn merge_class_layout_metadata(
                 )
                 .map_err(|()| MoltObject::none().bits())?;
                 if hinted_size > size
-                    || dict_order(source).as_chunks::<2>().0.iter().any(|pair| {
-                        crate::builtins::attr::class_field_offset(py, class, pair[0])
-                            != obj_from_bits(pair[1])
+                    || crate::object::ops_dict::dict_snapshot(
+                        py,
+                        source,
+                        crate::object::ops_dict::DictSnapshotKind::Entries,
+                    )
+                    .ok_or_else(|| MoltObject::none().bits())?
+                    .chunks_exact(2)
+                    .any(|row| {
+                        crate::builtins::attr::class_field_offset(py, class, row[0])
+                            != obj_from_bits(row[1])
                                 .as_int()
                                 .and_then(|offset| usize::try_from(offset).ok())
                     })
@@ -608,7 +615,12 @@ unsafe fn merge_class_layout_metadata(
             }
             crate::object::validate_class_field_offsets(py, target, 0, usize::MAX)
                 .map_err(|()| MoltObject::none().bits())?;
-            let entries = dict_order(source).clone();
+            let entries = crate::object::ops_dict::dict_snapshot(
+                py,
+                source,
+                crate::object::ops_dict::DictSnapshotKind::Entries,
+            )
+            .ok_or_else(|| MoltObject::none().bits())?;
             for pair in entries.as_chunks::<2>().0 {
                 if let Some(prior) = dict_get_in_place(py, target, pair[0]) {
                     if prior != pair[1] {

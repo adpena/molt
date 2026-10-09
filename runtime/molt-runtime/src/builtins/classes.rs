@@ -1392,6 +1392,10 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
         "builtin wrapper member descriptor publication failed"
     );
     assert!(
+        crate::builtins::attributes::numeric_publish_members(&py),
+        "builtin numeric descriptor publication failed"
+    );
+    assert!(
         crate::builtins::attr::install_weakref_callback_descriptor(&py),
         "builtin ReferenceType.__callback__ descriptor publication failed"
     );

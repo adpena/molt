@@ -413,7 +413,7 @@ fn native_callable_declarations_own_public_identity_and_binding() {
                 list
             ));
             let method = descriptor_bind(py, managed, Some(classes.list), Some(list)).unwrap();
-            let explicit = crate::builtins::functions::bound_method_new(py, native, list, false);
+            let explicit = crate::builtins::functions::explicit_bound_method_new(py, native, list);
             assert_eq!(
                 type_of_bits(py, method),
                 crate::builtins::types::method_class(py)

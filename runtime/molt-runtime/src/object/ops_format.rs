@@ -561,29 +561,6 @@ pub(crate) fn format_class_name_bytes(class_bits: u64) -> Vec<u8> {
         .unwrap_or_else(|| class_name_for_error(class_bits).into_bytes())
 }
 
-/// Pin collected set inputs through renderer callbacks using the same
-/// resource-accounted owner as sequence snapshots.
-pub(crate) fn snapshot_format_inputs<'a, 'py>(
-    py: &'a PyToken<'py>,
-    values: &[u64],
-) -> Option<crate::object::seq_access::PinnedSequenceSnapshot<'a, 'py>> {
-    let Some(storage) = crate::object::backing::tracked_vec_box_from_slice(values, values.len())
-    else {
-        return raise_exception::<_>(py, "MemoryError", "format input snapshot allocation failed");
-    };
-    unsafe {
-        for &bits in &*storage {
-            inc_ref_bits(py, bits);
-        }
-        Some(
-            crate::object::seq_access::PinnedSequenceSnapshot::from_owned_values(
-                py,
-                crate::object::backing::tracked_vec_box_from_raw(storage),
-            ),
-        )
-    }
-}
-
 pub(crate) fn decode_string_list(obj: MoltObject) -> Option<Vec<String>> {
     let ptr = obj.as_ptr()?;
     unsafe {
@@ -1479,10 +1456,8 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
                 let mut out = FormatBuffer::from("{");
                 let mut idx = 0;
                 let mut first = true;
-                while let Some((key, value)) = {
-                    let pairs = dict_order(ptr);
-                    pairs.get(idx + 1).map(|value| (pairs[idx], *value))
-                } {
+                while let Some(row) = dict_next_entry(ptr, &mut idx) {
+                    let (key, value) = (row.key, row.value);
                     inc_ref_bits(_py, key);
                     inc_ref_bits(_py, value);
                     let _key_owner = PtrDropGuard::new(
@@ -1506,7 +1481,6 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
                     if exception_pending(_py) {
                         break;
                     }
-                    idx += 2;
                 }
                 out.push('}');
                 return out.into();
@@ -1516,17 +1490,10 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
                 if !guard.active() {
                     return "{...}".into();
                 }
-                let order = set_order(ptr);
-                if order.is_empty() {
+                if set_len(ptr) == 0 {
                     return "set()".into();
                 }
-                let values: Vec<u64> = set_table(ptr)
-                    .iter()
-                    .copied()
-                    .filter(|entry| *entry != 0)
-                    .map(|entry| order[entry - 1])
-                    .collect();
-                let Some(values) = snapshot_format_inputs(_py, &values) else {
+                let Some(values) = crate::object::ops_set::set_snapshot(_py, ptr) else {
                     return Vec::new().into();
                 };
                 let mut out = FormatBuffer::from("{");
@@ -1549,17 +1516,10 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
                 if !guard.active() {
                     return "frozenset({...})".into();
                 }
-                let order = set_order(ptr);
-                if order.is_empty() {
+                if set_len(ptr) == 0 {
                     return "frozenset()".into();
                 }
-                let values: Vec<u64> = set_table(ptr)
-                    .iter()
-                    .copied()
-                    .filter(|entry| *entry != 0)
-                    .map(|entry| order[entry - 1])
-                    .collect();
-                let Some(values) = snapshot_format_inputs(_py, &values) else {
+                let Some(values) = crate::object::ops_set::set_snapshot(_py, ptr) else {
                     return Vec::new().into();
                 };
                 let mut out = FormatBuffer::from("frozenset({");
@@ -1583,13 +1543,7 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
             {
                 let guard = ReprGuard::new(_py, ptr);
                 if !guard.active() {
-                    return if type_id == TYPE_ID_DICT_KEYS_VIEW {
-                        "dict_keys(...)".into()
-                    } else if type_id == TYPE_ID_DICT_VALUES_VIEW {
-                        "dict_values(...)".into()
-                    } else {
-                        "dict_items(...)".into()
-                    };
+                    return "...".into();
                 }
                 let dict_bits = dict_view_dict_bits(ptr);
                 let dict_obj = obj_from_bits(dict_bits);
@@ -1610,40 +1564,35 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
                     } else {
                         FormatBuffer::from("dict_items([")
                     };
-                    let mut idx = 0;
                     let mut first = true;
-                    while idx + 1 < pairs.len() {
+                    for pair in pairs.chunks_exact(2) {
                         if !first {
                             out.push_str(", ");
                         }
                         first = false;
                         if type_id == TYPE_ID_DICT_ITEMS_VIEW {
                             out.push('(');
-                            out.push_output(_py, format_obj_output(_py, obj_from_bits(pairs[idx])));
+                            out.push_output(_py, format_obj_output(_py, obj_from_bits(pair[0])));
                             if exception_pending(_py) {
                                 break;
                             }
                             out.push_str(", ");
-                            out.push_output(
-                                _py,
-                                format_obj_output(_py, obj_from_bits(pairs[idx + 1])),
-                            );
+                            out.push_output(_py, format_obj_output(_py, obj_from_bits(pair[1])));
                             if exception_pending(_py) {
                                 break;
                             }
                             out.push(')');
                         } else {
                             let val = if type_id == TYPE_ID_DICT_KEYS_VIEW {
-                                pairs[idx]
+                                pair[0]
                             } else {
-                                pairs[idx + 1]
+                                pair[1]
                             };
                             out.push_output(_py, format_obj_output(_py, obj_from_bits(val)));
                             if exception_pending(_py) {
                                 break;
                             }
                         }
-                        idx += 2;
                     }
                     out.push_str("])");
                     return out.into();
@@ -1677,6 +1626,178 @@ mod tests {
     fn refcount(bits: u64) -> u32 {
         let ptr = obj_from_bits(bits).as_ptr().expect("heap object");
         unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() }
+    }
+
+    #[test]
+    fn dict_view_repr_visits_each_retained_pair_once() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let bits = [b"a".as_slice(), b"one", b"b", b"two"].map(|text| {
+                let ptr = alloc_string(py, text);
+                assert!(!ptr.is_null());
+                MoltObject::from_ptr(ptr).bits()
+            });
+            let dict = alloc_dict_with_pairs(py, &bits);
+            assert!(!dict.is_null());
+            let dict_bits = MoltObject::from_ptr(dict).bits();
+            let cases: [(extern "C" fn(u64) -> u64, &str); 3] = [
+                (
+                    crate::object::ops_dict::molt_dict_keys,
+                    "dict_keys(['a', 'b'])",
+                ),
+                (
+                    crate::object::ops_dict::molt_dict_values,
+                    "dict_values(['one', 'two'])",
+                ),
+                (
+                    crate::object::ops_dict::molt_dict_items,
+                    "dict_items([('a', 'one'), ('b', 'two')])",
+                ),
+            ];
+            for (make_view, expected) in cases {
+                let view = make_view(dict_bits);
+                assert!(!obj_from_bits(view).is_none());
+                let refs = bits.map(refcount);
+                assert_eq!(super::format_obj(py, obj_from_bits(view)), expected);
+                assert!(!crate::exception_pending(py));
+                assert_eq!(bits.map(refcount), refs, "snapshot references released");
+                crate::dec_ref_bits(py, view);
+            }
+            crate::dec_ref_bits(py, dict_bits);
+            for value in bits {
+                crate::dec_ref_bits(py, value);
+            }
+        });
+    }
+
+    extern "C" fn dict_view_element_repr_raises(_self_bits: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            crate::raise_exception::<u64>(py, "ValueError", "dict view element repr failed")
+        })
+    }
+
+    #[test]
+    fn dict_view_repr_errors_release_snapshot_and_recursion_guard() {
+        use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let name = attr_name_bits_from_bytes(py, b"DictViewReprError").unwrap();
+            let class = crate::molt_class_new(name);
+            crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+            let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+            unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
+            let repr_name = attr_name_bits_from_bytes(py, b"__repr__").unwrap();
+            let function = alloc_runtime_function_obj(
+                py,
+                runtime_fn_addr(
+                    "dict_view_element_repr_raises",
+                    dict_view_element_repr_raises as *const (),
+                ),
+                1,
+            );
+            assert!(!function.is_null());
+            let function_bits = MoltObject::from_ptr(function).bits();
+            crate::molt_set_attr_name(class, repr_name, function_bits);
+            let element = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
+            assert!(!obj_from_bits(element).is_none());
+            assert!(!crate::exception_pending(py));
+            let cases: [(extern "C" fn(u64) -> u64, bool, &str); 4] = [
+                (
+                    crate::object::ops_dict::molt_dict_keys,
+                    true,
+                    "dict_keys([])",
+                ),
+                (
+                    crate::object::ops_dict::molt_dict_values,
+                    false,
+                    "dict_values([])",
+                ),
+                (
+                    crate::object::ops_dict::molt_dict_items,
+                    true,
+                    "dict_items([])",
+                ),
+                (
+                    crate::object::ops_dict::molt_dict_items,
+                    false,
+                    "dict_items([])",
+                ),
+            ];
+            for (make_view, fail_key, empty_repr) in cases {
+                let one = MoltObject::from_int(1).bits();
+                let pair = if fail_key {
+                    [element, one]
+                } else {
+                    [one, element]
+                };
+                let dict = alloc_dict_with_pairs(py, &pair);
+                assert!(!dict.is_null());
+                let dict_bits = MoltObject::from_ptr(dict).bits();
+                let view = make_view(dict_bits);
+                assert!(!crate::exception_pending(py));
+                let refs = refcount(element);
+                let result = super::format_obj_output(py, obj_from_bits(view)).into_bits(py);
+                assert!(obj_from_bits(result).is_none());
+                let error = crate::exception_last_bits_noinc(py).expect("repr exception");
+                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    py,
+                    error,
+                    "ValueError"
+                ));
+                assert_eq!(
+                    crate::format_exception_message(py, obj_from_bits(error).as_ptr().unwrap()),
+                    "dict view element repr failed"
+                );
+                crate::molt_exception_clear();
+                assert_eq!(
+                    refcount(element),
+                    refs,
+                    "error releases snapshot references"
+                );
+                unsafe { crate::dict_clear_in_place(py, dict) };
+                assert_eq!(super::format_obj(py, obj_from_bits(view)), empty_repr);
+                assert!(!crate::exception_pending(py));
+                crate::dec_ref_bits(py, view);
+                crate::dec_ref_bits(py, dict_bits);
+            }
+            crate::dec_ref_bits(py, element);
+            unsafe { crate::object::heap_lifecycle::clear_cycle_edges(py, class_ptr) };
+            for bits in [class, name, repr_name, function_bits] {
+                crate::dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn dict_view_repr_preserves_recursive_value_markers() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let cases: [(extern "C" fn(u64) -> u64, &str); 2] = [
+                (
+                    crate::object::ops_dict::molt_dict_values,
+                    "dict_values([...])",
+                ),
+                (
+                    crate::object::ops_dict::molt_dict_items,
+                    "dict_items([(1, ...)])",
+                ),
+            ];
+            for (make_view, expected) in cases {
+                let dict = alloc_dict_with_pairs(py, &[]);
+                assert!(!dict.is_null());
+                let dict_bits = MoltObject::from_ptr(dict).bits();
+                let view = make_view(dict_bits);
+                unsafe { dict_set_in_place(py, dict, MoltObject::from_int(1).bits(), view) };
+                let refs = refcount(view);
+                assert_eq!(super::format_obj(py, obj_from_bits(view)), expected);
+                assert!(!crate::exception_pending(py));
+                assert_eq!(refcount(view), refs);
+                unsafe { crate::dict_clear_in_place(py, dict) };
+                crate::dec_ref_bits(py, view);
+                crate::dec_ref_bits(py, dict_bits);
+            }
+        });
     }
 
     #[test]

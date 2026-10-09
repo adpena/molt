@@ -2205,7 +2205,7 @@ unsafe fn type_from_spec_impl(
         // A custom allocator may not have enrolled this physical allocation.
         // Admit it before the first such crossing, but keep it untracked until
         // the completed type can expose all of its initialized owned fields.
-        if (crate::hooks::hooks_or_stubs().native_gc_allocate)(object.addr()) < 0 {
+        if crate::hooks::hooks_or_stubs().native_gc_allocate(object.addr()) < 0 {
             crate::api::errors::check_native_status(-1, "heap type GC admission");
             native_lifecycle::release_unconstructed_type(object, metaclass, owns_metaclass);
             return ptr::null_mut();
@@ -2827,7 +2827,7 @@ unsafe fn type_namespace_lookup_with_bridge(
     unsafe {
         if let Some(class) = bridge.observed_handle_for_pyobj(tp.cast()) {
             let hooks = crate::hooks::hooks_or_stubs();
-            if (hooks.classify_heap)(class.bits()) == crate::abi_types::MoltTypeTag::Type as u8 {
+            if hooks.classify_heap(class.bits()) == crate::abi_types::MoltTypeTag::Type as u8 {
                 let Some(name) = crate::bridge::RuntimeValue::acquire(name) else {
                     return ptr::null_mut();
                 };
@@ -2880,7 +2880,7 @@ pub unsafe extern "C" fn _PyType_Lookup(
     let found = (|| unsafe {
         if let Some(class) = GLOBAL_BRIDGE.observed_handle_for_pyobj(tp.cast()) {
             let hooks = crate::hooks::hooks_or_stubs();
-            if (hooks.classify_heap)(class.bits()) == crate::abi_types::MoltTypeTag::Type as u8 {
+            if hooks.classify_heap(class.bits()) == crate::abi_types::MoltTypeTag::Type as u8 {
                 let Some(name) = crate::bridge::RuntimeValue::acquire(name) else {
                     return ptr::null_mut();
                 };
@@ -2962,6 +2962,10 @@ pub unsafe extern "C" fn PyDescr_NAME(descr: *mut PyObject) -> *mut PyObject {
         return ptr::null_mut();
     }
     unsafe { (*descr.cast::<crate::abi_types::PyDescrObject>()).d_name }
+}
+
+pub(crate) fn builtin_number_table<const TAG: u8>() -> crate::abi_types::PyNumberMethods {
+    native_slot_dispatch::builtin_number_table::<TAG>()
 }
 
 /// Install the shared physical descriptor lifecycle and typed wrapper slots.
@@ -3537,9 +3541,9 @@ pub unsafe extern "C" fn PyType_IsSubtype(a: *mut PyTypeObject, b: *mut PyTypeOb
     ) = (a_identity, b_identity)
     {
         let hooks = crate::hooks::hooks_or_stubs();
-        if unsafe { (hooks.classify_heap)(a_bits.bits()) }
+        if unsafe { hooks.classify_heap(a_bits.bits()) }
             == crate::abi_types::MoltTypeTag::Type as u8
-            && unsafe { (hooks.classify_heap)(b_bits.bits()) }
+            && unsafe { hooks.classify_heap(b_bits.bits()) }
                 == crate::abi_types::MoltTypeTag::Type as u8
         {
             return unsafe { (hooks.type_is_subtype)(a_bits.bits(), b_bits.bits()) };
@@ -3605,7 +3609,7 @@ pub unsafe extern "C" fn PyType_GetName(tp: *mut PyTypeObject) -> *mut PyObject 
     if let Some(value) = GLOBAL_BRIDGE
         .observed_handle_for_pyobj(tp.cast())
         .filter(|value| unsafe {
-            (crate::hooks::hooks_or_stubs().classify_heap)(value.bits())
+            crate::hooks::hooks_or_stubs().classify_heap(value.bits())
                 == crate::abi_types::MoltTypeTag::Type as u8
         })
     {
@@ -3800,7 +3804,7 @@ pub unsafe extern "C" fn PyType_GetQualName(tp: *mut PyTypeObject) -> *mut PyObj
     if let Some(value) = GLOBAL_BRIDGE
         .observed_handle_for_pyobj(tp.cast())
         .filter(|value| unsafe {
-            (crate::hooks::hooks_or_stubs().classify_heap)(value.bits())
+            crate::hooks::hooks_or_stubs().classify_heap(value.bits())
                 == crate::abi_types::MoltTypeTag::Type as u8
         })
     {
@@ -4087,10 +4091,10 @@ unsafe fn numeric_declaring_richcompare(
     op: c_int,
 ) -> *mut PyObject {
     let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
-    let Some(left) = (unsafe { crate::api::numbers::numeric_comparison_value(left) }) else {
+    let Some(left) = (unsafe { crate::api::numbers::numeric_native_value(left) }) else {
         return ptr::null_mut();
     };
-    let Some(right) = (unsafe { crate::api::numbers::numeric_comparison_value(right) }) else {
+    let Some(right) = (unsafe { crate::api::numbers::numeric_native_value(right) }) else {
         return ptr::null_mut();
     };
     unsafe { declaring_richcompare(declaring_type, left.bits(), right.bits(), op) }

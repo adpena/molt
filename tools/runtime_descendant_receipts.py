@@ -107,7 +107,26 @@ TRANSACTION = "test_support::runtime_test_transactions_preserve_terminal_failure
 LIFECYCLE = (
     "state::runtime_state::tests::lifecycle_ffi_panics_fail_closed_without_unwinding"
 )
+DISCOVERY = "tests::pending_diagnostic_prints_and_retires_original_error_after_summary_encoding_failure"
 OWNERS: Mapping[str, Owner] = {
+    DISCOVERY: Owner(
+        "discovery-pending-diagnostic",
+        "tests::pending_diagnostic_child",
+        {
+            "render-and-drain": Outcome(
+                0,
+                True,
+                stdout_markers=("discovery diagnostic final drain verified\n",),
+                stderr_markers=(
+                    "[molt-cpython-abi] PyErr_Print: discovery exception custody\n",
+                    "[molt-cpython-abi] PyErr_Print: \\ud800\n",
+                    '===MOLT_DISCOVERY_EXC: pending exception value = "discovery exception custody"\n',
+                    "===MOLT_DISCOVERY_EXC: no pending exception on NULL return",
+                ),
+            ),
+        },
+        ignored=True,
+    ),
     TRANSACTION: Owner(
         "runtime-test-transaction",
         TRANSACTION,

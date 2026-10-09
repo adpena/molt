@@ -153,8 +153,16 @@ fn shallow_copy_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
             // Shallow copy: new dict with same key/value refs.
             // Dict order vec stores [k1, v1, k2, v2, ...].
             unsafe {
-                let order = dict_order(ptr);
-                let new_ptr = alloc_dict_with_pairs(_py, order);
+                let Some(order) = (unsafe {
+                    crate::object::ops_dict::dict_snapshot(
+                        _py,
+                        ptr,
+                        crate::object::ops_dict::DictSnapshotKind::Entries,
+                    )
+                }) else {
+                    return MoltObject::none().bits();
+                };
+                let new_ptr = alloc_dict_with_pairs(_py, &order);
                 if new_ptr.is_null() {
                     return raise_exception::<_>(_py, "MemoryError", "out of memory");
                 }
@@ -164,8 +172,11 @@ fn shallow_copy_bits(_py: &PyToken<'_>, bits: u64) -> u64 {
         TYPE_ID_SET => {
             // Shallow copy: new set with same element refs
             unsafe {
-                let order = set_order(ptr);
-                let new_ptr = alloc_set_with_entries(_py, order);
+                let Some(order) = (unsafe { crate::object::ops_set::set_snapshot(_py, ptr) })
+                else {
+                    return MoltObject::none().bits();
+                };
+                let new_ptr = alloc_set_with_entries(_py, &order);
                 if new_ptr.is_null() {
                     return raise_exception::<_>(_py, "MemoryError", "out of memory");
                 }
@@ -305,6 +316,15 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
             }
         }
         TYPE_ID_DICT => {
+            let Some(order) = (unsafe {
+                crate::object::ops_dict::dict_snapshot(
+                    _py,
+                    ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                )
+            }) else {
+                return MoltObject::none().bits();
+            };
             // Deep copy dict: recursively copy keys and values.
             // Allocate empty dict first for cycle breaking.
             let new_ptr = alloc_dict_with_pairs(_py, &[]);
@@ -315,7 +335,6 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
             memo_put(_py, memo_handle, obj_id, new_bits);
 
             unsafe {
-                let order = dict_order(ptr);
                 // order is [k1, v1, k2, v2, ...]
                 let mut i = 0;
                 while i + 1 < order.len() {
@@ -341,7 +360,10 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
         TYPE_ID_SET => {
             // Deep copy set
             unsafe {
-                let order = set_order(ptr);
+                let Some(order) = (unsafe { crate::object::ops_set::set_snapshot(_py, ptr) })
+                else {
+                    return MoltObject::none().bits();
+                };
                 let mut copied_elems = Vec::with_capacity(order.len());
                 for &elem in order.iter() {
                     let copied = deep_copy_bits(_py, elem, memo_handle);
@@ -363,7 +385,10 @@ fn deep_copy_bits(_py: &PyToken<'_>, bits: u64, memo_handle: i64) -> u64 {
             // Frozensets: deep copy elements, but since frozenset is immutable,
             // if all elements are identical return self.
             unsafe {
-                let order = set_order(ptr);
+                let Some(order) = (unsafe { crate::object::ops_set::set_snapshot(_py, ptr) })
+                else {
+                    return MoltObject::none().bits();
+                };
                 if order.is_empty() {
                     inc_ref_bits(_py, bits);
                     return bits;

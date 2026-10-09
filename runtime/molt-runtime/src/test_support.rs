@@ -835,12 +835,14 @@ fn runtime_test_transactions_preserve_terminal_failures() {
                 });
             }
             "ordinary" | "ordinary-return" => {
-                unsafe {
-                    errors::PyErr_SetString(
-                        (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast(),
-                        c"owner detached before terminal failure".as_ptr(),
-                    );
-                }
+                crate::with_gil_entry_nopanic!(_py, {
+                    unsafe {
+                        errors::PyErr_SetString(
+                            (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast(),
+                            c"owner detached before terminal failure".as_ptr(),
+                        );
+                    }
+                });
                 let _transaction = RuntimeTestTransaction::with_gc_isolation();
                 entered.set(true);
                 crate::concurrency::execution::inject_shutdown_drain_drop_panic();
@@ -856,12 +858,14 @@ fn runtime_test_transactions_preserve_terminal_failures() {
                 entered.set(true);
             }
             "healthy" => {
-                unsafe {
-                    errors::PyErr_SetString(
-                        (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast(),
-                        c"borrowed pre-transaction error".as_ptr(),
-                    );
-                }
+                crate::with_gil_entry_nopanic!(_py, {
+                    unsafe {
+                        errors::PyErr_SetString(
+                            (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast(),
+                            c"borrowed pre-transaction error".as_ptr(),
+                        );
+                    }
+                });
                 let original = errors::take_current_error().expect("actual C error owner");
                 let identity = (original.exc_type, original.value, original.traceback);
                 errors::restore_current_error_exact(original);

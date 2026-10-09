@@ -338,7 +338,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "0495e9b99bf6dde073c12662e8b1ee748f8b1975cf04b27e0d7bfa4b6cbf70b6",
+  "authority_sha256": "fee00a3f9b4355e6521f2aad435178a1e3ca8cfa33022d873cb06affae911d26",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1516,7 +1516,11 @@
         "pytest",
         "-v",
         "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
-        "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content"
+        "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content",
+        "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds",
+        "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root",
+        "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit",
+        "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-queue-portability",
@@ -1549,7 +1553,11 @@
         "pytest",
         "-v",
         "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
-        "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content"
+        "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content",
+        "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds",
+        "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root",
+        "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit",
+        "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-queue-portability",
@@ -1582,7 +1590,11 @@
         "pytest",
         "-v",
         "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
-        "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content"
+        "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content",
+        "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds",
+        "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root",
+        "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit",
+        "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"
       ],
       "cache_domain": "pytest",
       "cell": "windows-x86_64-py312-queue-portability",
@@ -2348,7 +2360,8 @@
         "tests/test_environment_registry.py",
         "tests/tools/test_check_environment_registry.py",
         "tests/tools/test_setup_project_inputs.py",
-        "tests/tools/test_rust_toolchain_contract.py"
+        "tests/tools/test_rust_toolchain_contract.py",
+        "tests/test_gen_cpython_abi_layout.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -2584,7 +2597,13 @@
     },
     {
       "argv": [
-        "target/sessions/wasm-ci/dev-fast/molt-wasm-host",
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "tools/run_wasm_host.py",
+        "--cargo-profile",
+        "dev-fast",
+        "--",
         "/tmp/molt-wasm-ci/hello/manifest.json"
       ],
       "cache_domain": "none",
@@ -2607,9 +2626,7 @@
       ],
       "timeout_seconds": 300,
       "toolchains": [
-        "rustc",
-        "cargo",
-        "wasm-tools"
+        "python"
       ]
     },
     {
@@ -2664,7 +2681,13 @@
     },
     {
       "argv": [
-        "target/sessions/wasm-ci/dev-fast/molt-wasm-host",
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "tools/run_wasm_host.py",
+        "--cargo-profile",
+        "dev-fast",
+        "--",
         "/tmp/molt-wasm-ci/comprehension/manifest.json"
       ],
       "cache_domain": "none",
@@ -2684,9 +2707,7 @@
       ],
       "timeout_seconds": 300,
       "toolchains": [
-        "rustc",
-        "cargo",
-        "wasm-tools"
+        "python"
       ]
     },
     {
@@ -2831,7 +2852,13 @@
     },
     {
       "argv": [
-        "target/sessions/wasm-ci/dev-fast/molt-wasm-host",
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "tools/run_wasm_host.py",
+        "--cargo-profile",
+        "dev-fast",
+        "--",
         "/tmp/molt-wasm-ci/sieve/manifest.json"
       ],
       "cache_domain": "none",
@@ -2851,9 +2878,7 @@
       ],
       "timeout_seconds": 300,
       "toolchains": [
-        "rustc",
-        "cargo",
-        "wasm-tools"
+        "python"
       ]
     },
     {
@@ -3174,6 +3199,8 @@
         "tests/test_bench_individual_tool.py",
         "tests/test_compile_governor.py",
         "tests/test_bench_wasm_runtime_build_flags.py",
+        "tests/test_bench_wasm_node_resolver.py",
+        "tests/test_wasm_linked_runner_node_flags.py",
         "tests/test_harness_memory_guard.py",
         "tests/test_molt_diff_expected_failures.py",
         "tests/test_compat_multibackend_oracle.py",
@@ -3181,7 +3208,8 @@
         "tests/test_perf_calibration.py",
         "tests/test_exception_diagnostics.py",
         "tests/tools/test_proof_queue_output_layout.py",
-        "tests/tools/test_memory_guard_windows_sampling.py"
+        "tests/tools/test_memory_guard_windows_sampling.py",
+        "tests/test_l7_numeric_attestation_runner.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -3226,6 +3254,8 @@
         "tests/test_bench_individual_tool.py",
         "tests/test_compile_governor.py",
         "tests/test_bench_wasm_runtime_build_flags.py",
+        "tests/test_bench_wasm_node_resolver.py",
+        "tests/test_wasm_linked_runner_node_flags.py",
         "tests/test_harness_memory_guard.py",
         "tests/test_molt_diff_expected_failures.py",
         "tests/test_compat_multibackend_oracle.py",
@@ -3233,7 +3263,8 @@
         "tests/test_perf_calibration.py",
         "tests/test_exception_diagnostics.py",
         "tests/tools/test_proof_queue_output_layout.py",
-        "tests/tools/test_memory_guard_windows_sampling.py"
+        "tests/tools/test_memory_guard_windows_sampling.py",
+        "tests/test_l7_numeric_attestation_runner.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
@@ -3679,7 +3710,8 @@
         "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive",
         "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges",
         "tests/cli/test_native_link_manifest.py::test_static_nobundle_order_changes_real_archive_resolution",
-        "tests/cli/test_link_selection_admission.py"
+        "tests/cli/test_link_selection_admission.py",
+        "tests/cli/test_c_api_headers.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-native-dev",

@@ -30,6 +30,8 @@ TRANSACTION = "test_support::runtime_test_transactions_preserve_terminal_failure
 LIFECYCLE = (
     "state::runtime_state::tests::lifecycle_ffi_panics_fail_closed_without_unwinding"
 )
+DISCOVERY = "tests::pending_diagnostic_prints_and_retires_original_error_after_summary_encoding_failure"
+DISCOVERY_CHILD = "tests::pending_diagnostic_child"
 TRACE_CALLARGS = "trace_callargs_emits_builder_lifecycle_logs"
 TRACE_BIND_IC = "trace_call_bind_ic_emits_hit_log"
 TRACE_BIND_META = "trace_function_bind_meta_emits_summary"
@@ -145,6 +147,24 @@ for _mode, _exit, _cause in (
         "exit_code": _exit,
         "completes": _mode != "exit",
     }
+CONTRACT[(DISCOVERY, "render-and-drain")] = {
+    "role": "discovery-pending-diagnostic",
+    "child": DISCOVERY_CHILD,
+    "args": ["--exact", DISCOVERY_CHILD, "--ignored", *SERIAL],
+    "stdout": (
+        f"\nrunning 1 test\ntest {DISCOVERY_CHILD} ... "
+        "discovery diagnostic final drain verified\nok\n\ntest result: ok. "
+        "1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\n"
+    ),
+    "stderr": (
+        '===MOLT_DISCOVERY_EXC: pending exception value = "discovery exception custody"\n'
+        "[molt-cpython-abi] PyErr_Print: discovery exception custody\n"
+        "[molt-cpython-abi] PyErr_Print: \\ud800\n"
+        "===MOLT_DISCOVERY_EXC: no pending exception on NULL return\n"
+    ),
+    "exit_code": 0,
+    "completes": True,
+}
 MODES: dict[str, list[str]] = {}
 for _owner, _mode in CONTRACT:
     MODES.setdefault(_owner, []).append(_mode)

@@ -24,12 +24,11 @@ pub(super) fn dict(
                 return Ok(false);
             }
             let mut index = 0;
-            // Compact ordered storage may move or shrink at every callback.
-            // Snapshot only scalar handles/hash, then pin before looking up.
-            while index < dict_len(left) {
-                let key = Pin::borrow(py, dict_order(left)[index * 2]);
-                let value = Pin::borrow(py, dict_order(left)[index * 2 + 1]);
-                let hash = dict_hashes(left)[index];
+            // Physical row selection owns its edges before any callback.
+            while let Some(row) = dict_next_entry(left, &mut index) {
+                let key = Pin::borrow(py, row.key);
+                let value = Pin::borrow(py, row.value);
+                let hash = row.hash.expect("live dictionary row").get();
                 let found = dict_find_entry_with_hash(py, right, key.bits, hash);
                 if exception_pending(py) {
                     return Err(molt_runtime_core::ErrorIndicatorSet);
@@ -37,7 +36,7 @@ pub(super) fn dict(
                 let Some(found) = found else {
                     return Ok(false);
                 };
-                let other = Pin::borrow(py, dict_order(right)[found * 2 + 1]);
+                let other = Pin::borrow(py, dict_entries(right)[found].value);
                 let equal = element_equal(py, value.bits, other.bits)?;
                 drop(other);
                 drop(value);
@@ -48,7 +47,6 @@ pub(super) fn dict(
                 if !equal {
                     return Ok(false);
                 }
-                index += 1;
             }
             Ok(true)
         }
@@ -65,7 +63,7 @@ fn set_contained(
 ) -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
     unsafe {
         let mut index = 0;
-        while let Some(entry) = crate::object::ops::set_pin_entry(py, left, index) {
+        while let Some(entry) = crate::object::ops::set_pin_next(py, left, &mut index) {
             let found = set_find_entry_in_place_with_hash(py, right, entry.bits(), entry.hash());
             drop(entry);
             if exception_pending(py) {
@@ -74,7 +72,6 @@ fn set_contained(
             if found.is_none() {
                 return Ok(false);
             }
-            index += 1;
         }
         Ok(true)
     }
@@ -228,7 +225,7 @@ pub(super) fn view_contains(
         let Some(found) = found else {
             return Ok(false);
         };
-        let stored = Pin::borrow(py, dict_order(dict)[found * 2 + 1]);
+        let stored = Pin::borrow(py, dict_entries(dict)[found].value);
         element_equal(py, stored.bits, value.bits)
     }
 }

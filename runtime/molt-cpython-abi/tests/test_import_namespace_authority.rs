@@ -323,14 +323,14 @@ fn imports_share_one_namespace_and_publication_is_transactional() {
     *DEFAULT_BUILTINS.lock().unwrap() = default_builtins;
 
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.alloc_str = alloc_str;
+    hooks.alloc_str = Some(alloc_str);
     hooks.str_data = str_data;
-    hooks.classify_heap = classify_heap;
+    hooks.classify_heap = Some(classify_heap);
     hooks.sys_get_object_borrowed = sys_get_object_borrowed;
     hooks.eval_get_builtins_borrowed = eval_get_builtins_borrowed;
     hooks.inc_ref = inc_ref;
     hooks.dec_ref = dec_ref;
-    hooks.ref_count = ref_count;
+    hooks.ref_count = Some(ref_count);
     hooks.alloc_module = alloc_module;
     hooks.module_get_dict_borrowed = module_get_dict_borrowed;
     hooks.import_add_module_borrowed = import_add_module_borrowed;

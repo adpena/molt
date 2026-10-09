@@ -43,13 +43,14 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 // `*const u8` the runtime hooks return stays valid for the whole test binary).
 static STRS: Mutex<Option<HashMap<u64, &'static [u8]>>> = Mutex::new(None);
 static BYTES: Mutex<Option<HashMap<u64, &'static [u8]>>> = Mutex::new(None);
-static NEXT_HANDLE: Mutex<u64> = Mutex::new(0xD000);
-
+fn retire_fixture_bytes(bits: u64) {
+    STRS.lock().unwrap().get_or_insert_default().remove(&bits);
+    BYTES.lock().unwrap().get_or_insert_default().remove(&bits);
+}
 fn fresh_handle() -> u64 {
-    let mut next = NEXT_HANDLE.lock().unwrap();
-    let addr = *next as usize;
-    *next += 0x100;
-    MoltObject::from_ptr(addr as *mut u8).bits()
+    let bits = support::fake_runtime::fresh_handle();
+    support::fake_runtime::observe_retirement(bits, retire_fixture_bytes);
+    bits
 }
 
 // ── fake str/bytes runtime ─────────────────────────────────────────────────
@@ -73,7 +74,7 @@ unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
     {
         return MoltTypeTag::Bytes as u8;
     }
-    MoltTypeTag::Other as u8
+    unsafe { support::fake_runtime::classify_heap(bits) }
 }
 
 fn fx_hash_bytes(bytes: &[u8]) -> i64 {
@@ -194,7 +195,8 @@ unsafe extern "C" fn fixture_builtin_compare(
 
 fn install() {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.classify_heap = fx_classify_heap;
+    support::fake_runtime::wire_numeric(&mut hooks);
+    hooks.classify_heap = Some(fx_classify_heap);
     hooks.object_hash = fx_object_hash;
     hooks.object_richcompare_builtin = fixture_builtin_compare;
     hooks.object_richcompare = support::fake_runtime::richcompare;

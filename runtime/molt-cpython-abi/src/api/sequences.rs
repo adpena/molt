@@ -31,7 +31,7 @@ fn resolve_native_list(op: *mut PyObject) -> Option<u64> {
         return None;
     }
     let h = hooks_or_stubs();
-    if unsafe { (h.classify_heap)(bits.bits()) } == crate::abi_types::MoltTypeTag::List as u8 {
+    if unsafe { h.classify_heap(bits.bits()) } == crate::abi_types::MoltTypeTag::List as u8 {
         Some(bits.bits())
     } else {
         None
@@ -619,7 +619,7 @@ pub unsafe extern "C" fn PyTuple_New(size: Py_ssize_t) -> *mut PyObject {
     if !crate::hooks::managed_tuple_construction_available() {
         return unsafe { native_tuple_new(size) };
     }
-    let bits = unsafe { (hooks_or_stubs().alloc_tuple)(size as usize) };
+    let bits = unsafe { hooks_or_stubs().alloc_tuple(size as usize) };
     if bits == 0 {
         if !crate::api::errors::transfer_runtime_pending_to_current()
             && unsafe { crate::api::errors::PyErr_Occurred() }.is_null()
@@ -673,7 +673,7 @@ pub unsafe extern "C" fn PyTuple_GET_ITEM(op: *mut PyObject, i: Py_ssize_t) -> *
         None => return ptr::null_mut(),
     };
     let h = hooks_or_stubs();
-    unsafe { GLOBAL_BRIDGE.borrowed_result_to_borrowed_pyobj((h.tuple_item)(bits, i as usize)) }
+    unsafe { GLOBAL_BRIDGE.borrowed_result_to_borrowed_pyobj(h.tuple_item(bits, i as usize)) }
 }
 
 #[unsafe(no_mangle)]
@@ -712,12 +712,12 @@ pub unsafe extern "C" fn PyTuple_GetItem(op: *mut PyObject, i: Py_ssize_t) -> *m
         }
     };
     let h = hooks_or_stubs();
-    if unsafe { (h.classify_heap)(bits) } != crate::abi_types::MoltTypeTag::Tuple as u8 {
+    if unsafe { h.classify_heap(bits) } != crate::abi_types::MoltTypeTag::Tuple as u8 {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
     if i >= 0 {
-        let result = unsafe { (h.tuple_item)(bits, i as usize) };
+        let result = unsafe { h.tuple_item(bits, i as usize) };
         if let crate::hooks::DecodedHandleResult::Ok(bits) = result.decode() {
             return unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };
         }
@@ -745,7 +745,7 @@ pub unsafe extern "C" fn PyTuple_GET_SIZE(op: *mut PyObject) -> Py_ssize_t {
         None => return 0,
     };
     let h = hooks_or_stubs();
-    unsafe { (h.tuple_len)(bits) as Py_ssize_t }
+    unsafe { h.tuple_len(bits) as Py_ssize_t }
 }
 
 #[unsafe(no_mangle)]
@@ -934,7 +934,7 @@ unsafe fn tuple_set_item(
         }
     };
     let h = hooks_or_stubs();
-    if check_unique && unsafe { (h.ref_count)(tuple_bits) } != 1 {
+    if check_unique && unsafe { h.ref_count(tuple_bits) } != 1 {
         unsafe {
             crate::api::refcount::Py_XDECREF(v);
             crate::api::errors::PyErr_BadInternalCall();
@@ -964,8 +964,8 @@ unsafe fn tuple_set_item(
         .as_ref()
         .map_or(MoltObject::none().bits(), RuntimeValue::bits);
     let is_tuple =
-        unsafe { (h.classify_heap)(tuple_bits) } == crate::abi_types::MoltTypeTag::Tuple as u8;
-    let in_bounds = i >= 0 && is_tuple && (i as usize) < unsafe { (h.tuple_len)(tuple_bits) };
+        unsafe { h.classify_heap(tuple_bits) } == crate::abi_types::MoltTypeTag::Tuple as u8;
+    let in_bounds = i >= 0 && is_tuple && (i as usize) < unsafe { h.tuple_len(tuple_bits) };
     if !in_bounds {
         drop(value);
         unsafe {
@@ -988,7 +988,7 @@ unsafe fn tuple_set_item(
         drop(value);
         return -1;
     };
-    let result = unsafe { (h.tuple_set)(tuple_bits, i as usize, value_bits, v) };
+    let result = unsafe { h.tuple_set(tuple_bits, i as usize, value_bits, v) };
     let old_bits = match result.decode() {
         crate::hooks::DecodedHandleResult::Ok(bits) => Some(bits),
         crate::hooks::DecodedHandleResult::Missing => Some(0),
@@ -1440,6 +1440,14 @@ pub unsafe extern "C" fn PySet_Add(anyset: *mut PyObject, key: *mut PyObject) ->
             Some(bits) => bits,
             None => return -1,
         };
+    // CPython admits only a unique frozenset under construction. Check before
+    // key conversion or hashing so a refused mutation has no key-side effects.
+    if unsafe { PyFrozenSet_Check(anyset) } != 0
+        && unsafe { GLOBAL_BRIDGE.managed_is_uniquely_referenced(anyset) } != Some(true)
+    {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
+    }
     let Some(key_value) = (unsafe { RuntimeValue::acquire(key) }) else {
         unsafe { ensure_set_error(c"set key could not acquire runtime edge custody") };
         return -1;

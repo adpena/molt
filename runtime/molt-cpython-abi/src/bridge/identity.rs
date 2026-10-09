@@ -48,13 +48,29 @@ pub(crate) fn resolve_pyobject(ptr: *mut PyObject) -> Option<ResolvedPyObject> {
     if ptr.is_null() {
         return None;
     }
-    Some(match GLOBAL_BRIDGE.molt_handle_for_pyobj(ptr) {
+    Some(match GLOBAL_BRIDGE.semantic_handle_for_pyobj(ptr).ok()? {
         Some(handle) => ResolvedPyObject::ManagedMolt(handle),
         None => {
             admit_foreign_pyobject(ptr)?;
             ResolvedPyObject::Foreign
         }
     })
+}
+
+/// Reference ownership never allocates a runtime identity. In particular an
+/// adoption failure must not suppress INCREF/DECREF of the still-live original.
+pub(crate) fn admit_reference(pointer: *mut PyObject) -> bool {
+    if pointer.is_null() {
+        return false;
+    }
+    if GLOBAL_BRIDGE.pyobj_to_handle(pointer).is_some() {
+        return true;
+    }
+    let numeric = {
+        let address = GLOBAL_BRIDGE.address_shard(pointer.addr()).lock();
+        address.numeric_carriers.contains_key(&pointer.addr())
+    };
+    numeric || admit_foreign_pyobject(pointer).is_some()
 }
 
 /// Membership is queried only after managed identity misses, without holding
@@ -100,14 +116,14 @@ pub(crate) fn observe_pyobject(ptr: *mut PyObject) -> Option<ResolvedPyObject> {
 /// Identity is recovered only from the bridge maps. No object-address or
 /// adjacent-memory encoding participates in the ABI contract.
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NumericCarrierKind {
     Long { allocation_size: usize },
     Float,
     Complex,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NumericCarrierRecord {
     pub bits: Option<AbiHandle>,
     pub kind: NumericCarrierKind,
@@ -150,6 +166,14 @@ impl RuntimeValue {
             return None;
         }
         unsafe { GLOBAL_BRIDGE.acquire_runtime_value(object, RuntimeValueAccess::Observe) }
+    }
+
+    /// Keep only crossings that actually own a temporary foreign wrapper.
+    /// Canonical managed values remain borrowed from the C caller's lifetime.
+    /// The handle can be copied into a synchronous hook span independently of
+    /// this optional guard; no representation or identity inference is exposed.
+    pub(crate) fn into_temporary_owner(self) -> Option<Self> {
+        self.owned.then_some(self)
     }
 
     /// Retain a reference edge without requiring a container's construction to
@@ -306,12 +330,132 @@ impl ObjectBridge {
         self.managed_handle_for_pyobj(ptr).map(MoltValueHandle)
     }
 
+    /// Typed semantic ingress. Numeric adoption failure is not a membership
+    /// miss and can never license foreign wrapping. Pure membership stays
+    /// nonallocating for refcount/GC/layout checks.
+    pub(super) fn semantic_handle_for_pyobj(
+        &self,
+        pointer: *mut PyObject,
+    ) -> Result<Option<MoltValueHandle>, ()> {
+        if let Some(bits) = pyobj_to_handle_static(pointer) {
+            return Ok(Some(MoltValueHandle(bits)));
+        }
+        let address = self.address_shard(pointer.addr()).lock();
+        let record = address.numeric_carriers.get(&pointer.addr()).copied();
+        let Some(record) = record else {
+            if let Some(bits) = address.direct_molt_py.get(&pointer.addr()).copied() {
+                return Ok(Some(MoltValueHandle(bits)));
+            }
+            drop(address);
+            return Ok(self.managed_handle_for_pyobj(pointer).map(MoltValueHandle));
+        };
+        drop(address);
+        // Only a standalone numeric crossing needs adoption custody. Already
+        // managed/direct/static values retain their existing lookup cost.
+        let _gil = crate::hooks::RuntimeGilGuard::ensure();
+        // Another admitted caller may have completed adoption while this one
+        // waited for execution custody. Reuse that winner before allocating B.
+        let current = self
+            .address_shard(pointer.addr())
+            .lock()
+            .numeric_carriers
+            .get(&pointer.addr())
+            .copied();
+        if current.is_none() {
+            if let Some(bits) = self.managed_handle_for_pyobj(pointer) {
+                return Ok(Some(MoltValueHandle(bits)));
+            }
+            unsafe { ensure_result_error(c"numeric source lost canonical ownership") };
+            return Err(());
+        }
+        if current != Some(record) {
+            unsafe { ensure_result_error(c"numeric source changed before adoption") };
+            return Err(());
+        }
+        // Semantic admission cannot consume or replace either incoming raised
+        // channel. Refuse before decoding/allocating a new runtime identity.
+        if crate::api::errors::raised_error_pending() {
+            return Err(());
+        }
+        if !crate::hooks::numeric_identity_available() {
+            unsafe { ensure_result_error(c"registered runtime has no numeric identity owner") };
+            return Err(());
+        }
+        let mut staged = None;
+        let bits = if let Some(bits) = record.bits {
+            bits
+        } else {
+            let Some(bits) =
+                (unsafe { crate::api::numbers::decode_standalone_numeric(pointer, record.kind) })
+            else {
+                unsafe { ensure_result_error(c"invalid standalone numeric payload") };
+                return Err(());
+            };
+            staged = Some(unsafe { RuntimeValue::from_owned(bits) });
+            bits
+        };
+        let bits = if MoltObject::from_bits(bits).is_ptr() {
+            bits
+        } else {
+            let result = unsafe { crate::hooks::hooks_or_stubs().numeric_identity_new(bits) };
+            let crate::hooks::DecodedHandleResult::Ok(heap) = result.decode() else {
+                unsafe { ensure_result_error(c"numeric identity allocation failed") };
+                return Err(());
+            };
+            staged = Some(unsafe { RuntimeValue::from_owned(heap) });
+            heap
+        };
+        // Raw integer decode has a separate pending-error channel. A producer
+        // may allocate before a reentrant error is raised; staged custody must
+        // retire that result instead of publishing it with an error pending.
+        if crate::api::errors::raised_error_pending() {
+            return Err(());
+        }
+        let expected = match record.kind {
+            NumericCarrierKind::Long { .. } => MoltTypeTag::Int,
+            NumericCarrierKind::Float => MoltTypeTag::Float,
+            NumericCarrierKind::Complex => MoltTypeTag::Complex,
+        };
+        if !MoltObject::from_bits(bits).is_ptr() || Self::classify_handle(bits) != expected {
+            unsafe {
+                ensure_result_error(c"numeric identity producer returned the wrong heap kind")
+            };
+            return Err(());
+        }
+        let Some(entry) = super::publication::PendingNumericEntry::new(pointer, record, bits)
+        else {
+            return Err(());
+        };
+        if let Err((entry, reason)) = self.insert_managed_entry(bits, entry) {
+            drop(entry); // only uninitialized entry storage; never the source allocation
+            if matches!(
+                reason,
+                super::publication::ManagedEntryRejection::InvalidNumericTransfer
+            ) && let Some(winner) = self.managed_handle_for_pyobj(pointer)
+            {
+                // A competing/reentrant admission won this same source while
+                // staging allocated B. Reuse its canonical committed identity;
+                // the local staged owner retires normally. This is not a retry,
+                // foreign fallback, or acceptance of a failed owner producer.
+                return Ok(Some(MoltValueHandle(winner)));
+            }
+            unsafe { reason.set_error() };
+            return Err(());
+        }
+        // Commit transferred the existing record's hold, or the newly staged
+        // hold. Disarming a local guard is the only remaining operation.
+        if let Some(owner) = staged {
+            owner.into_owned_bits();
+        }
+        Ok(Some(MoltValueHandle(bits)))
+    }
+
     /// Resolve a C object for semantic runtime observation. Unlike the raw
     /// identity lookup, this commits every mutable physical projection first,
     /// so generic protocols cannot observe stale list/exception state merely
     /// because they bypassed a type-specific C API entry point.
     pub fn observed_handle_for_pyobj(&self, ptr: *mut PyObject) -> Option<MoltValueHandle> {
-        let value = self.molt_handle_for_pyobj(ptr)?;
+        let value = self.semantic_handle_for_pyobj(ptr).ok()??;
         self.prepare_runtime_value(value, RuntimeValueAccess::Observe)
     }
 
@@ -383,7 +527,7 @@ impl ObjectBridge {
         ptr: *mut PyObject,
         access: RuntimeValueAccess,
     ) -> Option<RuntimeValue> {
-        if let Some(value) = self.molt_handle_for_pyobj(ptr) {
+        if let Some(value) = self.semantic_handle_for_pyobj(ptr).ok()? {
             // A failed semantic commit is not evidence of foreign identity.
             return self
                 .prepare_runtime_value(value, access)
@@ -417,7 +561,8 @@ impl ObjectBridge {
             {
                 drop(address);
                 let value = self
-                    .molt_handle_for_pyobj(ptr)
+                    .semantic_handle_for_pyobj(ptr)
+                    .ok()?
                     .and_then(|value| self.prepare_runtime_value(value, access));
                 if let Some(value) = value {
                     return Some(RuntimeValue {
@@ -653,14 +798,31 @@ impl ObjectBridge {
         ptr: *mut PyObject,
         bits: Option<AbiHandle>,
         kind: NumericCarrierKind,
-    ) {
-        if ptr.is_null() {
-            return;
+    ) -> bool {
+        use super::publication::ManagedEntryRejection;
+        let mut address = self.address_shard(ptr.addr()).lock();
+        let error = if ptr.is_null()
+            || address.numeric_carriers.contains_key(&ptr.addr())
+            || address.from_py.contains_key(&ptr.addr())
+            || address.foreign.contains_key(&ptr.addr())
+            || address.foreign_inflight.contains(&ptr.addr())
+        {
+            Some(ManagedEntryRejection::InvalidNumericTransfer)
+        } else if address.numeric_carriers.try_reserve(1).is_err() {
+            Some(ManagedEntryRejection::NoMemory)
+        } else {
+            address
+                .numeric_carriers
+                .insert(ptr.addr(), NumericCarrierRecord { bits, kind });
+            None
+        };
+        drop(address);
+        if let Some(error) = error {
+            unsafe { error.set_error() };
+            false
+        } else {
+            true
         }
-        self.address_shard(ptr.addr())
-            .lock()
-            .numeric_carriers
-            .insert(ptr.addr(), NumericCarrierRecord { bits, kind });
     }
 }
 

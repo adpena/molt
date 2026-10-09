@@ -14,64 +14,21 @@ use molt_cpython_abi::abi_types::{
 };
 use molt_cpython_abi::hooks::RuntimeHooks;
 use molt_lang_obj_model::MoltObject;
-use std::collections::HashMap;
 use std::os::raw::c_int;
 use std::ptr;
-use std::sync::Mutex;
 
-// ── Minimal native-string backend (for name/message round-trips) ─────────────
-static STR_MAP: Mutex<Option<HashMap<u64, &'static [u8]>>> = Mutex::new(None);
-fn str_map() -> std::sync::MutexGuard<'static, Option<HashMap<u64, &'static [u8]>>> {
-    let mut g = STR_MAP.lock().unwrap();
-    if g.is_none() {
-        *g = Some(HashMap::new());
-    }
-    g
-}
-unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
-    let bytes: Vec<u8> = if data.is_null() || len == 0 {
-        Vec::from(&b"\0"[..])
-    } else {
-        unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
-    };
-    let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-    let handle = MoltObject::from_ptr(leaked.as_ptr() as *mut u8).bits();
-    let view: &'static [u8] = if len == 0 { &leaked[..0] } else { leaked };
-    str_map().as_mut().unwrap().insert(handle, view);
-    handle
-}
-unsafe extern "C" fn fake_str_data(bits: u64, out_len: *mut usize) -> *const u8 {
-    if let Some(&v) = str_map().as_ref().unwrap().get(&bits) {
-        unsafe { *out_len = v.len() };
-        return v.as_ptr();
-    }
-    unsafe { *out_len = 0 };
-    ptr::null()
-}
-unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
-    use molt_cpython_abi::abi_types::MoltTypeTag;
-    if str_map().as_ref().unwrap().contains_key(&bits) {
-        MoltTypeTag::Str as u8
-    } else {
-        MoltTypeTag::Other as u8
-    }
-}
-unsafe extern "C" fn noop_ref(_: u64) {}
+// The shared fixture supplies real string/numeric payload and edge ownership.
 fn install() {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.alloc_str = fake_alloc_str;
-    hooks.str_data = fake_str_data;
-    hooks.classify_heap = fake_classify_heap;
-    hooks.inc_ref = noop_ref;
-    hooks.dec_ref = noop_ref;
+    support::fake_runtime::wire(&mut hooks);
     support::prepare_runtime_class_abi_test_thread(hooks);
 }
 unsafe fn read_str(py: *mut PyObject) -> Vec<u8> {
-    let bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-        .pyobj_to_handle(py)
-        .map(|identity| identity.as_handle())
-        .expect("bridge str");
-    str_map().as_ref().unwrap().get(&bits).unwrap().to_vec()
+    let mut length = 0;
+    let data =
+        unsafe { molt_cpython_abi::api::strings::PyUnicode_AsUTF8AndSize(py, &raw mut length) };
+    assert!(!data.is_null() && length >= 0);
+    unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length as usize) }.to_vec()
 }
 
 fn new_type() -> Box<PyTypeObject> {

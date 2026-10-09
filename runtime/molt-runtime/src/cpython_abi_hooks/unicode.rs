@@ -293,14 +293,15 @@ mod tests {
                 assert!(found.is_null() && errors::PyErr_Occurred().is_null());
                 assert!(object::PyObject_GetAttr(&mut native, name).is_null());
                 let error = errors::PyErr_GetRaisedException();
+                let error_owner = refcount::OwnedPyObject::from_owned(error);
                 let rendered = typeobj::PyObject_Str(error);
+                let rendered_owner = refcount::OwnedPyObject::from_owned(rendered);
                 assert_eq!(
                     runtime_text(rendered),
                     b"'UnicodeOwner' object has no attribute 'n\xed\xa0\x80\0m'"
                 );
-                for op in [rendered, error] {
-                    refcount::Py_DECREF(op);
-                }
+                drop(rendered_owner);
+                drop(error_owner);
                 assert!(numbers::PyLong_FromUnicodeObject(name, 10).is_null());
                 assert_eq!(
                     errors::PyErr_ExceptionMatches((&raw mut PyExc_ValueError).cast()),

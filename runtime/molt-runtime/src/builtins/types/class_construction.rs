@@ -27,11 +27,28 @@ pub(crate) fn call_vararg_args(
     unsafe { with_immutable_tuple_slice(args_ptr, |args| args.to_vec()) }
 }
 
-pub(crate) fn call_vararg_kwargs(
-    _py: &PyToken<'_>,
+/// Keyword names and their retained source values share one callback lifetime.
+pub(crate) struct CallKeywords<'a, 'py> {
+    names: Vec<String>,
+    entries: crate::object::seq_access::PinnedSequenceSnapshot<'a, 'py>,
+}
+
+impl CallKeywords<'_, '_> {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&String, &u64)> {
+        self.names
+            .iter()
+            .zip(self.entries.chunks_exact(2).map(|row| &row[1]))
+    }
+}
+
+pub(crate) fn call_vararg_kwargs<'a, 'py>(
+    _py: &'a PyToken<'py>,
     func_name: &str,
     kwargs_bits: u64,
-) -> Option<(*mut u8, Vec<(String, u64)>)> {
+) -> Option<CallKeywords<'a, 'py>> {
     let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() else {
         let msg = format!("{func_name}() expects keyword arguments dict");
         let _ = raise_exception::<u64>(_py, "TypeError", &msg);
@@ -44,7 +61,13 @@ pub(crate) fn call_vararg_kwargs(
             return None;
         }
     }
-    let order = unsafe { dict_order(kwargs_ptr) }.clone();
+    let order = unsafe {
+        crate::object::ops_dict::dict_snapshot(
+            _py,
+            kwargs_ptr,
+            crate::object::ops_dict::DictSnapshotKind::Entries,
+        )
+    }?;
     let mut entries = Vec::with_capacity(order.len() / 2);
     for pair in order.chunks(2) {
         if pair.len() != 2 {
@@ -57,9 +80,12 @@ pub(crate) fn call_vararg_kwargs(
                 return None;
             }
         };
-        entries.push((key_name, pair[1]));
+        entries.push(key_name);
     }
-    Some((kwargs_ptr, entries))
+    Some(CallKeywords {
+        names: entries,
+        entries: order,
+    })
 }
 
 fn copy_kwds_mapping(_py: &PyToken<'_>, kwds_bits: u64) -> Option<u64> {
@@ -86,38 +112,15 @@ pub(crate) fn call_with_kwargs(
     positional: &[u64],
     kwargs_bits: u64,
 ) -> u64 {
-    let mut kw_pairs: Vec<(u64, u64)> = Vec::new();
-    if let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
-        unsafe {
-            if object_type_id(kwargs_ptr) != TYPE_ID_DICT {
-                return raise_exception::<_>(_py, "TypeError", "keyword arguments must be a dict");
-            }
-            let order = dict_order(kwargs_ptr).clone();
-            for pair in order.chunks(2) {
-                if pair.len() == 2 {
-                    kw_pairs.push((pair[0], pair[1]));
-                }
-            }
+    let mapping = if let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
+        if unsafe { object_type_id(kwargs_ptr) } != TYPE_ID_DICT {
+            return raise_exception::<_>(_py, "TypeError", "keyword arguments must be a dict");
         }
-    }
-    let builder_bits = molt_callargs_new(
-        (positional.len() + kw_pairs.len()) as u64,
-        kw_pairs.len() as u64,
-    );
-    if builder_bits == 0 {
-        return MoltObject::none().bits();
-    }
-    for val_bits in positional.iter().copied() {
-        unsafe {
-            let _ = molt_callargs_push_pos(builder_bits, val_bits);
-        }
-    }
-    for (name_bits, val_bits) in kw_pairs.iter().copied() {
-        unsafe {
-            let _ = molt_callargs_push_kw(builder_bits, name_bits, val_bits);
-        }
-    }
-    molt_call_bind(callable_bits, builder_bits)
+        kwargs_bits
+    } else {
+        MoltObject::none().bits()
+    };
+    unsafe { crate::call::bind::call_bind_capi(_py, callable_bits, None, positional, mapping) }
 }
 
 fn resolve_bases_impl(_py: &PyToken<'_>, bases_bits: u64) -> u64 {
@@ -496,7 +499,7 @@ pub extern "C" fn molt_types_prepare_class(args_bits: u64, kwargs_bits: u64) -> 
         let Some(positional) = call_vararg_args(_py, "prepare_class", args_bits) else {
             return MoltObject::none().bits();
         };
-        let Some((_, keywords)) = call_vararg_kwargs(_py, "prepare_class", kwargs_bits) else {
+        let Some(keywords) = call_vararg_kwargs(_py, "prepare_class", kwargs_bits) else {
             return MoltObject::none().bits();
         };
         if positional.len() > 3 {
@@ -607,7 +610,7 @@ pub extern "C" fn molt_types_resolve_bases(args_bits: u64, kwargs_bits: u64) -> 
         let Some(positional) = call_vararg_args(_py, "resolve_bases", args_bits) else {
             return MoltObject::none().bits();
         };
-        let Some((_, keywords)) = call_vararg_kwargs(_py, "resolve_bases", kwargs_bits) else {
+        let Some(keywords) = call_vararg_kwargs(_py, "resolve_bases", kwargs_bits) else {
             return MoltObject::none().bits();
         };
         if positional.len() > 1 {
@@ -658,7 +661,7 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
         let Some(positional) = call_vararg_args(_py, "new_class", args_bits) else {
             return MoltObject::none().bits();
         };
-        let Some((_, keywords)) = call_vararg_kwargs(_py, "new_class", kwargs_bits) else {
+        let Some(keywords) = call_vararg_kwargs(_py, "new_class", kwargs_bits) else {
             return MoltObject::none().bits();
         };
         if positional.len() > 4 {
@@ -823,4 +826,44 @@ pub extern "C" fn molt_types_new_class(args_bits: u64, kwargs_bits: u64) -> u64 
         }
         class_bits
     })
+}
+
+#[cfg(test)]
+mod keyword_snapshot_tests {
+    use super::*;
+    use crate::header_from_obj_ptr;
+
+    #[test]
+    fn keyword_selection_keeps_values_owned_after_source_mapping_is_destroyed() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let name = attr_name_bits_from_bytes(py, b"selected").expect("keyword name");
+            let value_ptr = alloc_list(py, &[]);
+            assert!(!value_ptr.is_null());
+            let value = MoltObject::from_ptr(value_ptr).bits();
+            let dict_ptr = alloc_dict_with_pairs(py, &[name, value]);
+            assert!(!dict_ptr.is_null());
+            let dict = MoltObject::from_ptr(dict_ptr).bits();
+            let keywords = call_vararg_kwargs(py, "probe", dict).expect("keyword selection");
+            dec_ref_bits(py, dict);
+            // A raw copied handle would now have only the test's reference.
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(value_ptr)).ref_count_snapshot() },
+                2
+            );
+            let pairs: Vec<_> = keywords
+                .iter()
+                .map(|(name, value)| (name.as_str(), *value))
+                .collect();
+            assert_eq!(pairs, vec![("selected", value)]);
+            drop(keywords);
+            assert_eq!(
+                unsafe { (*header_from_obj_ptr(value_ptr)).ref_count_snapshot() },
+                1
+            );
+            dec_ref_bits(py, name);
+            dec_ref_bits(py, value);
+            assert!(!exception_pending(py));
+        });
+    }
 }

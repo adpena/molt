@@ -962,7 +962,7 @@ pub(crate) fn checked_integer_double(value: &BigInt) -> Option<f64> {
     value.to_f64().filter(|value| value.is_finite())
 }
 
-fn integer_as_double(py: &PyToken<'_>, value: &BigInt) -> Option<f64> {
+pub(crate) fn integer_as_double(py: &PyToken<'_>, value: &BigInt) -> Option<f64> {
     // num_bigint may return Some(infinity), not just None, on overflow.
     if let Some(value) = checked_integer_double(value) {
         return Some(value);
@@ -2334,7 +2334,15 @@ mod float_conversion_tests {
                     c"preserve native float failure".as_ptr(),
                 );
                 let failure = errors::PyErr_GetRaisedException();
+                let failure_owner = refcount::OwnedPyObject::from_owned(failure);
                 assert!(!failure.is_null());
+                struct ResetNativeFloatFailure;
+                impl Drop for ResetNativeFloatFailure {
+                    fn drop(&mut self) {
+                        NATIVE_FLOAT_FAILURE.store(0, Ordering::SeqCst);
+                    }
+                }
+                let failure_slot = ResetNativeFloatFailure;
                 NATIVE_FLOAT_FAILURE.store(failure as usize, Ordering::SeqCst);
                 INDEX_CALLS.store(0, Ordering::SeqCst);
                 let mut methods: PyNumberMethods = std::mem::zeroed();
@@ -2351,15 +2359,17 @@ mod float_conversion_tests {
                 };
                 assert_eq!(numbers::PyFloat_AsDouble(&mut op), -1.0);
                 let raised = errors::PyErr_GetRaisedException();
+                let raised_owner = refcount::OwnedPyObject::from_owned(raised);
                 assert_eq!(raised, failure);
-                refcount::Py_DECREF(raised);
+                drop(raised_owner);
                 assert!(abstract_number::PyNumber_Float(&mut op).is_null());
                 let raised = errors::PyErr_GetRaisedException();
+                let raised_owner = refcount::OwnedPyObject::from_owned(raised);
                 assert_eq!(raised, failure);
-                refcount::Py_DECREF(raised);
+                drop(raised_owner);
                 assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
-                NATIVE_FLOAT_FAILURE.store(0, Ordering::SeqCst);
-                refcount::Py_DECREF(failure);
+                drop(failure_slot);
+                drop(failure_owner);
             }
         });
     }

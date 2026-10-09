@@ -67,9 +67,8 @@ use crate::object::layout::{CO_OPTIMIZED, code_flags};
 use crate::{
     FRAME_STACK, MoltHeader, PyToken, TYPE_ID_DICT, TYPE_ID_FRAME_BINDINGS, TYPE_ID_STRING,
     alloc_dict_with_pairs, alloc_object, dec_ref_bits, dict_del_in_place, dict_get_in_place,
-    dict_order, dict_set_in_place, exception_pending, header_from_obj_ptr, inc_ref_bits,
-    is_missing_bits, missing_bits, obj_from_bits, object_mark_has_ptrs, object_type_id,
-    raise_exception,
+    dict_set_in_place, exception_pending, header_from_obj_ptr, inc_ref_bits, is_missing_bits,
+    missing_bits, obj_from_bits, object_mark_has_ptrs, object_type_id, raise_exception,
 };
 
 const WORD: usize = std::mem::size_of::<u64>();
@@ -1165,11 +1164,25 @@ fn alloc_locals_dict(py: &PyToken<'_>, items: &FrameBindingItems<'_, '_>) -> Res
         .bound()
         .flat_map(|(name, value)| [name, value])
         .collect();
-    if let Some(extra) = obj_from_bits(items.extra)
+    let extra = if let Some(extra) = obj_from_bits(items.extra)
         .as_ptr()
         .filter(|dict| unsafe { object_type_id(*dict) } == TYPE_ID_DICT)
     {
-        pairs.extend(unsafe { dict_order(extra) }.iter().copied());
+        Some(
+            unsafe {
+                crate::object::ops_dict::dict_snapshot(
+                    py,
+                    extra,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                )
+            }
+            .ok_or(())?,
+        )
+    } else {
+        None
+    };
+    if let Some(extra) = &extra {
+        pairs.extend(extra.iter().copied());
     }
     let dict = alloc_dict_with_pairs(py, &pairs);
     if dict.is_null() {

@@ -27,7 +27,7 @@ unsafe extern "C" fn target(_self: *mut PyObject, _arg: *mut PyObject) -> *mut P
 fn cfunction_registered_construction_failure_has_no_raw_callable_fallback() {
     let mut hooks = support::stub_runtime_hooks();
     support::fake_strings::wire(&mut hooks);
-    hooks.register_c_function = reject_registration;
+    hooks.register_c_function = Some(reject_registration);
     support::prepare_abi_test_thread(hooks);
     let mut definition = PyMethodDef {
         ml_name: c"rejected".as_ptr(),

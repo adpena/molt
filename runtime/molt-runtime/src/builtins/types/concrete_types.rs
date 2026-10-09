@@ -437,6 +437,15 @@ pub(crate) fn frame_locals_proxy_class(_py: &PyToken<'_>) -> u64 {
     )
 }
 
+/// Ordinary Python methods only; native bound callable classes keep their own protocol.
+pub(crate) fn method_ptr_from_bits(py: &PyToken<'_>, bits: u64) -> Option<*mut u8> {
+    let ptr = obj_from_bits(bits).as_ptr()?;
+    if unsafe { object_type_id(ptr) } != crate::TYPE_ID_BOUND_METHOD {
+        return None;
+    }
+    (unsafe { crate::object_class_bits(ptr) } == method_class(py)).then_some(ptr)
+}
+
 pub(crate) fn method_class(_py: &PyToken<'_>) -> u64 {
     let state = types_state(_py);
     let methods = [
@@ -451,6 +460,24 @@ pub(crate) fn method_class(_py: &PyToken<'_>) -> u64 {
             NativeCallableKind::WrapperDescriptor,
             molt_types_method_init as *const () as usize as u64,
             3,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__eq__",
+            NativeCallableKind::WrapperDescriptor,
+            crate::object::ops_compare::molt_method_eq as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__ne__",
+            NativeCallableKind::WrapperDescriptor,
+            crate::object::ops_compare::molt_method_ne as *const () as usize as u64,
+            2,
+        ),
+        RuntimeClassMethodSpec::fixed(
+            "__hash__",
+            NativeCallableKind::WrapperDescriptor,
+            crate::object::ops_hash::molt_method_hash as *const () as usize as u64,
+            1,
         ),
     ];
     init_cached_runtime_class(
@@ -649,11 +676,13 @@ pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_types_method_new(_cls_bits: u64, func_bits: u64, self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        if obj_from_bits(self_bits).is_none() {
-            inc_ref_bits(_py, func_bits);
-            return func_bits;
+        if !crate::builtins::callable::is_callable_impl(_py, func_bits) {
+            return raise_exception::<_>(_py, "TypeError", "first argument must be callable");
         }
-        crate::builtins::functions::bound_method_new(_py, func_bits, self_bits, false)
+        if obj_from_bits(self_bits).is_none() {
+            return raise_exception::<_>(_py, "TypeError", "instance must not be None");
+        }
+        crate::builtins::functions::explicit_bound_method_new(_py, func_bits, self_bits)
     })
 }
 
@@ -794,8 +823,7 @@ pub extern "C" fn molt_types_mappingproxy_get(
         if let Some(kwargs_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
             unsafe {
                 if object_type_id(kwargs_ptr) == TYPE_ID_DICT {
-                    let order = dict_order(kwargs_ptr);
-                    if !order.is_empty() {
+                    if crate::dict_len(kwargs_ptr) != 0 {
                         return raise_exception::<_>(
                             _py,
                             "TypeError",
@@ -1022,7 +1050,7 @@ pub extern "C" fn molt_types_cell_new(_cls_bits: u64, args_bits: u64, kwargs_bit
                 );
             };
             if unsafe { object_type_id(kwargs_ptr) } != TYPE_ID_DICT
-                || !unsafe { dict_order(kwargs_ptr) }.is_empty()
+                || unsafe { crate::dict_len(kwargs_ptr) } != 0
             {
                 return raise_exception::<_>(
                     _py,
@@ -1156,7 +1184,16 @@ pub extern "C" fn molt_types_simplenamespace_init(
                     dec_ref_bits(_py, dict_bits);
                     return MoltObject::none().bits();
                 }
-                let order = dict_order(dict_ptr);
+                let Some(order) = (unsafe {
+                    crate::object::ops_dict::dict_snapshot(
+                        _py,
+                        dict_ptr,
+                        crate::object::ops_dict::DictSnapshotKind::Entries,
+                    )
+                }) else {
+                    dec_ref_bits(_py, dict_bits);
+                    return MoltObject::none().bits();
+                };
                 let mut idx = 0;
                 while idx + 1 < order.len() {
                     let key_bits = order[idx];
@@ -1197,7 +1234,15 @@ pub extern "C" fn molt_types_simplenamespace_repr(self_bits: u64) -> u64 {
             if let Some(dict_ptr) = dict_ptr {
                 unsafe {
                     if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                        let order = dict_order(dict_ptr);
+                        let Some(order) = (unsafe {
+                            crate::object::ops_dict::dict_snapshot(
+                                _py,
+                                dict_ptr,
+                                crate::object::ops_dict::DictSnapshotKind::Entries,
+                            )
+                        }) else {
+                            return MoltObject::none().bits();
+                        };
                         let mut idx = 0;
                         let mut first = true;
                         while idx + 1 < order.len() {

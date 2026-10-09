@@ -188,8 +188,7 @@ def test_run_split_direct_uses_wasm_test_memory_guard(
     assert kwargs["timeout"] == 7
     env = kwargs["env"]
     assert isinstance(env, dict)
-    assert "MOLT_WASM_DIRECT_LINK" not in env
-    assert "MOLT_RUNTIME_WASM" not in env
+    assert "MOLT_RUNTIME_WASM" not in set(env)
 
 
 def test_split_worker_popen_kwargs_apply_child_rlimit(

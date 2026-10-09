@@ -48,7 +48,7 @@ def test_validator_roster_matches_the_owning_rust_call_sites() -> None:
         key: (value["role"], value["args"], value["exit_code"], value["completes"])
         for key, value in support.CONTRACT.items()
     }
-    assert len(roster) == 19
+    assert len(roster) == 20
 
 
 @pytest.mark.parametrize(
@@ -59,6 +59,7 @@ def test_validator_roster_matches_the_owning_rust_call_sites() -> None:
         (TRACE_OWNERS, 3),
         ([support.TRANSACTION], 9),
         ([support.LIFECYCLE], 3),
+        ([support.DISCOVERY], 1),
     ],
     ids=[
         "parallel-trap-cold",
@@ -66,6 +67,7 @@ def test_validator_roster_matches_the_owning_rust_call_sites() -> None:
         "trace-image",
         "terminal-transaction",
         "lifecycle-ffi",
+        "discovery-diagnostic",
     ],
 )
 def test_completed_owners_with_bound_children_verify(tmp_path, owners, children):
@@ -257,7 +259,7 @@ def test_both_shutdown_modes_need_their_own_retained_streams(tmp_path):
     stdout_path = Path(no_lease["stdout"]["path"])
     no_lease["stdout"] = support.publish(
         stdout_path,
-        stdout_path.read_text()
+        stdout_path.read_text(encoding="utf-8")
         + "shutdown callbacks verified before process exit: lease\n",
     )
     lease["stdout"] = deepcopy(no_lease["stdout"])
@@ -581,6 +583,15 @@ def test_mode_specific_proof_matches_each_literal_child_contract():
             ),
         }
     )
+    expected[(support.DISCOVERY, "render-and-drain")] = (
+        ("discovery diagnostic final drain verified\n",),
+        (
+            "[molt-cpython-abi] PyErr_Print: discovery exception custody\n",
+            "[molt-cpython-abi] PyErr_Print: \\ud800\n",
+            '===MOLT_DISCOVERY_EXC: pending exception value = "discovery exception custody"\n',
+            "===MOLT_DISCOVERY_EXC: no pending exception on NULL return",
+        ),
+    )
     for (owner, mode), contract in support.CONTRACT.items():
         stdout, stderr = expected.get((owner, mode), ((), ()))
         actual = descendants.OWNERS[owner].modes[mode]
@@ -601,4 +612,37 @@ def test_transaction_mode_prefix_is_not_complete_mode_evidence(tmp_path):
         tmp_path / "receipts", image, [support.TRANSACTION], records
     )
     with pytest.raises(descendants.DescendantEvidenceError, match="stdout lacks"):
+        verify(receipt)
+
+
+@pytest.mark.parametrize(
+    ("stream", "missing"),
+    [
+        ("stderr", "[molt-cpython-abi] PyErr_Print: discovery exception custody\n"),
+        ("stderr", "[molt-cpython-abi] PyErr_Print: \\ud800\n"),
+        (
+            "stderr",
+            '===MOLT_DISCOVERY_EXC: pending exception value = "discovery exception custody"\n',
+        ),
+        ("stderr", "===MOLT_DISCOVERY_EXC: no pending exception on NULL return\n"),
+        ("stdout", "discovery diagnostic final drain verified\n"),
+    ],
+)
+def test_discovery_completion_does_not_replace_original_diagnostic_evidence(
+    tmp_path, stream, missing
+):
+    image = support.make_image(tmp_path, "molt_cext_discovery-0123456789abcdef.exe")
+    records = support.family_records(image, [support.DISCOVERY])
+    record = records[0]
+    # Keep successful libtest completion, rebind the actual stream hash, and
+    # remove only one independently required printer or final-drain observation.
+    original = support.CONTRACT[(support.DISCOVERY, "render-and-drain")][stream]
+    assert missing in original
+    record[stream] = support.publish(
+        Path(record[stream]["path"]), original.replace(missing, "")
+    )
+    receipt = support.binary_receipt(
+        tmp_path / "receipts", image, [support.DISCOVERY], records
+    )
+    with pytest.raises(descendants.DescendantEvidenceError, match=f"{stream} lacks"):
         verify(receipt)

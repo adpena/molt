@@ -261,11 +261,6 @@ fn alloc_hash_aggregate_for_class_unpublished(
     if exception_pending(_py) {
         return std::ptr::null_mut();
     }
-    let Some(order_capacity) = capacity.checked_mul(if type_id == TYPE_ID_DICT { 2 } else { 1 })
-    else {
-        record_memory_error_without_allocation(_py);
-        return std::ptr::null_mut();
-    };
     let table_capacity = if capacity == 0 {
         0
     } else {
@@ -275,10 +270,7 @@ fn alloc_hash_aggregate_for_class_unpublished(
         };
         capacity
     };
-    let total = std::mem::size_of::<MoltHeader>()
-        + std::mem::size_of::<*mut Vec<u64>>()
-        + std::mem::size_of::<*mut Vec<usize>>()
-        + std::mem::size_of::<*mut Vec<u64>>();
+    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<HashStorage<DictEntry>>();
     let ptr = if let Some(class) = class {
         let kind = match type_id {
             TYPE_ID_SET => super::native_instance::NativePayload::Set,
@@ -291,7 +283,11 @@ fn alloc_hash_aggregate_for_class_unpublished(
             _py,
             total,
             type_id,
-            ObjectAuxPreselection::Default,
+            if type_id == TYPE_ID_FROZENSET {
+                ObjectAuxPreselection::StateInline
+            } else {
+                ObjectAuxPreselection::Default
+            },
         )
     };
     if ptr.is_null() {
@@ -299,13 +295,17 @@ fn alloc_hash_aggregate_for_class_unpublished(
     }
     unsafe {
         let initialized = (|| {
-            *(ptr as *mut *mut Vec<u64>) =
-                crate::object::backing::tracked_vec_box_with_capacity::<u64>(order_capacity)?;
-            *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) =
-                crate::object::backing::tracked_vec_box_zeroed::<usize>(table_capacity)?;
-            *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
-                as *mut *mut Vec<u64>) =
-                crate::object::backing::tracked_vec_box_with_capacity::<u64>(capacity)?;
+            if type_id == TYPE_ID_DICT {
+                dict_storage(ptr).entries =
+                    crate::object::backing::tracked_vec_box_with_capacity::<DictEntry>(capacity)?;
+                dict_storage(ptr).table =
+                    crate::object::backing::tracked_vec_box_zeroed::<usize>(table_capacity)?;
+            } else {
+                set_storage(ptr).entries =
+                    crate::object::backing::tracked_vec_box_with_capacity::<SetEntry>(capacity)?;
+                set_storage(ptr).table =
+                    crate::object::backing::tracked_vec_box_zeroed::<usize>(table_capacity)?;
+            }
             Some(())
         })();
         if initialized.is_none() {
@@ -2814,7 +2814,10 @@ mod sequence_builder_tests {
                         }
                     }
                     assert!(completed, "bounded admission never succeeded for {type_id}");
-                    assert!(failures >= 4, "must exercise object and all three buffers");
+                    assert!(
+                        failures >= 3,
+                        "must exercise object, typed entries and index owners"
+                    );
                 }
             }
             dec_ref_bits(py, item);

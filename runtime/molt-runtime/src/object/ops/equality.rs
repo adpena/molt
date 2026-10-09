@@ -32,23 +32,35 @@ unsafe fn call_dunder_raw(
     owner_ptr: *mut u8,
     instance_bits: u64,
     arg_bits: u64,
+    modulus: Option<u64>,
 ) -> BinaryDunderOutcome {
     unsafe {
-        let Some(res_bits) = crate::builtins::attr::descriptor_special_call1(
-            _py,
-            raw_bits,
-            owner_ptr,
-            Some(instance_bits),
-            arg_bits,
-            crate::builtins::attr::DescriptorCallPolicy::Optional,
-        ) else {
+        let result = match modulus {
+            Some(modulus) => crate::builtins::attr::descriptor_call2(
+                _py,
+                raw_bits,
+                owner_ptr,
+                Some(instance_bits),
+                arg_bits,
+                modulus,
+            ),
+            None => crate::builtins::attr::descriptor_special_call1(
+                _py,
+                raw_bits,
+                owner_ptr,
+                Some(instance_bits),
+                arg_bits,
+                crate::builtins::attr::DescriptorCallPolicy::Optional,
+            ),
+        };
+        let Some(res_bits) = result else {
             if exception_pending(_py) {
                 return BinaryDunderOutcome::Error;
             }
             return BinaryDunderOutcome::Missing;
         };
         if exception_pending(_py) {
-            dec_ref_bits(_py, res_bits);
+            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, res_bits));
             return BinaryDunderOutcome::Error;
         }
         if is_not_implemented_bits(_py, res_bits) {
@@ -62,41 +74,107 @@ unsafe fn call_dunder_raw(
 /// Resolve and invoke one binary special method against the receiver's current
 /// type. The owner pin and raw descriptor lookup live only for this attempt;
 /// neither can become stale across an earlier user callback.
-pub(in crate::object) unsafe fn call_current_binary_dunder(
-    _py: &PyToken<'_>,
-    receiver_bits: u64,
-    arg_bits: u64,
-    name_bits: u64,
+#[derive(Clone, Copy)]
+enum DunderPhase {
+    Numeric,
+    Sequence,
+}
+
+unsafe fn call_current_dunder(
+    py: &PyToken<'_>,
+    receiver: u64,
+    argument: u64,
+    name: u64,
+    modulus: Option<u64>,
+    phase: DunderPhase,
 ) -> BinaryDunderOutcome {
     unsafe {
-        let owner_bits = type_of_bits(_py, receiver_bits);
-        let Some(owner_ptr) = obj_from_bits(owner_bits).as_ptr() else {
-            return if exception_pending(_py) {
+        let owner = type_of_bits(py, receiver);
+        let Some(owner_ptr) = obj_from_bits(owner).as_ptr() else {
+            return if exception_pending(py) {
                 BinaryDunderOutcome::Error
             } else {
                 BinaryDunderOutcome::Missing
             };
         };
-
-        // A descriptor hook may replace the receiver's __class__. Keep the
-        // owner passed to descriptor_call1 alive through that immediate call.
-        inc_ref_bits(_py, owner_bits);
-        let outcome = match class_attr_lookup_raw_mro(_py, owner_ptr, name_bits) {
-            Some(raw_bits) => call_dunder_raw(_py, raw_bits, owner_ptr, receiver_bits, arg_bits),
-            None if exception_pending(_py) => BinaryDunderOutcome::Error,
+        inc_ref_bits(py, owner);
+        let outcome = match class_attr_lookup_raw_mro(py, owner_ptr, name) {
+            Some(raw) => {
+                let sequence = crate::object::ops_arith::native_slots::is_sequence_slot(Some(raw));
+                if matches!(phase, DunderPhase::Numeric) && sequence
+                    || matches!(phase, DunderPhase::Sequence) && !sequence
+                {
+                    BinaryDunderOutcome::Missing
+                } else {
+                    call_dunder_raw(py, raw, owner_ptr, receiver, argument, modulus)
+                }
+            }
+            None if exception_pending(py) => BinaryDunderOutcome::Error,
             None => BinaryDunderOutcome::Missing,
         };
-        dec_ref_bits(_py, owner_bits);
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, owner));
         outcome
     }
 }
 
-pub(in crate::object) unsafe fn call_binary_dunder(
+pub(in crate::object) unsafe fn call_sequence_dunder(
+    py: &PyToken<'_>,
+    receiver: u64,
+    argument: u64,
+    name: u64,
+) -> Option<u64> {
+    unsafe {
+        dunder_result(call_current_dunder(
+            py,
+            receiver,
+            argument,
+            name,
+            None,
+            DunderPhase::Sequence,
+        ))
+    }
+}
+
+fn dunder_result(outcome: BinaryDunderOutcome) -> Option<u64> {
+    match outcome {
+        BinaryDunderOutcome::Value(bits) => Some(bits),
+        BinaryDunderOutcome::Error => Some(MoltObject::none().bits()),
+        BinaryDunderOutcome::Missing | BinaryDunderOutcome::NotImplemented => None,
+    }
+}
+
+/// Numeric-only dispatch shared by normal, in-place fallback and ternary power.
+pub(in crate::object) unsafe fn call_numeric_dunder(
     _py: &PyToken<'_>,
     lhs_bits: u64,
     rhs_bits: u64,
     op_name_bits: u64,
     rop_name_bits: u64,
+    modulus: Option<u64>,
+) -> Option<u64> {
+    unsafe {
+        call_numeric_dunder_sides(
+            _py,
+            lhs_bits,
+            rhs_bits,
+            op_name_bits,
+            rop_name_bits,
+            modulus,
+            true,
+            true,
+        )
+    }
+}
+
+pub(in crate::object) unsafe fn call_numeric_dunder_sides(
+    _py: &PyToken<'_>,
+    lhs_bits: u64,
+    rhs_bits: u64,
+    op_name_bits: u64,
+    rop_name_bits: u64,
+    modulus: Option<u64>,
+    left_dispatches: bool,
+    right_dispatches: bool,
 ) -> Option<u64> {
     unsafe {
         // Snapshot identities only to choose CPython's reflected-subclass
@@ -129,37 +207,47 @@ pub(in crate::object) unsafe fn call_binary_dunder(
             (different_types, prefer_rhs)
         };
 
-        // Builtin sequence concat/repeat remains a sequence fallback when
-        // inherited by a heap subtype. Numeric reflected methods run first.
-        let lhs_sequence_slot = obj_from_bits(type_of_bits(_py, lhs_bits))
-            .as_ptr()
-            .map(|ptr| class_attr_lookup_raw_mro(_py, ptr, op_name_bits))
-            .is_some_and(|raw| crate::object::ops_arith::native_slots::is_sequence_slot(raw));
-        let rhs_sequence_slot = obj_from_bits(type_of_bits(_py, rhs_bits))
-            .as_ptr()
-            .map(|ptr| class_attr_lookup_raw_mro(_py, ptr, rop_name_bits))
-            .is_some_and(|raw| crate::object::ops_arith::native_slots::is_sequence_slot(raw));
-        if exception_pending(_py) {
-            return Some(MoltObject::none().bits());
-        }
         let mut tried_rhs = false;
-        if prefer_rhs || (different_types && lhs_sequence_slot && !rhs_sequence_slot) {
+        if left_dispatches && right_dispatches && prefer_rhs {
             tried_rhs = true;
-            match call_current_binary_dunder(_py, rhs_bits, lhs_bits, rop_name_bits) {
+            match call_current_dunder(
+                _py,
+                rhs_bits,
+                lhs_bits,
+                rop_name_bits,
+                modulus,
+                DunderPhase::Numeric,
+            ) {
                 BinaryDunderOutcome::Value(bits) => return Some(bits),
                 BinaryDunderOutcome::Error => return Some(MoltObject::none().bits()),
                 BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {}
             }
         }
 
-        match call_current_binary_dunder(_py, lhs_bits, rhs_bits, op_name_bits) {
-            BinaryDunderOutcome::Value(bits) => return Some(bits),
-            BinaryDunderOutcome::Error => return Some(MoltObject::none().bits()),
-            BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {}
+        if left_dispatches {
+            match call_current_dunder(
+                _py,
+                lhs_bits,
+                rhs_bits,
+                op_name_bits,
+                modulus,
+                DunderPhase::Numeric,
+            ) {
+                BinaryDunderOutcome::Value(bits) => return Some(bits),
+                BinaryDunderOutcome::Error => return Some(MoltObject::none().bits()),
+                BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {}
+            }
         }
 
-        if different_types && !tried_rhs {
-            match call_current_binary_dunder(_py, rhs_bits, lhs_bits, rop_name_bits) {
+        if right_dispatches && different_types && !tried_rhs {
+            match call_current_dunder(
+                _py,
+                rhs_bits,
+                lhs_bits,
+                rop_name_bits,
+                modulus,
+                DunderPhase::Numeric,
+            ) {
                 BinaryDunderOutcome::Value(bits) => return Some(bits),
                 BinaryDunderOutcome::Error => return Some(MoltObject::none().bits()),
                 BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => {}
@@ -176,10 +264,32 @@ pub(in crate::object) unsafe fn call_inplace_dunder(
     op_name_bits: u64,
 ) -> Option<u64> {
     unsafe {
-        match call_current_binary_dunder(_py, lhs_bits, rhs_bits, op_name_bits) {
+        match call_current_dunder(
+            _py,
+            lhs_bits,
+            rhs_bits,
+            op_name_bits,
+            None,
+            DunderPhase::Numeric,
+        ) {
             BinaryDunderOutcome::Value(bits) => Some(bits),
             BinaryDunderOutcome::Error => Some(MoltObject::none().bits()),
             BinaryDunderOutcome::NotImplemented | BinaryDunderOutcome::Missing => None,
         }
+    }
+}
+
+/// Source operators complete numeric dispatch before inherited sequence slots.
+pub(in crate::object) unsafe fn call_binary_dunder(
+    py: &PyToken<'_>,
+    left: u64,
+    right: u64,
+    op: u64,
+    reflected: u64,
+) -> Option<u64> {
+    unsafe {
+        call_numeric_dunder(py, left, right, op, reflected, None)
+            .or_else(|| call_sequence_dunder(py, left, right, op))
+            .or_else(|| call_sequence_dunder(py, right, left, reflected))
     }
 }

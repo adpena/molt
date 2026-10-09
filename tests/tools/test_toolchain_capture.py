@@ -891,11 +891,12 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
     observed_manifests: list[str] = []
     original_manifest = tmp_path / "Cargo.toml"
     original_manifest.write_text(
-        '[package]\nname="fixture"\nversion="0.1.0"\n[lib]\ncrate-type=["cdylib"]\n'
+        '[package]\nname="fixture"\nversion="0.1.0"\n[lib]\ncrate-type=["cdylib"]\n',
+        encoding="utf-8",
     )
     (tmp_path / "src").mkdir()
-    (tmp_path / "src/lib.rs").write_text("pub fn fixture() {}\n")
-    (tmp_path / "src/main.rs").write_text("fn main() {}\n")
+    (tmp_path / "src/lib.rs").write_text("pub fn fixture() {}\n", encoding="utf-8")
+    (tmp_path / "src/main.rs").write_text("fn main() {}\n", encoding="utf-8")
     metadata_calls = []
     package_calls = []
 
@@ -908,7 +909,10 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
             metadata_calls.append(list(command))
             if metadata_mutation and len(metadata_calls) == 2:
                 original_manifest.write_text(
-                    original_manifest.read_text().replace('"cdylib"', '"rlib"')
+                    original_manifest.read_text(encoding="utf-8").replace(
+                        '"cdylib"', '"rlib"'
+                    ),
+                    encoding="utf-8",
                 )
             return subprocess.CompletedProcess(
                 command,
@@ -1127,7 +1131,8 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
     )
     toolchain_capture.revalidate_rust_artifact_manifests(telemetry)
     original_manifest.write_text(
-        original_manifest.read_text().replace('"cdylib"', '"rlib"')
+        original_manifest.read_text(encoding="utf-8").replace('"cdylib"', '"rlib"'),
+        encoding="utf-8",
     )
     with pytest.raises(ValueError, match="artifact manifest/source changed"):
         toolchain_capture.revalidate_rust_artifact_manifests(telemetry)
@@ -2157,9 +2162,9 @@ def _native_c_capture_fixture(
     if resources:
         includes = tmp_path / "include"
         includes.mkdir()
-        (includes / "header.h").write_text("#define CAPTURED 1\n")
+        (includes / "header.h").write_text("#define CAPTURED 1\n", encoding="utf-8")
         forced = tmp_path / "forced.h"
-        forced.write_text("#define FORCED 1\n")
+        forced.write_text("#define FORCED 1\n", encoding="utf-8")
         environment["CFLAGS"] = f"-I{includes} -include {forced}"
     images, selection = toolchain_capture.capture_rust_link_process_images(
         rustc=tools["rustc"],
@@ -2509,9 +2514,11 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
     )
     assert directory_calls == [] and len(_calls) == probes
     if mutation == "new-member":
-        (tmp_path / "include" / "added.h").write_text("#define ADDED 1\n")
+        (tmp_path / "include" / "added.h").write_text(
+            "#define ADDED 1\n", encoding="utf-8"
+        )
     elif mutation == "file-content":
-        (tmp_path / "forced.h").write_text("#define FORCED 2\n")
+        (tmp_path / "forced.h").write_text("#define FORCED 2\n", encoding="utf-8")
     monkeypatch.setattr(
         command_identity, "_python_identity", lambda *args, **kwargs: None
     )
@@ -2614,9 +2621,9 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
     # Once the armed inventory exists, both new members and changed bytes are
     # rejected at a subsequent verification boundary.
     if mutation == "new-member":
-        (tmp_path / "include" / "late.h").write_text("late header")
+        (tmp_path / "include" / "late.h").write_text("late header", encoding="utf-8")
     else:
-        (tmp_path / "forced.h").write_text("late file mutation")
+        (tmp_path / "forced.h").write_text("late file mutation", encoding="utf-8")
     with pytest.raises(ValueError, match="resource.*changed while live custody armed"):
         toolchain_capture.revalidate_rust_link_process_images(
             captured["rustc"],
@@ -2773,7 +2780,7 @@ def test_directory_resource_producer_receiver_roundtrip_with_unicode(tmp_path):
     command_identity._revalidate_directory_manifest_identity(
         captured, selected_root=root, label="Unicode fixture"
     )
-    (root / "ajouté.h").write_text("changed membership")
+    (root / "ajouté.h").write_text("changed membership", encoding="utf-8")
     with pytest.raises(ValueError, match="membership or content changed"):
         command_identity._revalidate_directory_manifest_identity(
             captured, selected_root=root, label="Unicode fixture"
@@ -2812,10 +2819,10 @@ def test_cargo_capture_preserves_explicit_library_artifacts_and_host(
         if metadata is not None:
             return metadata
         manifest = Path(command[command.index("--manifest-path") + 1])
-        text = manifest.read_text()
+        text = manifest.read_text(encoding="utf-8")
         source = (
             manifest.parent / ("host.rs" if "proc-macro=true" in text else "main.rs")
-        ).read_text()
+        ).read_text(encoding="utf-8")
         observed.append((list(command), text, source))
         assert "[lib]" in text and "[[bin]]" not in text
         assert "#![no_std]" not in source

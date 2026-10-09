@@ -551,3 +551,73 @@ def test_guard_custody_is_not_a_build_input_but_rust_flags_are():
     assert runner._captured_environment(second) != expected
     second = dict(first, MOLT_RUNTIME_PYTHON_VERSION="3.14")
     assert runner._captured_environment(second) != expected
+
+
+def test_scalar_origin_cases_use_noncanonical_values_and_both_lifetimes() -> None:
+    scalar_cases = tuple(
+        row for row in runner.RUNTIME_CASES if row[1] == "runtime_scalar_bridge"
+    )
+    assert scalar_cases == (
+        (
+            "runtime.scalar.int.construct_extract_release",
+            "runtime_scalar_bridge",
+            {
+                "scalar": "int",
+                "value": 1000,
+                "operation": "construct_extract_release",
+                "real_runtime_hooks": True,
+            },
+        ),
+        (
+            "runtime.scalar.int.runtime_hold_roundtrip",
+            "runtime_scalar_bridge",
+            {
+                "scalar": "int",
+                "value": 1000,
+                "operation": "runtime_hold_roundtrip",
+                "real_runtime_hooks": True,
+            },
+        ),
+        (
+            "runtime.scalar.float.construct_extract_release",
+            "runtime_scalar_bridge",
+            {
+                "scalar": "float",
+                "value": 1.25,
+                "operation": "construct_extract_release",
+                "real_runtime_hooks": True,
+            },
+        ),
+        (
+            "runtime.scalar.float.runtime_hold_roundtrip",
+            "runtime_scalar_bridge",
+            {
+                "scalar": "float",
+                "value": 1.25,
+                "operation": "runtime_hold_roundtrip",
+                "real_runtime_hooks": True,
+            },
+        ),
+    )
+
+
+def test_aggregate_rejects_omitted_scalar_owner_roundtrip() -> None:
+    bundle = _bundle()
+    for attestation in bundle["attestations"]["runtime_bigint"]:
+        attestation["cases"] = [
+            case
+            for case in attestation["cases"]
+            if case["name"] != "runtime.scalar.float.runtime_hold_roundtrip"
+        ]
+    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
+    assert any("ordered case manifest drift" in error for error in errors)
+
+
+def test_aggregate_rejects_cached_integer_substitution_in_origin_case() -> None:
+    bundle = _bundle()
+    for attestation in bundle["attestations"]["runtime_bigint"]:
+        for case in attestation["cases"]:
+            if case["name"] == "runtime.scalar.int.runtime_hold_roundtrip":
+                case["input"]["value"] = 42
+    _aggregated, errors = runner._aggregate_bundle(bundle, 0.1, 0.25)
+    assert any("ordered case manifest drift" in error for error in errors)

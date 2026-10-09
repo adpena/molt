@@ -920,7 +920,7 @@ unsafe fn exact_name_value(
     let hash = hash_string_bytes(py, name) as u64;
     match unsafe { dict_exact_string_lookup(py, dict, name, hash) } {
         ExactStringLookup::Found(index) => {
-            Ok(Some(unsafe { crate::dict_order(dict)[index * 2 + 1] }))
+            Ok(Some(unsafe { crate::dict_entries(dict)[index].value }))
         }
         ExactStringLookup::Absent => Ok(None),
         ExactStringLookup::Undecided => Err(()),
@@ -2100,7 +2100,8 @@ mod tests {
                 assert!(unsafe { crate::object::ops::dict_del_in_place(_py, registry, alias_key) });
                 // Exhaust entry storage so rebinding the alias must grow it.
                 let spare = || unsafe {
-                    crate::dict_order(registry).capacity() - crate::dict_order(registry).len()
+                    2 * (crate::dict_entries(registry).capacity()
+                        - crate::dict_entries(registry).len())
                 };
                 let mut filler = 0;
                 while spare() >= 2 {
@@ -2109,17 +2110,22 @@ mod tests {
                     dec_ref_bits(_py, key);
                     filler += 1;
                 }
-                let entries = unsafe { crate::dict_order(registry).clone() };
+                let entries = unsafe {
+                    crate::dict_live_entries(registry)
+                        .flat_map(|row| [row.key, row.value])
+                        .collect::<Vec<_>>()
+                };
                 let denial = deny_allocation();
                 let denied = resolve_intrinsic_func(_py, alias, true);
                 drop(denial);
                 assert_eq!(denied, Err(IntrinsicResolveError::AllocFailed));
                 assert!(exception_pending(_py));
                 let _ = crate::molt_exception_clear();
-                assert_eq!(
-                    unsafe { crate::dict_order(registry).as_slice() },
-                    entries.as_slice()
-                );
+                assert!(unsafe {
+                    crate::dict_live_entries(registry)
+                        .flat_map(|row| [row.key, row.value])
+                        .eq(entries)
+                });
                 assert_eq!(
                     bound_value(_py, module_dict, REGISTRY_NAME),
                     Some(registry_bits)
@@ -2173,7 +2179,11 @@ mod tests {
                     bound_value(_py, registry, "_molt_capabilities_has"),
                     Some(first)
                 );
-                let order = unsafe { crate::dict_order(registry) };
+                let order = unsafe {
+                    crate::dict_live_entries(registry)
+                        .flat_map(|row| [row.key, row.value])
+                        .collect::<Vec<_>>()
+                };
                 assert!(order.as_chunks::<2>().0.contains(&[forged, marker]));
                 for bits in [first, first, owner_bits] {
                     dec_ref_bits(_py, bits);

@@ -1807,11 +1807,9 @@ unsafe fn detach_requirements(
             continue;
         };
         unsafe {
-            molt_traverse(py, ptr, &mut |_| {
-                edges = edges
-                    .checked_add(1)
-                    .unwrap_or_else(|| std::process::abort())
-            });
+            edges = edges
+                .checked_add(super::heap_lifecycle::detached_managed_edge_count(py, ptr))
+                .unwrap_or_else(|| std::process::abort());
             resources = resources
                 .checked_add(super::heap_lifecycle::detached_resource_count(ptr))
                 .unwrap_or_else(|| std::process::abort());

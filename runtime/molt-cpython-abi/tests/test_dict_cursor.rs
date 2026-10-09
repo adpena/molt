@@ -1,7 +1,7 @@
-//! Mask-proof teeth for real dict iteration: `PyDict_Next` (allocation-free O(1)
+//! Independent controls for sparse dict iteration: `PyDict_Next` (physical
 //! cursor) and `PyDict_Merge` (native-dict fast path).
 //!
-//! These need a fake dict model whose `dict_entry`/`dict_mutate`/`classify_heap`
+//! These need a fake dict model whose `dict_next`/`dict_mutate`/`classify_heap`
 //! hooks would collide with another test file's first-wins `RUNTIME_HOOKS`
 //! OnceLock, so they get their own test binary (fresh OnceLock). A process-wide
 //! shared support transaction serializes the fixture and builtin-root lifetime.
@@ -24,7 +24,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 // The fake `other` dict's entries (key_bits, val_bits), indexed by the cursor.
-static ENTRIES: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+static ENTRIES: Mutex<Vec<Option<(u64, u64)>>> = Mutex::new(Vec::new());
 // Recorded (dict_bits, key_bits, val_bits) writes via dict_mutate.
 static SETS: Mutex<Vec<(u64, u64, u64)>> = Mutex::new(Vec::new());
 // Keys reported present by dict_get (drives the merge override path).
@@ -36,30 +36,38 @@ static PROXIES: Mutex<Option<HashMap<u64, u64>>> = Mutex::new(None);
 static FOREIGN_C_PTR: AtomicUsize = AtomicUsize::new(0);
 static FOREIGN_WRAPPER: AtomicU64 = AtomicU64::new(0);
 
-unsafe extern "C" fn fx_dict_entry(
+unsafe extern "C" fn fx_dict_next(
     d: u64,
-    index: usize,
+    position: *mut usize,
     out_key: *mut u64,
     out_val: *mut u64,
 ) -> std::os::raw::c_int {
     if !is_fixture_dict(d) {
-        return unsafe { support::fake_runtime::dict_entry(d, index, out_key, out_val) };
+        return unsafe { support::fake_runtime::dict_next(d, position, out_key, out_val) };
     }
-    let e = ENTRIES.lock().unwrap();
-    match e.get(index) {
-        Some(&(k, v)) => {
-            unsafe {
-                if !out_key.is_null() {
-                    *out_key = k;
-                }
-                if !out_val.is_null() {
-                    *out_val = v;
-                }
-            }
-            1
+    if position.is_null() {
+        return 0;
+    }
+    let entries = ENTRIES.lock().unwrap();
+    let start = unsafe { *position };
+    let Some((index, &(key, value))) = entries
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find_map(|(index, row)| row.as_ref().map(|pair| (index, pair)))
+    else {
+        return 0;
+    };
+    unsafe {
+        *position = index + 1;
+        if !out_key.is_null() {
+            *out_key = key;
         }
-        None => 0,
+        if !out_val.is_null() {
+            *out_val = value;
+        }
     }
+    1
 }
 unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
     if is_fixture_dict(bits) {
@@ -182,7 +190,7 @@ unsafe extern "C" fn fx_object_set_item(object: u64, _: u64, _: *const u64) -> i
 }
 unsafe extern "C" fn fx_dict_len(bits: u64) -> usize {
     if is_fixture_dict(bits) {
-        ENTRIES.lock().unwrap().len()
+        ENTRIES.lock().unwrap().iter().flatten().count()
     } else {
         unsafe { support::fake_runtime::dict_len(bits) }
     }
@@ -206,8 +214,8 @@ fn install() {
     support::fake_runtime::wire(&mut hooks);
     hooks.mappingproxy_new = fx_mappingproxy_new;
     hooks.object_set_item = fx_object_set_item;
-    hooks.dict_entry = fx_dict_entry;
-    hooks.classify_heap = fx_classify_heap;
+    hooks.dict_next = fx_dict_next;
+    hooks.classify_heap = Some(fx_classify_heap);
     hooks.dict_mutate = fx_dict_mutate;
     hooks.dict_resolve = resolve_fixture_dict;
     hooks.dict_get = fx_dict_get;
@@ -366,7 +374,7 @@ fn setdefaultref_optional_sink_preserves_status_and_reference_ownership() {
 }
 
 #[test]
-fn next_yields_all_entries_no_exception() {
+fn next_skips_sparse_slots_and_publishes_physical_positions() {
     install();
     let (k1, v1) = (
         MoltObject::from_int(0x1111).bits(),
@@ -376,7 +384,7 @@ fn next_yields_all_entries_no_exception() {
         MoltObject::from_int(0x3333).bits(),
         MoltObject::from_int(0x4444).bits(),
     );
-    *ENTRIES.lock().unwrap() = vec![(k1, v1), (k2, v2)];
+    *ENTRIES.lock().unwrap() = vec![None, Some((k1, v1)), None, Some((k2, v2)), None];
 
     let dict = register(fake_dict_handle());
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
@@ -385,10 +393,12 @@ fn next_yields_all_entries_no_exception() {
     let mut key: *mut PyObject = ptr::null_mut();
     let mut val: *mut PyObject = ptr::null_mut();
     let mut collected: Vec<(u64, u64)> = Vec::new();
+    let mut positions = Vec::new();
     while unsafe {
         molt_cpython_abi::api::mapping::PyDict_Next(dict, &raw mut pos, &raw mut key, &raw mut val)
     } == 1
     {
+        positions.push(pos);
         collected.push((handle_of(key), handle_of(val)));
         assert!(collected.len() <= 2, "cursor failed to terminate");
     }
@@ -397,11 +407,70 @@ fn next_yields_all_entries_no_exception() {
         vec![(k1, v1), (k2, v2)],
         "PyDict_Next must yield every entry in order, not observe an empty dict"
     );
+    assert_eq!(positions, [2, 4]);
+    assert_eq!(pos, 4, "exhaustion must not publish the trailing-hole scan");
+    assert_eq!((handle_of(key), handle_of(val)), (k2, v2));
     assert!(
         unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null(),
         "PyDict_Next must NOT leave a stray pending exception on normal termination"
     );
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(dict) };
+}
+
+#[test]
+fn next_preserves_sentinels_and_supports_nullable_outputs() {
+    install();
+    let key_bits = MoltObject::from_int(11).bits();
+    let value_bits = MoltObject::from_int(22).bits();
+    *ENTRIES.lock().unwrap() = vec![None, Some((key_bits, value_bits)), None];
+    let dict = register(fake_dict_handle());
+    unsafe {
+        use molt_cpython_abi::api::{errors, mapping, refcount};
+        errors::PyErr_Clear();
+        for mut position in [-1, 2, 3, Py_ssize_t::MAX] {
+            let initial = position;
+            let (mut key, mut value) = (dict, dict);
+            assert_eq!(
+                mapping::PyDict_Next(dict, &mut position, &mut key, &mut value),
+                0
+            );
+            assert_eq!((position, key, value), (initial, dict, dict));
+            assert!(errors::PyErr_Occurred().is_null());
+        }
+        for outputs in 0..4 {
+            let mut position = 0;
+            let (mut key, mut value) = (dict, dict);
+            assert_eq!(
+                mapping::PyDict_Next(
+                    dict,
+                    &mut position,
+                    if outputs & 1 == 0 {
+                        ptr::null_mut()
+                    } else {
+                        &mut key
+                    },
+                    if outputs & 2 == 0 {
+                        ptr::null_mut()
+                    } else {
+                        &mut value
+                    },
+                ),
+                1
+            );
+            assert_eq!(position, 2);
+            if outputs & 1 != 0 {
+                assert_eq!(handle_of(key), key_bits);
+            } else {
+                assert_eq!(key, dict);
+            }
+            if outputs & 2 != 0 {
+                assert_eq!(handle_of(value), value_bits);
+            } else {
+                assert_eq!(value, dict);
+            }
+        }
+        refcount::Py_DECREF(dict);
+    }
 }
 
 #[test]
@@ -415,7 +484,7 @@ fn merge_populates_target_override() {
         MoltObject::from_int(0x3c3c).bits(),
         MoltObject::from_int(0x4d4d).bits(),
     );
-    *ENTRIES.lock().unwrap() = vec![(k1, v1), (k2, v2)];
+    *ENTRIES.lock().unwrap() = vec![Some((k1, v1)), Some((k2, v2))];
     SETS.lock().unwrap().clear();
     PRESENT.lock().unwrap().clear();
 
@@ -455,7 +524,7 @@ fn update_overwrites_and_clear_empties() {
     let key = MoltObject::from_int(0x55).bits();
     let old_value = MoltObject::from_int(0x66).bits();
     let new_value = MoltObject::from_int(0x77).bits();
-    *ENTRIES.lock().unwrap() = vec![(key, new_value)];
+    *ENTRIES.lock().unwrap() = vec![Some((key, new_value))];
     *PRESENT.lock().unwrap() = vec![key];
     SETS.lock().unwrap().clear();
     CLEARS.lock().unwrap().clear();

@@ -35,16 +35,35 @@ pub(in crate::builtins::types::dataclasses) fn dataclasses_fields_dict_bits(
     Some(fields_bits)
 }
 
-fn dataclasses_collect_fields_by_tag(
-    _py: &PyToken<'_>,
+struct SelectedDataclassFields<'a, 'py> {
+    entries: crate::object::seq_access::PinnedSequenceSnapshot<'a, 'py>,
+    indices: Vec<usize>,
+}
+impl SelectedDataclassFields<'_, '_> {
+    fn len(&self) -> usize {
+        self.indices.len()
+    }
+    fn iter(&self) -> impl Iterator<Item = u64> + '_ {
+        self.indices.iter().map(|&index| self.entries[index])
+    }
+}
+
+fn dataclasses_collect_fields_by_tag<'a, 'py>(
+    _py: &'a PyToken<'py>,
     fields_dict_bits: u64,
     field_tag_bits: u64,
-) -> Option<Vec<u64>> {
+) -> Option<SelectedDataclassFields<'a, 'py>> {
     let fields_dict_ptr = obj_from_bits(fields_dict_bits).as_ptr()?;
     let missing = missing_bits(_py);
-    let mut out: Vec<u64> = Vec::new();
-    let order = unsafe { dict_order(fields_dict_ptr) }.clone();
-    for pair in order.chunks(2) {
+    let mut indices = Vec::new();
+    let order = unsafe {
+        crate::object::ops_dict::dict_snapshot(
+            _py,
+            fields_dict_ptr,
+            crate::object::ops_dict::DictSnapshotKind::Entries,
+        )
+    }?;
+    for (index, pair) in order.chunks_exact(2).enumerate() {
         if pair.len() != 2 {
             continue;
         }
@@ -54,10 +73,13 @@ fn dataclasses_collect_fields_by_tag(
             return None;
         }
         if tag_bits == field_tag_bits {
-            out.push(field_obj_bits);
+            indices.push(index * 2 + 1);
         }
     }
-    Some(out)
+    Some(SelectedDataclassFields {
+        entries: order,
+        indices,
+    })
 }
 
 fn dataclasses_is_dataclass_instance(_py: &PyToken<'_>, obj_bits: u64, missing: u64) -> bool {
@@ -208,7 +230,7 @@ fn dataclasses_asdict_inner(
             return MoltObject::none().bits();
         };
         let mut item_bits: Vec<u64> = Vec::with_capacity(field_objs.len());
-        for field_obj_bits in field_objs {
+        for field_obj_bits in field_objs.iter() {
             let name_bits = molt_getattr_builtin(field_obj_bits, name_name_bits, missing);
             if exception_pending(_py) || name_bits == missing {
                 dec_ref_bits(_py, name_name_bits);
@@ -276,7 +298,15 @@ fn dataclasses_asdict_inner(
             }
             TYPE_ID_DICT => {
                 let mut pair_bits: Vec<u64> = Vec::new();
-                let order = dict_order(value_ptr).clone();
+                let Some(order) = (unsafe {
+                    crate::object::ops_dict::dict_snapshot(
+                        _py,
+                        value_ptr,
+                        crate::object::ops_dict::DictSnapshotKind::Entries,
+                    )
+                }) else {
+                    return MoltObject::none().bits();
+                };
                 for pair in order.chunks(2) {
                     if pair.len() != 2 {
                         continue;
@@ -349,7 +379,7 @@ fn dataclasses_astuple_inner(
             return MoltObject::none().bits();
         };
         let mut values: Vec<u64> = Vec::with_capacity(field_objs.len());
-        for field_obj_bits in field_objs {
+        for field_obj_bits in field_objs.iter() {
             let name_bits = molt_getattr_builtin(field_obj_bits, name_name_bits, missing);
             if exception_pending(_py) || name_bits == missing {
                 dec_ref_bits(_py, name_name_bits);
@@ -408,7 +438,15 @@ fn dataclasses_astuple_inner(
             }
             TYPE_ID_DICT => {
                 let mut pair_bits: Vec<u64> = Vec::new();
-                let order = dict_order(value_ptr).clone();
+                let Some(order) = (unsafe {
+                    crate::object::ops_dict::dict_snapshot(
+                        _py,
+                        value_ptr,
+                        crate::object::ops_dict::DictSnapshotKind::Entries,
+                    )
+                }) else {
+                    return MoltObject::none().bits();
+                };
                 for pair in order.chunks(2) {
                     if pair.len() != 2 {
                         continue;
@@ -519,7 +557,8 @@ pub extern "C" fn molt_dataclasses_fields(class_or_instance_bits: u64, field_tag
         else {
             return MoltObject::none().bits();
         };
-        let out_ptr = alloc_tuple(_py, field_objs.as_slice());
+        let fields: Vec<u64> = field_objs.iter().collect();
+        let out_ptr = alloc_tuple(_py, &fields);
         if out_ptr.is_null() {
             return MoltObject::none().bits();
         }
@@ -629,7 +668,20 @@ pub extern "C" fn molt_dataclasses_replace(
             return MoltObject::none().bits();
         };
 
-        let order = unsafe { dict_order(fields_ptr) }.clone();
+        let Some(order) = (unsafe {
+            crate::object::ops_dict::dict_snapshot(
+                _py,
+                fields_ptr,
+                crate::object::ops_dict::DictSnapshotKind::Entries,
+            )
+        }) else {
+            dec_ref_bits(_py, init_name_bits);
+            dec_ref_bits(_py, name_name_bits);
+            dec_ref_bits(_py, field_type_name_bits);
+            dec_ref_bits(_py, changes_copy_bits);
+            dec_ref_bits(_py, values_bits);
+            return MoltObject::none().bits();
+        };
         for pair in order.chunks(2) {
             if pair.len() != 2 {
                 continue;

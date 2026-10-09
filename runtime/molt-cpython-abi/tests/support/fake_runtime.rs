@@ -15,11 +15,17 @@ use std::sync::{LazyLock, Mutex, OnceLock};
 mod sequences;
 
 enum Value {
+    Integer(i128),
+    PatternInteger { byte: u8, length: usize },
+    Float(f64),
+    Complex(f64, f64),
     Opaque { supports_subscript: bool },
     NativeClassAnchor,
     CFunction { method: bool },
+    Method { function: u64, receiver: u64 },
     String(Vec<u8>),
-    Dict(Vec<(u64, u64)>),
+    Bytes(Vec<u8>),
+    Dict(Vec<Option<(u64, u64)>>),
     List(Vec<u64>),
     Tuple(Vec<Option<u64>>),
     Iterator { source: u64, index: usize },
@@ -47,6 +53,212 @@ fn allocate(value: Value) -> u64 {
     );
     bits
 }
+/// Numeric fixtures use this same real reference-count owner, not token-only
+/// heap addresses or a second scalar identity table.
+pub fn live_numeric_count() -> usize {
+    VALUES
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|entry| {
+            matches!(
+                entry.value,
+                Value::Integer(_)
+                    | Value::PatternInteger { .. }
+                    | Value::Float(_)
+                    | Value::Complex(_, _)
+            )
+        })
+        .count()
+}
+pub fn heap_integer(value: i128) -> u64 {
+    allocate(Value::Integer(value))
+}
+/// Boundary-control payload: a positive repeated-byte integer, not a BigInt
+/// implementation. Its actual lifetime uses the same fixture Entry owner.
+pub fn pattern_integer(byte: u8, length: usize) -> u64 {
+    assert!(byte != 0 && length > 0);
+    allocate(Value::PatternInteger { byte, length })
+}
+fn integer_pattern(bits: u64) -> Option<(u8, usize)> {
+    match VALUES.lock().unwrap().get(&bits).map(|entry| &entry.value) {
+        Some(Value::PatternInteger { byte, length }) => Some((*byte, *length)),
+        _ => None,
+    }
+}
+pub fn heap_float(value: f64) -> u64 {
+    allocate(Value::Float(value))
+}
+pub fn heap_complex(real: f64, imag: f64) -> u64 {
+    allocate(Value::Complex(real, imag))
+}
+pub fn integer_value(bits: u64) -> Option<i128> {
+    let value = MoltObject::from_bits(bits);
+    if let Some(integer) = value.as_int() {
+        return Some(i128::from(integer));
+    }
+    if let Some(boolean) = value.as_bool() {
+        return Some(i128::from(boolean));
+    }
+    match VALUES.lock().unwrap().get(&bits).map(|entry| &entry.value) {
+        Some(Value::Integer(value)) => Some(*value),
+        _ => None,
+    }
+}
+pub fn float_value(bits: u64) -> Option<f64> {
+    if let Some(value) = MoltObject::from_bits(bits).as_float() {
+        return Some(value);
+    }
+    match VALUES.lock().unwrap().get(&bits).map(|entry| &entry.value) {
+        Some(Value::Float(value)) => Some(*value),
+        _ => None,
+    }
+}
+pub fn complex_value(bits: u64) -> Option<(f64, f64)> {
+    match VALUES.lock().unwrap().get(&bits).map(|entry| &entry.value) {
+        Some(Value::Complex(real, imag)) => Some((*real, *imag)),
+        _ => None,
+    }
+}
+pub unsafe extern "C" fn numeric_identity_new(bits: u64) -> OwnedHandleResult {
+    let value = MoltObject::from_bits(bits);
+    if let Some(integer) = value.as_int() {
+        OwnedHandleResult::ok(heap_integer(i128::from(integer)))
+    } else if let Some(float) = value.as_float() {
+        OwnedHandleResult::ok(heap_float(float))
+    } else {
+        OwnedHandleResult::error()
+    }
+}
+pub unsafe extern "C" fn float_payload(bits: u64, out: *mut f64) -> i32 {
+    if out.is_null() {
+        return -1;
+    }
+    let Some(value) = float_value(bits) else {
+        return -1;
+    };
+    unsafe { out.write(value) };
+    0
+}
+pub unsafe extern "C" fn int_sign(bits: u64) -> i32 {
+    if integer_pattern(bits).is_some() {
+        1
+    } else {
+        integer_value(bits).map_or(0, |value| value.signum() as i32)
+    }
+}
+pub unsafe extern "C" fn int_num_bits(bits: u64, out: *mut usize) -> i32 {
+    if out.is_null() {
+        return -1;
+    }
+    if let Some((byte, length)) = integer_pattern(bits) {
+        unsafe { out.write((length - 1) * 8 + (8 - byte.leading_zeros()) as usize) };
+        return 0;
+    }
+    let Some(value) = integer_value(bits) else {
+        return -1;
+    };
+    unsafe { out.write((128 - value.unsigned_abs().leading_zeros()) as usize) };
+    0
+}
+pub unsafe extern "C" fn int_to_bytes(
+    bits: u64,
+    out: *mut u8,
+    length: usize,
+    little: i32,
+    signed: i32,
+) -> i32 {
+    use molt_cpython_abi::hooks::{
+        INT_BYTES_INVALID, INT_BYTES_NEGATIVE_UNSIGNED, INT_BYTES_OK, INT_BYTES_OVERFLOW,
+    };
+    if let Some((byte, width)) = integer_pattern(bits) {
+        if length > isize::MAX as usize || (length != 0 && out.is_null()) {
+            return INT_BYTES_INVALID;
+        }
+        for index in 0..length {
+            unsafe {
+                out.add(if little != 0 {
+                    index
+                } else {
+                    length - 1 - index
+                })
+                .write(if index < width { byte } else { 0 })
+            };
+        }
+        return if length < width || (signed != 0 && length == width && byte & 128 != 0) {
+            INT_BYTES_OVERFLOW
+        } else {
+            INT_BYTES_OK
+        };
+    }
+    let Some(value) = integer_value(bits) else {
+        return INT_BYTES_INVALID;
+    };
+    if length > isize::MAX as usize || (length != 0 && out.is_null()) {
+        return INT_BYTES_INVALID;
+    }
+    if value < 0 && signed == 0 {
+        return INT_BYTES_NEGATIVE_UNSIGNED;
+    }
+    let bytes = value.to_le_bytes();
+    for index in 0..length {
+        let byte = bytes
+            .get(index)
+            .copied()
+            .unwrap_or(if value < 0 { 255 } else { 0 });
+        unsafe {
+            out.add(if little != 0 {
+                index
+            } else {
+                length - 1 - index
+            })
+            .write(byte)
+        };
+    }
+    let fits = if length >= 16 {
+        true
+    } else if length == 0 {
+        value == 0
+    } else {
+        let width = length * 8;
+        if signed != 0 {
+            -(1i128 << (width - 1)) <= value && value < 1i128 << (width - 1)
+        } else {
+            value >= 0 && value < 1i128 << width
+        }
+    };
+    if fits {
+        INT_BYTES_OK
+    } else {
+        INT_BYTES_OVERFLOW
+    }
+}
+pub unsafe extern "C" fn int_from_bytes(
+    data: *const u8,
+    length: usize,
+    little: i32,
+    signed: i32,
+) -> u64 {
+    if length > 16 || (length != 0 && data.is_null()) {
+        return 0;
+    }
+    let mut bytes = [0u8; 16];
+    for index in 0..length {
+        bytes[index] = unsafe {
+            data.add(if little != 0 {
+                index
+            } else {
+                length - 1 - index
+            })
+            .read()
+        };
+    }
+    if length != 0 && signed != 0 && bytes[length - 1] & 128 != 0 {
+        bytes[length..].fill(255);
+    }
+    heap_integer(i128::from_le_bytes(bytes))
+}
+
 pub fn fresh_handle() -> u64 {
     allocate(Value::Opaque {
         supports_subscript: false,
@@ -67,6 +279,26 @@ pub fn observe_retirement(bits: u64, observer: fn(u64)) {
     let mut values = VALUES.lock().unwrap();
     let entry = values.get_mut(&bits).expect("observe a live fixture owner");
     assert!(entry.on_retire.replace(observer).is_none());
+}
+pub unsafe extern "C" fn method_new(function: u64, receiver: u64) -> OwnedHandleResult {
+    unsafe {
+        inc_ref(function);
+        inc_ref(receiver);
+    }
+    OwnedHandleResult::ok(allocate(Value::Method { function, receiver }))
+}
+pub unsafe extern "C" fn method_part(
+    bits: u64,
+    part: molt_cpython_abi::hooks::MethodPart,
+) -> BorrowedHandleResult {
+    let values = VALUES.lock().unwrap();
+    match values.get(&bits).map(|entry| &entry.value) {
+        Some(Value::Method { function, receiver }) => BorrowedHandleResult::ok(match part {
+            molt_cpython_abi::hooks::MethodPart::Function => *function,
+            molt_cpython_abi::hooks::MethodPart::Receiver => *receiver,
+        }),
+        _ => BorrowedHandleResult::error(),
+    }
 }
 pub unsafe extern "C" fn register_c_function(
     _: u64,
@@ -140,13 +372,17 @@ pub unsafe extern "C" fn dec_ref(bits: u64) {
     } = VALUES.lock().unwrap().remove(&bits).unwrap();
     match value {
         Value::Dict(entries) => {
-            for (key, value) in entries {
+            for (key, value) in entries.into_iter().flatten() {
                 unsafe {
                     dec_ref(key);
                     dec_ref(value);
                 }
             }
         }
+        Value::Method { function, receiver } => unsafe {
+            dec_ref(function);
+            dec_ref(receiver);
+        },
         Value::Foreign(address) => unsafe {
             molt_cpython_abi::bridge::molt_foreign_object_release(address)
         },
@@ -162,7 +398,12 @@ pub unsafe extern "C" fn dec_ref(bits: u64) {
             }
         }
         Value::Iterator { source, .. } => unsafe { dec_ref(source) },
-        Value::String(_)
+        Value::Integer(_)
+        | Value::PatternInteger { .. }
+        | Value::Float(_)
+        | Value::Complex(_, _)
+        | Value::Bytes(_)
+        | Value::String(_)
         | Value::Opaque { .. }
         | Value::NativeClassAnchor
         | Value::CFunction { .. } => {}
@@ -170,6 +411,19 @@ pub unsafe extern "C" fn dec_ref(bits: u64) {
     if let Some(observer) = on_retire {
         observer(bits);
     }
+}
+/// View admission uses this fixture's actual owner, never the permissive stub.
+pub unsafe extern "C" fn try_mark_abi_view(bits: u64, _present: i32) -> i32 {
+    if !MoltObject::from_bits(bits).is_ptr() {
+        return 1;
+    }
+    i32::from(
+        VALUES
+            .lock()
+            .unwrap()
+            .get(&bits)
+            .is_some_and(|value| value.refs > 0),
+    )
 }
 pub unsafe extern "C" fn ref_count(bits: u64) -> usize {
     VALUES
@@ -225,6 +479,18 @@ fn key_equal(values: &HashMap<u64, Entry>, left: u64, right: u64) -> bool {
     if left == right {
         return true;
     }
+    let integer = |bits| {
+        MoltObject::from_bits(bits)
+            .as_int()
+            .map(i128::from)
+            .or_else(|| match values.get(&bits).map(|entry| &entry.value) {
+                Some(Value::Integer(value)) => Some(*value),
+                _ => None,
+            })
+    };
+    if let (Some(left), Some(right)) = (integer(left), integer(right)) {
+        return left == right;
+    }
     match (values.get(&left), values.get(&right)) {
         (
             Some(Entry {
@@ -245,7 +511,7 @@ fn dict_index(values: &HashMap<u64, Entry>, dict: u64, key: u64) -> Option<usize
     };
     entries
         .iter()
-        .position(|(stored, _)| key_equal(values, *stored, key))
+        .position(|row| row.is_some_and(|(stored, _)| key_equal(values, stored, key)))
 }
 // The fixture follows the hook transaction: storage commit, publication, then
 // displaced-owner retirement. No callback or finalizer runs under VALUES.
@@ -285,13 +551,16 @@ pub unsafe extern "C" fn dict_mutate(
             let Some(index) = index else {
                 return 1;
             };
-            Some(entries.remove(index))
+            entries[index].take()
         } else if let Some(index) = index {
             // Preserve the original equal key and its position. The incoming
             // extra key owner retires alongside the displaced value.
-            Some((key, std::mem::replace(&mut entries[index].1, value)))
+            Some((
+                key,
+                std::mem::replace(&mut entries[index].as_mut().unwrap().1, value),
+            ))
         } else {
-            entries.push((key, value));
+            entries.push(Some((key, value)));
             None
         }
     };
@@ -324,7 +593,7 @@ pub unsafe extern "C" fn dict_pop(dict: u64, key: u64) -> OwnedHandleResult {
             }
             return OwnedHandleResult::error();
         };
-        index.map(|index| entries.remove(index))
+        index.and_then(|index| entries[index].take())
     };
     match removed {
         Some((key, value)) => {
@@ -349,7 +618,7 @@ pub unsafe extern "C" fn dict_get(
         return BorrowedHandleResult::error();
     };
     dict_index(&values, dict, key)
-        .map(|index| entries[index].1)
+        .map(|index| entries[index].unwrap().1)
         .map_or_else(BorrowedHandleResult::missing, BorrowedHandleResult::ok)
 }
 pub unsafe extern "C" fn dict_len(dict: u64) -> usize {
@@ -361,14 +630,17 @@ pub unsafe extern "C" fn dict_len(dict: u64) -> usize {
     else {
         return 0;
     };
-    entries.len()
+    entries.iter().flatten().count()
 }
-pub unsafe extern "C" fn dict_entry(
+pub unsafe extern "C" fn dict_next(
     dict: u64,
-    index: usize,
+    position: *mut usize,
     out_key: *mut u64,
     out_value: *mut u64,
 ) -> i32 {
+    if position.is_null() {
+        return 0;
+    }
     let values = VALUES.lock().unwrap();
     let Some(Entry {
         value: Value::Dict(entries),
@@ -377,10 +649,17 @@ pub unsafe extern "C" fn dict_entry(
     else {
         return 0;
     };
-    let Some(&(key, value)) = entries.get(index) else {
+    let start = unsafe { *position };
+    let Some((index, &(key, value))) = entries
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find_map(|(index, row)| row.as_ref().map(|pair| (index, pair)))
+    else {
         return 0;
     };
     unsafe {
+        *position = index + 1;
         if !out_key.is_null() {
             *out_key = key;
         }
@@ -404,7 +683,7 @@ pub unsafe extern "C" fn dict_op(op: u32, dict: u64) -> u64 {
         std::mem::take(entries)
     };
     molt_cpython_abi::api::errors::with_preserved_error(|| {
-        for (key, value) in entries {
+        for (key, value) in entries.into_iter().flatten() {
             unsafe {
                 dec_ref(key);
                 dec_ref(value);
@@ -412,6 +691,38 @@ pub unsafe extern "C" fn dict_op(op: u32, dict: u64) -> u64 {
         }
     });
     MoltObject::none().bits()
+}
+pub unsafe extern "C" fn alloc_bytes(data: *const u8, len: usize) -> u64 {
+    let bytes = if len == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
+    };
+    allocate(Value::Bytes(bytes))
+}
+pub unsafe extern "C" fn bytes_data(bits: u64, out_len: *mut usize) -> *const u8 {
+    let values = VALUES.lock().unwrap();
+    let Some(Entry {
+        value: Value::Bytes(bytes),
+        ..
+    }) = values.get(&bits)
+    else {
+        return std::ptr::null();
+    };
+    if !out_len.is_null() {
+        unsafe { *out_len = bytes.len() };
+    }
+    bytes.as_ptr()
+}
+/// The caller transfers each existing owned edge into this fixture tuple.
+pub fn list_values(bits: u64) -> Option<Vec<u64>> {
+    match VALUES.lock().unwrap().get(&bits).map(|entry| &entry.value) {
+        Some(Value::List(items)) => Some(items.clone()),
+        _ => None,
+    }
+}
+pub fn tuple_from_owned(items: Vec<u64>) -> u64 {
+    allocate(Value::Tuple(items.into_iter().map(Some).collect()))
 }
 pub unsafe extern "C" fn alloc_str(data: *const u8, len: usize) -> u64 {
     let mut bytes = if data.is_null() || len == 0 {
@@ -441,9 +752,14 @@ pub unsafe extern "C" fn str_data(bits: u64, out_len: *mut usize) -> *const u8 {
 pub unsafe extern "C" fn classify_heap(bits: u64) -> u8 {
     let values = VALUES.lock().unwrap();
     match values.get(&bits).map(|entry| &entry.value) {
+        Some(Value::Integer(_) | Value::PatternInteger { .. }) => MoltTypeTag::Int as u8,
+        Some(Value::Float(_)) => MoltTypeTag::Float as u8,
+        Some(Value::Complex(_, _)) => MoltTypeTag::Complex as u8,
         Some(Value::NativeClassAnchor) => MoltTypeTag::Other as u8,
-        Some(Value::CFunction { .. }) => MoltTypeTag::BuiltinCallable as u8,
+        Some(Value::CFunction { .. }) => MoltTypeTag::RuntimeCallable as u8,
+        Some(Value::Method { .. }) => MoltTypeTag::BoundMethod as u8,
         Some(Value::String(_)) => MoltTypeTag::Str as u8,
+        Some(Value::Bytes(_)) => MoltTypeTag::Bytes as u8,
         Some(Value::Dict(_)) => MoltTypeTag::Dict as u8,
         Some(Value::List(_)) => MoltTypeTag::List as u8,
         Some(Value::Tuple(_)) => MoltTypeTag::Tuple as u8,
@@ -469,6 +785,7 @@ struct Classes {
     list: u64,
     function: u64,
     method: u64,
+    python_method: u64,
     opaque: u64,
 }
 static CLASSES: OnceLock<Classes> = OnceLock::new();
@@ -497,6 +814,7 @@ fn initialize_class_bindings() -> Classes {
         list: bind(&raw mut abi_types::PyList_Type),
         function: bind(&raw mut abi_types::PyCFunction_Type),
         method: bind(&raw mut abi_types::PyCMethod_Type),
+        python_method: bind(&raw mut abi_types::PyMethod_Type),
         opaque: bind(&raw mut abi_types::MoltManaged_Type),
     }
 }
@@ -520,6 +838,7 @@ pub unsafe extern "C" fn runtime_class_borrowed(bits: u64) -> BorrowedHandleResu
             Some(Value::NativeClassAnchor) => Some(classes.type_class),
             Some(Value::CFunction { method: true }) => Some(classes.method),
             Some(Value::CFunction { method: false }) => Some(classes.function),
+            Some(Value::Method { .. }) => Some(classes.python_method),
             _ => None,
         }
     };
@@ -528,7 +847,7 @@ pub unsafe extern "C" fn runtime_class_borrowed(bits: u64) -> BorrowedHandleResu
     }
     // Specialized inline-list fixtures keep their explicit observation registries.
     // Consult their installed classifier without holding the shared value lock.
-    let tag = unsafe { (molt_cpython_abi::hooks::hooks_or_stubs().classify_heap)(bits) };
+    let tag = unsafe { molt_cpython_abi::hooks::hooks_or_stubs().classify_heap(bits) };
     let class = match tag {
         tag if tag == MoltTypeTag::Type as u8 => classes.type_class,
         tag if tag == MoltTypeTag::Str as u8 => classes.string,
@@ -563,9 +882,9 @@ unsafe fn stringify(bits: u64, repr: bool) -> OwnedHandleResult {
         "None".to_owned()
     } else if let Some(value) = object.as_bool() {
         if value { "True" } else { "False" }.to_owned()
-    } else if let Some(value) = object.as_int() {
+    } else if let Some(value) = integer_value(bits) {
         value.to_string()
-    } else if let Some(value) = object.as_float() {
+    } else if let Some(value) = float_value(bits) {
         value.to_string()
     } else {
         let values = VALUES.lock().unwrap();
@@ -656,12 +975,54 @@ pub fn prepare_class_bindings() {
 }
 
 pub fn wire_class_identity(hooks: &mut RuntimeHooks) {
-    hooks.runtime_class_borrowed = runtime_class_borrowed;
+    hooks.runtime_class_borrowed = Some(runtime_class_borrowed);
     hooks.type_is_subtype = type_is_subtype;
 }
 
+/// A provider opting into numeric identity also supplies its real storage,
+/// payload and refcount authority. Individual protocol fixtures compose their
+/// own classifiers explicitly; the lifecycle transaction never adds this.
+pub unsafe extern "C" fn numeric_hash(bits: u64) -> i64 {
+    if let Some(value) = integer_value(bits) {
+        let modulus = if usize::BITS == 64 {
+            (1u128 << 61) - 1
+        } else {
+            (1u128 << 31) - 1
+        };
+        let magnitude = (value.unsigned_abs() % modulus) as i64;
+        let hash = if value < 0 { -magnitude } else { magnitude };
+        return if hash == -1 { -2 } else { hash };
+    }
+    if let Some(value) = float_value(bits) {
+        return unsafe {
+            molt_cpython_abi::api::numbers::_Py_HashDouble(std::ptr::null_mut(), value) as i64
+        };
+    }
+    unsafe { super::fake_complex::hash(bits) }
+}
+
+pub fn wire_numeric(hooks: &mut RuntimeHooks) {
+    hooks.try_mark_abi_view = try_mark_abi_view;
+    hooks.object_hash = numeric_hash;
+    hooks.numeric_identity_new = Some(numeric_identity_new);
+    hooks.float_payload = float_payload;
+    hooks.complex_parts = super::fake_complex::parts;
+    hooks.complex_from_doubles = super::fake_complex::from_doubles;
+    hooks.int_sign = int_sign;
+    hooks.int_num_bits = int_num_bits;
+    hooks.int_to_bytes = int_to_bytes;
+    hooks.int_from_bytes = int_from_bytes;
+    hooks.classify_heap = Some(classify_heap);
+    hooks.inc_ref = inc_ref;
+    hooks.dec_ref = dec_ref;
+    hooks.ref_count = Some(ref_count);
+}
+
 pub fn wire(hooks: &mut RuntimeHooks) {
-    hooks.register_c_function = register_c_function;
+    wire_numeric(hooks);
+    hooks.register_c_function = Some(register_c_function);
+    hooks.method_new = Some(method_new);
+    hooks.method_part = method_part;
     hooks.alloc_dict = alloc_dict;
     hooks.alloc_module = alloc_module;
     hooks.module_get_dict_borrowed = module_get_dict;
@@ -670,15 +1031,15 @@ pub fn wire(hooks: &mut RuntimeHooks) {
     hooks.dict_resolve = dict_resolve;
     hooks.dict_get = dict_get;
     hooks.dict_len = dict_len;
-    hooks.dict_entry = dict_entry;
+    hooks.dict_next = dict_next;
     hooks.dict_op = dict_op;
-    hooks.alloc_str = alloc_str;
+    hooks.alloc_str = Some(alloc_str);
     hooks.str_data = str_data;
-    hooks.classify_heap = classify_heap;
+    hooks.classify_heap = Some(classify_heap);
     wire_class_identity(hooks);
     hooks.inc_ref = inc_ref;
     hooks.dec_ref = dec_ref;
-    hooks.ref_count = ref_count;
+    hooks.ref_count = Some(ref_count);
     hooks.foreign_new = foreign_new;
     hooks.object_str = object_str;
     hooks.object_repr = object_repr;

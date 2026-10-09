@@ -55,6 +55,7 @@ unsafe extern "C" fn crossing_set_override(
 // Restore the same raised instance after rendering, including its traceback.
 unsafe fn native_error_description() -> String {
     let error = unsafe { errors::PyErr_GetRaisedException() };
+    let error_owner = unsafe { refcount::OwnedPyObject::from_owned(error) };
     if error.is_null() {
         return "no native error".into();
     }
@@ -73,13 +74,14 @@ unsafe fn native_error_description() -> String {
             }
         })
     };
-    unsafe { errors::PyErr_SetRaisedException(error) };
+    unsafe { errors::PyErr_SetRaisedException(error_owner.into_ptr()) };
     description
 }
 
 unsafe fn assert_native_setter_rejection(delete: bool, type_name: &str) {
     unsafe {
         let raised = errors::PyErr_GetRaisedException();
+        let raised_owner = refcount::OwnedPyObject::from_owned(raised);
         assert!(!raised.is_null());
         assert_ne!(
             errors::PyErr_GivenExceptionMatches(
@@ -89,6 +91,7 @@ unsafe fn assert_native_setter_rejection(delete: bool, type_name: &str) {
             0
         );
         let text = molt_cpython_abi::api::typeobj::PyObject_Str(raised);
+        let text_owner = refcount::OwnedPyObject::from_owned(text);
         assert!(!text.is_null());
         let bytes = strings::PyUnicode_AsUTF8(text);
         assert!(!bytes.is_null());
@@ -97,8 +100,8 @@ unsafe fn assert_native_setter_rejection(delete: bool, type_name: &str) {
             std::ffi::CStr::from_ptr(bytes).to_string_lossy(),
             format!("can't apply this {operation} to {type_name} object")
         );
-        refcount::Py_DECREF(text);
-        refcount::Py_DECREF(raised);
+        drop(text_owner);
+        drop(raised_owner);
         assert!(errors::PyErr_Occurred().is_null());
     }
 }
@@ -340,6 +343,7 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
                     );
                 }
                 let raised = errors::PyErr_GetRaisedException();
+                let raised_owner = refcount::OwnedPyObject::from_owned(raised);
                 assert!(!raised.is_null());
                 assert_eq!(
                     GLOBAL_BRIDGE
@@ -347,7 +351,7 @@ fn native_namespaces_bind_and_mutate_managed_descriptors() {
                         .map(|value| value.bits()),
                     Some(failure)
                 );
-                refcount::Py_DECREF(raised);
+                drop(raised_owner);
                 assert_eq!(
                     mapping::PyDict_GetItem(receiver.dictionary, name),
                     shadow,
@@ -531,13 +535,54 @@ fn attribute_class(py: &crate::PyToken<'_>, base: u64, dictless: bool) -> u64 {
 }
 
 unsafe fn take_bits(value: *mut PyObject) -> u64 {
+    let value_owner = unsafe { refcount::OwnedPyObject::from_owned(value) };
     assert!(!value.is_null());
     let bits = GLOBAL_BRIDGE
         .observed_handle_for_pyobj(value)
         .unwrap()
         .bits();
-    unsafe { refcount::Py_DECREF(value) };
+    drop(value_owner);
     bits
+}
+
+#[test]
+fn raised_error_conversion_unwind_retires_unprojected_native_owner() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(super::register_cpython_hooks());
+    crate::concurrency::gil::with_gil(|py| unsafe {
+        let args = refcount::OwnedPyObject::from_owned(sequences::PyTuple_New(0));
+        assert!(!args.as_ptr().is_null());
+        let native = refcount::OwnedPyObject::from_owned(errors::molt_native_exception_new(
+            &raw mut molt_cpython_abi::abi_types::PyExc_ValueError,
+            args.as_ptr(),
+            ptr::null_mut(),
+        ));
+        assert!(!native.as_ptr().is_null());
+        let address = native.as_ptr().addr();
+        assert!(crate::object::gc::native_gc_is_enrolled(address));
+        assert!(
+            GLOBAL_BRIDGE
+                .observed_handle_for_pyobj(native.as_ptr())
+                .is_none()
+        );
+        errors::PyErr_SetRaisedException(native.into_ptr());
+        // The existing consuming helper requires a managed projection. A real
+        // unprojected native exception exercises its conversion failure after
+        // the public getter has transferred the last C owner.
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            take_bits(errors::PyErr_GetRaisedException())
+        }));
+        assert!(
+            failure.is_err(),
+            "the unprojected fixture must fail conversion"
+        );
+        assert!(
+            !crate::object::gc::native_gc_is_enrolled(address),
+            "conversion unwind leaked the transferred native exception"
+        );
+        assert!(errors::PyErr_Occurred().is_null());
+        assert!(!crate::exception_pending(&py));
+    });
 }
 
 #[test]

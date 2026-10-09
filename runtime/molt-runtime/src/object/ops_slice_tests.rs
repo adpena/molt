@@ -649,7 +649,9 @@ fn dataclass_slot_state_follows_mro_then_declaration_order() {
                 .unwrap()
         };
         let keys = unsafe {
-            dict_order(obj_from_bits(slot_state).as_ptr().unwrap())
+            dict_live_entries(obj_from_bits(slot_state).as_ptr().unwrap())
+                .flat_map(|row| [row.key, row.value])
+                .collect::<Vec<_>>()
                 .as_chunks::<2>()
                 .0
                 .iter()
@@ -727,10 +729,11 @@ fn ordinary_slot_state_omits_shadowed_storage_but_reset_releases_both_owners() {
             )
             .unwrap()
         };
-        assert_eq!(
-            unsafe { dict_order(obj_from_bits(slot_state).as_ptr().unwrap()).as_slice() },
-            &[field, child_value]
-        );
+        assert!(unsafe {
+            dict_live_entries(obj_from_bits(slot_state).as_ptr().unwrap())
+                .flat_map(|row| [row.key, row.value])
+                .eq([field, child_value])
+        });
         dec_ref_bits(py, state);
         assert_eq!(heap_refcount(base_value), 2);
         assert_eq!(heap_refcount(child_value), 2);

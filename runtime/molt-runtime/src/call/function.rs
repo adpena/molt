@@ -2687,8 +2687,15 @@ unsafe fn invoke_function_trampoline(
         // The shared C dispatcher owns its one recursion/frame activation;
         // intercept before constructing either guard or transferring arguments.
         if !crate::concurrency::execution::current_thread_has_c_extension_execution_context()
-            && let Some(result) =
-                crate::cpython_abi_hooks::try_call_cext(_py, func_ptr, args, &[], &[])
+            && let Some(result) = crate::cpython_abi_hooks::try_call_cext(
+                _py,
+                func_ptr,
+                crate::cpython_abi_hooks::CExtCallArguments::Vector {
+                    positional: args,
+                    names: &[],
+                    values: &[],
+                },
+            )
         {
             return result;
         }
@@ -2711,9 +2718,15 @@ unsafe fn invoke_function_trampoline(
             // C conventions own their arity diagnostics. Recognize them only
             // on this cold mismatch path; valid admitted borrowed calls keep
             // the generated transport without an executable-identity lookup.
-            if let Some(result) =
-                crate::cpython_abi_hooks::try_call_cext(_py, func_ptr, args, &[], &[])
-            {
+            if let Some(result) = crate::cpython_abi_hooks::try_call_cext(
+                _py,
+                func_ptr,
+                crate::cpython_abi_hooks::CExtCallArguments::Vector {
+                    positional: args,
+                    names: &[],
+                    values: &[],
+                },
+            ) {
                 return result;
             }
             // Both borrowed and moved transport contain already-bound ABI
@@ -3455,7 +3468,7 @@ mod tests {
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         let name = b"dispatch_probe";
         unsafe {
-            (molt_cpython_abi::hooks::hooks_or_stubs().register_c_function)(
+            molt_cpython_abi::hooks::hooks_or_stubs().register_c_function(
                 crate::provenance::abi::expose_function_address(target),
                 flags,
                 MoltObject::none().bits(),

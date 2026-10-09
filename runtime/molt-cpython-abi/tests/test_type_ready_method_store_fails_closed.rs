@@ -155,7 +155,7 @@ unsafe extern "C" fn observe_publication(context: *mut std::ffi::c_void) -> i32 
         DecodedHandleResult::Error => false,
     };
     observation.owners_alive = unsafe {
-        (hooks.ref_count)(observation.key) > 0 && (hooks.ref_count)(observation.displaced) == 1
+        hooks.ref_count(observation.key) > 0 && hooks.ref_count(observation.displaced) == 1
     };
     // Mutating this same dictionary in the callback also proves that the
     // fixture has released its storage lock before publishing.
@@ -276,13 +276,13 @@ fn dict_mutation_publishes_committed_storage_before_retiring_owners() {
                 (hooks.dict_mutate)(dict, alias, alias, 0, None, ptr::null_mut()),
                 0
             );
-            assert_eq!((hooks.ref_count)(alias), 3);
+            assert_eq!(hooks.ref_count(alias), 3);
         }
         (hooks.dec_ref)(alias);
         assert!(
             matches!((hooks.dict_pop)(dict, alias).decode(), DecodedHandleResult::Ok(value) if value == alias)
         );
-        assert_eq!((hooks.ref_count)(alias), 1);
+        assert_eq!(hooks.ref_count(alias), 1);
         (hooks.dec_ref)(alias);
         assert!(!support::fake_runtime::contains(alias));
         assert!(matches!(

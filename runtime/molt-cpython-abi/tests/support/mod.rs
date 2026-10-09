@@ -139,7 +139,7 @@ impl AbiTestThreadStateTransaction {
         hooks.gil_check = gil_check;
         hooks.thread_state_drop_enter = thread_state_drop_enter;
         hooks.thread_state_drop_leave = thread_state_drop_leave;
-        hooks.native_gc_allocate = native_gc_allocate;
+        hooks.native_gc_allocate = Some(native_gc_allocate);
         hooks.native_gc_track = native_gc_track;
         hooks.native_gc_untrack = native_gc_untrack;
         hooks.native_gc_deallocate = native_gc_deallocate;

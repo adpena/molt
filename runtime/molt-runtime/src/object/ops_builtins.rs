@@ -1750,9 +1750,7 @@ pub extern "C" fn molt_all_builtin(iter_bits: u64) -> u64 {
 pub extern "C" fn molt_abs_builtin(val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(val_bits);
-        if crate::object::ops::is_float_extended(obj)
-            && let Some(result) = super::ops_arith::unary_subtype_result(_py, obj, b"__abs__")
-        {
+        if let Some(result) = super::ops_arith::unary_subtype_result(_py, obj, b"__abs__") {
             return result;
         }
         if let Some(i) = index_i64_integral_bits(obj.bits()) {
@@ -1795,7 +1793,7 @@ pub extern "C" fn molt_divmod_builtin(a_bits: u64, b_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a_bits);
         let rhs = obj_from_bits(b_bits);
-        if let Some(result) = super::ops_arith::float_subtype_binary_result(
+        if let Some(result) = super::ops_arith::numeric_subtype_binary_result(
             _py,
             lhs,
             rhs,
@@ -1966,7 +1964,7 @@ pub extern "C" fn molt_object_getstate(_self_bits: u64) -> u64 {
         if dict_bits != 0
             && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
             && unsafe { object_type_id(dict_ptr) } == crate::TYPE_ID_DICT
-            && !unsafe { crate::dict_order(dict_ptr).is_empty() }
+            && unsafe { crate::dict_len(dict_ptr) } != 0
         {
             inc_ref_bits(_py, dict_bits);
             dict_state_bits = Some(dict_bits);
@@ -2052,7 +2050,7 @@ fn object_getstate_slot_state(py: &crate::PyToken<'_>, ptr: *mut u8) -> Option<u
                 return None;
             }
         }
-        if dict_order(state).is_empty() {
+        if dict_len(state) == 0 {
             return None;
         }
         owner.release();
@@ -2101,9 +2099,7 @@ pub extern "C" fn molt_object_ge_method(_self_bits: u64, _other_bits: u64) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_bool_method(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        MoltObject::from_bool(is_truthy(_py, obj_from_bits(self_bits))).bits()
-    })
+    crate::object::ops_arith::native_slots::int_bool_slot(self_bits)
 }
 
 #[unsafe(no_mangle)]
@@ -2116,43 +2112,22 @@ pub extern "C" fn molt_int_ceil_method(self_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_abs_method(self_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { molt_abs_builtin(self_bits) })
+    crate::object::ops_arith::native_slots::int_abs_slot(self_bits)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_add_method(self_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let builtins = builtin_classes(_py);
-        let other_ty = type_of_bits(_py, other_bits);
-        if other_ty != builtins.int && other_ty != builtins.bool {
-            return not_implemented_bits(_py);
-        }
-        molt_add(self_bits, other_bits)
-    })
+    crate::object::ops_arith::native_slots::int_add_slot(self_bits, other_bits)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_and_method(self_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let builtins = builtin_classes(_py);
-        let other_ty = type_of_bits(_py, other_bits);
-        if other_ty != builtins.int && other_ty != builtins.bool {
-            return not_implemented_bits(_py);
-        }
-        molt_bit_and(self_bits, other_bits)
-    })
+    crate::object::ops_arith::native_slots::int_and_slot(self_bits, other_bits)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_int_divmod_method(self_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let builtins = builtin_classes(_py);
-        let other_ty = type_of_bits(_py, other_bits);
-        if other_ty != builtins.int && other_ty != builtins.bool {
-            return not_implemented_bits(_py);
-        }
-        molt_divmod_builtin(self_bits, other_bits)
-    })
+    crate::object::ops_arith::native_slots::int_divmod_slot(self_bits, other_bits)
 }
 
 #[unsafe(no_mangle)]

@@ -1128,6 +1128,26 @@ ordered start before stop and stopped at the first exception. Negative list boun
 normalize after both callbacks; positive bounds remain live across element equality.
 C sequence count/index and native containment fallback retain owned iterator/items.
 
+## Dictionary cursors and call transport
+
+`RuntimeHooks::dict_next` accepts a physical dictionary cursor and skips deleted
+slots. Complete traversal is O(physical extent). `PyDict_Next` publishes the
+position and borrowed outputs together after row lookup and bridge conversion
+succeed; exhaustion preserves all caller outputs. The old ordinal hook has no
+compatibility path. First exposure of a C projection may allocate. Hook layout
+admission uses `RUNTIME_HOOKS_ABI_VERSION` in `runtime/molt-cpython-abi/src/hooks.rs`.
+
+Call transport preserves the caller's keyword carrier until the callee requires
+conversion. Mapping calls preserve the original mapping for tuple-based C
+callees; forwarding keywords must not invoke hashing or equality. The vector
+hook borrows validated argument and keyword-name spans only for the synchronous
+call. Frame binding acquires the references it retains. Required mapping/vector
+conversions share the existing call-argument and bridge ownership authorities;
+temporary foreign wrappers remain alive through dispatch. Source CALL and
+CALL_FUNCTION_EX retain their target-version-specific release policies, separate
+from C-API call cleanup. Qualification status belongs to V1-27 in the
+[V1 findings ledger](../../../../agent/V1_HANDOFF_FINDINGS.md).
+
 ## Canonical slice storage
 
 Python slice construction and linked `PySlice_New` create the same runtime
@@ -1185,3 +1205,31 @@ clearing obey that same typed boundary. Task capture traversal and detachment
 remain responsible for those words exactly once; ordinary class allocations,
 native subtype tails, and dedicated dictionary-bearing kinds retain their
 existing owners. No type name or mutable poll address selects class storage.
+
+### Numeric C origins and hook capability presence
+
+A fresh noncached C numeric owns its physical allocation. Primitive integer,
+float, and complex construction, physical extraction, type/membership checks,
+and C reference operations do not create a runtime numeric identity. The first
+semantic value crossing transfers that exact allocation into the existing
+managed bridge owner; distinct C origins remain distinct even when values are
+equal. An existing runtime heap numeric keeps its original handle and canonical
+C view. Runtime inline results keep the existing inline-key publication policy.
+Parsed arbitrary-width numeric construction continues to use the runtime
+arithmetic producer; it does not introduce a second parser in the C bridge.
+
+Adoption validates the source record and counts, reserves insertion storage,
+and acquires the runtime view mark before atomically publishing. Failure retains
+the original usable C allocation and releases only newly staged runtime owners.
+No failed adoption is interpreted as a foreign-object miss. Managed lists retain
+already admitted child identities without recursively observing those children's
+mutable projections, including self and mutual cycles.
+
+RuntimeHooks callback fields whose absence selects ownership or diagnostic
+behavior use `Option<callback>` as their sole capability authority. `None` invokes
+the existing failure behavior; `Some` invokes that producer once and preserves
+its failure. Function addresses are not capability identities. Required callbacks
+remain direct functions. This is part of the current hook ABI version named in
+`runtime/molt-cpython-abi/src/hooks.rs`; all runtime and fixture producers must
+publish the same schema. Native and WASM qualification must exercise actual
+consumer boundaries before making a supported-platform claim.

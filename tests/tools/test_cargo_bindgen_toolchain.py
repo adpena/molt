@@ -1014,7 +1014,7 @@ def test_native_c_cargo_context_rejects_unresolved_selection_before_probe(
     tmp_path, monkeypatch, entry
 ):
     config = tmp_path / "config.toml"
-    config.write_text(entry)
+    config.write_text(entry, encoding="utf-8")
     _no_processes(monkeypatch)
     monkeypatch.setattr(
         command_identity,
@@ -1046,7 +1046,7 @@ def test_native_c_context_uses_admitted_target_semantics(
     tmp_path, monkeypatch, kind, explicit, inherited, error
 ):
     config = tmp_path / "config.toml"
-    config.write_text('[build]\ntarget="configured-unknown-target"\n')
+    config.write_text('[build]\ntarget="configured-unknown-target"\n', encoding="utf-8")
     _no_processes(monkeypatch)
     if kind == "python":
         # Real declared Cargo child: its --target wasm is a Molt alias.

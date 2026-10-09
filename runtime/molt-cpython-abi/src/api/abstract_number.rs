@@ -386,51 +386,99 @@ unsafe fn call_ternary_func(
     unsafe { func(o1, o2, o3) }
 }
 
-unsafe fn foreign_power(o1: *mut PyObject, o2: *mut PyObject, o3: *mut PyObject) -> *mut PyObject {
-    let type1 = unsafe { (*o1).ob_type };
-    let type2 = unsafe { (*o2).ob_type };
-    let slot1 = unsafe { power_slot(o1) };
-    let mut slot2 = if !ptr::eq(type1, type2) {
-        unsafe { power_slot(o2) }
-    } else {
-        ptr::null_mut()
+/// CPython's raw ternary slot order. Runtime handles and C objects use the
+/// same state machine; their invocation and reference owners remain local.
+/// `None` from an invocation means a consumed NotImplemented. The third slot
+/// is looked up only after prior callbacks, against the current modulus type.
+pub fn ternary_slot_dispatch<S: Eq, T>(
+    left: Option<S>,
+    mut right: Option<S>,
+    right_is_subtype: bool,
+    third: impl FnOnce() -> Result<Option<S>, T>,
+    mut invoke: impl FnMut(&S) -> Option<T>,
+) -> Option<T> {
+    if right == left {
+        right = None;
+    }
+    if let Some(left) = left.as_ref() {
+        if right_is_subtype && let Some(right_slot) = right.as_ref() {
+            if let Some(result) = invoke(right_slot) {
+                return Some(result);
+            }
+            right = None;
+        }
+        if let Some(result) = invoke(left) {
+            return Some(result);
+        }
+    }
+    if let Some(right) = right.as_ref()
+        && let Some(result) = invoke(right)
+    {
+        return Some(result);
+    }
+    let third = match third() {
+        Ok(third) => third,
+        Err(result) => return Some(result),
     };
-    if slot2 == slot1 {
-        slot2 = ptr::null_mut();
+    if let Some(third) = third.as_ref()
+        && Some(third) != left.as_ref()
+        && Some(third) != right.as_ref()
+    {
+        return invoke(third);
     }
-    if !slot1.is_null() {
-        if !slot2.is_null() && unsafe { crate::api::typeobj::PyType_IsSubtype(type2, type1) } == 1 {
-            let result = unsafe { call_ternary_func(slot2, o1, o2, o3) };
-            if result.is_null() || !is_not_implemented(result) {
-                return result;
+    None
+}
+
+unsafe fn foreign_power(o1: *mut PyObject, o2: *mut PyObject, o3: *mut PyObject) -> *mut PyObject {
+    unsafe {
+        let type1 = (*o1).ob_type;
+        let type2 = (*o2).ob_type;
+        let slot1 = power_slot(o1);
+        let slot2 = if type1 != type2 {
+            power_slot(o2)
+        } else {
+            ptr::null_mut()
+        };
+        ternary_slot_dispatch(
+            (!slot1.is_null()).then_some(slot1),
+            (!slot2.is_null()).then_some(slot2),
+            type1 != type2 && crate::api::typeobj::PyType_IsSubtype(type2, type1) == 1,
+            || {
+                let slot3 = if o3.is_null() {
+                    ptr::null_mut()
+                } else {
+                    power_slot(o3)
+                };
+                Ok((!slot3.is_null()).then_some(slot3))
+            },
+            |&slot| {
+                let result = call_ternary_func(slot, o1, o2, o3);
+                if result.is_null() || !is_not_implemented(result) {
+                    Some(result)
+                } else {
+                    discard_not_implemented(result);
+                    None
+                }
+            },
+        )
+        .unwrap_or_else(|| {
+            if o3.is_null() || o3 == &raw mut crate::abi_types::Py_None {
+                return binop_type_error(o1, o2, "** or pow()");
             }
-            unsafe { discard_not_implemented(result) };
-            slot2 = ptr::null_mut();
-        }
-        let result = unsafe { call_ternary_func(slot1, o1, o2, o3) };
-        if result.is_null() || !is_not_implemented(result) {
-            return result;
-        }
-        unsafe { discard_not_implemented(result) };
+            let message = std::ffi::CString::new(format!(
+                "unsupported operand type(s) for pow(): '{}', '{}', '{}'",
+                type_name_of(o1),
+                type_name_of(o2),
+                type_name_of(o3),
+            ))
+            .expect("operator error contains no NUL");
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast(),
+                message.as_ptr(),
+            );
+            ptr::null_mut()
+        })
     }
-    if !slot2.is_null() {
-        let result = unsafe { call_ternary_func(slot2, o1, o2, o3) };
-        if result.is_null() || !is_not_implemented(result) {
-            return result;
-        }
-        unsafe { discard_not_implemented(result) };
-    }
-    if !o3.is_null() {
-        let slot3 = unsafe { power_slot(o3) };
-        if !slot3.is_null() && slot3 != slot1 && slot3 != slot2 {
-            let result = unsafe { call_ternary_func(slot3, o1, o2, o3) };
-            if result.is_null() || !is_not_implemented(result) {
-                return result;
-            }
-            unsafe { discard_not_implemented(result) };
-        }
-    }
-    unsafe { binop_type_error(o1, o2, "** or pow()") }
 }
 
 unsafe fn foreign_inplace_power(
@@ -479,7 +527,7 @@ unsafe fn number_power(
         };
         if let Some(mod_bits) = managed_modulus {
             let h = crate::hooks::hooks_or_stubs();
-            let result = unsafe { (h.number_power)(a.bits(), b.bits(), mod_bits) };
+            let result = unsafe { (h.number_power)(inplace as u32, a.bits(), b.bits(), mod_bits) };
             return unsafe { pyobj_from_result(result) };
         }
     }
@@ -546,7 +594,14 @@ unsafe fn inplace_binary_op(
         return ptr::null_mut();
     };
     if let (ResolvedPyObject::ManagedMolt(a), ResolvedPyObject::ManagedMolt(b)) = (left, right) {
-        return unsafe { managed_binary_op(op, a.bits(), b.bits()) };
+        return unsafe {
+            managed_binary_op(
+                op,
+                crate::hooks::NumberOperationMode::InPlace,
+                a.bits(),
+                b.bits(),
+            )
+        };
     }
     let Some((p1, p2)) = (unsafe { protocol_pair_observed(o1, left, o2, right) }) else {
         return ptr::null_mut();
@@ -554,14 +609,29 @@ unsafe fn inplace_binary_op(
     let result = unsafe { foreign_binary_iop1(inplace, binary_protocol(op).0, p1.ptr, p2.ptr) };
     if is_not_implemented(result) {
         unsafe { discard_not_implemented(result) };
+        if let Some(result) = unsafe {
+            crate::api::abstract_sequence::numeric_sequence_fallback(
+                op,
+                crate::hooks::NumberOperationMode::InPlace,
+                p1.ptr,
+                p2.ptr,
+            )
+        } {
+            return result;
+        }
         return unsafe { binop_type_error(p1.ptr, p2.ptr, op_name) };
     }
     result
 }
 
-unsafe fn managed_binary_op(op: NumberBinaryOp, a: u64, b: u64) -> *mut PyObject {
+unsafe fn managed_binary_op(
+    op: NumberBinaryOp,
+    mode: crate::hooks::NumberOperationMode,
+    a: u64,
+    b: u64,
+) -> *mut PyObject {
     let h = crate::hooks::hooks_or_stubs();
-    let result = unsafe { (h.number_binary_op)(op as u32, a, b) };
+    let result = unsafe { (h.number_binary_op)(op as u32, mode as u32, a, b) };
     unsafe { pyobj_from_result(result) }
 }
 
@@ -571,13 +641,35 @@ unsafe fn binary_op(op: NumberBinaryOp, o1: *mut PyObject, o2: *mut PyObject) ->
         return ptr::null_mut();
     };
     if let (ResolvedPyObject::ManagedMolt(a), ResolvedPyObject::ManagedMolt(b)) = (left, right) {
-        return unsafe { managed_binary_op(op, a.bits(), b.bits()) };
+        return unsafe {
+            managed_binary_op(
+                op,
+                crate::hooks::NumberOperationMode::Normal,
+                a.bits(),
+                b.bits(),
+            )
+        };
     }
     let (slot, op_name) = binary_protocol(op);
     let Some((p1, p2)) = (unsafe { protocol_pair_observed(o1, left, o2, right) }) else {
         return ptr::null_mut();
     };
-    unsafe { foreign_binary_op(slot, op_name, p1.ptr, p2.ptr) }
+    let result = unsafe { foreign_binary_op1(slot, p1.ptr, p2.ptr) };
+    if !is_not_implemented(result) {
+        return result;
+    }
+    unsafe { discard_not_implemented(result) };
+    if let Some(result) = unsafe {
+        crate::api::abstract_sequence::numeric_sequence_fallback(
+            op,
+            crate::hooks::NumberOperationMode::Normal,
+            p1.ptr,
+            p2.ptr,
+        )
+    } {
+        return result;
+    }
+    unsafe { binop_type_error(p1.ptr, p2.ptr, op_name) }
 }
 
 /// Dispatch a unary numeric op through the runtime authority.
@@ -629,7 +721,7 @@ fn is_runtime_int(bits: u64) -> bool {
     obj.is_int()
         || obj.is_bool()
         || obj.is_ptr()
-            && unsafe { (crate::hooks::hooks_or_stubs().classify_heap)(bits) }
+            && unsafe { crate::hooks::hooks_or_stubs().classify_heap(bits) }
                 == crate::abi_types::MoltTypeTag::Int as u8
 }
 
@@ -638,26 +730,9 @@ fn pyobj_from_float(v: f64) -> *mut PyObject {
     unsafe { crate::api::numbers::PyFloat_FromDouble(v) }
 }
 
-/// Helper: build a PyObject from an int result.
-///
-/// Routes through the runtime `int_from_i64` hook, which dispatches
-/// inline-vs-BigInt correctly. `MoltObject::from_int` alone truncates any value
-/// outside the 47-bit inline window (mod 2^47) — the silent-integer-miscompile
-/// class — so it must never be used to box an arbitrary i64 here.
+/// A newly computed C integer result uses the public exact constructor owner.
 fn pyobj_from_int(v: i64) -> *mut PyObject {
-    let h = crate::hooks::hooks_or_stubs();
-    let bits = unsafe { (h.int_from_i64)(v) };
-    if bits == 0 {
-        // Hooks unregistered (pre-init/test) — fall back to the inline boxer,
-        // valid only for the inline window. Out-of-window values fail closed as
-        // a null with a set exception rather than a truncated wrong answer.
-        if let Some(inline) = MoltObject::try_from_int(v) {
-            return unsafe { crate::bridge::molt_capi_result_to_pyobj(inline.bits()) };
-        }
-        unsafe { ensure_exception_set() };
-        return ptr::null_mut();
-    }
-    unsafe { crate::bridge::molt_capi_result_to_pyobj(bits) }
+    unsafe { crate::api::numbers::PyLong_FromLongLong(v as std::os::raw::c_longlong) }
 }
 
 // ─── Binary arithmetic ───────────────────────────────────────────────────
@@ -1369,11 +1444,25 @@ pub unsafe extern "C" fn PyNumber_Divmod(o1: *mut PyObject, o2: *mut PyObject) -
         };
         return unsafe { foreign_binary_op(BinarySlot::Divmod, "divmod()", p1.ptr, p2.ptr) };
     };
-    let quotient = unsafe { managed_binary_op(NumberBinaryOp::FloorDivide, a, b) };
+    let quotient = unsafe {
+        managed_binary_op(
+            NumberBinaryOp::FloorDivide,
+            crate::hooks::NumberOperationMode::Normal,
+            a,
+            b,
+        )
+    };
     if quotient.is_null() {
         return ptr::null_mut();
     }
-    let remainder = unsafe { managed_binary_op(NumberBinaryOp::Remainder, a, b) };
+    let remainder = unsafe {
+        managed_binary_op(
+            NumberBinaryOp::Remainder,
+            crate::hooks::NumberOperationMode::Normal,
+            a,
+            b,
+        )
+    };
     if remainder.is_null() {
         unsafe { crate::api::errors::release_preserving_error(&[quotient]) };
         return ptr::null_mut();

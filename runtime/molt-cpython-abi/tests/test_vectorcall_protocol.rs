@@ -90,7 +90,7 @@ fn setup() {
     // A str-materializing hook so `PyUnicode_FromString` (kwnames keys) works;
     // inline ints (`PyLong_FromLong`) and ABI-layout tuples need no hooks.
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.alloc_str = fake_alloc_str;
+    hooks.alloc_str = Some(fake_alloc_str);
     hooks.str_data = fake_str_data;
     support::prepare_abi_test_thread(hooks);
     *REC.lock().unwrap() = REC_EMPTY;

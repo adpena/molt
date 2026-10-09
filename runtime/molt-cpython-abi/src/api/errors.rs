@@ -1962,7 +1962,7 @@ unsafe fn allocate_native_exception(
         return ptr::null_mut();
     }
     if !generic_allocator
-        && unsafe { (crate::hooks::hooks_or_stubs().native_gc_allocate)(allocation.addr()) } < 0
+        && unsafe { crate::hooks::hooks_or_stubs().native_gc_allocate(allocation.addr()) } < 0
     {
         unsafe { check_native_status(-1, "native_gc_allocate") };
         let free = unsafe { (*subtype).tp_free }.unwrap_or(crate::api::memory::PyObject_GC_Del);
@@ -3010,15 +3010,10 @@ pub unsafe extern "C" fn PyErr_NormalizeException(
 /// remain errors, including failures during the owned handle's projection.
 fn allocate_exception_message(text: &str) -> *mut PyObject {
     let h = crate::hooks::hooks_or_stubs();
-    if std::ptr::fn_addr_eq(h.alloc_str, crate::hooks::STUB_HOOKS.alloc_str)
-        || std::ptr::fn_addr_eq(
-            h.runtime_class_borrowed,
-            crate::hooks::STUB_HOOKS.runtime_class_borrowed,
-        )
-    {
+    if h.alloc_str.is_none() || h.runtime_class_borrowed.is_none() {
         return ptr::null_mut();
     }
-    let bits = unsafe { (h.alloc_str)(text.as_ptr(), text.len()) };
+    let bits = unsafe { h.alloc_str(text.as_ptr(), text.len()) };
     if raised_error_pending() {
         with_preserved_error(|| {
             if bits != 0 {
@@ -3098,10 +3093,10 @@ unsafe fn exception_instance_class(value: *mut PyObject) -> *mut PyTypeObject {
         return ptr::null_mut();
     }
     let class = if let Some(handle) = GLOBAL_BRIDGE.molt_handle_for_pyobj(value)
-        && unsafe { (crate::hooks::hooks_or_stubs().classify_heap)(handle.bits()) }
+        && unsafe { crate::hooks::hooks_or_stubs().classify_heap(handle.bits()) }
             == MoltTypeTag::Exception as u8
     {
-        match unsafe { (crate::hooks::hooks_or_stubs().runtime_class_borrowed)(handle.bits()) }
+        match unsafe { crate::hooks::hooks_or_stubs().runtime_class_borrowed(handle.bits()) }
             .decode()
         {
             crate::hooks::DecodedHandleResult::Ok(class_bits) => unsafe {

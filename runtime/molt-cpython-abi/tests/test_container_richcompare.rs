@@ -70,18 +70,19 @@ unsafe extern "C" fn fx_richcompare(
                 unsafe { support::fake_runtime::classify_heap(dict) },
                 MoltTypeTag::Dict as u8
             );
-            (0..unsafe { support::fake_runtime::dict_len(dict) })
-                .map(|index| {
-                    let (mut key, mut value) = (0, 0);
-                    assert_eq!(
-                        unsafe {
-                            support::fake_runtime::dict_entry(dict, index, &mut key, &mut value)
-                        },
-                        1
-                    );
-                    (key, value)
-                })
-                .collect::<Vec<_>>()
+            let mut result = Vec::new();
+            let mut position = 0;
+            loop {
+                let (mut key, mut value) = (0, 0);
+                if unsafe {
+                    support::fake_runtime::dict_next(dict, &mut position, &mut key, &mut value)
+                } == 0
+                {
+                    break;
+                }
+                result.push((key, value));
+            }
+            result
         };
         let left = entries(left);
         let right = entries(right);
@@ -171,7 +172,7 @@ fn install() {
     hooks.list_append = fx_list_append;
     hooks.list_len = fx_list_len;
     hooks.list_item = fx_list_item;
-    hooks.classify_heap = fx_classify_heap;
+    hooks.classify_heap = Some(fx_classify_heap);
     support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
