@@ -32,6 +32,7 @@ from molt.custody_layout import unconfigured_state_root
 from tests.process_guard_common import (
     install_module_os_view,
     install_module_view,
+    start_owned_test_process,
 )
 from molt.memory_guard_paths import (
     active_guard_marker_dir,
@@ -1254,42 +1255,48 @@ def test_actual_darwin_kernel_row_matches_libproc_identity() -> None:
 @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin kernel process table")
 def test_actual_darwin_sampler_omits_unreaped_child() -> None:
     model = memory_guard._process_model
-    # A forked child the test reaps itself, so the SZOMB window is observable.
-    # It reports readiness on one pipe and exits when the other one closes.
-    ready_read, ready_write = os.pipe()
-    release_read, release_write = os.pipe()
-    child = os.fork()
-    if child == 0:  # pragma: no cover - child process
-        os.close(ready_read)
-        os.close(release_write)
-        os.write(ready_write, b"x")
-        os.read(release_read, 1)
-        os._exit(0)
-    os.close(ready_write)
-    os.close(release_read)
+    # The child is owned by this guarded test but not reaped until after the
+    # kernel zombie observation. Popen execs a fresh interpreter instead of
+    # forking the threaded guard/test process.
+    child = start_owned_test_process(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            "import os; os.write(1, b'x'); os.read(0, 1)",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
     try:
-        assert os.read(ready_read, 1) == b"x"
-        sample = model.sample_processes_posix().get(child)
+        assert child.stdout is not None and child.stdin is not None
+        assert child.stdout.read(1) == b"x"
+        sample = model.sample_processes_posix().get(child.pid)
         assert sample is not None
         assert sample.ppid == os.getpid()
-        assert sample.started_at_ns == model._darwin_proc_started_at_ns(child)
-        os.close(release_write)
-        # Not reaped yet on purpose: the child sits in SZOMB, still listed by
-        # proc_listallpids, while libproc answers ESRCH for it.
+        assert sample.started_at_ns == model._darwin_proc_started_at_ns(child.pid)
+        child.stdin.close()
+        # An exiting process fails libproc lookups while its kernel status is
+        # still SRUN, so wait on the kernel row itself (HF-88).
         deadline = time.monotonic() + 5.0
-        while model._darwin_proc_metadata(child) is not None:
+        while True:
+            row = model._darwin_proc_kernel_row(child.pid)
+            if row is not None and row.status == model._DARWIN_SZOMB:
+                break
             assert time.monotonic() < deadline, "child never reached SZOMB"
             time.sleep(0.02)
-        row = model._darwin_proc_kernel_row(child)
-        assert row is not None and row.status == model._DARWIN_SZOMB
         assert row.started_at_ns == sample.started_at_ns
-        assert child in model._darwin_proc_table()
-        assert child not in model.sample_processes_posix()
+        assert child.pid in model._darwin_proc_table()
+        assert child.pid not in model.sample_processes_posix()
     finally:
-        os.close(ready_read)
-        os.waitpid(child, 0)
-    assert model._darwin_proc_kernel_row(child) is None
-    assert child not in model.sample_processes_posix()
+        if child.stdin is not None and not child.stdin.closed:
+            child.stdin.close()
+        child.wait(timeout=5)
+        if child.stdout is not None:
+            child.stdout.close()
+    assert model._darwin_proc_kernel_row(child.pid) is None
+    assert child.pid not in model.sample_processes_posix()
 
 
 def test_descendant_pids_includes_grandchildren() -> None:
