@@ -49,11 +49,17 @@ MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024
 
 
 def _source_mode_matches_git(actual: int, recorded: int) -> bool:
+    """Whether a projected file's permissions agree with its Git mode.
+
+    Git records only the executable bit. A checkout or an installer applies the
+    user's umask to the rest (pip writes ``0o666 & ~umask``, so umask 002
+    gives 664 for a recorded 644), and the content digest already binds the
+    bytes. A file must keep the owner's executable bit as recorded and carry
+    no setuid, setgid or sticky bit.
+    """
+
     actual &= 0o7777
-    expected = recorded & 0o777
-    # The archive/install umask may remove access, but not add permissions or
-    # erase the owner's Git-tracked executable bit.
-    return not (actual & ~expected) and bool(actual & 0o100) == bool(expected & 0o100)
+    return not actual & 0o7000 and bool(actual & 0o100) == bool(recorded & 0o100)
 
 
 def verify_source_inventory(
@@ -61,7 +67,6 @@ def verify_source_inventory(
     files: Sequence[Mapping[str, Any]],
     *,
     manifest_name: str | None = None,
-    verify_modes: bool | None = None,
 ) -> Path:
     """Verify the same exact source projection before packaging and after install.
 
@@ -101,7 +106,8 @@ def verify_source_inventory(
         allowed.add(manifest_name)
     if actual_files != allowed or actual_dirs != directories:
         raise ValueError("Compiler source file/directory closure is not exact")
-    check_modes = os.name != "nt" if verify_modes is None else verify_modes
+    # Windows records no POSIX permission bits to compare.
+    check_modes = os.name != "nt"
 
     def verify_file(name: str) -> None:
         entry = expected[name]
@@ -109,10 +115,13 @@ def verify_source_inventory(
         identity = stable_regular_file_content_identity(path, label="compiler source")
         if any(identity[key] != entry[key] for key in ("size", "sha256")):
             raise ValueError(f"Compiler source content changed: {name}")
-        if check_modes and not _source_mode_matches_git(
-            path.stat().st_mode, entry["mode"]
-        ):
-            raise ValueError(f"Compiler source mode changed: {name}")
+        if check_modes:
+            mode = path.stat().st_mode
+            if not _source_mode_matches_git(mode, entry["mode"]):
+                raise ValueError(
+                    f"Compiler source mode changed: {name} (found "
+                    f"{mode & 0o7777:o}, recorded {entry['mode'] & 0o777:o})"
+                )
 
     with ThreadPoolExecutor(
         max_workers=min(16, max(1, len(expected))),
