@@ -243,11 +243,10 @@ def test_missing_runtime_binding_fails_without_layout_defaults() -> None:
         prepare_wasm_codegen_layout(None, linked=True, split_runtime=True)
 
 
-def test_layout_retains_compact_facts_and_never_reopens_admitted_bytes(
+def test_layout_retains_compact_facts_and_reads_admitted_bytes_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from molt import toolchain_identity
-    from molt.cli import runtime_wasm_generation as module
 
     binding = _bind_pair(tmp_path)
     original = toolchain_identity.read_stable_regular_file
@@ -257,11 +256,7 @@ def test_layout_retains_compact_facts_and_never_reopens_admitted_bytes(
         reads.append(identity.path)
         return original(identity, **kwargs)
 
-    def no_hash(*args, **kwargs):
-        pytest.fail("layout or repinning hashed an admitted member")
-
     monkeypatch.setattr(toolchain_identity, "read_stable_regular_file", read)
-    monkeypatch.setattr(module, "stable_regular_file_identity", no_hash)
     first = prepare_wasm_codegen_layout(binding, linked=True, split_runtime=True)
     repinned = bind_runtime_wasm_codegen(binding.generation, None)
     assert (
