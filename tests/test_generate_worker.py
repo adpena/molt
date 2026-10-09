@@ -834,7 +834,6 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
 
     root = Path(__file__).resolve().parents[1]
     browser_host = (root / "wasm/browser_host.js").read_text(encoding="utf-8")
-    assert "normalizeImportResult," in browser_host
     assert "normalizeValueForKind," in browser_host
     assert (
         "const loadRuntimeManifest = async (options, moduleUrl = import.meta.url) => {"
@@ -896,7 +895,7 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
         "normalizeValueForKind(value, callSignature.params[index] || null)"
         in browser_host
     )
-    assert "return normalizeImportResult(fn(...callArgs), resultKind);" in browser_host
+    assert "return normalizeValueForKind(fn(...callArgs), resultKind);" in browser_host
     assert "runtimeImportAbi," in browser_host
     assert "runtimeImportFallbacks," in browser_host
     assert "entry.name === 'fast_list_append'" not in browser_host

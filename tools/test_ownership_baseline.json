@@ -172,7 +172,6 @@
   "tests/test_wasm_performance.py",
   "tests/test_wasm_pipeline_e2e.py",
   "tests/test_wasm_profile_tool.py",
-  "tests/test_wasm_runner_table_base.py",
   "tests/test_wasm_socket_sendmsg_recvmsg.py",
   "tests/test_wasm_split_runtime_imported_module.py",
   "tests/test_wasm_startup_failures.py",

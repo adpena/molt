@@ -197,7 +197,7 @@ Example:
 
 ### 5.4 Socket host interface (capability-gated)
 WASM socket intrinsics mirror POSIX-style sockets and feed the runtime io_poller:
-- `molt_socket_*` imports (see `wit/molt-runtime.wit` for full list)
+- `molt_socket_*` imports (the `[[import]]` rows of `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` list them all)
 - `molt_socket_poll_host(handle, events) -> i32` returns a bitmask of
   `IO_EVENT_READ|IO_EVENT_WRITE|IO_EVENT_ERROR`
 - `molt_socket_wait_host(handle, events, timeout_ms) -> i32` blocks until readiness or timeout
@@ -377,20 +377,17 @@ A v0.1 Portable ABI is successful when:
 
 ### 13.1 Current State (Phase 1 — Complete)
 
-Molt's WASM target currently uses **raw wasmtime imports** via `Linker::func_wrap()`
-calls in `molt-wasm-host`. The intrinsic interface is defined in WIT format at
-`wit/molt-runtime.wit` (622+ intrinsic functions), but this WIT file serves as
-documentation — the actual binding is manual.
-
-**Current wasmtime version:** 41.0.3
+Molt's WASM target uses **raw wasmtime imports** via `Linker::func_wrap()`
+calls in `molt-wasm-host`. `runtime/molt-backend-wasm/src/wasm_abi_manifest.toml` declares every
+import's name and type, and `tools/gen_wasm_abi.py` projects it into the
+backend and the hosts. No WIT file exists yet. `Cargo.lock` pins the wasmtime
+version.
 
 ### 13.2 Phase 2: Component Model Migration (Planned)
 
-**Target:** wasmtime 42+ (when Component Model API stabilizes)
-
 Migrate from raw `Linker::func_wrap()` imports to Component Model linking:
 
-1. **Split WIT into capability-scoped interfaces:**
+1. **Generate capability-scoped WIT interfaces from the WASM ABI manifest:**
    - `molt:runtime/core` — lifecycle, object model, arithmetic, type system
    - `molt:runtime/io` — file, socket, process, stream operations
    - `molt:runtime/codec` — JSON, MsgPack, CBOR, Arrow IPC serialization
@@ -419,7 +416,7 @@ Migrate from raw `Linker::func_wrap()` imports to Component Model linking:
    - Automatic binding generation via `wit-bindgen`
 
 4. **Migration steps:**
-   - [ ] Split `wit/molt-runtime.wit` into per-capability `.wit` files
+   - [ ] Generate per-capability `.wit` files from the WASM ABI manifest
    - [ ] Define `molt-app` world in `wit/world.wit`
    - [ ] Replace `Linker::func_wrap()` calls with `wasmtime::component::Linker`
    - [ ] Update `runtime/molt-backend-wasm/src/wasm.rs` to emit Component Model modules
@@ -452,7 +449,6 @@ These will remain as custom `molt:runtime/*` imports alongside WASI interfaces.
 
 ### 13.4 Prerequisites
 
-- [ ] wasmtime Component Model API stable (42+)
 - [ ] WASI Preview 2 filesystem/network support mature
 - [ ] Molt's WIT interface stabilized (no breaking changes in 3+ months)
 - [ ] Performance validation: Component Model overhead < 2% vs raw imports

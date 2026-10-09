@@ -20,6 +20,7 @@ const {
   extractWasmTableBase,
   installManifestLinkImportTraps,
   installWasmTagImports,
+  normalizeValueForKind,
   parseWasmMetadata,
   parseWasmExportFunctionSignatures: parseWasmExportFunctionSignaturesFromBridge,
   parseWasmImports,
@@ -81,7 +82,6 @@ let runtimePath = null;
 let runtimeBuffer = null;
 let runtimeManifest = null;
 let runtimeManifestPath = null;
-let witSource = null;
 let runtimeAssetsLoaded = false;
 let wasmEnv = null;
 let wasi = null;
@@ -377,19 +377,10 @@ const loadRuntimeAssets = () => {
   if (!runtimePath || !fs.existsSync(runtimePath)) {
     runtimePath = null;
     runtimeBuffer = null;
-    witSource = null;
     return;
   }
   if (!runtimeBuffer) {
     runtimeBuffer = fs.readFileSync(runtimePath);
-  }
-  const witCandidates = [
-    path.join(__dirname, 'wit', 'molt-runtime.wit'),
-    path.join(__dirname, '..', 'wit', 'molt-runtime.wit'),
-  ];
-  const witPath = witCandidates.find((candidate) => fs.existsSync(candidate));
-  if (witPath) {
-    witSource = fs.readFileSync(witPath, 'utf8');
   }
 };
 
@@ -5029,90 +5020,11 @@ const makeTable = (limits) => {
   return new WebAssembly.Table(desc);
 };
 
-const parseWitFunctions = (source) => {
-  const funcSigs = new Map();
-  let buffer = '';
-  for (const rawLine of source.split('\n')) {
-    const line = rawLine.trim();
-    if (!buffer) {
-      if (!/^[A-Za-z0-9_]+:\s*func\(/.test(line)) {
-        continue;
-      }
-      buffer = line;
-    } else {
-      buffer = `${buffer} ${line}`;
-    }
-    if (!buffer.includes(';')) {
-      continue;
-    }
-    const match = buffer.match(
-      /^\s*([A-Za-z0-9_]+):\s*func\((.*)\)\s*(?:->\s*([^;]+))?;/
-    );
-    if (match) {
-      const name = match[1];
-      const rawArgs = match[2].trim();
-      const argTypes = rawArgs
-        ? rawArgs
-            .split(',')
-            .map((part) => part.split(':')[1]?.trim())
-            .filter(Boolean)
-        : [];
-      const retType = match[3] ? match[3].trim() : null;
-      funcSigs.set(name, { argTypes, retType });
-    }
-    buffer = '';
-  }
-  return funcSigs;
-};
-
-const expectsRuntimeImportBigInt = (ty) =>
-  ty === 'molt-object' || ty === 'u64' || ty === 's64' || ty === 'i64';
-
-const runtimeImportToBigInt = (value, ty) => {
-  if (typeof value === 'bigint') {
-    return value;
-  }
-  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
-    throw new TypeError(`Expected integer for ${ty}, got ${value}`);
-  }
-  return BigInt.asUintN(64, BigInt(value));
-};
-
-const normalizeRuntimeImportArg = (arg, ty) => {
-  if (!ty) {
-    return arg;
-  }
-  if (expectsRuntimeImportBigInt(ty)) {
-    return runtimeImportToBigInt(arg, ty);
-  }
-  if (typeof arg === 'bigint') {
-    return Number(arg);
-  }
-  return arg;
-};
-
-const normalizeRuntimeImportReturn = (value, ty) => {
-  if (!ty) {
-    return value;
-  }
-  if (expectsRuntimeImportBigInt(ty)) {
-    return runtimeImportToBigInt(value, ty);
-  }
-  if (typeof value === 'bigint') {
-    return Number(value);
-  }
-  return value;
-};
-
+// The runtime module's own type section is the only signature authority: each
+// import converts its arguments and result by the export it calls.
 const runtimeExportImportSignature = (runtimeExport) => {
   const signature = runtimeExportSignatures[runtimeExport] || null;
-  if (!signature || !Array.isArray(signature.params)) {
-    return null;
-  }
-  return {
-    argTypes: signature.params,
-    retType: signature.result || null,
-  };
+  return signature && Array.isArray(signature.params) ? signature : null;
 };
 
 const runtimeExportNameForImport = (importName) => {
@@ -5125,16 +5037,6 @@ const runtimeExportNameForImport = (importName) => {
     : null;
 };
 
-let cachedRuntimeImportFuncSigs = null;
-
-const runtimeImportFuncSigs = () => {
-  if (cachedRuntimeImportFuncSigs) {
-    return cachedRuntimeImportFuncSigs;
-  }
-  cachedRuntimeImportFuncSigs = witSource ? parseWitFunctions(witSource) : new Map();
-  return cachedRuntimeImportFuncSigs;
-};
-
 const makeRuntimeImportAdapter = (
   name,
   fn,
@@ -5142,9 +5044,9 @@ const makeRuntimeImportAdapter = (
   { traceStrings = false, appMemoryProvider = null } = {},
 ) => {
   return (...args) => {
-    const converted = sig ? args.map((arg, idx) => normalizeRuntimeImportArg(arg, sig.argTypes[idx])) : args;
+    const converted = sig ? args.map((arg, idx) => normalizeValueForKind(arg, sig.params[idx] || null)) : args;
     if (traceImports) {
-      console.error(`molt_runtime.${name}`, sig ? sig.argTypes : [], converted);
+      console.error(`molt_runtime.${name}`, sig ? sig.params : [], converted);
     }
     const bridgeMemory =
       typeof appMemoryProvider === 'function' ? appMemoryProvider() : null;
@@ -5196,7 +5098,7 @@ const makeRuntimeImportAdapter = (
         `[molt wasm] string_from_bytes ptr=${ptr} len=${len} out=${outPtr} ret=${result} bits=${outBits} preview=${preview}`
       );
     }
-    return sig ? normalizeRuntimeImportReturn(result, sig.retType) : result;
+    return sig ? normalizeValueForKind(result, sig.result || null) : result;
   };
 };
 
@@ -5216,7 +5118,8 @@ const runtimeFallbackFunction = (runtimeExports, name) => {
     if (typeof callBindIc !== 'function' || typeof callargsNew !== 'function' || typeof callargsPushPos !== 'function') {
       return null;
     }
-    return (methodBits, ...argBits) => {
+    // The composite receives the app's own i64 bits unconverted.
+    const fn = (methodBits, ...argBits) => {
       const runtime = { exports: runtimeExports };
       return withRuntimeOwnedValues(runtime, [fallback.call_arity, 0],
         value => boxRuntimeInt(runtime, value), ([arityBits, zeroBits]) => {
@@ -5227,34 +5130,36 @@ const runtimeFallbackFunction = (runtimeExports, name) => {
           return callBindIc(zeroBits, methodBits, builderBits);
         }, true);
     };
+    return { fn, sig: null };
   }
   if (fallback.strategy === 'direct_export' && fallback.exports.length === 1) {
-    const candidate = runtimeExports[fallback.exports[0]];
-    return typeof candidate === 'function' ? candidate : null;
+    const [exportName] = fallback.exports;
+    const candidate = runtimeExports[exportName];
+    return typeof candidate === 'function'
+      ? { fn: candidate, sig: runtimeExportImportSignature(exportName) }
+      : null;
   }
   return null;
 };
 
 const buildRuntimeImportDirect = (runtimeInst) => {
   const runtimeImports = {};
-  const funcSigs = runtimeImportFuncSigs();
   for (const entry of outputImports.funcImports) {
     if (entry.module !== 'molt_runtime') {
       continue;
     }
     const runtimeExport = runtimeExportNameForImport(entry.name);
-    let fn = runtimeExport ? runtimeInst.exports[runtimeExport] : null;
-    if (typeof fn !== 'function') {
-      fn = runtimeFallbackFunction(runtimeInst.exports, entry.name);
-    }
-    if (typeof fn !== 'function') {
+    const direct = runtimeExport ? runtimeInst.exports[runtimeExport] : null;
+    const resolved =
+      typeof direct === 'function'
+        ? { fn: direct, sig: runtimeExportImportSignature(runtimeExport) }
+        : runtimeFallbackFunction(runtimeInst.exports, entry.name);
+    if (!resolved) {
       throw new Error(
         `molt_runtime.${entry.name} missing export ${runtimeExport || entry.name}`,
       );
     }
-    const sig =
-      funcSigs.get(entry.name) ||
-      (runtimeExport ? runtimeExportImportSignature(runtimeExport) : null);
+    const { fn, sig } = resolved;
     runtimeImports[entry.name] = (...args) => {
       if (traceRun) {
         console.error(`[molt wasm] direct runtime import ${entry.name} argc=${args.length}`);
