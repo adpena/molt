@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "71e7bbebb7ec2dd43ac9f5748b2cd59f1f8f93e435724ff109383602263c67ec",
+  "authority_sha256": "787171de4708905f05df7f3038546e0c64bc56718c249c692a294456de9ad53d",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -3815,7 +3815,8 @@
         "tests/test_frontend_midend_passes.py",
         "tests/test_frontend_inline_frame_legality.py",
         "tests/test_python_binding_join_frontier.py",
-        "tests/test_class_annotation_namespace_lowering.py"
+        "tests/test_class_annotation_namespace_lowering.py",
+        "tests/test_frontend_async_placement.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -3872,7 +3873,8 @@
         "tests/test_frontend_midend_passes.py",
         "tests/test_frontend_inline_frame_legality.py",
         "tests/test_python_binding_join_frontier.py",
-        "tests/test_class_annotation_namespace_lowering.py"
+        "tests/test_class_annotation_namespace_lowering.py",
+        "tests/test_frontend_async_placement.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
