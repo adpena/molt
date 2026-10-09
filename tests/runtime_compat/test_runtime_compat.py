@@ -57,8 +57,8 @@ def _run_runtime_compat_process(
 def discover_libraries() -> list[str]:
     """Find all test scripts and extract library names."""
     libs = []
-    for p in sorted(SCRIPTS_DIR.glob("test_*.py")):
-        name = p.stem.removeprefix("test_")
+    for p in sorted(SCRIPTS_DIR.glob("compat_*.py")):
+        name = p.stem.removeprefix("compat_")
         libs.append(name)
     return libs
 
@@ -231,7 +231,7 @@ def test_library(
     verbose: bool = False,
 ) -> dict:
     """Test a single library. Returns a result dict."""
-    script = SCRIPTS_DIR / f"test_{lib}.py"
+    script = SCRIPTS_DIR / f"compat_{lib}.py"
     if not script.exists():
         return {
             "lib": lib,

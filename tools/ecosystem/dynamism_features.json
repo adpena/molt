@@ -24,7 +24,7 @@
     "D1": {
       "name": "Decorators (static + parametrized + stateful)",
       "status": "supported",
-      "evidence": "runtime call/closure path; tests/runtime_compat/scripts/test_tenacity.py proves a real retry decorator runs",
+      "evidence": "runtime call/closure path; tests/runtime_compat/scripts/compat_tenacity.py proves a real retry decorator runs",
       "notes": "Used by nearly all packages."
     },
     "D2": {
@@ -109,7 +109,7 @@
       "name": "Controlled string-exec codegen (dataclasses/namedtuple/attrs-__init__)",
       "status": "typed-shim",
       "evidence": "src/molt/stdlib/dataclasses.py:510,883 (structural synthesis + types.new_class)",
-      "notes": "Used by dataclasses, NamedTuple, attrs (slotted). The canonical compatible-via-typed-shim template. functionally tested (tests/runtime_compat/scripts/test_attrs.py)."
+      "notes": "Used by dataclasses, NamedTuple, attrs (slotted). The canonical compatible-via-typed-shim template. functionally tested (tests/runtime_compat/scripts/compat_attrs.py)."
     },
     "D15": {
       "name": "Arbitrary user exec/eval/compile",
