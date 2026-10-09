@@ -43,6 +43,30 @@ def _has_nested_require_intrinsic_use(tree: ast.AST) -> bool:
     return visitor.nested_use
 
 
+def _releases_helper(tree: ast.Module) -> bool:
+    """The module unbinds the helper at module scope, by ``del`` or pop."""
+
+    for statement in tree.body:
+        if isinstance(statement, ast.Delete) and any(
+            isinstance(target, ast.Name) and target.id == "_require_intrinsic"
+            for target in statement.targets
+        ):
+            return True
+        if (
+            isinstance(statement, ast.Expr)
+            and isinstance(statement.value, ast.Call)
+            and isinstance(statement.value.func, ast.Attribute)
+            and statement.value.func.attr == "pop"
+            and isinstance(statement.value.func.value, ast.Call)
+            and getattr(statement.value.func.value.func, "id", None) == "globals"
+            and statement.value.args
+            and isinstance(statement.value.args[0], ast.Constant)
+            and statement.value.args[0].value == "_require_intrinsic"
+        ):
+            return True
+    return False
+
+
 def test_ast_safe_private_intrinsic_helper_lane_is_exhausted() -> None:
     remaining: list[str] = []
 
@@ -52,9 +76,9 @@ def test_ast_safe_private_intrinsic_helper_lane_is_exhausted() -> None:
         text = path.read_text(encoding="utf-8")
         if "require_intrinsic as _require_intrinsic" not in text:
             continue
-        if 'globals().pop("_require_intrinsic", None)' in text:
-            continue
         tree = ast.parse(text)
+        if _releases_helper(tree):
+            continue
         if _has_nested_require_intrinsic_use(tree):
             continue
         remaining.append(str(path.relative_to(REPO_ROOT)))

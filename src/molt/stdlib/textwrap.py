@@ -402,3 +402,5 @@ def indent(text: str, prefix: str, predicate=None) -> str:
                 prefixed_lines.append(prefix)
             prefixed_lines.append(line)
     return "".join(prefixed_lines)
+
+globals().pop("_require_intrinsic", None)
