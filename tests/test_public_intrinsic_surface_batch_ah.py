@@ -10,10 +10,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
 import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 def _load_module(name, path_text):
@@ -25,27 +25,10 @@ def _load_module(name, path_text):
     return module
 
 
-builtins._molt_intrinsics = {{
-    "molt_capabilities_has": lambda name: True,
+install_registry({{
     "molt_punycode_encode": lambda text: str(text).encode("ascii", "ignore"),
     "molt_punycode_decode": lambda text, errors="strict": bytes(text).decode("ascii", errors),
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 mbc = types.ModuleType("_multibytecodec")
 mbc.MultibyteIncrementalEncoder = type("MultibyteIncrementalEncoder", (), {{}})

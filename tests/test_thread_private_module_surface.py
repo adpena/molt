@@ -11,11 +11,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import _thread as _host_thread
 import importlib.util
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 class _State:
@@ -99,7 +98,7 @@ def _thread_stack_size_set(size):
     return size
 
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_thread_timeout_max": lambda: _host_thread.TIMEOUT_MAX,
     "molt_lock_new": _lock_new,
     "molt_lock_acquire": _lock_acquire,
@@ -122,23 +121,7 @@ builtins._molt_intrinsics = {{
     "molt_thread_stack_size_get": lambda: _State.stack_size,
     "molt_thread_stack_size_set": _thread_stack_size_set,
     "molt_signal_set_interrupt": lambda signum: None,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 def _load_module(name, path_text):

@@ -11,11 +11,11 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
 import base64 as _host_base64
-import builtins
 import importlib.util
 import operator as _host_operator
 import sys
 import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 def _load_module(name, path_text):
@@ -44,7 +44,7 @@ for _name in _names:
 sys.modules["_operator"] = _operator_mod
 
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_math_isfinite": lambda x: True,
     "molt_math_isinf": lambda x: False,
     "molt_math_isnan": lambda x: False,
@@ -103,7 +103,6 @@ builtins._molt_intrinsics = {{
     "molt_uuid_uuid3_bytes": lambda ns, name: bytes.fromhex("33333333123412348123abcdef123456"),
     "molt_uuid_uuid4_bytes": lambda: bytes.fromhex("44444444123442348123abcdef123456"),
     "molt_uuid_uuid5_bytes": lambda ns, name: bytes.fromhex("55555555123452348123abcdef123456"),
-    "molt_capabilities_has": lambda name: True,
     "molt_binascii_a2b_base64": lambda s, strict_mode=False: _host_base64.b64decode(s),
     "molt_binascii_b2a_base64": lambda b, newline=True: _host_base64.b64encode(bytes(b)) + (b"\\n" if newline else b""),
     "molt_binascii_a2b_hex": lambda s: bytes.fromhex(bytes(s).decode() if not isinstance(s, str) else s),
@@ -121,23 +120,7 @@ builtins._molt_intrinsics = {{
     "molt_copy_error": lambda msg: None,
     "molt_copy_replace": lambda obj, changes: obj,
     "molt_operator_truth": lambda value=True: bool(value),
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 math_mod = _load_module("molt_test_math", {str(STDLIB_ROOT / "math.py")!r})

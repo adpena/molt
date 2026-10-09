@@ -10,12 +10,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import bisect as _host_bisect
 import random as _host_random
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 class _HandleBox:
     next_id = 0
@@ -32,7 +31,7 @@ def _new_handle(seed=None):
     return handle
 
 
-builtins._molt_intrinsics = {{
+install_registry({{
     "molt_random_new": lambda: _new_handle(),
     "molt_random_seed": lambda handle, seed, version=2: _HandleBox.states[handle].seed(seed, version),
     "molt_random_random": lambda handle: _HandleBox.states[handle].random(),
@@ -64,23 +63,7 @@ builtins._molt_intrinsics = {{
     "molt_math_lgamma": __import__('math').lgamma,
     "molt_math_log": __import__('math').log,
     "molt_math_isfinite": __import__('math').isfinite,
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 def _load_module(name, path_text):

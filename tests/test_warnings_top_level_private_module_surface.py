@@ -10,10 +10,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
-import builtins
 import importlib.util
 import sys
-import types
+from tests.stdlib_intrinsic_registry import install_registry
 
 
 def _warn(message, category=None, stacklevel=1, source=None):
@@ -24,9 +23,7 @@ def _warn_explicit(message, category, filename, lineno, module=None, registry=No
     return ("warn_explicit", str(message), getattr(category, "__name__", None), str(filename), int(lineno))
 
 
-builtins._molt_intrinsics = {{
-    "molt_stdlib_probe": lambda: True,
-    "molt_capabilities_has": lambda _name=None: True,
+install_registry({{
     "molt_warnings_warn": _warn,
     "molt_warnings_warn_explicit": _warn_explicit,
     "molt_warnings_formatwarning": lambda *args: "formatted",
@@ -35,23 +32,7 @@ builtins._molt_intrinsics = {{
     "molt_warnings_filterwarnings": lambda *args: None,
     "molt_warnings_resetwarnings": lambda *args: None,
     "molt_warnings_filters_get": lambda: [("default", None, Warning, None, 0)],
-}}
-
-_intrinsics_mod = types.ModuleType("_intrinsics")
-
-
-def _require_intrinsic(name, namespace=None):
-    intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
-    if name in intrinsics:
-        value = intrinsics[name]
-        if namespace is not None:
-            namespace[name] = value
-        return value
-    raise RuntimeError(f"intrinsic unavailable: {{name}}")
-
-
-_intrinsics_mod.require_intrinsic = _require_intrinsic
-sys.modules["_intrinsics"] = _intrinsics_mod
+}})
 
 
 def _load_module(name, path_text):
