@@ -1,5 +1,5 @@
 from __future__ import annotations
-from tests.process_guard_common import run_guarded_test_process
+from tests.process_guard_common import install_module_view, run_guarded_test_process
 
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -34,7 +34,7 @@ from molt.wasi_sdk_identity import (
     render_wasi_sdk_install_receipt,
     wasi_sdk_tree_identity,
 )
-from tests.subprocess_view import patch_module_subprocess
+import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -452,7 +452,7 @@ def _mock_tool_process_versions(monkeypatch: pytest.MonkeyPatch) -> None:
             output = "LLVM (test):\n  LLVM version 22.1.8\n"
         return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
-    patch_module_subprocess(monkeypatch, "molt.llvm_toolchain", run=run)
+    install_module_view(monkeypatch, "subprocess", subprocess, llvm_toolchain, run=run)
 
 
 def _mock_llvm_config(
@@ -1224,8 +1224,10 @@ def test_tool_version_rejects_captured_poison_content_before_execution(
 
     monkeypatch.setattr(llvm_toolchain, "stable_executable_probe", probe)
     monkeypatch.setattr(llvm_toolchain, "reject_poison_toolchain_path", reject)
-    patch_module_subprocess(
+    install_module_view(
         monkeypatch,
+        "subprocess",
+        subprocess,
         llvm_toolchain,
         run=lambda *_args, **_kwargs: pytest.fail("poison content was executed"),
     )
@@ -1263,8 +1265,10 @@ def test_tool_version_rejects_captured_onedrive_alias_before_execution(
         yield selected, captured_identity
 
     monkeypatch.setattr(llvm_toolchain, "stable_executable_probe", probe)
-    patch_module_subprocess(
+    install_module_view(
         monkeypatch,
+        "subprocess",
+        subprocess,
         llvm_toolchain,
         run=lambda *_args, **_kwargs: pytest.fail("OneDrive alias was executed"),
     )
@@ -1496,7 +1500,7 @@ def test_verifier_refuses_manifest_release_with_mixed_patch_tools(
         )
         return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
-    patch_module_subprocess(monkeypatch, "molt.llvm_toolchain", run=run)
+    install_module_view(monkeypatch, "subprocess", subprocess, llvm_toolchain, run=run)
     with pytest.raises(LlvmToolchainConfigError, match="expected exactly 22.1.8"):
         verify_llvm_toolchain_prefix(
             ROOT,
@@ -1584,9 +1588,11 @@ def test_complete_prefix_verifier_rejects_mismatched_tool_version(
     prefix = tmp_path / "llvm"
     _write_complete_llvm_prefix(prefix)
     _mock_llvm_config(prefix, monkeypatch)
-    patch_module_subprocess(
+    install_module_view(
         monkeypatch,
-        "molt.llvm_toolchain",
+        "subprocess",
+        subprocess,
+        llvm_toolchain,
         run=lambda command, **_kwargs: SimpleNamespace(
             returncode=0,
             stdout=(
@@ -1632,7 +1638,7 @@ def test_canonical_prefix_requires_exact_patch_for_every_companion_tool(
         )
         return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
-    patch_module_subprocess(monkeypatch, "molt.llvm_toolchain", run=run)
+    install_module_view(monkeypatch, "subprocess", subprocess, llvm_toolchain, run=run)
     with pytest.raises(LlvmToolchainConfigError, match="expected exactly 22.1.8"):
         verify_llvm_toolchain_prefix(
             ROOT,
@@ -1666,7 +1672,7 @@ def test_compile_link_probe_uses_verified_host_linker_by_absolute_path(
         commands.append((command, kwargs["env"]))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    patch_module_subprocess(monkeypatch, "molt.llvm_toolchain", run=run)
+    install_module_view(monkeypatch, "subprocess", subprocess, llvm_toolchain, run=run)
     monkeypatch.setattr(
         "molt.platform_toolchain.select_darwin_toolchain",
         lambda _env: SimpleNamespace(environment=lambda: {"SDKROOT": "/pinned-sdk"}),
@@ -1759,7 +1765,7 @@ def test_complete_prefix_verifier_requires_real_compile_link_probe(
         )
         return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
-    patch_module_subprocess(monkeypatch, "molt.llvm_toolchain", run=run)
+    install_module_view(monkeypatch, "subprocess", subprocess, llvm_toolchain, run=run)
     with pytest.raises(LlvmToolchainConfigError, match="compile and link together"):
         verify_llvm_toolchain_prefix(
             ROOT,

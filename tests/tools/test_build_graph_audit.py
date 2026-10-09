@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from tests.subprocess_view import patch_module_subprocess
+from tests.process_guard_common import install_module_view
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_ROOT = REPO_ROOT / "tools"
@@ -407,7 +407,7 @@ def test_metadata_probe_normalizes_workspace_wrapper(
 
     monkeypatch.setenv("RUSTC_WORKSPACE_WRAPPER", "sccache")
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
-    patch_module_subprocess(monkeypatch, bga, run=fake_run)
+    install_module_view(monkeypatch, "subprocess", subprocess, bga, run=fake_run)
 
     bga.run_cargo_metadata(tmp_path)
 

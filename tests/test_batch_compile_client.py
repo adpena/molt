@@ -11,7 +11,8 @@ from tools.batch_compile_client import (
     BatchCompileProtocolError,
     BatchCompileServerClient,
 )
-from tests.subprocess_view import patch_module_subprocess
+import subprocess
+from tests.process_guard_common import install_module_view
 
 
 class _FakeProc:
@@ -161,7 +162,9 @@ def test_batch_compile_client_owns_guard_context_by_default(
         "from_env",
         fake_from_env,
     )
-    patch_module_subprocess(monkeypatch, batch_compile_client, Popen=FakeProc)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, batch_compile_client, Popen=FakeProc
+    )
     guard = batch_compile_client.harness_memory_guard.memory_guard
     monkeypatch.setattr(guard._process_model, "process_started_at_ns", lambda pid: 1000)
     monkeypatch.setattr(

@@ -15,8 +15,8 @@ from molt import pytest_memory_guard_bootstrap
 from molt import pytest_memory_guard_config_plugin
 from molt import memory_guard_paths
 from molt import temporary_artifacts
-from tests.process_guard_common import install_module_os_view
-from tests.subprocess_view import patch_module_subprocess
+from tests.process_guard_common import install_module_os_view, install_module_view
+import subprocess
 
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
@@ -335,10 +335,14 @@ def test_pytest_startup_windows_handoff_waits_for_guard_child(monkeypatch) -> No
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
     # Complete the Windows simulation on every host: the flag is 0 off Windows.
-    patch_module_subprocess(
-        monkeypatch, pytest_memory_guard_bootstrap, CREATE_NEW_PROCESS_GROUP=0x00000200
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        pytest_memory_guard_bootstrap,
+        CREATE_NEW_PROCESS_GROUP=0x00000200,
+        run=fake_run,
     )
-    patch_module_subprocess(monkeypatch, pytest_memory_guard_bootstrap, run=fake_run)
     monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "execvpe", fake_execvpe)
     monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "_exit", fake_exit)
     monkeypatch.setattr(
@@ -386,7 +390,13 @@ def test_pytest_startup_windows_handoff_interrupt_exits_cleanly(monkeypatch) -> 
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
-    patch_module_subprocess(monkeypatch, pytest_memory_guard_bootstrap, run=fake_run)
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        pytest_memory_guard_bootstrap,
+        run=fake_run,
+    )
     monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "_exit", fake_exit)
 
     try:

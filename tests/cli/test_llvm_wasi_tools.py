@@ -21,7 +21,7 @@ from tests.cli.native_link_test_support import (
     static_archive_bytes,
 )
 from tests.operation_probe import same_thread_probe
-from tests.subprocess_view import patch_module_subprocess
+from tests.process_guard_common import install_module_view
 
 _TOOL_FILE_NAMES = {
     "cc": "clang",
@@ -534,7 +534,9 @@ def test_sdk_source_compilers_disable_hidden_config_before_probe_and_materializa
         probes.append(tuple(command))
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    patch_module_subprocess(monkeypatch, source_extension_toolchain, run=run)
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, source_extension_toolchain, run=run
+    )
     plan = source_extension_target.resolve_source_extension_target_plan(
         requested, host_platform="linux", host_arch="x86_64"
     )

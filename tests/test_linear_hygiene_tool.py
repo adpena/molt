@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 import tools.linear_hygiene as linear_hygiene
-from tests.subprocess_view import patch_module_subprocess
+import subprocess
+from tests.process_guard_common import install_module_view
 
 
 def test_sanitize_issue_title_removes_trailing_noise() -> None:
@@ -105,8 +106,10 @@ def test_run_formal_suite_warns_on_runtime_mismatch(
             "quint": {"diagnostics": {"runtime_mismatch_detected": True}, "errors": []}
         },
     }
-    patch_module_subprocess(
+    install_module_view(
         monkeypatch,
+        "subprocess",
+        subprocess,
         linear_hygiene,
         run=lambda *args, **kwargs: SimpleNamespace(
             returncode=1,

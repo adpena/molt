@@ -48,13 +48,13 @@ from molt.cli.source_extension_object_closure_schema import (
 from molt.source_extension_link_inputs import SourceExtensionLinkInputs
 from tests.cli.native_link_test_support import static_archive_bytes
 from tests.cli.process_guard import run_cli_test_process
-from tests.subprocess_view import patch_module_subprocess
 from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbol as _wasm_exporting_i64_unary_symbol,
 )
 from tests.wasm_object_fixtures import (
     wasm_exporting_i64_unary_symbols as _wasm_exporting_i64_unary_symbols,
 )
+from tests.process_guard_common import install_module_view
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -3674,7 +3674,13 @@ def test_source_extension_freestanding_metadata_needs_no_wasi_or_libc(
         probe_sources.append(source.read_text(encoding="ascii"))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    patch_module_subprocess(monkeypatch, cli_source_extension_toolchain, run=fake_run)
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        cli_source_extension_toolchain,
+        run=fake_run,
+    )
     resolved = cli_source_extension_toolchain._resolve_source_extension_toolchain(
         target_plan
     )
@@ -3890,7 +3896,13 @@ def test_source_extension_toolchain_rejects_wasm_cc_without_wasi_headers(
             "fatal error: 'errno.h' file not found\n",
         )
 
-    patch_module_subprocess(monkeypatch, cli_source_extension_toolchain, run=fake_run)
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        cli_source_extension_toolchain,
+        run=fake_run,
+    )
 
     toolchain = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain(
         _source_extension_target_plan("wasm")
@@ -3943,7 +3955,13 @@ def test_source_extension_toolchain_prefers_wasm_cc_and_probes_target(
         seen_commands.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    patch_module_subprocess(monkeypatch, cli_source_extension_toolchain, run=fake_run)
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        cli_source_extension_toolchain,
+        run=fake_run,
+    )
 
     toolchain = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain(
         _source_extension_target_plan("wasm")
@@ -4007,7 +4025,13 @@ def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
         seen_commands.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    patch_module_subprocess(monkeypatch, cli_source_extension_toolchain, run=fake_run)
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        cli_source_extension_toolchain,
+        run=fake_run,
+    )
 
     toolchain = cli_source_extension_toolchain._resolve_source_extension_wasm_toolchain(
         _source_extension_target_plan("wasm")

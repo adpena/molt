@@ -18,7 +18,7 @@ from molt.cli import process_execution, quality_commands, script_commands
 from molt.node_runtime import NodeRuntime
 from molt.llvm_toolchain import LlvmBackendPin
 from tests.cli.process_guard import run_cli_test_process
-from tests.subprocess_view import patch_module_subprocess
+from tests.process_guard_common import install_module_view
 
 # These cases build synthetic projects and assert developer-host roots and
 # guard limits; hosted custody has its own cases in
@@ -385,7 +385,7 @@ def test_cli_run_command_uses_memory_guard_prefix(
         cli,
         lambda cwd: _fake_cli_harness(calls),
     )
-    patch_module_subprocess(monkeypatch, cli, run=fail_raw_run)
+    install_module_view(monkeypatch, "subprocess", subprocess, cli, run=fail_raw_run)
 
     rc = process_execution._run_command(
         ["python3", "-c", "print('ok')"],
@@ -427,7 +427,7 @@ def test_cli_timed_command_uses_memory_guard_elapsed(
         cli,
         lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
     )
-    patch_module_subprocess(monkeypatch, cli, run=fail_raw_run)
+    install_module_view(monkeypatch, "subprocess", subprocess, cli, run=fail_raw_run)
 
     result = process_execution._run_command_timed(
         ["python3", "-c", "print('ok')"],
@@ -501,7 +501,13 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
         raise AssertionError("cargo helper used raw subprocess.run")
 
     monkeypatch.setenv("MOLT_BUILD_MAX_PROCESS_RSS_GB", "0.25")
-    patch_module_subprocess(monkeypatch, COMMAND_RUNTIME, run=fail_raw_subprocess_run)
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        COMMAND_RUNTIME,
+        run=fail_raw_subprocess_run,
+    )
     _patch_memory_guard_loader(
         monkeypatch,
         cli,
@@ -594,7 +600,7 @@ def test_cli_wrapper_build_uses_default_memory_guard(
         cli,
         lambda cwd: _fake_cli_harness(calls, result_factory=result_factory),
     )
-    patch_module_subprocess(monkeypatch, cli, run=fail_raw_run)
+    install_module_view(monkeypatch, "subprocess", subprocess, cli, run=fail_raw_run)
 
     contract, duration, error = cli._run_wrapper_build(
         file_path=str(entry),

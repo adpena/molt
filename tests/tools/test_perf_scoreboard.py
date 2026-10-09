@@ -12,11 +12,11 @@ import json
 import os
 import sys
 from pathlib import Path
-from tests.process_guard_common import install_module_os_view
+from tests.process_guard_common import install_module_os_view, install_module_view
 from types import SimpleNamespace
 
 import pytest
-from tests.subprocess_view import patch_module_subprocess
+import subprocess
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 for _p in (REPO_ROOT / "tools", REPO_ROOT / "src"):
@@ -1995,7 +1995,7 @@ def test_profiling_popen_uses_benchmark_process_group(monkeypatch) -> None:
         "batch_process_group_kwargs",
         _fake_process_group_kwargs,
     )
-    patch_module_subprocess(monkeypatch, ps, Popen=_FakePopen)
+    install_module_view(monkeypatch, "subprocess", subprocess, ps, Popen=_FakePopen)
 
     proc = ps._profiling_popen(["sample", "target"], env={"K": "V"})
 

@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
-from tests.subprocess_view import patch_module_subprocess
+from tests.process_guard_common import install_module_view
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -85,8 +85,10 @@ def test_safe_run_preserves_guard_infrastructure_outcome(
         encoding="utf-8",
     )
     monkeypatch.setattr(safe_run, "_summary_path", lambda _label: summary_path)
-    patch_module_subprocess(
+    install_module_view(
         monkeypatch,
+        "subprocess",
+        subprocess,
         safe_run,
         run=lambda *_args, **_kwargs: subprocess.CompletedProcess([], 125),
     )
