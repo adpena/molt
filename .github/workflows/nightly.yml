@@ -108,7 +108,7 @@ jobs:
           path: .
 
       - name: Verify and hydrate the shared runtime
-        run: python3 tools/nightly_runtime_bundle.py verify-extract --archive proof-results/nightly/prepare/runtime-bundle.tar
+        run: uv run python tools/nightly_runtime_bundle.py verify-extract --archive proof-results/nightly/prepare/runtime-bundle.tar
 
       - name: Run exact conformance shard
         run: |
@@ -164,7 +164,7 @@ jobs:
           path: .
 
       - name: Verify and hydrate the shared runtime
-        run: python3 tools/nightly_runtime_bundle.py verify-extract --archive proof-results/nightly/prepare/runtime-bundle.tar
+        run: uv run python tools/nightly_runtime_bundle.py verify-extract --archive proof-results/nightly/prepare/runtime-bundle.tar
 
       - name: Run exact differential shard
         env:
@@ -221,7 +221,7 @@ jobs:
           path: .
 
       - name: Verify and hydrate the shared runtime
-        run: python3 tools/nightly_runtime_bundle.py verify-extract --archive proof-results/nightly/prepare/runtime-bundle.tar
+        run: uv run python tools/nightly_runtime_bundle.py verify-extract --archive proof-results/nightly/prepare/runtime-bundle.tar
 
       - name: Run exact regrtest shard without duplicate differential work
         run: |
