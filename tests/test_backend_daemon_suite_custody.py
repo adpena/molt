@@ -14,7 +14,10 @@ from molt.exact_json import write_exact
 from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 from tools import memory_guard
 
-from tests.process_guard_common import run_custody_subject_process
+from tests.process_guard_common import (
+    install_module_os_view,
+    run_custody_subject_process,
+)
 
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
@@ -533,6 +536,9 @@ def test_dead_leader_never_claims_unobserved_worker_custody(
 
 
 def test_birth_probe_snapshot_error_is_unavailable(monkeypatch):
+    # POSIX reads the native birth time; the process snapshot serves the other
+    # hosts, so select that path here on every host.
+    install_module_os_view(monkeypatch, daemon, name="nt")
     monkeypatch.setattr(daemon, "_load_memory_guard_module", lambda: memory_guard)
 
     def fail():

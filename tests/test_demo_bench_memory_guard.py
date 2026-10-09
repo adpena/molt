@@ -11,12 +11,17 @@ import sys
 from pathlib import Path
 
 import molt.dx as molt_dx
+from molt import custody_layout
 import pytest
 
 from tests.process_guard_common import (
     run_custody_subject_process,
     run_guarded_test_process,
 )
+
+# The demo bench defaults its roots to the checkout on a developer host; a
+# hosted job's custody root and caps would decide them instead.
+pytestmark = pytest.mark.usefixtures("developer_host_context", "no_ambient_guard_caps")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -88,7 +93,11 @@ def test_demo_bench_run_cmd_uses_memory_guard(monkeypatch: pytest.MonkeyPatch) -
             call["env"],
         )
     )
-    assert call["env"]["TMPDIR"] == str(Path(call["env"]["MOLT_EXT_ROOT"]) / "tmp")
+    # Scratch is <root>/tmp unless that lies in the source tree (a checkout
+    # that is its own custody root), which moves it out of the tree.
+    assert call["env"]["TMPDIR"] == str(
+        custody_layout.scratch_root(Path(call["env"]["MOLT_EXT_ROOT"]), demo_bench.ROOT)
+    )
 
 
 def test_demo_bench_base_env_forces_repo_roots_unless_explicit(

@@ -8,8 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-# These tests fake process data the session sentinel also reads.
-pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
+# These tests fake process data the session sentinel also reads, and resolve
+# guard limits the CI plan's exported caps would otherwise decide.
+pytestmark = pytest.mark.usefixtures("session_sentinel_paused", "no_ambient_guard_caps")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
