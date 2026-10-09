@@ -160,10 +160,8 @@ def test_darwin_post_link_hook_uses_same_bounded_header_authority(
 ):
     binary = tmp_path / "image"
     binary.write_bytes(macho_header())
-    install_module_view(monkeypatch, "sys", sys, native_link_plan, platform="darwin")
-    install_module_view(
-        monkeypatch, "platform", platform, native_link_plan, machine=lambda: "x86_64"
-    )
+    # The check runs only on a Darwin host; native_binary is its reader.
+    install_module_view(monkeypatch, "sys", sys, native_binary, platform="darwin")
     monkeypatch.setattr(Path, "read_bytes", lambda path: pytest.fail("whole-file read"))
     assert native_binary._darwin_binary_magic_error(binary) is None
     binary.write_bytes(macho_header(cpu=0x0100000C))
