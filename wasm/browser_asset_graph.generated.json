@@ -427,7 +427,7 @@
     }
   },
   "scanner": {
-    "package_lock_sha256": "48aa8d11316e983cc93be2cfe319503092bed17b4d311290bd8c60a6a70051bc",
+    "package_lock_sha256": "7d8e66491c259a119ce86ff6d67bf5ac74050b2b91526c3cd78ffc9d1d7d207b",
     "path": "tools/browser_asset_graph/scan.mjs",
     "sha256": "346a692737424515c8e1350590c028aefba400cfa626512c8f58778211199c05"
   },
