@@ -2741,3 +2741,44 @@ def test_process_wide_patch_probe_ignores_process_wide_by_nature(tmp_path: Path)
         "    monkeypatch.setattr(mod, 'helper', fake)\n"
     )
     assert _process_wide_patch_count(tmp_path, body) == 0
+
+
+def _raw_intrinsic_binding_count(tmp_path: Path, relative: str, body: str) -> int:
+    path = tmp_path / "src" / "molt" / "stdlib" / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return sum(int(f.metric) for f in SA.probe_stdlib_raw_intrinsic_names(tmp_path))
+
+
+def test_raw_intrinsic_probe_counts_module_scope_bindings(tmp_path: Path):
+    body = (
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        "molt_spawn = _require_intrinsic('molt_spawn')\n"
+        "_MOLT_PRIVATE = _require_intrinsic('molt_private')\n"
+        "_require_intrinsic('molt_injected', globals())\n"
+        "from asyncio import molt_block_on\n"
+        "try:\n"
+        "    molt_guarded = _require_intrinsic('molt_guarded')\n"
+        "except RuntimeError:\n"
+        "    pass\n"
+        "if TYPE_CHECKING:\n"
+        "    def molt_declared() -> None: ...\n"
+        "def helper():\n"
+        "    molt_local = _require_intrinsic('molt_local')\n"
+        "    return molt_local\n"
+    )
+    # molt_spawn, the injected name, the import and the guarded binding leak;
+    # a private name, a type-checking declaration and a local do not.
+    assert _raw_intrinsic_binding_count(tmp_path, "mod.py", body) == 4
+
+
+def test_raw_intrinsic_probe_ignores_code_outside_the_stdlib(tmp_path: Path):
+    body = "molt_spawn = object()\n"
+    stdlib_count = _raw_intrinsic_binding_count(tmp_path, "mod.py", body)
+    outside = tmp_path / "src" / "molt" / "cli.py"
+    outside.write_text(body, encoding="utf-8")
+    assert (
+        sum(int(f.metric) for f in SA.probe_stdlib_raw_intrinsic_names(tmp_path))
+        == stdlib_count
+        == 1
+    )

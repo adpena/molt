@@ -2746,6 +2746,110 @@ def probe_process_wide_test_patches(root: Path) -> list[Finding]:
     return findings
 
 
+def _is_type_checking_guard(test: ast.expr) -> bool:
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+    )
+
+
+def _module_scope_statements(body: list[ast.stmt]) -> Iterator[ast.stmt]:
+    """Statements that run at module scope, through guards but not into defs."""
+
+    for node in body:
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(node, ast.If) and _is_type_checking_guard(node.test):
+            # Type-checking declarations never run.
+            yield from _module_scope_statements(node.orelse)
+            continue
+        for field in ("body", "orelse", "finalbody"):
+            nested = getattr(node, field, None)
+            if isinstance(nested, list):
+                yield from _module_scope_statements(nested)
+        for handler in getattr(node, "handlers", ()):
+            yield from _module_scope_statements(handler.body)
+        for case in getattr(node, "cases", ()):
+            yield from _module_scope_statements(case.body)
+
+
+def _binds_raw_intrinsic_name(node: ast.stmt) -> bool:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return node.name.startswith("molt_")
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return any(
+            (alias.asname or alias.name.split(".")[0]).startswith("molt_")
+            for alias in node.names
+        )
+    if isinstance(node, ast.Assign):
+        targets: list[ast.expr] = list(node.targets)
+    elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+        targets = [node.target]
+    elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+        # ``require_intrinsic("molt_x", globals())`` binds the raw name.
+        call = node.value
+        return (
+            len(call.args) >= 2
+            and isinstance(call.args[0], ast.Constant)
+            and str(call.args[0].value).startswith("molt_")
+            and isinstance(call.args[1], ast.Call)
+            and getattr(call.args[1].func, "id", None) == "globals"
+        )
+    else:
+        return False
+    return any(
+        isinstance(name, ast.Name) and name.id.startswith("molt_")
+        for target in targets
+        for name in ast.walk(target)
+    )
+
+
+def probe_stdlib_raw_intrinsic_names(root: Path) -> list[Finding]:
+    """Stdlib modules that leave a raw ``molt_*`` intrinsic name bound.
+
+    A name bound at module scope is a public attribute of the module, which
+    CPython's module does not have. Bind intrinsics to private ``_MOLT_*``
+    names and release the resolver helper. Reported per file, ratcheted in
+    aggregate.
+    """
+    findings: list[Finding] = []
+    stdlib = root / "src" / "molt" / "stdlib"
+    for path in _iter_source_files(root, (".py",)):
+        if not path.is_relative_to(stdlib):
+            continue
+        try:
+            text = _source_text(path)
+        except OSError:
+            continue
+        if "molt_" not in text:
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        lines = [
+            node.lineno
+            for node in _module_scope_statements(tree.body)
+            if _binds_raw_intrinsic_name(node)
+        ]
+        if not lines:
+            continue
+        rel = path.relative_to(root).as_posix()
+        findings.append(
+            Finding(
+                probe="stdlib_raw_intrinsic_name",
+                severity="medium" if len(lines) >= 10 else "low",
+                title=f"{len(lines)} raw intrinsic names bound at module scope",
+                location=f"{rel}:{lines[0]}",
+                detail=", ".join(f"L{line}" for line in lines[:8]),
+                suggested_action="bind each intrinsic to a private _MOLT_* name",
+                class_retired="stdlib-namespace-leak",
+                metric=len(lines),
+            )
+        )
+    return findings
+
+
 PROBES = (
     probe_semantic_fallthroughs,
     probe_large_source_files,
@@ -2760,6 +2864,7 @@ PROBES = (
     probe_duplicate_authorities,
     probe_registry_reconciliation,
     probe_process_wide_test_patches,
+    probe_stdlib_raw_intrinsic_names,
 )
 
 
@@ -2805,6 +2910,9 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     repr_name_scalar = [f for f in findings if f.probe == "repr_name_scalar_authority"]
     dup = [f for f in findings if f.probe == "duplicate_authority"]
     process_wide_patches = [f for f in findings if f.probe == "process_wide_test_patch"]
+    raw_intrinsic_names = [
+        f for f in findings if f.probe == "stdlib_raw_intrinsic_name"
+    ]
     kitchen_sink_files = float(len(kitchen_sink))
     max_kitchen_sink_structural_score = float(
         max((f.metric for f in kitchen_sink), default=0)
@@ -2850,6 +2958,9 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         "duplicate_authorities": float(len(dup)),
         "process_wide_test_patches": float(
             sum(int(f.metric) for f in process_wide_patches)
+        ),
+        "stdlib_raw_intrinsic_bindings": float(
+            sum(int(f.metric) for f in raw_intrinsic_names)
         ),
     }
 
