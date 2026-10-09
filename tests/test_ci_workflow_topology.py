@@ -494,7 +494,11 @@ def test_ci_command_diagnostics_survive_missing_final_receipts(family: str) -> N
     assert not fnmatchcase(upload["with"]["name"], strict_download["with"]["pattern"])
     paths = upload["with"]["path"].splitlines()
     if family == "rust":
-        assert paths == ["proof-receipts/evidence/cargo-test-truth-runs/"]
+        assert paths == [
+            "proof-receipts/evidence/cargo-test-truth-runs/",
+            "proof-receipts/evidence/runtime-gate-runs/",
+            "${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}",
+        ]
     else:
         assert job["env"]["MOLT_DEBUG_ARTIFACT_DIR"] == (
             "${{ github.workspace }}/proof-receipts/evidence/llvm-backend-debug"
@@ -651,6 +655,9 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
     assert outputs["pytest_guard_root"] == str(pytest_dir)
     values = {
         "matrix.cell": cell,
+        "env.CARGO_TARGET_DIR": str(custody / "target")
+        if state.startswith("failed-")
+        else "",
         "env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT": ""
         if state == "setup-no-root"
         else str(custody),
@@ -678,15 +685,23 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
         if detailed
         else [
             "proof-receipts/platform-portability-${{ matrix.cell }}.json",
+            "proof-receipts/evidence/runtime-gate-runs/",
+            "${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}",
             *common_profiles,
             "${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT != '' && format('{0}/tmp/pytest-memory-guard/**/*.json', env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT) || '' }}",
         ]
     )
     rendered = [_diagnostic_path_expression(line, values) for line in paths]
     if not state.startswith("failed-"):
-        assert rendered[1:3] == ["", ""]
+        assert all(
+            not _diagnostic_path_expression(line, values) for line in common_profiles
+        )
         if detailed or state == "setup-no-root":
-            assert not any(rendered[3:])
+            assert not any(
+                _diagnostic_path_expression(line, values)
+                for line in paths
+                if line.startswith("${{")
+            )
 
     expected: set[Path] = set()
     inner = {
@@ -709,9 +724,17 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             custody / "tmp/memory_guard/commands/current" / name
             for name in ("custody.json", "startup.json", "guard.json")
         ]
+    else:
+        retained_files += [
+            workspace / "proof-receipts/evidence/runtime-gate-runs/run/aggregate.json",
+            workspace
+            / "proof-receipts/evidence/runtime-gate-runs/run/child-0/raw.stderr.log",
+            custody / "target/release-output/deps/molt-test-artifacts/run/stderr.log",
+        ]
     for retained in retained_files:
         # Same filenames under a foreign run must never be swept into upload.
-        foreign = runner_temp / "mp-99999-1" / retained.relative_to(custody)
+        owner = custody if retained.is_relative_to(custody) else workspace
+        foreign = runner_temp / "mp-99999-1" / retained.relative_to(owner)
         foreign.parent.mkdir(parents=True, exist_ok=True)
         foreign.write_text('{"foreign":true}', encoding="utf-8")
         if state.startswith("failed-"):
@@ -722,7 +745,7 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
         (pytest_dir / "unrelated.txt").write_text("not guard JSON", encoding="utf-8")
     if state == "failed-with-receipt":
         receipt = workspace / rendered[0]
-        receipt.parent.mkdir(parents=True)
+        receipt.parent.mkdir(parents=True, exist_ok=True)
         receipt.write_text('{"status":"failed"}', encoding="utf-8")
         expected.add(receipt)
     retained_paths: set[Path] = set()
@@ -730,11 +753,19 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
         candidate = Path(path)
         if not candidate.is_absolute():
             candidate = workspace / candidate
-        assert candidate.is_relative_to(custody) or candidate == workspace / rendered[0]
-        retained_paths.update(
-            Path(found)
-            for found in glob.glob(str(candidate), recursive=True, include_hidden=True)
+        assert (
+            candidate.is_relative_to(custody)
+            or candidate == workspace / rendered[0]
+            or candidate == workspace / "proof-receipts/evidence/runtime-gate-runs"
         )
+        for found in glob.glob(str(candidate), recursive=True, include_hidden=True):
+            path = Path(found)
+            if path.is_dir():
+                retained_paths.update(
+                    child for child in path.rglob("*") if child.is_file()
+                )
+            else:
+                retained_paths.add(path)
     assert retained_paths == expected
     if state.startswith("failed-"):
         assert json.loads(profile.read_text(encoding="utf-8")) == inner

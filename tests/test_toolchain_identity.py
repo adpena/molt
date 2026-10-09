@@ -857,3 +857,56 @@ def test_attested_reader_rejects_declared_size_above_requested_limit(tmp_path):
     captured = identity.stable_regular_file_identity(path, label="fixture")
     with pytest.raises(ValueError, match="exceeds size limit"):
         identity.read_stable_regular_file(captured, label="fixture", max_bytes=4)
+
+
+@pytest.mark.parametrize("joined", [False, True])
+@pytest.mark.parametrize("prefix", ["", " \t"])
+def test_explicit_tool_command_preserves_embedded_quoted_option(
+    tmp_path, joined, prefix
+):
+    tool = tmp_path / "selected tools" / "clang.exe"
+    tool.parent.mkdir()
+    tool.write_bytes(b"selected compiler image")
+    option = (
+        '--sysroot="~/selected SDK/sysroot"'
+        if joined
+        else '--sysroot "~/selected SDK/sysroot"'
+    )
+    command = identity.resolve_explicit_tool_command(
+        f'{prefix}"{tool}" {option} ""', label="compiler", environment={}
+    )
+    expected = (
+        ("--sysroot=~/selected SDK/sysroot",)
+        if joined
+        else ("--sysroot", "~/selected SDK/sysroot")
+    )
+    assert command == (str(tool), *expected, "")
+
+
+@pytest.mark.parametrize("raw", ["", " \t\r\n", '"" -c'])
+def test_explicit_tool_command_rejects_missing_executable(tmp_path, raw):
+    with pytest.raises(ValueError, match="compiler is empty"):
+        identity.resolve_explicit_tool_command(
+            raw, label="compiler", environment={}, cwd=tmp_path
+        )
+
+
+def test_explicit_tool_literal_path_preserves_leading_filename_whitespace(tmp_path):
+    tool = tmp_path / " tools" / "compiler.exe"
+    tool.parent.mkdir()
+    tool.write_bytes(b"literal file selected before command parsing")
+    assert identity.resolve_explicit_tool_command(
+        " tools/compiler.exe", label="compiler", environment={}, cwd=tmp_path
+    ) == (str(tool),)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="actual native Windows quoting")
+def test_native_command_quotes_preserve_backslashes_empty_and_embedded_quotes():
+    assert identity.split_native_command(
+        r'"C:\selected tools\clang.exe" --sysroot="C:\SDK root\sysroot" "" --name=a\"b'
+    ) == (
+        r"C:\selected tools\clang.exe",
+        r"--sysroot=C:\SDK root\sysroot",
+        "",
+        '--name=a"b',
+    )

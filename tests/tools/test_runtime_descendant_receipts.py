@@ -539,7 +539,15 @@ def test_mode_specific_proof_matches_each_literal_child_contract():
     expected = {
         (support.TRANSACTION, mode): (
             (f"transaction outcome and custody verified: {mode}\n",),
-            (),
+            (
+                "molt runtime lifecycle failed: native owners survived the last callback drain before class retirement\n",
+            )
+            if mode in {"ordinary", "ordinary-return"}
+            else (
+                "molt runtime lifecycle failed: injected shutdown drain C extension cleanup panic\n",
+            )
+            if mode not in {"body-only", "healthy"}
+            else (),
         )
         for mode in (
             "prior",
@@ -645,4 +653,50 @@ def test_discovery_completion_does_not_replace_original_diagnostic_evidence(
         tmp_path / "receipts", image, [support.DISCOVERY], records
     )
     with pytest.raises(descendants.DescendantEvidenceError, match=f"{stream} lacks"):
+        verify(receipt)
+
+
+@pytest.mark.parametrize(
+    ("mode", "wrong_cause"),
+    [
+        (
+            "prior",
+            "native owners survived the last callback drain before class retirement",
+        ),
+        (
+            "cleanup",
+            "native owners survived the last callback drain before class retirement",
+        ),
+        (
+            "both",
+            "native owners survived the last callback drain before class retirement",
+        ),
+        (
+            "cold-both",
+            "native owners survived the last callback drain before class retirement",
+        ),
+        (
+            "reentry",
+            "native owners survived the last callback drain before class retirement",
+        ),
+        ("ordinary", "injected shutdown drain C extension cleanup panic"),
+        ("ordinary-return", "injected shutdown drain C extension cleanup panic"),
+    ],
+)
+def test_transaction_rejects_resealed_wrong_primary_failure(
+    tmp_path, mode, wrong_cause
+):
+    image = support.make_image(tmp_path)
+    records = support.family_records(image, [support.TRANSACTION])
+    selected = next(row for row in records if row["mode"] == mode)
+    # Keep the exact image, mode marker, exit status, complete roster and valid
+    # stream custody. An alternate real lifecycle failure is not this control.
+    selected["stderr"] = support.publish(
+        Path(selected["stderr"]["path"]),
+        f"molt runtime lifecycle failed: {wrong_cause}\n",
+    )
+    receipt = support.binary_receipt(
+        tmp_path / "receipts", image, [support.TRANSACTION], records
+    )
+    with pytest.raises(descendants.DescendantEvidenceError, match="stderr lacks"):
         verify(receipt)

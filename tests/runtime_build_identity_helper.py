@@ -477,6 +477,7 @@ def provisioned_wasi_sdk_fixture(fixture_root: RuntimeFixtureRoot):
         receipt.write_text(
             render_wasi_sdk_install_receipt(asdict(asset), wasi_sdk_tree_identity(sdk)),
             encoding="utf-8",
+            newline="",
         )
     return llvm_toolchain.load_wasi_sdk_installation(
         _compiler_root(), prefix, verify_tree=False

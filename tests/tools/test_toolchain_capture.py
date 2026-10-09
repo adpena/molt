@@ -2606,7 +2606,10 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
         )
     assert directory_calls == [tmp_path / "include"]
     assert identity["link_selection"]["native_c"][0]["resources"] is None
-    files = {row.path for row in toolchain_capture.frozen_files(captured)}
+    files = {
+        process_image_capture._image_path_key(Path(row.path))
+        for row in toolchain_capture.frozen_files(captured)
+    }
     assert process_image_capture._image_path_key(tools["git"]) in files
     for tool in located.values():
         assert {
@@ -2697,7 +2700,11 @@ def test_native_c_resource_receivers_reject_resealed_substitutions(
         header = process_image_capture._image_path_key(
             tmp_path / "include" / "header.h"
         )
-        original = [row for row in raw["files"] if row["path"] == header]
+        original = [
+            row
+            for row in raw["files"]
+            if process_image_capture._image_path_key(Path(row["path"])) == header
+        ]
         assert len(original) == 1
         forced = (tmp_path / "forced.h").read_bytes()
         replacement = {
@@ -2707,9 +2714,14 @@ def test_native_c_resource_receivers_reject_resealed_substitutions(
         }
         assert ".." in Path(replacement["path"]).parts
         assert not any(row["path"] == replacement["path"] for row in raw["files"])
-        retained = [row for row in raw["files"] if row["path"] != header]
+        retained = [
+            row
+            for row in raw["files"]
+            if process_image_capture._image_path_key(Path(row["path"])) != header
+        ]
         assert any(
-            row["path"] == process_image_capture._image_path_key(tmp_path / "forced.h")
+            process_image_capture._image_path_key(Path(row["path"]))
+            == process_image_capture._image_path_key(tmp_path / "forced.h")
             for row in retained
         )
         raw["files"] = sorted([*retained, replacement], key=lambda row: row["path"])
@@ -2826,7 +2838,7 @@ def test_cargo_capture_preserves_explicit_library_artifacts_and_host(
 ):
     tools = {}
     for name in ("rustc", "cargo", "target-linker", "host-linker"):
-        path = tmp_path / name
+        path = tmp_path / (name + (".exe" if os.name == "nt" else ""))
         path.write_bytes(("image:" + name).encode())
         path.chmod(0o755)
         tools[name] = path

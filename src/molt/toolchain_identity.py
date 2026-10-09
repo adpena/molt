@@ -384,6 +384,35 @@ def resolve_executable(
     return _executable_paths(candidate, label=label)[0]
 
 
+def split_native_command(value: str) -> tuple[str, ...]:
+    """Parse a host command using its actual native quoting authority."""
+    if os.name != "nt":
+        return tuple(shlex.split(value))
+
+    # CommandLineToArgvW is the Windows command-line grammar used by native
+    # launchers. shlex's POSIX and non-POSIX modes both mis-handle valid quoted
+    # Windows paths in edge cases, so use the platform authority directly.
+    import ctypes
+
+    argc = ctypes.c_int()
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    command_line_to_argv = shell32.CommandLineToArgvW
+    command_line_to_argv.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+    command_line_to_argv.restype = ctypes.POINTER(ctypes.c_wchar_p)
+    argv = command_line_to_argv(value, ctypes.byref(argc))
+    if not argv:
+        raise ValueError(
+            f"invalid Windows command line (error {ctypes.get_last_error()})"
+        )
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    try:
+        return tuple(argv[index] for index in range(argc.value))
+    finally:
+        kernel32.LocalFree(argv)
+
+
 def resolve_explicit_tool_command(
     raw_command: str,
     *,
@@ -413,17 +442,16 @@ def resolve_explicit_tool_command(
         direct_path = absolute(raw_command)
         if direct_path.is_file():
             return (str(direct_path),)
+    # Preserve literal filesystem spelling above. Command delimiters are not
+    # argv[0]; Windows otherwise emits an empty first argument for leading
+    # whitespace and selects the current executable for an empty command.
+    command_text = raw_command.lstrip(" \t\r\n")
+    if not command_text:
+        raise ValueError(f"{label} is empty")
     try:
-        argv = shlex.split(raw_command, posix=os.name != "nt")
+        argv = split_native_command(command_text)
     except ValueError as exc:
         raise ValueError(f"{label} is not a valid shell command: {exc}") from exc
-    if os.name == "nt":
-        argv = [
-            argument[1:-1]
-            if len(argument) >= 2 and argument[0] == argument[-1] == '"'
-            else argument
-            for argument in argv
-        ]
     if not argv or not argv[0]:
         raise ValueError(f"{label} is empty")
     executable = argv[0]

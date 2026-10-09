@@ -135,6 +135,17 @@ OWNERS: Mapping[str, Owner] = {
                 0,
                 True,
                 stdout_markers=(f"transaction outcome and custody verified: {mode}\n",),
+                stderr_markers=(
+                    (
+                        "molt runtime lifecycle failed: native owners survived the last callback drain before class retirement\n",
+                    )
+                    if mode in {"ordinary", "ordinary-return"}
+                    else (
+                        "molt runtime lifecycle failed: injected shutdown drain C extension cleanup panic\n",
+                    )
+                    if mode not in {"body-only", "healthy"}
+                    else ()
+                ),
             )
             for mode in (
                 "prior",

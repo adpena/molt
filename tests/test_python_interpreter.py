@@ -169,3 +169,24 @@ def test_molt_diff_metadata_probe_preserves_multi_token_python_command(monkeypat
     assert commands == [
         ["py", "-3.13", "-c", "import sys; print(sys.version_info[:2])"]
     ]
+
+
+def test_python_explicit_command_uses_host_quoted_option_authority(tmp_path):
+    executable = tmp_path / "selected Python.exe"
+    executable.write_bytes(b"selected interpreter image")
+    assert python_interpreter.explicit_python_command(
+        f'"{executable}" -X pycache_prefix="selected cache"'
+    ) == (str(executable), "-X", "pycache_prefix=selected cache")
+
+
+def test_python_explicit_command_preserves_parser_failure_contract(monkeypatch):
+    from molt import toolchain_identity
+
+    def invalid(_value):
+        raise ValueError("native parser refused command")
+
+    monkeypatch.setattr(toolchain_identity, "split_native_command", invalid)
+    with pytest.raises(
+        python_interpreter.PythonInterpreterError, match="native parser refused command"
+    ):
+        python_interpreter.explicit_python_command("selected-python --invalid")
