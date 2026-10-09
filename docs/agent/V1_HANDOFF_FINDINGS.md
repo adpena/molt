@@ -59,12 +59,14 @@ The broader affected rerun passes 949 checks with two existing skips and nine
 slow deselections; its four remaining expectations pass in the focused successor.
 These overlapping cohorts are not a whole-project or target-execution verdict.
 
-The merge with main `21b8f4798` reconciles all changed authorities and keeps
+The integration through main `1d18146ae` reconciles the changed authorities and keeps
 one lazy frontend dominance solver. All 1,426 owning frontend checks and source
 typing pass. The affected packaging/toolchain cohort passes 1,175 checks with
 12 platform skips and two slow deselections; six stale fixture failures are
 repaired and pass with their owning files. All 27 reproducible generators are
-current. A controlled full-tensor comparison changes only the CFG authority:
+current. The later generator/audit consolidation passes all 700 affected checks;
+its unused heap-generator executor is removed. A controlled full-tensor
+comparison changes only the CFG authority:
 median warm lowering falls from 3.611 to 2.130 seconds across three samples,
 with identical emitted IR in all eight cold/warm runs. The complete instrumented
 capsules peak at approximately 271 and 275 MiB of process-tree RSS respectively.
@@ -97,7 +99,7 @@ review found caller cleanup after unclosed writers and incomplete persistent-bat
 closure. Its completion must preserve working batch/profiling consumers, retained
 process generations, exact target identity and artifact ownership together.
 
-Published successor `bdc4fa92d` completes with failures in CI `37954788470`. Docs,
+Previous published candidate `bdc4fa92d` completes with failures in CI `37954788470`. Docs,
 Python static, Linux Python units, Windows and Linux/macOS queue portability,
 native integration, LLVM, security and formal jobs pass. Both native ARM cells
 expose five C-ABI fixture compilation issues; their integrated source repair
