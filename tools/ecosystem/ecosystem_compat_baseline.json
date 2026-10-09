@@ -34,7 +34,7 @@
     "click": {
       "verdict": "compatible",
       "hardest_feature": "D1",
-      "sha256_of_evidence": "7fed258cdf9a8c62dba754b57b847b9651fe9e3387f637e8a2cff547d3afa188"
+      "sha256_of_evidence": "97c3daf52e8444261072df1e6a3a446373cbcba272925011d66e30e9ac6bfdad"
     },
     "dataclasses-json": {
       "verdict": "compatible-via-typed-shim",
@@ -124,7 +124,7 @@
     "tqdm": {
       "verdict": "compatible",
       "hardest_feature": "D1",
-      "sha256_of_evidence": "ca1312314279b1af5a1b1b983094890933567471875d7bc94903251a43e9e226"
+      "sha256_of_evidence": "9ee98193688882577ba3e36b62f8acbf2d874840aa6d13ffc7d5cf86cdaa69f1"
     },
     "typing-extensions": {
       "verdict": "compatible",
