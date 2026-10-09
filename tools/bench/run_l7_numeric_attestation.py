@@ -34,6 +34,7 @@ if str(TOOLS_ROOT) not in sys.path:
 
 import harness_memory_guard  # noqa: E402
 import perf_calibration  # noqa: E402
+from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.memory_guard_paths import active_guard_marker_dir  # noqa: E402
 from molt.temporary_artifacts import SCRATCH_ENV  # noqa: E402
 
@@ -740,6 +741,7 @@ def _build_test_executable(
         command.extend(["--features", ",".join(config["features"])])
     build_env = dict(os.environ)
     build_env["CARGO_TERM_COLOR"] = "never"
+    admit_cargo_build(command, cwd=REPO_ROOT, env=build_env)
     completed = harness_memory_guard.guarded_completed_process(
         command,
         prefix="MOLT_BENCH",

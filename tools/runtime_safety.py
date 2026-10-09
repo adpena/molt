@@ -22,6 +22,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - direct script import from tools/
     import harness_memory_guard  # type: ignore
 
+from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
+
 SANITIZERS = {
     "asan": "address",
     "tsan": "thread",
@@ -49,6 +51,7 @@ def _run(
         env if env is not None else os.environ,
         repo_root=ROOT,
     )
+    admit_cargo_build(cmd, cwd=cwd or ROOT, env=run_env)
     if log_path is None:
         result = harness_memory_guard.guarded_completed_process(
             cmd,

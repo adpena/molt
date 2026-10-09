@@ -185,6 +185,62 @@ def is_cargo_command(command: Sequence[str]) -> bool:
     return any(_executable_name(str(part)) == "cargo" for part in command[1:])
 
 
+# Cargo subcommands that compile, so each one writes below a target directory.
+CARGO_COMPILING_SUBCOMMANDS = frozenset(
+    {
+        "b",
+        "bench",
+        "build",
+        "c",
+        "check",
+        "clippy",
+        "d",
+        "doc",
+        "fix",
+        "fuzz",
+        "install",
+        "llvm-cov",
+        "miri",
+        "nextest",
+        "r",
+        "run",
+        "rustc",
+        "rustdoc",
+        "t",
+        "test",
+    }
+)
+_CARGO_GLOBAL_OPTIONS_WITH_VALUE = frozenset({"-C", "-Z", "--color", "--config"})
+_CARGO_INFORMATION_FLAGS = frozenset({"-V", "--version", "-h", "--help"})
+
+
+def cargo_compiles(command: Sequence[str]) -> bool:
+    """Return whether a Cargo invocation compiles, and so needs admission."""
+
+    parts = [str(part) for part in command]
+    if not is_cargo_command(parts):
+        return False
+    index = 1 + next(
+        position
+        for position, part in enumerate(parts)
+        if _executable_name(part) == "cargo"
+    )
+    while index < len(parts):
+        part = parts[index]
+        if part in _CARGO_GLOBAL_OPTIONS_WITH_VALUE:
+            index += 2
+        elif part.startswith(("+", "-")):
+            index += 1
+        else:
+            options = parts[index + 1 :]
+            if "--" in options:
+                options = options[: options.index("--")]
+            return part in CARGO_COMPILING_SUBCOMMANDS and not (
+                _CARGO_INFORMATION_FLAGS.intersection(options)
+            )
+    return False
+
+
 def _cargo_output_path(raw: str, *, cwd: Path, label: str) -> Path:
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError(f"Cargo execution requires a non-empty {label}")
@@ -270,6 +326,27 @@ def require_cargo_build_capacity(
         cargo_output_paths(command, cwd=cwd, env=env),
         env=env,
         measure_free_bytes=measure_free_bytes,
+    )
+
+
+def admit_cargo_build(
+    command: Sequence[str],
+    *,
+    cwd: str | Path | None,
+    env: Mapping[str, str] | None,
+) -> DiskCapacityReceipt | None:
+    """Admit build capacity just before a launcher starts ``command``.
+
+    Launchers call this for every command they start; it admits only Cargo
+    invocations that compile and returns ``None`` for any other command.
+    """
+
+    if not cargo_compiles(command):
+        return None
+    return require_cargo_build_capacity(
+        command,
+        cwd=Path.cwd() if cwd is None else Path(cwd),
+        env=os.environ if env is None else env,
     )
 
 
