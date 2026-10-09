@@ -654,7 +654,7 @@ def test_native_c_reuse_revalidates_actual_selection_and_images(
 def test_rust_reuse_resolves_current_component_before_cache_without_phase_reprobe(
     tmp_path, monkeypatch, role
 ):
-    from molt import rust_toolchain
+    from molt import process_guard, rust_toolchain
     from tests.tools.test_toolchain_capture import _native_c_capture_fixture
 
     _identity, tools, environment, command, phase_calls = _native_c_capture_fixture(
@@ -683,7 +683,7 @@ def test_rust_reuse_resolves_current_component_before_cache_without_phase_reprob
             argv, 0, f"{role} 1.99.0\nhost: x86_64-unknown-linux-gnu\n", ""
         )
 
-    monkeypatch.setattr(rust_toolchain.process_guard, "run_completed_command", which)
+    monkeypatch.setattr(process_guard, "run_completed_command", which)
     monkeypatch.setattr(command_identity, "_run_captured", version)
     monkeypatch.setattr(
         command_identity, "_which_in_command_environment", lambda *args, **kwargs: proxy
@@ -853,7 +853,7 @@ def test_registered_tool_identity_uses_bound_payload_before_dependency_selectors
 def test_python_rustc_metadata_dependency_has_independent_reuse_identity(
     tmp_path, monkeypatch, owner
 ):
-    from molt import rust_toolchain
+    from molt import process_guard
     from tools.proof_queue_pkg import toolchain_capture
 
     suffix = ".exe" if os.name == "nt" else ""
@@ -884,7 +884,7 @@ def test_python_rustc_metadata_dependency_has_independent_reuse_identity(
             command, 0, "rustc 1.99.0\nhost: x86_64-unknown-linux-gnu\n", ""
         )
 
-    monkeypatch.setattr(rust_toolchain.process_guard, "run_completed_command", resolve)
+    monkeypatch.setattr(process_guard, "run_completed_command", resolve)
     monkeypatch.setattr(command_identity, "_run_captured", version)
     from types import SimpleNamespace
     from tests.tools.test_toolchain_capture import _rust_metadata_probe

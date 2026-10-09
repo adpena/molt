@@ -147,6 +147,29 @@ def unlink_file(path: Path) -> None:
             pass
 
 
+def _recursive_deletion_path(path: Path, metadata: os.stat_result) -> Path:
+    """Keep enumerated Windows child names in their actual filesystem namespace.
+
+    An ordinary root may contain verbatim-only children. Starting rmtree with
+    that root's verbatim spelling keeps trailing dots/spaces in every DirEntry
+    path; an ordinary child spelling could address a different sibling instead.
+    Do not resolve symlinks or change a caller's explicit verbatim coordinate.
+    """
+    if os.name != "nt":
+        return path
+    spelling = os.fspath(path)
+    if spelling.startswith("\\\\?\\"):
+        return path
+    absolute = os.path.abspath(spelling)
+    if absolute.startswith("\\\\"):
+        verbatim = Path("\\\\?\\UNC\\" + absolute[2:])
+    else:
+        verbatim = Path("\\\\?\\" + absolute)
+    if not os.path.samestat(metadata, verbatim.lstat()):
+        raise OSError("Windows recursive deletion spelling changed its entry")
+    return verbatim
+
+
 def delete_path(path: Path) -> tuple[bool, str]:
     """Delete one already-authorized path and report failure without hiding it."""
     try:
@@ -157,7 +180,7 @@ def delete_path(path: Path) -> tuple[bool, str]:
         if stat.S_ISDIR(metadata.st_mode) and not (
             getattr(metadata, "st_file_attributes", 0) & 0x400
         ):
-            shutil.rmtree(path, onexc=_rmtree_error)
+            shutil.rmtree(_recursive_deletion_path(path, metadata), onexc=_rmtree_error)
         else:
             unlink_file(path)
         return True, ""

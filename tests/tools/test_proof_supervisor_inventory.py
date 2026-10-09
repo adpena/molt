@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.process_guard_common import install_module_view
 
 import functools
 import hashlib
@@ -515,7 +516,13 @@ def test_process_image_revalidation_reads_shared_role_content_once(
         reads.append((Path(stream.name), algorithm))
         return actual_digest(stream, algorithm)
 
-    monkeypatch.setattr(process_image_capture.hashlib, "file_digest", counted_digest)
+    install_module_view(
+        monkeypatch,
+        "hashlib",
+        hashlib,
+        process_image_capture,
+        file_digest=counted_digest,
+    )
     assert process_image_capture.revalidate_images(rows) == rows
     assert len(reads) == 1
     assert reads[0][0].samefile(executable)

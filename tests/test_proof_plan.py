@@ -1,4 +1,5 @@
 from __future__ import annotations
+import shutil
 
 import ast
 import hashlib
@@ -30,14 +31,6 @@ from tools.proof_queue_pkg import command_admission, supervisor_custody
 from tools.proof_queue_pkg import custody as proof_queue_custody
 from tools.proof_queue_pkg import evidence as proof_queue_evidence
 from tests.process_guard_common import install_module_view, run_guarded_test_process
-
-
-@pytest.fixture(autouse=True)
-def isolated_fingerprint_subprocess(monkeypatch):
-    """Patch the fingerprint boundary without mutating the sampler's stdlib."""
-    import subprocess
-
-    monkeypatch.setattr(proof_plan, "subprocess", SimpleNamespace(**vars(subprocess)))
 
 
 PLAN = proof_plan.ProofPlan.load()
@@ -1897,7 +1890,7 @@ def test_toolchain_fingerprint_selects_sdk_only_for_declared_wasm_role(
         return str(selected)
 
     monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", sdk_role)
-    monkeypatch.setattr(proof_plan.shutil, "which", native_role)
+    install_module_view(monkeypatch, "shutil", shutil, proof_plan, which=native_role)
     commands = []
 
     def run(command, **_kwargs):
@@ -1927,8 +1920,12 @@ def test_missing_sdk_role_is_a_toolchain_preflight_error(
         raise llvm_toolchain.LlvmToolchainConfigError("provision SDK explicitly")
 
     monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", missing)
-    monkeypatch.setattr(
-        proof_plan.shutil, "which", lambda *_a, **_k: pytest.fail("no PATH fallback")
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        proof_plan,
+        which=lambda *_a, **_k: pytest.fail("no PATH fallback"),
     )
     with pytest.raises(
         ValueError, match="wasm-ld toolchain selection failed.*provision SDK explicitly"
@@ -1959,7 +1956,13 @@ def test_toolchain_content_and_version_probes_share_declared_cwd(monkeypatch) ->
         )
         return proof_plan.subprocess.CompletedProcess(argv, 0, output)
 
-    monkeypatch.setattr(proof_plan.shutil, "which", lambda _requested: sys.executable)
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        proof_plan,
+        which=lambda _requested: sys.executable,
+    )
     install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=fake_run)
 
     fingerprint = proof_plan._version_fingerprint(policy)
@@ -2000,7 +2003,13 @@ def test_toolchain_content_probe_ignores_provisioner_stderr(
             )
         return proof_plan.subprocess.CompletedProcess(argv, 0, "probe 1.0\n", "")
 
-    monkeypatch.setattr(proof_plan.shutil, "which", lambda _requested: sys.executable)
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        proof_plan,
+        which=lambda _requested: sys.executable,
+    )
     install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=fake_run)
 
     fingerprint = proof_plan._version_fingerprint(policy)
@@ -4581,13 +4590,19 @@ def test_wasi_compiler_fingerprint_bypasses_native_path_and_binds_helpers(
         return compiler
 
     monkeypatch.setattr(llvm_toolchain, "resolve_wasi_sdk_tool", resolve)
-    monkeypatch.setattr(
-        proof_plan.shutil, "which", lambda name: pytest.fail("native PATH consulted")
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        proof_plan,
+        which=lambda name: pytest.fail("native PATH consulted"),
     )
-    monkeypatch.setattr(
-        proof_plan.subprocess,
-        "run",
-        lambda argv, **kwargs: proof_plan.subprocess.CompletedProcess(
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        proof_plan,
+        run=lambda argv, **kwargs: proof_plan.subprocess.CompletedProcess(
             argv, 0, "clang version 23.1.0", ""
         ),
     )
@@ -4658,11 +4673,15 @@ def test_ninja_identity_binds_locked_release_and_observed_distribution_banner(
         assert not re.fullmatch(pattern, rejected)
     executable = tmp_path / "ninja"
     executable.write_bytes(b"pinned ninja distribution image")
-    monkeypatch.setattr(proof_plan.shutil, "which", lambda name: str(executable))
-    monkeypatch.setattr(
-        proof_plan.subprocess,
-        "run",
-        lambda argv, **kwargs: proof_plan.subprocess.CompletedProcess(
+    install_module_view(
+        monkeypatch, "shutil", shutil, proof_plan, which=lambda name: str(executable)
+    )
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        proof_plan,
+        run=lambda argv, **kwargs: proof_plan.subprocess.CompletedProcess(
             argv, 0, observed + "\n", ""
         ),
     )
@@ -4877,7 +4896,7 @@ def test_native_c_declaration_rejects_unbound_or_duplicate_units(units, tools):
 def test_rust_fingerprint_keeps_selected_physical_tool_without_rustup(
     tmp_path, monkeypatch, name, explicit
 ):
-    from molt import rust_toolchain
+    from molt import process_guard
 
     selected = tmp_path / name
     selected.write_bytes(b"independent physical Rust component")
@@ -4903,10 +4922,10 @@ def test_rust_fingerprint_keeps_selected_physical_tool_without_rustup(
         assert command[0] == str(selected)
         return proof_plan.subprocess.CompletedProcess(command, 0, name + " 1.99.0", "")
 
-    monkeypatch.setattr(proof_plan.shutil, "which", which)
-    monkeypatch.setattr(proof_plan.subprocess, "run", run)
+    install_module_view(monkeypatch, "shutil", shutil, proof_plan, which=which)
+    install_module_view(monkeypatch, "subprocess", subprocess, proof_plan, run=run)
     monkeypatch.setattr(
-        rust_toolchain.process_guard,
+        process_guard,
         "run_completed_command",
         lambda *args, **kwargs: pytest.fail("physical component invoked rustup"),
     )
@@ -4933,10 +4952,12 @@ def test_sdk_fingerprint_refuses_changed_helper_before_version_probe(
     content = installation.sdk / str(fact["content_path"])
     content.write_bytes(content.read_bytes() + b"changed after provisioning")
     monkeypatch.setenv("WASI_SDK_PATH", str(installation.sdk))
-    monkeypatch.setattr(
-        proof_plan.subprocess,
-        "run",
-        lambda *args, **kwargs: pytest.fail(
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        proof_plan,
+        run=lambda *args, **kwargs: pytest.fail(
             "changed SDK helper reached a version probe"
         ),
     )
@@ -4987,10 +5008,12 @@ def test_core_cargo_selection_preserves_declared_precedence(
 def test_fingerprint_mock_preserves_unrelated_process_sampler_boundary(monkeypatch):
     from tests.process_guard_common import run_custody_subject_process
 
-    monkeypatch.setattr(
-        proof_plan.subprocess,
-        "run",
-        lambda *args, **kwargs: pytest.fail("fingerprint probe must remain unused"),
+    install_module_view(
+        monkeypatch,
+        "subprocess",
+        subprocess,
+        proof_plan,
+        run=lambda *args, **kwargs: pytest.fail("fingerprint probe must remain unused"),
     )
     result = run_custody_subject_process(
         [sys.executable, "-c", "print('independent-process-boundary')"],

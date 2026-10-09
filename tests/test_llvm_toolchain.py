@@ -1,4 +1,5 @@
 from __future__ import annotations
+import shutil
 from tests.process_guard_common import install_module_view, run_guarded_test_process
 
 from dataclasses import asdict
@@ -301,10 +302,12 @@ def test_discovery_accepts_versioned_llvm_config_outside_matching_prefix(
     prefix = tmp_path / "usr" / "lib" / "llvm-22"
     external_config = tmp_path / "usr" / "bin" / "llvm-config-22"
     _write(external_config, "")
-    monkeypatch.setattr(
-        llvm_toolchain.shutil,
-        "which",
-        lambda name, **_kwargs: (
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        llvm_toolchain,
+        which=lambda name, **_kwargs: (
             str(external_config) if name == "llvm-config-22" else None
         ),
     )
@@ -342,10 +345,12 @@ def test_discovery_rejects_unrelated_llvm_sys_search_root(
     other = tmp_path / "other"
     external_config = tmp_path / "bin" / "llvm-config-22"
     _write(external_config, "")
-    monkeypatch.setattr(
-        llvm_toolchain.shutil,
-        "which",
-        lambda name, **_kwargs: (
+    install_module_view(
+        monkeypatch,
+        "shutil",
+        shutil,
+        llvm_toolchain,
+        which=lambda name, **_kwargs: (
             str(external_config) if name == "llvm-config-22" else None
         ),
     )
@@ -1213,7 +1218,7 @@ def test_wasm_llvm_nm_checks_resolved_entrypoint_and_content_custody(
             returncode=0, stdout=f"LLVM version {_WASI.llvm_version}", stderr=""
         )
 
-    monkeypatch.setattr(llvm_toolchain.subprocess, "run", run)
+    install_module_view(monkeypatch, "subprocess", subprocess, llvm_toolchain, run=run)
     verification = llvm_toolchain.verify_wasm_llvm_nm(
         ROOT,
         environ={"MOLT_LLVM_NM": raw, "PATH": str(selected.parent)},
@@ -1258,7 +1263,7 @@ def test_tool_version_preserves_live_content_and_alias_custody(
             returncode=0, stdout=f"LLVM version {_WASI.llvm_version}", stderr=""
         )
 
-    monkeypatch.setattr(llvm_toolchain.subprocess, "run", run)
+    install_module_view(monkeypatch, "subprocess", subprocess, llvm_toolchain, run=run)
     with pytest.raises(LlvmToolchainConfigError, match="changed"):
         llvm_toolchain._tool_version_fact_and_identity(
             tmp_path,

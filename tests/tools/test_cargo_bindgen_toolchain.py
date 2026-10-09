@@ -562,7 +562,7 @@ def test_bindgen_formatter_is_an_optional_shared_executable_input(
 def test_bindgen_rustup_formatter_is_bound_to_actual_selected_binary(
     tmp_path, monkeypatch
 ):
-    from molt import rust_toolchain
+    from molt import process_guard
 
     formatter = _tool(tmp_path / "proxy", "rustfmt")
     rustup = _tool(formatter.parent, "rustup")
@@ -575,7 +575,7 @@ def test_bindgen_rustup_formatter_is_bound_to_actual_selected_binary(
         assert kwargs["cwd"] == tmp_path
         return subprocess.CompletedProcess(command, 0, str(content) + "\n", "")
 
-    monkeypatch.setattr(rust_toolchain.process_guard, "run_completed_command", run)
+    monkeypatch.setattr(process_guard, "run_completed_command", run)
     updates, _ = toolchain_capture.select_cargo_build_tool_environment(
         cwd=tmp_path, env={"RUSTFMT": str(formatter)}
     )
@@ -598,7 +598,7 @@ def test_relative_bindgen_formatter_does_not_adopt_invocation_cwd(
 def test_missing_rustup_formatter_component_preserves_optional_vs_explicit_policy(
     tmp_path, monkeypatch, explicit
 ):
-    from molt import rust_toolchain
+    from molt import process_guard, rust_toolchain
 
     formatter = _tool(tmp_path / "proxy", "rustfmt")
     rustup = _tool(formatter.parent, "rustup")
@@ -610,9 +610,7 @@ def test_missing_rustup_formatter_component_preserves_optional_vs_explicit_polic
         assert kwargs["env"] == env
         return subprocess.CompletedProcess(command, 1, "", "component not installed\n")
 
-    monkeypatch.setattr(
-        rust_toolchain.process_guard, "run_completed_command", unavailable
-    )
+    monkeypatch.setattr(process_guard, "run_completed_command", unavailable)
     if explicit:
         with pytest.raises(rust_toolchain.RustupProxyUnavailable) as raised:
             toolchain_capture.select_cargo_build_tool_environment(cwd=tmp_path, env=env)
@@ -633,7 +631,7 @@ def test_missing_rustup_formatter_component_preserves_optional_vs_explicit_polic
 def test_rustup_formatter_alias_resolves_through_content_directory(
     tmp_path, monkeypatch, lexical_rustup
 ):
-    from molt import rust_toolchain
+    from molt import process_guard
 
     rustup = _tool(tmp_path / "real", "rustup")
     alias = tmp_path / "alias" / ("rustfmt.exe" if os.name == "nt" else "rustfmt")
@@ -653,7 +651,7 @@ def test_rustup_formatter_alias_resolves_through_content_directory(
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, str(actual) + "\n", "")
 
-    monkeypatch.setattr(rust_toolchain.process_guard, "run_completed_command", run)
+    monkeypatch.setattr(process_guard, "run_completed_command", run)
     updates, _ = toolchain_capture.select_cargo_build_tool_environment(
         cwd=tmp_path, env={"RUSTFMT": str(alias)}
     )
@@ -665,12 +663,12 @@ def test_rustup_formatter_alias_resolves_through_content_directory(
 def test_optional_formatter_does_not_hide_malformed_successful_selector(
     tmp_path, monkeypatch, stdout
 ):
-    from molt import rust_toolchain
+    from molt import process_guard
 
     rustup = _tool(tmp_path, "rustup")
     _tool(tmp_path, "rustfmt").write_bytes(rustup.read_bytes())
     monkeypatch.setattr(
-        rust_toolchain.process_guard,
+        process_guard,
         "run_completed_command",
         lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout, ""),
     )
@@ -770,7 +768,7 @@ def test_documenter_direct_hook_collapses_shadowed_cargo_hook(tmp_path, monkeypa
 def test_documenter_proxy_binds_selected_component_in_cargo_context(
     tmp_path, monkeypatch, explicit
 ):
-    from molt import rust_toolchain
+    from molt import process_guard
 
     proxy = _tool(tmp_path / "proxy", "rustdoc")
     rustup = _tool(proxy.parent, "rustup")
@@ -783,7 +781,7 @@ def test_documenter_proxy_binds_selected_component_in_cargo_context(
         assert kwargs["env"]["RUSTUP_TOOLCHAIN"] == "selected-toolchain"
         return subprocess.CompletedProcess(command, 0, str(actual) + "\n", "")
 
-    monkeypatch.setattr(rust_toolchain.process_guard, "run_completed_command", run)
+    monkeypatch.setattr(process_guard, "run_completed_command", run)
     inherited = {
         "RUSTUP_TOOLCHAIN": "older-context",
         "PATH": str(proxy.parent),

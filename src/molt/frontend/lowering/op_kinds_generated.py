@@ -1460,6 +1460,19 @@ FRONTEND_REGISTERED_KINDS: frozenset[str] = frozenset(
     }
 )
 
+# Explicit frontend spellings replacing the uppercase wire default.
+FRONTEND_LOWERING_KINDS_BY_WIRE: dict[str, tuple[str, ...]] = {
+    'block_on': ('ASYNC_BLOCK_ON',),
+    'class_layout_version': ('CLASS_VERSION',),
+    'closure_load': ('LOAD_CLOSURE',),
+    'closure_store': ('STORE_CLOSURE',),
+    'del_attr_generic_obj': ('DELATTR_GENERIC_OBJ',),
+    'del_attr_generic_ptr': ('DELATTR_GENERIC_PTR',),
+    'iter': ('ITER_NEW',),
+    'ret': ('ret',),
+    'ret_void': ('ret_void',),
+}
+
 SIMPLEIR_STRUCTURAL_KINDS: frozenset[str] = frozenset(
     {
         "br_if",

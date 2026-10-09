@@ -1,5 +1,5 @@
 {
-  "baseline_total": 170,
+  "baseline_total": 173,
   "entries": [
     {
       "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::inner",
@@ -142,6 +142,11 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
+      "id": "runtime/molt-cext-discovery/src/lib.rs::allow_dead_code::mod:cargo_test_artifacts",
+      "owner": "runtime-test-support",
+      "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, compiled into independent test crates; discovery uses the captured-child artifact subset"
+    },
+    {
       "id": "runtime/molt-cpython-abi/src/api/datetime.rs::allow_dead_code::const:_",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
@@ -217,12 +222,12 @@
       "waiver": "test-support source compiled into several test crates; each crate uses a subset"
     },
     {
-      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::fn:prepare_abi_test_thread",
+      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::fn:enter_abi_test",
       "owner": "runtime-authority-closure",
       "waiver": "test-support source compiled into several test crates; each crate uses a subset"
     },
     {
-      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::fn:prepare_runtime_class_abi_test_thread",
+      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::fn:enter_runtime_class_abi_test",
       "owner": "runtime-authority-closure",
       "waiver": "test-support source compiled into several test crates; each crate uses a subset"
     },
@@ -230,6 +235,11 @@
       "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::fn:take_current_error_text",
       "owner": "runtime-authority-closure",
       "waiver": "test-support source compiled into several test crates; each crate uses a subset"
+    },
+    {
+      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::mod:warnings",
+      "owner": "runtime-test-support",
+      "waiver": "shared ABI integration-test support compiled independently for each test target; only numeric and member-write targets install the warnings provider"
     },
     {
       "id": "runtime/molt-gpu/benches/bench_profile.rs::allow_dead_code::fn:time_us",
@@ -395,6 +405,11 @@
       "id": "runtime/molt-runtime/src/builtins/platform_mod.rs::allow_dead_code::inner",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/platform_tests.rs::allow_dead_code::mod:cargo_test_artifacts",
+      "owner": "runtime-test-support",
+      "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs; resolver admission tests use the artifact directory subset"
     },
     {
       "id": "runtime/molt-runtime/src/builtins/select.rs::allow_dead_code::field:kind",

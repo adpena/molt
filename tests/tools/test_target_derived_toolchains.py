@@ -13,7 +13,6 @@ import shutil
 import subprocess
 from types import SimpleNamespace
 
-from tests.operation_probe import same_thread_probe
 
 import pytest
 
@@ -511,10 +510,8 @@ def test_recorded_native_target_is_independent_of_inspector_host(
 
     monkeypatch.setattr(provider, "resolve_source_extension_target_plan", forbidden)
     monkeypatch.setattr(provider, "_resolve_source_extension_toolchain", forbidden)
-    monkeypatch.setattr(
-        source_extension_toolchain.subprocess,
-        "run",
-        same_thread_probe(source_extension_toolchain.subprocess.run, forbidden),
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, source_extension_toolchain, run=forbidden
     )
     provider.validate_identity(_policy(), identity)
     if triple.endswith("-msvc"):
