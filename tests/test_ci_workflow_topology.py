@@ -525,7 +525,7 @@ def _diagnostic_path_expression(line: str, values: dict[str, str]) -> str:
 @pytest.mark.parametrize(
     ("family", "os_name"),
     [("platform_portability", os_name) for os_name in ("linux", "macos", "windows")]
-    + [("native_integration", "linux")],
+    + [("native_integration", "linux"), ("wasm", "linux")],
 )
 @pytest.mark.parametrize(
     "state",
@@ -549,8 +549,10 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
 
     plan = tomllib.loads(_read("tools/proof_plan.toml"))
     native = family == "native_integration"
+    wasm = family == "wasm"
+    detailed = native or wasm
     cell = ""
-    if not native:
+    if not detailed:
         cells = [
             cell
             for cell in plan["matrix_cell"]
@@ -559,11 +561,21 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
         assert len(cells) == 1
         cell = cells[0]["id"]
     jobs = yaml.safe_load(_read(".github/workflows/ci.yml"))["jobs"]
-    job = jobs[family.replace("_", "-")]
-    if native:
+    job = (
+        yaml.safe_load(_read(".github/workflows/molt-wasm-ci.yml"))["jobs"][
+            "wasm-build"
+        ]
+        if wasm
+        else jobs[family.replace("_", "-")]
+    )
+    if detailed:
         assert job["env"]["MOLT_GUARD_PROFILE"] == "all"
     suffix = (
-        "native-integration" if native else "platform-portability-${{ matrix.cell }}"
+        "wasm"
+        if wasm
+        else "native-integration"
+        if native
+        else "platform-portability-${{ matrix.cell }}"
     )
     steps = job["steps"]
     upload = next(
@@ -600,8 +612,8 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
         if step.get("with", {}).get("name") == f"proof-receipt-{suffix}"
     )
     assert receipt_upload["if"] == (
-        "always() && hashFiles('proof-receipts/native_integration.json') != ''"
-        if native
+        f"always() && hashFiles('proof-receipts/{family}.json') != ''"
+        if detailed
         else "always() && hashFiles(format('proof-receipts/platform-portability-{0}.json', matrix.cell)) != ''"
     )
     assert receipt_upload["with"]["if-no-files-found"] == "error"
@@ -617,7 +629,7 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
     environment = _github_actions_custody_env(workspace, runner_temp)
     custody = runner_temp / "mp-12345-2"
     environment[dx.GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV] = str(custody)
-    environment["GITHUB_JOB"] = family.replace("_", "-")
+    environment["GITHUB_JOB"] = "wasm-build" if wasm else family.replace("_", "-")
     # Only this synthetic workspace has synthetic Git identity. Concurrent
     # custody observers retain real checkout observation for their own roots.
     checkout_head = dx._git_checkout_head
@@ -658,12 +670,12 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
     ]
     assert paths == (
         [
-            "proof-receipts/native_integration.json",
+            f"proof-receipts/{family}.json",
             *common_profiles,
             "${{ steps.build-control.outputs.guard_state_root != '' && format('{0}/commands/**/*.json', steps.build-control.outputs.guard_state_root) || '' }}",
             "${{ steps.build-control.outputs.pytest_guard_root != '' && format('{0}/**/*.json', steps.build-control.outputs.pytest_guard_root) || '' }}",
         ]
-        if native
+        if detailed
         else [
             "proof-receipts/platform-portability-${{ matrix.cell }}.json",
             *common_profiles,
@@ -673,7 +685,7 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
     rendered = [_diagnostic_path_expression(line, values) for line in paths]
     if not state.startswith("failed-"):
         assert rendered[1:3] == ["", ""]
-        if native or state == "setup-no-root":
+        if detailed or state == "setup-no-root":
             assert not any(rendered[3:])
 
     expected: set[Path] = set()
@@ -692,7 +704,7 @@ def test_ci_diagnostics_retain_current_custody_without_final_receipt(
             ".workers/gw0_current-test.json",
         )
     ]
-    if native:
+    if detailed:
         retained_files += [
             custody / "tmp/memory_guard/commands/current" / name
             for name in ("custody.json", "startup.json", "guard.json")
@@ -1901,6 +1913,7 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     )
     assert "MOLT_WASM_TEST_CHILD_RLIMIT_GB" not in wasm_text
     assert 'MOLT_WASM_TEST_KEEPALIVE_SEC: "20"' in wasm_text
+    assert 'MOLT_PREFER_EXTERNAL_ARTIFACTS: "1"' in wasm_text
     assert 'MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC: "2"' in wasm_text
     assert "CARGO_INCREMENTAL:" not in wasm_text
     assert 'CARGO_BUILD_JOBS: "1"' not in wasm_text

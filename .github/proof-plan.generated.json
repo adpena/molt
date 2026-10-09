@@ -338,7 +338,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "3bbbc9917febe6ce3e69d5d6f992da615b06484b785663a796133860d20168a4",
+  "authority_sha256": "1c55f97a3e9950b5546d393adcf7a50c2a426ee9ffa5aa06a0d2d07731e04da6",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2403,8 +2403,7 @@
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [],
       "env": {
-        "MOLT_BACKEND_DAEMON": "0",
-        "RUSTC_WRAPPER": ""
+        "MOLT_BACKEND_DAEMON": "0"
       },
       "family": "wasm",
       "id": "wasm.build.backend",
@@ -2479,9 +2478,6 @@
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [],
-      "env": {
-        "RUSTC_WRAPPER": ""
-      },
       "family": "wasm",
       "id": "wasm.build.shared-runtime",
       "resource_class": "compiler-build-resource",
@@ -2569,8 +2565,7 @@
         "wasm.build.shared-runtime"
       ],
       "env": {
-        "MOLT_BACKEND_DAEMON": "0",
-        "RUSTC_WRAPPER": ""
+        "MOLT_BACKEND_DAEMON": "0"
       },
       "family": "wasm",
       "id": "wasm.compile.hello",
@@ -2653,8 +2648,7 @@
         "wasm.build.shared-runtime"
       ],
       "env": {
-        "MOLT_BACKEND_DAEMON": "0",
-        "RUSTC_WRAPPER": ""
+        "MOLT_BACKEND_DAEMON": "0"
       },
       "family": "wasm",
       "id": "wasm.compile.comprehension",
@@ -2732,8 +2726,7 @@
         "wasm.build.backend"
       ],
       "env": {
-        "MOLT_BACKEND_DAEMON": "0",
-        "RUSTC_WRAPPER": ""
+        "MOLT_BACKEND_DAEMON": "0"
       },
       "family": "wasm",
       "id": "luau.compile.hello",
@@ -2777,8 +2770,7 @@
         "wasm.build.backend"
       ],
       "env": {
-        "MOLT_BACKEND_DAEMON": "0",
-        "RUSTC_WRAPPER": ""
+        "MOLT_BACKEND_DAEMON": "0"
       },
       "family": "wasm",
       "id": "luau.compile.comprehension",
@@ -2824,8 +2816,7 @@
         "wasm.build.shared-runtime"
       ],
       "env": {
-        "MOLT_BACKEND_DAEMON": "0",
-        "RUSTC_WRAPPER": ""
+        "MOLT_BACKEND_DAEMON": "0"
       },
       "family": "wasm",
       "id": "wasm.compile.sieve",
@@ -2883,16 +2874,9 @@
     },
     {
       "argv": [
-        "uv",
-        "run",
-        "--active",
-        "--project",
-        ".",
-        "--python",
-        "3.12",
-        "--no-sync",
-        "--no-config",
-        "python",
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
         "-m",
         "pytest",
         "-q",
@@ -2969,10 +2953,10 @@
     },
     {
       "argv": [
-        "uv",
-        "run",
-        "--python",
-        "3.12",
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
         "pytest",
         "-q",
         "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts::test_repeated_build_preserves_complete_generation_and_executes",
@@ -3010,10 +2994,10 @@
     },
     {
       "argv": [
-        "uv",
-        "run",
-        "--python",
-        "3.12",
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
         "pytest",
         "-q",
         "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output",
@@ -3056,15 +3040,10 @@
     },
     {
       "argv": [
-        "uv",
-        "run",
-        "--active",
-        "--project",
-        ".",
-        "--python",
-        "3.12",
-        "--no-sync",
-        "--no-config",
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
         "pytest",
         "-q",
         "tests/test_wasm_freestanding.py::test_freestanding_produces_no_wasi_imports",
@@ -3102,15 +3081,10 @@
     },
     {
       "argv": [
-        "uv",
-        "run",
-        "--active",
-        "--project",
-        ".",
-        "--python",
-        "3.12",
-        "--no-sync",
-        "--no-config",
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
         "pytest",
         "-q",
         "tests/test_finally_pending_observer_parity.py::test_finally_pending_observer_native_wasm_parity"

@@ -957,7 +957,7 @@ def test_wasm_backend_prewarm_admits_the_consumer_compiler(
         300,
     )
     # Both entry points must inherit host-profile/session overrides identically
-    # while explicitly selecting the consumer's no-wrapper/no-daemon lane.
+    # and the selected compiler wrapper while disabling the backend daemon.
     inherited = {
         "MOLT_BACKEND_PROFILE": "release",
         "MOLT_RELEASE_BACKEND_CARGO_PROFILE": "release-fast",
@@ -973,8 +973,60 @@ def test_wasm_backend_prewarm_admits_the_consumer_compiler(
             PLAN, command, command.data["timeout_seconds"]
         )
         assert {name: environment[name] for name in inherited} == inherited
-        assert environment["RUSTC_WRAPPER"] == ""
+        assert environment["RUSTC_WRAPPER"] == "/opt/cache/sccache"
+        assert environment["CARGO_INCREMENTAL"] == "0"
         assert environment["MOLT_BACKEND_DAEMON"] == "0"
+
+
+def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
+    monkeypatch,
+) -> None:
+    rows = {row.id: row for row in PLAN.commands if row.family == "wasm"}
+    expected_pytest_rows = {
+        "wasm.test.linker-admission",
+        "wasm.test.control-flow",
+        "wasm.integration.split-runtime",
+        "wasm.integration.host-exports",
+        "wasm.test.freestanding-e2e",
+        "wasm.test.finally-pending-observer-parity",
+    }
+    assert {
+        name for name, row in rows.items() if "pytest" in row.argv
+    } == expected_pytest_rows
+    for name in expected_pytest_rows:
+        assert rows[name].argv[:5] == (
+            "python3",
+            "tools/venv_exec.py",
+            "python3",
+            "-m",
+            "pytest",
+        )
+    for name in (
+        "wasm.build.backend",
+        "wasm.build.shared-runtime",
+        "wasm.build.split-runtime-release",
+    ):
+        assert rows[name].argv[:5] == (
+            "python3",
+            "tools/venv_exec.py",
+            "python3",
+            "-m",
+            "molt.cli",
+        )
+    # The proof chooses a wrapper once; prebuild and consumer rows must not
+    # silently erase that choice. The shared policy still disables incremental.
+    monkeypatch.setenv("RUSTC_WRAPPER", "/selected/sccache")
+    monkeypatch.setenv("CARGO_INCREMENTAL", "1")
+    monkeypatch.setenv("MOLT_BUILD_PYTHON", "/selected/build-python")
+    for row in rows.values():
+        environment, _policies = proof_plan._command_environment(
+            PLAN, row, row.data["timeout_seconds"]
+        )
+        assert environment["RUSTC_WRAPPER"] == "/selected/sccache"
+        assert environment["CARGO_INCREMENTAL"] == (
+            "0" if "cargo" in row.toolchains else "1"
+        )
+        assert environment["MOLT_BUILD_PYTHON"] == "/selected/build-python"
 
 
 def test_wasm_e2e_commands_bind_complete_child_toolchain_closure() -> None:
@@ -1350,10 +1402,12 @@ def test_command_direct_rustc_override_does_not_apply_sccache_policy(
 ) -> None:
     monkeypatch.setenv("RUSTC_WRAPPER", "/opt/cache/sccache")
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
-    command = next(
-        command
-        for command in PLAN.commands
-        if command.data.get("env", {}).get("RUSTC_WRAPPER") == ""
+    template = next(
+        command for command in PLAN.commands if command.id == "wasm.build.host"
+    )
+    command = replace(
+        template,
+        data={**template.data, "env": {"RUSTC_WRAPPER": ""}},
     )
 
     environment, applied = proof_plan._command_environment(PLAN, command, 30)
