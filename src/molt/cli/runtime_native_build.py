@@ -759,6 +759,37 @@ class _NativeRuntimeBuildPlan:
         return True
 
 
+def canonical_native_runtime_coordinate(
+    runtime_lib: Path,
+    *,
+    project_root: Path,
+    cargo_profile: str,
+    target_triple: str | None,
+) -> Path:
+    """The canonical target's coordinate for ``runtime_lib``; every session reads it."""
+    canonical = _canonical_target_root(project_root)
+    if target_triple:
+        canonical /= target_triple
+    return canonical / _cargo_profile_dir(cargo_profile) / runtime_lib.name
+
+
+def native_runtime_generation_coordinates(
+    runtime_lib: Path,
+    *,
+    project_root: Path,
+    cargo_profile: str,
+    target_triple: str | None,
+) -> tuple[Path, ...]:
+    """The selection coordinates a build consults, in order."""
+    canonical = canonical_native_runtime_coordinate(
+        runtime_lib,
+        project_root=project_root,
+        cargo_profile=cargo_profile,
+        target_triple=target_triple,
+    )
+    return tuple(dict.fromkeys((runtime_lib, canonical)))
+
+
 def _native_runtime_generation_candidates(
     runtime_lib: Path,
     *,
@@ -766,12 +797,13 @@ def _native_runtime_generation_candidates(
     cargo_profile: str,
     target_triple: str | None,
 ) -> tuple[NativeRuntimeGeneration, ...]:
-    canonical = _canonical_target_root(project_root)
-    if target_triple:
-        canonical /= target_triple
-    canonical = canonical / _cargo_profile_dir(cargo_profile) / runtime_lib.name
     candidates = []
-    for coordinate in dict.fromkeys((runtime_lib, canonical)):
+    for coordinate in native_runtime_generation_coordinates(
+        runtime_lib,
+        project_root=project_root,
+        cargo_profile=cargo_profile,
+        target_triple=target_triple,
+    ):
         generation = read_native_runtime_generation(
             coordinate, cargo_profile=cargo_profile, target_triple=target_triple
         )

@@ -12,6 +12,7 @@ from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,11 +23,12 @@ for import_root in (ROOT, SRC):
 
 from molt.artifact_publication import atomic_write_json  # noqa: E402
 from molt.dx import development_artifact_env  # noqa: E402
+from molt.exact_json import loads_exact  # noqa: E402
 from tools.command_execution import CommandExecutor, bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from tools import cpython_regrtest, nightly_runtime_bundle, nightly_sharding  # noqa: E402
+from tools import cpython_regrtest, nightly_sharding  # noqa: E402
 
 
 COMMANDS = CommandExecutor.for_file(__file__)
@@ -55,13 +57,12 @@ def prepare(
     build_env: Mapping[str, str],
     github_output: Path | None,
 ) -> dict[str, object]:
-    """Build the runtime once and bundle it from the target that build used.
+    """Build the runtime and backend once and bundle what that build admitted.
 
-    ``build_env`` is the DX-resolved environment for the smoke build; its
-    ``CARGO_TARGET_DIR`` is where that build leaves the runtime and backend,
-    so the bundle reads the same root by construction.
+    ``build_env`` is the DX-resolved environment of the smoke build. The
+    bundle exports under the same environment, so it reads the runtime
+    generation and backend the build selected by construction.
     """
-    target_root = Path(build_env["CARGO_TARGET_DIR"])
     output_root.mkdir(parents=True, exist_ok=True)
     log_path = output_root / "cpython-provision.log"
     sources = cpython_regrtest.load_cpython_sources()
@@ -105,19 +106,26 @@ def prepare(
 
     archive = output_root / "runtime-bundle.tar"
     manifest_path = output_root / "runtime-bundle-manifest.json"
-    runtime_build_identity = nightly_runtime_bundle.capture_bundle_runtime_identity(
-        ROOT, target_root
+    # The CLI selects the runtime and backend from the environment, so the
+    # export runs in the build's own environment and finds what it admitted.
+    packed = COMMANDS.run(
+        [
+            sys.executable,
+            "tools/nightly_runtime_bundle.py",
+            "pack",
+            "--output",
+            str(archive),
+            "--manifest-out",
+            str(manifest_path),
+        ],
+        cwd=ROOT,
+        env=build_env,
+        stdout=subprocess.DEVNULL,
+        timeout=1800,
     )
-    identity = nightly_runtime_bundle.collect_bundle_identity(
-        ROOT, runtime_build_identity=runtime_build_identity
-    )
-    manifest = nightly_runtime_bundle.pack_bundle(
-        target_root=target_root,
-        output=archive,
-        manifest_output=manifest_path,
-        identity=identity,
-        runtime_build_identity=runtime_build_identity,
-    )
+    if packed.returncode != 0 or not manifest_path.is_file():
+        raise RuntimeError("Nightly runtime bundle packing failed")
+    manifest = loads_exact(manifest_path.read_text(encoding="utf-8"))
     smoke_output.unlink()
     plan = nightly_sharding.build_plan(
         ROOT,
@@ -129,7 +137,7 @@ def prepare(
         _write_github_outputs(github_output, plan)
     return {
         "schema": "molt.nightly-prepare.v1",
-        "source_commit": identity.source_commit,
+        "source_commit": manifest["identity"]["source_commit"],
         "cpython_commit": plan["cpython_commit"],
         "plan_sha256": plan["plan_sha256"],
         "weight_profile_sha256": plan["authority"]["weight_profile"]["profile_sha256"],

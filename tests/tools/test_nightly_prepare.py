@@ -29,40 +29,21 @@ def test_prepare_owns_runtime_cpython_plan_and_matrix_projection(
         fake_ensure,
     )
 
+    runs: list[tuple[list[str], dict[str, object]]] = []
+
     def fake_run(argv, **kwargs):
-        seen["build"] = (argv, kwargs)
-        output = Path(argv[argv.index("--output") + 1])
-        output.write_bytes(b"native-smoke")
+        runs.append((list(argv), kwargs))
+        if "pack" in argv:
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"bundle")
+            Path(argv[argv.index("--manifest-out") + 1]).write_text(
+                '{"identity":{"source_commit":"' + "a" * 40 + '"}}',
+                encoding="utf-8",
+            )
+        else:
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"native-smoke")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(nightly_prepare, "COMMANDS", SimpleNamespace(run=fake_run))
-    identity = SimpleNamespace(source_commit="a" * 40)
-    runtime_build_identity = object()
-
-    def fake_capture(_root, target):
-        seen["bundle_target"] = target
-        return runtime_build_identity
-
-    monkeypatch.setattr(
-        nightly_prepare.nightly_runtime_bundle,
-        "capture_bundle_runtime_identity",
-        fake_capture,
-    )
-    monkeypatch.setattr(
-        nightly_prepare.nightly_runtime_bundle,
-        "collect_bundle_identity",
-        lambda _root, **_kwargs: identity,
-    )
-
-    def fake_pack(**kwargs):
-        assert kwargs["runtime_build_identity"] is runtime_build_identity
-        kwargs["output"].write_bytes(b"bundle")
-        kwargs["manifest_output"].write_text("{}", encoding="utf-8")
-        return {"schema_version": 1}
-
-    monkeypatch.setattr(
-        nightly_prepare.nightly_runtime_bundle, "pack_bundle", fake_pack
-    )
     plan = {
         "cpython_commit": "b" * 40,
         "plan_sha256": "c" * 64,
@@ -86,10 +67,12 @@ def test_prepare_owns_runtime_cpython_plan_and_matrix_projection(
         github_output=github_output,
     )
 
-    build_argv, build_kwargs = seen["build"]
-    # The bundle reads the target the smoke build wrote, never a default.
+    (build_argv, build_kwargs), (pack_argv, pack_kwargs) = runs
+    # The bundle exports under the smoke build's own environment, so it reads
+    # the runtime generation and backend that build admitted.
     assert build_kwargs["env"] is build_env
-    assert seen["bundle_target"] == target_root
+    assert pack_kwargs["env"] is build_env
+    assert pack_argv[1:3] == ["tools/nightly_runtime_bundle.py", "pack"]
     assert build_argv[build_argv.index("--stdlib-profile") + 1] == "full"
     assert build_argv[build_argv.index("--build-profile") + 1] == "dev"
     assert summary["source_commit"] == "a" * 40
