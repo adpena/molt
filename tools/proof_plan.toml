@@ -1515,12 +1515,14 @@ cell = "windows-x86_64-py312-queue-portability"
 # PRs prove the changed pinned-toolchain boundary without repeating that suite.
 tiers = ["pr"]
 resource_class = "python-tests"
-timeout_seconds = 120
+# Windows cold Cargo took 105s before the independent Python-location cases.
+# Preserve the Cargo test's 120s bound and budget this whole cohort separately.
+timeout_seconds = 180
 cache_domain = "pytest"
 dependencies = []
 # Retain successful nested command costs while diagnosing the prior timeout.
 env = { MOLT_GUARD_PROFILE = "all" }
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "--durations=10", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody", "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content", "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds", "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root", "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit", "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]

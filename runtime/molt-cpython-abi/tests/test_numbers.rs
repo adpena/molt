@@ -5,8 +5,7 @@
 mod support;
 
 use molt_cpython_abi::abi_types::{
-    MoltTypeTag, Py_False, Py_None, Py_NotImplementedSentinel, Py_True, PyNumberMethods, PyObject,
-    PyTypeObject,
+    Py_False, Py_None, Py_NotImplementedSentinel, Py_True, PyNumberMethods, PyObject, PyTypeObject,
 };
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_cpython_abi::hooks::OwnedHandleResult;

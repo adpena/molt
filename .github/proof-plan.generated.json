@@ -338,7 +338,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "208dcd4464f911a7911ae0aaa15c6083a1e3243abe4f695e04860a56f2c3ddd3",
+  "authority_sha256": "f31301d67ab8ca4a8892d4efdc92b663adda0184bc0c84221eedddbdfcb21adb",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1588,6 +1588,7 @@
         "-m",
         "pytest",
         "-v",
+        "--durations=10",
         "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
         "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content",
         "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds",
@@ -1607,7 +1608,7 @@
       "tiers": [
         "pr"
       ],
-      "timeout_seconds": 120,
+      "timeout_seconds": 180,
       "toolchains": [
         "python",
         "uv",
@@ -4924,7 +4925,7 @@
           "headroom_seconds": 8700,
           "projected_makespan_seconds": 2100,
           "resource_capacity_floor_seconds": {
-            "python-tests": 2070
+            "python-tests": 2100
           }
         }
       },
