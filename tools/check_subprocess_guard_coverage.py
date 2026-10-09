@@ -194,7 +194,7 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tools/proof_plan.py",
-        "_source_tree_state",
+        "_source_tree_changes",
         "check_output",
         "bounded git status metadata proving executable receipts are commit-backed",
     ),

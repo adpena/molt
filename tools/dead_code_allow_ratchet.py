@@ -11,7 +11,8 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-REGISTRY = Path(__file__).resolve().parent / "dead_code_allow_baseline.json"
+# The waiver registry, relative to the scanned checkout.
+REGISTRY_RELPATH = Path("tools") / "dead_code_allow_baseline.json"
 SCAN_ROOTS = ("runtime", "src")
 ALLOW_RE = re.compile(r"#!?\[\s*allow\s*\(([^)]*)\)\s*\]")
 CFG_CORPSE_RE = re.compile(
@@ -41,10 +42,10 @@ def scan(root: Path = ROOT) -> list[Site]:
         if not source_root.is_dir():
             continue
         for source in sorted(source_root.rglob("*.rs")):
-            if "target" in source.parts or ".git" in source.parts:
+            rel = source.relative_to(root).as_posix()
+            if {"target", ".git"} & set(Path(rel).parts):
                 continue
             text = source.read_text(encoding="utf-8", errors="replace")
-            rel = source.relative_to(root).as_posix()
             matches: list[tuple[int, str]] = []
             for match in ALLOW_RE.finditer(text):
                 lints = {lint.strip() for lint in match.group(1).split(",")}
@@ -68,8 +69,8 @@ def scan(root: Path = ROOT) -> list[Site]:
     return sites
 
 
-def _load_registry(path: Path = REGISTRY) -> dict[str, object]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+def _load_registry(root: Path) -> dict[str, object]:
+    data = json.loads((root / REGISTRY_RELPATH).read_text(encoding="utf-8"))
     if not isinstance(data.get("entries"), list):
         raise ValueError("registry must contain an entries list")
     return data
@@ -109,7 +110,7 @@ def regressions(sites: list[Site], registry: dict[str, object]) -> list[str]:
     return failures
 
 
-def _write_registry(sites: list[Site], owner: str, path: Path = REGISTRY) -> None:
+def _write_registry(sites: list[Site], owner: str, root: Path) -> None:
     entries = [
         {
             **asdict(site),
@@ -118,7 +119,7 @@ def _write_registry(sites: list[Site], owner: str, path: Path = REGISTRY) -> Non
         }
         for site in sites
     ]
-    path.write_bytes(
+    (root / REGISTRY_RELPATH).write_bytes(
         (
             json.dumps({"baseline_total": len(entries), "entries": entries}, indent=2)
             + "\n"
@@ -130,8 +131,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--update", action="store_true")
     parser.add_argument("--owner", default="compiler-runtime maintainers")
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=ROOT,
+        help="checkout to scan; its tools/dead_code_allow_baseline.json is the "
+        "registry (default: this repository)",
+    )
     args = parser.parse_args(argv)
-    sites = scan()
+    root = args.root.resolve()
+    sites = scan(root)
     if args.update:
         if not _valid_text(args.owner):
             print(
@@ -139,11 +148,11 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 3
-        _write_registry(sites, args.owner)
+        _write_registry(sites, args.owner, root)
         print(f"dead_code_allow_ratchet: registry updated to {len(sites)} sites")
         return 0
     try:
-        registry = _load_registry()
+        registry = _load_registry(root)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"dead_code_allow_ratchet: invalid registry: {exc}", file=sys.stderr)
         return 3
