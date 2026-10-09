@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import re
 
-from tools import harness_memory_guard
+from tools.generator_io import rustfmt_source
 
-from .paths import ROOT
 from .registration import backend_private_kinds, registered_simpleir_kinds
 from .primitive_effects import render_primitive_effects_rs
 from .runtime_requirements import (
@@ -83,7 +82,7 @@ use crate::tir::types::TirType;
 
 
 def render_rs(data: dict) -> str:
-    return _rustfmt_rust_source(_render_rs_unformatted(data))
+    return rustfmt_source(_render_rs_unformatted(data), label="op-kind Rust tables")
 
 
 def _render_rs_unformatted(data: dict) -> str:
@@ -934,27 +933,6 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_terminator_ownership(data.get("terminator", [])))
 
     return "".join(out)
-
-
-def _rustfmt_rust_source(source: str) -> str:
-    """Format generated Rust before freshness checks or writes.
-
-    The generated file is compiler-owned, so the formatter is part of the
-    generator contract rather than an optional developer cleanup command.
-    """
-    result = harness_memory_guard.guarded_completed_process(
-        ["rustfmt", "--edition", "2024", "--emit", "stdout"],
-        prefix="MOLT_GENERATOR",
-        cwd=ROOT,
-        input=source,
-        capture_output=True,
-        text=True,
-        timeout=60.0,
-    )
-    result.check_returncode()
-    if not isinstance(result.stdout, str):
-        raise TypeError("rustfmt stdout must be text when text=True")
-    return result.stdout
 
 
 _SIMPLEIR_CONTROL_FN_DOCS = {

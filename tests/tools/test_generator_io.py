@@ -34,3 +34,48 @@ def test_exactly_one_mode_is_required(tmp_path, argv):
     with pytest.raises(SystemExit) as raised:
         generator_io.generator_main(_render(tmp_path), argv)
     assert raised.value.code == 2
+
+
+def test_rustfmt_source_formats_through_the_shared_generator_guard(monkeypatch):
+    from types import SimpleNamespace
+
+    from tools import harness_memory_guard
+
+    calls: list[dict[str, object]] = []
+
+    def fake_guarded_completed_process(cmd, **kwargs):
+        calls.append({"cmd": list(cmd), **kwargs})
+        return SimpleNamespace(returncode=0, stdout="fn main() {}\n", stderr="")
+
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    assert generator_io.rustfmt_source("fn main(){}\n", label="t") == "fn main() {}\n"
+    assert calls == [
+        {
+            "cmd": ["rustfmt", "--edition", "2024", "--emit", "stdout"],
+            "prefix": "MOLT_GENERATOR",
+            "cwd": generator_io.ROOT,
+            "input": "fn main(){}\n",
+            "capture_output": True,
+            "text": True,
+            "timeout": 60.0,
+        }
+    ]
+
+
+def test_rustfmt_source_names_the_output_when_rustfmt_fails(monkeypatch):
+    from types import SimpleNamespace
+
+    from tools import harness_memory_guard
+
+    monkeypatch.setattr(
+        harness_memory_guard,
+        "guarded_completed_process",
+        lambda cmd, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="bad"),
+    )
+    with pytest.raises(RuntimeError, match="rustfmt failed for codec tables:\nbad"):
+        generator_io.rustfmt_source("fn", label="codec tables")

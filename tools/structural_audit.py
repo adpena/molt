@@ -1221,7 +1221,24 @@ def _python_raise_nodes(tree: ast.Module, text: str) -> list[ast.Raise]:
     """
     if "raise" not in text:
         return []
-    return [node for node in ast.walk(tree) if isinstance(node, ast.Raise)]
+    # ``raise`` is a statement, so only statement blocks can hold one; the walk
+    # never descends into expressions, which make up most of a tree.
+    raises: list[ast.Raise] = []
+    blocks: list[ast.AST] = [tree]
+    while blocks:
+        node = blocks.pop()
+        for field in ("body", "orelse", "finalbody"):
+            statements = getattr(node, field, None)
+            if not isinstance(statements, list):
+                continue
+            for statement in statements:
+                if isinstance(statement, ast.Raise):
+                    raises.append(statement)
+                elif isinstance(statement, ast.stmt):
+                    blocks.append(statement)
+        blocks.extend(getattr(node, "handlers", ()))
+        blocks.extend(getattr(node, "cases", ()))
+    return raises
 
 
 def _python_intrinsic_stub_surface_hit(
