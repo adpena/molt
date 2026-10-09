@@ -229,7 +229,15 @@ def test_guarded_timeout_preserves_terminal_telemetry() -> None:
     assert getattr(raised.value, "guarded_result") is guarded_result
 
 
-def test_guarded_check_failure_preserves_terminal_telemetry() -> None:
+@pytest.mark.parametrize("check", [False, True])
+def test_guard_failure_is_a_typed_error_with_terminal_telemetry(check: bool) -> None:
+    """The guard's own failure (125) never reaches a caller as the child's status.
+
+    Before HF-29 this returned (or, with check=True, raised CalledProcessError
+    for) exit code 125, so a caller blamed the child that had exited with 0.
+    """
+    from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+
     guarded_result = type(
         "GuardedResult",
         (),
@@ -239,7 +247,10 @@ def test_guarded_check_failure_preserves_terminal_telemetry() -> None:
             "stderr": "scratch retention failed",
             "returncode": 125,
             "child_returncode": 0,
-            "infrastructure_failure": object(),
+            "infrastructure_failure": GuardInfrastructureFailure(
+                phase="temporary_artifact_custody",
+                details=("scratch retention failed",),
+            ),
         },
     )()
 
@@ -257,17 +268,20 @@ def test_guarded_check_failure_preserves_terminal_telemetry() -> None:
         {"HarnessExecutionContext": FakeContext},
     )
 
-    with pytest.raises(subprocess.CalledProcessError) as raised:
+    with pytest.raises(process_guard.GuardInfrastructureError) as raised:
         process_guard.run_completed_command(
             ["compiler", "input.py"],
             memory_guard_prefix="MOLT_TEST",
             capture_output=True,
-            check=True,
+            check=check,
             guard_loader=lambda _cwd: harness,
         )
 
-    assert raised.value.returncode == 125
-    assert getattr(raised.value, "guarded_result") is guarded_result
+    assert not isinstance(raised.value, subprocess.CalledProcessError)
+    assert not hasattr(raised.value, "returncode")
+    assert raised.value.child_returncode == 0
+    assert raised.value.phase == "temporary_artifact_custody"
+    assert raised.value.guarded_result is guarded_result
 
 
 def test_captured_command_retains_progress_and_terminal_result():
