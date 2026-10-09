@@ -65,6 +65,11 @@ percentages. Required conformance and release matrix gates still apply.
   and blanket skips that hide supported cells. Simulated coordinates test policy
   selection, not execution on that OS/architecture/interpreter. Unexecuted cells
   remain unverified; explicit exclusions need a contract reason.
+- **Never write into the checkout.** A test puts files, generator outputs and
+  scratch state in `tmp_path` or a fixture checkout; a gate that scans the
+  repository takes `--root` so its teeth test can plant a violation there. The
+  proof executor attests the checkout after every command, so even a file that
+  lives for seconds fails every command running beside it.
 - **Budget the execution, not the coverage.** Use the smallest fixture and
   dependency closure that preserves the invariant. Profile slow setup/build/run
   stages before optimizing. Reuse immutable fixture inputs without sharing
@@ -284,9 +289,12 @@ Global cancellation covers unsafe memory pressure, missing or invalid guard
 metrics, unresolved guard or Cargo-quarantine ownership, uncertain descendant
 closure, source changes, guard or child signals and host exceptions, lost
 executor outcomes, dependency deadlock, and operator or control-plane
-interruption. Exit code 124 alone does not establish a
-safe deadline: the guard must attest its timeout and completed process closure,
-and any Cargo recovery must have completed with exact ownership and no errors.
+interruption. A source-change stop names the dirty Git status entries in its
+failure reason, and a failed run prints each failing command with its reason,
+so the log identifies the cause without the receipt. Exit code 124 alone does
+not establish a safe deadline: the guard must attest its timeout and completed
+process closure, and any Cargo recovery must have completed with exact
+ownership and no errors.
 A complete birth-custodied native interruption inventory with no active
 incremental compiler records recovery as unnecessary and retains completed
 caches only with a native process-birth fence through termination. Windows Job

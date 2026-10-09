@@ -2143,7 +2143,7 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
 
 
 def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     cell = proof_plan.MatrixCell(
         "local-executor-cell",
         {
@@ -2204,7 +2204,7 @@ def test_provisioned_lean_fingerprint_admits_formal_build_receipt(
     command = next(
         command for command in PLAN.commands if command.id == "formal.lean.build"
     )
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     observed_toolchains: list[tuple[str, ...]] = []
 
     def fake_fingerprints(
@@ -2334,7 +2334,7 @@ def test_executor_hashes_declared_evidence_and_rejects_zero_work(
         },
     )
     plan = _synthetic_executor_plan((producer,), limits={"resource-a": 1})
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -2381,7 +2381,7 @@ def test_executor_schedules_dependencies_and_resources_with_deterministic_receip
         _synthetic_executor_command("synthetic.after-a", dependencies=["synthetic.a"]),
     )
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -2453,7 +2453,7 @@ def test_executor_partition_failure_preserves_independent_work_and_blocks_depend
         ),
     )
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -2555,7 +2555,7 @@ def test_actual_rust_roots_continue_after_failure_without_overlapping_capacity(
     # Source/toolchain admission is supplied by this unit fixture; execution and
     # failure classification still use the real executor, guard and children.
     plan = replace(PLAN, commands=commands)
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -2593,7 +2593,7 @@ def test_executor_does_not_convert_control_plane_interrupts_into_records(
 ) -> None:
     command = _synthetic_executor_command("synthetic.interrupt")
     plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -2640,7 +2640,7 @@ def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
     live = replace(live, data={**live.data, "argv": [sys.executable, "-c", live_code]})
     commands = (fail, live)
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -2685,19 +2685,44 @@ def test_executor_process_custody_is_classified_by_subprocess_guard() -> None:
 def test_executor_refuses_uncommitted_source_attestation(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "dirty")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ("?? stray.py",))
     command = next(
         command for command in PLAN.commands if command.id == "python.static.ty"
     )
-    with pytest.raises(ValueError, match="clean source tree"):
+    with pytest.raises(ValueError, match=r"clean source tree.*: \?\? stray\.py"):
         proof_plan.execute_commands(PLAN, (command,), tmp_path / "receipt.json")
     assert not (tmp_path / "receipt.json").exists()
+
+
+def test_source_tree_changes_names_every_dirty_entry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def git(*args: str) -> None:
+        run_guarded_test_process(
+            ["git", "-C", str(tmp_path), *args], check=True, capture_output=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "proof@example.invalid")
+    git("config", "user.name", "Proof")
+    (tmp_path / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+    git("add", "tracked.py")
+    git("commit", "-q", "-m", "seed")
+    monkeypatch.setattr(proof_plan, "ROOT", tmp_path)
+    assert proof_plan._source_tree_changes() == ()
+
+    (tmp_path / "tracked.py").write_text("x = 2\n", encoding="utf-8")
+    (tmp_path / "new file é.py").write_text("", encoding="utf-8")
+    assert sorted(proof_plan._source_tree_changes()) == [
+        " M tracked.py",
+        "?? new file é.py",
+    ]
 
 
 def test_executor_preflight_error_is_visible_and_receipted(
     tmp_path, monkeypatch, capsys
 ):
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
 
     def reject_toolchain(_plan, _names):
         raise ValueError("toolchain contract violation: node version mismatch")
@@ -2718,10 +2743,10 @@ def test_executor_preflight_error_is_visible_and_receipted(
 
 
 def test_executor_rejects_source_mutation_during_partition(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    states = iter(("clean", "clean", "dirty"))
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: next(states))
+    states = iter(((), (), ("?? tools/stray.py", " M README.md")))
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: next(states))
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -2744,7 +2769,13 @@ def test_executor_rejects_source_mutation_during_partition(
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["status"] == "failure"
     assert receipt["commands"][0]["source_tree_state_after"] == "changed"
+    reason = "source tree changed or is dirty: ?? tools/stray.py,  M README.md"
+    assert receipt["commands"][0]["failure_reason"] == reason
     assert receipt["executed_partitions"] == []
+    # The log names the failing command and the paths without the receipt.
+    message = capsys.readouterr().err
+    assert f"proof-plan: failed python.static.ty: {reason}" in message
+    assert f"status=failure failed=1; receipt={receipt_path}" in message
 
 
 def test_heavy_queue_projects_the_same_receipt_schema(
@@ -3157,7 +3188,7 @@ def test_executor_stops_on_candidate_change_even_when_checkout_is_clean(
 ) -> None:
     original = {"commit": "a" * 40, "tree": "b" * 40}
     current = dict(original)
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(proof_plan, "_source_identity", lambda: dict(current))
     monkeypatch.setattr(
         proof_plan,
@@ -3196,7 +3227,7 @@ def test_executor_control_plane_interrupt_cancels_siblings_before_join(
         _synthetic_executor_command("live", resource_class="resource-b"),
     )
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan,
         "toolchain_fingerprints",
@@ -3495,7 +3526,7 @@ def test_python_rust_consumers_admit_tools_before_any_partition(
         assert {"python", "uv", "rustc", "cargo"} <= set(names)
         raise ValueError("independent fixture: partial Rust installation")
 
-    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_tree_changes", lambda: ())
     monkeypatch.setattr(
         proof_plan, "toolchain_fingerprints", reject_incomplete_installation
     )

@@ -76,7 +76,8 @@ except ModuleNotFoundError:  # pragma: no cover
 force_utf8_stdio()
 
 ROOT = Path(__file__).resolve().parents[1]
-BASELINE = Path(__file__).resolve().parent / "encoding_gate_baseline.json"
+# The ratchet baseline, relative to the scanned checkout.
+BASELINE_RELPATH = Path("tools") / "encoding_gate_baseline.json"
 
 # Roots scanned for first-party Python sources (relative to repo ROOT).
 _SCAN_ROOTS = ("tools", "src/molt", "tests")
@@ -308,13 +309,13 @@ def fix_source(source: str, relpath: str) -> tuple[str, int]:
     return fixed, len(edits)
 
 
-def fix_files(paths: list[Path] | None = None) -> dict[str, int]:
+def fix_files(paths: list[Path] | None = None, root: Path = ROOT) -> dict[str, int]:
     """Apply :func:`fix_source` in place; returns fixes per repo-relative path.
 
     ``paths`` limits the rewrite to files inside the gate's scope (pre-commit
     style); ``None`` rewrites the whole scanned tree.
     """
-    in_scope = dict(_iter_python_files())
+    in_scope = dict(_iter_python_files(root))
     if paths is not None:
         wanted = {path.resolve() for path in paths}
         in_scope = {
@@ -340,26 +341,26 @@ def _scan_file(path: Path, relpath: str) -> list[Violation]:
     return scan_source(source, relpath)
 
 
-def _iter_python_files() -> list[tuple[Path, str]]:
+def _iter_python_files(root: Path) -> list[tuple[Path, str]]:
     files: list[tuple[Path, str]] = []
     for root_name in _SCAN_ROOTS:
-        root = ROOT / root_name
-        if not root.is_dir():
+        scan_root = root / root_name
+        if not scan_root.is_dir():
             continue
-        for py in root.rglob("*.py"):
-            if _SKIP_DIR_PARTS & set(py.parts):
+        for py in scan_root.rglob("*.py"):
+            relpath = py.relative_to(root).as_posix()
+            if _SKIP_DIR_PARTS & set(Path(relpath).parts):
                 continue
-            relpath = py.relative_to(ROOT).as_posix()
             if relpath.startswith(_SKIP_PREFIXES):
                 continue
             files.append((py, relpath))
     return files
 
 
-def scan() -> list[Violation]:
+def scan(root: Path = ROOT) -> list[Violation]:
     """All current violations across the scanned tree, sorted for stable output."""
     out: list[Violation] = []
-    for path, relpath in _iter_python_files():
+    for path, relpath in _iter_python_files(root):
         out.extend(_scan_file(path, relpath))
     out.sort(key=lambda v: (v.relpath, v.line, v.rule))
     return out
@@ -401,17 +402,18 @@ def regressions(counts: dict[str, int], base_by_site: dict[str, int]) -> list[st
     return sorted(fp for fp, c in counts.items() if c > base_by_site.get(fp, 0))
 
 
-def _load_baseline() -> dict[str, object] | None:
-    if not BASELINE.is_file():
+def _load_baseline(root: Path) -> dict[str, object] | None:
+    baseline = root / BASELINE_RELPATH
+    if not baseline.is_file():
         return None
     try:
-        return json.loads(BASELINE.read_text(encoding="utf-8"))
+        return json.loads(baseline.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 
 
-def _write_baseline(violations: list[Violation]) -> None:
-    BASELINE.write_text(
+def _write_baseline(violations: list[Violation], root: Path) -> None:
+    (root / BASELINE_RELPATH).write_text(
         json.dumps(_baseline_payload(violations), indent=2) + "\n",
         encoding="utf-8",
         newline="\n",  # LF on every OS; the baseline is a committed artifact
@@ -428,14 +430,14 @@ def _cmd_list(violations: list[Violation]) -> int:
     return 0
 
 
-def _cmd_update(violations: list[Violation]) -> int:
-    _write_baseline(violations)
+def _cmd_update(violations: list[Violation], root: Path) -> int:
+    _write_baseline(violations, root)
     print(f"encoding_gate: baseline updated to total={len(violations)} site(s)")
     return 0
 
 
-def _cmd_check(violations: list[Violation]) -> int:
-    base = _load_baseline()
+def _cmd_check(violations: list[Violation], root: Path) -> int:
+    base = _load_baseline(root)
     if base is None:
         print(
             "encoding_gate: no baseline -- run --update once to establish it.",
@@ -506,12 +508,20 @@ def main(argv: list[str] | None = None) -> int:
         help='pin encoding="utf-8" on every flagged call (in PATHS, or the whole scope)',
     )
     ap.add_argument("paths", nargs="*", type=Path, help="files for --fix")
+    ap.add_argument(
+        "--root",
+        type=Path,
+        default=ROOT,
+        help="checkout to scan; its tools/encoding_gate_baseline.json is the "
+        "baseline (default: this repository)",
+    )
     args = ap.parse_args(argv)
+    root = args.root.resolve()
     if args.paths and not args.fix:
         ap.error("paths are only accepted with --fix")
 
     if args.fix:
-        fixed = fix_files(args.paths or None)
+        fixed = fix_files(args.paths or None, root)
         for relpath, count in fixed.items():
             print(f"encoding_gate: pinned {count} call(s) in {relpath}")
         print(
@@ -519,13 +529,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    violations = scan()
+    violations = scan(root)
 
     if args.list:
         return _cmd_list(violations)
     if args.update:
-        return _cmd_update(violations)
-    return _cmd_check(violations)
+        return _cmd_update(violations, root)
+    return _cmd_check(violations, root)
 
 
 if __name__ == "__main__":
