@@ -5406,7 +5406,6 @@ def test_sccp_new_executable_edge_revisits_phi_with_equal_predecessor_states() -
         },
         predecessors={0: [], 1: [0], 2: [0], 3: [2], 4: [1, 3]},
         reachable={0, 1, 2, 3, 4},
-        idom={0: 0, 1: 0, 2: 0, 3: 2, 4: 0},
     )
     join = cfg.label_to_block["join"]
     gen = SimpleTIRGenerator()
@@ -6225,6 +6224,48 @@ def _reachable_without(
     return seen
 
 
+def _jump_label_ops(target: int, label: int, constant: int) -> list[MoltOp]:
+    # Blocks: 0 CONST, 1 JUMP, 2 CONST, 3 LABEL, 4 ret_void.
+    return [
+        MoltOp(kind="CONST", args=[constant], result=MoltValue("v0")),
+        MoltOp(kind="JUMP", args=[target], result=MoltValue("none")),
+        MoltOp(kind="CONST", args=[constant + 1], result=MoltValue("v1")),
+        MoltOp(kind="LABEL", args=[label], result=MoltValue("none")),
+        MoltOp(kind="ret_void", args=[], result=MoltValue("none")),
+    ]
+
+
+def test_cfg_is_shared_by_op_lists_with_equal_control() -> None:
+    # Operands the CFG never reads may differ; the graph is the same object.
+    first = build_cfg(_jump_label_ops(1, 1, constant=10))
+    second = build_cfg(_jump_label_ops(1, 1, constant=20))
+
+    assert second is first
+    assert first.successors[1] == (3,)
+
+
+def test_cfg_differs_when_a_label_operand_differs() -> None:
+    to_label = build_cfg(_jump_label_ops(1, 1, constant=10))
+    to_nowhere = build_cfg(_jump_label_ops(2, 1, constant=10))
+
+    assert to_nowhere is not to_label
+    assert to_label.successors[1] == (3,)
+    assert to_nowhere.successors[1] == ()
+
+
+def test_shared_cfg_cannot_be_mutated() -> None:
+    cfg = build_cfg(_jump_label_ops(1, 1, constant=10))
+
+    with pytest.raises(TypeError):
+        cfg.successors[0] = (1,)  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        cfg.successors[0].append(1)  # type: ignore[attr-defined]
+    with pytest.raises(TypeError):
+        cfg.label_to_block["1"] = 0  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        cfg.reachable.add(3)  # type: ignore[attr-defined]
+
+
 @pytest.mark.parametrize("seed", range(300))
 def test_cfg_dominance_matches_the_path_definition(seed: int) -> None:
     # Oracle: a dominates a reachable b exactly when removing a cuts every
@@ -6254,8 +6295,8 @@ def test_cfg_dominance_matches_the_path_definition(seed: int) -> None:
         edge_kinds={},
         predecessors=predecessors,
         reachable=reachable,
-        idom=idom,
     )
+    assert cfg.idom == idom  # derived on first use from the same graph
     for block in range(count):
         for candidate in range(count):
             if block not in reachable:
