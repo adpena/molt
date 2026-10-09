@@ -1203,8 +1203,9 @@ needs = ["nightly-prepare", "conformance-aggregate", "differential-aggregate", "
 # Frontend IR determinism: each case recompiles a program in fresh
 # interpreters (several hash seeds, both parse codecs, a midend wall-clock
 # budget) and requires byte-identical IR. The 145 cases take 140 s at -n 4 on
-# an M-series Mac and about five times as long on a hosted runner, too slow for
-# the PR unit job. It needs no build, so it runs beside the runtime build.
+# an M-series Mac and took 878 s on the hosted runner (Nightly run
+# 37947710312), too slow for the PR unit job. It needs no build, so it runs
+# beside the build chain.
 [[command]]
 id = "nightly.determinism.ir-hashseed"
 family = "nightly_determinism"
@@ -1224,7 +1225,7 @@ description = "Runtime determinism and typed IR verification after one runtime b
 workflow = ".github/workflows/nightly.yml"
 job = "determinism-sweep"
 tiers = ["scheduled"]
-timeout_minutes = 60
+timeout_minutes = 75
 resource_class = "scheduled-suite"
 
 [[scheduled_family]]
@@ -1336,15 +1337,19 @@ evidence_outputs = ["proof-results/nightly/deterministic-runtime.json"]
 argv = ["uv", "run", "python3", "-u", "tools/check_deterministic_runtime.py", "--corpus", "full", "--runs", "3", "--build-profile", "dev", "--json-out", "proof-results/nightly/deterministic-runtime.json"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
+# The typed-IR verification and the IR hash-seed suite are CPU-bound Python
+# suites. Run beside each other on the 4-core runner, the verification ran
+# past 900 s in Nightly run 37947710312 and its timeout stopped the runtime
+# sweep; it now follows the hash-seed suite while the build chain runs.
 [[command]]
 id = "nightly.determinism.ir"
 family = "nightly_determinism"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
 resource_class = "scheduled-suite"
-timeout_seconds = 900
+timeout_seconds = 1800
 cache_domain = "cargo-workspace"
-dependencies = ["nightly.determinism.compiler-prewarm"]
+dependencies = ["nightly.determinism.ir-hashseed"]
 evidence_outputs = ["proof-results/nightly/ir-verification.json"]
 argv = ["uv", "run", "python3", "tools/verify_ir_suite.py", "--dir", "tests/differential/basic", "--examples", "--json-out", "proof-results/nightly/ir-verification.json"]
 toolchains = ["python", "uv", "rustc", "cargo"]
