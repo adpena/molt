@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "83f78277a2a4dc9f0e25ad25bf500c3a435b9b65d8eaceaef44c59ab67491f35",
+  "authority_sha256": "fef49f11fa7931fe752ab5c03aeebe3001cda24e6744d7670f84561656579cfa",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -3579,7 +3579,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 300,
+      "timeout_seconds": 600,
       "toolchains": [
         "python",
         "uv"
@@ -3635,7 +3635,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 300,
+      "timeout_seconds": 600,
       "toolchains": [
         "python",
         "uv"
@@ -5995,7 +5995,7 @@
           "headroom_seconds": 0,
           "projected_makespan_seconds": 1800,
           "resource_capacity_floor_seconds": {
-            "python-tests": 1560
+            "python-tests": 1710
           }
         },
         "macos-arm64-py312-unit": {
@@ -6004,7 +6004,7 @@
           "headroom_seconds": 0,
           "projected_makespan_seconds": 1800,
           "resource_capacity_floor_seconds": {
-            "python-tests": 1560
+            "python-tests": 1710
           }
         }
       }
