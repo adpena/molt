@@ -539,11 +539,15 @@ def test_environment_rust_proxy_component_reaches_both_custody_consumers(
     )
     assert calls == [[str(rustup), "which", role]]
     images = process_image_capture.environment_images(captured)
-    assert {row["path"] for row in images} == {str(proxy), str(physical)}
-    assert {row.path for row in toolchain_capture.frozen_files(captured)} >= {
-        str(proxy),
-        str(physical),
+    expected_paths = {
+        process_image_capture._image_path_key(proxy),
+        process_image_capture._image_path_key(physical),
     }
+    assert {row["path"] for row in images} == expected_paths
+    assert {
+        process_image_capture._image_path_key(Path(row.path))
+        for row in toolchain_capture.frozen_files(captured)
+    } >= expected_paths
     assert set(execution_custody._identity_paths(captured)) >= {proxy, physical}
     policy = execution_custody.child_policy(
         {"process_closure": {"descendants": "declared-toolchains"}},

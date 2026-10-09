@@ -730,11 +730,6 @@ fn pyobj_from_float(v: f64) -> *mut PyObject {
     unsafe { crate::api::numbers::PyFloat_FromDouble(v) }
 }
 
-/// A newly computed C integer result uses the public exact constructor owner.
-fn pyobj_from_int(v: i64) -> *mut PyObject {
-    unsafe { crate::api::numbers::PyLong_FromLongLong(v as std::os::raw::c_longlong) }
-}
-
 // ─── Binary arithmetic ───────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]

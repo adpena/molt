@@ -331,6 +331,32 @@ def test_retirement_reclaims_readonly_payload(tmp_path: Path, kind: str) -> None
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_retirement_reclaims_hardlink_without_mutating_external_source(
+    tmp_path: Path, readonly_file_source, kind: str
+) -> None:
+    source, attributes = readonly_file_source
+    before = attributes()
+    owned = tmp_path / "retire"
+    if kind == "directory":
+        owned.mkdir()
+        link = owned / "borrowed.exe"
+    else:
+        link = owned
+    link.hardlink_to(source)
+
+    def forbidden_chmod(*_args, **_kwargs):
+        pytest.fail("retirement must not mutate another hardlink's attributes")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Path, "chmod", forbidden_chmod)
+        file_publication.durable_remove_path(owned, retirement_scope="hardlink")
+    assert not owned.exists()
+    assert not list(tmp_path.glob(".molt-retired-v1-*"))
+    assert attributes() == before
+    assert source.read_bytes() == b"external source must survive cleanup"
+
+
 def test_retirement_barrier_failure_retains_intact_payload_and_new_live_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

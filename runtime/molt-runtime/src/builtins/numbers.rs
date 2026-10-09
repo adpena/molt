@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 
 use molt_obj_model::MoltObject;
 use num_bigint::{BigInt, Sign};
-use num_traits::{ToPrimitive, Zero};
+use num_traits::ToPrimitive;
 
 use crate::object::class_layout::{ScalarValueKind, scalar_value_bits};
 use crate::object::ops::{as_float_extended, is_float_extended};

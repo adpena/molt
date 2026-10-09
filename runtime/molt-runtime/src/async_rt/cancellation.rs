@@ -8,11 +8,11 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use crate::object::heap_lifecycle::DetachedEdgeSink;
 use crate::{
     ExceptionSentinel, HEADER_FLAG_BLOCK_ON, HEADER_FLAG_CANCEL_PENDING, HEADER_FLAG_SPAWN_RETAIN,
-    MoltHeader, MoltObject, PtrSlot, TYPE_ID_TUPLE, alloc_exception_from_class_bits, alloc_tuple,
-    dec_ref_bits, exception_type_bits_from_name, header_from_obj_ptr, obj_from_bits,
-    raise_exception, record_exception, runtime_state, string_obj_to_owned,
-    task_exception_baseline_drop, task_exception_depth_drop, task_exception_handler_stack_drop,
-    task_exception_stack_drop, task_last_exception_drop, type_name,
+    MoltObject, PtrSlot, TYPE_ID_TUPLE, alloc_exception_from_class_bits, alloc_tuple, dec_ref_bits,
+    exception_type_bits_from_name, header_from_obj_ptr, obj_from_bits, raise_exception,
+    record_exception, runtime_state, string_obj_to_owned, task_exception_baseline_drop,
+    task_exception_depth_drop, task_exception_handler_stack_drop, task_exception_stack_drop,
+    task_last_exception_drop, type_name,
 };
 
 use super::scheduler::{await_waiter_clear, wake_task_ptr};

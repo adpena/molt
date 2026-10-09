@@ -211,7 +211,10 @@ def test_capture_records_family_and_frozen_inputs(tmp_path, monkeypatch, target)
     assert "path" not in identity and "executable_sha256" not in identity
     images = process_image_capture.toolchain_images("source-extension", identity)
     assert images == identity["process_images"]
-    files = {row.path: row for row in toolchain_capture.frozen_files(identity)}
+    files = {
+        process_image_capture._image_path_key(Path(row.path)): row
+        for row in toolchain_capture.frozen_files(identity)
+    }
     assert all(
         process_image_capture._image_path_key(tool.path) in files
         for tool in (

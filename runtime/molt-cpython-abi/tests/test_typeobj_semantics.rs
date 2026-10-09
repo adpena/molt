@@ -310,6 +310,238 @@ const T_ULONG: c_int = 12;
 const T_LONGLONG: c_int = 17;
 const T_ULONGLONG: c_int = 18;
 const T_PYSSIZET: c_int = 19;
+const T_STRING: c_int = 5;
+const T_STRING_INPLACE: c_int = 13;
+const T_OBJECT: c_int = 6;
+const T_OBJECT_EX: c_int = 16;
+
+unsafe fn assert_member_error(exception: *mut PyObject, message: &str) {
+    assert_eq!(unsafe { errors::PyErr_ExceptionMatches(exception) }, 1);
+    assert_eq!(support::take_current_error_text().as_deref(), Some(message));
+    assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+}
+
+#[test]
+fn member_relative_offset_is_rejected_before_other_admission() {
+    install_member_protocol();
+    unsafe {
+        for minor in [12, 13, 14] {
+            MEMBER_TARGET.with(|target| target.set(minor));
+            // All addresses are in bounds even for an implementation missing
+            // the guard. NONE and unknown types also prove type-independent admission.
+            for ty in [T_INT, T_STRING_INPLACE, 20, 999] {
+                for flags in [
+                    member_abi::Py_RELATIVE_OFFSET,
+                    member_abi::Py_RELATIVE_OFFSET | 1,
+                ] {
+                    let mut storage = [0u64; 4];
+                    let before = storage;
+                    let mut definition = member(ty, 8);
+                    definition.flags = flags;
+                    assert!(
+                        typeobj::PyMember_GetOne(storage.as_ptr().cast(), &raw mut definition,)
+                            .is_null()
+                    );
+                    assert_member_error(
+                        (&raw mut member_abi::PyExc_SystemError).cast(),
+                        "PyMember_GetOne used with Py_RELATIVE_OFFSET",
+                    );
+                    for value in [(&raw mut Py_True).cast::<PyObject>(), ptr::null_mut()] {
+                        assert_eq!(
+                            typeobj::PyMember_SetOne(
+                                storage.as_mut_ptr().cast(),
+                                &raw mut definition,
+                                value,
+                            ),
+                            -1
+                        );
+                        assert_member_error(
+                            (&raw mut member_abi::PyExc_SystemError).cast(),
+                            "PyMember_SetOne used with Py_RELATIVE_OFFSET",
+                        );
+                        assert_eq!(storage, before);
+                    }
+                }
+            }
+            // Clearing the error leaves ordinary member access usable.
+            let mut field: c_int = 41;
+            let mut definition = member(T_INT, 0);
+            assert_eq!(
+                typeobj::PyMember_SetOne(
+                    (&raw mut field).cast(),
+                    &raw mut definition,
+                    (&raw mut Py_True).cast()
+                ),
+                0
+            );
+            assert_eq!(field, 1);
+        }
+    }
+}
+
+#[test]
+fn member_inline_string_reads_storage_and_preserves_readonly_precedence() {
+    install_member_protocol();
+    unsafe {
+        for minor in [12, 13, 14] {
+            MEMBER_TARGET.with(|target| target.set(minor));
+            for payload in [b"\0".as_slice(), b"h\xc3\xa9\0ignored".as_slice()] {
+                let mut storage = [0xa5u8; 24];
+                storage[1..1 + payload.len()].copy_from_slice(payload);
+                let before = storage;
+                let mut definition = member(T_STRING_INPLACE, 1);
+                let value = refcount::OwnedPyObject::from_owned(typeobj::PyMember_GetOne(
+                    storage.as_ptr().cast(),
+                    &raw mut definition,
+                ));
+                assert!(!value.as_ptr().is_null());
+                let end = payload.iter().position(|byte| *byte == 0).unwrap();
+                assert_eq!(read_str(value.as_ptr()), &payload[..end]);
+                assert_eq!(storage, before);
+                for flags in [0, 1] {
+                    definition.flags = flags;
+                    for replacement in [(&raw mut Py_True).cast::<PyObject>(), ptr::null_mut()] {
+                        assert_eq!(
+                            typeobj::PyMember_SetOne(
+                                storage.as_mut_ptr().cast(),
+                                &raw mut definition,
+                                replacement,
+                            ),
+                            -1
+                        );
+                        let (exception, message) = if flags != 0 {
+                            (
+                                (&raw mut member_abi::PyExc_AttributeError).cast(),
+                                "readonly attribute",
+                            )
+                        } else if replacement.is_null() {
+                            (
+                                (&raw mut member_abi::PyExc_TypeError).cast(),
+                                "can't delete numeric/char attribute",
+                            )
+                        } else {
+                            (
+                                (&raw mut member_abi::PyExc_TypeError).cast(),
+                                "readonly attribute",
+                            )
+                        };
+                        assert_member_error(exception, message);
+                        assert_eq!(storage, before);
+                    }
+                }
+            }
+            // STRING still dereferences a pointer; STRING_INPLACE reads the
+            // bytes at the field. Both use the canonical UTF-8 string constructor.
+            let indirect = c"indirect".as_ptr();
+            let mut definition = member(T_STRING, 0);
+            let result = refcount::OwnedPyObject::from_owned(typeobj::PyMember_GetOne(
+                (&raw const indirect).cast(),
+                &raw mut definition,
+            ));
+            assert!(!result.as_ptr().is_null());
+            assert_eq!(read_str(result.as_ptr()), b"indirect");
+            let invalid = [0xffu8, 0];
+            definition.type_ = T_STRING_INPLACE;
+            assert!(
+                typeobj::PyMember_GetOne(invalid.as_ptr().cast(), &raw mut definition).is_null()
+            );
+            assert_eq!(
+                errors::PyErr_ExceptionMatches(
+                    (&raw mut member_abi::PyExc_UnicodeDecodeError).cast()
+                ),
+                1
+            );
+            errors::PyErr_Clear();
+        }
+    }
+}
+
+#[test]
+fn member_missing_object_and_unknown_type_use_pinned_diagnostics() {
+    install_member_protocol();
+    #[repr(C)]
+    struct Record {
+        base: PyObject,
+        value: *mut PyObject,
+    }
+    let name = std::ffi::CString::new(format!("pkg.{}", "Q".repeat(205))).unwrap();
+    let mut class = new_type();
+    class.ob_base.ob_base = PyObject {
+        ob_refcnt: 1,
+        ob_type: &raw mut member_abi::PyType_Type,
+    };
+    class.tp_base = &raw mut member_abi::PyBaseObject_Type;
+    class.tp_name = name.as_ptr();
+    let mut record = Record {
+        base: PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut *class,
+        },
+        value: ptr::null_mut(),
+    };
+    let mut definition = member(T_OBJECT_EX, std::mem::offset_of!(Record, value) as isize);
+    unsafe {
+        for minor in [12, 13, 14] {
+            MEMBER_TARGET.with(|target| target.set(minor));
+            assert!(
+                typeobj::PyMember_GetOne((&raw const record).cast(), &raw mut definition,)
+                    .is_null()
+            );
+            let type_name = if minor == 12 {
+                &name.to_bytes()[..200]
+            } else {
+                name.to_bytes()
+            };
+            assert_member_error(
+                (&raw mut member_abi::PyExc_AttributeError).cast(),
+                &format!(
+                    "'{}' object has no attribute 'field'",
+                    std::str::from_utf8(type_name).unwrap()
+                ),
+            );
+            assert_eq!(
+                typeobj::PyMember_SetOne(
+                    (&raw mut record).cast(),
+                    &raw mut definition,
+                    ptr::null_mut(),
+                ),
+                -1
+            );
+            assert_member_error((&raw mut member_abi::PyExc_AttributeError).cast(), "field");
+            definition.type_ = T_OBJECT;
+            let none = refcount::OwnedPyObject::from_owned(typeobj::PyMember_GetOne(
+                (&raw const record).cast(),
+                &raw mut definition,
+            ));
+            assert_eq!(none.as_ptr(), &raw mut member_abi::Py_None);
+            assert!(errors::PyErr_Occurred().is_null());
+            definition.type_ = 999;
+            assert!(
+                typeobj::PyMember_GetOne((&raw const record).cast(), &raw mut definition,)
+                    .is_null()
+            );
+            assert_member_error(
+                (&raw mut member_abi::PyExc_SystemError).cast(),
+                "bad memberdescr type",
+            );
+            assert_eq!(
+                typeobj::PyMember_SetOne(
+                    (&raw mut record).cast(),
+                    &raw mut definition,
+                    (&raw mut Py_True).cast(),
+                ),
+                -1
+            );
+            assert_member_error(
+                (&raw mut member_abi::PyExc_SystemError).cast(),
+                "bad memberdescr type for field",
+            );
+            assert!(record.value.is_null());
+            assert_eq!(class.ob_base.ob_base.ob_refcnt, 1);
+            definition.type_ = T_OBJECT_EX;
+        }
+    }
+}
 
 thread_local! {
     static MEMBER_TARGET: Cell<i64> = const { Cell::new(12) };

@@ -8,10 +8,8 @@ use std::ptr;
 unsafe fn input(value: *mut PyObject) -> Option<RuntimeValue> {
     unsafe { RuntimeValue::acquire_edge(value) }
 }
-unsafe fn status_error() -> c_int {
-    unsafe {
-        crate::api::errors::transfer_runtime_pending_to_current();
-    }
+fn status_error() -> c_int {
+    crate::api::errors::transfer_runtime_pending_to_current();
     -1
 }
 #[unsafe(no_mangle)]
@@ -39,11 +37,7 @@ pub unsafe extern "C" fn PyContext_Enter(ctx: *mut PyObject) -> c_int {
         return -1;
     };
     let status = unsafe { (hooks_or_stubs().context_enter)(ctx.bits()) };
-    if status < 0 {
-        unsafe { status_error() }
-    } else {
-        status
-    }
+    if status < 0 { status_error() } else { status }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyContext_Exit(ctx: *mut PyObject) -> c_int {
@@ -52,11 +46,7 @@ pub unsafe extern "C" fn PyContext_Exit(ctx: *mut PyObject) -> c_int {
         return -1;
     };
     let status = unsafe { (hooks_or_stubs().context_exit)(ctx.bits()) };
-    if status < 0 {
-        unsafe { status_error() }
-    } else {
-        status
-    }
+    if status < 0 { status_error() } else { status }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyContextVar_New(
@@ -177,11 +167,7 @@ pub unsafe extern "C" fn PyContextVar_Reset(var: *mut PyObject, token: *mut PyOb
         return -1;
     };
     let status = unsafe { (hooks_or_stubs().context_var_reset)(var.bits(), token.bits()) };
-    if status < 0 {
-        unsafe { status_error() }
-    } else {
-        status
-    }
+    if status < 0 { status_error() } else { status }
 }
 unsafe fn exact(value: *mut PyObject, ty: *mut PyTypeObject) -> c_int {
     c_int::from(!value.is_null() && unsafe { (*value).ob_type == ty })

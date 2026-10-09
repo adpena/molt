@@ -477,7 +477,7 @@ fn lookup_error(py: &PyToken<'_>, var: u64) -> u64 {
     let p = crate::alloc_exception_from_class_bits(py, class, args);
     dec_ref_bits(py, args);
     if !p.is_null() {
-        crate::record_exception_owned(py, p);
+        crate::builtins::exceptions::record_exception_owned(py, p);
     }
     none()
 }

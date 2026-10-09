@@ -2394,7 +2394,10 @@ def test_native_c_capture_uses_actual_helpers_and_independent_archiver(
     assert {
         process_image_capture._image_path_key(tools[name])
         for name in ("selected-gcc", "selected-ar", "cc1", "as")
-    } <= {row.path for row in toolchain_capture.frozen_files(identity)}
+    } <= {
+        process_image_capture._image_path_key(Path(row.path))
+        for row in toolchain_capture.frozen_files(identity)
+    }
     assert sum("-###" in command for command in calls) == 2
     before = len(calls)
     toolchain_capture.revalidate_rust_link_process_images(

@@ -10,6 +10,7 @@ import subprocess
 import pytest
 
 import tools.secret_guard as secret_guard
+from tests.process_guard_common import run_guarded_test_process
 
 
 def test_secret_guard_detects_high_confidence_token() -> None:
@@ -128,8 +129,13 @@ def test_staged_scan_uses_entire_selected_index_from_any_cwd(
     repo.mkdir()
 
     def git(*args: str) -> bytes:
-        return subprocess.run(
-            ["git", *args], cwd=repo, check=True, capture_output=True, timeout=10
+        return run_guarded_test_process(
+            ["git", *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=False,
+            timeout=10,
         ).stdout
 
     git("init", "--quiet")
