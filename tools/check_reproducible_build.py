@@ -40,6 +40,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from molt.cargo_execution_policy import default_nested_process_timeout_seconds  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
 
@@ -150,19 +151,19 @@ def extract_artifact_path(build_json: dict, prefer_object: bool = False) -> str:
     )
 
 
-# A measured build starts from a warm compiler (the proof plan prewarms it) but
-# compiles the program and its stdlib objects into a fresh cache.
-DEFAULT_BUILD_TIMEOUT_SECONDS = 300
-
-
 def _build_once(
     source: str,
     cache_dir: str,
     profile: str,
     prefer_object: bool,
-    build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    build_timeout: float | None = None,
 ) -> tuple[str | None, str]:
-    """Build a source file once, returning (artifact_path, error_msg)."""
+    """Build a source file once, returning (artifact_path, error_msg).
+
+    ``build_timeout`` defaults to the proof plan's nested build budget.
+    """
+    if build_timeout is None:
+        build_timeout = default_nested_process_timeout_seconds("build")
     env = os.environ.copy()
     env.setdefault("PYTHONPATH", "src")
     env["PYTHONHASHSEED"] = "0"
@@ -267,7 +268,7 @@ def _build_repeated_and_compare(
     prefer_object: bool,
     verbose: bool,
     runs: int,
-    build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    build_timeout: float | None = None,
 ) -> tuple[bool, dict]:
     """Build a source repeatedly in isolated caches and compare all outputs."""
     if runs < 2:
@@ -437,11 +438,9 @@ def main() -> int:
     parser.add_argument(
         "--build-timeout",
         type=float,
-        default=DEFAULT_BUILD_TIMEOUT_SECONDS,
-        help=(
-            "Timeout in seconds per build from a warm compiler "
-            f"(default: {DEFAULT_BUILD_TIMEOUT_SECONDS})"
-        ),
+        default=None,
+        help="Timeout in seconds per build (default: the proof plan's nested "
+        "build budget)",
     )
     parser.add_argument(
         "--audit-ir",

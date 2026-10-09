@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from molt.cargo_execution_policy import default_nested_process_timeout_seconds  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from tools.check_reproducible_build import resolve_corpus  # noqa: E402
 from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
@@ -57,11 +58,6 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-# A measured build starts from a warm compiler (the proof plan prewarms it) but
-# compiles the program and its stdlib objects into a fresh cache.
-DEFAULT_BUILD_TIMEOUT_SECONDS = 300
-
-
 def build_program(
     source: str,
     profile: str = "dev",
@@ -70,16 +66,19 @@ def build_program(
     cache_dir: str | None = None,
     cwd: str | Path | None = None,
     hash_seed: int = 0,
-    build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    build_timeout: float | None = None,
 ) -> tuple[str | None, str, dict[str, object] | None]:
     """Build a Molt program. Returns (binary_path, error_msg).
 
     Every observation shares the compiler build (the Cargo target and
     toolchain roots in the environment). It gets its own working directory,
     program cache and output path, and no backend daemon, so no compile state
-    passes between observations. Returns (None, error) on failure instead of
+    passes between observations. ``build_timeout`` defaults to the plan's
+    nested build budget. Returns (None, error) on failure instead of
     sys.exit().
     """
+    if build_timeout is None:
+        build_timeout = default_nested_process_timeout_seconds("build")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")
     env["PYTHONHASHSEED"] = str(hash_seed)
@@ -204,7 +203,7 @@ def check_determinism(
     timeout: int = 60,
     verbose: bool = False,
     deterministic_mode: bool = True,
-    build_timeout: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
+    build_timeout: float | None = None,
 ) -> dict:
     """Check determinism for a single source file. Returns result dict."""
     result = {
@@ -402,11 +401,9 @@ def main() -> int:
     parser.add_argument(
         "--build-timeout",
         type=float,
-        default=DEFAULT_BUILD_TIMEOUT_SECONDS,
-        help=(
-            "Timeout in seconds per program build from a warm compiler "
-            f"(default: {DEFAULT_BUILD_TIMEOUT_SECONDS})"
-        ),
+        default=None,
+        help="Timeout in seconds per program build (default: the proof plan's "
+        "nested build budget)",
     )
     parser.add_argument(
         "--verbose",

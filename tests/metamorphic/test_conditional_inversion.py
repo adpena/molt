@@ -116,7 +116,7 @@ def test_conditional_inversion_equivalence(pair: tuple[str, str]):
     result = runner.compare(original, inverted)
 
     if result.error:
-        pytest.skip(f"Build/run error: {result.error}")
+        pytest.fail(f"Build/run error: {result.error}")
 
     assert result.equivalent, (
         f"Output differs after conditional inversion!\n"
