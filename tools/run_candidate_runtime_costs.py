@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import sys
 
 if __package__ in (None, ""):
     from import_file import bind_repository_imports, load_module_from_path
@@ -212,7 +213,8 @@ def run_operation(operation: str) -> None:
         if operation == "l7":
             output = directory / "attestation.json"
             code = l7.main(
-                ["--runs", "7", "--timeout", str(timeout), "--output", str(output)]
+                ["--runs", "7", "--timeout", str(timeout), "--output", str(output)],
+                raise_measurement_rejection=True,
             )
             payload = l7._load_json_strict(output)
             if (
@@ -247,9 +249,17 @@ def run_operation(operation: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     argparse.ArgumentParser(description=__doc__).parse_args(argv)
+    rejected = False
     for operation in ("l7", "list", "storage"):
-        run_operation(operation)
-    return 0
+        try:
+            run_operation(operation)
+        except l7.EvidenceRejected as error:
+            # Only the owners' completed evidence-rejection outcome is safe to
+            # continue. Build, custody, source, I/O and interruption errors retain
+            # their original fail-fast behavior and recorded failed operation.
+            print(f"{operation}: {error}", file=sys.stderr)
+            rejected = True
+    return 1 if rejected else 0
 
 
 if __name__ == "__main__":

@@ -830,6 +830,14 @@ def _parse_attestation(
     return result
 
 
+class _MeasurementPolicyError(str):
+    """In-memory classification; serialized diagnostics remain ordinary strings."""
+
+
+class EvidenceRejected(RuntimeError):
+    """Known measurement rejection with no outstanding child custody."""
+
+
 def _quiescence_ok(value: dict[str, Any]) -> bool:
     return value.get("certified") is True and value.get("competing_builds") == 0
 
@@ -916,11 +924,7 @@ def _run_component(
             after = asdict(perf_calibration.measure_quiescence())
             capsule.update(
                 {
-                    "status": (
-                        "completed"
-                        if measured.returncode == 0 and not measured.timed_out
-                        else "failed"
-                    ),
+                    "status": ("completed" if measured.evidence_eligible else "failed"),
                     "completed_at_utc": _utc_now(),
                     "returncode": measured.returncode,
                     "timed_out": measured.timed_out,
@@ -944,7 +948,7 @@ def _run_component(
         archived_capsule.parent.mkdir(parents=True, exist_ok=True)
         active_capsule.replace(archived_capsule)
 
-        if measured.returncode != 0 or measured.timed_out:
+        if not measured.evidence_eligible:
             sys.stderr.write(measured.stdout)
             sys.stderr.write(measured.stderr)
             raise RuntimeError(
@@ -1064,9 +1068,15 @@ def _validate_dispersion(
     robust_cv = float(summary["robust_cv"])
     raw_cv = float(summary["cv"])
     if robust_cv > max_robust_cv:
-        errors.append(f"{context}: robust CV {robust_cv:.4f}>{max_robust_cv:.4f}")
+        errors.append(
+            _MeasurementPolicyError(
+                f"{context}: robust CV {robust_cv:.4f}>{max_robust_cv:.4f}"
+            )
+        )
     if raw_cv > max_raw_cv:
-        errors.append(f"{context}: raw CV {raw_cv:.4f}>{max_raw_cv:.4f}")
+        errors.append(
+            _MeasurementPolicyError(f"{context}: raw CV {raw_cv:.4f}>{max_raw_cv:.4f}")
+        )
 
 
 def _recompute_case(
@@ -1246,9 +1256,17 @@ def _aggregate_bundle(
             if process_run["run"] != run_index:
                 errors.append(f"{context}: run index drift")
             if not _quiescence_ok(process_run["quiescence_before"]):
-                errors.append(f"{context}: pre-run quiescence not certified")
+                errors.append(
+                    _MeasurementPolicyError(
+                        f"{context}: pre-run quiescence not certified"
+                    )
+                )
             if not _quiescence_ok(process_run["quiescence_after"]):
-                errors.append(f"{context}: post-run quiescence not certified")
+                errors.append(
+                    _MeasurementPolicyError(
+                        f"{context}: post-run quiescence not certified"
+                    )
+                )
             elapsed_value = _number(
                 process_run["elapsed_ms"],
                 context=f"{context}.elapsed_ms",
@@ -1657,7 +1675,9 @@ def run_attestation(
     return result
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None, *, raise_measurement_rejection: bool = False
+) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs", type=int, default=7, choices=range(7, 10))
     parser.add_argument("--timeout", type=float, default=300.0)
@@ -1729,6 +1749,15 @@ def main(argv: list[str] | None = None) -> int:
     output = args.output if args.output.is_absolute() else REPO_ROOT / args.output
     _write_json_atomic(output, result)
     print(output)
+    errors = result["validation"]["errors"]
+    if (
+        raise_measurement_rejection
+        and result["comparison"]["status"] == "invalid"
+        and result["comparison"]["performance_claim"] is False
+        and errors
+        and all(isinstance(error, _MeasurementPolicyError) for error in errors)
+    ):
+        raise EvidenceRejected(f"candidate L7 measurement rejected; retained {output}")
     return 2 if result["comparison"]["status"] in {"fail", "invalid"} else 0
 
 

@@ -67,14 +67,30 @@ correction preserves the production refusal, binds the actual primary diagnostic
 through the receipt receiver and requires a successful release/shutdown control.
 The owning runtime/cargo receipt consumers pass 313 local checks with one skip.
 Rust execution remains required, and this does not identify the earlier parent
-process failure. WASM remains running. Candidate-cost run `37893847852` fails:
+process failure. WASM completes with the GPU vector mismatch and a 1200.90-second
+host-export cohort timeout during a later tinygrad compilation; unresolved Cargo
+quarantine stops the two remaining commands. Retained receipts and diagnostics
+confirm that these cells remain unqualified. Candidate-cost run `37893847852` fails:
 L7 samples were collected, but 28 quiet-host and 10 variability checks reject
 timing. The 41 cases have stable allocation/byte/live-memory/hook observations
 across seven processes and nine samples; there is no comparative performance
 claim. The quiet-host signal uses lagging host load and does not establish that
 neighboring workloads caused the rejection;
 list and storage collection did not run because the first rejected component
-stopped the driver.
+stopped the driver. The reviewed local collector now continues independent
+operations only after the measurement owner reports a typed policy rejection.
+Failed operation receipts and overall failure remain mandatory; source, schema,
+summary, child-custody and unknown failures still stop execution. The owning
+86 checks pass, including mixed noise/corruption controls. This changes no
+measurement threshold or emitted runtime, and a new actual cost run is required.
+
+The Python location/image test family now captures the existing minimal real
+interpreter fixture through the same identity authority; queue execution tests
+retain their full environment. On macOS the same four passes and three platform
+or filesystem skips take 4.96 seconds versus 13.93 before the change. This is a
+bounded development-test observation, not a runtime benchmark or Windows proof.
+Actual Windows location execution and the 120-second Cargo-link cohort remain
+required; its preceding timeout is not reclassified as solved by the local result.
 
 Preceding published candidate `9cb436428` includes the complete image/fixture and
 WASM development-orchestration corrections described below. CI run
