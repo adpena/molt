@@ -7,6 +7,7 @@ import os
 
 import pytest
 
+from molt.backend_environment import CodegenSelection
 import molt.cli as cli
 from molt.cli import runtime_callable_symbols, native_symbol_inspection
 from tests.cli.native_link_test_support import stub_native_symbol_admission
@@ -524,6 +525,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
             target_python=_DEFAULT_TARGET_PYTHON_VERSION,
             backend_compiler_fingerprint="fixture-compiler",
             native_runtime_codegen_binding=binding,
+            codegen=CodegenSelection(),
         )
 
     def keys(setup):
@@ -554,6 +556,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
             backend_compiler_fingerprint="fixture-compiler",
             start_daemon=False,
             native_runtime_codegen_binding=binding,
+            codegen=CodegenSelection(),
         )
         assert error is None and result is not None
         return result.backend_env
@@ -605,6 +608,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
             skip_function_output_if_synced=False,
             probe_cache_only=probe,
             native_runtime_codegen_binding=first,
+            request_environment=os.environ,
         )
         assert error is None
         request = json.loads(payload)
@@ -663,6 +667,7 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
         native_runtime_codegen_binding=first,
+        codegen=CodegenSelection(),
     )
     assert result is None and error is not None and len(captured) == 1
     assert captured[0]["MOLT_RUNTIME_CALLABLE_SYMBOLS"] == str(
@@ -709,6 +714,7 @@ def test_absent_binding_cannot_inherit_ambient_callable_inputs(tmp_path, monkeyp
         config_digest=None,
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
+        request_environment=os.environ,
     )
     assert payload is None
     assert error == "native backend request requires a runtime codegen binding"
@@ -820,6 +826,7 @@ def test_native_object_output_rejects_runtime_generation_drift(
         capabilities_source=None,
         target_python=TargetPythonVersion(3, 12, 0),
         target_sys_platform=None,
+        codegen=CodegenSelection(),
     )
     result = backend_output_pipeline._emit_backend_pipeline_outputs(
         native_object_destination=tmp_path / "output.o",

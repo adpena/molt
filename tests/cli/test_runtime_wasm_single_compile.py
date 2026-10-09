@@ -1467,7 +1467,6 @@ def _prepare_host_precompile_routing(
     """Run the real private deployment and host receipt admission boundary."""
     from molt import artifact_publication
 
-    monkeypatch.delenv("MOLT_SPLIT_RUNTIME", raising=False)
     monkeypatch.delenv("MOLT_WASM_PRECOMPILED_PATH", raising=False)
     monkeypatch.delenv("MOLT_WASM_PRECOMPILED_RUNTIME_PATH", raising=False)
     linked = outcome != "unlinked"

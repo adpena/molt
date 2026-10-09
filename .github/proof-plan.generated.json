@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "0ae3c9fac0b865fb083be9e4e63d0b727de890a060db57c92cd517953e306bbc",
+  "authority_sha256": "ed05fcb0ec7cea9bd9a25b9327154886fe9e23bdea8324563cc72d8b5a46c079",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -4017,7 +4017,8 @@
         "tests/cli/test_fail_closed_gate.py",
         "tests/cli/test_cli_progress.py",
         "tests/cli/test_cli_wasm_codegen_layout.py",
-        "tests/cli/test_cli_guard_infrastructure.py"
+        "tests/cli/test_cli_guard_infrastructure.py",
+        "tests/cli/test_cli_environment_custody.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -4159,7 +4160,8 @@
         "tests/cli/test_fail_closed_gate.py",
         "tests/cli/test_cli_progress.py",
         "tests/cli/test_cli_wasm_codegen_layout.py",
-        "tests/cli/test_cli_guard_infrastructure.py"
+        "tests/cli/test_cli_guard_infrastructure.py",
+        "tests/cli/test_cli_environment_custody.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",

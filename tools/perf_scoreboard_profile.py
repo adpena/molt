@@ -293,6 +293,7 @@ def build_profiling_binary(
     extra_args = [
         "--python-version",
         target_python_version,
+        *spec.build_args(),
         *bench_suites.molt_args_for_benchmark(script_path),
     ]
     build_flag = PROFILE_BUILD_FLAG[profile]

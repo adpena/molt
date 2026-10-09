@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import functools
-import os
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
 from molt.cli.config_resolution import (
     AUTO_STDLIB_PROFILE,
     DEFAULT_STDLIB_PROFILE,
-    MOLT_STDLIB_PROFILE_ENV,
 )
 from molt.cli import module_resolution as _module_resolution
 from molt.cli import module_graph_cache as _module_graph_cache
@@ -170,19 +168,18 @@ def _core_stdlib_module_names_for_profile(
 
 
 def _ensure_core_stdlib_modules(
-    module_graph: dict[str, Path], stdlib_root: Path
+    module_graph: dict[str, Path],
+    stdlib_root: Path,
+    stdlib_profile: str = DEFAULT_STDLIB_PROFILE,
 ) -> None:
     """Add the profile's unconditional core stdlib modules to the graph.
 
-    The profile is read from ``MOLT_STDLIB_PROFILE``, which `build()` exports
-    from the value resolved by the single config authority
-    (`config_resolution.resolve_stdlib_profile`). Falling back to the same
-    `DEFAULT_STDLIB_PROFILE` constant that the staticlib selector uses keeps the
-    closure and the linked staticlib from disagreeing.
+    ``stdlib_profile`` is the value `build()` resolved through the single
+    config authority (`config_resolution.resolve_stdlib_profile`) and also
+    passes to the staticlib selector, so the closure and the linked staticlib
+    cannot disagree. The process environment is not consulted here.
     """
-    core_modules = _core_stdlib_module_names_for_profile(
-        os.environ.get(MOLT_STDLIB_PROFILE_ENV, DEFAULT_STDLIB_PROFILE)
-    )
+    core_modules = _core_stdlib_module_names_for_profile(stdlib_profile)
     for name in core_modules:
         path = _module_resolution._resolve_module_path(name, [stdlib_root])
         if path is not None:

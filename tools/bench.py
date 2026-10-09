@@ -663,6 +663,14 @@ def _molt_build_params(
         if arg.startswith("--type-hints="):
             params["type_hints"] = arg.split("=", maxsplit=1)[1]
             continue
+        if arg == "--backend":
+            if not remaining:
+                raise ValueError("--backend requires a value")
+            params["backend"] = remaining.pop(0)
+            continue
+        if arg.startswith("--backend="):
+            params["backend"] = arg.split("=", maxsplit=1)[1]
+            continue
         if arg == "--stdlib-profile":
             if not remaining:
                 raise ValueError("--stdlib-profile requires a value")

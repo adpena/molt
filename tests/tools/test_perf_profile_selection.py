@@ -427,3 +427,32 @@ def test_profiling_refuses_an_unbound_or_unsupported_minor(minor):
     assert binary is None
     assert metadata["refused"] is True
     assert "explicit supported target Python" in metadata["reason"]
+
+
+@pytest.mark.parametrize("spec", [NATIVE_CRANELIFT, NATIVE_LLVM])
+def test_lane_backend_is_a_build_flag_for_batch_and_cli_builds(
+    monkeypatch, tmp_path, spec
+):
+    """The lane's codegen backend travels as ``--backend``, never ``MOLT_BACKEND``.
+
+    Since HF-60 neither ``molt build`` nor the batch build server reads the
+    backend from the environment, so a lane that set only the variable built
+    with Cranelift.
+    """
+    import bench
+
+    monkeypatch.delenv("MOLT_BACKEND", raising=False)
+    env = measure._perfscore_build_env(spec, "release-fast")
+    params = bench._molt_build_params(
+        script=str(tmp_path / "program.py"),
+        extra_args=list(spec.build_args()),
+        env=env,
+        build_profile="release",
+        out_dir=tmp_path,
+    )
+
+    assert "MOLT_BACKEND" not in env
+    assert params.get("backend") == spec.molt_backend
+    assert spec.build_args() == (
+        () if spec.molt_backend is None else ("--backend", spec.molt_backend)
+    )

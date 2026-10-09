@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from molt.backend_environment import CodegenSelection
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
@@ -92,6 +93,8 @@ _ENVIRONMENTS: dict[str, dict[str, str]] = {
         "MOLT_PERF_PROFILE": "native-arch",
         "RUSTFLAGS": "-C debuginfo=1",
     },
+    # The process environment never selects the codegen backend (HF-60).
+    "ambient-backend-ignored": {"MOLT_BACKEND": "llvm"},
 }
 
 
@@ -190,8 +193,11 @@ def _build_layout(target: str, tmp_path: Path, project_root: Path) -> Any:
     )
 
 
-def _build_backend_setup(target: str, tmp_path: Path) -> tuple[Any, Any]:
+def _build_backend_setup(
+    target: str, tmp_path: Path, codegen_backend: str
+) -> tuple[Any, Any]:
     """Run `molt build --build-profile dev` from its preamble to backend setup."""
+    codegen = CodegenSelection(backend=codegen_backend)  # type: ignore[arg-type]
     preamble, error = cli_build_inputs._prepare_build_preamble(
         diagnostics=None,
         diagnostics_file=None,
@@ -218,6 +224,7 @@ def _build_backend_setup(target: str, tmp_path: Path) -> tuple[Any, Any]:
         pgo_profile=None,
         runtime_feedback=None,
         capabilities=None,
+        codegen=codegen,
     )
     assert error is None and config is not None
     layout = _build_layout(target, tmp_path, roots.project_root)
@@ -245,6 +252,7 @@ def _build_backend_setup(target: str, tmp_path: Path) -> tuple[Any, Any]:
         entry_module="__main__",
         module_graph_metadata=object(),  # type: ignore[arg-type]
         target_python=config.target_python,
+        codegen=config.codegen,
     )
 
 
@@ -370,26 +378,33 @@ def test_prewarm_admits_the_backend_the_build_selects(
         lambda *_args, **_kwargs: ("", None),
     )
     build_targets: list[str] = []
+    build_backends: list[str] = []
 
-    def build_fn(*args: Any, **_kwargs: Any) -> int:
+    def build_fn(*args: Any, **kwargs: Any) -> int:
         build_targets.append(args[1])
+        build_backends.append(kwargs["codegen_backend"])
         return 0
 
     build_rc = _dispatch(
         ["build", "app.py", "--target", target, "--backend", backend, "--json"],
         build_fn=build_fn,
     )
-    for build_target in build_targets:
-        _prepared, build_error = _build_backend_setup(build_target, tmp_path)
+    # The selection travels as a parameter; the process environment keeps
+    # whatever the caller had.
+    assert os.environ.get("MOLT_BACKEND") == env.get("MOLT_BACKEND")
+    for build_target, build_backend in zip(build_targets, build_backends):
+        _prepared, build_error = _build_backend_setup(
+            build_target, tmp_path, build_backend
+        )
         assert build_error is not None
     build_admissions = list(admissions)
     admissions.clear()
-    # Undo the build side's ambient mutations; the prewarm must make its own.
-    for name in ("MOLT_BACKEND", "RUSTFLAGS"):
-        if name in env:
-            monkeypatch.setenv(name, env[name])
-        else:
-            monkeypatch.delenv(name, raising=False)
+    # Undo the build side's ambient RUSTFLAGS mutation (the native-arch perf
+    # policy still writes it; HF-60 records it); the prewarm makes its own.
+    if "RUSTFLAGS" in env:
+        monkeypatch.setenv("RUSTFLAGS", env["RUSTFLAGS"])
+    else:
+        monkeypatch.delenv("RUSTFLAGS", raising=False)
 
     prewarm_argv = ["internal-backend-build", "--target", target, "--backend", backend]
     prewarm_rc = _dispatch([*prewarm_argv, "--json"])
@@ -565,7 +580,7 @@ def test_prewarm_receipts_let_the_next_build_skip_cargo_until_removed(
     # those receipts: no Cargo, no re-probe, and its cache identity binds the
     # prewarmed bytes.
     cache_inputs = _stub_backend_cache_setup(monkeypatch, "luau")
-    prepared, error = _build_backend_setup("luau", tmp_path)
+    prepared, error = _build_backend_setup("luau", tmp_path, "cranelift")
     assert error is None and prepared is not None
     assert prepared.backend_bin == binary
     assert prepared.backend_compiler_fingerprint == compiler["fingerprint"]
@@ -577,7 +592,7 @@ def test_prewarm_receipts_let_the_next_build_skip_cargo_until_removed(
     # build must establish provenance with Cargo again.
     source_receipt.unlink()
     cargo_output_receipt.unlink()
-    prepared, error = _build_backend_setup("luau", tmp_path)
+    prepared, error = _build_backend_setup("luau", tmp_path, "cranelift")
     assert error is None and prepared is not None
     assert len(cargo_calls) == 2
     assert binary.read_bytes() == b"backend build 2"

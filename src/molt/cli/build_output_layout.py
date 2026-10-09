@@ -352,8 +352,6 @@ def _resolve_build_output_layout(
     )
     output_binary: Path | None = None
     linked_output_path: Path | None = None
-    if is_luau_transpile and "MOLT_MODULE_CHUNK_OPS" not in os.environ:
-        os.environ["MOLT_MODULE_CHUNK_OPS"] = "1500"
     if is_mlir_emit:
         output_artifact = _resolve_output_path(
             output,

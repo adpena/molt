@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from molt.backend_executable_names import CodegenBackend
 from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_compile as _backend_compile
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
@@ -148,6 +149,7 @@ def _prebuild_backend_binary(
     *,
     project_root: Path,
     target: str,
+    codegen_backend: CodegenBackend,
     json_output: bool,
     cargo_timeout: float | None,
     verbose: bool = False,
@@ -200,6 +202,7 @@ def _prebuild_backend_binary(
         is_wasm=is_wasm,
         is_luau_transpile=is_luau_transpile,
         is_rust_transpile=is_rust_transpile,
+        codegen_backend=codegen_backend,
     )
     compiler: dict[str, Any] = {
         "path": os.fspath(selection.binary),

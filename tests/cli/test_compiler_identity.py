@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from molt.backend_environment import CodegenSelection
 from molt.cli import backend_binary, backend_compile, backend_execution
 from molt.cli import cache_fingerprints, cargo_source_closure, compiler_identity
 from molt.cli import wrapper_build
@@ -166,6 +167,7 @@ def test_daemon_dispatch_converts_compiler_identity_rejection(
         backend_bin=binary,
         backend_compiler_fingerprint="admitted",
         native_runtime_codegen_binding=object(),
+        codegen=CodegenSelection(),
     )
     assert prepared is None and error is not None
     assert "compiler inputs changed" in capsys.readouterr().out

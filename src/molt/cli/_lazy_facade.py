@@ -716,17 +716,6 @@ _build_inputs = _LazyPostLoweringModule("build_inputs")
 _build_pipeline = _LazyPostLoweringModule("build_pipeline")
 
 
-def _scoped_environ_updates(*args, **kwargs):
-    """Lazy wrapper for :func:`molt.cli.wrapper_build._scoped_environ_updates`.
-
-    ``wrapper_build`` is part of the post-lowering layer; defer its import to
-    call time so it does not load at package import.
-    """
-    from molt.cli.wrapper_build import _scoped_environ_updates as _impl
-
-    return _impl(*args, **kwargs)
-
-
 def __getattr__(name: str):
     entry = _LAZY_REEXPORTS.get(name)
     if entry is None:

@@ -18,6 +18,7 @@ from molt.backend_environment import environment_keys, codegen_environment_input
 from molt import backend_daemon_custody as _daemon_custody
 from molt.backend_executable_names import (
     DEFAULT_BACKEND_FEATURES as _DEFAULT_BACKEND_FEATURES,
+    CodegenBackend,
     backend_executable_name,
     backend_features_for_target as _backend_features_for_target,
 )
@@ -146,7 +147,7 @@ def _backend_features_for_build_target(
     *,
     target: str,
     is_wasm: bool,
-    env: Mapping[str, str] | None = None,
+    codegen_backend: CodegenBackend,
 ) -> tuple[str, ...]:
     """Resolve backend features from the public ``target`` string.
 
@@ -159,7 +160,7 @@ def _backend_features_for_build_target(
         is_wasm=is_wasm,
         is_luau_transpile=target == "luau",
         is_rust_transpile=target in {"rust", "luau"},
-        env=env,
+        codegen_backend=codegen_backend,
     )
 
 
@@ -956,6 +957,7 @@ def _backend_daemon_compile_request_bytes(
     probe_cache_only: bool = False,
     include_health: bool = False,
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
+    request_environment: Mapping[str, str],
 ) -> tuple[bytes | None, str | None]:
     contract_error = _backend_daemon_artifact_contract_error(
         artifact_contract,
@@ -1020,10 +1022,11 @@ def _backend_daemon_compile_request_bytes(
         payload["include_health"] = True
     # Pass through optimization-relevant env vars so the daemon applies
     # them per-request (the daemon process inherits env from startup,
-    # not from the build request).
+    # not from the build request). The caller supplies the build's own
+    # mapping, so its codegen selection reaches the daemon explicitly.
     env_passthrough = {}
     for key in _BACKEND_REQUEST_ENV_KNOBS:
-        val = os.environ.get(key)
+        val = request_environment.get(key)
         if val is not None:
             env_passthrough[key] = val
     if entry_module:
@@ -1520,6 +1523,7 @@ def _compile_with_backend_daemon(
     timeout: float | None,
     daemon_identity: _BackendDaemonIdentity | None = None,
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
+    request_environment: Mapping[str, str],
 ) -> _BackendDaemonCompileResult:
     contract_error = _backend_daemon_artifact_contract_error(
         artifact_contract,
@@ -1569,6 +1573,7 @@ def _compile_with_backend_daemon(
             stdlib_module_symbols_json=stdlib_module_symbols_json,
             include_health=False,
             native_runtime_codegen_binding=native_runtime_codegen_binding,
+            request_environment=request_environment,
         )
         return full_request_bytes, encode_err
 
@@ -1610,6 +1615,7 @@ def _compile_with_backend_daemon(
             probe_cache_only=True,
             include_health=False,
             native_runtime_codegen_binding=native_runtime_codegen_binding,
+            request_environment=request_environment,
         )
         if probe_encode_err is not None:
             return _BackendDaemonCompileResult(

@@ -25,6 +25,7 @@ from typing import Any, Collection, Mapping, Sequence, cast
 
 import pytest
 
+from molt.backend_environment import CodegenSelection
 import molt.cli as cli
 import molt.wasm_artifact as wasm_artifact
 from molt import c_api_symbols as cli_c_api_symbols
@@ -3129,6 +3130,7 @@ def test_collections_static_helper_copy_reaches_backend_symbol_contract(
         module_graph_metadata=module_graph_metadata,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         stdlib_profile="micro",
+        codegen=CodegenSelection(),
     )
 
     assert "copy" in backend_setup.stdlib_module_symbols
@@ -4063,13 +4065,13 @@ def test_pure_wasm_dme_mode_overrides_legacy_env(
         linked_output_path=Path("output_linked.wasm"),
         emit_ir_path=None,
     )
-    monkeypatch.setenv("MOLT_WASM_PROFILE", "pure")
     monkeypatch.setenv("MOLT_DEAD_MODULE_ELIMINATION", "1")
 
     assert (
         cli_frontend_pipeline._dead_module_elimination_mode(
             output_layout=output_layout,
             tree_shake=True,
+            wasm_profile="pure",
         )
         == "pure-wasm"
     )
@@ -9749,6 +9751,7 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
         is_wasm=True,
         frontend_parallel_details={},
         frontend_phase_timeout=None,
+        is_luau_transpile=False,
     )
     assert config_error is None
     assert config is not None
@@ -18775,6 +18778,7 @@ def _compile_with_backend_daemon_non_wasm(
         native_runtime_codegen_binding=transport_codegen_binding(
             backend_output.parent / "runtime-transport"
         ),
+        request_environment=os.environ,
     )
 
 
@@ -19925,6 +19929,7 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
         is_wasm=False,
         frontend_parallel_details={},
         frontend_phase_timeout=None,
+        is_luau_transpile=False,
     )
 
     assert failure is None
@@ -19981,6 +19986,7 @@ def test_prepare_frontend_lowering_config_keeps_guarded_policy_for_external_impo
         is_wasm=True,
         frontend_parallel_details={},
         frontend_phase_timeout=None,
+        is_luau_transpile=False,
     )
 
     assert failure is None
@@ -20991,6 +20997,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
             entry_module="__main__",
             module_graph_metadata=empty_module_graph_metadata,
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+            codegen=CodegenSelection(),
         )
     )
 
@@ -21116,6 +21123,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
             entry_module="__main__",
             module_graph_metadata=empty_module_graph_metadata,
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+            codegen=CodegenSelection(),
         )
     )
 
@@ -21241,6 +21249,7 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
             entry_module="__main__",
             module_graph_metadata=empty_module_graph_metadata,
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+            codegen=CodegenSelection(),
         )
     )
 
@@ -21369,6 +21378,7 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
             module_graph_metadata=empty_module_graph_metadata,
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             resolved_modules={"__main__", "json"},
+            codegen=CodegenSelection(),
         )
     )
 
@@ -21489,6 +21499,7 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
             module_graph_metadata=empty_module_graph_metadata,
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             resolved_modules={"__main__"},
+            codegen=CodegenSelection(),
         )
     )
 
@@ -24053,6 +24064,7 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
         capabilities_source=None,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         target_sys_platform=None,
+        codegen=CodegenSelection(),
     )
     resolved_entry = cli._ResolvedBuildEntry(
         source_path=tmp_path / "main.py",
@@ -24357,6 +24369,7 @@ def test_prepare_backend_dispatch_surfaces_backend_ensure_detail_in_json(
         json_output=True,
         backend_daemon_config_digest=None,
         warnings=[],
+        codegen=CodegenSelection(),
     )
 
     assert prepared is None
@@ -25162,7 +25175,6 @@ def test_build_scopes_pipeline_env_updates(
         "MOLT_AUDIT_OUTPUT",
         "MOLT_IO_MODE",
         "MOLT_PORTABLE",
-        "MOLT_SPLIT_RUNTIME",
         "MOLT_TYPE_GATE",
     }
     for key in cleared_keys:
@@ -26773,7 +26785,7 @@ def test_native_backend_compile_routes_stdlib_object_env(
         warnings=[],
         verbose=False,
         backend_bin=backend_bin,
-        backend_env=None,
+        backend_env=dict(os.environ),
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
@@ -26783,6 +26795,7 @@ def test_native_backend_compile_routes_stdlib_object_env(
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
+        codegen=CodegenSelection(),
     )
 
     assert error is None
@@ -26875,7 +26888,7 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
         warnings=[],
         verbose=False,
         backend_bin=backend_bin,
-        backend_env=None,
+        backend_env=dict(os.environ),
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
@@ -26885,6 +26898,7 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
+        codegen=CodegenSelection(),
     )
 
     assert error is None
@@ -26973,7 +26987,7 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
         warnings=[],
         verbose=False,
         backend_bin=backend_bin,
-        backend_env=None,
+        backend_env=dict(os.environ),
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
@@ -26983,6 +26997,7 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
+        codegen=CodegenSelection(),
     )
 
     assert error is None
@@ -27085,6 +27100,7 @@ def test_backend_compile_stages_one_shot_output_into_cache(
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
+        codegen=CodegenSelection(),
     )
 
     captured = capsys.readouterr()
@@ -27206,7 +27222,7 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
         warnings=[],
         verbose=False,
         backend_bin=tmp_path / "backend-bin",
-        backend_env=None,
+        backend_env=dict(os.environ),
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
@@ -27215,6 +27231,7 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
+        codegen=CodegenSelection(),
     )
 
     assert error is None
@@ -27339,7 +27356,7 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
         warnings=[],
         verbose=False,
         backend_bin=tmp_path / "backend-bin",
-        backend_env=None,
+        backend_env=dict(os.environ),
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
@@ -27348,6 +27365,7 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
+        codegen=CodegenSelection(),
     )
 
     assert error is None
@@ -27461,7 +27479,7 @@ def test_execute_backend_compile_does_not_retry_after_full_daemon_request(
         warnings=[],
         verbose=False,
         backend_bin=tmp_path / "backend-bin",
-        backend_env=None,
+        backend_env=dict(os.environ),
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
@@ -27470,6 +27488,7 @@ def test_execute_backend_compile_does_not_retry_after_full_daemon_request(
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
+        codegen=CodegenSelection(),
     )
 
     assert result is None
@@ -27569,7 +27588,7 @@ def test_execute_backend_compile_fails_closed_after_daemon_failure(
         warnings=[],
         verbose=False,
         backend_bin=tmp_path / "backend-bin",
-        backend_env=None,
+        backend_env=dict(os.environ),
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
@@ -27578,6 +27597,7 @@ def test_execute_backend_compile_fails_closed_after_daemon_failure(
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
+        codegen=CodegenSelection(),
     )
 
     assert result is None
@@ -27675,7 +27695,7 @@ def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
         warnings=[],
         verbose=True,
         backend_bin=tmp_path / "backend-bin",
-        backend_env=None,
+        backend_env=dict(os.environ),
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
@@ -27684,6 +27704,7 @@ def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
+        codegen=CodegenSelection(),
     )
 
     assert error is None
@@ -27762,7 +27783,7 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
         warnings=[],
         verbose=False,
         backend_bin=tmp_path / "backend-bin",
-        backend_env=None,
+        backend_env=dict(os.environ),
         backend_timeout=None,
         molt_root=project_root,
         backend_cargo_profile="dev-fast",
@@ -27771,6 +27792,7 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
+        codegen=CodegenSelection(),
     )
 
     assert result is None
@@ -27829,6 +27851,7 @@ def test_backend_daemon_compile_request_partition_env_obeys_artifact_contract(
         native_runtime_codegen_binding=transport_codegen_binding(
             tmp_path / "runtime-transport"
         ),
+        request_environment=os.environ,
     )
 
     if emit_mode == "obj" and shared_stdlib:
@@ -27868,6 +27891,7 @@ def test_backend_daemon_compile_request_uses_canonical_split_table_boundary(
         config_digest="digest123",
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
+        request_environment=os.environ,
     )
 
     assert error is None
@@ -27902,6 +27926,7 @@ def test_backend_daemon_compile_request_can_use_path_backed_ir_lease(
         native_runtime_codegen_binding=transport_codegen_binding(
             tmp_path / "runtime-transport"
         ),
+        request_environment=os.environ,
     )
 
     assert error is None
@@ -27932,6 +27957,7 @@ def test_backend_daemon_compile_request_rejects_duplicate_ir_authority(
         native_runtime_codegen_binding=transport_codegen_binding(
             tmp_path / "runtime-transport"
         ),
+        request_environment=os.environ,
     )
 
     assert request_bytes is None
@@ -27967,6 +27993,7 @@ def test_backend_daemon_compile_request_includes_batch_op_budget_env(
         native_runtime_codegen_binding=transport_codegen_binding(
             tmp_path / "runtime-transport"
         ),
+        request_environment=os.environ,
     )
 
     assert error is None
@@ -28004,6 +28031,7 @@ def test_backend_daemon_compile_request_includes_resource_env_without_codegen_di
         native_runtime_codegen_binding=transport_codegen_binding(
             tmp_path / "runtime-transport"
         ),
+        request_environment=os.environ,
     )
 
     assert error is None
@@ -31695,6 +31723,7 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
         entry_module="__main__",
         module_graph_metadata=module_graph_metadata,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        codegen=CodegenSelection(),
     )
 
     setup_split = cli_backend_cache_setup._prepare_backend_cache_setup(
@@ -31778,6 +31807,7 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
         entry_module="__main__",
         module_graph_metadata=module_graph_metadata,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        codegen=CodegenSelection(),
     )
 
     assert setup.cache_path is not None
@@ -31846,6 +31876,7 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
         entry_module="__main__",
         module_graph_metadata=module_graph_metadata,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
+        codegen=CodegenSelection(),
     )
 
     assert setup.cache_path is None
@@ -32089,6 +32120,7 @@ def test_concurrent_backend_dispatches_pin_fingerprint_in_each_daemon_env(
             warnings=[],
             backend_bin=backend_bin,
             backend_compiler_fingerprint=fingerprint,
+            codegen=CodegenSelection(),
         )
         assert error is None
         assert prepared is not None

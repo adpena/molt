@@ -6,10 +6,9 @@ import os
 import shlex
 import sys
 import time
-from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Generator, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from molt.capability_manifest import resolve_runtime_policy_from_env
 from molt.cli import build_inputs as _build_inputs
@@ -27,13 +26,16 @@ from molt.cli.cache_fingerprints import (
     _source_tree_fingerprint_transaction,
 )
 from molt.cli.compiler_identity import CompilerIdentityError
-from molt.backend_executable_names import backend_features_for_target
+from molt.backend_executable_names import CodegenBackend, backend_features_for_target
 from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
 from molt.cli.config_resolution import (
     STATIC_IMPORT_MODULES_ENV,
     _resolve_build_config,
+    _select_codegen_backend,
+    resolve_stdlib_profile,
 )
 from molt.cli.default_paths import _default_molt_bin
+from molt.cli.env_overrides import temporary_env_overrides
 from molt.cli.external_native import (
     _resolve_external_package_native_artifact_plan,
     _resolve_import_admission_policy,
@@ -77,23 +79,6 @@ def _build_args_has_python_version_flag(args: Sequence[str]) -> bool:
     )
 
 
-@contextmanager
-def _scoped_environ_updates(updates: Mapping[str, str]) -> Generator[None]:
-    if not updates:
-        yield
-        return
-    previous = {key: os.environ.get(key) for key in updates}
-    try:
-        os.environ.update(updates)
-        yield
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
-
 def _wrapper_target_python(
     build_args: Sequence[str],
     *,
@@ -113,6 +98,27 @@ def _wrapper_target_python(
     )
 
 
+def _wrapper_stdlib_profile(
+    build_args: Sequence[str],
+    *,
+    project_root: Path,
+    env: Mapping[str, str],
+) -> str:
+    """The stdlib profile the child ``molt build`` resolves from its inputs."""
+    flag: str | None = None
+    for index, arg in enumerate(build_args):
+        if arg == "--stdlib-profile" and index + 1 < len(build_args):
+            flag = build_args[index + 1]
+        elif arg.startswith("--stdlib-profile="):
+            flag = arg.split("=", 1)[1]
+    profile, _source = resolve_stdlib_profile(
+        flag=flag,
+        build_cfg=_resolve_build_config(_build_inputs._load_molt_config(project_root)),
+        env=env,
+    )
+    return profile
+
+
 def _wrapper_build_target(build_args: Sequence[str]) -> str:
     for index, arg in enumerate(build_args):
         if arg == "--target" and index + 1 < len(build_args):
@@ -122,6 +128,28 @@ def _wrapper_build_target(build_args: Sequence[str]) -> str:
             target = arg.split("=", 1)[1]
             return "native" if target == "llvm" else target
     return "native"
+
+
+def _wrapper_codegen_backend(build_args: Sequence[str]) -> CodegenBackend:
+    """The codegen backend the child ``molt build`` selects from its flags.
+
+    The child resolves ``--backend``/``--target llvm`` itself; its environment
+    never selects the backend. A conflicting pair fails in the child before it
+    builds, so the key computed here is never published.
+    """
+    target, backend = "native", "auto"
+    for index, arg in enumerate(build_args):
+        value = build_args[index + 1] if index + 1 < len(build_args) else None
+        if arg == "--target" and value is not None:
+            target = value
+        elif arg.startswith("--target="):
+            target = arg.split("=", 1)[1]
+        elif arg == "--backend" and value is not None:
+            backend = value
+        elif arg.startswith("--backend="):
+            backend = arg.split("=", 1)[1]
+    _target, codegen_backend, _error = _select_codegen_backend(target, backend)
+    return codegen_backend
 
 
 _WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 3
@@ -171,7 +199,10 @@ def _wrapper_build_dependency_fingerprints(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
     stdlib_root = _stdlib_root_path()
     module_reasons: dict[str, set[str]] = {}
-    with _scoped_environ_updates(env):
+    # The child build reads these ambient inputs from its own environment;
+    # predicting its module graph in process applies the same mapping for the
+    # prediction only (see molt.cli.env_overrides).
+    with temporary_env_overrides(env):
         target = _wrapper_build_target(build_args)
         import_admission_policy, admission_error = _resolve_import_admission_policy(
             external_module_roots=resolved_build_entry.external_module_roots,
@@ -200,6 +231,9 @@ def _wrapper_build_dependency_fingerprints(
                     target_python=resolved_build_entry.target_python,
                     capability_config_digest=capability_config_digest,
                     image_scope=resolved_build_entry.image_scope,
+                    stdlib_profile=_wrapper_stdlib_profile(
+                        build_args, project_root=project_root, env=env
+                    ),
                 )
             )
         except (OSError, SyntaxError, UnicodeDecodeError):
@@ -335,7 +369,7 @@ def _wrapper_build_cache_input(
                 is_wasm=_wrapper_build_target(build_args).startswith("wasm"),
                 is_luau_transpile=_wrapper_build_target(build_args) == "luau",
                 is_rust_transpile=_wrapper_build_target(build_args) == "rust",
-                env=env,
+                codegen_backend=_wrapper_codegen_backend(build_args),
             ),
         ),
         "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
