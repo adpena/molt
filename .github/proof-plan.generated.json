@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "94fc62843e165426e9099b33195635e398c3f24bf105bf12c15795aaec94a708",
+  "authority_sha256": "70ae914327e70604f7cf42c62a09779f115ace1bc6c96907b5e6c22632ed329d",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -442,7 +442,9 @@
         "uv.lock",
         "src/**",
         "tests/**",
-        "tools/**"
+        "tools/**",
+        "runtime/molt-runtime/src/intrinsics/manifest.pyi",
+        "docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md"
       ],
       "job": "python-static",
       "name": "python_static",
@@ -1892,31 +1894,6 @@
         "uv",
         "run",
         "python3",
-        "tools/check_stdlib_intrinsics.py",
-        "--critical-allowlist"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.stdlib.intrinsics",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
         "tools/check_differential_suite_layout.py"
       ],
       "cache_domain": "uv",
@@ -2304,6 +2281,8 @@
         "-m",
         "pytest",
         "-q",
+        "-n",
+        "auto",
         "tests/test_update_status_blocks.py",
         "tests/test_bench_report.py",
         "tests/test_check_docs_architecture.py",
@@ -3287,6 +3266,31 @@
         "main"
       ],
       "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/check_stdlib_intrinsics.py",
+        "--critical-allowlist"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-static",
+      "dependencies": [],
+      "family": "python_static",
+      "id": "python.static.stdlib-intrinsics",
+      "resource_class": "python-static",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 600,
       "toolchains": [
         "python",
         "uv"
@@ -5951,20 +5955,20 @@
       },
       "python_static": {
         "budget_seconds": 900,
-        "critical_path_seconds": 300,
-        "headroom_seconds": 600,
-        "projected_makespan_seconds": 300,
+        "critical_path_seconds": 600,
+        "headroom_seconds": 0,
+        "projected_makespan_seconds": 900,
         "resource_capacity_floor_seconds": {
-          "python-static": 300
+          "python-static": 900
         }
       },
       "repository_policy": {
         "budget_seconds": 3600,
         "critical_path_seconds": 1500,
-        "headroom_seconds": 1500,
-        "projected_makespan_seconds": 2100,
+        "headroom_seconds": 1380,
+        "projected_makespan_seconds": 2220,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 1935
+          "repository-policy": 1860
         }
       },
       "rust": {

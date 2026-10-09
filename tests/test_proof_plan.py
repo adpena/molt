@@ -1875,7 +1875,14 @@ def _receipt_for(
 
 def test_receipt_verdict_fails_selected_but_unexecuted_cells(tmp_path: Path) -> None:
     errors = proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
-    assert errors == ["python.static.ty: required executable receipt is missing"]
+    selected = [
+        command.id for command in PLAN.commands if command.family == "python_static"
+    ]
+    assert len(selected) > 1
+    assert errors == [
+        f"{command_id}: required executable receipt is missing"
+        for command_id in selected
+    ]
 
 
 def test_cache_disposition_never_infers_restore_hit_from_directory_existence(
