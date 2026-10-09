@@ -23,6 +23,7 @@ from molt.frontend.lowering import midend_pipeline
 from tests.process_guard_common import install_module_view
 from molt.frontend.cfg_analysis import BasicBlock, CFGEdgeKind, CFGGraph, build_cfg
 from molt.frontend.lowering.op_kinds_generated import (
+    SIMPLEIR_FIRST_TRAILING_RESULT_ARG,
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
     SIMPLEIR_RUNTIME_REQUIREMENT_IMPORT_PROTOCOL,
     SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS,
@@ -6310,3 +6311,218 @@ def test_cfg_dominance_matches_the_path_definition(seed: int) -> None:
                     successors, candidate
                 )
             assert cfg.dominates(candidate, block) is expected, (candidate, block)
+
+
+# --- Stateful polls keep every value a resume needs in the frame ------------
+#
+# A resume enters a poll at STATE_SWITCH and jumps to a STATE_LABEL, skipping
+# every op between them. The oracles below read the poll as the backends run
+# it, independently of how the spill pass computes liveness: a forward
+# must-definition walk from the entry and from every resume, and a forward
+# must-store walk over the first activation.
+
+_FRAME_NAMES = frozenset({"self", "none", ""})
+
+
+def _stateful_polls(source: str) -> dict[str, list[MoltOp]]:
+    gen = SimpleTIRGenerator()
+    gen.visit(ast.parse(source))
+    return {
+        name: function["ops"]
+        for name, function in gen.funcs_map.items()
+        if any(op.kind == "STATE_SWITCH" for op in function["ops"])
+    }
+
+
+def _op_reads_and_writes(op: MoltOp) -> tuple[list[str], list[str]]:
+    first_output = SIMPLEIR_FIRST_TRAILING_RESULT_ARG.get(op.kind.lower(), len(op.args))
+    reads = [
+        arg.name
+        for arg in op.args[:first_output]
+        if isinstance(arg, MoltValue) and arg.name not in _FRAME_NAMES
+    ]
+    writes = [
+        value.name
+        for value in (op.result, *op.args[first_output:])
+        if isinstance(value, MoltValue) and value.name not in _FRAME_NAMES
+    ]
+    return reads, writes
+
+
+def _forward_must(
+    cfg: CFGGraph, gen_sets: list[set], entry_blocks: dict[int, frozenset], edges
+) -> dict[int, frozenset]:
+    """Intersect each block's predecessors' out sets until nothing changes."""
+    state: dict[int, frozenset] = dict(entry_blocks)
+    changed = True
+    while changed:
+        changed = False
+        for block in range(len(cfg.blocks)):
+            if block in entry_blocks:
+                continue
+            incoming = [
+                state[pred] | gen_sets[pred]
+                for pred in cfg.predecessors.get(block, ())
+                if pred in state and edges(pred, block)
+            ]
+            if not incoming:
+                continue
+            merged = frozenset.intersection(*map(frozenset, incoming))
+            if state.get(block) != merged:
+                state[block] = merged
+                changed = True
+    return state
+
+
+def _reads_without_definition(ops: list[MoltOp]) -> list[tuple[int, str]]:
+    cfg = build_cfg(ops)
+    defined = [
+        {
+            name
+            for idx in range(block.start, block.end)
+            for name in _op_reads_and_writes(ops[idx])[1]
+        }
+        for block in cfg.blocks
+    ]
+    state = _forward_must(cfg, defined, {0: frozenset()}, lambda _p, _b: True)
+    missing = []
+    for block_id, block in enumerate(cfg.blocks):
+        if block_id not in state:
+            continue
+        current = set(state[block_id])
+        for idx in range(block.start, block.end):
+            reads, writes = _op_reads_and_writes(ops[idx])
+            missing.extend((idx, name) for name in reads if name not in current)
+            current.update(writes)
+    return missing
+
+
+def _spill_reloads(ops: list[MoltOp]) -> list[int]:
+    """A spill reload re-defines, from its frame slot, a value defined earlier."""
+    defined: set[str] = set()
+    reloads = []
+    for idx, op in enumerate(ops):
+        writes = _op_reads_and_writes(op)[1]
+        if op.kind == "LOAD_CLOSURE" and writes and writes[0] in defined:
+            reloads.append(idx)
+        defined.update(writes)
+    return reloads
+
+
+def _reloads_before_their_store(ops: list[MoltOp]) -> list[int]:
+    """Reloads that the first activation reaches before storing their slot."""
+    cfg = build_cfg(ops)
+    switch_block = next(
+        cfg.index_to_block[idx]
+        for idx, op in enumerate(ops)
+        if op.kind == "STATE_SWITCH"
+    )
+    label_blocks = {
+        cfg.index_to_block[idx]
+        for idx, op in enumerate(ops)
+        if op.kind == "STATE_LABEL"
+    }
+
+    def first_activation_edge(pred: int, block: int) -> bool:
+        return not (pred == switch_block and block in label_blocks)
+
+    stored = [
+        {
+            ops[idx].args[1]
+            for idx in range(block.start, block.end)
+            if ops[idx].kind == "STORE_CLOSURE"
+        }
+        for block in cfg.blocks
+    ]
+    state = _forward_must(cfg, stored, {0: frozenset()}, first_activation_edge)
+    early = []
+    reloads = set(_spill_reloads(ops))
+    for block_id, block in enumerate(cfg.blocks):
+        if block_id not in state:
+            continue
+        current = set(state[block_id])
+        for idx in range(block.start, block.end):
+            op = ops[idx]
+            if idx in reloads and op.args[1] not in current:
+                early.append(idx)
+            if op.kind == "STORE_CLOSURE":
+                current.add(op.args[1])
+    return early
+
+
+_RESUME_IN_LOOP_SOURCES = {
+    # HF-104: an outer synchronous comprehension around an awaiting one.
+    "nested_comprehension": (
+        "async def f(agen, inc):\n"
+        "    return [[await inc(y) async for y in agen()] for _ in range(2)]\n"
+    ),
+    "awaiting_element": (
+        "async def f(inc):\n    return [await inc(i) for i in range(4)]\n"
+    ),
+    "awaiting_set_and_dict": (
+        "async def f(inc):\n"
+        "    return {await inc(i) for i in range(3)}, {i: await inc(i) for i in range(3)}\n"
+    ),
+    "awaiting_innermost_clause": (
+        "async def f(inc):\n"
+        "    return [(i, await inc(j)) for i in range(2) for j in range(2)]\n"
+    ),
+    "async_generator_comprehension": (
+        "async def f(inc):\n"
+        "    for base in range(2):\n"
+        "        yield [await inc(base + i) for i in range(3)]\n"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "source", _RESUME_IN_LOOP_SOURCES.values(), ids=_RESUME_IN_LOOP_SOURCES.keys()
+)
+def test_values_read_after_a_resume_inside_a_loop_are_defined(source: str) -> None:
+    polls = _stateful_polls(source)
+    assert polls
+    for name, ops in polls.items():
+        assert _reads_without_definition(ops) == [], name
+        assert _reloads_before_their_store(ops) == [], name
+
+
+def test_prologue_values_keep_the_first_activation_value() -> None:
+    # The handler makes the poll save its exception-stack baselines in the
+    # prologue, and the return restores them after the await's resume.
+    polls = _stateful_polls(
+        "async def f(g):\n"
+        "    try:\n"
+        "        await g()\n"
+        "    finally:\n"
+        "        pass\n"
+        "    return 1\n"
+    )
+    (ops,) = polls.values()
+    switch = next(idx for idx, op in enumerate(ops) if op.kind == "STATE_SWITCH")
+    prologue = {name for op in ops[:switch] for name in _op_reads_and_writes(op)[1]}
+    reloaded = {ops[idx].result.name for idx in _spill_reloads(ops)}
+    assert prologue & reloaded, "the restore after the resume needs the baselines"
+    baseline_slots = {
+        ops[idx].args[1]
+        for idx in _spill_reloads(ops)
+        if ops[idx].result.name in prologue
+    }
+    assert _reads_without_definition(ops) == []
+    assert _reloads_before_their_store(ops) == []
+    # No resume may overwrite the frame's first-activation baseline.
+    cfg = build_cfg(ops)
+    from_resume: set[int] = set()
+    pending = [
+        cfg.index_to_block[idx]
+        for idx, op in enumerate(ops)
+        if op.kind == "STATE_LABEL"
+    ]
+    while pending:
+        block = pending.pop()
+        if block not in from_resume:
+            from_resume.add(block)
+            pending.extend(cfg.successors.get(block, ()))
+    for idx, op in enumerate(ops):
+        if op.kind == "STORE_CLOSURE" and op.args[1] in baseline_slots:
+            assert idx > switch, "a prologue store would save every activation"
+            assert cfg.index_to_block[idx] not in from_resume, idx
