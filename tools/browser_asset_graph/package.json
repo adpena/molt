@@ -4,6 +4,6 @@
   "version": "0.0.0",
   "type": "module",
   "dependencies": {
-    "acorn": "8.15.0"
+    "acorn": "8.19.0"
   }
 }
