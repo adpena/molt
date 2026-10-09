@@ -5,6 +5,9 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
+from molt.dx import cargo_target_dir_for_artifact_root
 from tests.native_process_guard import run_native_test_process
 
 
@@ -18,14 +21,17 @@ def _export_value(stdout: str, key: str) -> str:
     return line.split('"', 2)[1].replace("\\\\", "\\")
 
 
-def test_new_agent_task_scaffolds_canonical_agent_env() -> None:
+@pytest.mark.parametrize("pinned", [False, True], ids=["init-named", "pinned"])
+def test_new_agent_task_scaffolds_canonical_agent_env(pinned: bool) -> None:
     task = f"unit-agent-{uuid4().hex}"
+    pinned_session = f"lane-{uuid4().hex}"
     base = REPO_ROOT / "logs" / "agents" / task
     artifact_root = (Path("/tmp") / f"molt-agent-artifacts-{uuid4().hex}").resolve()
     socket_root = (Path("/tmp") / f"molt-agent-sockets-{uuid4().hex}").resolve()
     env = dict(os.environ)
     for key in (
         "MOLT_SESSION_ID",
+        "MOLT_SESSION_ID_GENERATED",
         "MOLT_EXT_ROOT",
         "CARGO_TARGET_DIR",
         "MOLT_DIFF_CARGO_TARGET_DIR",
@@ -46,6 +52,9 @@ def test_new_agent_task_scaffolds_canonical_agent_env() -> None:
             "MOLT_BACKEND_DAEMON_SOCKET_ROOT": str(socket_root),
         }
     )
+    if pinned:
+        # A launcher's generated-session marker must not unpin --session.
+        env["MOLT_SESSION_ID_GENERATED"] = "1"
 
     try:
         result = run_native_test_process(
@@ -58,6 +67,7 @@ def test_new_agent_task_scaffolds_canonical_agent_env() -> None:
                 "tools/agent_coordination.py",
                 "init",
                 task,
+                *(["--session", pinned_session] if pinned else []),
             ],
             cwd=REPO_ROOT,
             env=env,
@@ -81,13 +91,24 @@ def test_new_agent_task_scaffolds_canonical_agent_env() -> None:
         env_text = env_sh.read_text(encoding="utf-8")
         ps_text = env_ps1.read_text(encoding="utf-8")
         session_id = _export_value(env_text, "MOLT_SESSION_ID")
-        assert session_id.startswith(f"agent-{task}-")
         assert Path(_export_value(env_text, "MOLT_EXT_ROOT")) == artifact_root
-        assert _export_value(env_text, "CARGO_TARGET_DIR") == str(
-            artifact_root / "target" / "sessions" / session_id
-        )
+        cargo_target = Path(_export_value(env_text, "CARGO_TARGET_DIR"))
+        if pinned:
+            # Only a pinned session gets its own Cargo target.
+            assert session_id == pinned_session
+            assert "MOLT_SESSION_ID_GENERATED" not in env_text
+            assert cargo_target.parent == artifact_root / "target" / "sessions"
+            assert cargo_target == cargo_target_dir_for_artifact_root(
+                artifact_root, session_id
+            )
+        else:
+            # A session init names itself shares the warm persistent target;
+            # a per-PID target would build cold for every task.
+            assert session_id.startswith(f"agent-{task}-")
+            assert _export_value(env_text, "MOLT_SESSION_ID_GENERATED") == "1"
+            assert cargo_target == artifact_root / "target"
         assert _export_value(env_text, "MOLT_DIFF_CARGO_TARGET_DIR") == str(
-            artifact_root / "target" / "sessions" / session_id
+            cargo_target
         )
         assert _export_value(env_text, "SCCACHE_DIR") == str(artifact_root / ".sccache")
         assert _export_value(env_text, "MOLT_BACKEND_DAEMON_SOCKET_DIR").startswith(
@@ -99,11 +120,8 @@ def test_new_agent_task_scaffolds_canonical_agent_env() -> None:
         report_text = reports[0].read_text(encoding="utf-8")
         assert f"- Env: {env_sh}" in report_text
         assert f"- Env PowerShell: {env_ps1}" in report_text
-        assert f"- MOLT_SESSION_ID: agent-{task}-" in report_text
-        assert (
-            f"- CARGO_TARGET_DIR: {artifact_root / 'target' / 'sessions' / session_id}"
-            in report_text
-        )
+        assert f"- MOLT_SESSION_ID: {session_id}" in report_text
+        assert f"- CARGO_TARGET_DIR: {cargo_target}" in report_text
         assert "molt dx run -- <command>" in report_text
         assert f'source "{env_sh}"' in report_text
         assert "initialized task=" in progress_log.read_text(encoding="utf-8")
