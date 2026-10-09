@@ -50,13 +50,11 @@ fn rng_log(x: f64) -> f64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[allow(dead_code)]
 #[inline(always)]
 fn rng_log2(x: f64) -> f64 {
     libm::log2(x)
 }
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
 #[inline(always)]
 fn rng_log2(x: f64) -> f64 {
     x.log2()
@@ -107,26 +105,22 @@ fn rng_atan(x: f64) -> f64 {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[allow(dead_code)]
 #[inline(always)]
 fn rng_fabs(x: f64) -> f64 {
     libm::fabs(x)
 }
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
 #[inline(always)]
 fn rng_fabs(x: f64) -> f64 {
     x.abs()
 }
 
 #[cfg(target_arch = "wasm32")]
-#[allow(dead_code)]
 #[inline(always)]
 fn rng_floor(x: f64) -> f64 {
     libm::floor(x)
 }
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
 #[inline(always)]
 fn rng_floor(x: f64) -> f64 {
     x.floor()

@@ -7,8 +7,8 @@
 //!   - html.entities: html5, codepoint2name, name2codepoint dictionaries
 
 use crate::bridge::{
-    alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, dec_ref_bits, inc_ref_bits,
-    is_truthy, raise_exception, string_obj_to_owned, to_i64, type_name,
+    alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, dec_ref_bits, is_truthy,
+    raise_exception, string_obj_to_owned, to_i64, type_name,
 };
 use molt_obj_model::MoltObject;
 use molt_runtime_core::obj_from_bits;
@@ -1242,12 +1242,4 @@ pub extern "C" fn molt_html_entities_name2codepoint() -> u64 {
         }
         MoltObject::from_ptr(dict_ptr).bits()
     })
-}
-
-// Suppress dead-code warnings for trait impls used only inside tests.
-#[allow(dead_code)]
-fn _unused_import_suppress(_: &HashMap<i64, ParserState>) {}
-#[allow(dead_code)]
-fn _unused_inc(_py: &CoreGilToken, b: u64) {
-    inc_ref_bits(_py, b);
 }

@@ -1,30 +1,6 @@
 use super::*;
 
 #[cfg(feature = "native-backend")]
-#[allow(dead_code)]
-pub(in crate::native_backend::simple_backend) fn parse_inst_id(text: &str) -> Option<usize> {
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i + 4 <= bytes.len() {
-        if bytes[i..].starts_with(b"inst") {
-            let mut j = i + 4;
-            let mut value: usize = 0;
-            let mut found = false;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
-                found = true;
-                value = value * 10 + (bytes[j] - b'0') as usize;
-                j += 1;
-            }
-            if found {
-                return Some(value);
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
-#[cfg(feature = "native-backend")]
 pub(crate) struct TraceOpsConfig {
     pub(crate) stride: usize,
 }

@@ -538,15 +538,6 @@ fn get_close_matches_impl(
 // Object helpers
 // ---------------------------------------------------------------------------
 
-fn alloc_str_or_err(_py: &PyToken, s: &str) -> Result<u64, u64> {
-    let ptr = alloc_string(_py, s.as_bytes());
-    if ptr.is_null() {
-        Err(raise_exception::<u64>(_py, "MemoryError", "out of memory"))
-    } else {
-        Ok(MoltObject::from_ptr(ptr).bits())
-    }
-}
-
 /// Decode a Python list-of-str to a Vec<String>.
 fn list_to_str_vec(_py: &PyToken, bits: u64) -> Result<Vec<String>, u64> {
     let obj = obj_from_bits(bits);
@@ -865,10 +856,4 @@ pub extern "C" fn molt_difflib_is_junk(ch_bits: u64) -> u64 {
         let junk = s.trim().is_empty();
         MoltObject::from_bool(junk).bits()
     })
-}
-
-// Suppress dead-code warnings for internal helpers used only in some paths.
-#[allow(dead_code)]
-fn _use_alloc_str(_py: &PyToken, s: &str) -> Result<u64, u64> {
-    alloc_str_or_err(_py, s)
 }

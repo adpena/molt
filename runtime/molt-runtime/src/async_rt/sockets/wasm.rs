@@ -1,4 +1,3 @@
-use crate::PyToken;
 use crate::libc_compat as libc;
 use crate::*;
 use std::io::ErrorKind;
@@ -38,12 +37,6 @@ pub extern "C" fn molt_socket_clone(_sock_bits: u64) -> u64 {
         }
         MoltObject::from_int(new_handle).bits()
     })
-}
-
-#[cfg(target_arch = "wasm32")]
-#[allow(dead_code)]
-fn wasm_socket_unavailable<T: ExceptionSentinel>(_py: &PyToken<'_>) -> T {
-    raise_exception(_py, "RuntimeError", "socket unsupported on wasm")
 }
 
 #[cfg(target_arch = "wasm32")]
