@@ -1377,15 +1377,16 @@ toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
 # Fifteen builds (three programs, five runs), each compiling the stdlib into a
 # fresh cache, plus the IR audit, with three other suites on a 4-core runner:
-# 600 s did not finish in Nightly run 37947710312. `-u` streams progress, so a
-# timeout shows how far the sweep got.
+# 600 s did not finish in Nightly run 37947710312, and in run 37953183680 two
+# programs passed in about 1700 s (about 170 s a build) before 1800 s ran out.
+# `-u` streams progress, so a timeout shows how far the sweep got.
 [[command]]
 id = "nightly.verification-t3.reproducibility"
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
 resource_class = "scheduled-suite"
-timeout_seconds = 1800
+timeout_seconds = 3300
 cache_domain = "cargo-workspace"
 dependencies = ["nightly.verification-t3.compiler-prewarm"]
 evidence_outputs = ["proof-results/reproducibility-tier3.json"]
@@ -1421,13 +1422,15 @@ evidence_outputs = ["proof-results/mutation-tier3.json"]
 argv = ["uv", "run", "python3", "tools/mutation_test.py", "--max-mutations", "50", "--timeout", "60", "--json-out", "proof-results/mutation-tier3.json"]
 toolchains = ["python", "uv"]
 
+# Translation validation of tests/differential ran past 1800 s beside the
+# other Tier 3 suites in Nightly run 37953183680.
 [[command]]
 id = "nightly.verification-t3.translation"
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
 resource_class = "scheduled-suite"
-timeout_seconds = 1800
+timeout_seconds = 3300
 cache_domain = "cargo-workspace"
 dependencies = ["nightly.verification-t3.compiler-prewarm"]
 evidence_outputs = ["proof-results/translation-tier3.json"]
