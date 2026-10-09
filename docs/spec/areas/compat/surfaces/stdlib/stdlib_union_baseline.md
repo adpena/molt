@@ -56,7 +56,7 @@ Failure of any invariant is a hard CI failure.
 - Stub generator (one template for every stub; `tests/test_stdlib_stubs.py`
   pins it):
   - `tools/gen_stdlib_stubs.py`
-- Enforcer (CI command `repository.stdlib.intrinsics`):
+- Enforcer (CI command `python.static.stdlib-intrinsics`):
   - `tools/check_stdlib_intrinsics.py`
 - Generated status artifact:
   - `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`

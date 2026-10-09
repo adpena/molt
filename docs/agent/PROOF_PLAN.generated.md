@@ -43,9 +43,9 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 
 | Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2100 s | 1500 s | `repository-policy` | none | `docs-gates` needs none | 1 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2220 s | 1380 s | `repository-policy` | none | `docs-gates` needs none | 1 |
 | `wasm` | pr, main | yes | `github-job` | 160 min | 9600 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 18 |
-| `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
+| `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 900 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 40 min | 2400 s per cell | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `native_integration` | pr, main | yes | `github-job` | 40 min | 2400 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 19 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 240 min | 14400 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
@@ -179,7 +179,6 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.benchmark-docs.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.docs.architecture` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.ecosystem.compatibility` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
-| `repository.stdlib.intrinsics` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.differential.layout` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.suite.honesty` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.cargo-test.truth` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
@@ -216,6 +215,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `wasm.test.freestanding-e2e` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
 | `wasm.test.finally-pending-observer-parity` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
 | `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | `explicit` | 300 s | `python-static` | 0 |
+| `python.static.stdlib-intrinsics` | `python_static` | `linux-x86_64-py312-static` | `explicit` | 600 s | `python-static` | 0 |
 | `python.unit.harness` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.harness.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.python-custody` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
