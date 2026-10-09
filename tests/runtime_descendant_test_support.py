@@ -123,7 +123,13 @@ for _mode in (
             "ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; "
             "0 measured; 41 filtered out; finished in 0.00s\n\n"
         ),
-        "stderr": "",
+        "stderr": (
+            "molt runtime lifecycle failed: native owners survived the last callback drain before class retirement\n"
+            if _mode in {"ordinary", "ordinary-return"}
+            else "molt runtime lifecycle failed: injected shutdown drain C extension cleanup panic\n"
+            if _mode not in {"body-only", "healthy"}
+            else ""
+        ),
         "exit_code": 0,
         "completes": True,
     }

@@ -173,6 +173,8 @@ jobs:
           name: proof-diagnostics-platform-portability-${{ matrix.cell }}
           path: |
             proof-receipts/platform-portability-${{ matrix.cell }}.json
+            proof-receipts/evidence/runtime-gate-runs/
+            ${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}
             ${{ steps.build-control.outputs.profile_log }}
             ${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}
             ${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT != '' && format('{0}/tmp/pytest-memory-guard/**/*.json', env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT) || '' }}
@@ -379,7 +381,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: proof-diagnostics-rust
-          path: proof-receipts/evidence/cargo-test-truth-runs/
+          path: |
+            proof-receipts/evidence/cargo-test-truth-runs/
+            proof-receipts/evidence/runtime-gate-runs/
+            ${{ env.CARGO_TARGET_DIR != '' && format('{0}/**/molt-test-artifacts/**/*.log', env.CARGO_TARGET_DIR) || '' }}
           include-hidden-files: true
           if-no-files-found: warn
 

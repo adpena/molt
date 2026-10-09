@@ -1623,7 +1623,7 @@ def test_environment_selected_executable_inputs_are_content_bound(
     wrapper = tmp_path / Path(sys.executable).name
     shutil.copy2(sys.executable, wrapper)
     environment = {
-        "RUSTC_WRAPPER": f'"{wrapper}" --wrapper-argument',
+        "RUSTC_WRAPPER": f' \t"{wrapper}" --wrapper-argument',
         "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER": str(wrapper),
         "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": str(wrapper),
     }

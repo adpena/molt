@@ -13,9 +13,9 @@ use molt_cpython_abi::abi_types::{
     Py_False, Py_NotImplementedSentinel, Py_True, PyMemberDef, PyObject, PyTypeObject,
 };
 use molt_cpython_abi::hooks::RuntimeHooks;
-use molt_lang_obj_model::MoltObject;
 use std::os::raw::c_int;
 use std::ptr;
+use std::sync::Mutex;
 
 // The shared fixture supplies real string/numeric payload and edge ownership.
 fn install() {

@@ -811,6 +811,7 @@ fn runtime_test_transactions_preserve_terminal_failures() {
         let entered = Cell::new(false);
         let marker = Box::new(0x51a7_u64);
         let marker_address = (&*marker as *const u64).addr();
+        let detached_native_error = Cell::new(0usize);
         let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| match mode.as_str() {
             "prior" => {
                 crate::concurrency::execution::inject_shutdown_drain_drop_panic();
@@ -843,9 +844,21 @@ fn runtime_test_transactions_preserve_terminal_failures() {
                         );
                     }
                 });
-                let _transaction = RuntimeTestTransaction::with_gc_isolation();
+                let transaction = RuntimeTestTransaction::with_gc_isolation();
+                let saved = transaction
+                    .pending_exceptions
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.c_error.as_ref())
+                    .expect("transaction must own the original native C error");
+                let address = saved.value.addr();
+                assert!(crate::object::gc::native_gc_is_enrolled(address));
+                assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+                detached_native_error.set(address);
                 entered.set(true);
-                crate::concurrency::execution::inject_shutdown_drain_drop_panic();
+                // The detached native value is deliberately an external root.
+                // The production retirement census must reject it before the
+                // callback-free class tail; no later injected panic may replace
+                // that primary failure.
                 assert_eq!(molt_runtime_shutdown(), 0);
                 if mode == "ordinary" {
                     std::panic::resume_unwind(marker);
@@ -871,14 +884,14 @@ fn runtime_test_transactions_preserve_terminal_failures() {
                 errors::restore_current_error_exact(original);
                 {
                     let _transaction = RuntimeTestTransaction::with_gc_isolation();
-                    assert!(errors::take_current_error().is_none());
+                    assert!(unsafe { errors::PyErr_Occurred() }.is_null());
                 }
                 let normal = errors::take_current_error().expect("normal restored C error");
                 assert_eq!((normal.exc_type, normal.value, normal.traceback), identity);
                 errors::restore_current_error_exact(normal);
                 let failure = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     let _transaction = RuntimeTestTransaction::with_gc_isolation();
-                    assert!(errors::take_current_error().is_none());
+                    assert!(unsafe { errors::PyErr_Occurred() }.is_null());
                     std::panic::resume_unwind(marker);
                 }))
                 .expect_err("ordinary body panic must survive restoration");
@@ -887,7 +900,21 @@ fn runtime_test_transactions_preserve_terminal_failures() {
                     (restored.exc_type, restored.value, restored.traceback),
                     identity
                 );
+                let released_native_error = restored.value.addr();
+                assert!(crate::object::gc::native_gc_is_enrolled(
+                    released_native_error
+                ));
+                crate::with_gil_entry_nopanic!(_py, {
+                    assert_eq!(
+                        unsafe { (*restored.value).ob_refcnt },
+                        1,
+                        "the restored native exception must have exactly its returned C owner"
+                    );
+                });
                 drop(restored);
+                assert!(!crate::object::gc::native_gc_is_enrolled(
+                    released_native_error
+                ));
                 assert!(runtime_is_ready());
                 // Restoration must reopen exactly the prior producer admission.
                 unsafe extern "C" fn no_op(_: *mut std::ffi::c_void) -> std::os::raw::c_int {
@@ -900,11 +927,24 @@ fn runtime_test_transactions_preserve_terminal_failures() {
                 crate::with_gil_entry_nopanic!(_py, {
                     assert_eq!(pending_calls::Py_MakePendingCalls(), 0);
                 });
+                assert_eq!(
+                    molt_runtime_shutdown(),
+                    1,
+                    "releasing the restored native owner must permit final retirement"
+                );
                 std::panic::resume_unwind(failure);
             }
             _ => panic!("unknown transaction mode"),
         }));
         let failure = outcome.expect_err("failed transaction must never return success");
+        if matches!(mode.as_str(), "ordinary" | "ordinary-return") {
+            // This is an opaque registry lookup, not a post-terminal object
+            // dereference or runtime entry. Terminal cleanup must neither
+            // republish nor release the detached native owner.
+            assert!(crate::object::gc::native_gc_is_enrolled(
+                detached_native_error.get()
+            ));
+        }
         if matches!(
             mode.as_str(),
             "both" | "cold-both" | "body-only" | "ordinary" | "healthy"
@@ -985,7 +1025,16 @@ fn runtime_test_transactions_preserve_terminal_failures() {
             !stderr.contains("panic in a destructor during cleanup"),
             "{stderr}"
         );
-        if !matches!(mode, "body-only" | "healthy") {
+        if matches!(mode, "ordinary" | "ordinary-return") {
+            assert!(
+                stderr.contains("molt runtime lifecycle failed: native owners survived the last callback drain before class retirement"),
+                "{mode}: {stderr}"
+            );
+            assert!(
+                !stderr.contains("injected shutdown drain C extension cleanup panic"),
+                "{mode}: {stderr}"
+            );
+        } else if !matches!(mode, "body-only" | "healthy") {
             assert!(stderr.contains("molt runtime lifecycle failed: injected shutdown drain C extension cleanup panic"), "{mode}: {stderr}");
         } else {
             assert!(

@@ -12,6 +12,8 @@ from pathlib import Path
 import subprocess
 from types import SimpleNamespace
 
+from tests.operation_probe import same_thread_probe
+
 import pytest
 
 from molt.cli import llvm_wasi_tools, source_extension_toolchain, wasm_link_inputs
@@ -471,7 +473,11 @@ def test_validation_never_rediscovers_native_target_or_probes(tmp_path, monkeypa
 
     monkeypatch.setattr(provider, "resolve_source_extension_target_plan", forbidden)
     monkeypatch.setattr(provider, "_resolve_source_extension_toolchain", forbidden)
-    monkeypatch.setattr(source_extension_toolchain.subprocess, "run", forbidden)
+    monkeypatch.setattr(
+        source_extension_toolchain.subprocess,
+        "run",
+        same_thread_probe(source_extension_toolchain.subprocess.run, forbidden),
+    )
     provider.validate_identity(_policy(), identity)
 
 
@@ -505,7 +511,11 @@ def test_recorded_native_target_is_independent_of_inspector_host(
 
     monkeypatch.setattr(provider, "resolve_source_extension_target_plan", forbidden)
     monkeypatch.setattr(provider, "_resolve_source_extension_toolchain", forbidden)
-    monkeypatch.setattr(source_extension_toolchain.subprocess, "run", forbidden)
+    monkeypatch.setattr(
+        source_extension_toolchain.subprocess,
+        "run",
+        same_thread_probe(source_extension_toolchain.subprocess.run, forbidden),
+    )
     provider.validate_identity(_policy(), identity)
     if triple.endswith("-msvc"):
         identity["commands"]["c"].append("--driver-mode=gcc")
@@ -784,7 +794,11 @@ def test_compiler_probe_subprocess_receives_exact_environment(tmp_path, monkeypa
         calls.append(command)
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(source_extension_toolchain.subprocess, "run", run)
+    monkeypatch.setattr(
+        source_extension_toolchain.subprocess,
+        "run",
+        same_thread_probe(source_extension_toolchain.subprocess.run, run),
+    )
     assert (
         source_extension_toolchain._probe_wasm_source_extension_compiler(
             (str(tmp_path / "clang"),), target_plan=target, environment=selected
@@ -860,6 +874,32 @@ def test_wasi_sdk_selection_is_fresh_and_uses_selected_home(tmp_path, monkeypatc
             )
             == install.sysroot
         )
+
+
+@pytest.mark.parametrize("alteration", ["none", "crlf", "trailing-space"])
+def test_sdk_fixture_receipt_keeps_exact_lf_generation_bytes(tmp_path, alteration):
+    install = provisioned_wasi_sdk_fixture(RuntimeFixtureRoot(tmp_path))
+    receipt = install.prefix / ".molt-wasi-sdk.json"
+    original = receipt.read_bytes()
+    # The provisioner emits one compact UTF-8 JSON line, regardless of host.
+    # Checking physical bytes detects Windows text-mode translation independently
+    # of the JSON decoder, which deliberately accepts JSON whitespace.
+    assert original.endswith(b"\n") and original.count(b"\n") == 1
+    assert b"\r" not in original
+    selected = llvm_toolchain.project_wasm_toolchain_environment(install, environ={})
+    admitted = capture_wasi_sdk_selection(root=proof_plan.ROOT, env=selected)
+    assert admitted["receipt"]["size_bytes"] == len(original)
+    assert admitted["receipt"]["sha256"] == hashlib.sha256(original).hexdigest()
+    if alteration == "none":
+        assert receipt.read_bytes() == original
+        return
+    changed = (
+        original[:-1] + b"\r\n" if alteration == "crlf" else original[:-1] + b" \n"
+    )
+    assert json.loads(changed) == json.loads(original)
+    receipt.write_bytes(changed)
+    with pytest.raises(ValueError, match="finite generation"):
+        capture_wasi_sdk_selection(root=proof_plan.ROOT, env=selected)
 
 
 @pytest.mark.parametrize("joined", [False, True])

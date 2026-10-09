@@ -75,6 +75,7 @@ def _compiler_rt_sdk_fixture(tmp_path: Path, *, libc: bytes | None = None):
             asdict(installation.asset), wasi_sdk_tree_identity(installation.sdk)
         ),
         encoding="utf-8",
+        newline="",
     )
     return runtime_wasi_c_abi_plan(RuntimeFixtureRoot(tmp_path))
 
@@ -11394,6 +11395,7 @@ def test_lazy_archive_compiler_rt_candidates_retain_lazy_selected_sdk_provider(
             asdict(installation.asset), wasi_sdk_tree_identity(installation.sdk)
         ),
         encoding="utf-8",
+        newline="",
     )
     for key in (
         "WASI_SDK_PREFIX",

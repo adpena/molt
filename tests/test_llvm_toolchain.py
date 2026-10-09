@@ -124,9 +124,10 @@ def _write_wasi_sdk_installation(
         / "lib/wasm32-unknown-wasip1/libclang_rt.builtins.a",
         "compiler-rt",
     )
-    _write(
-        prefix / INSTALL_RECEIPT_FILENAME,
-        render_wasi_sdk_install_receipt(asdict(asset), wasi_sdk_tree_identity(sdk)),
+    (prefix / INSTALL_RECEIPT_FILENAME).write_bytes(
+        render_wasi_sdk_install_receipt(
+            asdict(asset), wasi_sdk_tree_identity(sdk)
+        ).encode("utf-8")
     )
     return prefix
 
