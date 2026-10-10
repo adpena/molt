@@ -2819,6 +2819,7 @@ _REAL_METADATA_CASES = frozenset(
         "test_guarded_identity_timeout_is_terminal_before_command_launch",
         "test_proof_queue_non_wasm_exec_does_not_load_wasm_toolchain",
         "test_proof_queue_exec_records_passed_run",
+        "test_proof_queue_completion_reclaims_runs_outside_the_retention_window",
         "test_proof_queue_exec_preserves_command_help_after_delimiter",
         "test_proof_queue_exec_honors_explicit_memory_guard_poll_override",
         "test_proof_queue_evidence_accepts_positional_run_id",
@@ -5307,6 +5308,75 @@ def test_proof_queue_exec_records_passed_run(
     assert "changed queue smoke to verify note capture" in notebook_text
     assert '"note_kind_counts": {' in notebook_text
     assert '"submission": 1' in notebook_text
+
+
+@capability_aware_proof_execution
+def test_proof_queue_completion_reclaims_runs_outside_the_retention_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    custody_python: Path,
+) -> None:
+    db = tmp_path / "proof_queue.sqlite3"
+    logs = tmp_path / "runs"
+    repo = tmp_path / "repo"
+    _initialize_clean_git_repo(repo)
+    monkeypatch.setenv("MOLT_PROOF_QUEUE_RETAIN_RUNS", "1")
+    base_args = ["--db", str(db), "--logs-root", str(logs), "--repo-root", str(repo)]
+
+    def run(name: str) -> None:
+        rc = cli.main(
+            [
+                *base_args,
+                "exec",
+                *_real_queue_output_arguments(),
+                "--id",
+                f"retention-{name}",
+                "--reason",
+                "prove automatic retention after completion",
+                "--resource-family",
+                "python",
+                "--contention-key",
+                f"python:retention-{name}",
+                "--timeout",
+                _REAL_EXECUTION_TIMEOUT,
+                "--",
+                str(custody_python),
+                "-c",
+                "print('ok')",
+            ]
+        )
+        assert rc == 0
+
+    def receipt(run_id: str) -> dict[str, object]:
+        capsys.readouterr()
+        assert cli.main([*base_args, "evidence", "--run-id", run_id]) == 0
+        return json.loads(capsys.readouterr().out)[0]
+
+    run("first")
+    first_id = _rows(db)[0]["run_id"]
+    before = receipt(first_id)
+    first_files = {path.name for path in logs.glob(f"{first_id}.*")}
+    assert Path(before["log_path"]).name in first_files
+
+    run("second")
+
+    assert "proof run retention: reclaimed=1" in capsys.readouterr().out
+    first, second = _rows(db)
+    record = json.loads(first["evidence_retention_json"])
+    assert record["state"] == "reclaimed"
+    assert {Path(path).name for path in record["paths"]} >= first_files
+    # The run's own scratch directory goes with its files.
+    assert any(Path(path).parent.name == "derived" for path in record["paths"])
+    assert not any(Path(path).exists() for path in record["paths"])
+    assert second["evidence_retention_json"] is None
+    assert Path(second["log_path"]).is_file()
+    after = receipt(first_id)
+    assert after["proof_receipt"] == before["proof_receipt"]
+    assert after["evidence_retention"]["state"] == "reclaimed"
+    assert [item["signal_id"] for item in after["diagnostics"]] == [
+        "proof-evidence-reclaimed"
+    ]
 
 
 def test_proof_queue_exec_requires_command_delimiter(tmp_path: Path) -> None:
