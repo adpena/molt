@@ -584,33 +584,34 @@ def _python_auxiliary_command(
 
 
 def _python_probe_command(
-    envelope: Mapping[str, object],
-    exact: Sequence[str],
+    executable: Path,
     *,
     source_root: Path,
     external_roots: Sequence[Path] = (),
     hash_workers: int = 1,
-) -> list[str] | None:
+) -> list[str]:
+    """Capture the located interpreter without repeating launcher selection."""
     admitted_roots = sorted(
         {Path(root).resolve(strict=True) for root in (source_root, *external_roots)},
         key=lambda path: (os.path.normcase(str(path)), str(path)),
     )
-    return _python_auxiliary_command(
-        envelope,
-        exact,
-        arguments=(
-            "--capture-active-environment",
-            "--with-custody",
-            "--hash-workers",
-            str(hash_workers),
-            "--admit-virtualenv-bootstrap",
-            *(
-                value
-                for root in admitted_roots
-                for value in ("--admit-external-root", str(root))
-            ),
+    return [
+        str(executable),
+        *python_identity_probe_arguments(
+            (
+                "--capture-active-environment",
+                "--with-custody",
+                "--hash-workers",
+                str(hash_workers),
+                "--admit-virtualenv-bootstrap",
+                *(
+                    value
+                    for root in admitted_roots
+                    for value in ("--admit-external-root", str(root))
+                ),
+            )
         ),
-    )
+    ]
 
 
 def _parse_json_output(
@@ -632,7 +633,6 @@ def _parse_json_output(
 
 def _python_identity(
     envelope: Mapping[str, object],
-    exact: Sequence[str],
     *,
     cwd: Path,
     env: Mapping[str, str],
@@ -664,26 +664,6 @@ def _python_identity(
         raise ValueError("proof Python selection has no external-root authority")
     if selected_external_roots != location.get("external_roots"):
         raise ValueError("proof Python selection external roots differ from location")
-    command = _python_probe_command(
-        envelope,
-        exact,
-        source_root=source_root,
-        external_roots=[
-            Path(value) for value in cast(list[str], selected_external_roots)
-        ],
-        hash_workers=hash_workers,
-    )
-    if command is None:
-        return None
-    payload = _parse_json_output(
-        _run_captured(command, cwd=cwd, env=env, timeout=120.0),
-        purpose="proof Python identity probe",
-    )
-    try:
-        capture = validate_python_capture(payload)
-        environment = cast(Mapping[str, object], capture["identity"])
-    except PythonEnvironmentIdentityError as exc:
-        raise ValueError(f"proof Python identity is invalid: {exc}") from exc
     prefix_raw = selection.get("prefix")
     executable_raw = selection.get("executable")
     base_executable_raw = selection.get("base_executable")
@@ -717,6 +697,32 @@ def _python_identity(
         != _hash_file(Path(base_executable_raw))
     ):
         raise ValueError("proof Python selection differs from its location receipt")
+    # Selection ran the exact uv/py launcher before arming. Repeating uv run
+    # here can sync or close its writable environment lock before full capture
+    # has admitted that lock. Preserve the lexical venv launcher (not its base
+    # image), isolated no-write suffix, admitted environment and effective cwd.
+    command = _python_probe_command(
+        Path(executable_raw),
+        source_root=source_root,
+        external_roots=[
+            Path(value) for value in cast(list[str], selected_external_roots)
+        ],
+        hash_workers=hash_workers,
+    )
+    payload = _parse_json_output(
+        _run_captured(
+            command,
+            cwd=admission._execution_source_paths(envelope, cwd=cwd),
+            env=env,
+            timeout=120.0,
+        ),
+        purpose="proof Python identity probe",
+    )
+    try:
+        capture = validate_python_capture(payload)
+        environment = cast(Mapping[str, object], capture["identity"])
+    except PythonEnvironmentIdentityError as exc:
+        raise ValueError(f"proof Python identity is invalid: {exc}") from exc
     source_root = source_root.resolve(strict=True)
     try:
         process_images = _python_process_images(
@@ -724,6 +730,16 @@ def _python_identity(
         )
     except PythonEnvironmentIdentityError as exc:
         raise ValueError(f"proof Python launcher closure is invalid: {exc}") from exc
+    expected_images = {
+        "selected-interpreter": selection["executable_sha256"],
+        "base-interpreter": selection["base_executable_sha256"],
+    }
+    if any(
+        image["sha256"] != expected_images[image["role"]]
+        for image in process_images
+        if image["role"] in expected_images
+    ):
+        raise ValueError("proof Python captured images differ from pre-arm selection")
     material: dict[str, object] = {
         "schema": "molt.proof-python-toolchain.v3",
         "identity_kind": "executable",
@@ -1976,6 +1992,7 @@ _NONDETERMINISTIC_ENV_NAMES = frozenset(
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
         "UV_CONFIG_FILE",
         "UV_DEFAULT_INDEX",
+        "UV_ENV_FILE",
         "UV_EXTRA_INDEX_URL",
         "UV_FIND_LINKS",
         "UV_INDEX",

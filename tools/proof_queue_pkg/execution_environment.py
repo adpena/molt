@@ -551,7 +551,6 @@ def _capture_toolchains(
         raise ValueError("located Python selection identity is unavailable")
     proof_python = command_identity._python_identity(
         envelope,
-        exact,
         cwd=cwd,
         env=env,
         source_root=source_root,
@@ -564,7 +563,6 @@ def _capture_toolchains(
         )
         proof_python = command_identity._python_identity(
             synthetic_envelope,
-            [sys.executable, "-c", "raise SystemExit('identity-only')"],
             cwd=cwd,
             env=env,
             source_root=source_root,

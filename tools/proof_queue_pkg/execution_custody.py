@@ -1,8 +1,10 @@
 """Live source/toolchain and child-process custody for proof execution.
 
 Endpoint hashes prove only the endpoints.  This module supplies the missing
-execution-time authority: kernel filesystem notifications retain any write,
-rename, deletion, or metadata mutation until the parent consumes it, and the
+execution-time authority: kernel filesystem notifications retain observed
+write, rename, deletion, and metadata events until the parent consumes them. On
+Linux, writable-close events remain necessary for closed writable mappings;
+inotify alone does not report mmap writes or identify their process. The
 Python/Node launch hooks reject child executables before launch unless the
 admitted envelope declares their captured toolchain identity or the native
 supervisor has admitted their run-owned output root.
@@ -24,7 +26,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from molt.exact_json import loads_exact
+from molt.exact_json import canonical_json_sha256, loads_exact
+from molt.toolchain_identity import (
+    StableRegularFileVersion,
+    stable_regular_file_version,
+    verify_stable_regular_file_identity,
+)
 from tools.proof_queue_pkg import process_image_capture, windows_createprocess
 
 from tools.proof_queue_pkg.python_child_custody import (
@@ -61,27 +68,175 @@ class WatchSpec:
 
 
 CHILD_POLICY_SCHEMA = "molt.proof-child-custody.v1"
-# v2: the receipt separates the apparatus's own writes (`apparatus_events`) from
-# input mutations and binds them into its identity.
-LIVE_CUSTODY_RECEIPT_SCHEMA = "molt.proof-live-custody.v2"
+# v3: every apparatus class is validated; selected empty uv-lock closes carry
+# captured Python/uv owner identities. Older permissive receivers cannot admit it.
+LIVE_CUSTODY_RECEIPT_SCHEMA = "molt.proof-live-custody.v3"
 
 # Filesystem events that the proof apparatus itself causes inside a watched
 # root. They carry no information about the proof's inputs and are recorded
 # under their own class instead of as input mutations.
 APPARATUS_GIT_INDEX_REFRESH = "git-index-refresh"
+APPARATUS_UV_ENVIRONMENT_LOCK = "uv-environment-lock-close"
+_EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
-def classify_apparatus_event(root: Path, path: Path, action: str) -> str | None:
-    """Name the apparatus class of an event beneath ``root``, or None.
+@dataclass(frozen=True)
+class CapturedUvEnvironmentLocks:
+    uv_identity_sha256: str | None
+    environments: tuple[tuple[Path, str], ...]
 
-    `git status` (run by custody's own source snapshots and by tools that
-    validate the tree, including a package source checkout that is a git
-    worktree whose gitdir lives inside the watched tree) refreshes the index
-    through `index.lock` and touches the `.git` directory entry, or the
-    `.git/worktrees/<name>` entry for a linked worktree. Neither changes any
-    source input, so those events are `git-index-refresh`. Every other `.git`
-    write (HEAD, refs, objects, a rewritten index) stays an input mutation.
+
+def captured_uv_environment_locks(
+    toolchains: Mapping[str, object],
+) -> CapturedUvEnvironmentLocks:
+    """Project one already validated full capture; never infer from watch roots.
+
+    A compound operation can capture its uv owner and selected Python
+    environment in different contexts. No new selection or probe occurs here.
+    Retain only finite owner facts, not the full environment/SDK inventories.
     """
+    uv = toolchains.get("uv")
+    uv_identity = str(uv["identity_sha256"]) if isinstance(uv, Mapping) else None
+    environments: list[tuple[Path, str]] = []
+    python = toolchains.get("python")
+    if isinstance(python, Mapping):
+        location = python["location"]
+        environment = python["environment"]
+        assert isinstance(location, Mapping) and isinstance(environment, Mapping)
+        prefix = Path(str(location["prefix"]))
+        if not prefix.is_absolute():
+            raise ValueError("operational environment lock has no absolute owner")
+        tree = environment["tree"]
+        assert isinstance(tree, Mapping)
+        entries, nodes = tree["entries"], tree["file_nodes"]
+        assert isinstance(entries, list) and isinstance(nodes, list)
+        lock = next((row for row in entries if row["path"] == ".lock"), None)
+        if (
+            lock is not None
+            and lock.get("kind") == "file"
+            and lock.get("access")
+            == {"readable": True, "writable": True, "executable": False}
+        ):
+            node = next((row for row in nodes if row["id"] == lock["node"]), None)
+            if (
+                node is not None
+                and node.get("size") == 0
+                and node.get("sha256") == _EMPTY_SHA256
+            ):
+                path = prefix / ".lock"
+                custody = python["file_custody"]
+                assert isinstance(custody, list)
+                if {
+                    "path": str(path),
+                    "size": 0,
+                    "sha256": _EMPTY_SHA256,
+                } not in custody:
+                    raise ValueError(
+                        "operational environment lock lacks captured file custody"
+                    )
+                environments.append((path, str(python["identity_sha256"])))
+    return CapturedUvEnvironmentLocks(uv_identity, tuple(environments))
+
+
+def _uv_environment_lock_records(
+    captures: Sequence[CapturedUvEnvironmentLocks],
+) -> dict[str, dict[str, str]]:
+    uv_identities = {
+        capture.uv_identity_sha256
+        for capture in captures
+        if capture.uv_identity_sha256 is not None
+    }
+    if not uv_identities:
+        return {}
+    if len(uv_identities) != 1:
+        raise ValueError("operational environment lock has ambiguous uv ownership")
+    uv_identity = next(iter(uv_identities))
+    records: dict[str, dict[str, str]] = {}
+    for capture in captures:
+        for path, python_identity in capture.environments:
+            record = {
+                "action": "inotify:0x8",
+                "path": str(path),
+                "apparatus": APPARATUS_UV_ENVIRONMENT_LOCK,
+                "python_identity_sha256": python_identity,
+                "uv_identity_sha256": uv_identity,
+            }
+            key = _norm(path)
+            if key in records and records[key] != record:
+                raise ValueError(
+                    "operational environment lock has conflicting captures"
+                )
+            records[key] = record
+    return records
+
+
+def validated_uv_environment_lock_capture(
+    toolchains: Mapping[str, object],
+) -> CapturedUvEnvironmentLocks:
+    """Validate a retained capture before granting new operational authority.
+
+    Canonical guarded execution has already performed these validations. The
+    receipt receiver and compound private capture composition reuse the same
+    validators here; a CAS binding alone is not semantic owner validation.
+    """
+    if not any(name in toolchains for name in ("python", "uv")):
+        return CapturedUvEnvironmentLocks(None, ())
+
+    from tools import proof_plan
+    from tools.proof_queue_pkg import command_identity
+
+    plan = proof_plan.ProofPlan.load()
+    for name in ("python", "uv"):
+        if name not in toolchains:
+            continue
+        identity = toolchains[name]
+        if not isinstance(identity, Mapping):
+            raise ValueError("operational environment lock owner is malformed")
+        command_identity._validate_toolchain_identity(
+            plan, name, identity, full_capture=True
+        )
+        if name == "uv":
+            material = dict(identity)
+            digest = material.pop("identity_sha256", None)
+            if digest != canonical_json_sha256(material):
+                raise ValueError("uv operational owner identity digest is invalid")
+    return captured_uv_environment_locks(toolchains)
+
+
+def validate_apparatus_events(
+    events: Sequence[object], captures: Sequence[CapturedUvEnvironmentLocks]
+) -> None:
+    """Validate every apparatus class, including each captured uv-lock owner."""
+    expected = _uv_environment_lock_records(captures)
+    for event in events:
+        if not isinstance(event, Mapping):
+            raise ValueError("live custody apparatus event is malformed")
+        path, action = event.get("path"), event.get("action")
+        if (
+            not isinstance(path, str)
+            or not Path(path).is_absolute()
+            or not isinstance(action, str)
+        ):
+            raise ValueError("live custody apparatus event has invalid path/action")
+        if event.get("apparatus") == APPARATUS_GIT_INDEX_REFRESH:
+            if (
+                set(event) != {"path", "action", "apparatus"}
+                or _git_refresh_candidate(Path(Path(path).anchor), Path(path), action)
+                is None
+            ):
+                raise ValueError(
+                    "git apparatus event differs from index-refresh authority"
+                )
+        elif event.get(
+            "apparatus"
+        ) != APPARATUS_UV_ENVIRONMENT_LOCK or event != expected.get(_norm(path)):
+            raise ValueError("uv environment lock event differs from captured owners")
+
+
+def _git_refresh_candidate(
+    root: Path, path: Path, action: str
+) -> tuple[Path, bool] | None:
+    """Pure path/action authority, also usable for retained event receipts."""
     try:
         root_key = _norm(root)
         # This event classifier may observe an already removed index.lock.
@@ -110,14 +265,8 @@ def classify_apparatus_event(root: Path, path: Path, action: str) -> str | None:
         return None
     lock_event = bool(tail and tail[-1] == "index.lock")
     directory = path.parent if lock_event else path
-    # A linked-worktree .git file is an input, not directory bookkeeping.
-    # Missing/replaced directories and symlink aliases are never excused.
-    if not directory.is_dir() or directory.resolve() != Path(_norm(directory)):
-        return None
     if lock_event:
-        if path.is_dir() or path.is_symlink():
-            return None
-        return APPARATUS_GIT_INDEX_REFRESH
+        return directory, True
     safe_directory_change = action == "modified"
     if action.startswith("inotify:"):
         try:
@@ -131,7 +280,24 @@ def classify_apparatus_event(root: Path, path: Path, action: str) -> str | None:
         except ValueError:
             return None
         safe_directory_change = bool(flags & 0x1400) and not (flags & ~0x21400)
-    return APPARATUS_GIT_INDEX_REFRESH if safe_directory_change else None
+    return (directory, False) if safe_directory_change else None
+
+
+def classify_apparatus_event(root: Path, path: Path, action: str) -> str | None:
+    """Classify Git refresh events, checking live directory ownership here.
+
+    Linked-worktree .git files, missing/replaced directories, symlink aliases,
+    rewritten indexes and other Git changes remain ordinary input events.
+    """
+    candidate = _git_refresh_candidate(root, path, action)
+    if candidate is None:
+        return None
+    directory, lock_event = candidate
+    if not directory.is_dir() or directory.resolve() != Path(_norm(directory)):
+        return None
+    if lock_event and (path.is_dir() or path.is_symlink()):
+        return None
+    return APPARATUS_GIT_INDEX_REFRESH
 
 
 def _compact_specs(specs: Iterable[WatchSpec]) -> list[WatchSpec]:
@@ -198,6 +364,49 @@ class LiveCustodyMonitor:
         self._handles: list[object] = []
         self._state = "CREATED"
         self._lifecycle = ["CREATED"]
+        self._uv_lock_records: dict[str, dict[str, str]] = {}
+        self._uv_lock_versions: list[StableRegularFileVersion] = []
+        self._uv_locks_admitted = False
+
+    def admit_uv_environment_locks(
+        self, captures: Sequence[CapturedUvEnvironmentLocks]
+    ) -> None:
+        """Admit only selected empty uv locks after full capture, before action.
+
+        Callers retain ordinary endpoint custody for every lock. The original
+        event stream is never erased or retrospectively reclassified. A lock
+        without a complete capture remains an ordinary immutable input.
+        """
+        with self._lock:
+            if self._state != "ARMED" or self._uv_locks_admitted:
+                raise ValueError(
+                    "uv lock admission requires one armed capture boundary"
+                )
+        records = _uv_environment_lock_records(captures)
+        admitted: dict[str, dict[str, str]] = {}
+        versions: list[StableRegularFileVersion] = []
+        for key, record in sorted(records.items()):
+            path = Path(record["path"])
+            if not path.is_absolute() or path.resolve(strict=True) != path:
+                raise ValueError("uv environment lock has path indirection")
+            if not any(
+                path.is_relative_to(spec.root) and spec.owns(path)
+                for spec in self.specs
+            ):
+                raise ValueError("uv environment lock is outside armed custody")
+            version = stable_regular_file_version(
+                path, label="captured uv environment lock"
+            )
+            if version.size != 0 or path.lstat().st_nlink != 1:
+                raise ValueError("uv environment lock is not an empty single-link file")
+            admitted[key] = record
+            versions.append(version)
+        with self._lock:
+            if self._state != "ARMED" or self._uv_locks_admitted:
+                raise ValueError("uv lock admission lost its armed capture boundary")
+            self._uv_lock_records = admitted
+            self._uv_lock_versions = versions
+            self._uv_locks_admitted = True
 
     def _transition(self, expected: str, next_state: str) -> None:
         with self._lock:
@@ -255,6 +464,17 @@ class LiveCustodyMonitor:
             self._thread.join(timeout=10.0)
             if self._thread.is_alive():
                 self._record_error("proof live custody watcher did not stop")
+        for version in self._uv_lock_versions:
+            try:
+                verify_stable_regular_file_identity(
+                    version, label="captured uv environment lock"
+                )
+                if version.path.lstat().st_nlink != 1:
+                    raise ValueError(
+                        "captured uv environment lock link ownership changed"
+                    )
+            except (OSError, ValueError) as exc:
+                self._record_error(str(exc))
         for handle in self._handles:
             try:
                 if sys.platform == "win32":
@@ -304,6 +524,12 @@ class LiveCustodyMonitor:
         event = {"action": action, "path": str(path)}
         apparatus = classify_apparatus_event(spec.root, path, action)
         with self._lock:
+            if action == "inotify:0x8":
+                uv_lock = self._uv_lock_records.get(_norm(path))
+                if uv_lock is not None:
+                    if uv_lock not in self._apparatus_events:
+                        self._apparatus_events.append(dict(uv_lock))
+                    return
             if apparatus is not None:
                 classified = {**event, "apparatus": apparatus}
                 if classified not in self._apparatus_events:

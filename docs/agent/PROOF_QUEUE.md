@@ -108,6 +108,18 @@ unexecuted namespaces. A failed bootstrap must preserve existing module and
 parent bindings; canonical aliases are published only after initialization.
 These compiler/development boundaries add no emitted-guest checks.
 
+Python location runs the exact admitted launcher before the input monitor is
+armed. Full environment capture then executes that selected lexical interpreter
+directly, after checking the selection's image hashes, using the shared `-B -I`
+probe suffix, unchanged admitted environment and effective source cwd. The
+captured process-image closure must still agree with the pre-arm selection.
+This avoids repeating uv synchronization during capture; the admitted payload
+invocation and options are unchanged by capture. The closed startup capability policy
+admits only reviewed hooks and absolute declarative `.pth` entries, so capture
+does not reconstruct uv's `PATH` or `VIRTUAL_ENV` activation. `UV_ENV_FILE` shares
+the existing unbound-environment policy: inherited values are omitted and
+explicit overrides refuse, matching the unmodeled `--env-file` option.
+
 The queue publishes `MOLT_PROOF_SOURCE_ROOT` only from its validated Git snapshot.
 Users cannot override it. The Python bootstrap exposes that same checkout's
 `src` only to the typed Molt module payload, including under `-P`; unrelated
@@ -115,6 +127,27 @@ module, script, directory/ZIP, command and stdin import behavior is unchanged.
 Source, sysroot, SDK compiler-rt and executable inputs enter live custody
 before execution. Native requests preserve host CC/CXX selection separately
 from their recorded effective target triple.
+
+Linux writable-close notifications remain input events: they can be the only
+notification of a closed writable mapping, including a write followed by a
+restore. A selected uv environment's pre-existing empty regular lock has one
+narrow operational class. After full capture and before action, the monitor
+joins the captured uv owner to the captured Python environment's root `.lock`
+file node, verifies a zero-byte single-link file, and retains its stable file
+identity until drain. Only the exact `IN_CLOSE_WRITE` event is operational;
+creation, writes, truncation, metadata, replacement and mixed events remain
+input failures. The file remains in full environment and endpoint custody.
+Already recorded events remain unchanged on admission. Queued inotify events
+have no timestamps: an earlier pure close can be delivered after admission.
+Zero-byte capture is essential here; mapping nonempty data before admission
+requires an earlier growth/truncation interval, whose mutation events remain
+failures. Apparatus events bind the selected uv and Python eligibility context;
+this does not identify the writer. Receipt acceptance validates both captured
+identities and checks their join again.
+There is no filename-based lock exclusion or dependency-check replacement.
+This classification adds no guest instrumentation. Kernel notifications do not
+identify a writer, and inotify does not directly report mmap stores; this is
+bounded event custody, not proof against every possible external writer.
 
 WASI Cargo library links use the selected SDK's raw linker with Rust's
 self-contained C runtime disabled. C and C++ compilation retain their selected
