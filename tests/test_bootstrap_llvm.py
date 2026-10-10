@@ -132,9 +132,18 @@ def test_explicit_targets_parse_before_unknown_host_default(
 
 
 @pytest.mark.usefixtures("developer_host_context")
-def test_managed_paths_share_checkout_family_custody(tmp_path: Path) -> None:
+def test_managed_paths_share_checkout_family_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import dx
+
     # A checkout family: the main checkout and a worktree beside it. Where CI
-    # checks this repository out is not such a family.
+    # checks this repository out is not such a family. The synthetic family
+    # lives under pytest's temp root, which a hosted runner reports as host
+    # scratch; it is a family here, not host scratch.
+    monkeypatch.setattr(
+        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
     family = tmp_path / "Molt"
     main_checkout = family / "molt-src"
     worktree = family / "worktrees" / "feature"
