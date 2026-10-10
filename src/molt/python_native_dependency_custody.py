@@ -592,6 +592,30 @@ def _census_change(
     return f"same images, changed {', '.join(changed) or 'identity'}"
 
 
+def _census_only_lost_images(
+    before: LoadedNativeModuleSnapshot, after: LoadedNativeModuleSnapshot
+) -> bool:
+    """Whether a later census only unloaded images the capture already holds.
+
+    The closure was computed from ``before``, so an image the process unloads
+    later keeps it a sound over-approximation. On Windows, CPython's
+    ``platform`` loads the WMI providers through COM, and COM frees them while
+    the capture runs. An image gained, swapped or redefined is still a change.
+    """
+    return (
+        after.executable == before.executable
+        and set(after.paths) <= set(before.paths)
+        and all(
+            before.aliases.get(name) == path for name, path in after.aliases.items()
+        )
+        and set(after.contracts) <= set(before.contracts)
+        and all(
+            before.macho_identities.get(path) == identity
+            for path, identity in after.macho_identities.items()
+        )
+    )
+
+
 def _native_dependency_closure(
     roots: Mapping[str, Path],
     *,
@@ -813,7 +837,9 @@ def _native_dependency_closure(
 
     def verify_census() -> None:
         current = _loaded_native_module_snapshot(operating_system)
-        if current != loader_snapshot:
+        if current != loader_snapshot and not _census_only_lost_images(
+            loader_snapshot, current
+        ):
             raise PythonEnvironmentIdentityError(
                 "loaded native image census changed during dependency capture: "
                 + _census_change(loader_snapshot, current)
