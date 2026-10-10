@@ -314,3 +314,39 @@ fn native_guarded_object_helpers_receive_the_tagged_receiver() {
         );
     }
 }
+
+#[test]
+fn pointer_decode_preserves_unsigned_bit_47_in_emitted_arithmetic() {
+    use cranelift_codegen::ir::InstBuilder;
+    use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+
+    let mut function = Function::new();
+    function
+        .signature
+        .params
+        .push(cranelift_codegen::ir::AbiParam::new(types::I64));
+    let mut context = FunctionBuilderContext::new();
+    let (input, output) = {
+        let mut builder = FunctionBuilder::new(&mut function, &mut context);
+        let entry = builder.create_block();
+        let input = builder.append_block_param(entry, types::I64);
+        builder.switch_to_block(entry);
+        let output = crate::native_backend::simple_backend::value_encoding::unbox_ptr_value(
+            &mut builder,
+            input,
+        );
+        builder.ins().return_(&[]);
+        builder.seal_all_blocks();
+        builder.finalize();
+        (input, output)
+    };
+    // Check the actual emitted result, not a second decoder implementation.
+    // This equality excludes any arithmetic shift/sign extension downstream of
+    // the mask, including the former bit-47 corruption on AArch64 stacks.
+    assert_eq!(
+        masked_operand(&function, output, 0x0000_ffff_ffff_ffff),
+        Some(input),
+        "pointer recovery must preserve every unsigned payload bit: {}",
+        function.display()
+    );
+}

@@ -317,8 +317,7 @@ def test_admitted_delegated_outputs_survive_python_custody_rewriting(tmp_path):
     execution_command = command_admission._python_bootstrap_command(
         envelope, admitted_argv
     )
-    with pytest.raises(ValueError, match="direct Python target"):
-        command_admission._nested_command(execution_command)
+    assert command_admission._nested_command(execution_command) is None
     with pytest.raises(ValueError):
         command_admission.parse_cargo_invocation(execution_command)
 
@@ -2054,15 +2053,25 @@ def test_failed_publication_owner_write_keeps_structured_secondary_without_prima
     assert calls == cleanup_calls == []
 
 
-@pytest.mark.parametrize("member", ["selected-gcc", "cc1", "as", "selected-ar"])
-def test_native_c_process_closure_participates_in_cargo_cache_inputs(
-    tmp_path, monkeypatch, member
+@pytest.mark.parametrize(
+    "operation,member",
+    [
+        ("c", "selected-gcc"),
+        ("c", "cc1"),
+        ("c", "as"),
+        ("c", "selected-ar"),
+        ("c++", "selected-g++"),
+        ("c++", "cc1plus"),
+    ],
+)
+def test_native_build_process_closure_participates_in_cargo_cache_inputs(
+    tmp_path, monkeypatch, operation, member
 ):
-    from tests.tools.test_toolchain_capture import _native_c_capture_fixture
+    from tests.tools.test_toolchain_capture import _native_build_capture_fixture
     from tools.proof_queue_pkg import toolchain_capture
 
-    identity, tools, env, command, _calls = _native_c_capture_fixture(
-        tmp_path, monkeypatch
+    identity, tools, env, command, _calls = _native_build_capture_fixture(
+        tmp_path, monkeypatch, operation=operation
     )
     arguments = {
         "source": {"root": str(tmp_path), "commit": "fixed"},
@@ -2084,7 +2093,7 @@ def test_native_c_process_closure_participates_in_cargo_cache_inputs(
         rustc_version="rustc 1.99.0\nhost: x86_64-unknown-linux-gnu\n",
         command_argv=command,
         admitted_command=command,
-        native_c_units=["target"],
+        native_units={"target": ["c"]} if operation == "c" else {"host": ["c++"]},
     )
     refreshed = dict(
         identity,

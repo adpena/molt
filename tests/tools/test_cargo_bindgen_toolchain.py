@@ -954,8 +954,11 @@ def test_unavailable_documenter_proxy_never_selects_an_alternate(
 
 
 @pytest.mark.parametrize("unit", ["target", "host"])
-def test_native_c_selection_uses_exact_unit_precedence_without_probes(
-    tmp_path, monkeypatch, unit
+@pytest.mark.parametrize(
+    "language,role,flags", [("c", "CC", "CFLAGS"), ("c++", "CXX", "CXXFLAGS")]
+)
+def test_native_build_selection_uses_exact_unit_precedence_without_probes(
+    tmp_path, monkeypatch, unit, language, role, flags
 ):
     host, target = "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"
     triple = target if unit == "target" else host
@@ -964,23 +967,23 @@ def test_native_c_selection_uses_exact_unit_precedence_without_probes(
     other = _tool(tmp_path / "ambient", "cc")
     _no_processes(monkeypatch)
     env = {
-        "CC": str(other),
-        "TARGET_CC": str(other),
-        "HOST_CC": str(other),
-        "CC_" + triple: str(chosen),
+        role: str(other),
+        "TARGET_" + role: str(other),
+        "HOST_" + role: str(other),
+        role + "_" + triple: str(chosen),
         "AR_" + triple: str(archive),
-        "CFLAGS": "-O1",
-        "CFLAGS_" + triple: "-O2",
+        flags: "-O1",
+        flags + "_" + triple: "-O2",
         "PATH": "",
     }
-    rows = toolchain_capture.select_cargo_native_c_units(
-        required=[unit], target=target, host=host, cwd=tmp_path, env=env
+    rows = toolchain_capture.select_cargo_native_units(
+        required={unit: [language]}, target=target, host=host, cwd=tmp_path, env=env
     )
     assert rows == [
         {
-            "units": [unit],
+            "units": {unit: [language]},
             "target": triple,
-            "compiler": [str(chosen), "-O1", "-O2"],
+            "compilers": {language: [str(chosen), "-O1", "-O2"]},
             "archiver": str(archive),
             "resource_roots": [],
         }
@@ -993,23 +996,23 @@ def test_native_c_selection_deduplicates_equal_target_host_and_skips_rust_only(
     triple = "x86_64-unknown-linux-gnu"
     cc, ar = _tool(tmp_path, "cc"), _tool(tmp_path, "ar")
     _no_processes(monkeypatch)
-    rows = toolchain_capture.select_cargo_native_c_units(
-        required=["target", "host"],
+    rows = toolchain_capture.select_cargo_native_units(
+        required={"target": ["c"], "host": ["c"]},
         target=triple,
         host=triple,
         cwd=tmp_path,
         env={"CC": str(cc), "AR": str(ar)},
     )
-    assert len(rows) == 1 and rows[0]["units"] == ["target", "host"]
+    assert len(rows) == 1 and rows[0]["units"] == {"target": ["c"], "host": ["c"]}
     assert (
-        toolchain_capture.select_cargo_native_c_units(
-            required=[], target="wasm32-wasip1", host=triple, cwd=tmp_path, env={}
+        toolchain_capture.select_cargo_native_units(
+            required={}, target="wasm32-wasip1", host=triple, cwd=tmp_path, env={}
         )
         == []
     )
     with pytest.raises(ValueError, match="not native C"):
-        toolchain_capture.select_cargo_native_c_units(
-            required=["target"],
+        toolchain_capture.select_cargo_native_units(
+            required={"target": ["c"]},
             target="wasm32-wasip1",
             host=triple,
             cwd=tmp_path,
@@ -1042,7 +1045,7 @@ def test_native_c_cargo_context_rejects_unresolved_selection_before_probe(
             outputs=_outputs(["cargo", "build"]),
             cwd=tmp_path,
             env={"HOST_CC": "selected"},
-            native_c_required=True,
+            native_required=True,
         )
 
 
@@ -1112,7 +1115,7 @@ def test_native_c_context_uses_admitted_target_semantics(
             ),
             cwd=tmp_path,
             env=env,
-            native_c_required=True,
+            native_required=True,
         )
 
     if expected_error is None:
@@ -1154,11 +1157,11 @@ def test_cargo_context_keeps_admitted_inline_config_before_binding(
             ),
             cwd=tmp_path,
             env={"CARGO": str(cargo)},
-            native_c_required=True,
+            native_required=True,
         )
 
 
-def test_cargo_and_native_c_environment_have_one_identity_authority():
+def test_cargo_and_native_build_environment_have_one_identity_authority():
     env = {
         "CARGO": "/selected/cargo",
         "HOST_CC": "/selected/cc",
@@ -1176,17 +1179,18 @@ def test_cargo_and_native_c_environment_have_one_identity_authority():
     )
 
 
-def test_locator_publishes_captured_physical_rust_and_native_c_selections(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("operation", ["c", "c++"])
+def test_locator_publishes_captured_physical_rust_and_native_build_selections(
+    tmp_path, monkeypatch, operation
 ):
     import hashlib
     import json
-    from tests.tools.test_toolchain_capture import _native_c_capture_fixture
+    from tests.tools.test_toolchain_capture import _native_build_capture_fixture
     from molt.exact_json import canonical_json_sha256
     from tools.proof_queue_pkg import process_image_capture
 
-    identity, tools, env, command, _calls = _native_c_capture_fixture(
-        tmp_path, monkeypatch
+    identity, tools, env, command, _calls = _native_build_capture_fixture(
+        tmp_path, monkeypatch, operation=operation
     )
     observed = []
 
@@ -1218,14 +1222,83 @@ def test_locator_publishes_captured_physical_rust_and_native_c_selections(
     envelope = {
         "argv": command,
         "toolchains": ["cargo", "rustc"],
-        "cargo_native_c_units": ["target"],
+        "cargo_native_units": {"target": ["c"]}
+        if operation == "c"
+        else {"host": ["c++"]},
     }
     _, _, _, updates = execution_environment._locate_toolchain_watch_roots(
         envelope, command, cwd=tmp_path, env=env, supervisor_binary=tools["rustc"]
     )
     assert [name for name, _ in observed] == ["cargo", "rustc"]
     assert observed[1][1]["CARGO"] == str(tools["cargo"])
-    assert updates["CC_x86_64_unknown_linux_gnu"] == str(tools["selected-gcc"])
+    assert updates[
+        ("CC" if operation == "c" else "CXX") + "_x86_64_unknown_linux_gnu"
+    ] == str(tools["selected-gcc" if operation == "c" else "selected-g++"])
     assert updates["RUSTC"] == str(tools["rustc"])
     assert updates["CARGO"] == str(tools["cargo"])
     assert env.get("RUSTC") is None and env.get("CARGO") is None
+
+
+def test_native_build_selection_unions_languages_without_reselecting_shared_target(
+    tmp_path, monkeypatch
+):
+    host = "x86_64-unknown-linux-gnu"
+    cc, cxx, ar = (_tool(tmp_path, name) for name in ("cc", "cxx", "ar"))
+    _no_processes(monkeypatch)
+    selected = toolchain_capture.select_cargo_native_units(
+        required={"target": ["c"], "host": ["c++"]},
+        target=host,
+        host=host,
+        cwd=tmp_path,
+        env={
+            "CC": str(cc),
+            "CXX": str(cxx),
+            "AR": str(ar),
+            "CFLAGS": "-DC_ONLY=1",
+            "CXXFLAGS": "-DCPP_ONLY=1",
+        },
+    )
+    assert selected == [
+        {
+            "units": {"target": ["c"], "host": ["c++"]},
+            "target": host,
+            "compilers": {
+                "c": [str(cc), "-DC_ONLY=1"],
+                "c++": [str(cxx), "-DCPP_ONLY=1"],
+            },
+            "archiver": str(ar),
+            "resource_roots": [],
+        }
+    ]
+
+
+def test_native_host_cpp_in_wasm_build_does_not_select_a_native_c_driver(
+    tmp_path, monkeypatch
+):
+    host = "x86_64-unknown-linux-gnu"
+    cxx, ar = (_tool(tmp_path, name) for name in ("cxx", "ar"))
+    _no_processes(monkeypatch)
+    selected = toolchain_capture.select_cargo_native_units(
+        required={"host": ["c++"]},
+        target="wasm32-wasip1",
+        host=host,
+        cwd=tmp_path,
+        env={
+            "HOST_CXX": str(cxx),
+            "HOST_AR": str(ar),
+            "CC": str(tmp_path / "must-not-resolve-cc"),
+            "PATH": "",
+        },
+    )
+    assert selected[0]["units"] == {"host": ["c++"]}
+    assert selected[0]["target"] == host
+    assert selected[0]["compilers"] == {"c++": [str(cxx)]}
+    published = toolchain_capture.native_build_environment(
+        {"native_build": [{"selection": selected[0]}]}
+    )
+    assert published == {
+        "CXX_x86_64-unknown-linux-gnu": str(cxx),
+        "CXX_x86_64_unknown_linux_gnu": str(cxx),
+        "AR_x86_64-unknown-linux-gnu": str(ar),
+        "AR_x86_64_unknown_linux_gnu": str(ar),
+    }

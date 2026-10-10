@@ -278,7 +278,7 @@ def _bind_cargo_build_tool_environment(
         outputs=outputs,
         cwd=cwd,
         env=selected,
-        native_c_required=bool(envelope.get("cargo_native_c_units")),
+        native_required=bool(envelope.get("cargo_native_units")),
     )
     updates, selection = toolchain_capture.select_cargo_build_tool_environment(
         cwd=cwd,
@@ -341,7 +341,7 @@ def _require_cargo_build_tool_environment_context(
     outputs: cargo_output_environment.CargoOutputEnvironment,
     cwd: Path,
     env: Mapping[str, str],
-    native_c_required: bool = False,
+    native_required: bool = False,
 ) -> None:
     """Reject unresolved Cargo-owned tool selection, not model its precedence.
 
@@ -424,13 +424,13 @@ def _require_cargo_build_tool_environment_context(
                     f"select the tool through explicit {role.upper()} before capture"
                 )
         if (
-            native_c_required
+            native_required
             and isinstance(build, Mapping)
             and "target" in build
             and command_identity._rust_target(envelope, env) is None
         ):
             raise ValueError(
-                "native C selection requires explicit Cargo target before capture; unresolved build.target"
+                "native build selection requires explicit Cargo target before capture; unresolved build.target"
             )
         if isinstance(build, Mapping) and any(
             key in build for key in ("rustc-wrapper", "rustc-workspace-wrapper")
@@ -453,7 +453,7 @@ def _require_cargo_build_tool_environment_context(
         for name, value in environment.items():
             key = str(name).upper() if os.name == "nt" else str(name)
             if key not in protected_environment and not (
-                native_c_required and command_identity._runtime_c_environment_name(key)
+                native_required and command_identity._runtime_c_environment_name(key)
             ):
                 continue
             if key in inherited_keys and not (
@@ -638,13 +638,16 @@ def _capture_toolchains(
                     located,
                     target=command_identity._rust_target(envelope, env),
                     command_argv=admission._nested_command(exact) or exact,
-                    required_native_c=envelope.get("cargo_native_c_units", []),
+                    required_native_units=envelope.get("cargo_native_units", {}),
                 )
             )
             located["link_selection"] = selection
             verified_resource_files = frozenset(
                 toolchain_capture.frozen_files(
-                    [row["resources"] for row in located["link_selection"]["native_c"]]
+                    [
+                        row["resources"]
+                        for row in located["link_selection"]["native_build"]
+                    ]
                 )
             )
         if not toolchain_capture.sdk_required(policies[name].data, located):
@@ -844,7 +847,9 @@ def _locate_toolchain_watch_roots(
             updates = {name.upper(): str(identity["content_path"])}
             if name == "rustc":
                 updates.update(
-                    toolchain_capture.native_c_environment(identity["link_selection"])
+                    toolchain_capture.native_build_environment(
+                        identity["link_selection"]
+                    )
                 )
                 from molt.rust_toolchain import rust_toolchain_library_environment
 
@@ -1161,7 +1166,7 @@ def _broad_toolchain_roots(toolchains: Mapping[str, object]) -> list[Path]:
             roots.append(Path(raw_root).resolve(strict=True))
         selection = identity.get("link_selection")
         if isinstance(selection, Mapping):
-            for unit in selection.get("native_c", []):
+            for unit in selection.get("native_build", []):
                 for selected_root in unit["selection"]["resource_roots"]:
                     lexical = Path(selected_root)
                     roots.append(

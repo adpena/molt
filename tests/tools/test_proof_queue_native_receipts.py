@@ -4,6 +4,8 @@ from functools import lru_cache, partial
 import hashlib
 import json
 import os
+import secrets
+import sys
 from pathlib import Path
 import tempfile
 
@@ -17,15 +19,19 @@ from tests.proof_queue_custody_test_support import (
     synthetic_python_toolchain,
 )
 from tools.proof_queue_pkg import supervisor_custody, supervisor_generation
-from tools.proof_queue_pkg import toolchain_capture
+from tools.proof_queue_pkg import (
+    command_admission,
+    process_image_capture,
+    toolchain_capture,
+)
 from molt.toolchain_identity import find_executable
 
 pytestmark = pytest.mark.slow
 
 
-@pytest.mark.parametrize("native_c", [False, True])
+@pytest.mark.parametrize("operation", ["rust", "c", "c++", "both"])
 def test_rust_link_capture_owns_workspace_inside_owner_selected_scratch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_c: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
     """Real Cargo must accept both probe crates below an enclosing workspace."""
     tmp_path = proof_queue_owned_roots.native_case_path(
@@ -41,6 +47,18 @@ def test_rust_link_capture_owns_workspace_inside_owner_selected_scratch(
     manifest.write_text(original, encoding="utf-8")
     monkeypatch.setattr(tempfile, "tempdir", str(scratch))
     env = dict(os.environ)
+    if operation == "c++" and sys.platform == "linux":
+        # This cell proves GCC's separate C++ frontend, not an in-process
+        # Clang frontend. Select its installed physical driver before capture.
+        compiler = find_executable("g++", environment=env)
+        assert compiler is not None, "Linux C++ custody proof requires g++"
+        env = {
+            name: value
+            for name, value in env.items()
+            if name not in {"CXX", "HOST_CXX", "TARGET_CXX"}
+            and not name.startswith("CXX_")
+        }
+        env["CXX"] = str(compiler.resolve(strict=True))
     rustc = find_executable("rustc", environment=env)
     cargo = find_executable("cargo", environment=env)
     assert rustc is not None and cargo is not None, "native proof requires Rust tools"
@@ -51,15 +69,21 @@ def test_rust_link_capture_owns_workspace_inside_owner_selected_scratch(
 
     from tools import proof_plan
 
+    command_id, requirements = {
+        "rust": (None, {}),
+        "c": ("wasm.build.host", {"target": ["c"]}),
+        "c++": ("mlir.test.backend", {"host": ["c++"]}),
+        "both": ("rust.test.default-truth", {"target": ["c", "c++"]}),
+    }[operation]
     command = (
         list(
             next(
                 row.argv
                 for row in proof_plan.ProofPlan.load().commands
-                if row.id == "wasm.build.host"
+                if row.id == command_id
             )
         )
-        if native_c
+        if command_id is not None
         else ["cargo", "build", "--release"]
     )
     images, telemetry = toolchain_capture.capture_rust_link_process_images(
@@ -70,12 +94,33 @@ def test_rust_link_capture_owns_workspace_inside_owner_selected_scratch(
         target=None,
         command_argv=command,
         admitted_command=command,
-        native_c_units=["target"] if native_c else [],
+        native_units=requirements,
     )
-    toolchain_capture.validate_rust_link_selection(
-        {"process_images": images, "link_selection": telemetry}
+    # Link capture owns descendants; the policy consumer also requires the
+    # launcher's real byte identity. Rustup resolution above selected one
+    # physical image for both launcher and content, so capture it once.
+    launcher = process_image_capture.capture_image(
+        "rustc-launcher", rustc, preserve_path=True
     )
-    assert bool(telemetry["native_c"]) is native_c
+    rustc_identity = {
+        "path": launcher["path"],
+        "launcher_sha256": launcher["sha256"],
+        "content_path": launcher["path"],
+        "executable_sha256": launcher["sha256"],
+        "process_images": [launcher, *images],
+        "link_selection": telemetry,
+    }
+    projected = process_image_capture.toolchain_images("rustc", rustc_identity)
+    assert launcher in projected
+    for field, label in (("path", "launcher"), ("content_path", "content")):
+        incomplete = {
+            key: value for key, value in rustc_identity.items() if key != field
+        }
+        with pytest.raises(
+            ValueError, match=f"rustc toolchain has no {label} image identity"
+        ):
+            process_image_capture.toolchain_images("rustc", incomplete)
+    assert bool(telemetry["native_build"]) is bool(requirements)
 
     assert {row["role"] for row in images} >= {"rust-linker"}
     assert [unit["unit"] for unit in telemetry["units"]] == [
@@ -90,6 +135,101 @@ def test_rust_link_capture_owns_workspace_inside_owner_selected_scratch(
     )
     assert manifest.read_text(encoding="utf-8") == original
     assert not list(scratch.iterdir()), "probe scratch must be released after capture"
+
+    if operation == "c++" and sys.platform == "linux":
+        native = telemetry["native_build"][0]
+        assert native["selection"]["units"] == {"host": ["c++"]}
+        compiler = native["selection"]["compilers"]["c++"]
+        frontend = next(
+            Path(helper["path"])
+            for phase in native["compilers"]["c++"]["phases"]
+            for helper in phase["helpers"]
+            if Path(helper["path"]).name == "cc1plus"
+        )
+        source = tmp_path / "frontend.cc"
+        source.write_text(
+            "template<int N> struct Answer { static constexpr int value = N; };\n"
+            "static_assert(Answer<42>::value == 42);\n"
+            'extern "C" int answer() { return Answer<42>::value; }\n',
+            encoding="utf-8",
+        )
+        binary = _native_supervisor_binary()
+        required = supervisor_custody.required_execution_environment(
+            binary=binary, mode="declared-tree", cwd=tmp_path, env=env
+        )
+        execution_env = supervisor_custody.bind_required_environment(env, required)
+        # Compilation produces data only. Do not grant the object directory
+        # executable-image authority that could conceal a missing helper.
+        execution_env.pop("CARGO_TARGET_DIR", None)
+        execution_env.pop(supervisor_custody.PROOF_SCRATCH_ROOT_ENV, None)
+        for admit_frontend in (True, False):
+            label = "admitted" if admit_frontend else "missing-frontend"
+            output = tmp_path / f"{label}.o"
+            policy_path = tmp_path / f"{label}.policy.json"
+            receipt_path = tmp_path / f"{label}.receipt.json"
+            policy = supervisor_custody._supervisor_policy(
+                envelope=command_admission.envelope_for_command(command),
+                execution_command=[*compiler, "-c", str(source), "-o", str(output)],
+                execution_env=execution_env,
+                cwd=tmp_path,
+                nonce=secrets.token_hex(32),
+                toolchains={"rustc": rustc_identity},
+                environment_executables={},
+                platform_process_images=(),
+            )
+            if not admit_frontend:
+                policy["fixed_images"] = [
+                    row
+                    for row in policy["fixed_images"]
+                    if Path(row["path"]).resolve(strict=True) != frontend
+                ]
+            assert policy["derived_roots"] == []
+            supervisor_custody.publish_supervisor_policy(policy_path, policy)
+            completed = run_custody_subject_process(
+                [
+                    str(binary),
+                    "run",
+                    "--policy",
+                    str(policy_path),
+                    "--receipt",
+                    str(receipt_path),
+                ],
+                cwd=tmp_path,
+                env=execution_env,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            receipt = supervisor_custody._validated_supervisor_receipt(
+                binary=binary,
+                policy_path=policy_path,
+                receipt_path=receipt_path,
+                cwd=tmp_path,
+                env=execution_env,
+            )
+            if admit_frontend:
+                assert completed.returncode == 0, completed.stderr
+                assert supervisor_custody.supervisor_receipt_is_complete(receipt)
+                assert receipt["root_exit_code"] == 0
+                assert output.read_bytes().startswith(b"\x7fELF")
+                _, observed = supervisor_custody._verified_supervisor_event_artifact(
+                    receipt_path=receipt_path,
+                    descriptor=receipt["event_log"],
+                    collect_images=True,
+                )
+                assert str(frontend) in {path for path, _digest, _size in observed}
+            else:
+                assert completed.returncode != 0
+                assert not supervisor_custody.supervisor_receipt_is_complete(receipt)
+                assert not output.exists(), (
+                    "unadmitted cc1plus must not produce an object"
+                )
+                assert any(
+                    "unadmitted executable image" in violation
+                    and str(frontend) in violation
+                    for violation in receipt["violations"]
+                ), receipt
 
 
 @lru_cache(maxsize=1)

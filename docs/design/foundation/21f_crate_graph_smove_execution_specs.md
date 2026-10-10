@@ -311,7 +311,11 @@ deps molt-ir) and `molt-lower` (TIR->{LIR,SimpleIR,WASM-IR} lowering + repr-plan
   lowering; it is an analysis -> passes layer, fact verified),
   `tir/exception_regions.rs` (2,249), `tir/drop_phase.rs` (631), `tir/parallel.rs` (249),
   `tir/cache.rs` (1,001 -- 0 passes/lower refs but assigned to passes by 21b; it is the
-  compilation cache the pass pipeline drives), `tir/bolt.rs` (203).
+  compilation cache the pass pipeline drives). The historical extraction also
+  included `tir/bolt.rs` (203 lines); that unconsumed placeholder is now retired.
+  Implemented BOLT remains in the CLI/native link pipeline and
+  `tools/bolt_optimize.sh`, not the pass crate (see
+  [native link contract](native_link_plan.md)).
 
 **-> `runtime/molt-lower/src/` (deps `molt-passes`, transitively molt-ir; 21b Layer-2):**
 - `tir/lower_from_simple.rs` (1,408), `tir/lower_to_simple.rs` (8,187), `tir/lower_to_lir.rs`

@@ -9,14 +9,18 @@ entrypoints used to validate them.
 
 ## 1. Object Representation Invariants
 - All values are NaN-boxed `u64` (`MoltObject`).
-- Heap pointers must fit in 48 bits and are stored directly with the pointer tag.
-- `MoltObject::from_ptr` registers canonical pointer addresses in the pointer
-  registry; `MoltObject::as_ptr` resolves through the registry (no int->ptr).
-- Pointer unboxing in the backend sign-extends bit 47; non-canonical pointers are
-  rejected in debug builds.
-- `molt_handle_resolve` resolves via the pointer registry (not a raw unbox).
-- `molt_alloc` returns boxed object bits; raw pointers are only used internally
-  for field access and must be registered when exposed as bits.
+- Object addresses must fit the unsigned 48-bit pointer payload; boxing rejects
+  wider addresses in every profile instead of truncating them.
+- Runtime and generated native pointer decoding preserve bit 47 and zero-extend
+  the masked address. Decoding must also fit the target pointer width.
+- Debug `MoltObject::from_ptr` registers exposed addresses for provenance checking.
+  `as_ptr` preserves registered provenance when available; compiled-minted boxes
+  also recover through exposed provenance. A registry miss must not change
+  address identity or make debug and release decoding disagree.
+- `molt_handle_resolve` consumes this object-address contract. Opaque Rust handles
+  use the separate generational ID protocol below.
+- `molt_alloc` returns boxed object bits; raw field-access pointers obey the same
+  representability and lifetime requirements when exposed as object bits.
 - Rust-owned opaque handles must not use pointer-tagged object bits. Non-Molt
   Rust allocations are exposed with `opaque_handle_bits`, which registers the
   pointer in a sharded generational slab behind a bounded synthetic

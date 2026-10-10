@@ -44,18 +44,105 @@ retain the historical repair evidence without treating it as release acceptance.
 
 Integration decision (2026-10-10 UTC): current main is the canonical base and
 one parent integrator owns reconciliation, qualification and landing. The
-qualified ABI/supervisor unit is reconciled with main `50d52e471`, preserving its
+qualified ABI/supervisor unit landed at `9d943eddd`, reconciled with `50d52e471` and preserving its
 newer Windows invocation/custody, R6 admission, cache-validation and intrinsic
 retirement changes. Other committed branches and private runtime/measurement
 capsules retain their source custody; their existence is not release acceptance.
 
-CI `38050591959` at that main base remains red: the Rust micro partition has
+Historical CI `38050591959` at `ed9c7c308` remains red: the Rust micro partition has
 777 passes, one import-error allocation-denial fixture failure and two ignores;
 Windows reports changed CPython runtime/import selection in its installed-record
 hash test; macOS reports two raw-child-stream timeout failures; WASM reports a
 10.39 MB shared runtime against the unchanged 5 MB limit and finally/pending
 observer parity failure. These remain assigned to their existing release
 obligations. The current integration does not claim to close those failures.
+
+The successor landed at `df5226c5f` and repairs the import/sequence/dictionary allocation-denial fixtures
+through the real emergency C-API channel. All three changed tests pass in
+independent Linux/aarch64 dev-fast micro-runtime processes, as does the sparse
+dictionary snapshot ownership control. Native C build custody is now declared
+for nineteen additional confirmed native-runtime command/lane consumers;
+direct and wrapped admission retain the declarations. WASM-only and frontend-only
+commands keep their distinct tool requirements. These are development-side
+checks and add no emitted-binary work.
+
+The unused pass-crate BOLT placeholder and both exports are retired; the existing
+native-link BOLT pipeline remains authoritative and its sixteen focused checks
+pass. The removed code had no production caller, fabricated a speedup estimate,
+and emitted a comment-only macOS order file. Measured macOS profile-derived
+ordering remains open. The ABI lane now collects every test executable's result
+with `--no-fail-fast`; its topology and admission cohort passes 211 checks.
+Bootstrap-parser and Windows launch-spelling fixtures retain their independent
+identity/output oracles; their focused cohorts pass 38 and 50 checks on macOS.
+Actual Windows replay remains required.
+
+The Linux/aarch64 Rust replay at `b52360cf0` has complete native custody and closed
+descendants: WASM backend, pass, and ownership-contract cohorts pass 305, 946,
+and 286 tests respectively. The full partition still fails because
+`object::accessors::tests::frame_storage_collects_inline_and_dictionary_cycles_before_scope_exit`
+segfaults. A fresh-process exact replay reproduces that crash without an RSS
+violation. Exact-image fault tracing locates the crash before collection: native
+pointer decoding sign-extends a valid Linux/AArch64 stack address whose bit 47
+is set. The runtime's decoder and six native-codegen sites share this defect.
+The unsigned 48-bit address correction, all-profile wide-address rejection,
+complete native consumer migration and incompatible-artifact ABI witness update
+pass the Linux/aarch64 runtime partition at `d43dab3cb`: 781 runtime tests
+(two existing ignores), 305 WASM backend, 946 pass, 286 ownership-contract and
+one raw-symbol check. This includes the original crashing frame-cycle case.
+The failing image and fault evidence remain retained. The final checked boxer
+is explicitly inlined at `b26875812`; alternating optimized macOS/AArch64
+microprobes measure decode medians of 0.365/0.366 ns and boxing medians of
+0.391/0.403 ns before/after. The decoder remains one machine instruction and
+boxing has no added hot-path call. These advisory samples establish neither
+an end-to-end speedup nor cross-platform performance acceptance.
+
+The compiler partition at `493082f25` passes all 1,386 tests with complete
+native custody, no violations and closed descendants. It exercises the actual
+Cranelift result, object-model address boundaries and incompatible ABI link
+witnesses in both threading modes. Six prior AArch64 execution failures shared
+one fixture defect: a Rust provider archive was passed after its dependencies
+as a raw linker argument. The shared native/LLVM helper now uses an actual
+Rust crate dependency and preserves its generated-object C ABI and independent
+behavioral oracles. LLVM at `37637b871` passes all 169 selected tests on
+Linux/aarch64 with LLVM 22.1.8, including both shared native-execution fixtures
+and the unsigned-address decoder; native custody is complete with no violations
+and closed descendants. The Windows supervisor now preserves `NTSTATUS`
+through its debug-event continuation boundary, reusing the preserved repair;
+its MSVC all-targets cross-check passes with unchanged source and tool images.
+Actual macOS/Windows execution remains unverified; these results do not qualify
+the full release matrix.
+
+The same compiler replay exposed undeclared Criterion/alloca C compilation.
+The existing compiler partition now owns that target-C obligation and the
+object-model/ABI-link tests; four LLVM rows declare their actual llvm-sys C
+wrapper compilation. The bounded dependency census also finds host C++ in
+MLIR's tblgen build and target C++ in full-runtime simdutf consumers. The
+role/language migration at `65b3deec1` replaces the C-only declaration through
+admission, selection, published compiler environment, image/resource capture,
+receipt validation and reuse. Shared host/target triples retain both role
+obligations and one resource inventory; host-only C++ does not select unused C.
+The final focused cohort passes 113 checks (12 platform skips), with 794 passes
+in the broader consumer cohort. Its disk-blocked Cargo timeout/cache fixture
+passes on Linux. After the test fixture supplies the real compiler's complete
+launcher/content identity, all four Rust/C/C++/combined capture cells pass at
+`047cb630f`. The actual GCC C++ compile produces an ELF object under the native
+supervisor; removing its `cc1plus` image is independently refused and produces
+no object. Source and tool images remain unchanged across execution.
+The full-runtime/MLIR build consumers, cold/warm reuse, and actual macOS/Windows
+execution remain release-acceptance obligations under V1-12. These are
+strictly development-side checks and add no work to emitted binaries.
+Main CI `38063172584` at `df5226c5f` retains the runtime lifecycle cascade:
+seven serial children pass, while the parallel child reports 480 failures after
+unnamed-worker class retirement finds surviving native owners. This is an
+observed shared failure mechanism, not evidence of 480 independent defects.
+The preserved GC, thread-identity and joined-service proposals remain unqualified.
+The same CI reports a macOS SIGTERM cleanup failure (2,100 other Python tests
+pass) and a macOS runtime build exceeding its 2.29 GB process-tree budget with
+unresolved artifact custody. Their existing V1-12/resource/closure obligations
+remain open. The Windows compile failure is repaired above; native Windows
+replay is still required. Metadata-only Windows Cargo checks also expose an
+unnecessary target-linker requirement in the development proof selector; its
+operation family must be corrected without weakening host proc-macro linking.
 
 Historical integration evidence: PR119 merged at `5a6758e90` on 2026-10-10.
 The clean Linux ABI qualification at `bb2b77bca` is recorded below.
@@ -119,11 +206,12 @@ incorrectly expects a heap exception instead of the emergency raised channel.
 The same defect exists in the sequence-snapshot denial fixture. Their successor
 checks the real C API for MemoryError identity and negative type matching while
 allocation remains denied, preserves pending state until clear, and retains
-the successful recovery and reference-ownership oracles. Actual Rust replay is
-required; correcting these fixtures does not qualify the GC/lifecycle failures.
+the successful recovery and reference-ownership oracles. The independent micro
+runtime replays above qualify these fixture corrections; they do not qualify
+the frame-cycle crash or GC/lifecycle failures.
 
-Current execution order is integration of the qualified ABI/supervisor unit,
-complete runtime shutdown integration and execution, then guarded measurement
+Current execution order is frame-cycle and runtime shutdown ownership repair,
+complete runtime integration and execution, then guarded measurement
 and WASM size qualification.
 The upstream reconciliation is committed at `512a00667`. ABI fixture repairs now
 use one immutable hook profile per binary, reject conflicting normalized tables
@@ -1072,7 +1160,6 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 | HF-139 | A verify branch runs the Windows portability cell with a cold Cargo cache: only main saves Cargo caches, and main's Windows entry was gone 40 minutes after main saved it. Cold, `portability.ir.windows` (`verify_ir_suite.py`, 120 s budget) timed out; the guard then reported Cargo quarantine recovery as unresolved ("no birth-custodied rustc incremental observations"), the executor took that as a global stop and cancelled `portability.queue.windows` at 39%. Two cold reruns finished the IR command in 100 s and 114 s, so the budget sits at the edge. In those cold runs, and not in the warm base run 38027215773, real-Cargo rows of `tests/test_cargo_quarantine_custody.py` also failed (`test_actual_cargo_held_profile_locks_defer_recovery` twice, `test_actual_windows_job_cargo_observer_preserves_completed_cache_on_late_timeout` once). | CI 38031471885 attempt 1, job 114157831992, 2026-10-10; main run 38028828555 saved the Windows cache at 06:27, and `gh cache list` showed none at 07:09; attempts 2 and 3 (jobs 114171437224 and 114174710194), IR command 99.98 s and 113.68 s, both cold. | Give the IR command a budget that holds a cold build, or keep one Windows Cargo cache resident, and decide whether a timed-out non-incremental build must stop the whole cell. |
 | HF-148 | `tests/cli/test_cli_smoke.py::test_cli_package_verify_roundtrip` fails: `molt package ... --capabilities caps.json` returns `Capabilities missing from allowlist: net` although the capabilities file allows `net`. | Reproduced with main's `src` and with PR 158, Darwin arm64, 2026-10-10. | Find which allowlist the package command checks against (manifest capabilities versus the `--capabilities` profile) and fix the owner, not the test. |
 | HF-149 | Residual hf03 WIP intents (Codex `hf03-upstream-reconciliation` worktree, uncommitted): `tools/artifact_cleanup.py` still git-cleans `.molt_cache/` inside a checkout, which deletes live lock files and a plain clone's default home; the WIP routed cache deletion through the pruner. The IR lease writer leaves a partial file in scratch when serialization fails mid-write. Wrapper-build closure sources share one scratch directory per artifact root; the WIP used per-key, locked cache entries for concurrent reuse. | V1-28 reconciliation review, 2026-10-10. Main's scratch authority already keeps leases, build-slot locks and wrapper sources out of compiler source, which was the WIP's main purpose. | Port each piece onto the scratch and pruner authorities with its own tests; treat the WIP only as donor material. |
-| HF-150 | `tests/tools/test_proof_queue_cargo_cache_custody.py::test_admitted_delegated_outputs_survive_python_custody_rewriting` fails on main since bb2b77bca. It expects `command_admission._nested_command` to refuse the custody-bootstrap argv with `direct Python target`, but no source raises that message any more: the bootstrap argv parses as an ordinary script and `_nested_command` returns None. | Reproduced on an export of main 9d943eddd and in PR 158's macOS Python unit cell, 2026-10-10. | Decide whether the bootstrap rewrite of a guarded_exec delegation must be refused or reconstructed, then make the test and `_guarded_exec_invocation` agree; the fix belongs with bb2b77bca's proof-custody owner. |
 
 ## Fixed after the handoff
 
@@ -1148,8 +1235,9 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 | HF-F133 (was part of HF-48) | Every guarded command paid a whole-host process census. One `git --version` through `molt_dev_common._run_fast_captured_command` cost 397 ms at 1,980 host processes and 161 ms at 930, against 10 ms raw; with `sampling_scope="owned_tree"` it cost 224 ms and 109 ms. The guard took about seven full samples per command (a stale preflight that could never signal, the repo-sentinel baseline and its scan, the first tree sample, tracked-orphan cleanup, repo-scoped cleanup, the closure proof), and each sample read every process's kernel rows and argv. The adaptive budget also spawned `vm_stat` about three times per command. `tests/test_molt_dev.py` fixtures spent 5-7 s each on seven `git` calls, and `repository.docs-tests` reached 552-600 s on CI. | macOS reads every `kern.proc` row in one `KERN_PROC_ALL` sysctl. A native `ProcessSample` binds argv on first read, checked against the sampled birth (macOS and Linux), and `ProtectedProcessGroups` decides only the groups a caller asks about, so a decision reads argv for its tree and lineage only. The inert preflight and its `MOLT_*_STALE_*` knobs are deleted; a sentinel that does not drain takes no baseline; one post-exit snapshot serves both orphan cleanups and the closure proof until the guard signals; `host_statistics64` replaces `vm_stat`. After, measured back to back on this Mac: 31 ms global and 28 ms owned_tree at 930 processes, 40 ms and 36 ms at 1,980 (guard overhead 386 ms to 30 ms). The sentinel's exit join takes about 0.1 ms per short command: its thread takes no scan before the first poll interval, and a scan costs about 4 ms. `tests/test_molt_dev.py` at `-n 4`: 37.8 s to 12.9 s. The `repository.docs-tests` argv at `-n 4`: 132.1 s to 73.8 s, with the same 14 host-specific failures before and after. New tests: an escaped new-session grandchild is still terminated and tree RSS across it is still enforced (each fails when the post-exit snapshot or the RSS read is broken), argv reads stay inside the tree, and no preflight census runs. Two sentinel fixtures that tied births to the test pid, and three tests that faked the wrong custody module, are fixed. Guard suites (26 files): 1,408 passed on macOS, with one host-layout failure in `test_artifact_cleanup.py` that base shares; 1,405 passed on `molt-linux`, none failed. The `repository.docs-tests` budget is still 600 s on main; PR 150 raises it to 900 s, and it can come back down once both land. |
 | HF-F141 (was part of HF-48) | After SIGKILL the guard observed exit for `max(0.02, grace)` seconds, and urgent paths pass `grace=0`, so a tree the kernel tore down in more than 20 ms on a loaded host was reported "process cleanup incomplete" (`test_main_writes_summary_when_guard_parent_receives_sigterm` on hosted macOS). `cargo_quarantine.py` also kept a retention stub that never pruned, an unread `retention_keep` parameter and an always-empty `pruned_quarantine_dirs` receipt field. | The post-SIGKILL observation is now independent of the TERM grace (`_KILL_EXIT_OBSERVATION_S = 2.0`; the probe stops at ESRCH, so a prompt exit costs one probe interval). A new test fails on the old 20 ms window. The retention stub, its constant, the parameter, the field and its payload key are deleted, and the receipt dataclass is keyword-only so a field change can no longer shift positional values. Guard and quarantine suites pass (741). |
 | HF-F147 (was HF-147) | `tests/tools/test_named_lanes.py` pinned `LANE_IDS` to the three Pact lanes after eff176f81 registered three R6 lanes, so `test_registered_named_lanes_validate_and_are_distinct` failed on main; the file sat in the test-ownership backlog, so no CI command ran it. | PR 158 pins the R6 lanes; all 46 named-lane cases pass, including admission of each R6 argv. The file now runs in `repository.tooling-tests` and leaves the ownership backlog (113 files remain). |
-| HF-F151 (no open row) | bb2b77bca moved the Windows debug-event loop of `molt-proof-supervisor` into a closure typed `(u32, Option<u32>)`, but windows-sys 0.61 types `DBG_CONTINUE`, `DBG_EXCEPTION_NOT_HANDLED` and `ContinueDebugEvent`'s status as `NTSTATUS` (i32). The crate stopped compiling on Windows (E0308), so every Windows proof that provisions the supervisor failed. | PR 158 types the closure status as `NTSTATUS`. Verified against the windows-sys 0.61.2 source; no local Windows build ran (the host was below the disk floor), so the PR's Windows cells are the compile proof. |
-| HF-F152 (no open row) | bb2b77bca registered the `runtime.abi-fixture-authorities` named lane as a multi-executable `cargo test` without `--no-fail-fast`. The cargo-test truth gate refuses that, so Docs Gates failed on main and on every PR. | PR 158 adds the flag and regenerates the proof-plan projection; `tools/check_cargo_test_truth.py` passes and the named-lane, cargo-test-truth and proof-plan suites pass (495 cases). |
+| HF-F150 (was HF-150) | `tests/tools/test_proof_queue_cargo_cache_custody.py::test_admitted_delegated_outputs_survive_python_custody_rewriting` failed on main after bb2b77bca. It expected `command_admission._nested_command` to refuse the custody-bootstrap argv with `direct Python target`, but no source raised that message: the bootstrap argv parses as an ordinary script and `_nested_command` returns None. | Main's 720cb5ec9 makes the test expect None, which matches the parsed-command contract. PR 158's merge of main passes the test with the rest of the proof-queue suites (1,329 cases). |
+| HF-F151 (no open row) | bb2b77bca moved the Windows debug-event loop of `molt-proof-supervisor` into a closure typed `(u32, Option<u32>)`, but windows-sys 0.61 types `DBG_CONTINUE`, `DBG_EXCEPTION_NOT_HANDLED` and `ContinueDebugEvent`'s status as `NTSTATUS` (i32). The crate stopped compiling on Windows (E0308), so every Windows proof that provisions the supervisor failed. | Main's 37637b871 types the closure status as `NTSTATUS`. PR 158 made the same repair first; after its merge of main the file equals main's. Verified against the windows-sys 0.61.2 source; PR 158's Windows cells compile the crate. |
+| HF-F152 (no open row) | bb2b77bca registered the `runtime.abi-fixture-authorities` named lane as a multi-executable `cargo test` without `--no-fail-fast`. The cargo-test truth gate refuses that, so Docs Gates failed on main and on every PR. | Main's 50b34cbf8 adds the flag. PR 158 made the same repair first and takes main's spelling in its merge; `tools/check_cargo_test_truth.py` passes on the merged plan. |
 
 ## Fixed during the handoff (for traceability)
 

@@ -213,7 +213,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let obj = builder.inst_results(call)[0];
             let tracking_origin = builder.current_block();
             let initialized = begin_task_initialization(builder, sealed_blocks, obj);
-            let obj_ptr = unbox_ptr_value(&mut *builder, obj, nbc);
+            let obj_ptr = unbox_ptr_value(&mut *builder, obj);
             if let Some(args_names) = &op.args {
                 for (i, name) in args_names.iter().enumerate() {
                     let arg_val = var_get_boxed_overflow_safe(
@@ -313,7 +313,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             )
             .expect("Value not found");
             let offset = op.value.unwrap_or(0) as i32;
-            let obj_ptr = unbox_ptr_value(&mut *builder, *obj, nbc);
+            let obj_ptr = unbox_ptr_value(&mut *builder, *obj);
             let field_store_mode = field_store_modes.get(&op_idx).copied();
             if field_store_mode != Some(FieldStoreMode::DirectNonHeap) {
                 let local_profile_struct =
@@ -500,7 +500,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     representation_plan,
                 )
                 .expect("Object not found");
-                unbox_ptr_value(&mut *builder, *obj, nbc)
+                unbox_ptr_value(&mut *builder, *obj)
             };
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,
@@ -545,7 +545,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     representation_plan,
                 )
                 .expect("Object not found");
-                unbox_ptr_value(&mut *builder, *obj, nbc)
+                unbox_ptr_value(&mut *builder, *obj)
             };
             let callee = SimpleBackend::import_func_id_split(
                 &mut *module,

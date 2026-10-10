@@ -1010,15 +1010,16 @@ def revalidate_rust_artifact_manifests(selection: Mapping[str, object]) -> None:
                 )
 
 
-def select_cargo_native_c_units(
+def select_cargo_native_units(
     *,
-    required: Sequence[str],
+    required: Mapping[str, Sequence[str]] | None,
     target: str | None,
     host: str,
     cwd: Path,
     env: Mapping[str, str],
 ) -> list[dict[str, object]]:
-    """Resolve only declared native units, without compiler probes or hashing."""
+    """Resolve declared role/language pairs without compiler probes or hashing."""
+    from tools.proof_plan import cargo_native_units
     from molt.cli.runtime_cargo_plan import (
         _CargoEnvironment,
         _c_tool_environment_names,
@@ -1027,22 +1028,32 @@ def select_cargo_native_c_units(
         runtime_c_tool_selection,
     )
 
-    if any(unit not in {"target", "host"} for unit in required) or len(
-        set(required)
-    ) != len(required):
-        raise ValueError("native C units must be unique target/host roles")
-    result: list[dict[str, object]] = []
-    selected_env = _CargoEnvironment(env)
-    by_target: dict[str, dict[str, object]] = {}
-    for unit in required:
+    requirements = cargo_native_units(
+        {
+            "cargo_native_units": {} if required is None else required,
+            "toolchains": ["cargo", "rustc"],
+        }
+    )
+    by_target: dict[str, dict[str, list[str]]] = {}
+    for unit, languages in requirements.items():
         triple = (target or host) if unit == "target" else host
         if triple.startswith("wasm"):
-            raise ValueError("managed WASI C tools are not native C build units")
-        if triple in by_target:
-            by_target[triple]["units"].append(unit)
-            continue
+            raise ValueError("managed WASI tools are not native C/C++ build units")
+        by_target.setdefault(triple, {})[unit] = languages
+
+    selected_env = _CargoEnvironment(env)
+    result: list[dict[str, object]] = []
+    for triple, units in by_target.items():
+        languages = [
+            language
+            for language in ("c", "c++")
+            if any(language in values for values in units.values())
+        ]
         tools = {}
-        for role in ("cc", "ar"):
+        for role in [
+            *("cc" if language == "c" else "cxx" for language in languages),
+            "ar",
+        ]:
             names = _c_tool_environment_names(role, target=triple, host_target=host)
             selected = next(
                 (selected_env[name] for name in names if selected_env.get(name)), None
@@ -1052,15 +1063,19 @@ def select_cargo_native_c_units(
                 and not Path(selected).is_absolute()
                 and any(sep in selected for sep in ("/", "\\"))
             ):
-                raise ValueError("native C selector has unresolved build-script cwd")
+                raise ValueError(
+                    "native compiler selector has unresolved build-script cwd"
+                )
             path = runtime_c_tool_selection(
                 role, root=cwd, env=selected_env, target=triple, host_target=host
             )
             if path is None:
-                raise ValueError(f"native C unit {triple} requires an explicit {role}")
+                raise ValueError(
+                    f"native build unit {triple} requires an explicit {role}"
+                )
             tools[role] = str(path)
-        # The same flag/resource grammar used by ordinary Cargo owns rejection
-        # of response/plugin/prefix and package-relative input ambiguities.
+        # The canonical Cargo resource grammar owns flags and search inputs for
+        # both languages; shared roots have one armed inventory per target.
         resources = _resolve_c_build_resources(
             selected_env, target=triple, host_target=host
         )
@@ -1070,15 +1085,23 @@ def select_cargo_native_c_units(
             "false",
             "no",
         }
-        flags = [
-            token
-            for name in reversed(
-                _c_tool_environment_names("cflags", target=triple, host_target=host)
+        compilers = {}
+        for language in languages:
+            role, flag_role = (
+                ("cc", "cflags") if language == "c" else ("cxx", "cxxflags")
             )
-            for token in runtime_c_flag_tokens(
-                selected_env.get(name, ""), shell_escaped=shell
-            )
-        ]
+            flags = [
+                token
+                for name in reversed(
+                    _c_tool_environment_names(
+                        flag_role, target=triple, host_target=host
+                    )
+                )
+                for token in runtime_c_flag_tokens(
+                    selected_env.get(name, ""), shell_escaped=shell
+                )
+            ]
+            compilers[language] = [tools[role], *flags]
         if selected_env.get("CC_KNOWN_WRAPPER_CUSTOM") or Path(
             selected_env.get("RUSTC_WRAPPER", "")
         ).stem in {
@@ -1091,32 +1114,37 @@ def select_cargo_native_c_units(
             "icecc",
         }:
             raise ValueError(
-                "native C compiler wrapper requires executable child custody"
+                "native compiler wrapper requires executable child custody"
             )
-        record = {
-            "units": [unit],
-            "target": triple,
-            "compiler": [tools["cc"], *flags],
-            "archiver": tools["ar"],
-            "resource_roots": sorted({str(root.path) for root in resources.roots}),
-        }
-        result.append(record)
-        by_target[triple] = record
+        result.append(
+            {
+                "units": units,
+                "target": triple,
+                "compilers": compilers,
+                "archiver": tools["ar"],
+                "resource_roots": sorted({str(root.path) for root in resources.roots}),
+            }
+        )
     return result
 
 
-def native_c_environment(selection: Mapping[str, object]) -> dict[str, str]:
-    """Publish recorded selection without selecting tools a second time."""
+def native_build_environment(selection: Mapping[str, object]) -> dict[str, str]:
+    """Publish captured drivers for each language without reselecting tools."""
     updates: dict[str, str] = {}
-    for row in selection.get("native_c", []):
-        triple = row["selection"]["target"]
-        for role, value in (
-            ("CC", row["selection"]["compiler"][0]),
-            ("AR", row["selection"]["archiver"]),
-        ):
+    for row in selection.get("native_build", []):
+        selected = row["selection"]
+        triple = selected["target"]
+        tools = {"AR": selected["archiver"]}
+        for language, command in selected["compilers"].items():
+            tools["CC" if language == "c" else "CXX"] = command[0]
+        for role, value in tools.items():
             for form in (triple, triple.replace("-", "_").replace(".", "_")):
                 updates[f"{role}_{form}"] = value
     return updates
+
+
+def _native_compiler_role(language: str, target: str) -> str:
+    return "rust-build-native-" + ("c" if language == "c" else "cxx") + "-" + target
 
 
 def _compiler_phase_languages(language: str, target: str) -> tuple[str, ...]:
@@ -1420,7 +1448,7 @@ def capture_rust_link_process_images(
     linker_process_helpers: Mapping[str, Sequence[str]] | None = None,
     linker_build_tools: Mapping[str, Mapping[str, str]] | None = None,
     rustc_version: str | None = None,
-    native_c_units: Sequence[str] = (),
+    native_units: Mapping[str, Sequence[str]] | None = None,
     admitted_command: Sequence[str] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Capture both Cargo target and host-unit linker families exactly once."""
@@ -1430,6 +1458,9 @@ def capture_rust_link_process_images(
 
     admitted = list(command_argv if admitted_command is None else admitted_command)
     admitted_envelope = command_admission.envelope_for_command(admitted)
+    declared = admitted_envelope["cargo_native_units"]
+    if ({} if native_units is None else native_units) != declared:
+        raise ValueError("native build requirements differ from admitted command")
     cargo_invocation = (
         command_admission.cargo_invocation_for_envelope(admitted_envelope)
         if "cargo" in admitted_envelope["toolchains"]
@@ -1469,12 +1500,12 @@ def capture_rust_link_process_images(
         raise RustLinkCaptureError(
             str(exc), unit="compiler", probes=compiler_probes
         ) from exc
-    native_selections = select_cargo_native_c_units(
-        required=native_c_units, target=target, host=host, cwd=cwd, env=env
+    native_selections = select_cargo_native_units(
+        required=native_units, target=target, host=host, cwd=cwd, env=env
     )
     if any(row["target"] != host for row in native_selections):
         raise ValueError(
-            "native C cross-target proof requires an effective cc-rs compiler command; CC/AR paths alone do not attest target flags"
+            "native C/C++ cross-target proof requires an effective cc-rs compiler command; driver/archiver paths alone do not attest target flags"
         )
     units = ("target", "host-proc-macro") if cargo is not None else ("target",)
     images: list[dict[str, object]] = []
@@ -1503,32 +1534,38 @@ def capture_rust_link_process_images(
             raise RustLinkCaptureError(str(exc), unit=unit, probes=probes) from exc
         images.extend(selected_images)
         selections.append(selection)
-    native_c = []
+    native_build = []
     for selection in native_selections:
-        role = "rust-build-native-c-" + selection["target"]
-        selected_images, compiler = capture_native_compiler_process_images(
-            selection["compiler"],
-            role=role,
-            language="c",
-            target=selection["target"],
-            cwd=cwd,
-            env=env,
-            captured_images=images,
-        )
+        compilers = {}
+        for language, command in selection["compilers"].items():
+            role = _native_compiler_role(language, selection["target"])
+            selected_images, compiler = capture_native_compiler_process_images(
+                command,
+                role=role,
+                language=language,
+                target=selection["target"],
+                cwd=cwd,
+                env=env,
+                captured_images=images,
+            )
+            images.extend(selected_images)
+            compilers[language] = compiler
         archiver = capture_image(
-            role + "-archiver", Path(selection["archiver"]), preserve_path=True
+            "rust-build-native-archiver-" + selection["target"],
+            Path(selection["archiver"]),
+            preserve_path=True,
         )
-        images.extend([*selected_images, archiver])
-        native_c.append(
-            {"selection": selection, "compiler": compiler, "resources": None}
+        images.append(archiver)
+        native_build.append(
+            {"selection": selection, "compilers": compilers, "resources": None}
         )
     images = canonical_images(images)
     return images, {
-        "schema": "molt.proof-rust-link-selection-telemetry.v4",
+        "schema": "molt.proof-rust-link-selection-telemetry.v5",
         "producer_command": list(command_argv),
         "admitted_command": admitted,
-        "native_c_required": list(native_c_units),
-        "native_c": native_c,
+        "native_required": declared,
+        "native_build": native_build,
         "target": target,
         "compiler_host": host,
         "selection_probe_count": len(units),
@@ -2055,17 +2092,17 @@ def _capture_rust_link_unit(
 def validate_rust_link_selection(
     identity: Mapping[str, object],
     *,
-    required_native_c: Sequence[str] | None = None,
+    required_native_units: Mapping[str, Sequence[str]] | None = None,
     full_capture: bool = False,
     command_argv: Sequence[str] | None = None,
 ) -> dict[str, object]:
-    """One structural receiver for Rust link and declared native C images."""
+    """One structural receiver for Rust links and declared native build languages."""
     from tools.proof_queue_pkg import command_admission
 
     raw = identity.get("link_selection")
     if (
         not isinstance(raw, Mapping)
-        or raw.get("schema") != "molt.proof-rust-link-selection-telemetry.v4"
+        or raw.get("schema") != "molt.proof-rust-link-selection-telemetry.v5"
     ):
         raise ValueError("Rust linker selection telemetry schema mismatch")
     telemetry = dict(raw)
@@ -2093,7 +2130,7 @@ def validate_rust_link_selection(
         if "cargo" in admitted_envelope["toolchains"]
         else None
     )
-    declared = admitted_envelope["cargo_native_c_units"]
+    declared = admitted_envelope["cargo_native_units"]
     cargo = "cargo" in admitted_envelope["toolchains"]
     if [row["unit"] for row in units] != (
         ["target", "host-proc-macro"] if cargo else ["target"]
@@ -2172,10 +2209,10 @@ def validate_rust_link_selection(
             raise ValueError(
                 "archive-only Rust operation has unexpected linker selection"
             )
-    if telemetry.get("native_c_required") != declared or (
-        required_native_c is not None and list(required_native_c) != declared
+    if telemetry.get("native_required") != declared or (
+        required_native_units is not None and dict(required_native_units) != declared
     ):
-        raise ValueError("Rust native C requirement differs from admitted command")
+        raise ValueError("Rust native build requirement differs from admitted command")
     host, target = telemetry.get("compiler_host"), telemetry.get("target")
     if (
         not isinstance(host, str)
@@ -2183,15 +2220,17 @@ def validate_rust_link_selection(
         or (target is not None and not isinstance(target, str))
     ):
         raise ValueError("Rust linker capture has no selected compiler host/target")
-    native = telemetry.get("native_c")
+    native = telemetry.get("native_build")
     if not isinstance(native, list):
-        raise ValueError("Rust native C unit capture is missing")
-    expected: dict[str, list[str]] = {}
-    for unit in declared:
+        raise ValueError("Rust native build unit capture is missing")
+    expected: dict[str, dict[str, list[str]]] = {}
+    for unit, languages in declared.items():
         triple = (target or host) if unit == "target" else host
         if triple != host:
-            raise ValueError("native C unit lacks an effective cross-target command")
-        expected.setdefault(triple, []).append(unit)
+            raise ValueError(
+                "native build unit lacks an effective cross-target command"
+            )
+        expected.setdefault(triple, {})[unit] = languages
     raw_images = identity.get("process_images")
     if not isinstance(raw_images, list):
         raise ValueError("Rust process image closure is missing")
@@ -2285,45 +2324,61 @@ def validate_rust_link_selection(
         elif refs or resolutions:
             raise ValueError("archive-only Rust unit has process images")
         unit_keys.update(keys)
-    seen: dict[str, list[str]] = {}
+    seen: dict[str, dict[str, list[str]]] = {}
     for row in native:
         if not isinstance(row, Mapping) or set(row) != {
             "selection",
-            "compiler",
+            "compilers",
             "resources",
         }:
-            raise ValueError("native C unit record is malformed")
+            raise ValueError("native build unit record is malformed")
         selection = row["selection"]
         if not isinstance(selection, Mapping) or set(selection) != {
             "units",
             "target",
-            "compiler",
+            "compilers",
             "archiver",
             "resource_roots",
         }:
-            raise ValueError("native C unit selection is malformed")
+            raise ValueError("native build unit selection is malformed")
         triple = selection["target"]
-        if not isinstance(triple, str) or triple in seen:
-            raise ValueError("native C units must select each target once")
+        if not isinstance(triple, str) or triple in seen or triple not in expected:
+            raise ValueError("native build units must select each declared target once")
+        if selection["units"] != expected[triple]:
+            raise ValueError(
+                "native build role/language custody differs from admission"
+            )
         seen[triple] = selection["units"]
-        command = selection["compiler"]
+        languages = {
+            language for values in expected[triple].values() for language in values
+        }
+        commands, compilers = selection["compilers"], row["compilers"]
         if (
-            not isinstance(command, list)
-            or not command
-            or any(not isinstance(value, str) or not value for value in command)
-            or not Path(command[0]).is_absolute()
+            not isinstance(commands, Mapping)
+            or set(commands) != languages
+            or not isinstance(compilers, Mapping)
+            or set(compilers) != languages
         ):
-            raise ValueError("native C compiler selection is malformed")
-        role = "rust-build-native-c-" + triple
-        validate_native_compiler_capture(
-            row["compiler"],
-            images,
-            command=command,
-            language="c",
-            target=triple,
-            role=role,
-        )
-        archivers = [image for image in images if image["role"] == role + "-archiver"]
+            raise ValueError("native build language custody is incomplete")
+        for language, command in commands.items():
+            if (
+                not isinstance(command, list)
+                or not command
+                or any(not isinstance(value, str) or not value for value in command)
+                or not Path(command[0]).is_absolute()
+            ):
+                raise ValueError("native compiler selection is malformed")
+            role = _native_compiler_role(language, triple)
+            validate_native_compiler_capture(
+                compilers[language],
+                images,
+                command=command,
+                language=language,
+                target=triple,
+                role=role,
+            )
+        archiver_role = "rust-build-native-archiver-" + triple
+        archivers = [image for image in images if image["role"] == archiver_role]
         if (
             len(archivers) != 1
             or not isinstance(selection["archiver"], str)
@@ -2332,9 +2387,9 @@ def validate_rust_link_selection(
             != _image_path_key(Path(selection["archiver"]))
         ):
             raise _image_membership_error(
-                "native C independent archiver custody is incomplete",
+                "native independent archiver custody is incomplete",
                 unit=triple,
-                role=role + "-archiver",
+                role=archiver_role,
                 selected=selection["archiver"],
                 images=((image["role"], image["path"]) for image in archivers),
             )
@@ -2348,7 +2403,7 @@ def validate_rust_link_selection(
             )
             or roots != sorted(set(roots))
         ):
-            raise ValueError("native C resource roots are malformed")
+            raise ValueError("native build resource roots are malformed")
         if resources is None and not full_capture:
             continue
         if (
@@ -2366,7 +2421,7 @@ def validate_rust_link_selection(
                 for resource in resources
             )
         ):
-            raise ValueError("native C resource custody is incomplete")
+            raise ValueError("native build resource custody is incomplete")
         from tools.proof_queue_pkg.command_identity import (
             _validate_directory_manifest_identity,
         )
@@ -2377,7 +2432,7 @@ def validate_rust_link_selection(
                 not isinstance(selected_root, str)
                 or not Path(selected_root).is_absolute()
             ):
-                raise ValueError("native C resource selection is not absolute")
+                raise ValueError("native build resource selection is not absolute")
             if "root" in resource:
                 _validate_directory_manifest_identity(
                     {
@@ -2395,20 +2450,25 @@ def validate_rust_link_selection(
                 or not isinstance(resource["sha256"], str)
                 or re.fullmatch(r"[0-9a-f]{64}", resource["sha256"]) is None
             ):
-                raise ValueError("native C file resource lacks bound content custody")
+                raise ValueError(
+                    "native build file resource lacks bound content custody"
+                )
     if seen != expected:
-        raise ValueError("native C build-unit custody is incomplete")
+        raise ValueError("native build-unit custody is incomplete")
     native_roles = {
-        "rust-build-native-c-" + triple + suffix
-        for triple in expected
-        for suffix in ("", "-archiver")
-    }
+        _native_compiler_role(language, triple)
+        for triple, requirements in expected.items()
+        for languages in requirements.values()
+        for language in languages
+    } | {"rust-build-native-archiver-" + triple for triple in expected}
     if {
         row["role"]
         for row in images
-        if str(row["role"]).startswith("rust-build-native-c-")
+        if str(row["role"]).startswith("rust-build-native-")
     } != native_roles:
-        raise ValueError("native C process roles differ from declared build units")
+        raise ValueError(
+            "native compiler process roles differ from declared build units"
+        )
     selected = [
         row
         for row in images
@@ -2418,7 +2478,7 @@ def validate_rust_link_selection(
     expected_unit_keys = {
         (row["role"], _image_path_key(Path(row["path"])))
         for row in selected
-        if not str(row["role"]).startswith("rust-build-native-c-")
+        if not str(row["role"]).startswith("rust-build-native-")
     }
     if unit_keys != expected_unit_keys:
         different = next(iter(sorted(unit_keys ^ expected_unit_keys)))
@@ -2436,7 +2496,7 @@ def validate_rust_link_selection(
     return telemetry
 
 
-def capture_native_c_resources(selection: Mapping[str, object]) -> dict[str, object]:
+def capture_native_resources(selection: Mapping[str, object]) -> dict[str, object]:
     """Materialize selected roots once, after their live watchers have armed."""
     from tools.proof_queue_pkg.command_identity import (
         _directory_manifest_identity,
@@ -2445,14 +2505,14 @@ def capture_native_c_resources(selection: Mapping[str, object]) -> dict[str, obj
     )
 
     units = []
-    for unit in selection["native_c"]:
+    for unit in selection["native_build"]:
         if unit["resources"] is None:
             resources = [
                 {
                     "selected_root": path,
                     **(
                         _directory_manifest_identity(
-                            Path(path), label="native C resource"
+                            Path(path), label="native build resource"
                         )
                         if Path(path).is_dir()
                         else _file_identity(Path(path))
@@ -2469,12 +2529,14 @@ def capture_native_c_resources(selection: Mapping[str, object]) -> dict[str, obj
             }
             if "root" in captured:
                 _revalidate_directory_manifest_identity(
-                    captured, selected_root=root, label="native C resource"
+                    captured, selected_root=root, label="native build resource"
                 )
             elif _file_identity(root) != captured:
-                raise ValueError("native C resource changed while live custody armed")
+                raise ValueError(
+                    "native build resource changed while live custody armed"
+                )
         units.append(dict(unit))
-    return {**selection, "native_c": units}
+    return {**selection, "native_build": units}
 
 
 def revalidate_rust_link_process_images(
@@ -2482,12 +2544,12 @@ def revalidate_rust_link_process_images(
     *,
     target: str | None,
     command_argv: Sequence[str] = (),
-    required_native_c: Sequence[str] | None = None,
+    required_native_units: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Rehash frozen selections at the armed boundary, without running probes."""
     telemetry = validate_rust_link_selection(
         selected_identity,
-        required_native_c=required_native_c,
+        required_native_units=required_native_units,
         command_argv=command_argv,
     )
     if telemetry["target"] != target:
@@ -2498,10 +2560,10 @@ def revalidate_rust_link_process_images(
         raise ValueError(
             "Rust linker command semantics changed while live custody armed"
         )
-    telemetry = capture_native_c_resources(telemetry)
+    telemetry = capture_native_resources(telemetry)
     validate_rust_link_selection(
         {**selected_identity, "link_selection": telemetry},
-        required_native_c=required_native_c,
+        required_native_units=required_native_units,
         full_capture=True,
     )
     for unit in telemetry["units"]:
