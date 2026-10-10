@@ -1085,16 +1085,23 @@ fn copyreg_extension_key_bits(_py: &PyToken<'_>, module_bits: u64, name_bits: u6
 
 fn copyreg_add_extension_code_int(_py: &PyToken<'_>, code_bits: u64) -> Result<u64, u64> {
     let int_code_bits = molt_int_from_obj(code_bits, MoltObject::none().bits(), 0);
+    let mut owner = obj_from_bits(int_code_bits)
+        .as_ptr()
+        .map(crate::PtrDropGuard::new);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
-    let Some(code) = to_i64(obj_from_bits(int_code_bits)) else {
-        dec_ref_bits(_py, int_code_bits);
+    let Some(code) = crate::builtins::numbers::integer_storage_i64(_py, int_code_bits) else {
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
         return Err(raise_exception::<_>(_py, "ValueError", "code out of range"));
     };
     if !(1..=0x7fff_ffff).contains(&code) {
-        dec_ref_bits(_py, int_code_bits);
         return Err(raise_exception::<_>(_py, "ValueError", "code out of range"));
+    }
+    if let Some(owner) = &mut owner {
+        owner.release();
     }
     Ok(int_code_bits)
 }
@@ -1447,14 +1454,19 @@ pub extern "C" fn molt_copyreg_reconstructor(
 pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let proto_int_bits = molt_int_from_obj(proto_bits, MoltObject::none().bits(), 0);
+        let proto_owner = obj_from_bits(proto_int_bits)
+            .as_ptr()
+            .map(crate::PtrDropGuard::new);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        let Some(proto) = to_i64(obj_from_bits(proto_int_bits)) else {
-            dec_ref_bits(_py, proto_int_bits);
+        let Some(proto) = crate::builtins::numbers::integer_storage_i64(_py, proto_int_bits) else {
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
             return raise_exception::<_>(_py, "TypeError", "proto must be int");
         };
-        dec_ref_bits(_py, proto_int_bits);
+        drop(proto_owner);
         if proto >= 2 {
             return raise_exception::<_>(_py, "AssertionError", "");
         }
@@ -1470,16 +1482,26 @@ pub extern "C" fn molt_copyreg_reduce_ex(self_bits: u64, proto_bits: u64) -> u64
                 Err(err_bits) => return err_bits,
             };
             if let Some(flags_bits) = flags_bits {
+                let input_owner = obj_from_bits(flags_bits)
+                    .as_ptr()
+                    .map(crate::PtrDropGuard::new);
                 let flags_int_bits = molt_int_from_obj(flags_bits, MoltObject::none().bits(), 0);
-                dec_ref_bits(_py, flags_bits);
+                let flags_owner = obj_from_bits(flags_int_bits)
+                    .as_ptr()
+                    .map(crate::PtrDropGuard::new);
+                drop(input_owner);
                 if exception_pending(_py) {
                     return MoltObject::none().bits();
                 }
-                let Some(flags) = to_i64(obj_from_bits(flags_int_bits)) else {
-                    dec_ref_bits(_py, flags_int_bits);
+                let Some(flags) =
+                    crate::builtins::numbers::integer_storage_i64(_py, flags_int_bits)
+                else {
+                    if exception_pending(_py) {
+                        return MoltObject::none().bits();
+                    }
                     return raise_exception::<_>(_py, "TypeError", "__flags__ must be int");
                 };
-                dec_ref_bits(_py, flags_int_bits);
+                drop(flags_owner);
                 if (flags & 0x200) == 0 {
                     base_bits = candidate_bits;
                     found_base = true;
@@ -3383,6 +3405,72 @@ mod namespace_lookup_tests;
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn copyreg_reads_foreign_integer_storage_without_losing_range_policy() {
+        use molt_cpython_abi::abi_types::{
+            PyExc_AssertionError, PyExc_ValueError, PyLong_Type, PyLongObject,
+        };
+        use molt_cpython_abi::api::{errors, object, refcount::OwnedPyObject, typeobj};
+        use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                for value in [5000u32, 0] {
+                    let native = OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+                        &raw mut PyLong_Type,
+                        1,
+                    ));
+                    assert!(!native.as_ptr().is_null());
+                    assert!(
+                        GLOBAL_BRIDGE
+                            .molt_handle_for_pyobj(native.as_ptr())
+                            .is_none()
+                    );
+                    let integer = native.as_ptr().cast::<PyLongObject>();
+                    (*integer).long_value.lv_tag = if value == 0 { 1 } else { 1 << 3 };
+                    (*integer).long_value.ob_digit[0] = value;
+                    let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
+                    let _owner = crate::PtrDropGuard::preserving(ptr_from_bits(bits));
+                    assert_eq!(
+                        crate::object::object_type_id(ptr_from_bits(bits)),
+                        crate::TYPE_ID_FOREIGN
+                    );
+                    let refs = (*native.as_ptr()).ob_refcnt;
+                    let converted = copyreg_add_extension_code_int(py, bits);
+                    if value == 0 {
+                        let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                        assert!(converted.is_err());
+                        assert!(!error.as_ptr().is_null());
+                        assert_eq!(object::Py_TYPE(error.as_ptr()), &raw mut PyExc_ValueError);
+                    } else {
+                        let converted = converted.unwrap();
+                        let converted_owner = obj_from_bits(converted)
+                            .as_ptr()
+                            .map(crate::PtrDropGuard::preserving);
+                        assert!(!exception_pending(py));
+                        // Public int() retains an exact native integer; range admission
+                        // does not require a managed scalar projection.
+                        assert_eq!(converted, bits);
+                        drop(converted_owner);
+                        let result = molt_copyreg_reduce_ex(MoltObject::none().bits(), bits);
+                        let _result_owner = obj_from_bits(result)
+                            .as_ptr()
+                            .map(crate::PtrDropGuard::preserving);
+                        let error = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                        assert!(!error.as_ptr().is_null());
+                        // Correct extraction reaches the documented proto >= 2 guard.
+                        assert_eq!(
+                            object::Py_TYPE(error.as_ptr()),
+                            &raw mut PyExc_AssertionError
+                        );
+                    }
+                    assert!(!exception_pending(py));
+                    assert_eq!((*native.as_ptr()).ob_refcnt, refs);
+                }
+            }
+        });
+    }
 
     #[test]
     fn namespace_del_normalizes_non_key_mapping_failures() {

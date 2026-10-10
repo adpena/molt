@@ -207,6 +207,7 @@ fn assert_installed_runtime_hooks(requested: RuntimeHooks) {
             descriptor_get,
             descriptor_set,
             object_format,
+            unicode_format,
             object_str,
             object_repr,
             object_is_true,

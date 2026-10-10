@@ -155,12 +155,15 @@ unsafe fn invoke<const SLOT: c_int>(
             ptr::null_mut()
         }
         Ok(Some(method)) => unsafe {
-            object::PyObject_VectorcallDict(
-                method.as_ptr(),
+            let method = method.into_ptr();
+            let result = object::PyObject_VectorcallDict(
+                method,
                 arguments.as_ptr().cast_mut(),
                 arguments.len(),
                 ptr::null_mut(),
-            )
+            );
+            crate::api::refcount::Py_DECREF(method);
+            result
         },
     }
 }
@@ -168,7 +171,12 @@ unsafe fn invoke<const SLOT: c_int>(
 unsafe extern "C" fn repr(receiver: *mut PyObject) -> *mut PyObject {
     unsafe {
         match special::<{ ts::Py_tp_repr }>(receiver, 0) {
-            Ok(Some(method)) => object::PyObject_CallNoArgs(method.as_ptr()),
+            Ok(Some(method)) => {
+                let method = method.into_ptr();
+                let result = object::PyObject_CallNoArgs(method);
+                crate::api::refcount::Py_DECREF(method);
+                result
+            }
             Err(crate::ErrorIndicatorSet) | Ok(None) => {
                 errors::PyErr_Clear();
                 errors::PyUnicode_FromFormat(
@@ -183,7 +191,12 @@ unsafe extern "C" fn repr(receiver: *mut PyObject) -> *mut PyObject {
 unsafe extern "C" fn async_unary<const SLOT: c_int>(receiver: *mut PyObject) -> *mut PyObject {
     unsafe {
         match special::<SLOT>(receiver, 0) {
-            Ok(Some(method)) => object::PyObject_CallNoArgs(method.as_ptr()),
+            Ok(Some(method)) => {
+                let method = method.into_ptr();
+                let result = object::PyObject_CallNoArgs(method);
+                crate::api::refcount::Py_DECREF(method);
+                result
+            }
             Err(crate::ErrorIndicatorSet) | Ok(None) => {
                 let slot = stable_slot_wrapper(SLOT).expect("declared async slot");
                 let declaration = SLOT_WRAPPER_DEFS
@@ -246,16 +259,22 @@ unsafe fn reflected_overrides<const SLOT: c_int>(
             errors::PyErr_Clear();
             return Ok(false);
         }
+        let right = right.into_ptr();
         let left =
             OwnedPyObject::from_owned(object::PyObject_GetAttr(left_type.cast(), key.as_ptr()));
         if left.as_ptr().is_null() {
             if errors::PyErr_ExceptionMatches((&raw mut PyExc_AttributeError).cast()) == 0 {
+                crate::api::refcount::Py_DECREF(right);
                 return Err(crate::ErrorIndicatorSet);
             }
             errors::PyErr_Clear();
+            crate::api::refcount::Py_DECREF(right);
             return Ok(true);
         }
-        let comparison = PyObject_RichCompareBool(left.as_ptr(), right.as_ptr(), 3);
+        let left = left.into_ptr();
+        let comparison = PyObject_RichCompareBool(left, right, 3);
+        crate::api::refcount::Py_DECREF(left);
+        crate::api::refcount::Py_DECREF(right);
         if comparison < 0 {
             Err(crate::ErrorIndicatorSet)
         } else {
@@ -363,107 +382,130 @@ unsafe extern "C" fn inplace_power(
 
 unsafe extern "C" fn length<const SLOT: c_int>(receiver: *mut PyObject) -> Py_ssize_t {
     unsafe {
-        let result = OwnedPyObject::from_owned(invoke::<SLOT>(receiver, 0, &[], false));
-        if result.as_ptr().is_null() {
+        let result = invoke::<SLOT>(receiver, 0, &[], false);
+        if result.is_null() {
             return -1;
         }
-        let length = abstract_number::PyNumber_AsSsize_t(
-            result.as_ptr(),
-            (&raw mut PyExc_OverflowError).cast(),
-        );
-        if length < 0 && !descriptors::pending() {
+        let index = abstract_number::number_index(result);
+        crate::api::refcount::Py_DECREF(result);
+        if index.is_null() {
+            return -1;
+        }
+        let sign = numbers::_PyLong_Sign(index);
+        if descriptors::pending() {
+            crate::api::refcount::Py_DECREF(index);
+            return -1;
+        }
+        if sign < 0 {
+            crate::api::refcount::Py_DECREF(index);
             errors::PyErr_SetString(
                 (&raw mut PyExc_ValueError).cast(),
                 c"__len__() should return >= 0".as_ptr(),
             );
             return -1;
         }
+        let length =
+            abstract_number::PyNumber_AsSsize_t(index, (&raw mut PyExc_OverflowError).cast());
+        crate::api::refcount::Py_DECREF(index);
         length
     }
 }
+
 unsafe extern "C" fn truth(receiver: *mut PyObject) -> c_int {
     unsafe {
-        let method = match special::<{ ts::Py_nb_bool }>(receiver, 0) {
+        let (method, using_len) = match special::<{ ts::Py_nb_bool }>(receiver, 0) {
             Err(crate::ErrorIndicatorSet) => return -1,
-            Ok(Some(method)) => method,
-            Ok(None) => {
-                return match special::<{ ts::Py_sq_length }>(receiver, 0) {
-                    Err(crate::ErrorIndicatorSet) => -1,
-                    Ok(None) => 1,
-                    Ok(Some(method)) => {
-                        let result =
-                            OwnedPyObject::from_owned(object::PyObject_CallNoArgs(method.as_ptr()));
-                        if result.as_ptr().is_null() {
-                            return -1;
-                        }
-                        let length = abstract_number::PyNumber_AsSsize_t(
-                            result.as_ptr(),
-                            (&raw mut PyExc_OverflowError).cast(),
-                        );
-                        if length < 0 {
-                            if !descriptors::pending() {
-                                errors::PyErr_SetString(
-                                    (&raw mut PyExc_ValueError).cast(),
-                                    c"__len__() should return >= 0".as_ptr(),
-                                );
-                            }
-                            -1
-                        } else {
-                            (length != 0) as c_int
-                        }
-                    }
-                };
-            }
+            Ok(Some(method)) => (method, false),
+            Ok(None) => match special::<{ ts::Py_sq_length }>(receiver, 0) {
+                Err(crate::ErrorIndicatorSet) => return -1,
+                Ok(None) => return 1,
+                Ok(Some(method)) => (method, true),
+            },
         };
-        let result = OwnedPyObject::from_owned(object::PyObject_CallNoArgs(method.as_ptr()));
-        if result.as_ptr().is_null() {
+        let minor = (crate::hooks::hooks_or_stubs().target_python_minor)();
+        if minor < 0 {
+            crate::bridge::ensure_result_error(c"semantic Python target unavailable");
+            crate::api::refcount::Py_DECREF(method.into_ptr());
             return -1;
         }
-        if crate::bridge::semantic_type(result.as_ptr()) != &raw mut PyBool_Type {
-            errors::PyErr_SetString(
-                (&raw mut PyExc_TypeError).cast(),
-                c"__bool__ should return bool".as_ptr(),
-            );
-            return -1;
+        let method = method.into_ptr();
+        let result = object::PyObject_CallNoArgs(method);
+        // 3.12/3.13 slot_nb_bool retains the callable through value validation.
+        // 3.14's maybe_call_special_no_args retires it at call completion.
+        if minor >= 14 {
+            crate::api::refcount::Py_DECREF(method);
         }
-        object::PyObject_IsTrue(result.as_ptr())
+        let status = if result.is_null() {
+            -1
+        } else {
+            let status =
+                if using_len || crate::bridge::semantic_type(result) == &raw mut PyBool_Type {
+                    object::PyObject_IsTrue(result)
+                } else {
+                    errors::PyErr_SetString(
+                        (&raw mut PyExc_TypeError).cast(),
+                        c"__bool__ should return bool".as_ptr(),
+                    );
+                    -1
+                };
+            crate::api::refcount::Py_DECREF(result);
+            status
+        };
+        if minor < 14 {
+            crate::api::refcount::Py_DECREF(method);
+        }
+        status
     }
 }
+
 unsafe extern "C" fn hash(receiver: *mut PyObject) -> isize {
     unsafe {
         let method = match special::<{ ts::Py_tp_hash }>(receiver, 0) {
             Ok(Some(method)) if method.as_ptr() != &raw mut Py_None => method,
             _ => return PyObject_HashNotImplemented(receiver),
         };
-        let result = OwnedPyObject::from_owned(object::PyObject_CallNoArgs(method.as_ptr()));
-        if result.as_ptr().is_null() {
+        let method = method.into_ptr();
+        let result = object::PyObject_CallNoArgs(method);
+        crate::api::refcount::Py_DECREF(method);
+        if result.is_null() {
             return -1;
         }
-        if numbers::PyLong_Check(result.as_ptr()) == 0 {
+        if numbers::PyLong_Check(result) == 0 {
+            // Follow the fixed CPython 3.13+ release order; do not reproduce
+            // the 3.12 wrong-result reference leak.
+            crate::api::refcount::Py_DECREF(result);
             errors::PyErr_SetString(
                 (&raw mut PyExc_TypeError).cast(),
                 c"__hash__ method should return an integer".as_ptr(),
             );
             return -1;
         }
-        let mut hash = numbers::PyLong_AsSsize_t(result.as_ptr());
+        let mut hash = numbers::PyLong_AsSsize_t(result);
         if hash == -1 && descriptors::pending() {
             if errors::PyErr_ExceptionMatches((&raw mut PyExc_OverflowError).cast()) == 0 {
+                crate::api::refcount::Py_DECREF(result);
                 return -1;
             }
             errors::PyErr_Clear();
-            hash = PyObject_Hash(result.as_ptr());
+            hash = PyObject_Hash(result);
         }
-        if hash == -1 && !descriptors::pending() {
+        let status = if hash == -1 && !descriptors::pending() {
             -2
         } else {
             hash
-        }
+        };
+        crate::api::refcount::Py_DECREF(result);
+        status
     }
 }
+
 unsafe fn ignored_result(result: *mut PyObject) -> c_int {
-    let owner = unsafe { OwnedPyObject::from_owned(result) };
-    if owner.as_ptr().is_null() { -1 } else { 0 }
+    if result.is_null() {
+        -1
+    } else {
+        unsafe { crate::api::refcount::Py_DECREF(result) };
+        0
+    }
 }
 unsafe extern "C" fn setitem(
     receiver: *mut PyObject,
@@ -525,11 +567,15 @@ unsafe extern "C" fn contains(receiver: *mut PyObject, value: *mut PyObject) -> 
             }
             Ok(Some(method)) => method,
         };
-        let result = OwnedPyObject::from_owned(object::PyObject_CallOneArg(method.as_ptr(), value));
-        if result.as_ptr().is_null() {
+        let method = method.into_ptr();
+        let result = object::PyObject_CallOneArg(method, value);
+        crate::api::refcount::Py_DECREF(method);
+        if result.is_null() {
             -1
         } else {
-            object::PyObject_IsTrue(result.as_ptr())
+            let status = object::PyObject_IsTrue(result);
+            crate::api::refcount::Py_DECREF(result);
+            status
         }
     }
 }
@@ -569,7 +615,12 @@ unsafe extern "C" fn getattribute(receiver: *mut PyObject, key: *mut PyObject) -
                 errors::PyErr_SetRaisedException(raised.into_ptr());
                 ptr::null_mut()
             }
-            Ok(Some(method)) => object::PyObject_CallOneArg(method.as_ptr(), key),
+            Ok(Some(method)) => {
+                let method = method.into_ptr();
+                let result = object::PyObject_CallOneArg(method, key);
+                crate::api::refcount::Py_DECREF(method);
+                result
+            }
         }
     }
 }
@@ -587,7 +638,10 @@ unsafe extern "C" fn iter(receiver: *mut PyObject) -> *mut PyObject {
     unsafe {
         match special::<{ ts::Py_tp_iter }>(receiver, 0) {
             Ok(Some(method)) if method.as_ptr() != &raw mut Py_None => {
-                object::PyObject_CallNoArgs(method.as_ptr())
+                let method = method.into_ptr();
+                let result = object::PyObject_CallNoArgs(method);
+                crate::api::refcount::Py_DECREF(method);
+                result
             }
             Ok(Some(_)) => not_iterable(receiver),
             Err(crate::ErrorIndicatorSet) | Ok(None) => {
@@ -595,7 +649,10 @@ unsafe extern "C" fn iter(receiver: *mut PyObject) -> *mut PyObject {
                 // the sequence protocol, including descriptor lookup errors.
                 errors::PyErr_Clear();
                 match special::<{ ts::Py_sq_item }>(receiver, 0) {
-                    Ok(Some(_)) => object::PySeqIter_New(receiver),
+                    Ok(Some(method)) => {
+                        crate::api::refcount::Py_DECREF(method.into_ptr());
+                        object::PySeqIter_New(receiver)
+                    }
                     Err(crate::ErrorIndicatorSet) | Ok(None) => not_iterable(receiver),
                 }
             }
@@ -643,12 +700,15 @@ unsafe extern "C" fn descriptor_get(
                 owner
             },
         ];
-        object::PyObject_VectorcallDict(
-            method.as_ptr(),
+        let method = method.into_ptr();
+        let result = object::PyObject_VectorcallDict(
+            method,
             arguments.as_mut_ptr(),
             arguments.len(),
             ptr::null_mut(),
-        )
+        );
+        crate::api::refcount::Py_DECREF(method);
+        result
     }
 }
 unsafe extern "C" fn descriptor_set(
@@ -679,7 +739,12 @@ unsafe fn call_tuple<const SLOT: c_int>(
                 );
                 ptr::null_mut()
             }
-            Ok(Some(method)) => object::PyObject_Call(method.as_ptr(), args, kwargs),
+            Ok(Some(method)) => {
+                let method = method.into_ptr();
+                let result = object::PyObject_Call(method, args, kwargs);
+                crate::api::refcount::Py_DECREF(method);
+                result
+            }
         }
     }
 }
@@ -696,21 +761,24 @@ unsafe extern "C" fn init(
     kwargs: *mut PyObject,
 ) -> c_int {
     unsafe {
-        let result =
-            OwnedPyObject::from_owned(call_tuple::<{ ts::Py_tp_init }>(receiver, args, kwargs));
-        if result.as_ptr().is_null() {
+        let result = call_tuple::<{ ts::Py_tp_init }>(receiver, args, kwargs);
+        if result.is_null() {
             return -1;
         }
-        if result.as_ptr() != &raw mut Py_None {
+        let status = if result != &raw mut Py_None {
             errors::PyErr_SetString(
                 (&raw mut PyExc_TypeError).cast(),
                 c"__init__() should return None".as_ptr(),
             );
-            return -1;
-        }
-        0
+            -1
+        } else {
+            0
+        };
+        crate::api::refcount::Py_DECREF(result);
+        status
     }
 }
+
 unsafe extern "C" fn new(
     tp: *mut PyTypeObject,
     args: *mut PyObject,
@@ -727,6 +795,7 @@ unsafe extern "C" fn new(
         }
         let count = sequences::PyTuple_Size(args);
         if count < 0 {
+            crate::api::refcount::Py_DECREF(method.into_ptr());
             return ptr::null_mut();
         }
         let mut arguments = Vec::with_capacity(count as usize + 1);
@@ -734,12 +803,15 @@ unsafe extern "C" fn new(
         for index in 0..count {
             arguments.push(sequences::PyTuple_GetItem(args, index));
         }
-        object::PyObject_VectorcallDict(
-            method.as_ptr(),
+        let method = method.into_ptr();
+        let result = object::PyObject_VectorcallDict(
+            method,
             arguments.as_mut_ptr(),
             arguments.len(),
             kwargs,
-        )
+        );
+        crate::api::refcount::Py_DECREF(method);
+        result
     }
 }
 unsafe extern "C" fn finalize(receiver: *mut PyObject) {

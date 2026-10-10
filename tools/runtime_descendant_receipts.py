@@ -166,28 +166,47 @@ OWNERS: Mapping[str, Owner] = {
                 )
             },
             "joined-service-failed-join": Outcome(
-                0, True,
-                stdout_markers=("native thread lifetime verified: joined-service-failed-join\n",),
-                stderr_markers=("molt runtime lifecycle failed: runtime teardown refused: joined service workers failed; origin retained\n",),
+                0,
+                True,
+                stdout_markers=(
+                    "native thread lifetime verified: joined-service-failed-join\n",
+                ),
+                stderr_markers=(
+                    "molt runtime lifecycle failed: runtime teardown refused: joined service workers failed; origin retained\n",
+                ),
             ),
             "joined-service-cleanup-panic": Outcome(
-                0, True,
-                stdout_markers=("native thread lifetime verified: joined-service-cleanup-panic\n",),
-                stderr_markers=("molt runtime lifecycle failed: runtime teardown refused: joined service workers failed; origin retained\n",),
+                0,
+                True,
+                stdout_markers=(
+                    "native thread lifetime verified: joined-service-cleanup-panic\n",
+                ),
+                stderr_markers=(
+                    "molt runtime lifecycle failed: runtime teardown refused: joined service workers failed; origin retained\n",
+                ),
             ),
             "joined-service-foreign-c": Outcome(
-                0, True,
-                stdout_markers=("native thread lifetime verified: joined-service-foreign-c\n",),
-                stderr_markers=("runtime teardown refused: foreign retained PyThreadState owners remain live",),
+                0,
+                True,
+                stdout_markers=(
+                    "native thread lifetime verified: joined-service-foreign-c\n",
+                ),
+                stderr_markers=(
+                    "runtime teardown refused: foreign retained PyThreadState owners remain live",
+                ),
             ),
             "joined-service-exit": Outcome(
                 1,
-                stderr_markers=("molt runtime process exit refused: joined service callback cannot retire its own runtime\n",),
+                stderr_markers=(
+                    "molt runtime process exit refused: joined service callback cannot retire its own runtime\n",
+                ),
             ),
             "process-service-timeout": Outcome(
                 0,
                 True,
-                stdout_markers=("native thread lifetime verified: process-service-timeout\n",),
+                stdout_markers=(
+                    "native thread lifetime verified: process-service-timeout\n",
+                ),
                 stderr_markers=(
                     "molt runtime lifecycle failed: runtime teardown refused: process workers remain live or failed; origin retained\n",
                 ),
@@ -560,7 +579,8 @@ def _verify_record(
             {"identity": owner.child, "status": "pass"}
         ]:
             raise DescendantEvidenceError(
-                f"{parent}: descendant lacks exact one-test completion"
+                f"{parent} ({record['mode']}): descendant lacks exact one-test completion; "
+                f"issues={report.issues!r}, rows={report.rows()!r}, pending={report.pending!r}"
             )
     elif (
         report.issues

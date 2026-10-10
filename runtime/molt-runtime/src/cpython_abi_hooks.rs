@@ -1510,6 +1510,13 @@ unsafe extern "C" fn hook_object_format(obj_bits: u64, spec_bits: u64) -> OwnedH
     owned_result_from_pending(bits)
 }
 
+unsafe extern "C" fn hook_unicode_format(format_bits: u64, args_bits: u64) -> OwnedHandleResult {
+    owned_result_from_pending(crate::object::ops_arith::native_slots::string_mod_slot(
+        format_bits,
+        args_bits,
+    ))
+}
+
 unsafe extern "C" fn hook_object_str(obj_bits: u64) -> OwnedHandleResult {
     owned_result_from_pending(crate::molt_str_from_obj(obj_bits))
 }
@@ -5156,6 +5163,7 @@ pub fn register_cpython_hooks() -> bool {
                 descriptor_get: hook_descriptor_get,
                 descriptor_set: hook_descriptor_set,
                 object_format: hook_object_format,
+                unicode_format: hook_unicode_format,
                 object_str: hook_object_str,
                 object_repr: hook_object_repr,
                 object_is_true: hook_object_is_true,
@@ -8217,22 +8225,12 @@ mod tests {
     }
 
     pub(super) fn pending_exception_type_for_assertion() -> String {
-        with_gil(|_py| {
-            let exc_bits = crate::builtins::exceptions::molt_exception_last_pending();
-            let type_name = MoltObject::from_bits(exc_bits)
-                .as_ptr()
-                .and_then(|exc_ptr| {
-                    let class_bits = unsafe { crate::object_class_bits(exc_ptr) };
-                    MoltObject::from_bits(class_bits)
-                        .as_ptr()
-                        .and_then(|class_ptr| {
-                            let name_bits = unsafe { crate::class_name_bits(class_ptr) };
-                            crate::string_obj_to_owned(MoltObject::from_bits(name_bits))
-                        })
-                })
-                .unwrap_or_else(|| "<unknown>".to_string());
-            dec_ref_bits(&_py, exc_bits);
-            type_name
+        // C failures retain genuine native exception identity. Observe the
+        // canonical pending diagnostic instead of assuming managed storage.
+        with_gil(|py| {
+            crate::builtins::exceptions::pending_exception_diagnostic(&py)
+                .map(|(kind, _)| kind)
+                .unwrap_or_else(|| "<unknown>".to_string())
         })
     }
 

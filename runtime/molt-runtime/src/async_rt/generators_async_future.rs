@@ -788,14 +788,24 @@ pub unsafe extern "C" fn molt_async_sleep_poll(obj_bits: u64) -> i64 {
                 let delay_secs = if payload_len >= 1 {
                     let delay_bits = *payload_ptr;
                     let float_bits = molt_float_from_obj(delay_bits);
+                    let _float_owner = obj_from_bits(float_bits)
+                        .as_ptr()
+                        .map(crate::PtrDropGuard::new);
                     if exception_pending(_py) {
-                        dec_ref_bits(_py, float_bits);
                         return MoltObject::none().bits() as i64;
                     }
-                    let delay_secs =
-                        crate::object::ops::as_float_extended(obj_from_bits(float_bits))
-                            .expect("float conversion returned a float without an exception");
-                    dec_ref_bits(_py, float_bits);
+                    let Some(delay_secs) =
+                        crate::builtins::numbers::float_storage_value(_py, float_bits)
+                    else {
+                        if !exception_pending(_py) {
+                            raise_exception::<()>(
+                                _py,
+                                "SystemError",
+                                "float conversion returned no float storage",
+                            );
+                        }
+                        return MoltObject::none().bits() as i64;
+                    };
                     delay_secs
                 } else {
                     0.0
@@ -953,6 +963,7 @@ mod sleep_payload_tests {
 
     static OWNER: AtomicU64 = AtomicU64::new(0);
     static CONVERSION_ERROR: AtomicU64 = AtomicU64::new(0);
+    static CONVERSION_RESULT: AtomicU64 = AtomicU64::new(0);
     static RETIRED_PREFIX: AtomicU64 = AtomicU64::new(0);
     static FINALIZER_CALLS: AtomicU64 = AtomicU64::new(0);
     static OBSERVED_STATE: AtomicU64 = AtomicU64::new(0);
@@ -973,6 +984,7 @@ mod sleep_payload_tests {
         fn reset(&self) {
             OWNER.store(0, Ordering::Relaxed);
             CONVERSION_ERROR.store(0, Ordering::Relaxed);
+            CONVERSION_RESULT.store(0, Ordering::Relaxed);
             RETIRED_PREFIX.store(0, Ordering::Relaxed);
             FINALIZER_CALLS.store(0, Ordering::Relaxed);
             OBSERVED_STATE.store(0, Ordering::Relaxed);
@@ -993,6 +1005,13 @@ mod sleep_payload_tests {
         let error = CONVERSION_ERROR.load(Ordering::Relaxed);
         if error != 0 {
             return crate::molt_exception_set_last(error);
+        }
+        let result = CONVERSION_RESULT.load(Ordering::Relaxed);
+        if result != 0 {
+            return crate::with_gil_entry_nopanic!(py, {
+                inc_ref_bits(py, result);
+                result
+            });
         }
         MoltObject::from_float(0.0).bits()
     }
@@ -1101,6 +1120,54 @@ mod sleep_payload_tests {
                 dec_ref_bits(py, future);
                 assert_eq!(owners(delay), before);
                 dec_ref_bits(py, delay);
+                assert!(!exception_pending(py));
+            }
+        });
+    }
+
+    #[test]
+    fn sleep_conversion_reads_foreign_callback_float_and_retires_temporary_owner() {
+        use molt_cpython_abi::abi_types::{PyFloat_Type, PyFloatObject};
+        use molt_cpython_abi::api::{refcount::OwnedPyObject, typeobj};
+        use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let native = OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(
+                    &raw mut PyFloat_Type,
+                    0,
+                ));
+                assert!(!native.as_ptr().is_null());
+                assert!(
+                    GLOBAL_BRIDGE
+                        .molt_handle_for_pyobj(native.as_ptr())
+                        .is_none()
+                );
+                (*native.as_ptr().cast::<PyFloatObject>()).ob_fval = 0.0;
+                let result = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
+                let _result_owner = crate::PtrDropGuard::preserving(ptr_from_bits(result));
+                assert_eq!(
+                    crate::object::object_type_id(ptr_from_bits(result)),
+                    crate::TYPE_ID_FOREIGN
+                );
+                let _callbacks = CallbackScope::new();
+                CONVERSION_RESULT.store(result, Ordering::Relaxed);
+                let class = delay_class(py);
+                let _class_owner = crate::PtrDropGuard::preserving(ptr_from_bits(class));
+                let delay = delay_instance(py, class);
+                let _delay_owner = crate::PtrDropGuard::preserving(ptr_from_bits(delay));
+                let future = molt_async_sleep(delay, MoltObject::from_int(41).bits());
+                let _future_owner = crate::PtrDropGuard::preserving(ptr_from_bits(future));
+                let native_refs = (*native.as_ptr()).ob_refcnt;
+                let result_refs = owners(result);
+                assert_eq!(molt_async_sleep_poll(future), pending_bits_i64());
+                assert!(!exception_pending(py));
+                assert_eq!(owners(result), result_refs);
+                assert_eq!((*native.as_ptr()).ob_refcnt, native_refs);
+                assert_eq!(
+                    molt_async_sleep_poll(future) as u64,
+                    MoltObject::from_int(41).bits()
+                );
                 assert!(!exception_pending(py));
             }
         });

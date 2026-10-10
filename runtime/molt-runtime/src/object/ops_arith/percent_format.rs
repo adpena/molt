@@ -1,4 +1,3 @@
-use crate::builtins::attr::lookup_special_method_bits;
 // String percent-format runtime shared by `%` modulo dispatch.
 // This owns the parser/conversion authority for legacy `%` formatting
 // while ops_arith.rs keeps only arithmetic entrypoint dispatch.
@@ -9,6 +8,131 @@ use crate::object::ops_format::{
     format_obj_str_output,
 };
 use crate::object::ops_string::wtf8_step;
+use crate::object::tuple_storage::{TupleComparisonItem, TupleStorage, is_tuple};
+use molt_cpython_abi::abi_types::PyObject;
+use molt_cpython_abi::api::{abstract_number, errors, numbers, object, strings, typeobj};
+use molt_cpython_abi::hooks::DecodedHandleResult;
+
+fn percent_native(bits: u64) -> Option<*mut PyObject> {
+    let ptr = obj_from_bits(bits).as_ptr()?;
+    (unsafe { object_type_id(ptr) } == TYPE_ID_FOREIGN).then(|| {
+        std::ptr::with_exposed_provenance_mut(unsafe {
+            crate::object::foreign::foreign_ptr_from_obj(ptr)
+        })
+    })
+}
+
+fn percent_native_failed(py: &PyToken<'_>, operation: &str) -> bool {
+    if errors::raised_error_pending() {
+        crate::cpython_abi_hooks::propagate_native_failure(py, operation);
+    }
+    exception_pending(py)
+}
+
+/// Keep the conversion result through integer conversion, including precision
+/// failures, then retire it before width padding. This is _PyUnicode_FormatLong's
+/// iobj lifetime, without projecting a
+/// managed operand into a process-static C view.
+enum PercentIntegerOwner {
+    Native { value: *mut PyObject },
+    Managed { _value: PtrDropGuard },
+}
+
+impl Drop for PercentIntegerOwner {
+    fn drop(&mut self) {
+        if let Self::Native { value } = self {
+            crate::object::foreign::retire_native_reference(|| unsafe {
+                molt_cpython_abi::api::refcount::Py_XDECREF(*value);
+            });
+        }
+    }
+}
+
+struct PercentInteger {
+    value: BigInt,
+    _owner: Option<PercentIntegerOwner>,
+}
+
+impl PercentInteger {
+    fn value(value: BigInt) -> Self {
+        Self {
+            value,
+            _owner: None,
+        }
+    }
+
+    fn managed(py: &PyToken<'_>, bits: u64) -> Option<Self> {
+        let owner = obj_from_bits(bits)
+            .as_ptr()
+            .map(|ptr| PercentIntegerOwner::Managed {
+                _value: PtrDropGuard::new(ptr),
+            });
+        if exception_pending(py) {
+            return None;
+        }
+        let value = crate::builtins::numbers::integer_storage_bigint(py, bits)?;
+        Some(Self {
+            value,
+            _owner: owner,
+        })
+    }
+}
+
+fn percent_native_integer(
+    py: &PyToken<'_>,
+    native: *mut PyObject,
+    conv: u8,
+) -> Option<PercentInteger> {
+    let converted = unsafe {
+        if numbers::PyLong_Check(native) != 0 {
+            object::Py_NewRef(native)
+        } else if matches!(conv, b'd' | b'i' | b'u') {
+            // PyNumber_Long also parses strings; the Unicode formatter's
+            // preceding PyNumber_Check deliberately excludes that protocol.
+            if numbers::PyNumber_Check(native) == 0 {
+                if !percent_native_failed(py, "percent numeric admission") {
+                    errors::PyErr_SetString(
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast(),
+                        c"a number is required".as_ptr(),
+                    );
+                }
+                std::ptr::null_mut()
+            } else {
+                abstract_number::PyNumber_Long(native)
+            }
+        } else {
+            abstract_number::number_index(native)
+        }
+    };
+    let owner = PercentIntegerOwner::Native { value: converted };
+    if converted.is_null() || percent_native_failed(py, "percent integer conversion") {
+        if converted.is_null() {
+            crate::cpython_abi_hooks::propagate_native_failure(py, "percent integer conversion");
+        }
+        return None;
+    }
+    let result = unsafe { numbers::native_numeric_payload(converted) };
+    let bits = match result.decode() {
+        DecodedHandleResult::Ok(bits) => bits,
+        _ => {
+            crate::cpython_abi_hooks::propagate_native_failure(py, "percent integer payload");
+            return None;
+        }
+    };
+    let _payload = obj_from_bits(bits).as_ptr().map(PtrDropGuard::new);
+    let value = crate::builtins::numbers::index_bigint_integral_bits(bits)?;
+    Some(PercentInteger {
+        value,
+        _owner: Some(owner),
+    })
+}
+
+fn percent_type_name(py: &PyToken<'_>, obj: MoltObject) -> String {
+    percent_native(obj.bits()).map_or_else(
+        || type_name(py, obj).into_owned(),
+        |native| unsafe { typeobj::object_type_name_with_precision(native, 200) },
+    )
+}
 
 #[derive(Clone, Copy, Default)]
 struct PercentFormatFlags {
@@ -25,7 +149,11 @@ fn percent_rhs_allows_unused_non_tuple(_py: &PyToken<'_>, rhs: MoltObject) -> bo
     };
     unsafe {
         let type_id = object_type_id(ptr);
-        if type_id == TYPE_ID_STRING || type_id == TYPE_ID_TUPLE {
+        if type_id == TYPE_ID_STRING
+            || is_tuple(rhs.bits())
+            || percent_native(rhs.bits())
+                .is_some_and(|native| strings::PyUnicode_Check(native) != 0)
+        {
             return false;
         }
     }
@@ -78,6 +206,18 @@ fn percent_parse_usize(
 
 /// '*' accepts an actual int or subtype, never an arbitrary __index__ protocol.
 fn percent_star_integer(py: &PyToken<'_>, bits: u64, field: PercentField) -> Option<i64> {
+    if let Some(native) = percent_native(bits) {
+        if unsafe { numbers::PyLong_Check(native) } == 0 {
+            return raise_exception(py, "TypeError", "* wants int");
+        }
+        let value = unsafe {
+            match field {
+                PercentField::Width => numbers::PyLong_AsSsize_t(native) as i64,
+                PercentField::Precision => numbers::_PyLong_AsInt(native) as i64,
+            }
+        };
+        return (!percent_native_failed(py, "percent star field")).then_some(value);
+    }
     let Some(value) = crate::builtins::numbers::index_bigint_integral_bits(bits) else {
         return raise_exception(py, "TypeError", "* wants int");
     };
@@ -184,30 +324,26 @@ fn percent_integer_precision_admit(py: &PyToken<'_>, precision: Option<usize>) -
     Some(())
 }
 
-fn percent_raise_real_type_error_decimal(
+fn percent_raise_real_type_error_decimal<T>(
     _py: &PyToken<'_>,
     obj: MoltObject,
     conv: u8,
-) -> Option<BigInt> {
+) -> Option<T> {
     let conv_ch = conv as char;
     let msg = format!(
         "%{conv_ch} format: a real number is required, not {}",
-        type_name(_py, obj)
+        percent_type_name(_py, obj)
     );
-    raise_exception::<Option<BigInt>>(_py, "TypeError", &msg)
+    raise_exception(_py, "TypeError", &msg)
 }
 
-fn percent_raise_integer_type_error(
-    _py: &PyToken<'_>,
-    obj: MoltObject,
-    conv: u8,
-) -> Option<BigInt> {
+fn percent_raise_integer_type_error<T>(_py: &PyToken<'_>, obj: MoltObject, conv: u8) -> Option<T> {
     let conv_ch = conv as char;
     let msg = format!(
         "%{conv_ch} format: an integer is required, not {}",
-        type_name(_py, obj)
+        percent_type_name(_py, obj)
     );
-    raise_exception::<Option<BigInt>>(_py, "TypeError", &msg)
+    raise_exception(_py, "TypeError", &msg)
 }
 
 fn percent_raise_char_type_error(_py: &PyToken<'_>, obj: MoltObject) -> Option<FormatOutput> {
@@ -268,169 +404,63 @@ fn percent_decimal_float(py: &PyToken<'_>, value: f64) -> Option<BigInt> {
     Some(bigint_from_f64_trunc(value))
 }
 
-fn percent_decimal_from_obj(_py: &PyToken<'_>, value_bits: u64, conv: u8) -> Option<BigInt> {
-    let obj = obj_from_bits(value_bits);
-    if let Some(value) = crate::builtins::numbers::index_bigint_integral_bits(value_bits) {
-        return Some(value);
+fn percent_decimal_from_obj(py: &PyToken<'_>, bits: u64, conv: u8) -> Option<PercentInteger> {
+    if let Some(native) = percent_native(bits) {
+        return percent_native_integer(py, native, conv);
     }
-    if builtin_operand(_py, obj)
+    if let Some(value) = crate::builtins::numbers::index_bigint_integral_bits(bits) {
+        return Some(PercentInteger::value(value));
+    }
+    let obj = obj_from_bits(bits);
+    if builtin_operand(py, obj)
         && let Some(value) = as_float_extended(obj)
     {
-        return percent_decimal_float(_py, value);
+        return percent_decimal_float(py, value).map(PercentInteger::value);
     }
-    if let Some(ptr) = maybe_ptr_from_bits(value_bits) {
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_COMPLEX
-                || type_id == TYPE_ID_STRING
-                || type_id == TYPE_ID_BYTES
-                || type_id == TYPE_ID_BYTEARRAY
-            {
-                return percent_raise_real_type_error_decimal(_py, obj, conv);
-            }
-            let int_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.int_name, b"__int__");
-            if let Some(call_bits) =
-                lookup_special_method_bits(_py, MoltObject::from_ptr(ptr).bits(), int_name_bits)
-            {
-                let res_bits = call_callable0(_py, call_bits);
-                molt_cpython_abi::api::errors::with_preserved_error(|| {
-                    dec_ref_bits(_py, call_bits)
-                });
-                if exception_pending(_py) {
-                    if obj_from_bits(res_bits).as_ptr().is_some() {
-                        molt_cpython_abi::api::errors::with_preserved_error(|| {
-                            dec_ref_bits(_py, res_bits)
-                        });
-                    }
-                    return None;
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(value) = crate::builtins::numbers::index_bigint_integral_bits(res_bits)
-                {
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(_py, res_bits)
-                    });
-                    return Some(value);
-                }
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                if res_obj.as_ptr().is_some() {
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(_py, res_bits)
-                    });
-                }
-                let msg = format!("__int__ returned non-int (type {res_type})");
-                return raise_exception::<Option<BigInt>>(_py, "TypeError", &msg);
-            }
-            if exception_pending(_py) {
-                return None;
-            }
-            // The float base payload applies only after an overriding __int__
-            // has had its turn; floats do not fall through to __index__.
-            if let Some(value) = as_float_extended(obj) {
-                return percent_decimal_float(_py, value);
-            }
-            let index_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
-            if let Some(call_bits) =
-                lookup_special_method_bits(_py, MoltObject::from_ptr(ptr).bits(), index_name_bits)
-            {
-                let res_bits = call_callable0(_py, call_bits);
-                molt_cpython_abi::api::errors::with_preserved_error(|| {
-                    dec_ref_bits(_py, call_bits)
-                });
-                if exception_pending(_py) {
-                    if obj_from_bits(res_bits).as_ptr().is_some() {
-                        molt_cpython_abi::api::errors::with_preserved_error(|| {
-                            dec_ref_bits(_py, res_bits)
-                        });
-                    }
-                    return None;
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(value) = crate::builtins::numbers::index_bigint_integral_bits(res_bits)
-                {
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(_py, res_bits)
-                    });
-                    return Some(value);
-                }
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                if res_obj.as_ptr().is_some() {
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(_py, res_bits)
-                    });
-                }
-                let msg = format!("__index__ returned non-int (type {res_type})");
-                return raise_exception::<Option<BigInt>>(_py, "TypeError", &msg);
-            }
-            if exception_pending(_py) {
-                return None;
-            }
+    // Mirror PyNumber_Check before PyNumber_Long, using the existing type-level
+    // admission authority without binding or executing descriptors.
+    let mut numeric = false;
+    for name in [b"__index__".as_slice(), b"__int__", b"__float__"] {
+        numeric = unsafe { crate::builtins::attr::has_special_method(py, bits, name) };
+        if exception_pending(py) {
+            return None;
+        }
+        if numeric {
+            break;
         }
     }
-    percent_raise_real_type_error_decimal(_py, obj, conv)
+    if !numeric {
+        return percent_raise_real_type_error_decimal(py, obj, conv);
+    }
+    // Use the same full conversion as PyNumber_Long: an admitted numeric
+    // string/bytes subtype may reach int's text parser after absent protocols.
+    let result = crate::molt_int_from_obj(
+        bits,
+        MoltObject::none().bits(),
+        MoltObject::from_bool(false).bits(),
+    );
+    PercentInteger::managed(py, result)
 }
 
-fn percent_integer_from_obj(_py: &PyToken<'_>, value_bits: u64, conv: u8) -> Option<BigInt> {
-    let obj = obj_from_bits(value_bits);
-    if let Some(value) = crate::builtins::numbers::index_bigint_integral_bits(value_bits) {
-        return Some(value);
+fn percent_integer_from_obj(py: &PyToken<'_>, bits: u64, conv: u8) -> Option<PercentInteger> {
+    if let Some(native) = percent_native(bits) {
+        return percent_native_integer(py, native, conv);
     }
-    if let Some(ptr) = maybe_ptr_from_bits(value_bits) {
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_COMPLEX
-                || type_id == TYPE_ID_STRING
-                || type_id == TYPE_ID_BYTES
-                || type_id == TYPE_ID_BYTEARRAY
-            {
-                return percent_raise_integer_type_error(_py, obj, conv);
-            }
-            let index_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
-            if let Some(call_bits) =
-                lookup_special_method_bits(_py, MoltObject::from_ptr(ptr).bits(), index_name_bits)
-            {
-                let res_bits = call_callable0(_py, call_bits);
-                molt_cpython_abi::api::errors::with_preserved_error(|| {
-                    dec_ref_bits(_py, call_bits)
-                });
-                if exception_pending(_py) {
-                    if obj_from_bits(res_bits).as_ptr().is_some() {
-                        molt_cpython_abi::api::errors::with_preserved_error(|| {
-                            dec_ref_bits(_py, res_bits)
-                        });
-                    }
-                    return None;
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(value) = crate::builtins::numbers::index_bigint_integral_bits(res_bits)
-                {
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(_py, res_bits)
-                    });
-                    return Some(value);
-                }
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                if res_obj.as_ptr().is_some() {
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(_py, res_bits)
-                    });
-                }
-                let msg = format!("__index__ returned non-int (type {res_type})");
-                return raise_exception::<Option<BigInt>>(_py, "TypeError", &msg);
-            }
-            if exception_pending(_py) {
-                return None;
-            }
-        }
+    if let Some(value) = crate::builtins::numbers::index_bigint_integral_bits(bits) {
+        return Some(PercentInteger::value(value));
     }
-    percent_raise_integer_type_error(_py, obj, conv)
+    if let Some(result) = crate::builtins::numbers::index_from_number_protocol(py, bits) {
+        return PercentInteger::managed(py, result);
+    }
+    if exception_pending(py) {
+        None
+    } else {
+        percent_raise_integer_type_error(py, obj_from_bits(bits), conv)
+    }
 }
 
-fn percent_char_from_obj(_py: &PyToken<'_>, value_bits: u64) -> Option<FormatOutput> {
-    let obj = obj_from_bits(value_bits);
+fn percent_char_from_obj(py: &PyToken<'_>, bits: u64) -> Option<FormatOutput> {
+    let obj = obj_from_bits(bits);
     if let Some(ptr) = obj
         .as_ptr()
         .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
@@ -440,57 +470,39 @@ fn percent_char_from_obj(_py: &PyToken<'_>, value_bits: u64) -> Option<FormatOut
             // %c writes a character, never adopts a str subclass receiver.
             let mut bytes = Vec::new();
             if let Err(error) = crate::object::ops_format::append_format_bytes(&mut bytes, text) {
-                return error.raise(_py);
+                return error.raise(py);
             }
             return Some(FormatOutput::Bytes(bytes));
         }
-        return percent_raise_char_type_error(_py, obj);
+        return percent_raise_char_type_error(py, obj);
     }
-    if let Some(value) = crate::builtins::numbers::index_bigint_integral_bits(value_bits) {
-        return percent_char_from_bigint(_py, value).map(Into::into);
-    }
-    if let Some(ptr) = maybe_ptr_from_bits(value_bits) {
-        unsafe {
-            let index_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
-            if let Some(call_bits) =
-                lookup_special_method_bits(_py, MoltObject::from_ptr(ptr).bits(), index_name_bits)
-            {
-                let res_bits = call_callable0(_py, call_bits);
-                molt_cpython_abi::api::errors::with_preserved_error(|| {
-                    dec_ref_bits(_py, call_bits)
-                });
-                if exception_pending(_py) {
-                    if obj_from_bits(res_bits).as_ptr().is_some() {
-                        molt_cpython_abi::api::errors::with_preserved_error(|| {
-                            dec_ref_bits(_py, res_bits)
-                        });
-                    }
-                    return None;
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(value) = crate::builtins::numbers::index_bigint_integral_bits(res_bits)
-                {
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(_py, res_bits)
-                    });
-                    return percent_char_from_bigint(_py, value).map(Into::into);
-                }
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                if res_obj.as_ptr().is_some() {
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(_py, res_bits)
-                    });
-                }
-                let msg = format!("__index__ returned non-int (type {res_type})");
-                return raise_exception::<Option<FormatOutput>>(_py, "TypeError", &msg);
-            }
-            if exception_pending(_py) {
-                return None;
-            }
+    if let Some(native) = percent_native(bits) {
+        let mut overflow = 0;
+        // formatchar retires an __index__ result inside this converter, before
+        // constructing its range error. It differs from formatlong's lifetime.
+        let value = unsafe { numbers::PyLong_AsLongAndOverflow(native, &mut overflow) };
+        if percent_native_failed(py, "percent character conversion") {
+            return None;
         }
+        if overflow != 0 || !(0..=0x10ffff).contains(&value) {
+            return raise_exception(py, "OverflowError", "%c arg not in range(0x110000)");
+        }
+        return percent_char_from_bigint(py, BigInt::from(value)).map(Into::into);
     }
-    percent_raise_char_type_error(_py, obj)
+    if let Some(value) = crate::builtins::numbers::index_bigint_integral_bits(bits) {
+        return percent_char_from_bigint(py, value).map(Into::into);
+    }
+    if let Some(result) = crate::builtins::numbers::index_from_number_protocol(py, bits) {
+        let owner = obj_from_bits(result).as_ptr().map(PtrDropGuard::new);
+        let value = crate::builtins::numbers::integer_storage_bigint(py, result);
+        drop(owner);
+        return percent_char_from_bigint(py, value?).map(Into::into);
+    }
+    if exception_pending(py) {
+        None
+    } else {
+        percent_raise_char_type_error(py, obj)
+    }
 }
 
 fn percent_numeric_prefix(is_negative: bool, flags: PercentFormatFlags) -> Option<char> {
@@ -543,9 +555,10 @@ fn percent_format_decimal(
         }
     })?;
     percent_integer_precision_admit(_py, precision)?;
-    let negative = value.is_negative();
-    let mut body = value.abs().to_string();
+    let negative = value.value.is_negative();
+    let mut body = value.value.abs().to_string();
     body = percent_integer_precision(_py, body, precision)?;
+    drop(value);
     let mut prefix = String::new();
     if let Some(sign) = percent_numeric_prefix(negative, flags) {
         prefix.push(sign);
@@ -578,16 +591,17 @@ fn percent_format_radix(
         }
     })?;
     percent_integer_precision_admit(_py, precision)?;
-    let negative = value.is_negative();
+    let negative = value.value.is_negative();
     let mut body = match conv {
-        b'o' => value.abs().to_str_radix(8),
-        b'x' | b'X' => value.abs().to_str_radix(16),
-        _ => value.abs().to_string(),
+        b'o' => value.value.abs().to_str_radix(8),
+        b'x' | b'X' => value.value.abs().to_str_radix(16),
+        _ => value.value.abs().to_string(),
     };
     if conv == b'X' {
         body = body.to_uppercase();
     }
     body = percent_integer_precision(_py, body, precision)?;
+    drop(value);
     let mut prefix = String::new();
     if let Some(sign) = percent_numeric_prefix(negative, flags) {
         prefix.push(sign);
@@ -618,7 +632,16 @@ fn percent_format_float(
     flags: PercentFormatFlags,
     conv: u8,
 ) -> Option<Vec<u8>> {
-    let value = crate::builtins::numbers::float_as_double(_py, value_bits)?;
+    let value = if let Some(native) = percent_native(value_bits) {
+        // Physical float subtypes bypass overridden __float__ in PyFloat_AsDouble.
+        let value = unsafe { numbers::PyFloat_AsDouble(native) };
+        if percent_native_failed(_py, "percent float conversion") {
+            return None;
+        }
+        value
+    } else {
+        crate::builtins::numbers::float_as_double(_py, value_bits)?
+    };
     let sign = if flags.sign_plus {
         Some('+')
     } else if flags.sign_space {
@@ -706,7 +729,7 @@ fn percent_lookup_mapping_arg(_py: &PyToken<'_>, rhs_bits: u64, key: &[u8]) -> O
     };
     unsafe {
         let rhs_type = object_type_id(rhs_ptr);
-        if rhs_type == TYPE_ID_TUPLE {
+        if is_tuple(rhs_bits) {
             return raise_exception::<Option<(u64, bool)>>(
                 _py,
                 "TypeError",
@@ -742,44 +765,46 @@ fn percent_lookup_mapping_arg(_py: &PyToken<'_>, rhs_bits: u64, key: &[u8]) -> O
 
 /// Mapping fields replace the active argument cursor before option parsing.
 /// Keep their returned reference through the next field, including error exits.
-struct PercentArguments {
+enum PercentArgument<'tuple, 'a, 'py> {
+    Tuple(TupleComparisonItem<'tuple, 'a, 'py>),
+    Value(u64),
+}
+
+impl PercentArgument<'_, '_, '_> {
+    fn bits(&self) -> u64 {
+        match self {
+            Self::Tuple(item) => item.bits(),
+            Self::Value(bits) => *bits,
+        }
+    }
+}
+
+struct PercentArguments<'a, 'py> {
     source: u64,
     current: u64,
-    tuple: Option<*mut u8>,
+    tuple: Option<TupleStorage<'a, 'py>>,
+    tuple_len: usize,
     index: usize,
     consumed: bool,
     mapping: bool,
     mapped_owner: Option<PtrDropGuard>,
 }
 
-impl PercentArguments {
-    fn next(&mut self, py: &PyToken<'_>) -> Option<u64> {
-        if let Some(ptr) = self.tuple {
-            let bits = unsafe {
-                crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| {
-                    elems.get(self.index).copied()
-                })
-                .flatten()
-            };
-            let Some(bits) = bits else {
-                return raise_exception::<Option<u64>>(
-                    py,
-                    "TypeError",
-                    "not enough arguments for format string",
-                );
-            };
+impl<'a, 'py> PercentArguments<'a, 'py> {
+    fn next(&mut self, py: &PyToken<'_>) -> Option<PercentArgument<'_, 'a, 'py>> {
+        if let Some(tuple) = &self.tuple {
+            if self.index >= self.tuple_len {
+                return raise_exception(py, "TypeError", "not enough arguments for format string");
+            }
+            let item = tuple.comparison_item(self.index)?;
             self.index += 1;
-            return Some(bits);
+            return Some(PercentArgument::Tuple(item));
         }
         if self.consumed {
-            return raise_exception::<Option<u64>>(
-                py,
-                "TypeError",
-                "not enough arguments for format string",
-            );
+            return raise_exception(py, "TypeError", "not enough arguments for format string");
         }
         self.consumed = true;
-        Some(self.current)
+        Some(PercentArgument::Value(self.current))
     }
 
     fn mapped(&mut self, py: &PyToken<'_>, key: &[u8]) -> Option<()> {
@@ -790,7 +815,7 @@ impl PercentArguments {
             if !owned {
                 inc_ref_bits(py, bits);
             }
-            PtrDropGuard::preserving(ptr)
+            PtrDropGuard::new(ptr)
         });
         self.current = bits;
         self.tuple = None;
@@ -813,9 +838,11 @@ pub(super) fn string_percent_format_impl(
     rhs_bits: u64,
 ) -> Option<FormatOutput> {
     let rhs_obj = obj_from_bits(rhs_bits);
-    let tuple = rhs_obj
-        .as_ptr()
-        .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_TUPLE });
+    let tuple = TupleStorage::from_bits(_py, rhs_bits);
+    let tuple_len = match &tuple {
+        Some(tuple) => tuple.len()?,
+        None => 0,
+    };
     let mapping = percent_rhs_allows_unused_non_tuple(_py, rhs_obj);
     if exception_pending(_py) {
         return None;
@@ -824,6 +851,7 @@ pub(super) fn string_percent_format_impl(
         source: rhs_bits,
         current: rhs_bits,
         tuple,
+        tuple_len,
         index: 0,
         consumed: false,
         mapping,
@@ -906,8 +934,8 @@ pub(super) fn string_percent_format_impl(
         }
         if width.is_none() && idx < bytes.len() && bytes[idx] == b'*' {
             idx += 1;
-            let width_bits = arguments.next(_py)?;
-            let width_val = percent_star_integer(_py, width_bits, PercentField::Width)?;
+            let width_arg = arguments.next(_py)?;
+            let width_val = percent_star_integer(_py, width_arg.bits(), PercentField::Width)?;
             if exception_pending(_py) {
                 return None;
             }
@@ -935,8 +963,8 @@ pub(super) fn string_percent_format_impl(
             idx += 1;
             if idx < bytes.len() && bytes[idx] == b'*' {
                 idx += 1;
-                let prec_bits = arguments.next(_py)?;
-                let prec_val = percent_star_integer(_py, prec_bits, PercentField::Precision)?;
+                let prec_arg = arguments.next(_py)?;
+                let prec_val = percent_star_integer(_py, prec_arg.bits(), PercentField::Precision)?;
                 if exception_pending(_py) {
                     return None;
                 }
@@ -972,7 +1000,8 @@ pub(super) fn string_percent_format_impl(
         let (next_idx, codepoint) =
             wtf8_step(bytes, idx, false).expect("Python format conversion codepoint");
         idx = next_idx;
-        let value_bits = arguments.next(_py)?;
+        let value_arg = arguments.next(_py)?;
+        let value_bits = value_arg.bits();
         let rendered = match conv {
             b's' => percent_format_text(
                 _py,
@@ -1014,12 +1043,8 @@ pub(super) fn string_percent_format_impl(
     if let Err(error) = out.append_literal(&text[literal_start..], Some(receiver_bits), true) {
         return error.raise(_py);
     }
-    if let Some(ptr) = arguments.tuple {
-        let len = unsafe {
-            crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| elems.len())
-                .unwrap_or(0)
-        };
-        if arguments.index < len {
+    if arguments.tuple.is_some() {
+        if arguments.index < arguments.tuple_len {
             return raise_exception::<Option<FormatOutput>>(
                 _py,
                 "TypeError",

@@ -263,123 +263,31 @@ fn decode_dispatches_latin1_not_utf8() {
 }
 
 #[test]
-fn format_applies_width_precision_and_hex() {
+fn format_without_runtime_percent_authority_fails_closed() {
     let _abi_test = install();
-    let fmt = unsafe { str_obj("[%5s][%-4d][%.2s][%#x]") };
-    let args = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(4) };
+    use molt_cpython_abi::api::{errors, refcount::OwnedPyObject, sequences, strings};
     unsafe {
-        molt_cpython_abi::api::sequences::PyTuple_SetItem(args, 0, str_obj("ab"));
-        molt_cpython_abi::api::sequences::PyTuple_SetItem(
-            args,
-            1,
-            molt_cpython_abi::api::numbers::PyLong_FromLong(7),
+        let format = OwnedPyObject::from_owned(str_obj("literal"));
+        let args = OwnedPyObject::from_owned(sequences::PyTuple_New(0));
+        assert!(!format.as_ptr().is_null());
+        assert!(!args.as_ptr().is_null());
+        assert!(errors::PyErr_Occurred().is_null());
+        let result =
+            OwnedPyObject::from_owned(strings::PyUnicode_Format(format.as_ptr(), args.as_ptr()));
+        let matches = errors::PyErr_ExceptionMatches(
+            (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast(),
         );
-        molt_cpython_abi::api::sequences::PyTuple_SetItem(args, 2, str_obj("xyz"));
-        molt_cpython_abi::api::sequences::PyTuple_SetItem(
-            args,
-            3,
-            molt_cpython_abi::api::numbers::PyLong_FromLong(255),
-        );
-    }
-    let out = unsafe { molt_cpython_abi::api::strings::PyUnicode_Format(fmt, args) };
-    assert!(!out.is_null());
-    assert_eq!(
-        String::from_utf8(unsafe { read_str(out) }).unwrap(),
-        "[   ab][7   ][xy][0xff]",
-        "width/precision/flags were previously parsed then DISCARDED"
-    );
-    unsafe {
-        molt_cpython_abi::api::refcount::Py_DECREF(out);
-        molt_cpython_abi::api::refcount::Py_DECREF(args);
-        molt_cpython_abi::api::refcount::Py_DECREF(fmt);
+        let pending = errors::PyErr_Occurred();
+        assert!(result.as_ptr().is_null());
+        assert_eq!(matches, 1);
+        assert!(!pending.is_null());
+        errors::PyErr_Clear();
     }
 }
 
-#[test]
-#[allow(clippy::approx_constant)] // 3.14159 deliberately exercises %.2f truncation, not math::PI
-fn format_float_conversions() {
-    let _abi_test = install();
-    let fmt = unsafe { str_obj("%.2f|%e|%g") };
-    let args = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(3) };
-    unsafe {
-        molt_cpython_abi::api::sequences::PyTuple_SetItem(
-            args,
-            0,
-            molt_cpython_abi::api::numbers::PyFloat_FromDouble(3.14159),
-        );
-        molt_cpython_abi::api::sequences::PyTuple_SetItem(
-            args,
-            1,
-            molt_cpython_abi::api::numbers::PyFloat_FromDouble(100.0),
-        );
-        molt_cpython_abi::api::sequences::PyTuple_SetItem(
-            args,
-            2,
-            molt_cpython_abi::api::numbers::PyFloat_FromDouble(0.5),
-        );
-    }
-    let out = unsafe { molt_cpython_abi::api::strings::PyUnicode_Format(fmt, args) };
-    assert!(!out.is_null());
-    assert_eq!(
-        String::from_utf8(unsafe { read_str(out) }).unwrap(),
-        "3.14|1.000000e+02|0.5"
-    );
-    unsafe {
-        molt_cpython_abi::api::refcount::Py_DECREF(out);
-        molt_cpython_abi::api::refcount::Py_DECREF(args);
-        molt_cpython_abi::api::refcount::Py_DECREF(fmt);
-    }
-}
-
-#[test]
-fn format_not_enough_and_surplus_args_are_typeerrors() {
-    let _abi_test = install();
-    unsafe { err_clear() };
-    let fmt = unsafe { str_obj("%s %s") };
-    let args = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(1) };
-    unsafe { molt_cpython_abi::api::sequences::PyTuple_SetItem(args, 0, str_obj("a")) };
-    let out = unsafe { molt_cpython_abi::api::strings::PyUnicode_Format(fmt, args) };
-    assert!(
-        out.is_null(),
-        "argument exhaustion must raise, not truncate"
-    );
-    assert!(unsafe { err_set() });
-    unsafe { err_clear() };
-
-    let fmt2 = unsafe { str_obj("%s") };
-    let args2 = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(2) };
-    unsafe {
-        molt_cpython_abi::api::sequences::PyTuple_SetItem(args2, 0, str_obj("a"));
-        molt_cpython_abi::api::sequences::PyTuple_SetItem(args2, 1, str_obj("b"));
-    }
-    let out2 = unsafe { molt_cpython_abi::api::strings::PyUnicode_Format(fmt2, args2) };
-    assert!(out2.is_null(), "surplus args must raise TypeError");
-    assert!(unsafe { err_set() });
-    unsafe { err_clear() };
-    unsafe {
-        molt_cpython_abi::api::refcount::Py_DECREF(args2);
-        molt_cpython_abi::api::refcount::Py_DECREF(fmt2);
-        molt_cpython_abi::api::refcount::Py_DECREF(args);
-        molt_cpython_abi::api::refcount::Py_DECREF(fmt);
-    }
-}
-
-#[test]
-fn format_d_of_non_number_is_typeerror_not_minus_one() {
-    let _abi_test = install();
-    unsafe { err_clear() };
-    let fmt = unsafe { str_obj("%d") };
-    let args = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(1) };
-    unsafe { molt_cpython_abi::api::sequences::PyTuple_SetItem(args, 0, str_obj("nope")) };
-    let out = unsafe { molt_cpython_abi::api::strings::PyUnicode_Format(fmt, args) };
-    assert!(out.is_null(), "old body appended '-1' and continued");
-    assert!(unsafe { err_set() });
-    unsafe { err_clear() };
-    unsafe {
-        molt_cpython_abi::api::refcount::Py_DECREF(args);
-        molt_cpython_abi::api::refcount::Py_DECREF(fmt);
-    }
-}
+// Percent-format semantic cases run against the actual runtime in
+// cpython_abi_hooks::exception_rendering_tests. A standalone string allocator
+// cannot substitute for the numeric/protocol engine behind unicode_format.
 
 #[test]
 fn join_concatenates_with_separator_and_rejects_non_str_items() {

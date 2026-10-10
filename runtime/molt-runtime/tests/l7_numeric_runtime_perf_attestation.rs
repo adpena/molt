@@ -5,7 +5,8 @@
 //! `BigInt::from_radix_be`, and byte export / `_PyLong_NumBits` execute the real
 //! heap-BigInt paths. Allocation and hook statistics come from a test-feature
 //! wrapper around the production mimalloc allocator. The wrapper is disabled
-//! during timed loops and enabled only for separate observer passes.
+//! during timed loops and enabled only for separate observer passes. Observed
+//! allocations are Rust global mimalloc traffic; native libc malloc is unobserved.
 
 #![cfg(not(target_arch = "wasm32"))]
 #![allow(clippy::undocumented_unsafe_blocks)]
@@ -15,7 +16,10 @@ use molt_cpython_abi::api::numbers::{
     _PyLong_AsByteArray, _PyLong_FromByteArray, _PyLong_NumBits, PyFloat_AsDouble,
     PyFloat_FromDouble, PyLong_AsLong, PyLong_FromLong, PyLong_FromString,
 };
-use molt_cpython_abi::api::refcount::Py_DECREF;
+use molt_cpython_abi::api::refcount::{OwnedPyObject, Py_DECREF};
+use molt_cpython_abi::api::strings::{
+    PyUnicode_AsUTF8AndSize, PyUnicode_Format, PyUnicode_FromString,
+};
 use molt_cpython_abi::l7_attestation::{
     CALIBRATION_TARGET_NS, MINIMUM_SAMPLE_NS, SAMPLE_COUNT, calibrate_timed_iterations,
     enforce_current_thread_affinity, normalized_affinity_mask, summarize_samples,
@@ -84,6 +88,8 @@ fn calibrate_case_iterations(seed_iterations: usize, operation: &mut impl FnMut(
 enum CaseFamily {
     BigInt,
     ScalarBridge,
+    NumericConversion,
+    PercentFormat,
     SharedHashStorage,
 }
 impl CaseFamily {
@@ -91,6 +97,8 @@ impl CaseFamily {
         match self {
             Self::BigInt => "runtime_bigint",
             Self::ScalarBridge => "runtime_scalar_bridge",
+            Self::NumericConversion => "runtime_numeric_conversion",
+            Self::PercentFormat => "runtime_percent_format",
             Self::SharedHashStorage => "runtime_shared_hash_storage",
         }
     }
@@ -410,6 +418,133 @@ fn scalar_origin_preserved(kind: ScalarKind) -> bool {
     }
 }
 
+// These stable public operations run unchanged in each source image. Preparation
+// is outside measure(); conversion/formatting, the literal witness and owned
+// result retirement are all included in each operation.
+unsafe extern "C" {
+    fn molt_number_long(value: u64) -> u64;
+    fn molt_number_float(value: u64) -> u64;
+    fn molt_int_as_i64(value: u64) -> i64;
+    fn molt_float_as_f64(value: u64) -> f64;
+    fn molt_mod(format: u64, args: u64) -> u64;
+}
+
+fn numeric_conversion_case(integer: bool) -> Value {
+    let input = if integer {
+        molt_obj_model::MoltObject::from_float(1.25).bits()
+    } else {
+        molt_obj_model::MoltObject::from_int(7).bits()
+    };
+    let (name, descriptor) = if integer {
+        (
+            "runtime.convert.int_from_float",
+            json!({
+                "entry": "molt_number_long", "input": 1.25, "expected": 1,
+                "operation": "convert_extract_release", "real_runtime_hooks": true,
+            }),
+        )
+    } else {
+        (
+            "runtime.convert.float_from_int",
+            json!({
+                "entry": "molt_number_float", "input": 7, "expected": 7.0,
+                "operation": "convert_extract_release", "real_runtime_hooks": true,
+            }),
+        )
+    };
+    measure(
+        name,
+        CaseFamily::NumericConversion,
+        descriptor,
+        2048,
+        || unsafe {
+            let result = if integer {
+                molt_number_long(input)
+            } else {
+                molt_number_float(input)
+            };
+            let valid = if PyErr_Occurred().is_null() {
+                if integer {
+                    molt_int_as_i64(result) == 1
+                } else {
+                    molt_float_as_f64(result).to_bits() == 7.0f64.to_bits()
+                }
+            } else {
+                false
+            };
+            molt_dec_ref_obj(result);
+            u64::from(black_box(valid))
+        },
+    )
+}
+
+fn percent_case(c_entry: bool, integer: bool) -> Value {
+    let (template, expected, argument) = if integer {
+        (c"%08d", b"00000007".as_slice(), 7.0)
+    } else {
+        (c"%.2f", b"1.25".as_slice(), 1.25)
+    };
+    let entry = if c_entry {
+        "PyUnicode_Format"
+    } else {
+        "molt_mod"
+    };
+    let kind = if integer { "int" } else { "float" };
+    let entry_name = if c_entry { "c" } else { "managed" };
+    unsafe {
+        let format = OwnedPyObject::from_owned(PyUnicode_FromString(template.as_ptr()));
+        assert!(!format.as_ptr().is_null());
+        let arg = OwnedPyObject::from_owned(if integer {
+            PyLong_FromLong(7)
+        } else {
+            PyFloat_FromDouble(argument)
+        });
+        assert!(!arg.as_ptr().is_null());
+        // These handles are borrowed while their C owners remain live for the
+        // complete measurement. The result crossing consumes its owned result.
+        let format_bits = molt_cpython_abi::bridge::molt_capi_pyobj_to_handle(format.as_ptr());
+        let arg_bits = molt_cpython_abi::bridge::molt_capi_pyobj_to_handle(arg.as_ptr());
+        assert_no_pending_exception();
+        measure(
+            &format!("runtime.percent.{entry_name}.{kind}"),
+            CaseFamily::PercentFormat,
+            json!({
+                "entry": entry, "template": template.to_str().unwrap(),
+                "argument": if integer { json!(7) } else { json!(1.25) },
+                "expected_utf8": std::str::from_utf8(expected).unwrap(),
+                "operation": "format_utf8_witness_release",
+                "managed_result_c_bridge_included": !c_entry,
+                "real_runtime_hooks": true,
+            }),
+            2048,
+            || {
+                let result = OwnedPyObject::from_owned(if c_entry {
+                    PyUnicode_Format(format.as_ptr(), arg.as_ptr())
+                } else {
+                    let bits = molt_mod(format_bits, arg_bits);
+                    if !PyErr_Occurred().is_null() {
+                        molt_dec_ref_obj(bits);
+                        return 0;
+                    }
+                    molt_cpython_abi::bridge::molt_capi_result_to_pyobj(bits)
+                });
+                if result.as_ptr().is_null() || !PyErr_Occurred().is_null() {
+                    return 0;
+                }
+                let mut len = 0;
+                let bytes = PyUnicode_AsUTF8AndSize(result.as_ptr(), &mut len);
+                let valid = !bytes.is_null()
+                    && len == expected.len() as isize
+                    && std::slice::from_raw_parts(bytes.cast::<u8>(), expected.len()) == expected;
+                // Drop runs before returning the witness; no output owner can
+                // escape the timed or observed operation.
+                drop(result);
+                u64::from(black_box(valid))
+            },
+        )
+    }
+}
+
 fn required_env(name: &str) -> String {
     let value = std::env::var(name)
         .unwrap_or_else(|_| panic!("{name} must be provided by the attestation runner"));
@@ -440,13 +575,21 @@ fn l7_numeric_runtime_performance_attestation() {
             cases.push(scalar_bridge_case(kind, roundtrip));
         }
     }
+    for integer in [true, false] {
+        cases.push(numeric_conversion_case(integer));
+    }
+    for c_entry in [false, true] {
+        for integer in [true, false] {
+            cases.push(percent_case(c_entry, integer));
+        }
+    }
     let integer_origin = scalar_origin_preserved(ScalarKind::Integer);
     let float_origin = scalar_origin_preserved(ScalarKind::Float);
     let payload = json!({
         "schema_version": 3,
         "kind": "l7_numeric_runtime_performance_attestation",
         "profile": "release",
-        "allocator_scope": "test_feature_counting_wrapper_over_production_mimalloc",
+        "allocator_scope": "rust_global_mimalloc_traffic_native_libc_unobserved",
         "sample_count": SAMPLE_COUNT,
         "scope": {
             "native": true,
@@ -477,7 +620,7 @@ fn l7_numeric_runtime_performance_attestation() {
             "scalar_identity_scope": "diagnostic only; independent candidate correctness gate; compared with both C owners alive",
             "decimal": "real RuntimeHooks::int_from_digits and BigInt::from_radix_be",
             "bytes": "real RuntimeHooks int_from_bytes/int_to_bytes/int_num_bits",
-            "numeric_hook_calls_per_op": "observed in the separate untimed probe pass",
+            "numeric_hook_calls_per_op": "selected numeric hooks only; unicode_format and other crossings are not counted; observed in the separate untimed probe pass",
             "semantic_witness": "every batch must complete every operation, preserve representative value bits, and leave no pending exception",
             "process_peak_rss": "component harness only; added by tools/bench/run_l7_numeric_attestation.py",
         },
@@ -785,7 +928,7 @@ fn shared_hash_storage_performance_attestation() {
             "schema_version": 1,
             "kind": "shared_hash_storage_performance_attestation",
             "profile": "release",
-            "allocator_scope": "existing test feature observer over production mimalloc; disabled in timed loops",
+            "allocator_scope": "observed Rust global mimalloc traffic; native libc malloc unobserved; disabled in timed loops",
             "source": {
                 "git_commit": required_env("MOLT_L7_GIT_COMMIT"),
                 "git_dirty": required_env("MOLT_L7_GIT_DIRTY"),

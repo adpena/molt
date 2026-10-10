@@ -564,9 +564,9 @@ fn unicode_formatter_supports_object_and_type_conversions() {
             "foreign_repr()",
             "foreign_repr()",
             "pkg.Widget",
-            "pkg:Widget",
             "pkg.Widget",
-            "pkg:Widget",
+            "pkg.Widget",
+            "pkg.Widget",
             "\u{03a9}",
         ]
     );

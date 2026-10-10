@@ -407,6 +407,33 @@ fn format_qualified_type_name_in_context(
 /// Python's %T diagnostic spelling uses actual class identity and qualname,
 /// suppressing builtins/__main__ while retaining lossless Python name bytes.
 pub(crate) fn format_diagnostic_type_name_bytes(py: &PyToken<'_>, obj: MoltObject) -> Vec<u8> {
+    if let Some(ptr) = obj
+        .as_ptr()
+        .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_FOREIGN })
+    {
+        let native = std::ptr::with_exposed_provenance_mut(unsafe {
+            crate::object::foreign::foreign_ptr_from_obj(ptr)
+        });
+        let result = unsafe {
+            let class = molt_cpython_abi::api::object::Py_TYPE(native);
+            if class.is_null() {
+                crate::cpython_abi_hooks::propagate_native_failure(py, "diagnostic type lookup");
+                return Vec::new();
+            }
+            let name =
+                molt_cpython_abi::api::errors::molt_capi_type_fully_qualified_name(class, b'.');
+            molt_cpython_abi::bridge::owned_native_result_to_runtime(name)
+        };
+        let molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) = result.decode() else {
+            crate::cpython_abi_hooks::propagate_native_failure(py, "diagnostic type name");
+            return Vec::new();
+        };
+        let _owner = obj_from_bits(bits).as_ptr().map(PtrDropGuard::preserving);
+        return string_obj_bytes(obj_from_bits(bits)).unwrap_or_else(|| {
+            raise_exception::<()>(py, "SystemError", "diagnostic type name is not a string");
+            Vec::new()
+        });
+    }
     let class = type_of_bits(py, obj.bits());
     obj_from_bits(class)
         .as_ptr()

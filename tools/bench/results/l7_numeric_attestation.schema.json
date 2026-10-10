@@ -535,7 +535,7 @@
         "allocator_scope": {
           "enum": [
             "rust_global_allocator",
-            "test_feature_counting_wrapper_over_production_mimalloc"
+            "rust_global_mimalloc_traffic_native_libc_unobserved"
           ]
         },
         "sample_count": { "const": 9 },

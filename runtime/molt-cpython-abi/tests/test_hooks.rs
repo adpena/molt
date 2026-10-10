@@ -31,6 +31,10 @@ fn init() -> support::AbiTestThreadStateTransaction {
 fn test_hooks_or_stubs_returns_stubs() {
     let _abi_test = init();
     let h = hooks_or_stubs();
+    assert!(matches!(
+        unsafe { (h.unicode_format)(0, 0) }.decode(),
+        DecodedHandleResult::Error
+    ));
     // The transaction adds lifecycle custody; the explicit string fixture
     // and all other object hooks retain fail-closed stub behavior.
     assert!(matches!(

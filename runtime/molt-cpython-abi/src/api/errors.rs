@@ -278,7 +278,7 @@ fn current_exc_type_ptr() -> Option<*mut PyObject> {
 
 /// Query both raised channels without projecting a C view, materializing a
 /// traceback, or consuming an allocation-free runtime emergency error.
-pub(crate) fn raised_error_pending() -> bool {
+pub fn raised_error_pending() -> bool {
     current_exc_type_ptr().is_some()
         || unsafe { (crate::hooks::hooks_or_stubs().exception_pending)() } != 0
 }
@@ -3873,29 +3873,66 @@ unsafe extern "C" {
     pub fn PyErr_Format(exc_type: *mut PyObject, format: *const c_char, ...) -> *mut PyObject;
 }
 
-/// Formatter-only typed adapter for `%T`/`%N`.
-///
-/// Both static extension types and Molt-managed type views keep their
-/// canonical `module.qualname` spelling in `tp_name`. The C variadic shim
-/// cannot safely redeclare the full `PyTypeObject` layout just to reach that
-/// field, so it crosses this fixed-arity boundary instead.
+/// Canonical diagnostic type-name producer for `%T`/`%N`. Static types
+/// retain tp_name; heap types use current qualname and their own __module__
+/// entry, bypassing metaclass descriptors as _PyType_GetFullyQualifiedName does.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_capi_type_fully_qualified_name(
     tp: *mut PyTypeObject,
+    separator: u8,
 ) -> *mut PyObject {
-    if tp.is_null() {
-        return ptr::null_mut();
-    }
-    let name = unsafe { (*tp).tp_name };
-    if name.is_null() {
-        return ptr::null_mut();
-    }
-    let bytes = unsafe { CStr::from_ptr(name) }.to_bytes();
+    use crate::api::{mapping, refcount::OwnedPyObject, strings, typeobj};
     unsafe {
-        crate::api::strings::PyUnicode_FromStringAndSize(
-            bytes.as_ptr().cast(),
-            bytes.len() as Py_ssize_t,
-        )
+        if tp.is_null() {
+            PyErr_BadInternalCall();
+            return ptr::null_mut();
+        }
+        if (*tp).tp_flags & crate::abi_types::Py_TPFLAGS_HEAPTYPE == 0 {
+            if (*tp).tp_name.is_null() {
+                PyErr_BadInternalCall();
+                return ptr::null_mut();
+            }
+            return strings::PyUnicode_FromString((*tp).tp_name);
+        }
+        let qualname = OwnedPyObject::from_owned(typeobj::PyType_GetQualName(tp));
+        if qualname.as_ptr().is_null() {
+            return ptr::null_mut();
+        }
+        let dictionary = OwnedPyObject::from_owned(typeobj::PyType_GetDict(tp));
+        if dictionary.as_ptr().is_null() {
+            return ptr::null_mut();
+        }
+        let module =
+            mapping::_PyDict_GetItemStringWithError(dictionary.as_ptr(), c"__module__".as_ptr());
+        if module.is_null() {
+            if !raised_error_pending() {
+                PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_AttributeError).cast(),
+                    c"__module__".as_ptr(),
+                );
+            }
+            return ptr::null_mut();
+        }
+        let module = OwnedPyObject::from_borrowed(module);
+        if strings::PyUnicode_Check(module.as_ptr()) == 0 {
+            return qualname.into_ptr();
+        }
+        let Some(bytes) = strings::unicode_bytes(module.as_ptr()) else {
+            return ptr::null_mut();
+        };
+        if matches!(bytes, b"builtins" | b"__main__") {
+            return qualname.into_ptr();
+        }
+        let dot = OwnedPyObject::from_owned(strings::unicode_from_python_bytes(&[separator]));
+        if dot.as_ptr().is_null() {
+            return ptr::null_mut();
+        }
+        let prefix =
+            OwnedPyObject::from_owned(strings::PyUnicode_Concat(module.as_ptr(), dot.as_ptr()));
+        if prefix.as_ptr().is_null() {
+            return ptr::null_mut();
+        }
+        strings::PyUnicode_Concat(prefix.as_ptr(), qualname.as_ptr())
     }
 }
 

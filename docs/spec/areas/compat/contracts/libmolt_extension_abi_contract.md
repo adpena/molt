@@ -93,6 +93,26 @@ Static binding replaces that whole domain, including across runtime restarts;
 physical readiness, protocol and GC flags remain C-owned. Both runtime producers
 and test stubs use the canonical version constant.
 
+### Unicode percent formatting
+
+`PyUnicode_Format` enters the runtime's declaring `str.__mod__` operation through
+`RuntimeHooks::unicode_format` (hook ABI version 62). The runtime percent parser,
+arbitrary-width integer conversions, width/precision validation, Python text
+writer and callback cleanup are the single formatting authority. The explicit
+C API bypasses a string subtype's `__mod__` override. Managed inputs remain
+borrowed from their C owners; temporary foreign projections remain owned until
+the synchronous operation finishes. Native tuple arguments use their physical
+tuple storage, and native numeric values use the existing numeric payload and
+conversion authority. Standalone ABI stubs fail closed without a formatting
+engine; semantic tests use the real runtime. Raw native Unicode payload support
+is unchanged.
+
+Native diagnostic type names share the C formatter's type-name producer. Static
+types use `tp_name`; heap types read the current qualname and own `__module__`
+entry. The producer owns the module separator for `%T`/`%N` and their alternate
+forms, so nested qualnames are preserved. Runtime diagnostics retain Python text
+bytes, including surrogate codepoints, through this boundary.
+
 ### Managed iterator protocol
 
 `PyObject_GetIter`, `PyIter_Check`, `PyIter_Next`, and the `None` advancement
@@ -123,10 +143,10 @@ Storage recognition is separate from exact Python type identity and protocol
 dispatch. `PyFloat_AsDouble` and explicit float descriptors read subclass
 payloads; the float constructor dispatches a subtype's conversion override.
 `sum()` admits only exact floats to its float fast phase. Source and operator
-unary calls share subtype-first dispatch; range membership/count/index and
-decimal percent formatting retain rich-equality and integer-conversion
-overrides respectively. These consumers never infer protocol admission from
-the physical `TYPE_ID_FLOAT` tag alone.
+unary calls share subtype-first dispatch; range membership/count/index retains
+rich equality. Decimal percent formatting reads existing integer storage and
+uses integer conversion for other admitted numeric objects. These consumers
+never infer protocol admission from the physical `TYPE_ID_FLOAT` tag alone.
 Mixed int/float subtype arithmetic enters the existing forward/reflected
 dispatch authority before reading payloads. Inherited float arithmetic
 descriptors normalize owned scalar carriers and invoke the same exact-builtin
@@ -134,13 +154,14 @@ operator implementation. This preserves reflected subtype priority and makes
 `NotImplemented` terminal after the protocol is exhausted; it neither repeats
 an override nor substitutes payload arithmetic for a declined method.
 
-Semantic integer arithmetic and integer-format protocol results use the shared
-integer-only projections, `index_i64_integral_bits` and
-`index_bigint_integral_bits`. The codegen-tolerant `to_i64`/`to_bigint`
-conversions do not authorize integer payload paths: inline floats, native heap
-floats, and tagged Float instances all remain in the float family. Decimal,
-integer-base, and character percent formatting validate `__int__`/`__index__`
-results with the same arbitrary-width integer projection before consuming them.
+Semantic integer arithmetic uses the pure managed integer projections,
+`index_i64_integral_bits` and `index_bigint_integral_bits`. The codegen-tolerant
+`to_i64`/`to_bigint` conversions do not authorize integer payload paths: inline
+floats, native heap floats, and tagged Float instances remain in the float family.
+Validated conversion results use the separate fallible integer-storage reader,
+which also reads native integer results without admitting them early into
+arithmetic dispatch. Decimal, integer-base, and character percent formatting
+share this conversion-result authority.
 Floor-division dispatch retains the caller's operator spelling, including `//=`,
 when subtype protocols decline.
 
@@ -403,11 +424,27 @@ stored. Typed-field batches convert and retain all inputs before publication,
 then release replaced owners after the complete new state is visible. Replacing
 a raised slot with the same exception still releases the old slot's reference.
 Public raised-error transfer gives the C indicator precedence
-when both channels are populated. Temporary-owner cleanup instead detaches and
+when both channels are populated. Explicit shielded cleanup instead detaches and
 restores both exact channels independently, including allocation-free emergency
 runtime errors; it does not project C views or materialize lazy tracebacks.
 The synchronous cleanup hook keeps ownership on the caller and runtime stacks,
 drains cleanup errors, and restores both channels before resuming a Rust panic.
+Numeric operation temporaries use ordinary reference retirement: native
+deallocators can observe the pending error and must preserve its exact identity.
+Runtime native-reference retirement completes a C raised-error roundtrip through
+the existing transfer authority before its caller resumes, for both foreign
+wrappers and directly owned C results. Managed finalizers retain their existing
+error-preservation boundary. Payload-only projections and explicitly shielded
+cleanup retain the detached-channel policy.
+Type-special descriptor binding, public method calls and generated native slot
+invocation use the same ordinary retirement rule for semantic callable and
+result owners. Internal receiver/type/name projections remain protected. The
+Boolean slot preserves the callable through result validation for Python
+3.12/3.13; Python 3.14 retires it when the call completes. Generated length
+conversion retains the private index result through scalar extraction while
+retiring the original result at the conversion boundary. Hash validation uses
+the balanced Python 3.13+ wrong-result release order on every target; Molt does
+not reproduce the reference leak present in the pinned Python 3.12 source.
 Printing and unraisable reporting consume the same selected raised error as
 fetching it. Native finalizers, clear callbacks and type watchers detach both
 outer channels before executing or reporting callback failures. Cold C-view
@@ -1285,6 +1322,18 @@ with warning failure preceding the callback; Python 3.14 removes that path.
 These rules follow [CPython's numeric protocols](https://github.com/python/cpython/blob/v3.14.8/Objects/abstract.c).
 String and generic-buffer acceptance remain separately qualified parser surfaces;
 numeric protocol tests do not certify their completeness.
+
+Managed numeric callbacks may return genuine native integer or float objects.
+Their results use the same native validation, subtype warnings, and owned
+normalization as C numeric slots. Private index conversion retains the returned
+subtype; public integer conversions produce exact integers. Exact native
+integer and float results preserve their identity. Float scalar consumers retire
+the validated owner after extraction, while `float()` transfers an exact callback
+result. Integer-to-float conversion retains the index result through overflow
+creation. Managed scalar subclass fields receive managed payloads even when
+conversion returns a native object. Public scalar extraction, async sleep,
+copyreg, and the ctypes bridge consume these storage rules without invoking a
+second conversion callback. Pure arithmetic carrier probes remain unchanged.
 
 Adoption validates the source record and counts, reserves insertion storage,
 and acquires the runtime view mark before atomically publishing. Failure retains

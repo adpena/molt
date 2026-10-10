@@ -737,7 +737,7 @@ fn sequence_container_performance_attestation() {
         "schema_version": 2,
         "kind": "sequence_container_performance_attestation",
         "profile": "release",
-        "allocator_scope": "test_feature_counting_wrapper_over_production_mimalloc",
+        "allocator_scope": "rust_global_mimalloc_traffic_native_libc_unobserved",
         "sample_count": SAMPLE_COUNT,
         "execution_mode": {
             "deterministic_default": true,

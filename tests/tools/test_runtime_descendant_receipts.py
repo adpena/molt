@@ -94,7 +94,9 @@ def test_unrelated_binary_is_not_engaged_even_without_evidence(tmp_path):
 
 
 @pytest.mark.parametrize("owner, mode", list(support.CONTRACT))
-def test_every_mandatory_child_is_derived_from_completed_owner_rows(tmp_path, owner, mode):
+def test_every_mandatory_child_is_derived_from_completed_owner_rows(
+    tmp_path, owner, mode
+):
     owners = [owner]
     image = support.make_image(tmp_path)
     records = support.family_records(image, owners)
@@ -517,9 +519,24 @@ def test_lifecycle_modes_keep_their_actual_completion_contract(tmp_path, mode):
         (support.EXIT, "no-lease", "lease", "stdout"),
         (support.ISOLATE_OWNER, "failed", "thread-state", "stdout"),
         (support.THREAD_ADMISSION, "delayed-isolate", "delayed-shared", "stdout"),
-        (support.THREAD_ADMISSION, "spawn-failure-shared", "spawn-failure-bytes", "stdout"),
-        (support.THREAD_ADMISSION, "shared-payload-panic", "shared-cleanup-panic", "stdout"),
-        (support.THREAD_ADMISSION, "shared-cleanup-panic", "process-service-timeout", "stdout"),
+        (
+            support.THREAD_ADMISSION,
+            "spawn-failure-shared",
+            "spawn-failure-bytes",
+            "stdout",
+        ),
+        (
+            support.THREAD_ADMISSION,
+            "shared-payload-panic",
+            "shared-cleanup-panic",
+            "stdout",
+        ),
+        (
+            support.THREAD_ADMISSION,
+            "shared-cleanup-panic",
+            "process-service-timeout",
+            "stdout",
+        ),
     ],
 )
 def test_same_child_modes_cannot_exchange_valid_retained_output(
@@ -799,36 +816,88 @@ def test_transaction_rejects_resealed_wrong_primary_failure(
 
 
 @pytest.mark.parametrize("change", ["success", "abort", "completed", "missing-refusal"])
-def test_pending_native_reservation_process_exit_must_refuse_before_completion(tmp_path, change):
+def test_pending_native_reservation_process_exit_must_refuse_before_completion(
+    tmp_path, change
+):
     receipt, records = lib_receipt(tmp_path, owners=[support.THREAD_ADMISSION])
-    row = next(record for record in records if record["mode"] == "exit-with-pending-isolate")
+    row = next(
+        record for record in records if record["mode"] == "exit-with-pending-isolate"
+    )
     if change == "success":
         row["termination"] = {"kind": "exit", "code": 0}
     elif change == "abort":
         row["termination"] = deepcopy(support.ABORT[os.name])
     elif change == "completed":
-        row["stdout"] = support.publish(Path(row["stdout"]["path"]), support.transcript([support.THREAD_ADMISSION]))
+        row["stdout"] = support.publish(
+            Path(row["stdout"]["path"]), support.transcript([support.THREAD_ADMISSION])
+        )
     else:
         row["stderr"] = support.publish(Path(row["stderr"]["path"]), "")
     support.republish(receipt, "stderr", support.records_text(records))
-    with pytest.raises(descendants.DescendantEvidenceError, match="termination|before terminating inside it|lacks"):
+    with pytest.raises(
+        descendants.DescendantEvidenceError,
+        match="termination|before terminating inside it|lacks",
+    ):
         verify(receipt)
 
 
 def test_process_service_timeout_requires_its_retained_owner_diagnostic(tmp_path):
     receipt, records = lib_receipt(tmp_path, owners=[support.THREAD_ADMISSION])
-    row = next(record for record in records if record["mode"] == "process-service-timeout")
-    row["stderr"] = support.publish(Path(row["stderr"]["path"]), "unrelated worker timeout\n")
+    row = next(
+        record for record in records if record["mode"] == "process-service-timeout"
+    )
+    row["stderr"] = support.publish(
+        Path(row["stderr"]["path"]), "unrelated worker timeout\n"
+    )
     support.republish(receipt, "stderr", support.records_text(records))
-    with pytest.raises(descendants.DescendantEvidenceError, match="descendant stderr lacks"):
+    with pytest.raises(
+        descendants.DescendantEvidenceError, match="descendant stderr lacks"
+    ):
         verify(receipt)
 
 
-@pytest.mark.parametrize("mode", ["joined-service-failed-join", "joined-service-cleanup-panic", "joined-service-foreign-c", "joined-service-exit"])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "joined-service-failed-join",
+        "joined-service-cleanup-panic",
+        "joined-service-foreign-c",
+        "joined-service-exit",
+    ],
+)
 def test_joined_service_failure_requires_retained_owner_diagnostic(tmp_path, mode):
     receipt, records = lib_receipt(tmp_path, owners=[support.THREAD_ADMISSION])
     row = next(record for record in records if record["mode"] == mode)
-    row["stderr"] = support.publish(Path(row["stderr"]["path"]), "unrelated worker failure\n")
+    row["stderr"] = support.publish(
+        Path(row["stderr"]["path"]), "unrelated worker failure\n"
+    )
     support.republish(receipt, "stderr", support.records_text(records))
-    with pytest.raises(descendants.DescendantEvidenceError, match="descendant stderr lacks"):
+    with pytest.raises(
+        descendants.DescendantEvidenceError, match="descendant stderr lacks"
+    ):
+        verify(receipt)
+
+
+def test_native_thread_descendant_rejects_forwarded_nested_libtest_banner(tmp_path):
+    receipt, records = lib_receipt(tmp_path, owners=[support.THREAD_ADMISSION])
+    row = next(record for record in records if record["mode"] == "delayed-isolate")
+    # Actual v9 shape: a successful nested inert process inherited the owning
+    # child's stdout. Keep valid stream hashes, exit0, exact pass and marker;
+    # none can disambiguate the second run banner into one libtest invocation.
+    child = support.THREAD_ADMISSION
+    row["stdout"] = support.publish(
+        Path(row["stdout"]["path"]),
+        "\nrunning 1 test\n"
+        f"test {child} ... \n"
+        "running 1 test\n"
+        "native thread lifetime verified: delayed-isolate\n"
+        "ok\n\n"
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; "
+        "1764 filtered out; finished in 0.02s\n\n",
+    )
+    support.republish(receipt, "stderr", support.records_text(records))
+    with pytest.raises(
+        descendants.DescendantEvidenceError,
+        match=r"\(delayed-isolate\): descendant lacks exact one-test completion; .*multiple-run-banners",
+    ):
         verify(receipt)
