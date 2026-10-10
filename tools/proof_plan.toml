@@ -1740,7 +1740,7 @@ resource_class = "compiler-build-resource"
 timeout_budget = "shipping"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "tools/run_runtime_test_gate.py", "--profile", "dev-fast", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--profile", "dev-fast", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
@@ -2850,7 +2850,7 @@ dependencies = []
 # Full default-feature shipping runtime: parallel remainder plus seven separate
 # fresh-process lifecycle/GIL witnesses. Performance probes remain explicit
 # unrun entries; no missing child or incomplete result accounting can pass.
-argv = ["uv", "run", "--frozen", "python3", "tools/run_runtime_test_gate.py", "--profile", "release-output", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120", "--parallel-threads", "8"]
+argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/run_runtime_test_gate.py", "--profile", "release-output", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120", "--parallel-threads", "8"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]

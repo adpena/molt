@@ -531,8 +531,14 @@ def test_shipping_runtime_gate_requires_full_parallel_and_fresh_child_accounting
     assert shipping.argv == (
         "uv",
         "run",
-        "--frozen",
-        "python3",
+        "--active",
+        "--project",
+        ".",
+        "--python",
+        "3.12",
+        "--no-sync",
+        "--no-config",
+        "python",
         "tools/run_runtime_test_gate.py",
         "--profile",
         "release-output",
@@ -550,6 +556,25 @@ def test_shipping_runtime_gate_requires_full_parallel_and_fresh_child_accounting
     ):
         assert path in PLAN.authority_inputs
         assert _classes(path)["rust"] is True
+
+
+@pytest.mark.parametrize(
+    "command_id",
+    ["rust.test.runtime-cold-lifecycle", "portability.rust.macos.runtime-gate"],
+)
+def test_runtime_proof_transport_preserves_registered_native_build_closure(command_id):
+    from tools.proof_queue_pkg import policy
+
+    command = next(row for row in PLAN.commands if row.id == command_id)
+    # The exact dispatch must satisfy queue admission and carry the real Cargo
+    # producer closure; altering UV transport must never be needed at launch.
+    assert policy._proof_command_policy_error(list(command.argv)) is None
+    envelope = command_admission.envelope_for_command(command.argv)
+    assert envelope["proof_plan_command_ids"] == [command_id]
+    assert envelope["process_closure"]["kind"] == "proof-plan"
+    assert envelope["process_closure"]["descendants"] == "declared-toolchains"
+    assert {"python", "uv", "rustc", "cargo"} <= set(envelope["toolchains"])
+    assert envelope["cargo_native_units"] == {"target": ["c", "c++"]}
 
 
 def test_runtime_descendant_authority_is_hashed_and_its_tests_execute() -> None:

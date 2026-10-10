@@ -166,6 +166,14 @@ remain open. The Windows compile failure is repaired above; native Windows
 replay is still required. Metadata-only Windows Cargo checks also expose an
 unnecessary target-linker requirement in the development proof selector; its
 operation family must be corrected without weakening host proc-macro linking.
+The first local full-runtime dispatch also exposes incompatible interpreter
+transport requirements between its plan declaration and queue admission. Both
+registered runtime variants now use the queue's existing active-project
+contract and retain their exact Rust and C/C++ declarations. A mismatched
+transport had been admitted as a Python leaf because the entrypoint had multiple
+registered variants; the complete registry family must refuse that loss of
+custody before launch. The failed dispatch is not a Rust compilation or runtime
+result, and its incomplete execution receipt is retained.
 
 Historical integration evidence: PR119 merged at `5a6758e90` on 2026-10-10.
 The clean Linux ABI qualification at `bb2b77bca` is recorded below.
