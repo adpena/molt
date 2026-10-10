@@ -13,7 +13,11 @@ from molt.dx import control_state_dir
 STATE_ROOT_ENV = "MOLT_MEMORY_GUARD_STATE_ROOT"
 # Guard state is this control-state directory of the run's scratch.
 STATE_DIRNAME = "memory_guard"
+# Markers of unresolved custody. Every reader of this directory costs
+# O(live custody), so a marker leaves it once its custody is resolved.
 ACTIVE_DIRNAME = "active"
+# Bounded history of resolved markers, beside the active directory.
+RETIRED_DIRNAME = "retired"
 
 
 def memory_guard_state_root(
@@ -47,6 +51,12 @@ def active_guard_marker_dir(
     """Return the active-marker directory under the admitted artifact root."""
 
     return memory_guard_state_root(repo_root, environ) / ACTIVE_DIRNAME
+
+
+def retired_guard_marker_dir(active_dir: Path) -> Path:
+    """Return the bounded history directory beside one active-marker directory."""
+
+    return active_dir.parent / RETIRED_DIRNAME
 
 
 def active_guard_marker_dirs_of(artifact_root: Path) -> tuple[Path, ...]:

@@ -37,24 +37,46 @@ compatibility. If 3.12/3.13/3.14 differ, document the chosen target in specs/tes
 - **Current-tree guard ownership**: repo-sentinel current-tree ownership survives reparenting only while live parent lineage or repo/Molt command identity still proves the process group belongs to the guarded launch. Numeric process-group reuse alone is not ownership proof; a later host process that inherits an old PGID must be excluded from drain and violation kill sets, and stale-preflight cleanup must ignore orphaned host processes that lack Molt/repo command identity. The standalone `tools/process_sentinel.py` terminator also re-samples ancestor plus Claude/Codex/app-server/renderer/node-repl protected PGIDs before signaling, so direct cleanup commands share the same final kill refusal.
 - **Process cleanup custody**: cleanup authority is Molt-owned process identity, not repo path, process name, stale PID, parent shell, or Codex/Claude ancestry. Only live-proved Molt build/test/bench workers, backend daemons, runtime children, and guard-owned process groups may be signaled. Codex, Claude, app-server, renderer, node-repl, MCP/plugin helpers, shell hosts, Git pollers, ancestors, and other host-control-plane processes are never cleanup targets; ambiguous ownership must skip and preserve evidence.
 - **Descendant birth admission**: tracker-free watches and sentinel ownership use the same live birth-fenced descendant authority as tracked custody. Every inferred edge requires exact positive integer creation timestamps with parent birth no later than child birth; unknown births and stale parent PIDs cannot extend ownership. Directly admitted roots retain their existing meaning. The current-guard exception to host protection requires that same verified ancestry, while uncertain host ancestry and snapshot-helper descendants remain conservatively protected. PPID-only descendant walks serve diagnostics and never grant cleanup custody.
-- **Active-marker reconciliation**: `tools/memory_guard_core/active_custody.py`
-  owns the schema-v2 guard/direct-child birth identities and terminal projection
-  used by the producer, disk guard, pytest bootstrap, proof-queue diagnostics,
-  and final runtime-WASM preflight. The producer must publish `spawn_pending`
-  before creating a child and records the existing handle-bound child birth.
-  Inspect with `python tools/memory_guard_custody.py --json`; use `--active-dir`
-  for an explicit canonical custody directory. `--apply` records
-  `custody_reconciled` only when a fresh native snapshot establishes the recorded
-  guard and child are absent or their PIDs belong to different birth identities,
-  with no recorded child process group still present. Marker generations are
-  read before the single snapshot and compared under the producer's publication
-  lock before writing a receipt. Empty/failed snapshots abort without writes;
-  concurrent changes, indirect/unreadable files, invalid JSON/schema/identity,
-  legacy records without birth identities, and interrupted launches lacking a
-  child identity remain protective. A parent's watched PIDs and file timestamps
-  cannot retire another marker. New launches and reconciliation preserve every
-  evidence file; neither path prunes records, signals processes, or grants
-  process-cleanup authority. Host-control-plane exclusions remain unchanged.
+- **Guard-marker custody**: `tools/memory_guard_core/active_custody.py` owns the
+  schema-v2 guard/direct-child birth identities, publication, reconciliation and
+  retirement for the producer, disk guard, pytest bootstrap, proof-queue
+  diagnostics and final runtime-WASM preflight. `active/` holds only unresolved
+  custody, so every reader costs O(live guards), not O(history). A guard that
+  finishes moves its own marker to `retired/` once its scratch is reclaimed,
+  retained or blocked; `retired/` keeps the newest 256 records. A marker that
+  stays in `active/` names a live run, a run that raised, a run whose closure or
+  scratch is unresolved, or a guard that died. The producer publishes
+  `spawn_pending` before it creates a child, records the handle-bound child
+  birth, and records `child_launch_state: failed` when the launch raises (no
+  child exists). An exiting guard sweeps `active/` when it holds 16 more records
+  than the previous sweep left (`sweep.json`); the gate reads at most 1,025
+  directory entries and never sweeps above 1,024 records, so it never pays for
+  history. `python tools/memory_guard_custody.py` does the same full pass on
+  demand: dry run by default, `--apply` to write. One native snapshot decides
+  each record. A pid absent from the snapshot is dead, whatever its recorded
+  birth. A pid that now names another birth was reused, and a reused child
+  leader proves its recorded group closed (a kernel never gives a new process a
+  pid that still names a live group). A record whose guard and child are dead
+  or reused, with no recorded child-group member left, becomes
+  `custody_reconciled` and leaves `active/`. Its leased or indeterminate scratch
+  then takes the scratch authority's failure path (see `docs/agent/PROOF_QUEUE.md`).
+  `completed` and `finalizer_completed` are terminal without births: the guard
+  reaped its child before it published them. Live evidence (a matching birth or
+  a live child-group member) always protects. Inconclusive evidence (a present
+  pid without two comparable births, or a launch that never published its
+  outcome) and unreadable records stay protective, and the report names each
+  one with the exact command `memory_guard_custody.py --active-dir <dir>
+  --release <marker> --apply`. Use it only after you confirm that no process of
+  that run is alive; it records an `operator_attested` receipt and still refuses
+  live evidence. `tools/disk_guard.py` reads files only; when an active record
+  blocks a candidate, its result names the records and this command. Marker
+  generations are read before the snapshot and compared under the producer's
+  lock before any write. Empty, failed or substituted snapshots abort without
+  writes. A parent's watched PIDs and file timestamps cannot retire another
+  marker. Reconciliation never signals processes or grants process-cleanup
+  authority. Host-control-plane exclusions remain unchanged. A host whose
+  `active/` still holds history from before retirement existed migrates it once
+  with `python tools/memory_guard_custody.py --apply`.
 - **Guarded-command hotspot profile**: shared guarded subprocesses write structured `guarded_command_profile` JSONL events only for incidents by default, keeping routine successful test/build runs clean. Incident events include prefix, session id, command, cwd, return code, elapsed time, memory-guard limits, peak RSS when sampled, violation/timeout/signal/orphan status, GitHub Actions context when present, and a bounded repro payload with pytest/Codex/Molt env hints, parent-process lineage, and host-control-plane process topology. Set `MOLT_GUARD_PROFILE=all` or provide `MOLT_GUARD_PROFILE_LOG=<path>` for an intentional all-command capture; set `MOLT_GUARD_PROFILE=0` to disable profile writes entirely. The log rotates to `commands.jsonl.1` at 16 MB by default (`MOLT_GUARD_PROFILE_MAX_MB`, set `<=0` only for an intentional unbounded local capture). `tools/guarded_exec.py` also prints the elapsed time and profile path for each wrapped CI/dev command. Use `MOLT_GUARD_PROFILE_LOG=<path>` to move this log to another canonical artifact path for a specific run, and use `python3 tools/profile_hotspots.py --limit 20` to summarize slowest events and grouped command families when all-command profiling is enabled.
 - **Repo-sentinel incident schema**: shared harness repo-sentinel JSONL events distinguish termination from observation. Claimed kills carry `claim_status=claimed`, `termination.attempted=true`, `killed_at`, and `killer_*`; PGIDs already claimed by another guard carry `claim_status=already_claimed`, `termination.attempted=false`, `observed_at`, and `observer_*` so diagnostics do not falsely attribute a kill to the wrong guard.
 - **Output startup and binary-size audit**: use `python3 tools/output_startup_size_audit.py --targets all --build-profiles dev,release --backends all --samples 5` when startup or output-size regressions are suspected. The audit builds the same hello-world probe through the normal CLI for native, linked-WASM, Luau, and MLIR targets, records artifact bytes for each target/profile/backend row, measures same-path and fresh-path startup wherever a canonical runner exists, and writes a JSON artifact to `bench/results/output_startup_size_audit_<timestamp>.json`. Native fresh-path copies expose dyld/code-signature fixed costs; linked-WASM rows run under deterministic Node flags when Node is available; Luau/MLIR rows keep size custody and record an explicit skipped-runner reason when local startup is not canonical. Pass `--max-artifact-mb` and `--max-fresh-start-ms` only when intentionally enforcing a budget; otherwise the audit is observational so current regressions can be measured before setting the ratchet.
