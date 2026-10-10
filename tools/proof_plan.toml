@@ -2032,7 +2032,7 @@ cell = "linux-x86_64-py312-repository-policy"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "repository-policy"
 # Measured 552 s and more than 600 s on a 4-CPU runner shared with the tooling
-# and supply-chain families; most of it is per-spawn guard census cost (HF-131).
+# and supply-chain families; most of it is per-spawn guard census cost (HF-48).
 timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = ["repository.generator-manifest", "repository.generators", "repository.structural-debt", "repository.canonicalization", "repository.call-fact-coverage"]
