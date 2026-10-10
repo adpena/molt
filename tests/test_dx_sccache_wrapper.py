@@ -149,13 +149,19 @@ def test_cargo_build_env_incremental_off_when_sccache_wrapper(monkeypatch):
     assert env["CARGO_INCREMENTAL"] == "0"  # sccache skips incremental units
 
 
-def test_maybe_enable_sccache_forces_incremental_off(monkeypatch):
+def test_maybe_enable_sccache_forces_incremental_off(monkeypatch, tmp_path: Path):
     import molt.cli.cargo_execution as ce
 
     monkeypatch.setattr(ce, "pinned_sccache", lambda env: "/opt/sccache")
     monkeypatch.setattr(ce, "_sccache_server_responsive", lambda _sccache, _env: True)
     monkeypatch.setattr(ce, "_SCCACHE_DIAG_EMITTED", True, raising=False)
-    env = {"MOLT_USE_SCCACHE": "1"}  # forced on
+    # Name the cache: a derived default follows the run context, which this
+    # minimal environment lacks, and would pin its server temp dir in a CI
+    # clone's checkout.
+    env = {
+        "MOLT_USE_SCCACHE": "1",  # forced on
+        "SCCACHE_DIR": str(tmp_path / ".sccache"),
+    }
     ce._maybe_enable_sccache(env)
     assert env.get("RUSTC_WRAPPER", "").endswith("sccache")
     assert env["CARGO_INCREMENTAL"] == "0"

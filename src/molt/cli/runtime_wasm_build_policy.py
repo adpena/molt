@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from molt.cli.cargo_profiles import _CARGO_PROFILE_NAME_RE
+from molt.dx import project_cargo_target_dir
 
 
 def _runtime_build_profile_override() -> str:
@@ -131,18 +132,12 @@ def _runtime_wasm_incremental_target_root(project_root: Path, family_key: str) -
 
     Session-independent by design: cross-iteration incremental reuse is the whole
     point (the per-session dir exists for agent isolation, but a fresh session id
-    per proof-queue run means cargo incremental never engages â€” the M09 "stable
+    per proof-queue run means cargo incremental never engages: the M09 "stable
     target dir" lever).  Concurrency across sessions building the same family is
     made safe by cargo's own per-target build lock plus the ``_build_slot()``
     cross-process gate; two *divergent* source builds in one family serialise and
     may thrash each other's incremental state (slower, never incorrect), so this
     stays opt-in for the single-lane iteration loop.
     """
-    override = os.environ.get("CARGO_TARGET_DIR", "").strip()
-    if override:
-        base = Path(override).expanduser()
-        if not base.is_absolute():
-            base = (Path.cwd() / base).absolute()
-    else:
-        base = project_root / "target"
+    base = project_cargo_target_dir(project_root, os.environ, session_scoped=False)
     return base / "runtime-wasm-incr" / family_key

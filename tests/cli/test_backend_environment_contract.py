@@ -3,6 +3,8 @@ from pathlib import Path
 import pytest
 
 from molt.backend_environment import (
+    DEBUG_ARTIFACT_DIR_ENV,
+    CodegenSelection,
     codegen_environment_inputs,
     compilation_diagnostics_requested,
     environment_keys,
@@ -50,6 +52,45 @@ def test_compilation_diagnostic_presence_and_observation_policy():
     assert not compilation_diagnostics_requested(
         {name: "1" for name in environment_keys("observation", "resource")}
     )
+
+
+def test_backend_debug_artifacts_follow_the_artifact_root_not_the_checkout(
+    tmp_path: Path,
+):
+    """HF-111: the CLI names the directory; the backend derives no root."""
+    from molt.path_custody import host_path_is_within
+    from molt.source_root import compiler_source_root
+
+    artifact_root = tmp_path / "artifacts"
+    rooted = CodegenSelection().environment({"MOLT_EXT_ROOT": str(artifact_root)})
+    default = Path(CodegenSelection().environment({})[DEBUG_ARTIFACT_DIR_ENV])
+
+    # The artifact root's scratch, the layout the backend used to derive.
+    assert rooted[DEBUG_ARTIFACT_DIR_ENV] == str(
+        artifact_root.resolve() / "tmp" / "molt-backend"
+    )
+    assert default.is_absolute()
+    assert not host_path_is_within(default, compiler_source_root())
+    # The backend no longer reads the artifact root, so no request carries it.
+    assert "MOLT_EXT_ROOT" not in environment_keys(
+        "common", "native", "wasm", "diagnostic", "observation", "resource"
+    )
+    assert DEBUG_ARTIFACT_DIR_ENV in environment_keys("observation")
+
+
+def test_explicit_backend_debug_artifact_dir_wins_and_is_made_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.chdir(tmp_path)
+    explicit = tmp_path / "evidence" / "backend-debug"
+
+    kept = CodegenSelection().environment({DEBUG_ARTIFACT_DIR_ENV: str(explicit)})
+    relative = CodegenSelection().environment({DEBUG_ARTIFACT_DIR_ENV: "rel/debug"})
+
+    assert kept[DEBUG_ARTIFACT_DIR_ENV] == str(explicit)
+    # A daemon with another working directory resolves the same directory.
+    assert relative[DEBUG_ARTIFACT_DIR_ENV] == str(tmp_path / "rel" / "debug")
+    assert not (tmp_path / "rel").exists()
 
 
 @pytest.mark.parametrize("tier", ["module", "function"])

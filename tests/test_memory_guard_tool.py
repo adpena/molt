@@ -8351,7 +8351,7 @@ def test_untracked_watch_cannot_admit_children_of_an_absent_root():
 def test_sigkilled_target_gets_time_to_leave_under_zero_grace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Zero grace means "kill now", not "vanish within 20 ms" (HF-48).
+    """Zero grace means "kill now", not "vanish within 20 ms" (HF-F141).
 
     The escaped descendant leaves the process table 0.2 s after SIGKILL, which
     a loaded host can take. A probe window shorter than that sees it live and

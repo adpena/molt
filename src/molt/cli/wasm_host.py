@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from molt.dx import project_cargo_target_dir
+
 
 def molt_wasm_host_exe_name() -> str:
     return "molt-wasm-host.exe" if os.name == "nt" else "molt-wasm-host"
@@ -19,10 +21,9 @@ def resolve_molt_wasm_host_binary(
     """Resolve the host built with the same Cargo profile as the runtime.
 
     ``MOLT_WASM_HOST_BIN`` is the explicit deployment authority.  Otherwise
-    select the caller's target directory, CARGO_TARGET_DIR, or the repository
-    target directory, in that order. A missing selected binary never falls
-    through to another build. Relative Cargo target directories are relative to
-    the source root, where callers run Cargo.
+    select the caller's target directory (relative to ``root``), else the
+    project's Cargo target (`molt.dx.project_cargo_target_dir`). A missing
+    selected binary never falls through to another build.
     """
     requested = os.environ.get("MOLT_WASM_HOST_BIN", "").strip()
     if requested:
@@ -31,8 +32,7 @@ def resolve_molt_wasm_host_binary(
 
     root = root.absolute()
     if target_dir is None:
-        configured = os.environ.get("CARGO_TARGET_DIR", "").strip()
-        target_dir = Path(configured) if configured else root / "target"
+        target_dir = project_cargo_target_dir(root, os.environ)
     target_dir = target_dir.expanduser()
     if not target_dir.is_absolute():
         target_dir = root / target_dir
