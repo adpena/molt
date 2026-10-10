@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 from molt.dx import development_artifact_env
 
 
-def build_molt_conformance_env(project_root: Path, session_id: str) -> dict[str, str]:
+def build_molt_conformance_env(
+    project_root: Path, session_id: str, base: Mapping[str, str]
+) -> dict[str, str]:
+    """Resolve a conformance run's DX roots from the caller's environment.
+
+    The caller's custody selectors (an explicit artifact root, CI's ephemeral
+    custody root) decide where artifacts go. Resolving from the session ID
+    alone put them in the checkout, which CI custody refuses.
+    """
     return development_artifact_env(
         project_root,
-        {"MOLT_SESSION_ID": session_id},
+        {**base, "MOLT_SESSION_ID": session_id},
         session_prefix="conformance",
         create_dirs=False,
     )
