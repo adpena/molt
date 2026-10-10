@@ -2937,9 +2937,13 @@ def test_scratch_probe_lets_tests_build_fixtures_under_their_own_roots(
     assert _scratch_bypass_count(tmp_path, "tests/test_sample.py", body) == 4
 
 
-def test_scratch_probe_exempts_the_authority_and_the_stdlib(tmp_path: Path):
+def test_scratch_probe_exempts_the_authority_and_guest_code(tmp_path: Path):
     body = "x = env.get('MOLT_EXT_ROOT')\ny = root / 'tmp'\n"
-    for relative in ("src/molt/dx.py", "src/molt/stdlib/tempfile.py"):
+    for relative in (
+        "src/molt/dx.py",
+        "src/molt/stdlib/tempfile.py",
+        "tests/differential/basic/tempfile_paths.py",
+    ):
         assert _scratch_bypass_count(tmp_path, relative, body) == 0
 
 

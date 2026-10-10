@@ -2972,7 +2972,9 @@ def probe_stdlib_raw_intrinsic_names(root: Path) -> list[Finding]:
 # (configured_artifact_root, artifact_root) and run scratch (scratch_root,
 # scratch_dir, control_state_dir); molt.custody_layout owns the path rule.
 _SCRATCH_AUTHORITY_ROOTS = ("src", "tools", "tests", "bench", "drivers", "deploy")
-_SCRATCH_AUTHORITY_SKIP_PREFIXES = ("src/molt/stdlib/",)
+# The stdlib and differential programs are guest code Molt compiles, not
+# Molt tooling.
+_SCRATCH_AUTHORITY_SKIP_PREFIXES = ("src/molt/stdlib/", "tests/differential/")
 _SCRATCH_AUTHORITY_OWNER = "src/molt/dx.py"
 _ARTIFACT_ROOT_ENV = "MOLT_EXT_ROOT"
 _ARTIFACT_ROOT_CONSTANT = "ARTIFACT_ROOT_ENV"
