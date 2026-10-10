@@ -1064,7 +1064,7 @@ audience = "user"
 kind = "path"
 default = ""
 owner = "runtime/molt-ir/src/debug_artifacts.rs"
-summary = "Root directory where the compiler backends write debug artifacts such as native/compiled_funcs.txt, counted_loop_trace.txt and native batch failure replays; unset means <MOLT_EXT_ROOT or current directory>/tmp/molt-backend."
+summary = "Directory where the compiler backends write debug artifacts and scratch objects such as native/compiled_funcs.txt, LLVM object files and native batch failure replays. It is the backend's only placement input. The molt CLI always passes it as an absolute path: the set value, else the compiler's run scratch folder molt-backend from molt.dx.scratch_dir. A backend started without it uses <platform temp directory>/molt-backend."
 
 [[variable]]
 name = "MOLT_DEBUG_AWAITABLE"
