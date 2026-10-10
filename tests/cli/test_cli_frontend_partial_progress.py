@@ -40,6 +40,9 @@ def _clear_path_caches() -> None:
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "molt_cache"))
+    # Lowering slots live under the build-state root, which otherwise follows
+    # the shared Cargo target; a slot left there breaks the next run (HF-107).
+    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "build_state"))
     monkeypatch.setenv("MOLT_SESSION_ID", "partial-progress")
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("MOLT_DISABLE_FRONTEND_LOWERING_CACHE", raising=False)

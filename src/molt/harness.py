@@ -7,6 +7,7 @@ and produces reports. This is the entry point called by `molt harness`.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +18,7 @@ from molt.harness_layers import (
     harness_memory_limits,
     harness_repo_sentinel,
 )
+from molt.process_guard import GuardInfrastructureError
 from molt.harness_report import (
     Baseline,
     HarnessReport,
@@ -48,7 +50,18 @@ def _run_profile(
             )
             continue
 
-        result = layer.run_fn(config)
+        started = time.monotonic()
+        try:
+            result = layer.run_fn(config)
+        except GuardInfrastructureError as exc:
+            # The guard failed around the layer's command; the layer's own
+            # outcome is unknown, so it fails with the guard's diagnosis.
+            result = LayerResult(
+                name=layer.name,
+                status=LayerStatus.FAIL,
+                duration_s=time.monotonic() - started,
+                details=str(exc),
+            )
         results.append(result)
 
         if not result.passed and result.status != LayerStatus.SKIP:

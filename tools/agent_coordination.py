@@ -27,7 +27,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from molt import process_guard  # noqa: E402
-from molt.dx import DX_ENV_KEYS, RunContext, render_env  # noqa: E402
+from molt.dx import DX_ENV_KEYS, development_artifact_env, render_env  # noqa: E402
 from molt.portable_paths import portable_path_component, portable_relative_path  # noqa: E402
 from tools import check_instruction_hierarchy, claims_status  # noqa: E402
 
@@ -1635,7 +1635,6 @@ def render_report(record: dict[str, Any]) -> str:
 4. Run commands with `molt dx run -- <command>` or source the env file first.
 
 ## Resume Instructions
-- Export MOLT_SESSION_ID="{record["session_id"]}"
 - POSIX: source "{record["env_sh"]}"
 - PowerShell: . "{record["env_ps1"]}"
 - Resume from the next command recorded above.
@@ -2371,12 +2370,17 @@ def init_task(args: argparse.Namespace) -> dict[str, Any]:
     )
     artifacts.mkdir(parents=True, exist_ok=True)
     (base / "progress.log").touch()
-    dx_env = RunContext(
+    session_env = dict(os.environ)
+    if not args.session and not session_env.get("MOLT_SESSION_ID"):
+        # init named this session itself. Only --session pins an isolated
+        # Cargo target; an unpinned task shares the warm persistent one.
+        session_env["MOLT_SESSION_ID"] = record["session_id"]
+        session_env["MOLT_SESSION_ID_GENERATED"] = "1"
+    dx_env = development_artifact_env(
         repo_root,
+        session_env,
         session_prefix=f"agent-{task}",
-        prefer_external_artifacts=True,
-    ).dx_env(
-        os.environ | {"MOLT_SESSION_ID": record["session_id"]},
+        session_id=args.session,
         create_dirs=False,
     )
     record["dx_env"] = {key: dx_env[key] for key in DX_ENV_KEYS if key in dx_env}
@@ -2561,7 +2565,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     init = sub.add_parser("init", help="create a task log and coordination.json")
     init.add_argument("task")
     init.add_argument("--agent")
-    init.add_argument("--session")
+    init.add_argument(
+        "--session",
+        help="pin this session id; a pinned session builds in its own Cargo target",
+    )
     init.add_argument("--role", choices=VALID_ROLES, default="implementer")
     init.add_argument("--lane", default="")
     init.add_argument("--status", default="running")

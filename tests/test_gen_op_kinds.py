@@ -7773,10 +7773,9 @@ def test_preserved_iterator_requires_the_generated_iterable_protocol():
 def test_explicit_frontend_lowerings_replace_manufactured_spellings():
     namespace = {}
     exec(_gen().render_py(_gen().load_table()), namespace)
-    # These names come from the lifecycle, async, closure, iteration and
+    # These names come from the lifecycle, closure, iteration and
     # attribute producers. The wire spellings are not extra frontend aliases.
     lowerings = {
-        "block_on": "ASYNC_BLOCK_ON",
         "class_layout_version": "CLASS_VERSION",
         "del_attr_generic_obj": "DELATTR_GENERIC_OBJ",
         "del_attr_generic_ptr": "DELATTR_GENERIC_PTR",
@@ -7806,7 +7805,7 @@ def test_explicit_frontend_lowerings_replace_manufactured_spellings():
     for kind in ("ret", "ret_void"):
         assert kind in namespace["FRONTEND_EFFECT_CONTROL_KINDS"]
         assert namespace["FRONTEND_ARBITRARY_HEAP_EFFECT"][kind] is False
-    for kind in ("RETURN", "RET", "RET_VOID"):
+    for kind in ("RETURN", "RET", "RET_VOID", "ASYNC_BLOCK_ON", "block_on"):
         with pytest.raises(ValueError, match="unregistered frontend op kind"):
             namespace["validate_frontend_kind"](kind, "producer")
         with pytest.raises(ValueError, match="unregistered SimpleIR op kind"):

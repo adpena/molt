@@ -4,7 +4,7 @@ use crate::builtins::exceptions::{
 };
 use crate::{
     CONTEXT_STACK, MoltHeader, MoltObject, PyToken, TYPE_ID_CONTEXT_MANAGER, TYPE_ID_FILE_HANDLE,
-    alloc_object, call_callable0, call_callable3, close_payload, dec_ref_bits, exception_pending,
+    alloc_object, call_callable0, call_callable3, dec_ref_bits, exception_pending,
     file_handle_enter, file_handle_exit, inc_ref_bits, intern_static_name, obj_from_bits,
     object_type_id, raise_exception, runtime_state, to_i64,
 };
@@ -116,22 +116,6 @@ extern "C" fn context_null_enter(payload_bits: u64) -> u64 {
 
 extern "C" fn context_null_exit(_payload_bits: u64, _exc_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(false).bits() })
-}
-
-#[allow(dead_code)]
-extern "C" fn context_closing_enter(payload_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        inc_ref_bits(_py, payload_bits);
-        payload_bits
-    })
-}
-
-#[allow(dead_code)]
-extern "C" fn context_closing_exit(payload_bits: u64, _exc_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        close_payload(_py, payload_bits);
-        MoltObject::from_bool(false).bits()
-    })
 }
 
 fn context_stack_push(_py: &PyToken<'_>, ctx_bits: u64) {

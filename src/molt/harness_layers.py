@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Callable
 from molt.cargo_workspace import workspace_package_names
 from molt.dx import development_artifact_env
 from molt.harness_report import LayerResult, LayerStatus
+from molt.process_guard import raise_for_guard_outcome
 from molt.source_root import compiler_source_root
 
 _SOURCE_ROOT = compiler_source_root()
@@ -130,7 +131,7 @@ def _run_cmd(
     )
 
     try:
-        return guard.guarded_completed_process(
+        result = guard.guarded_completed_process(
             args,
             prefix=HARNESS_MEMORY_PREFIX,
             cwd=cwd,
@@ -140,6 +141,9 @@ def _run_cmd(
             timeout=timeout,
             limits=limits,
         )
+        # A guard timeout or infrastructure failure is not the layer's result.
+        raise_for_guard_outcome(args, result, timeout=timeout)
+        return result
     except FileNotFoundError as exc:
         return subprocess.CompletedProcess(
             args=args,

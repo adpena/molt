@@ -53,11 +53,10 @@ class ComprehensionMixin(GeneratorMixinBase):
         return self._emit_inline_dict_comp(node)
 
     def visit_GeneratorExp(self, node: ast.GeneratorExp) -> Any:
+        # An async generator expression is legal in any scope: building it
+        # awaits nothing. Its outermost iterable runs in the enclosing scope,
+        # where visit_Await enforces placement.
         async_needed = self._comprehension_requires_async(node.generators, [node.elt])
-        if async_needed and not self.is_async_context():
-            raise SyntaxError(
-                "asynchronous comprehension outside of an asynchronous function"
-            )
         # CPython evaluates AND iterates the outermost iterable at generator
         # construction time; only the loop body and every nested iterable are
         # lazy.  Transport that already-created iterator as the hidden .0
@@ -124,7 +123,6 @@ class ComprehensionMixin(GeneratorMixinBase):
         assigned = self._collect_assigned_names(body)
         del_targets = self._collect_deleted_names(body)
         prev_state = self._capture_function_state()
-        prev_async_context = self.async_context
         self.start_function(
             poll_func_name,
             stateful_frame_plan=frame_plan,
@@ -136,7 +134,6 @@ class ComprehensionMixin(GeneratorMixinBase):
         )
         self.current_class = None
         self.current_method_first_param = None
-        self.async_context = prev_async_context
         self.global_decls = set(module_namedexpr_targets)
         self.del_targets = del_targets
         self.scope_assigned = assigned - self.nonlocal_decls - self.global_decls
@@ -885,9 +882,10 @@ class ComprehensionMixin(GeneratorMixinBase):
         """
         exprs = self._inline_simple_comp_exprs(node)
         async_needed = self._comprehension_requires_async(node.generators, exprs)
-        if async_needed and not self.is_async_context():
-            raise SyntaxError(
-                "asynchronous comprehension outside of an asynchronous function"
+        if async_needed and not self._in_coroutine_body():
+            self._raise_syntax_error(
+                "asynchronous comprehension outside of an asynchronous function",
+                node,
             )
         outer = node.generators[0]
         outer_value = self.visit(outer.iter)

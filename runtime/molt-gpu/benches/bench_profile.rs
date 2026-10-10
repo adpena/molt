@@ -67,14 +67,6 @@ impl StageTimings {
     }
 }
 
-/// Measure a closure's duration.
-#[allow(dead_code)]
-fn time_us<F: FnMut()>(mut f: F) -> f64 {
-    let start = Instant::now();
-    f();
-    start.elapsed().as_secs_f64() * 1e6
-}
-
 // ============================================================================
 // Softmax pipeline
 // ============================================================================

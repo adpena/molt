@@ -62,7 +62,7 @@ def _compile_to_luau(python_source: str) -> str:
     """Compile Python source to Luau via molt CLI and return the Luau source code.
 
     Returns the generated Luau text (not the runtime output).
-    Calls pytest.skip if compilation fails.
+    Fails the test if compilation fails.
     """
     with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as py_f:
         py_f.write(python_source)
@@ -92,7 +92,9 @@ def _compile_to_luau(python_source: str) -> str:
             cwd=MOLT_DIR,
         )
         if result.returncode != 0:
-            pytest.skip(f"Compilation failed: {result.stderr[:300]}")
+            pytest.fail(
+                f"Compilation failed (exit {result.returncode}): {result.stderr[-2000:]}"
+            )
 
         with open(luau_path, "r", encoding="utf-8") as f:
             return f.read()
@@ -133,7 +135,9 @@ def _run_luau(python_source: str) -> str:
             cwd=MOLT_DIR,
         )
         if result.returncode != 0:
-            pytest.skip(f"Compilation failed: {result.stderr[:300]}")
+            pytest.fail(
+                f"Compilation failed (exit {result.returncode}): {result.stderr[-2000:]}"
+            )
 
         try:
             result = run_native_test_process(

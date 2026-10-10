@@ -9,16 +9,10 @@ from __future__ import annotations
 
 import ast
 import sys
-from pathlib import Path
 from random import Random
 
 from tests.native_process_guard import run_native_test_process
-
-# Allow importing tools/fuzz_compiler.py from the repo root.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_REPO_ROOT / "tools"))
-
-from fuzz_compiler import SafeProgramGenerator  # noqa: E402
+from tools.fuzz_compiler_safe import SafeProgramGenerator
 
 
 def _generate(seed: int, max_stmts: int = 15) -> str:

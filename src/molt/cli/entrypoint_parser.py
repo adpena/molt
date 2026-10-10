@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+from molt.backend_executable_names import CODEGEN_BACKENDS
 from molt.debug import DebugSubcommand
 from molt.cli import factgraph as _factgraph
 from molt.cli.arg_helpers import (
@@ -22,7 +23,7 @@ from molt.cli.source_extension_invocation import (
 from molt.cli.toolchain_validation import _VALIDATE_SUITE_CHOICES
 from molt.wasm_optimization import WASM_OPT_LEVELS
 
-_CODEGEN_BACKEND_CHOICES = ("cranelift", "llvm", "auto")
+_CODEGEN_BACKEND_CHOICES = (*CODEGEN_BACKENDS, "auto")
 
 
 def _build_entrypoint_parser() -> argparse.ArgumentParser:

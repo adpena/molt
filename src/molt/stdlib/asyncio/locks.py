@@ -20,22 +20,22 @@ from asyncio import (
     _current_token_id,
     _is_cancelled_exc,
     _register_event_waiter,
-    molt_asyncio_event_clear_handle,
-    molt_asyncio_event_drop,
-    molt_asyncio_event_is_set,
-    molt_asyncio_event_new,
-    molt_asyncio_event_set_fast,
-    molt_asyncio_event_set_waiters,
-    molt_asyncio_lock_acquire_fast,
-    molt_asyncio_lock_drop,
-    molt_asyncio_lock_locked,
-    molt_asyncio_lock_new,
-    molt_asyncio_lock_release_fast,
-    molt_asyncio_semaphore_acquire_fast,
-    molt_asyncio_semaphore_drop,
-    molt_asyncio_semaphore_new,
-    molt_asyncio_semaphore_release_fast,
-    molt_asyncio_semaphore_value,
+    _molt_asyncio_event_clear_handle,
+    _molt_asyncio_event_drop,
+    _molt_asyncio_event_is_set,
+    _molt_asyncio_event_new,
+    _molt_asyncio_event_set_fast,
+    _molt_asyncio_event_set_waiters,
+    _molt_asyncio_lock_acquire_fast,
+    _molt_asyncio_lock_drop,
+    _molt_asyncio_lock_locked,
+    _molt_asyncio_lock_new,
+    _molt_asyncio_lock_release_fast,
+    _molt_asyncio_semaphore_acquire_fast,
+    _molt_asyncio_semaphore_drop,
+    _molt_asyncio_semaphore_new,
+    _molt_asyncio_semaphore_release_fast,
+    _molt_asyncio_semaphore_value,
     _require_asyncio_intrinsic,
     _unregister_event_waiter,
 )
@@ -46,28 +46,28 @@ mixins: Any | None = None
 
 class Event:
     def __init__(self) -> None:
-        self._evt_handle: int = molt_asyncio_event_new()
+        self._evt_handle: int = _molt_asyncio_event_new()
         self._waiters: list[Future] = []
 
     def is_set(self) -> bool:
-        return bool(molt_asyncio_event_is_set(self._evt_handle))
+        return bool(_molt_asyncio_event_is_set(self._evt_handle))
 
     def set(self) -> None:
-        if molt_asyncio_event_is_set(self._evt_handle):
+        if _molt_asyncio_event_is_set(self._evt_handle):
             return None
-        molt_asyncio_event_set_fast(self._evt_handle)
+        _molt_asyncio_event_set_fast(self._evt_handle)
         waiters = self._waiters
         self._waiters = []
         _require_asyncio_intrinsic(
-            molt_asyncio_event_set_waiters, "asyncio_event_set_waiters"
+            _molt_asyncio_event_set_waiters, "asyncio_event_set_waiters"
         )(waiters, True)
         return None
 
     def clear(self) -> None:
-        molt_asyncio_event_clear_handle(self._evt_handle)
+        _molt_asyncio_event_clear_handle(self._evt_handle)
 
     async def wait(self) -> bool:
-        if molt_asyncio_event_is_set(self._evt_handle):
+        if _molt_asyncio_event_is_set(self._evt_handle):
             return True
         fut = Future()
         fut._molt_event_owner = self
@@ -90,19 +90,19 @@ class Event:
     def __del__(self) -> None:
         handle = getattr(self, "_evt_handle", None)
         if handle is not None:
-            molt_asyncio_event_drop(handle)
+            _molt_asyncio_event_drop(handle)
 
 
 class Lock:
     def __init__(self) -> None:
-        self._lock_handle: int = molt_asyncio_lock_new()
+        self._lock_handle: int = _molt_asyncio_lock_new()
         self._waiters: _deque[Future] = _deque()
 
     def locked(self) -> bool:
-        return bool(molt_asyncio_lock_locked(self._lock_handle))
+        return bool(_molt_asyncio_lock_locked(self._lock_handle))
 
     async def acquire(self) -> bool:
-        if molt_asyncio_lock_acquire_fast(self._lock_handle):
+        if _molt_asyncio_lock_acquire_fast(self._lock_handle):
             return True
         fut = Future()
         self._waiters.append(fut)
@@ -112,13 +112,13 @@ class Lock:
             if _is_cancelled_exc(exc):
                 _asyncio_waiters_remove(self._waiters, fut)
             raise
-        molt_asyncio_lock_acquire_fast(self._lock_handle)
+        _molt_asyncio_lock_acquire_fast(self._lock_handle)
         return True
 
     def release(self) -> None:
-        if not molt_asyncio_lock_locked(self._lock_handle):
+        if not _molt_asyncio_lock_locked(self._lock_handle):
             raise RuntimeError("Lock is not acquired")
-        molt_asyncio_lock_release_fast(self._lock_handle)
+        _molt_asyncio_lock_release_fast(self._lock_handle)
         if self._waiters:
             _asyncio_waiters_notify(self._waiters, 1, True)
 
@@ -136,7 +136,7 @@ class Lock:
     def __del__(self) -> None:
         handle = getattr(self, "_lock_handle", None)
         if handle is not None:
-            molt_asyncio_lock_drop(handle)
+            _molt_asyncio_lock_drop(handle)
 
 
 class Condition:
@@ -201,14 +201,14 @@ class Semaphore:
     def __init__(self, value: int = 1) -> None:
         if value < 0:
             raise ValueError("Semaphore initial value must be >= 0")
-        self._sem_handle: int = molt_asyncio_semaphore_new(value)
+        self._sem_handle: int = _molt_asyncio_semaphore_new(value)
         self._waiters: _deque[Future] = _deque()
 
     def locked(self) -> bool:
-        return molt_asyncio_semaphore_value(self._sem_handle) == 0
+        return _molt_asyncio_semaphore_value(self._sem_handle) == 0
 
     async def acquire(self) -> bool:
-        if molt_asyncio_semaphore_acquire_fast(self._sem_handle):
+        if _molt_asyncio_semaphore_acquire_fast(self._sem_handle):
             return True
         fut = Future()
         self._waiters.append(fut)
@@ -221,7 +221,7 @@ class Semaphore:
         return True
 
     def release(self) -> None:
-        molt_asyncio_semaphore_release_fast(self._sem_handle, -1)
+        _molt_asyncio_semaphore_release_fast(self._sem_handle, -1)
         if self._waiters:
             _asyncio_waiters_notify(self._waiters, 1, True)
 
@@ -233,14 +233,14 @@ class Semaphore:
         self.release()
 
     def __repr__(self) -> str:
-        value = int(molt_asyncio_semaphore_value(self._sem_handle))
+        value = int(_molt_asyncio_semaphore_value(self._sem_handle))
         state = "locked" if value == 0 else f"unlocked, value:{value}"
         return f"<Semaphore [{state}]>"
 
     def __del__(self) -> None:
         handle = getattr(self, "_sem_handle", None)
         if handle is not None:
-            molt_asyncio_semaphore_drop(handle)
+            _molt_asyncio_semaphore_drop(handle)
 
 
 class BoundedSemaphore(Semaphore):
@@ -249,7 +249,7 @@ class BoundedSemaphore(Semaphore):
         self._initial_value = value
 
     def release(self) -> None:
-        molt_asyncio_semaphore_release_fast(self._sem_handle, self._initial_value)
+        _molt_asyncio_semaphore_release_fast(self._sem_handle, self._initial_value)
         if self._waiters:
             _asyncio_waiters_notify(self._waiters, 1, True)
 

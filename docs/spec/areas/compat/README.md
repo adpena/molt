@@ -92,7 +92,9 @@ Update the authority for the changed contract and regenerate its affected
 projections; do not run unrelated generators for a prose-only change. For
 stdlib/version coverage changes, the existing commands are:
 
-1. Refresh stdlib union baseline and stubs when their inputs change:
+1. Refresh stdlib union baseline and stubs when their inputs change (after a
+   CPython pin moves in `config/cpython_regrtest_sources.toml`, run
+   `python3 tools/gen_stdlib_module_union.py --refresh-sources` first):
    - `python3 tools/gen_stdlib_module_union.py --write`
    - `python3 tools/gen_stdlib_stubs.py --write`
 2. Refresh stdlib intrinsic audit doc:

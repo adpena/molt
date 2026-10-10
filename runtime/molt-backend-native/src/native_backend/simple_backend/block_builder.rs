@@ -49,7 +49,6 @@ pub(crate) fn block_has_terminator(builder: &FunctionBuilder, block: Block) -> b
 }
 
 #[cfg(feature = "native-backend")]
-#[allow(dead_code)]
 pub(crate) fn sync_block_filled(builder: &FunctionBuilder, is_block_filled: &mut bool) {
     if let Some(block) = builder.current_block() {
         if block_has_terminator(builder, block) {

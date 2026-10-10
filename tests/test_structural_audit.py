@@ -2803,8 +2803,11 @@ def test_build_failure_skip_probe_counts_skips_that_hide_a_failed_build(
         "    pytest.skip('Build/run error: x')\n"
         "    pytest.skip('one or both builds failed')\n"
         "    pytest.skip('Backend killed during compilation (stale daemon)')\n"
+        "    pytest.skip(f'molt native warmup failed (infrastructure): {err}')\n"
+        "    pytest.skip(f'molt native warmup timed out: {exc}')\n"
+        "    pytest.skip('Cross-target build exceeded 300s; warm the cache.')\n"
     )
-    assert _build_failure_skip_count(tmp_path, body) == 4
+    assert _build_failure_skip_count(tmp_path, body) == 7
 
 
 def test_build_failure_skip_probe_keeps_capability_skips(tmp_path: Path):
@@ -2814,6 +2817,8 @@ def test_build_failure_skip_probe_keeps_capability_skips(tmp_path: Path):
         "    pytest.skip('cargo is required for backend compilation.')\n"
         "    pytest.skip('clang is required for target C data-model compilation')\n"
         "    pytest.skip(reason)\n"
+        "    pytest.skip('zig is required for cross-target linking.')\n"
+        "    pytest.skip('symlink creation unavailable')\n"
         "    pytest.fail('Compilation failed')\n"
     )
     assert _build_failure_skip_count(tmp_path, body) == 0

@@ -627,7 +627,7 @@ simpleir_fallible_protocol_semantics_kinds = [
     "call_builtin", "call_method_ic", "call_super_method_ic",
 ]
 simpleir_async_runtime_semantics_kinds = [
-    "alloc_task", "call_async", "block_on", "is_native_awaitable",
+    "alloc_task", "call_async", "is_native_awaitable",
     "stateful_locals_register",
     "state_label", "state_switch", "state_transition", "state_yield",
     "yield", "yield_from", "state_block_start", "state_block_end", "state_set", "is_pending", "task_wait", "async_for_start", "async_for_end",
@@ -841,7 +841,6 @@ classifier_owned_value = [
     "anext",
     "ascii_from_obj",
     "asyncgen_new",
-    "block_on",
     "bound_method_new",
     "bridge_unavailable",
     "buffer2d_get",
@@ -1105,6 +1104,13 @@ async_work_poll_after_opcodes = [
     "CallBuiltin",
 ]
 exception_check_kinds = ["check_exception", "async_work_poll"]
+# Pending-exception effects for the SimpleIR verifier's dataflow. `raise`
+# always leaves an exception pending, and execution continues to the next
+# exception check. Only these kinds drop a pending exception (the runtime's
+# molt_exception_clear and molt_exception_enter_handler); every other kind may
+# raise but leaves a pending exception in place.
+simpleir_pending_exception_raise_kinds = ["raise"]
+simpleir_pending_exception_clear_kinds = ["exception_clear", "exception_enter_handler"]
 async_work_poll_kinds = ["async_work_poll"]
 async_work_poll_marker_kinds = [
     "exception_finally_pending_observer",
@@ -5461,10 +5467,6 @@ reason = "frontend-internal: serializes to wire `set_attr_generic_ptr` (StoreAtt
 # [[frontend_raising_kind]]. Rows here are frontend-only facts or explicit
 # pre-serialization memory-effect overrides such as CONST_STR and LOAD_VAR.
 # ---------------------------------------------------------------------------
-
-[[frontend_lowering_kind]]
-kind = "ASYNC_BLOCK_ON"
-wire_kind = "block_on"
 
 [[frontend_lowering_kind]]
 kind = "CLASS_VERSION"

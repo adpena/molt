@@ -16,10 +16,7 @@ from molt.cli import link_fingerprints
 from molt.cli.backend_cache import (
     _stage_shared_stdlib_object_for_link,
 )
-from molt.cli.command_runtime import (
-    _load_cli_harness_memory_guard,
-    _run_completed_command,
-)
+from molt.cli.command_runtime import _run_completed_command
 from molt.cli.external_native import (
     _external_native_link_requirements,
     _stage_external_package_native_artifacts_for_build,
@@ -62,7 +59,9 @@ def _run_native_link_command(
     json_output: bool,
     link_timeout: float | None,
 ) -> subprocess.CompletedProcess[str]:
-    result = _run_completed_command(
+    # The guarded runner raises TimeoutExpired for a guard timeout; a linker
+    # that itself exits 124 is a link failure, not a timeout.
+    return _run_completed_command(
         list(link_cmd),
         capture_output=True,
         env=None,
@@ -70,18 +69,6 @@ def _run_native_link_command(
         timeout=link_timeout,
         memory_guard_prefix="MOLT_BUILD",
     )
-    harness_memory_guard = _load_cli_harness_memory_guard(None)
-    if (
-        link_timeout is not None
-        and result.returncode == harness_memory_guard.memory_guard.TIMEOUT_RETURN_CODE
-    ):
-        raise subprocess.TimeoutExpired(
-            list(link_cmd),
-            link_timeout,
-            output=result.stdout,
-            stderr=result.stderr,
-        )
-    return result
 
 
 def _prepare_native_object_artifact(

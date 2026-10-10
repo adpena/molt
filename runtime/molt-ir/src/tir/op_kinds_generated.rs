@@ -50,7 +50,6 @@ pub fn simpleir_kind_is_registered(kind: &str) -> bool {
             | "bit_not"
             | "bit_or"
             | "bit_xor"
-            | "block_on"
             | "bool"
             | "bool_const"
             | "bor"
@@ -1905,7 +1904,6 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         "alloc_task"
         | "async_for_end"
         | "async_for_start"
-        | "block_on"
         | "call_async"
         | "is_native_awaitable"
         | "is_pending"
@@ -2566,7 +2564,6 @@ pub fn copy_kind_mints_owned_value_table(kind: &str) -> bool {
             | "anext"
             | "ascii_from_obj"
             | "asyncgen_new"
-            | "block_on"
             | "bound_method_new"
             | "bridge_unavailable"
             | "buffer2d_get"
@@ -3609,6 +3606,20 @@ pub fn simpleir_kind_requires_async_work_poll_after(kind: &str) -> bool {
 #[inline]
 pub fn simpleir_kind_is_exception_check(kind: &str) -> bool {
     matches!(kind, "check_exception" | "async_work_poll")
+}
+
+/// Whether this SimpleIR spelling always leaves an exception pending.
+/// Generated from `simpleir_pending_exception_raise_kinds`.
+#[inline]
+pub fn simpleir_kind_raises_pending_exception(kind: &str) -> bool {
+    matches!(kind, "raise")
+}
+
+/// Whether this SimpleIR spelling always drops the pending exception.
+/// Generated from `simpleir_pending_exception_clear_kinds`.
+#[inline]
+pub fn simpleir_kind_clears_pending_exception(kind: &str) -> bool {
+    matches!(kind, "exception_clear" | "exception_enter_handler")
 }
 
 /// Whether this SimpleIR spelling is the generated async-work poll.

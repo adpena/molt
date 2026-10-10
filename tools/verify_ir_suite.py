@@ -21,6 +21,7 @@ import sys
 import time
 import traceback
 import tomllib
+from collections.abc import Callable
 from multiprocessing.connection import Connection, wait as wait_connections
 from pathlib import Path
 
@@ -335,6 +336,7 @@ def _run_worker_pool(
     max_cases_per_worker: int,
     fail_fast: bool,
     resource_policy: dict[str, object],
+    on_result: Callable[[dict[str, object]], None],
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Own one verifier for the complete compiler-pool lifetime."""
     verifier_binary()
@@ -346,6 +348,7 @@ def _run_worker_pool(
             max_cases_per_worker=max_cases_per_worker,
             fail_fast=fail_fast,
             resource_policy=resource_policy,
+            on_result=on_result,
         )
     finally:
         close_process_local_verifier()
@@ -359,8 +362,13 @@ def _run_worker_pool_owned(
     max_cases_per_worker: int,
     fail_fast: bool,
     resource_policy: dict[str, object],
+    on_result: Callable[[dict[str, object]], None],
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    """Supervise owned workers with stable ordering, deadlines, and recycling."""
+    """Supervise owned workers with stable ordering, deadlines, and recycling.
+
+    ``on_result`` sees each case as it completes, so its evidence survives a
+    run that is stopped before the summary.
+    """
     if fail_fast:
         worker_count = 1
     context = multiprocessing.get_context("spawn")
@@ -376,6 +384,10 @@ def _run_worker_pool_owned(
     stopped_early = False
     pending_verification: dict[int, tuple[int, dict[str, object]]] = {}
     max_pending_verifications = 0
+
+    def record(index: int, result: dict[str, object]) -> None:
+        results[index] = result
+        on_result(result)
 
     def launch_worker() -> None:
         nonlocal next_worker_id
@@ -470,20 +482,25 @@ def _run_worker_pool_owned(
         )
         supervisor_errors.append(message)
         if index is not None and results[index] is None:
-            results[index] = {
-                "source": str(files[index]),
-                "status": "error",
-                "error": "worker protocol lost",
-                "compile": {
+            record(
+                index,
+                {
+                    "source": str(files[index]),
                     "status": "error",
-                    "returncode": process.exitcode,
-                    "stderr": message,
+                    "error": "worker protocol lost",
+                    "compile": {
+                        "status": "error",
+                        "returncode": process.exitcode,
+                        "stderr": message,
+                    },
+                    "duration_seconds": (
+                        None
+                        if task_started is None
+                        else time.monotonic() - task_started
+                    ),
+                    "worker_lifetime_peak_rss_bytes_after_case": None,
                 },
-                "duration_seconds": (
-                    None if task_started is None else time.monotonic() - task_started
-                ),
-                "worker_lifetime_peak_rss_bytes_after_case": None,
-            }
+            )
         stop_worker(
             worker_id,
             terminate=process.is_alive(),
@@ -585,7 +602,7 @@ def _run_worker_pool_owned(
             request_id=index,
             per_case_timeout=per_case_timeout,
         )
-        results[index] = result
+        record(index, result)
         state = workers.get(worker_id)
         if state is not None:
             state["pending_verifications"] -= 1
@@ -629,18 +646,21 @@ def _run_worker_pool_owned(
                 and task_started is not None
                 and now - task_started > per_case_timeout
             ):
-                results[index] = {
-                    "source": str(files[index]),
-                    "status": "error",
-                    "error": "compile timed out",
-                    "compile": {
-                        "status": "timeout",
-                        "returncode": None,
-                        "stderr": "",
+                record(
+                    index,
+                    {
+                        "source": str(files[index]),
+                        "status": "error",
+                        "error": "compile timed out",
+                        "compile": {
+                            "status": "timeout",
+                            "returncode": None,
+                            "stderr": "",
+                        },
+                        "duration_seconds": now - task_started,
+                        "worker_lifetime_peak_rss_bytes_after_case": None,
                     },
-                    "duration_seconds": now - task_started,
-                    "worker_lifetime_peak_rss_bytes_after_case": None,
-                }
+                )
                 timeouts += 1
                 stop_worker(worker_id, terminate=True, reason="case_timeout")
                 if not fail_fast and next_index < len(files):
@@ -749,6 +769,53 @@ def _run_worker_pool_owned(
     return completed, telemetry
 
 
+def _case_cost(result: dict[str, object]) -> str:
+    """Time and verifier memory of one case, for a log that may be cut short."""
+    parts = []
+    duration = result.get("duration_seconds")
+    if isinstance(duration, (int, float)):
+        parts.append(f"{duration:.2f} s")
+    peak = result.get("verifier_lifetime_peak_rss_bytes")
+    if isinstance(peak, int) and peak > 0:
+        parts.append(f"verifier peak {peak / 2**20:.0f} MiB")
+    return f" ({', '.join(parts)})" if parts else ""
+
+
+def _print_case_result(result: dict[str, object], *, quiet: bool) -> None:
+    source = result["source"]
+    status = result["status"]
+    if status == "pass":
+        if not quiet:
+            print(f"  PASS {source}{_case_cost(result)}", flush=True)
+    elif status == "error":
+        if not quiet:
+            print(
+                f"  ERROR {source} ({result.get('error', 'compile failed')})",
+                flush=True,
+            )
+    elif status == "unsupported":
+        if not quiet:
+            compile_result = result.get("compile")
+            diagnostic = (
+                compile_result.get("diagnostic")
+                if isinstance(compile_result, dict)
+                else None
+            )
+            code = diagnostic.get("code") if isinstance(diagnostic, dict) else None
+            category = (
+                diagnostic.get("feature_category")
+                if isinstance(diagnostic, dict)
+                else None
+            )
+            label = code or category or "typed rejection"
+            print(f"  UNSUPPORTED {source} ({label})", flush=True)
+    else:
+        detail = str(result.get("detail", ""))
+        lines = [f"  FAIL {source}{_case_cost(result)}"]
+        lines.extend(f"       {line}" for line in detail.splitlines()[:5])
+        print("\n".join(lines), flush=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -853,6 +920,7 @@ def main() -> int:
         max_cases_per_worker=max_cases_per_worker,
         fail_fast=args.fail_fast,
         resource_policy=resource_policy,
+        on_result=lambda result: _print_case_result(result, quiet=args.quiet),
     )
     attempted = len(results)
     passed = sum(result["status"] == "pass" for result in results)
@@ -865,37 +933,6 @@ def main() -> int:
         for result in results
         if result["status"] == "fail"
     ]
-
-    for result in results:
-        source = result["source"]
-        status = result["status"]
-        if status == "pass":
-            if not args.quiet:
-                print(f"  PASS {source}")
-        elif status == "error":
-            if not args.quiet:
-                print(f"  ERROR {source} ({result.get('error', 'compile failed')})")
-        elif status == "unsupported":
-            if not args.quiet:
-                compile_result = result.get("compile")
-                diagnostic = (
-                    compile_result.get("diagnostic")
-                    if isinstance(compile_result, dict)
-                    else None
-                )
-                code = diagnostic.get("code") if isinstance(diagnostic, dict) else None
-                category = (
-                    diagnostic.get("feature_category")
-                    if isinstance(diagnostic, dict)
-                    else None
-                )
-                label = code or category or "typed rejection"
-                print(f"  UNSUPPORTED {source} ({label})")
-        else:
-            detail = str(result.get("detail", ""))
-            print(f"  FAIL {source}")
-            for line in detail.splitlines()[:5]:
-                print(f"       {line}")
 
     print(
         f"\nIR verification suite: {selected} selected | {attempted} attempted | "

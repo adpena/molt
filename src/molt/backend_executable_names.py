@@ -6,9 +6,13 @@ ownership. Admission still requires the content-bound build receipt.
 
 from __future__ import annotations
 
-import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
+from typing import Literal, get_args
 
+
+CodegenBackend = Literal["cranelift", "llvm"]
+CODEGEN_BACKENDS: tuple[CodegenBackend, ...] = get_args(CodegenBackend)
+DEFAULT_CODEGEN_BACKEND: CodegenBackend = "cranelift"
 
 _TARGET_FEATURES = {
     "native": ("native-backend",),
@@ -24,10 +28,15 @@ def backend_features_for_target(
     is_wasm: bool,
     is_luau_transpile: bool,
     is_rust_transpile: bool,
-    env: Mapping[str, str] | None = None,
+    codegen_backend: CodegenBackend,
 ) -> tuple[str, ...]:
-    """Resolve the same feature identity for builds, names and cache keys."""
-    source = os.environ if env is None else env
+    """Resolve the same feature identity for builds, names and cache keys.
+
+    ``codegen_backend`` is the resolved selection (``--backend``; ``auto`` is
+    cranelift). The process environment never selects it.
+    """
+    if codegen_backend not in CODEGEN_BACKENDS:
+        raise ValueError(f"unknown codegen backend: {codegen_backend!r}")
     if is_luau_transpile:
         target = "luau"
     elif is_rust_transpile:
@@ -37,7 +46,7 @@ def backend_features_for_target(
     else:
         target = "native"
     features = _TARGET_FEATURES[target]
-    return (*features, "llvm") if source.get("MOLT_BACKEND") == "llvm" else features
+    return (*features, "llvm") if codegen_backend == "llvm" else features
 
 
 def backend_executable_name(

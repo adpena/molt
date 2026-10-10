@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -18,7 +17,6 @@ class FactGraphRequest:
     output_path: Path
     function_name: str
     requested_target: str
-    effective_backend: str
 
 
 def add_factgraph_parser(
@@ -151,7 +149,7 @@ def execute_backend_fact_graph(
     json_output: bool,
     verbose: bool,
     backend_bin: Path,
-    backend_env: dict[str, str] | None,
+    backend_env: Mapping[str, str],
     backend_timeout: float | None,
     entry_module: str,
     ensure_backend_ir_file_path: Callable[[], Path],
@@ -168,9 +166,7 @@ def execute_backend_fact_graph(
             json_output,
             command="factgraph",
         )
-    if backend_env is None:
-        backend_env = os.environ.copy()
-    backend_env[entry_override_env] = entry_module
+    backend_env = {**backend_env, entry_override_env: entry_module}
     request.output_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = backend_command_prefix(
         backend_bin=backend_bin,
@@ -250,7 +246,6 @@ def resolve_request_output_path(
         output_path=project_root / request.output_path,
         function_name=request.function_name,
         requested_target=request.requested_target,
-        effective_backend=request.effective_backend,
     )
 
 
@@ -317,6 +312,7 @@ def emit_pipeline_fact_graph(
                 runtime_context.runtime_state.native_runtime_codegen_binding
             ),
             start_daemon=False,
+            codegen=build_config.codegen,
         )
         if dispatch_error is not None:
             return dispatch_error
@@ -353,7 +349,7 @@ def emit_pipeline_fact_graph(
                         "output": str(request.output_path),
                         "function": request.function_name,
                         "target": request.requested_target,
-                        "backend": request.effective_backend,
+                        "backend": build_config.codegen.backend,
                         "pipeline_target": target,
                         "profile": profile,
                     },
@@ -389,10 +385,11 @@ def run_factgraph_command(
         )
     target = args.target
     backend_choice = args.backend or "auto"
-    target, backend_error = _select_codegen_backend(target, backend_choice)
+    target, codegen_backend, backend_error = _select_codegen_backend(
+        target, backend_choice
+    )
     if backend_error:
         return fail(backend_error, args.json, command="factgraph")
-    effective_backend = os.environ["MOLT_BACKEND"]
     return build(
         file_path=args.file,
         target=target,
@@ -417,7 +414,7 @@ def run_factgraph_command(
             output_path=Path(args.output),
             function_name=args.function,
             requested_target=args.target,
-            effective_backend=effective_backend,
         ),
         build_config=build_config,
+        codegen_backend=codegen_backend,
     )

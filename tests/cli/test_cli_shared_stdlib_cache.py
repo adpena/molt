@@ -9,6 +9,7 @@ import sys
 import traceback
 from typing import Iterator, Mapping
 
+from molt.backend_environment import CodegenSelection
 from molt.cli import native_symbol_inspection
 import pytest
 
@@ -595,6 +596,7 @@ def test_prepare_backend_cache_setup_threads_capability_config_to_stdlib_key(
         stdlib_like_by_module={"sys": True},
     )
     common = dict(
+        codegen=CodegenSelection(),
         cache_enabled=True,
         ir=ir,
         target="native",
@@ -760,6 +762,7 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         stdlib_profile="micro",
         stage_timings_ms=stage_timings_ms,
+        codegen=CodegenSelection(),
     )
 
     assert setup.cache_key is not None
@@ -799,9 +802,12 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
     selected = ("native-backend",)
     seen: list[tuple[str, ...]] = []
 
-    def selected_features(*, target: str, is_wasm: bool) -> tuple[str, ...]:
+    def selected_features(
+        *, target: str, is_wasm: bool, codegen_backend: str
+    ) -> tuple[str, ...]:
         assert target == "native"
         assert not is_wasm
+        assert codegen_backend == "cranelift"
         return selected
 
     def compiler_fingerprint(**kwargs: object) -> str:
@@ -833,6 +839,7 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
         stdlib_like_by_module={"sys": True},
     )
     common = dict(
+        codegen=CodegenSelection(),
         cache_enabled=True,
         ir=ir,
         target="native",
@@ -927,6 +934,7 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
         stdlib_like_by_module={"sys": True},
     )
     common = dict(
+        codegen=CodegenSelection(),
         cache_enabled=True,
         ir=ir,
         target="native",
@@ -1050,6 +1058,7 @@ def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
             target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
             stdlib_profile="micro",
             backend_compiler_fingerprint=backend_compiler_fingerprint,
+            codegen=CodegenSelection(),
         )
 
     setup_a = prepare(
@@ -1087,6 +1096,7 @@ def test_prepare_backend_cache_setup_threads_ambient_capability_env_to_stdlib_ke
         stdlib_like_by_module={"sys": True},
     )
     common = dict(
+        codegen=CodegenSelection(),
         cache_enabled=True,
         ir=ir,
         target="native",
@@ -3028,50 +3038,60 @@ def test_backend_binary_identity_and_daemon_selection_reject_preserved_metadata_
     assert daemon_before != daemon_after
 
 
-def test_backend_features_for_target_single_source_of_truth() -> None:
-    empty: dict[str, str] = {}
+def test_backend_features_for_target_single_source_of_truth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The process environment never selects the backend (HF-60).
+    monkeypatch.setenv("MOLT_BACKEND", "llvm")
     assert cli._backend_features_for_target(
         is_wasm=False,
         is_luau_transpile=False,
         is_rust_transpile=False,
-        env=empty,
+        codegen_backend="cranelift",
     ) == ("native-backend",)
     assert cli._backend_features_for_target(
         is_wasm=True,
         is_luau_transpile=False,
         is_rust_transpile=False,
-        env=empty,
+        codegen_backend="cranelift",
     ) == ("wasm-backend",)
     # luau implies rust-transpile too; luau wins.
     assert cli._backend_features_for_target(
         is_wasm=False,
         is_luau_transpile=True,
         is_rust_transpile=True,
-        env=empty,
+        codegen_backend="cranelift",
     ) == ("luau-backend",)
     assert cli._backend_features_for_target(
         is_wasm=False,
         is_luau_transpile=False,
         is_rust_transpile=True,
-        env=empty,
+        codegen_backend="cranelift",
     ) == ("rust-backend",)
     # The llvm feature folds in and changes both codegen and the binary path.
     assert cli._backend_features_for_target(
         is_wasm=False,
         is_luau_transpile=False,
         is_rust_transpile=False,
-        env={"MOLT_BACKEND": "llvm"},
+        codegen_backend="llvm",
     ) == ("native-backend", "llvm")
+    with pytest.raises(ValueError, match="unknown codegen backend"):
+        cli._backend_features_for_target(
+            is_wasm=False,
+            is_luau_transpile=False,
+            is_rust_transpile=False,
+            codegen_backend="gcc",  # type: ignore[arg-type]
+        )
     # The target-string wrapper derives the booleans purely from `target`.
     assert cli._backend_features_for_build_target(
-        target="native", is_wasm=False, env=empty
+        target="native", is_wasm=False, codegen_backend="cranelift"
     ) == ("native-backend",)
     assert cli._backend_features_for_build_target(
-        target="luau", is_wasm=False, env=empty
+        target="luau", is_wasm=False, codegen_backend="cranelift"
     ) == ("luau-backend",)
     assert cli._backend_features_for_build_target(
-        target="rust", is_wasm=False, env=empty
+        target="rust", is_wasm=False, codegen_backend="cranelift"
     ) == ("rust-backend",)
     assert cli._backend_features_for_build_target(
-        target="wasm", is_wasm=True, env=empty
+        target="wasm", is_wasm=True, codegen_backend="cranelift"
     ) == ("wasm-backend",)

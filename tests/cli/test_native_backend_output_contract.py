@@ -3,6 +3,7 @@ from __future__ import annotations
 from tests.cli.native_link_test_support import transport_codegen_binding
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,7 @@ def test_native_output_kind_is_explicit_in_full_and_probe_requests(
         )
         if contract.is_native
         else None,
+        request_environment=os.environ,
     )
     assert error is None
     assert payload is not None
@@ -78,6 +80,7 @@ def test_wasm_requests_omit_native_output_kind(target: str, probe: bool) -> None
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
         probe_cache_only=probe,
+        request_environment=os.environ,
     )
     assert error is None
     assert payload is not None
@@ -154,6 +157,7 @@ def test_daemon_probe_and_full_request_preserve_cache_setup_contract(
         )
         if contract.is_native
         else None,
+        request_environment=os.environ,
     )
     assert result.ok, result.error
     assert len(jobs) == 2
@@ -196,6 +200,7 @@ def test_daemon_rejects_text_contract_before_ir_lease_or_transport(
         config_digest=None,
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
+        request_environment=os.environ,
     )
     assert payload is None
     assert error is not None and "supports only native or WASM" in error
@@ -212,6 +217,7 @@ def test_daemon_rejects_text_contract_before_ir_lease_or_transport(
         function_cache_key=None,
         config_digest=None,
         timeout=None,
+        request_environment=os.environ,
     )
     assert not result.ok
     assert result.error == error

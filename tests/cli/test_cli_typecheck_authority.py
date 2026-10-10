@@ -48,6 +48,7 @@ def _prepare(source: Path, *, policy="check", is_wasm=False):
         is_wasm=is_wasm,
         frontend_parallel_details=details,
         frontend_phase_timeout=None,
+        is_luau_transpile=False,
     )
     return config, failure, warnings, details
 

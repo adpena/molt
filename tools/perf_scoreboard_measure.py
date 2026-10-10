@@ -38,9 +38,10 @@ from perf_scoreboard_model import (  # noqa: E402
 def _perfscore_build_env(spec: BackendSpec, profile: str) -> dict[str, str]:
     """Build the conformance/build env for a backend lane.
 
-    Sets the constitution's session isolation + the LLVM_SYS prefix + the
-    MOLT_BACKEND selector. bench._canonical_bench_env folds in the molt
-    conformance env (PYTHONPATH, codec, conformance dirs).
+    Sets the constitution's session isolation and the LLVM_SYS prefix.
+    bench._canonical_bench_env folds in the molt conformance env (PYTHONPATH,
+    codec, conformance dirs). The codegen backend is a build flag
+    from the canonical release lane, never an environment variable.
     """
     from perf_scoreboard_build_profiles import profile_selection
 
@@ -109,14 +110,17 @@ def measure_cell(
     log_lines: list[str] = [f"# {benchmark} | {spec.backend} | {profile}"]
 
     build_env = _perfscore_build_env(spec, profile)
+    from perf_scoreboard_build_profiles import profile_selection
+
+    selection = profile_selection(spec, profile)
     extra_args = [
         "--python-version",
         target_python_version,
+        "--backend",
+        selection.codegen_backend,
         *bench_suites.molt_args_for_benchmark(script_path),
     ]
-    from perf_scoreboard_build_profiles import profile_selection
-
-    build_flag = profile_selection(spec, profile).guest_profile
+    build_flag = selection.guest_profile
 
     # --- Build the molt binary via the canonical daemon batch build ---------
     binary = None

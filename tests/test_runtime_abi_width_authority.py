@@ -54,7 +54,7 @@ def test_checked_width_authorities_remain_fail_closed_and_inlined() -> None:
     assert "usize::try_from(bits).ok()" in platform
     assert "with_exposed_provenance::<T>" in provenance
     assert "with_exposed_provenance_mut::<T>" in provenance
-    assert "ptr_addr % alignment != 0" in provenance
+    assert "!ptr_addr.is_multiple_of(alignment)" in provenance
     assert "len.checked_mul(core::mem::size_of::<T>())?" in provenance
     assert "byte_len > isize::MAX as usize" in provenance
     assert "ptr_addr.checked_add(byte_len)?" in provenance

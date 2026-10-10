@@ -28,8 +28,8 @@ You are deploying a Python application to Cloudflare Workers via molt (Python-to
 2. Kill any stale backend daemon and compile to WASM:
 ```bash
 pkill -f "molt-backend.*daemon" 2>/dev/null; sleep 1
-MOLT_WASM_PROFILE=pure .venv/bin/python -m molt build examples/cloudflare-demo/src/app.py \
-    --target wasm --stdlib-profile micro \
+.venv/bin/python -m molt build examples/cloudflare-demo/src/app.py \
+    --target wasm --wasm-profile pure --stdlib-profile micro \
     --output /tmp/molt_deploy/output.wasm \
     --linked-output /tmp/molt_deploy/linked.wasm
 ```

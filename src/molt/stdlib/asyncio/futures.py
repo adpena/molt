@@ -21,18 +21,18 @@ from asyncio import (
     _contextvars,
     _require_asyncio_intrinsic,
     _task_registry_current,
-    molt_asyncio_future_cancel_fast,
-    molt_asyncio_future_cancelled,
-    molt_asyncio_future_done,
-    molt_asyncio_future_drop,
-    molt_asyncio_future_exception,
-    molt_asyncio_future_new,
-    molt_asyncio_future_result,
-    molt_asyncio_future_set_exception_fast,
-    molt_asyncio_future_set_result_fast,
-    molt_generic_alias_new,
-    molt_promise_new,
-    molt_promise_set_result,
+    _molt_asyncio_future_cancel_fast,
+    _molt_asyncio_future_cancelled,
+    _molt_asyncio_future_done,
+    _molt_asyncio_future_drop,
+    _molt_asyncio_future_exception,
+    _molt_asyncio_future_new,
+    _molt_asyncio_future_result,
+    _molt_asyncio_future_set_exception_fast,
+    _molt_asyncio_future_set_result_fast,
+    _molt_generic_alias_new,
+    _molt_promise_new,
+    _molt_promise_set_result,
 )
 
 if TYPE_CHECKING:
@@ -58,12 +58,12 @@ class Future:
 
     @classmethod
     def __class_getitem__(cls, item: Any) -> Any:
-        return _require_asyncio_intrinsic(molt_generic_alias_new, "generic_alias_new")(
+        return _require_asyncio_intrinsic(_molt_generic_alias_new, "generic_alias_new")(
             cls, item
         )
 
     def __init__(self, *, loop: Any | None = None) -> None:
-        self._fut_handle: int = molt_asyncio_future_new()
+        self._fut_handle: int = _molt_asyncio_future_new()
         self._result: Any = None
         self._exception: BaseException | None = None
         self._cancel_message: Any | None = None
@@ -85,37 +85,37 @@ class Future:
     def _set_cancelled(self, exc: BaseException, msg: Any | None) -> None:
         self._exception = exc
         self._cancel_message = msg
-        molt_asyncio_future_cancel_fast(self._fut_handle, msg)
+        _molt_asyncio_future_cancel_fast(self._fut_handle, msg)
         self._invoke_callbacks()
 
     def cancelled(self) -> bool:
-        return bool(molt_asyncio_future_cancelled(self._fut_handle))
+        return bool(_molt_asyncio_future_cancelled(self._fut_handle))
 
     def done(self) -> bool:
-        return bool(molt_asyncio_future_done(self._fut_handle))
+        return bool(_molt_asyncio_future_done(self._fut_handle))
 
     def result(self) -> Any:
-        if not molt_asyncio_future_done(self._fut_handle):
+        if not _molt_asyncio_future_done(self._fut_handle):
             raise InvalidStateError("Result is not set.")
-        if molt_asyncio_future_cancelled(self._fut_handle):
+        if _molt_asyncio_future_cancelled(self._fut_handle):
             if self._exception is not None:
                 raise self._exception
             raise CancelledError
         if self._exception is not None:
             raise self._exception
-        stored_exc = molt_asyncio_future_exception(self._fut_handle)
+        stored_exc = _molt_asyncio_future_exception(self._fut_handle)
         if stored_exc is not None:
             raise stored_exc
-        return molt_asyncio_future_result(self._fut_handle)
+        return _molt_asyncio_future_result(self._fut_handle)
 
     def exception(self) -> BaseException | None:
-        if not molt_asyncio_future_done(self._fut_handle):
+        if not _molt_asyncio_future_done(self._fut_handle):
             raise InvalidStateError("Exception is not set.")
-        if molt_asyncio_future_cancelled(self._fut_handle):
+        if _molt_asyncio_future_cancelled(self._fut_handle):
             if self._exception is not None:
                 raise self._exception
             raise CancelledError
-        return molt_asyncio_future_exception(self._fut_handle)
+        return _molt_asyncio_future_exception(self._fut_handle)
 
     @property
     def _callbacks(self) -> Any:
@@ -164,14 +164,14 @@ class Future:
         return self._loop
 
     def set_result(self, result: Any) -> None:
-        if molt_asyncio_future_done(self._fut_handle):
+        if _molt_asyncio_future_done(self._fut_handle):
             raise InvalidStateError("invalid state")
         self._result = result
-        molt_asyncio_future_set_result_fast(self._fut_handle, result)
+        _molt_asyncio_future_set_result_fast(self._fut_handle, result)
         self._invoke_callbacks()
 
     def set_exception(self, exception: BaseException) -> None:
-        if molt_asyncio_future_done(self._fut_handle):
+        if _molt_asyncio_future_done(self._fut_handle):
             raise InvalidStateError("invalid state")
         if isinstance(exception, type):
             exception = exception()
@@ -185,7 +185,7 @@ class Future:
             exception.__cause__ = original
             exception.__context__ = original
         self._exception = exception
-        molt_asyncio_future_set_exception_fast(self._fut_handle, exception)
+        _molt_asyncio_future_set_exception_fast(self._fut_handle, exception)
         self._invoke_callbacks()
 
     def _invoke_callbacks(self) -> None:
@@ -210,9 +210,9 @@ class Future:
         return _wait_for_future(self).__await__()
 
     def __repr__(self) -> str:
-        if molt_asyncio_future_cancelled(self._fut_handle):
+        if _molt_asyncio_future_cancelled(self._fut_handle):
             state = "cancelled"
-        elif molt_asyncio_future_done(self._fut_handle):
+        elif _molt_asyncio_future_done(self._fut_handle):
             state = "finished"
         else:
             state = "pending"
@@ -221,7 +221,7 @@ class Future:
     def __del__(self) -> None:
         handle = getattr(self, "_fut_handle", None)
         if handle is not None:
-            molt_asyncio_future_drop(handle)
+            _molt_asyncio_future_drop(handle)
 
 def future_add_to_awaited_by(fut: Any, waiter: Any) -> None:
     if isinstance(fut, Future) and isinstance(waiter, Future):
@@ -297,10 +297,10 @@ async def _wait_for_future(future: Any) -> Any:
         waiter._fut_waiter = future
     if _EXPOSE_GRAPH and waiter is not None:
         future_add_to_awaited_by(future, waiter)
-    promise = molt_promise_new()
+    promise = _molt_promise_new()
 
     def wake(done: Any) -> None:
-        molt_promise_set_result(promise, None)
+        _molt_promise_set_result(promise, None)
 
     subscription = None
     try:

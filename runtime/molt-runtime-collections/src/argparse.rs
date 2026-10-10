@@ -14,8 +14,8 @@ use molt_runtime_core::obj_from_bits;
 use molt_runtime_core::prelude::*;
 
 use crate::bridge::{
-    ExceptionSentinel, alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple, dec_ref_bits,
-    is_truthy, raise_exception, seq_snapshot, string_obj_to_owned, to_i64, type_name,
+    ExceptionSentinel, alloc_dict_with_pairs, alloc_list, alloc_string, dec_ref_bits, is_truthy,
+    raise_exception, seq_snapshot, string_obj_to_owned, to_i64, type_name,
 };
 use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
@@ -1265,16 +1265,4 @@ pub extern "C" fn molt_argparse_parser_drop(handle_bits: u64) -> u64 {
         }
         MoltObject::none().bits()
     })
-}
-
-// Suppress dead-code lint for opt_str / type_name used in various paths.
-#[allow(dead_code)]
-fn _type_name_use(_py: &CoreGilToken, b: u64) {
-    let _ = type_name(_py, obj_from_bits(b));
-}
-
-// Keep the alloc_tuple import used.
-#[allow(dead_code)]
-fn _alloc_tuple_use(_py: &CoreGilToken) {
-    let _ = alloc_tuple(_py, &[]);
 }

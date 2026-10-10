@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from molt.backend_environment import CodegenSelection
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import (
     backend_pipeline,
@@ -180,6 +181,7 @@ def terminal_build(
         runtime_feedback_payload=None,
         cargo_timeout=None,
         link_timeout=None,
+        codegen=CodegenSelection(),
     )
     preamble = SimpleNamespace(
         diagnostics_enabled=True,
@@ -770,6 +772,7 @@ def test_frontend_preparation_failure_flushes_without_repeating_error_json(
         emit_ir=None,
         type_facts_path=None,
         tree_shake=True,
+        stdlib_profile="auto",
     )
     assert frontend_pipeline._prepare_frontend_pipeline(**args) == (None, 2)
     captured = capsys.readouterr()

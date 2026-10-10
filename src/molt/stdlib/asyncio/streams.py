@@ -39,14 +39,14 @@ from asyncio import (
     _tls_client_from_fd,
     _tls_server_from_fd,
     _tls_server_payload,
-    molt_asyncio_server_accept_loop_new,
-    molt_asyncio_socket_reader_read_new,
-    molt_asyncio_socket_reader_readline_new,
-    molt_asyncio_stream_buffer_consume,
-    molt_asyncio_stream_buffer_snapshot,
-    molt_asyncio_stream_reader_read_new,
-    molt_asyncio_stream_reader_readline_new,
-    molt_asyncio_stream_send_all_new,
+    _molt_asyncio_server_accept_loop_new,
+    _molt_asyncio_socket_reader_read_new,
+    _molt_asyncio_socket_reader_readline_new,
+    _molt_asyncio_stream_buffer_consume,
+    _molt_asyncio_stream_buffer_snapshot,
+    _molt_asyncio_stream_reader_read_new,
+    _molt_asyncio_stream_reader_readline_new,
+    _molt_asyncio_stream_send_all_new,
     sleep,
 )
 
@@ -90,7 +90,7 @@ class StreamReader:
         while True:
             try:
                 res = await _require_asyncio_intrinsic(
-                    molt_asyncio_socket_reader_read_new,
+                    _molt_asyncio_socket_reader_read_new,
                     "asyncio_socket_reader_read_new",
                 )(self._reader, n, self._wait_key)
             except (BlockingIOError, InterruptedError):
@@ -180,7 +180,7 @@ class StreamReader:
         while True:
             try:
                 res = await _require_asyncio_intrinsic(
-                    molt_asyncio_socket_reader_readline_new,
+                    _molt_asyncio_socket_reader_readline_new,
                     "asyncio_socket_reader_readline_new",
                 )(self._reader, self._wait_key)
             except (BlockingIOError, InterruptedError):
@@ -239,13 +239,13 @@ class StreamWriter:
         loop = _asyncio.get_running_loop()
         while self._buffer:
             chunk = _require_asyncio_intrinsic(
-                molt_asyncio_stream_buffer_snapshot, "asyncio_stream_buffer_snapshot"
+                _molt_asyncio_stream_buffer_snapshot, "asyncio_stream_buffer_snapshot"
             )(self._buffer)
             if not chunk:
                 return None
             await loop.sock_sendall(self._sock, chunk)
             _require_asyncio_intrinsic(
-                molt_asyncio_stream_buffer_consume, "asyncio_stream_buffer_consume"
+                _molt_asyncio_stream_buffer_consume, "asyncio_stream_buffer_consume"
             )(self._buffer, len(chunk))
 
     def write_eof(self) -> None:
@@ -372,7 +372,7 @@ class Server(AbstractServer):
     async def _accept_loop(self) -> None:
         loop = _asyncio.get_running_loop()
         await _require_asyncio_intrinsic(
-            molt_asyncio_server_accept_loop_new, "asyncio_server_accept_loop_new"
+            _molt_asyncio_server_accept_loop_new, "asyncio_server_accept_loop_new"
         )(
             self._sock,
             self._callback,
@@ -446,7 +446,7 @@ class ProcessStreamReader:
 
     async def read(self, n: int = -1) -> bytes:
         res = await _require_asyncio_intrinsic(
-            molt_asyncio_stream_reader_read_new, "asyncio_stream_reader_read_new"
+            _molt_asyncio_stream_reader_read_new, "asyncio_stream_reader_read_new"
         )(self._reader, n)
         if isinstance(res, (bytes, bytearray, memoryview)):
             return bytes(res)
@@ -454,7 +454,7 @@ class ProcessStreamReader:
 
     async def readline(self) -> bytes:
         res = await _require_asyncio_intrinsic(
-            molt_asyncio_stream_reader_readline_new,
+            _molt_asyncio_stream_reader_readline_new,
             "asyncio_stream_reader_readline_new",
         )(self._reader)
         if isinstance(res, (bytes, bytearray, memoryview)):
@@ -496,15 +496,15 @@ class ProcessStreamWriter:
     async def drain(self) -> None:
         while self._buffer:
             chunk = _require_asyncio_intrinsic(
-                molt_asyncio_stream_buffer_snapshot, "asyncio_stream_buffer_snapshot"
+                _molt_asyncio_stream_buffer_snapshot, "asyncio_stream_buffer_snapshot"
             )(self._buffer)
             if not chunk:
                 return None
             await _require_asyncio_intrinsic(
-                molt_asyncio_stream_send_all_new, "asyncio_stream_send_all_new"
+                _molt_asyncio_stream_send_all_new, "asyncio_stream_send_all_new"
             )(self._handle, chunk)
             _require_asyncio_intrinsic(
-                molt_asyncio_stream_buffer_consume, "asyncio_stream_buffer_consume"
+                _molt_asyncio_stream_buffer_consume, "asyncio_stream_buffer_consume"
             )(self._buffer, len(chunk))
 
     def write_eof(self) -> None:

@@ -750,7 +750,6 @@ def test_graph_import_plan_and_full_frontend_share_runtime_custody(
 
     # A print-only micro program no longer imports runtime protocol owners as a
     # side effect of builtin publication. The positive case owns a real import.
-    monkeypatch.setenv("MOLT_STDLIB_PROFILE", "micro")
     entry = tmp_path / "demo.py"
     entry.write_text(source, encoding="utf-8")
     stdlib = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
@@ -766,6 +765,7 @@ def test_graph_import_plan_and_full_frontend_share_runtime_custody(
         module_reasons=reasons,
         json_output=False,
         target="native",
+        stdlib_profile="micro",
     )
     assert error is None and graph is not None
     plan = _materialize_import_plan(
