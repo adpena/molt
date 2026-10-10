@@ -4016,7 +4016,7 @@ gates = [
 [[named_lane]]
 id = "runtime.abi-fixture-authorities"
 description = "Compile and execute the complete CPython ABI integration-test family, including native C shims and fixture lifetime controls."
-argv = ["cargo", "test", "--locked", "--profile", "dev-fast", "-p", "molt-lang-cpython-abi", "--tests", "--", "--test-threads=4"]
+argv = ["cargo", "test", "--locked", "--profile", "dev-fast", "--no-fail-fast", "-p", "molt-lang-cpython-abi", "--tests", "--", "--test-threads=4"]
 toolchains = ["cargo", "rustc", "python"]
 cargo_native_c_units = ["target"]
 resource_family = "rust"
