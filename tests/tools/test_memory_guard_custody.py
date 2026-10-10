@@ -1,4 +1,9 @@
-"""Birth-bound active evidence is shared by the producer, CLI, and disk guard."""
+"""Birth-bound custody evidence is shared by the producer, CLI, and disk guard.
+
+Tests use a private state root: ``<tmp>/state/active`` and its retired
+history ``<tmp>/state/retired``. Process tables are faked only at the
+snapshot boundary; markers, scratch generations and locks are real files.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +11,14 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import shutil
 from threading import Event
 from types import SimpleNamespace
 
 import pytest
 
+from molt import temporary_artifacts as scratch
+from molt.exact_json import read_exact
 from tools import memory_guard_custody as cli
 from tools.memory_guard_core import active_custody as custody
 from tools.memory_guard_core import process_model, windows_snapshot
@@ -26,6 +34,14 @@ def _sample(pid=99, birth=9900, pgid=None):
 def _snapshot(*samples):
     values = samples or (_sample(),)
     return lambda: {sample.pid: sample for sample in values}
+
+
+def _active(tmp_path):
+    return tmp_path / "state" / "active"
+
+
+def _retired(tmp_path):
+    return tmp_path / "state" / "retired"
 
 
 def _marker(
@@ -63,32 +79,38 @@ def _rewrite(path, mutate):
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def test_dry_run_then_apply_keeps_evidence_and_records_exact_births(tmp_path):
-    marker = _marker(tmp_path)
+def test_dry_run_then_apply_records_exact_births_and_retires_the_record(tmp_path):
+    active = _active(tmp_path)
+    marker = _marker(active)
     original = marker.read_bytes()
-    before = set(tmp_path.iterdir())
-    report = custody.reconcile_active_guard_markers(tmp_path, _snapshot())
+    report = custody.reconcile_active_guard_markers(active, _snapshot())
     assert report.decisions[0].disposition == "terminalize"
     assert report.terminalized == 0
     assert marker.read_bytes() == original
-    assert custody.has_active_guard_marker(tmp_path)
+    assert not _retired(tmp_path).exists()
+    assert custody.has_active_guard_marker(active)
 
-    report = custody.reconcile_active_guard_markers(tmp_path, _snapshot(), apply=True)
-    assert report.terminalized == 1
-    assert set(tmp_path.iterdir()) == before
-    payload = _payload(marker)
+    report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    assert report.terminalized == 1 and report.retired == 1
+    # The resolved record and its lock leave active/; history keeps the record.
+    assert list(active.iterdir()) == []
+    retired = _retired(tmp_path) / marker.name
+    assert report.decisions[0].retired_to == str(retired)
+    payload = _payload(retired)
     assert payload["status"] == "custody_reconciled"
     receipt = payload["reconciliation"]
     assert receipt["previous_status"] == "child_running"
+    assert receipt["reason"] == "recorded_custody_absent_or_reused"
     assert [
         (item["pid"], item["expected_started_at_ns"], item["state"])
         for item in receipt["evidence"]
     ] == [(10, 100, "absent"), (20, 200, "absent")]
-    assert not custody.has_active_guard_marker(tmp_path)
-    frozen = marker.read_bytes()
-    again = custody.reconcile_active_guard_markers(tmp_path, _snapshot(), apply=True)
-    assert again.decisions[0].disposition == "already_terminal"
-    assert marker.read_bytes() == frozen
+    assert custody.read_marker_record(retired).terminal
+    assert not custody.has_active_guard_marker(active)
+    frozen = retired.read_bytes()
+    again = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    assert again.decisions == ()
+    assert retired.read_bytes() == frozen
 
 
 @pytest.mark.parametrize(
@@ -102,21 +124,23 @@ def test_dry_run_then_apply_keeps_evidence_and_records_exact_births(tmp_path):
     ],
 )
 def test_live_or_uncomparable_custody_remains_protective(tmp_path, samples, reason):
-    marker = _marker(tmp_path)
+    active = _active(tmp_path)
+    marker = _marker(active)
     original = marker.read_bytes()
     report = custody.reconcile_active_guard_markers(
-        tmp_path, _snapshot(*samples), apply=True
+        active, _snapshot(*samples), apply=True
     )
     assert report.decisions[0].reason == reason
     assert report.preserved == 1
     assert marker.read_bytes() == original
-    assert custody.has_active_guard_marker(tmp_path)
+    assert custody.has_active_guard_marker(active)
 
 
 def test_reused_guard_and_child_are_distinct_identities(tmp_path):
-    _marker(tmp_path)
+    active = _active(tmp_path)
+    _marker(active)
     report = custody.reconcile_active_guard_markers(
-        tmp_path, _snapshot(_sample(10, 1000), _sample(20, 2000)), apply=True
+        active, _snapshot(_sample(10, 1000), _sample(20, 2000)), apply=True
     )
     assert report.terminalized == 1
     assert [item.state for item in report.decisions[0].evidence] == [
@@ -129,10 +153,11 @@ def test_reused_guard_and_child_are_distinct_identities(tmp_path):
     "status", ["guard_starting", "launch_prepared", "guard_exception"]
 )
 def test_durable_before_launch_boundary_can_reconcile(tmp_path, status):
-    _marker(tmp_path, status=status, child=False)
+    active = _active(tmp_path)
+    _marker(active, status=status, child=False)
     assert (
         custody.reconcile_active_guard_markers(
-            tmp_path, _snapshot(), apply=True
+            active, _snapshot(), apply=True
         ).terminalized
         == 1
     )
@@ -145,30 +170,103 @@ def test_durable_before_launch_boundary_can_reconcile(tmp_path, status):
 def test_interrupted_or_failed_spawn_without_child_identity_is_protective(
     tmp_path, status
 ):
-    marker = _marker(tmp_path, status="guard_starting", child=False)
+    active = _active(tmp_path)
+    marker = _marker(active, status="guard_starting", child=False)
     custody.update_active_guard_marker(
         marker, _payload(marker)["token"], status=status, child_launch_state="pending"
     )
-    report = custody.reconcile_active_guard_markers(tmp_path, _snapshot(), apply=True)
+    report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
     assert report.decisions[0].reason == "child_launch_identity_unpublished"
-    assert custody.has_active_guard_marker(tmp_path)
+    assert report.decisions[0].operator_resolvable
+    assert custody.has_active_guard_marker(active)
 
 
 @pytest.mark.parametrize("birth,child_birth", [(None, 200), (100, None)])
-@pytest.mark.parametrize("status", ["child_running", "completed"])
-def test_missing_birth_cannot_release_even_terminal_evidence(
-    tmp_path, birth, child_birth, status
+def test_missing_birth_cannot_release_without_process_evidence(
+    tmp_path, birth, child_birth
 ):
-    marker = _marker(tmp_path, birth=birth, child_birth=child_birth, status=status)
+    active = _active(tmp_path)
+    marker = _marker(active, birth=birth, child_birth=child_birth)
+    assert custody.has_active_guard_marker(active)
+    # The pid with the unknown birth is present: it may be the recorded process.
+    present = _sample(10, 100) if birth is None else _sample(20, 200)
     original = marker.read_bytes()
-    assert (
-        custody.reconcile_active_guard_markers(
-            tmp_path, _snapshot(), apply=True
-        ).preserved
-        == 1
+    report = custody.reconcile_active_guard_markers(
+        active, _snapshot(present), apply=True
+    )
+    decision = report.decisions[0]
+    role = "guard" if birth is None else "child"
+    assert (decision.disposition, decision.reason) == (
+        "preserve",
+        f"{role}_process_identity_unavailable",
     )
     assert marker.read_bytes() == original
-    assert custody.has_active_guard_marker(tmp_path)
+    assert custody.has_active_guard_marker(active)
+    steps = report.next_steps()
+    assert len(steps) == 1
+    assert f"--release {marker} --apply" in steps[0]
+
+
+@pytest.mark.parametrize("birth,child_birth", [(None, 200), (100, None)])
+def test_absent_pid_is_dead_whatever_its_recorded_birth(tmp_path, birth, child_birth):
+    active = _active(tmp_path)
+    marker = _marker(active, birth=birth, child_birth=child_birth)
+    report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    assert report.terminalized == 1 and report.retired == 1
+    payload = _payload(_retired(tmp_path) / marker.name)
+    receipt = payload["reconciliation"]
+    assert receipt["previous_status"] == "child_running"
+    assert [
+        (item["role"], item["expected_started_at_ns"], item["state"])
+        for item in receipt["evidence"]
+    ] == [("guard", birth, "absent"), ("child", child_birth, "absent")]
+    assert not custody.has_active_guard_marker(active)
+
+
+@pytest.mark.parametrize("status", ["completed", "finalizer_completed"])
+def test_producer_terminal_status_does_not_depend_on_births(tmp_path, status):
+    # A fast child exits before the guard can read its birth.
+    active = _active(tmp_path)
+    marker = _marker(active, child_birth=None, status=status)
+    assert custody.read_marker_record(marker).terminal
+    assert not custody.has_active_guard_marker(active)
+    # Its guard still runs: the producer retires its own record.
+    kept = custody.reconcile_active_guard_markers(
+        active, _snapshot(_sample(10, 100)), apply=True
+    )
+    assert kept.decisions[0].disposition == "already_terminal"
+    assert marker.exists()
+    report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    assert report.retired == 1 and report.terminalized == 0
+    assert _payload(_retired(tmp_path) / marker.name)["status"] == status
+
+
+def test_reused_child_leader_proves_its_recorded_group_closed(tmp_path):
+    active = _active(tmp_path)
+    _marker(active)
+    # Pid 20 now names another process; its new group 20 has a member.
+    samples = (_sample(20, 2000, pgid=20), _sample(21, 2100, pgid=20))
+    report = custody.reconcile_active_guard_markers(
+        active, _snapshot(*samples), apply=True
+    )
+    assert report.terminalized == 1
+    assert [item.state for item in report.decisions[0].evidence] == [
+        "absent",
+        "identity_mismatch",
+    ]
+
+
+def test_group_of_a_non_leader_child_stays_protective_after_reuse(tmp_path):
+    active = _active(tmp_path)
+    marker = _marker(active)
+    _rewrite(marker, lambda p: p["child_process"].update(pgid=30))
+    samples = (_sample(20, 2000), _sample(31, 3100, pgid=30))
+    report = custody.reconcile_active_guard_markers(
+        active, _snapshot(*samples), apply=True
+    )
+    assert report.decisions[0].reason == "child_process_group_still_present"
+    assert not report.decisions[0].operator_resolvable
+    assert custody.has_active_guard_marker(active)
 
 
 @pytest.mark.parametrize(
@@ -191,16 +289,14 @@ def test_missing_birth_cannot_release_even_terminal_evidence(
     ],
 )
 def test_invalid_terminal_records_fail_closed(tmp_path, mutate):
-    marker = _marker(tmp_path, status="completed")
+    active = _active(tmp_path)
+    marker = _marker(active, status="completed")
     _rewrite(marker, mutate)
     original = marker.read_bytes()
-    assert custody.has_active_guard_marker(tmp_path)
-    assert (
-        custody.reconcile_active_guard_markers(
-            tmp_path, _snapshot(), apply=True
-        ).preserved
-        == 1
-    )
+    assert custody.has_active_guard_marker(active)
+    report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    assert report.preserved == 1
+    assert report.decisions[0].reason.startswith("marker_invalid: ")
     assert marker.read_bytes() == original
 
 
@@ -208,44 +304,65 @@ def test_invalid_terminal_records_fail_closed(tmp_path, mutate):
     "content", [b"{", b"[]", b"\xff", b'{"status":"completed","status":"completed"}']
 )
 def test_inexact_or_unreadable_json_is_protective(tmp_path, content):
-    marker = tmp_path / f"guard-10-{'a' * 32}.json"
+    active = _active(tmp_path)
+    active.mkdir(parents=True)
+    marker = active / f"guard-10-{'a' * 32}.json"
     marker.write_bytes(content)
-    assert custody.has_active_guard_marker(tmp_path)
+    assert custody.has_active_guard_marker(active)
     assert (
         custody.reconcile_active_guard_markers(
-            tmp_path, _snapshot(), apply=True
+            active, _snapshot(), apply=True
         ).preserved
         == 1
     )
     assert marker.read_bytes() == content
 
 
-def test_corrupted_reconciliation_receipt_does_not_release_artifacts(tmp_path):
-    marker = _marker(tmp_path)
-    custody.reconcile_active_guard_markers(tmp_path, _snapshot(), apply=True)
-    _rewrite(
-        marker,
-        lambda p: p["reconciliation"]["evidence"][0].update(expected_started_at_ns=999),
-    )
-    assert custody.has_active_guard_marker(tmp_path)
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        lambda r: r["evidence"][0].update(expected_started_at_ns=999),
+        lambda r: r["evidence"][0].update(state="identity_unavailable"),
+        lambda r: r["evidence"][0].update(state="identity_match"),
+        lambda r: r.update(reason="age"),
+        lambda r: r.update(previous_status="custody_reconciled"),
+    ],
+)
+def test_corrupted_reconciliation_receipt_does_not_release_artifacts(tmp_path, corrupt):
+    active = _active(tmp_path)
+    marker = _marker(active)
+    custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    # Put a damaged copy of the reconciled record back into active custody.
+    payload = _payload(_retired(tmp_path) / marker.name)
+    corrupt(payload["reconciliation"])
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+    assert custody.has_active_guard_marker(active)
     assert (
         custody.reconcile_active_guard_markers(
-            tmp_path, _snapshot(), apply=True
+            active, _snapshot(), apply=True
         ).preserved
         == 1
     )
 
 
 def test_guard_shaped_directory_is_protective_and_never_rewritten(tmp_path):
-    marker = tmp_path / f"guard-10-{'a' * 32}.json"
-    marker.mkdir()
-    assert custody.has_active_guard_marker(tmp_path)
+    active = _active(tmp_path)
+    marker = active / f"guard-10-{'a' * 32}.json"
+    marker.mkdir(parents=True)
+    assert custody.has_active_guard_marker(active)
     assert (
         custody.reconcile_active_guard_markers(
-            tmp_path, _snapshot(), apply=True
+            active, _snapshot(), apply=True
         ).preserved
         == 1
     )
+    assert marker.is_dir()
+    # An operator release cannot move what is not a regular file.
+    report = custody.reconcile_active_guard_markers(
+        active, _snapshot(), apply=True, release=[marker]
+    )
+    assert report.decisions[0].retired_to is None
+    assert report.decisions[0].retirement.startswith("marker_is_not_a_regular_file")
     assert marker.is_dir()
 
 
@@ -272,37 +389,43 @@ def test_indirect_marker_never_releases_or_rewrites_target(tmp_path):
 
 
 def test_unreadable_directory_fails_closed(tmp_path, monkeypatch):
+    active = _active(tmp_path)
+    active.mkdir(parents=True)
     original_iterdir = Path.iterdir
 
     def unreadable(path):
-        if path == tmp_path:
+        if path == active:
             raise PermissionError("denied")
         return original_iterdir(path)
 
     monkeypatch.setattr(Path, "iterdir", unreadable)
-    assert custody.has_active_guard_marker(tmp_path)
+    assert custody.has_active_guard_marker(active)
     with pytest.raises(PermissionError, match="denied"):
-        custody.reconcile_active_guard_markers(tmp_path, _snapshot(), apply=True)
+        custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
 
 
 def test_parent_watched_pid_and_mtime_never_override_nested_identity(tmp_path):
-    nested = _marker(tmp_path)
-    parent = _marker(tmp_path, pid=1, status="completed")
+    active = _active(tmp_path)
+    nested = _marker(active)
+    parent = _marker(active, pid=1, status="completed")
     _rewrite(parent, lambda p: p.update(termination_reports=[{"watched_pids": [10]}]))
     os.utime(nested, ns=(100, 100))
     os.utime(parent, ns=(200, 200))
     report = custody.reconcile_active_guard_markers(
-        tmp_path, _snapshot(_sample(10, 100)), apply=True
+        active, _snapshot(_sample(10, 100)), apply=True
     )
     assert report.preserved == 1
+    # The finished parent leaves; its nested child's live record stays.
+    assert report.retired == 1 and not parent.exists()
     assert _payload(nested)["status"] == "child_running"
-    assert custody.has_active_guard_marker(tmp_path)
+    assert custody.has_active_guard_marker(active)
 
 
 def test_snapshot_failure_or_empty_result_never_changes_markers(
     tmp_path, monkeypatch, capsys
 ):
-    marker = _marker(tmp_path)
+    active = _active(tmp_path)
+    marker = _marker(active)
     original = marker.read_bytes()
 
     def failed():
@@ -310,31 +433,32 @@ def test_snapshot_failure_or_empty_result_never_changes_markers(
 
     for sampler in (failed, lambda: {}):
         monkeypatch.setattr(cli, "sample_processes", sampler)
-        assert cli.main(["--active-dir", str(tmp_path), "--apply"]) == 2
+        assert cli.main(["--active-dir", str(active), "--apply"]) == 2
         assert "no markers changed" in capsys.readouterr().err
         assert marker.read_bytes() == original
 
 
 def test_invalid_snapshot_identity_rejected_before_any_apply(tmp_path):
-    marker = _marker(tmp_path)
+    active = _active(tmp_path)
+    marker = _marker(active)
     original = marker.read_bytes()
     with pytest.raises(custody.ActiveCustodyError, match="invalid identity"):
         custody.reconcile_active_guard_markers(
-            tmp_path, lambda: {99: _sample(100)}, apply=True
+            active, lambda: {99: _sample(100)}, apply=True
         )
     assert marker.read_bytes() == original
 
 
 def test_kernel_process_group_zero_does_not_invalidate_full_native_snapshot(tmp_path):
-    _marker(tmp_path)
-    report = custody.reconcile_active_guard_markers(
-        tmp_path, _snapshot(_sample(pgid=0))
-    )
+    active = _active(tmp_path)
+    _marker(active)
+    report = custody.reconcile_active_guard_markers(active, _snapshot(_sample(pgid=0)))
     assert report.decisions[0].disposition == "terminalize"
 
 
 def test_cli_defaults_to_one_snapshot_and_dry_run(tmp_path, monkeypatch, capsys):
-    marker = _marker(tmp_path)
+    active = _active(tmp_path)
+    marker = _marker(active)
     original = marker.read_bytes()
     calls = []
 
@@ -343,7 +467,7 @@ def test_cli_defaults_to_one_snapshot_and_dry_run(tmp_path, monkeypatch, capsys)
         return {99: _sample()}
 
     monkeypatch.setattr(cli, "sample_processes", snapshot)
-    assert cli.main(["--active-dir", str(tmp_path), "--json"]) == 0
+    assert cli.main(["--active-dir", str(active), "--json"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["apply"] is False
     assert result["decisions"][0]["disposition"] == "terminalize"
@@ -352,32 +476,37 @@ def test_cli_defaults_to_one_snapshot_and_dry_run(tmp_path, monkeypatch, capsys)
 
 
 def test_markers_created_during_snapshot_are_not_judged_by_older_observation(tmp_path):
+    active = _active(tmp_path)
+    active.mkdir(parents=True)
+
     def snapshot():
-        _marker(tmp_path)
+        _marker(active)
         return {99: _sample()}
 
-    report = custody.reconcile_active_guard_markers(tmp_path, snapshot, apply=True)
+    report = custody.reconcile_active_guard_markers(active, snapshot, apply=True)
     assert report.decisions == ()
-    assert custody.has_active_guard_marker(tmp_path)
+    assert custody.has_active_guard_marker(active)
 
 
 def test_same_bytes_in_new_file_generation_fail_compare_and_swap(tmp_path):
-    marker = _marker(tmp_path)
+    active = _active(tmp_path)
+    marker = _marker(active)
     original = marker.read_bytes()
 
     def snapshot():
-        replacement = tmp_path / "replacement"
+        replacement = active / "replacement"
         replacement.write_bytes(original)
         os.replace(replacement, marker)
         return {99: _sample()}
 
-    report = custody.reconcile_active_guard_markers(tmp_path, snapshot, apply=True)
+    report = custody.reconcile_active_guard_markers(active, snapshot, apply=True)
     assert report.decisions[0].reason == "marker_changed_during_reconciliation"
     assert marker.read_bytes() == original
 
 
 def test_producer_update_wins_over_concurrent_reconciliation(tmp_path, monkeypatch):
-    marker = _marker(tmp_path)
+    active = _active(tmp_path)
+    marker = _marker(active)
     token = _payload(marker)["token"]
     writer_entered, snapshot_taken, release_writer = Event(), Event(), Event()
     publish = custody.atomic_write_bytes
@@ -404,7 +533,7 @@ def test_producer_update_wins_over_concurrent_reconciliation(tmp_path, monkeypat
         try:
             assert writer_entered.wait(5)
             reconciler = executor.submit(
-                custody.reconcile_active_guard_markers, tmp_path, snapshot, apply=True
+                custody.reconcile_active_guard_markers, active, snapshot, apply=True
             )
             assert snapshot_taken.wait(5)
         finally:
@@ -413,11 +542,11 @@ def test_producer_update_wins_over_concurrent_reconciliation(tmp_path, monkeypat
         report = reconciler.result(timeout=5)
     assert report.decisions[0].reason == "marker_changed_during_reconciliation"
     assert _payload(marker)["detail"] == "latest"
-    assert custody.has_active_guard_marker(tmp_path)
+    assert custody.has_active_guard_marker(active)
 
 
 def test_update_rejects_identity_changes(tmp_path):
-    marker = _marker(tmp_path)
+    marker = _marker(_active(tmp_path))
     token = _payload(marker)["token"]
     original = marker.read_bytes()
     assert not custody.update_active_guard_marker(marker, "wrong", status="completed")
@@ -463,3 +592,470 @@ def test_windows_scalar_birth_never_opens_arbitrary_pid(monkeypatch):
     )
     assert process_model.process_started_at_ns(10) == 1234
     assert process_model.process_started_at_ns(20) is None
+
+
+# --- launch outcome --------------------------------------------------------
+
+
+def test_failed_launch_records_no_child_and_reconciles_once_the_guard_is_gone(
+    tmp_path,
+):
+    active = _active(tmp_path)
+    marker = _marker(active, status="guard_starting", child=False)
+    token = _payload(marker)["token"]
+    custody.update_active_guard_marker(
+        marker, token, status="spawn_pending", child_launch_state="pending"
+    )
+    custody.update_active_guard_marker(
+        marker, token, status="spawn_failed", child_launch_state="failed"
+    )
+    custody.update_active_guard_marker(marker, token, status="guard_exception")
+    assert _payload(marker)["child_launch_state"] == "failed"
+    assert custody.has_active_guard_marker(active)
+    live = custody.reconcile_active_guard_markers(active, _snapshot(_sample(10, 100)))
+    assert live.decisions[0].reason == "guard_process_identity_match"
+    report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    assert report.terminalized == 1 and report.retired == 1
+    assert not custody.has_active_guard_marker(active)
+
+
+@pytest.mark.parametrize(
+    "prior,launch",
+    [
+        ([], "failed"),
+        ([("spawn_pending", "pending"), ("child_running", "recorded")], "failed"),
+        ([("spawn_pending", "pending"), ("spawn_failed", "failed")], "pending"),
+        ([("spawn_pending", "pending"), ("spawn_failed", "failed")], "not_started"),
+    ],
+)
+def test_launch_failure_is_reachable_only_from_the_launch_boundary(
+    tmp_path, prior, launch
+):
+    marker = _marker(_active(tmp_path), status="guard_starting", child=False)
+    token = _payload(marker)["token"]
+    for status, state in prior:
+        fields = {"child_launch_state": state}
+        if state == "recorded":
+            fields["child_process"] = {"pid": 20, "started_at_ns": 200, "pgid": 20}
+        custody.update_active_guard_marker(marker, token, status=status, **fields)
+    original = marker.read_bytes()
+    with pytest.raises(custody.ActiveCustodyError):
+        custody.update_active_guard_marker(
+            marker, token, status="guard_exception", child_launch_state=launch
+        )
+    assert marker.read_bytes() == original
+
+
+def test_failed_launch_cannot_claim_a_child(tmp_path):
+    marker = _marker(_active(tmp_path), status="guard_starting", child=False)
+    _rewrite(
+        marker,
+        lambda p: p.update(status="completed", child_launch_state="failed"),
+    )
+    assert custody.read_marker_record(marker).error == (
+        "child_launch_status_inconsistent"
+    )
+
+
+# --- retirement and bounded history ----------------------------------------
+
+
+def test_active_readers_cost_live_records_not_history(tmp_path, monkeypatch):
+    active = _active(tmp_path)
+    for pid in range(10, 30):
+        _marker(active, pid=pid, status="completed")
+    report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    assert report.retired == 20
+    live = _marker(active, pid=40)
+    parsed = []
+    read = custody.read_marker_record
+    monkeypatch.setattr(
+        custody, "read_marker_record", lambda path: parsed.append(path) or read(path)
+    )
+    assert custody.has_active_guard_marker(active)
+    assert parsed == [live]
+    assert sorted(path.name for path in active.iterdir()) == [
+        live.name,
+        live.with_suffix(".lock").name,
+    ]
+
+
+def test_retired_history_keeps_the_newest_records(tmp_path, monkeypatch):
+    monkeypatch.setattr(custody, "RETIRED_GUARD_MARKER_KEEP", 3)
+    monkeypatch.setattr(custody, "_RETIRED_PRUNE_SLACK", 1)
+    active = _active(tmp_path)
+    for pid in range(10, 15):
+        marker = _marker(active, pid=pid, status="completed")
+        # A retired marker keeps its last-write time; newer pids wrote later.
+        os.utime(marker, ns=(pid * 10**9, pid * 10**9))
+        report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+        assert report.retired == 1
+    names = sorted(path.name for path in _retired(tmp_path).iterdir())
+    assert names == [f"guard-{pid}-{pid:032x}.json" for pid in (12, 13, 14)]
+
+
+def test_guard_marker_lookup_reads_active_and_retired_records_of_one_pid(tmp_path):
+    active = _active(tmp_path)
+    done = _marker(active, pid=10, status="completed")
+    custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    running = _marker(active, pid=11)
+    assert [record.path for record in custody.guard_marker_records(active, 10)] == [
+        _retired(tmp_path) / done.name
+    ]
+    assert [record.path for record in custody.guard_marker_records(active, 11)] == [
+        running
+    ]
+
+
+def test_orphan_locks_leave_with_a_full_apply(tmp_path):
+    active = _active(tmp_path)
+    live = _marker(active, pid=10)
+    orphan = active / f"guard-11-{11:032x}.lock"
+    orphan.write_bytes(b"")
+    report = custody.reconcile_active_guard_markers(
+        active, _snapshot(_sample(10, 100)), apply=True
+    )
+    assert report.removed_locks == 1
+    assert not orphan.exists()
+    assert live.with_suffix(".lock").exists()
+
+
+def test_producer_retires_only_its_own_resolved_record(tmp_path):
+    active = _active(tmp_path)
+    done = _marker(active, pid=10, status="completed")
+    raised = _marker(active, pid=11, status="guard_exception", child=False)
+    token = _payload(done)["token"]
+    assert custody.retire_active_guard_marker(done, "f" * 32) is None
+    assert custody.retire_active_guard_marker(raised, _payload(raised)["token"]) is None
+    retired = custody.retire_active_guard_marker(done, token)
+    assert retired == _retired(tmp_path) / done.name
+    assert not done.exists() and not done.with_suffix(".lock").exists()
+    assert raised.exists()
+
+
+# --- operator release ------------------------------------------------------
+
+
+def test_release_resolves_inconclusive_evidence_with_an_attested_receipt(tmp_path):
+    active = _active(tmp_path)
+    pending = _marker(active, pid=10, status="guard_starting", child=False)
+    custody.update_active_guard_marker(
+        pending,
+        _payload(pending)["token"],
+        status="guard_exception",
+        child_launch_state="pending",
+    )
+    unknown = _marker(active, pid=11, child_birth=None)
+    samples = _snapshot(_sample(21, 2100))
+    plan = custody.reconcile_active_guard_markers(active, samples)
+    assert [item.reason for item in plan.decisions] == [
+        "child_launch_identity_unpublished",
+        "child_process_identity_unavailable",
+    ]
+    assert len(plan.next_steps()) == 2
+    report = custody.reconcile_active_guard_markers(
+        active, samples, apply=True, release=[pending, unknown]
+    )
+    assert report.terminalized == 2 and report.retired == 2
+    for marker in (pending, unknown):
+        receipt = _payload(_retired(tmp_path) / marker.name)["reconciliation"]
+        assert receipt["reason"] == "operator_attested"
+    states = _payload(_retired(tmp_path) / unknown.name)["reconciliation"]["evidence"]
+    assert [item["state"] for item in states] == ["absent", "identity_unavailable"]
+    assert not custody.has_active_guard_marker(active)
+
+
+def test_release_refuses_live_evidence(tmp_path):
+    active = _active(tmp_path)
+    marker = _marker(active)
+    original = marker.read_bytes()
+    report = custody.reconcile_active_guard_markers(
+        active, _snapshot(_sample(20, 200)), apply=True, release=[marker]
+    )
+    assert report.decisions[0].reason == "child_process_identity_match"
+    assert report.next_steps() == []
+    assert marker.read_bytes() == original
+
+
+def test_release_moves_an_unreadable_record_unchanged(tmp_path):
+    active = _active(tmp_path)
+    active.mkdir(parents=True)
+    marker = active / f"guard-10-{'a' * 32}.json"
+    marker.write_bytes(b"{")
+    plan = custody.reconcile_active_guard_markers(active, _snapshot())
+    assert plan.decisions[0].operator_resolvable
+    report = custody.reconcile_active_guard_markers(
+        active, _snapshot(), apply=True, release=[marker]
+    )
+    assert report.decisions[0].disposition == "release"
+    assert (_retired(tmp_path) / marker.name).read_bytes() == b"{"
+    assert not custody.has_active_guard_marker(active)
+
+
+@pytest.mark.parametrize("name", ["other/guard-10-" + "a" * 32 + ".json", "x.json"])
+def test_release_names_only_records_in_the_active_directory(tmp_path, name):
+    active = _active(tmp_path)
+    _marker(active)
+    outside = tmp_path / name
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_text("{}", encoding="utf-8")
+    with pytest.raises(custody.ActiveCustodyError, match="release names"):
+        custody.reconcile_active_guard_markers(
+            active, _snapshot(), apply=True, release=[outside]
+        )
+
+
+def test_cli_names_the_release_command_for_inconclusive_records(
+    tmp_path, monkeypatch, capsys
+):
+    active = _active(tmp_path)
+    marker = _marker(active, child_birth=None)
+    monkeypatch.setattr(cli, "sample_processes", _snapshot(_sample(20, 2000)))
+    assert cli.main(["--active-dir", str(active)]) == 0
+    out = capsys.readouterr().out
+    assert "operator action required:" in out
+    assert f"--release {marker} --apply" in out
+    assert cli.main(["--active-dir", str(active), "--release", str(marker)]) == 0
+    assert marker.exists()  # A release without --apply is a dry run.
+    args = ["--active-dir", str(active), "--release", str(marker), "--apply"]
+    assert cli.main(args) == 0
+    assert not marker.exists()
+    assert (_retired(tmp_path) / marker.name).exists()
+
+
+def test_cli_apply_records_what_the_sweep_left(tmp_path, monkeypatch):
+    active = _active(tmp_path)
+    _marker(active, pid=10)
+    _marker(active, pid=11)
+    monkeypatch.setattr(cli, "sample_processes", _snapshot(_sample(11, 100)))
+    assert cli.main(["--active-dir", str(active), "--apply"]) == 0
+    receipt = read_exact(active.parent / "sweep.json", max_bytes=65536, label="test")
+    assert receipt["remaining"] == 1
+
+
+# --- scratch custody -------------------------------------------------------
+
+
+def _guarded_scratch(tmp_path, *, pid=10, status="child_running"):
+    """A real scratch lease bound to a real marker, as the producer makes them."""
+    active = _active(tmp_path)
+    marker = _marker(active, pid=pid)
+    token = _payload(marker)["token"]
+    env = {
+        "MOLT_MEMORY_GUARD_STATE_ROOT": str(active.parent),
+        "MOLT_MEMORY_GUARD_TOKEN": token,
+        "MOLT_MEMORY_GUARD_MARKER": str(marker),
+    }
+    lease = scratch.acquire_guard_scratch(tmp_path, env)
+    (lease.target / "output").write_bytes(b"payload")
+    custody.update_active_guard_marker(
+        marker,
+        token,
+        status=status,
+        temporary_artifacts={"state": "leased", "target": str(lease.target)},
+    )
+    return active, marker, lease
+
+
+def _finish_indeterminate(marker, lease):
+    outcome = scratch.finish_guard_scratch(
+        lease, closed=False, success=False, evidence={"closed": False}
+    )
+    custody.update_active_guard_marker(
+        marker,
+        _payload(marker)["token"],
+        status="completed",
+        temporary_artifacts=outcome,
+    )
+
+
+def test_dead_guard_lease_is_adopted_through_the_scratch_authority(tmp_path):
+    active, marker, lease = _guarded_scratch(tmp_path)
+    lease.release()  # The guard died: its lock is gone, its lease is not.
+    report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    decision = report.decisions[0]
+    assert decision.disposition == "terminalize" and decision.retired_to
+    assert decision.scratch["state"] == "retained"
+    assert not lease.target.exists()
+    payload = lease.generation / "payload" / "output"
+    assert payload.read_bytes() == b"payload"
+    terminal = read_exact(
+        lease.generation / "terminal.json", max_bytes=65536, label="test"
+    )
+    assert terminal["closure"]["authority"] == "reconciled-custody"
+    assert terminal["finished_ns"] == 0
+    assert terminal["retained_bytes"] == len(b"payload")
+    assert report.scratch_retention[0]["retained_count"] == 1
+
+
+def test_busy_lease_keeps_the_record_until_its_lock_is_free(tmp_path):
+    active, marker, lease = _guarded_scratch(tmp_path)
+    try:
+        report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+        decision = report.decisions[0]
+        assert decision.applied and decision.retired_to is None
+        assert decision.retirement == "scratch_busy"
+        assert lease.target.is_dir()
+        # Reconciled, so it no longer blocks reclamation, but it stays listed.
+        assert not custody.has_active_guard_marker(active)
+        assert marker.exists()
+    finally:
+        lease.release()
+    again = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    assert again.decisions[0].disposition == "retire"
+    assert again.decisions[0].retired_to
+    assert (lease.generation / "payload" / "output").read_bytes() == b"payload"
+
+
+def test_indeterminate_scratch_waits_while_the_child_group_lives(tmp_path):
+    active, marker, lease = _guarded_scratch(tmp_path)
+    _finish_indeterminate(marker, lease)
+    assert not custody.has_active_guard_marker(active)
+    report = custody.reconcile_active_guard_markers(
+        active, _snapshot(_sample(21, 2100, pgid=20)), apply=True
+    )
+    decision = report.decisions[0]
+    assert decision.disposition == "already_terminal"
+    assert decision.reason == "child_process_group_still_present"
+    assert (lease.target / "output").read_bytes() == b"payload"
+    assert marker.exists()
+    # The same holds when the scratch is already resolved.
+    resolved = _marker(active, pid=11, status="completed")
+    report = custody.reconcile_active_guard_markers(
+        active, _snapshot(_sample(22, 2200, pgid=21)), apply=True
+    )
+    (kept,) = [item for item in report.decisions if item.marker == str(resolved)]
+    assert kept.reason == "child_process_group_still_present"
+    assert resolved.exists()
+
+
+def test_indeterminate_scratch_whose_payload_is_gone_resolves_with_a_receipt(
+    tmp_path,
+):
+    active, marker, lease = _guarded_scratch(tmp_path)
+    _finish_indeterminate(marker, lease)
+    shutil.rmtree(lease.target)  # An operator removed the payload by hand.
+    report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    decision = report.decisions[0]
+    assert decision.disposition == "retire" and decision.retired_to
+    assert decision.scratch["state"] == "reclaimed"
+    assert decision.scratch.get("error") is None
+    # Reclaimed generations hold no custody: the receipts go too.
+    assert not lease.generation.exists()
+    assert report.scratch_retention[0]["errors"] == []
+    again = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    assert again.decisions == ()
+    assert scratch.reclaim_terminal_scratch(lease.generation.parent)["errors"] == []
+
+
+def test_retirement_removes_a_reclaimed_generation_left_by_older_code(tmp_path):
+    active, marker, lease = _guarded_scratch(tmp_path)
+    outcome = scratch.finish_guard_scratch(
+        lease, closed=True, success=False, evidence={"closed": True}
+    )
+    assert outcome["state"] == "retained"
+    # Older code reclaimed the payload, dropped the index, and kept receipts.
+    with scratch._locked(lease.generation):
+        owner = scratch._reclaim_locked(
+            lease.generation, scratch._owner(lease.generation)
+        )
+    scratch._drop_index(lease.generation)
+    assert owner["state"] == "reclaimed" and lease.generation.is_dir()
+    custody.update_active_guard_marker(
+        marker,
+        _payload(marker)["token"],
+        status="completed",
+        temporary_artifacts={**outcome, "state": "reclaimed"},
+    )
+    report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    assert report.decisions[0].retired_to
+    assert not lease.generation.exists()
+
+
+def test_scratch_of_another_marker_is_never_adopted(tmp_path):
+    active, marker, lease = _guarded_scratch(tmp_path)
+    lease.release()
+    other = _marker(active, pid=12)
+    custody.update_active_guard_marker(
+        other,
+        _payload(other)["token"],
+        status="child_running",
+        temporary_artifacts={
+            "state": "indeterminate",
+            "receipt": str(lease.generation / "owner.json"),
+        },
+    )
+    report = custody.reconcile_active_guard_markers(
+        active, _snapshot(_sample(10, 100)), apply=True
+    )
+    (decision,) = [item for item in report.decisions if item.marker == str(other)]
+    assert decision.retirement == "scratch_error"
+    assert "another guard marker" in decision.scratch["error"]
+    assert (lease.target / "output").read_bytes() == b"payload"
+
+
+# --- automatic sweep -------------------------------------------------------
+
+
+def test_exit_sweep_runs_only_when_records_gathered(tmp_path, monkeypatch):
+    monkeypatch.setattr(custody, "AUTO_SWEEP_GROWTH", 1)
+    active = _active(tmp_path)
+    own = _sample(os.getpid(), 1)
+    _marker(active, pid=10)
+    assert custody.sweep_active_guard_markers(active, _snapshot(own)) is None
+    _marker(active, pid=11)
+    report = custody.sweep_active_guard_markers(active, _snapshot(own))
+    assert report is not None and report.retired == 2
+    receipt = read_exact(active.parent / "sweep.json", max_bytes=65536, label="test")
+    assert receipt["remaining"] == 0
+    # Live records raise the baseline, so they do not trigger every exit.
+    for pid in (12, 13):
+        _marker(active, pid=pid)
+    live = _snapshot(own, _sample(12, 100), _sample(13, 100))
+    assert custody.sweep_active_guard_markers(active, live).remaining == 2
+    _marker(active, pid=14)
+    assert custody.sweep_active_guard_markers(active, live) is None
+
+
+def test_exit_sweep_refuses_a_table_without_its_reader(tmp_path, monkeypatch):
+    monkeypatch.setattr(custody, "AUTO_SWEEP_GROWTH", 0)
+    active = _active(tmp_path)
+    marker = _marker(active)
+    original = marker.read_bytes()
+    with pytest.raises(custody.ActiveCustodyError, match="own reader"):
+        custody.sweep_active_guard_markers(active, _snapshot())
+    assert marker.read_bytes() == original
+
+
+def test_exit_sweep_leaves_pre_retirement_history_to_the_operator(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(custody, "AUTO_SWEEP_GROWTH", 0)
+    monkeypatch.setattr(custody, "AUTO_SWEEP_LIMIT", 3)
+    active = _active(tmp_path)
+    for pid in range(10, 14):
+        _marker(active, pid=pid, status="completed")
+    scanned = []
+    scandir = os.scandir
+
+    class CountingScandir:
+        def __init__(self, path):
+            self._entries = scandir(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._entries.close()
+
+        def __iter__(self):
+            for entry in self._entries:
+                scanned.append(entry.name)
+                yield entry
+
+    monkeypatch.setattr(custody.os, "scandir", CountingScandir)
+    snapshot = _snapshot(_sample(os.getpid(), 1))
+    assert custody.sweep_active_guard_markers(active, snapshot) is None
+    # The gate stops reading at the limit plus one marker.
+    assert sum(name.endswith(".json") for name in scanned) == 4
+    assert len(list(active.glob("*.json"))) == 4
