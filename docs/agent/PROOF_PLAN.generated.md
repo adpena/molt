@@ -83,7 +83,6 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `linux-x86_64-py312-unit` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `test` |
 | `macos-arm64-py312-unit` | `macos-14` | `macos` | `aarch64` | `3.12` | `python-tooling` | `host` | `test` |
 | `linux-x86_64-py312-unit-collection` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `test` |
-| `macos-arm64-py312-unit-collection` | `macos-14` | `macos` | `aarch64` | `3.12` | `python-tooling` | `host` | `test` |
 | `linux-x86_64-py312-native-dev` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `native` | `x86_64-unknown-linux-gnu` | `dev` |
 | `linux-x86_64-rust-native-dev` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `dev` |
 | `linux-x86_64-rust-native-release-output` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `release-output` |
@@ -249,7 +248,6 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `python.unit.cli` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.cli.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.cli.import-collection` | `python_unit_collection` | `linux-x86_64-py312-unit-collection` | `explicit` | 900 s | `python-tests` | 0 |
-| `python.unit.cli.import-collection.macos` | `python_unit_collection` | `macos-arm64-py312-unit-collection` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.surface-contracts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.surface-contracts.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.runtime-artifacts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |

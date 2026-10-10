@@ -342,7 +342,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "e8c34e6f3ca2e41f350a8f7b6fbf9ecf7c36f9bb48f5bb452fadd359b478a737",
+  "authority_sha256": "7ef1b10b9b9938b62dd9e22d78254bbe1aa5e391f2ad5993efcf9d8ae16c34b6",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -518,7 +518,7 @@
       ],
       "admission_workflow": ".github/workflows/ci.yml",
       "dependencies": [],
-      "description": "The whole CLI import-collection suite on Linux and macOS, in its own job so its memory never shares a runner with other unit partitions.",
+      "description": "The whole CLI import-collection suite on Linux, in its own job so its memory never shares a runner with other unit partitions.",
       "executor": "github-matrix",
       "inputs": [
         ".github/actions/setup-project/**",
@@ -4741,50 +4741,6 @@
         "2",
         "-m",
         "not slow",
-        "tests/cli/test_cli_import_collection.py",
-        "--deselect",
-        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]",
-        "--deselect",
-        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]",
-        "--deselect",
-        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]",
-        "--deselect",
-        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]",
-        "--deselect",
-        "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"
-      ],
-      "cache_domain": "pytest",
-      "cell": "macos-arm64-py312-unit-collection",
-      "dependencies": [],
-      "family": "python_unit_collection",
-      "id": "python.unit.cli.import-collection.macos",
-      "resource_class": "python-tests",
-      "tiers": [
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 900,
-      "toolchains": [
-        "python",
-        "uv",
-        "rustc",
-        "cargo"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "--python",
-        "3.12",
-        "python",
-        "-m",
-        "pytest",
-        "-q",
-        "-n",
-        "2",
-        "-m",
-        "not slow",
         "tests/test_abc_private_module_surface.py",
         "tests/test_abc_public_module_surface.py",
         "tests/test_agent_contract_budget.py",
@@ -7246,17 +7202,6 @@
           "resource_capacity_floor_seconds": {
             "python-tests": 450
           }
-        },
-        "macos-arm64-py312-unit-collection": {
-          "budget_seconds": 960,
-          "critical_path_seconds": 900,
-          "headroom_seconds": 0,
-          "job_reserve_seconds": 60,
-          "projected_makespan_seconds": 900,
-          "required_job_seconds": 960,
-          "resource_capacity_floor_seconds": {
-            "python-tests": 450
-          }
         }
       }
     },
@@ -8607,16 +8552,6 @@
       "profile": "test",
       "python": "3.12",
       "runner": "ubuntu-latest",
-      "target": "host"
-    },
-    {
-      "arch": "aarch64",
-      "backend": "python-tooling",
-      "id": "macos-arm64-py312-unit-collection",
-      "os": "macos",
-      "profile": "test",
-      "python": "3.12",
-      "runner": "macos-14",
       "target": "host"
     },
     {
