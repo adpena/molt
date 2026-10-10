@@ -99,9 +99,11 @@ def test_cache_roots_leave_git_clean_for_the_cache_pruner() -> None:
     module = _load_artifact_cleanup()
     defaults = set(module.default_pathspecs())
 
-    assert {".molt_cache/", ".molt_cache-*/", "runtime/molt-backend/.molt_cache/"} == set(
-        module.cache_pathspecs()
-    )
+    assert {
+        ".molt_cache/",
+        ".molt_cache-*/",
+        "runtime/molt-backend/.molt_cache/",
+    } == set(module.cache_pathspecs())
     assert not defaults & set(module.cache_pathspecs())
     for pathspec in [
         ".molt_cache",
@@ -127,7 +129,9 @@ def test_extra_pathspecs_reject_ancestors_of_protected_data() -> None:
             assert "stateful data" in str(exc)
         else:
             raise AssertionError(f"{pathspec} should have been rejected")
-    module.validate_extra_pathspecs(["runtime/molt-backend/tmp", "tests/harness/reports"])
+    module.validate_extra_pathspecs(
+        ["runtime/molt-backend/tmp", "tests/harness/reports"]
+    )
 
 
 def test_cache_prune_command_drives_the_real_pruner(tmp_path: Path) -> None:

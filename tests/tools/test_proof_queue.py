@@ -1545,12 +1545,14 @@ def _selected_python_capture_fixture(tmp_path: Path) -> dict[str, object]:
     }
     # The selection rule hashes the actual images; the fixture bytes are the
     # independent oracle for those digests.
-    assert selection["executable_sha256"] == hashlib.sha256(
-        executable.read_bytes()
-    ).hexdigest()
-    assert selection["base_executable_sha256"] == hashlib.sha256(
-        base.read_bytes()
-    ).hexdigest()
+    assert (
+        selection["executable_sha256"]
+        == hashlib.sha256(executable.read_bytes()).hexdigest()
+    )
+    assert (
+        selection["base_executable_sha256"]
+        == hashlib.sha256(base.read_bytes()).hexdigest()
+    )
     return selection
 
 
