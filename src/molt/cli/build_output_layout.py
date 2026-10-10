@@ -80,7 +80,7 @@ def _wasm_runtime_root(project_root: Path) -> Path:
     return _wasm_runtime_root_cached(
         os.fspath(project_root),
         os.environ.get("MOLT_WASM_RUNTIME_DIR"),
-        _configured_artifact_root_text(os.environ, Path.cwd()),
+        _configured_artifact_root_text(os.environ),
         os.fspath(Path.cwd()),
     )
 
@@ -118,7 +118,7 @@ def _default_build_root(output_base: str) -> Path:
         os.fspath(Path.cwd()),
         _default_home_str(),
         sys.platform,
-        _configured_artifact_root_text(os.environ, Path.cwd()),
+        _configured_artifact_root_text(os.environ),
     )
 
 
@@ -158,7 +158,7 @@ def _resolve_cache_root(project_root: Path, cache_dir: str | None) -> Path:
         os.fspath(Path.cwd()),
         _default_home_str(),
         sys.platform,
-        _configured_artifact_root_text(os.environ, Path.cwd()),
+        _configured_artifact_root_text(os.environ),
     )
 
 

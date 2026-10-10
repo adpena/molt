@@ -146,7 +146,7 @@ def _build_state_root(project_root: Path) -> Path:
         os.environ.get("CARGO_TARGET_DIR"),
         os.fspath(Path.cwd()),
         _molt_session_id(),
-        _configured_artifact_root_text(os.environ, project_root),
+        _configured_artifact_root_text(os.environ),
     )
 
 
@@ -224,6 +224,6 @@ def _runtime_wasm_artifact_path_from_env(
         os.fspath(project_root),
         artifact_name,
         env.get("MOLT_WASM_RUNTIME_DIR"),
-        _configured_artifact_root_text(env, Path.cwd()),
+        _configured_artifact_root_text(env),
         os.fspath(Path.cwd()),
     )

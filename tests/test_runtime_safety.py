@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from pathlib import Path
 import subprocess
 
@@ -73,7 +75,9 @@ def test_run_miri_defaults_to_canonical_tmp_root(monkeypatch) -> None:
     runtime_safety.run_miri(None)
 
     miri = Path(captured["env"]["TMPDIR"])
-    assert miri == runtime_safety._miri_tmp_root({})
+    # The process environment, as run_miri sees it; under CI it names the
+    # ephemeral custody root, which places scratch.
+    assert miri == runtime_safety._miri_tmp_root(dict(os.environ))
     assert not miri.is_relative_to(runtime_safety.ROOT.resolve())
 
 
