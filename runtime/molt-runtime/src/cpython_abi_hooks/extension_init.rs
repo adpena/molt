@@ -802,7 +802,7 @@ pub(crate) fn execute_prepared_extension(
             return initialization_failure(&py, "extension module ABI view unavailable");
         }
         let mut publication = ModulePublication {
-            object: unsafe { NativeObjectOwner::from_owned(object) },
+            object: NativeObjectOwner::from_owned(object),
             name_bits,
             def,
             register_state: false,
@@ -1453,7 +1453,7 @@ mod tests {
                         .borrowed_handle_to_new_pyobj(second);
                     assert!(!object.is_null());
                     drop(ModulePublication {
-                        object: unsafe { NativeObjectOwner::from_owned(object) },
+                        object: NativeObjectOwner::from_owned(object),
                         name_bits,
                         def: &raw mut def,
                         register_state: false,

@@ -810,7 +810,7 @@ pub extern "C" fn molt_exceptiongroup_init(self_bits: u64, args_bits: u64) -> u6
     crate::with_gil_entry_nopanic!(_py, {
         let Some(storage) = ExceptionStorage::for_exception(_py, self_bits) else {
             if !obj_from_bits(args_bits).is_none() {
-                release(_py, args_bits);
+                dec_ref_bits(_py, args_bits);
             }
             return raise_exception::<u64>(
                 _py,

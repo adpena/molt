@@ -1,7 +1,7 @@
 use super::*;
 use crate::builtins::exceptions::ExceptionValue;
 use molt_cpython_abi::abi_types::*;
-use molt_cpython_abi::api::{errors, numbers, typeobj};
+use molt_cpython_abi::api::{errors, numbers, refcount::OwnedPyObject, typeobj};
 use std::cell::Cell;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};

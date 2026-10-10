@@ -65,13 +65,17 @@ Nested child output also invalidates complete parallel accounting. The corrected
 receipt and inert-process fixture family passes 227 checks with one platform
 skip. Both newly selected isolated semantic cases pass; the gate now distinguishes
 nine isolated semantic children from seven development probes. The successor
-full-runtime build stops in test compilation: eight test closures pass an owned
-token where a borrow is required, and four calls use the wrong C API module.
-These fixture errors and two unused production imports are corrected; successor
-compilation and full execution remain required. Windows/macOS process cells
-remain unverified.
+full-runtime build first exposed stale token borrows and C API module references.
+Those corrections expose 31 further compilation errors: migrated fixtures lack
+explicit imports, current argument types and required unsafe scopes, and one
+production path retains a deleted release helper. These six affected files are
+corrected, including two redundant unsafe scopes; successor compilation and full
+execution remain required. Windows/macOS process cells remain unverified.
 
-The earlier standalone Linux/aarch64 ABI run reports 759 passes, two failures
+The current standalone Linux/aarch64 ABI run at `78ddd63bf` passes 771 cases,
+with no failures and one explicit developer timing probe ignored across 56 test
+summaries. Native process custody is complete with no custody violations.
+The earlier standalone run reports 759 passes, two failures
 and one explicit developer timing probe ignored. Its member fixture and obsolete
 source-spelling assertion are corrected. The ownership successor compiles and
 reports 762 passes, eight failures and one ignored probe across 56 test summaries,
@@ -87,8 +91,9 @@ the metaclass fixture: it marks undersized static storage as a ready heap type
 and asserts immediate destruction despite the normal MRO self-cycle. That
 invalid fixture and its private callbacks are deleted; existing descriptor
 retirement and real heap-metaclass collector controls retain the valid lifetime
-oracles. Replacement execution remains required; no semantic obligation is
-waived or reclassified as a subset exclusion.
+oracles. The current passing execution covers these replacement consumers;
+full-runtime and other affected cells remain required. No semantic obligation
+is waived or reclassified as a subset exclusion.
 
 The C percent-formatting repair deletes the duplicate parser and migrates its
 complete versioned hook family, reusing the runtime formatter for arbitrary-width
@@ -134,7 +139,7 @@ is detached, including the original argument's repr side effects. Those note
 semantics now share the existing exception-note and formatting authorities in
 the assembled source. The saved-error hook and every provider/consumer migrate
 together; obsolete hook and renderer contracts are absent from the integrated
-Rust source. Actual standalone and full-runtime execution remain required.
+Rust source. Standalone execution passes; full-runtime execution remains required.
 The source includes sole-owner native controls for failure visibility, cold
 publication rollback, successful-note input retirement and callback-mutated
 traceback restoration; parsing and source review do not qualify those controls.

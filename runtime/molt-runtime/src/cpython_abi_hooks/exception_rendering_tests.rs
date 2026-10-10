@@ -3618,7 +3618,7 @@ fn native_exception_field_publication_restores_error_before_displaced_retirement
         let mut payload_type =
             NativeType::subtype(&raw mut PyBaseObject_Type, c"FieldRetirementPayload");
         payload_type.tp_dealloc = Some(payload_drop);
-        assert_eq!(payload_type.ready(), 0);
+        assert_eq!(unsafe { payload_type.ready() }, 0);
         unsafe {
             let payload = OwnedPyObject::from_owned(Box::into_raw(Box::new(PyObject {
                 ob_refcnt: 1,
@@ -3916,7 +3916,7 @@ fn dictionary_typed_lookup_distinguishes_prior_errors_from_native_hash_failures(
                         assert_eq!(selected.as_ptr(), LOOKUP_HASH_ERROR.load(Ordering::SeqCst));
                         if mode == 1 {
                             assert_eq!(
-                                text(strings::PyObject_Str(selected.as_ptr())),
+                                text(typeobj::PyObject_Str(selected.as_ptr())),
                                 "unhashable type: 'NativeHashKey'"
                             );
                         } else {

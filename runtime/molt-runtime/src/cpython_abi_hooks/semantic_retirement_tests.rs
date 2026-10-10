@@ -1,6 +1,7 @@
 //! Ordinary semantic retirement must expose, then complete, native error reentry.
 use super::native_test_fixture::NativeType;
 use super::*;
+use crate::{PyToken, exception_pending, obj_from_bits};
 use molt_cpython_abi::api::{errors, refcount};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_runtime_core::{OwnedRuntimeValue, ProtectedRuntimeValue};
@@ -66,7 +67,7 @@ unsafe fn native_value<'a>(
 }
 
 fn pending_error<'a>(py: &'a PyToken<'_>) -> ProtectedRuntimeValue<'a> {
-    let ptr = crate::builtins::exceptions::alloc_exception(py, "ValueError", None);
+    let ptr = crate::builtins::exceptions::alloc_exception(py, "ValueError", "");
     assert!(!ptr.is_null());
     unsafe {
         ProtectedRuntimeValue::from_owned_bits(py.core_token(), MoltObject::from_ptr(ptr).bits())
@@ -149,12 +150,13 @@ fn semantic_sequence_and_argument_snapshots_expose_last_native_owner() {
             assert_eq!(kind.ready(), 0);
             for mode in 0..4 {
                 let value = native_value(py, &mut kind);
+                let value_bits = value.bits();
                 let tuple = crate::alloc_tuple(
                     py,
                     if mode == 3 {
                         &[]
                     } else {
-                        std::slice::from_ref(&value.bits())
+                        std::slice::from_ref(&value_bits)
                     },
                 );
                 assert!(!tuple.is_null());
