@@ -1,13 +1,23 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import (
+    Callable,
+    Collection,
+    Container,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+    Set as AbcSet,
+)
+from dataclasses import MISSING, dataclass
 from datetime import datetime
-from functools import lru_cache
+from functools import lru_cache, partial
 import os
 from pathlib import Path
 import re
 import shlex
+import struct
 import subprocess
 import sys
 import threading
@@ -144,18 +154,93 @@ HOST_CONTROL_PLANE_LINEAGE_PROTECTED_EXECUTABLE_NAMES = (
 )
 
 
-@dataclass(frozen=True, slots=True)
+NativeCommandBinding = tuple[str, "tuple[str, ...] | None", str]
+"""``(command, argv, command_kind)`` bound to one sampled process instance."""
+
+_native_command_binding_lock = threading.Lock()
+
+
+class _BoundOnRead:
+    """A ``ProcessSample`` field a native sampler binds on first read.
+
+    A native snapshot reads one kernel row per process: parent, group, birth
+    and resident set. Argv costs a further read per process and only the
+    processes a decision visits need it, so a native row reads its argv the
+    first time ``command``, ``argv`` or ``command_kind`` is read. The binder
+    checks that the pid still names the sampled birth; once bound, every
+    reader sees the same value. Rows built directly carry eager values.
+    """
+
+    __slots__ = ("default", "name")
+
+    def __init__(self, default: object = MISSING) -> None:
+        self.default = default
+        self.name = ""
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self.name = name
+
+    def __get__(self, instance: object, owner: type | None = None) -> Any:
+        if instance is None:
+            if self.default is MISSING:
+                raise AttributeError(self.name)
+            return self.default
+        values = instance.__dict__
+        try:
+            return values[self.name]
+        except KeyError:
+            pass
+        with _native_command_binding_lock:
+            if self.name not in values:
+                command, argv, command_kind = values["_bind_native_command"]()
+                values["command"] = command
+                values["argv"] = argv
+                values["command_kind"] = command_kind
+                del values["_bind_native_command"]
+        return values[self.name]
+
+    def __set__(self, instance: object, value: object) -> None:
+        instance.__dict__[self.name] = value
+
+
+@dataclass(frozen=True)
 class ProcessSample:
     pid: int
     ppid: int
     rss_kb: int
-    command: str
+    command: str = _BoundOnRead()  # type: ignore[assignment]
     pgid: int | None = None
     elapsed_sec: int | None = None
     started_at_ns: int | None = None
     # None uses the native sampler's command source; () explicitly means unknown.
-    argv: tuple[str, ...] | None = None
-    command_kind: str = "full"
+    argv: tuple[str, ...] | None = _BoundOnRead(None)  # type: ignore[assignment]
+    command_kind: str = _BoundOnRead("full")  # type: ignore[assignment]
+
+
+def native_process_sample(
+    *,
+    pid: int,
+    ppid: int,
+    rss_kb: int,
+    pgid: int | None,
+    elapsed_sec: int | None,
+    started_at_ns: int | None,
+    bind_command: Callable[[], NativeCommandBinding],
+) -> ProcessSample:
+    """Build a kernel-row sample whose command binds on first read."""
+
+    sample = object.__new__(ProcessSample)
+    values = sample.__dict__
+    values.update(
+        pid=pid,
+        ppid=ppid,
+        rss_kb=rss_kb,
+        pgid=pgid,
+        elapsed_sec=elapsed_sec,
+        started_at_ns=started_at_ns,
+        _bind_native_command=bind_command,
+    )
+    return sample
 
 
 @dataclass(frozen=True, slots=True)
@@ -723,13 +808,39 @@ def _linux_proc_rss_kb(pid: int, proc_root: Path = Path("/proc")) -> int:
     return 0 if row is None else row[1]
 
 
+def _linux_bind_command(
+    pid: int,
+    started_at_ns: int,
+    comm: str,
+    proc_root: Path,
+    stat_reader: Callable[[int, Path], tuple[int, int, int, str] | None],
+) -> NativeCommandBinding:
+    """Bind ``cmdline`` to the sampled birth, or leave the argv unknown.
+
+    The ``stat`` read after ``cmdline`` proves the pid still names the sampled
+    instance. A reused pid keeps the sampled row but binds no argv; an empty
+    or unreadable ``cmdline`` (a kernel thread) keeps the kernel name.
+    """
+
+    argv = _linux_proc_argv(pid, proc_root)
+    after = stat_reader(pid, proc_root)
+    if after is None or after[2] != started_at_ns:
+        return comm, (), "full"
+    return (shlex.join(argv) if argv is not None else comm), argv, "full"
+
+
 def sample_processes_linux_proc(
     proc_root: Path = Path("/proc"),
     *,
     stat_reader: Callable[[int, Path], tuple[int, int, int, str] | None] | None = None,
     uptime_sec: float | None = None,
 ) -> dict[int, ProcessSample]:
-    """Sample Linux processes with instance-bound ancestry and identity."""
+    """Sample Linux processes with instance-bound ancestry and identity.
+
+    One ``stat`` row per process carries parent, group, birth and resident
+    set. Argv binds on first read (``_linux_bind_command``), so a snapshot
+    reads ``cmdline`` only for the processes a decision visits.
+    """
 
     samples: dict[int, ProcessSample] = {}
     try:
@@ -755,28 +866,24 @@ def sample_processes_linux_proc(
         stat_reader = _linux_proc_stat_identity
     for pid in pids:
         if injected_reader:
-            before = stat_reader(pid, proc_root)
+            identity = stat_reader(pid, proc_root)
             rss_kb = _linux_proc_rss_kb(pid, proc_root)
         else:
             row = _linux_proc_stat_row(pid, proc_root)
-            before, rss_kb = (None, 0) if row is None else row
-        if before is None:
+            identity, rss_kb = (None, 0) if row is None else row
+        if identity is None:
             continue
-        ppid, pgid, started_at_ns, comm = before
-        argv = _linux_proc_argv(pid, proc_root)
-        command = shlex.join(argv) if argv is not None else comm
-        after = stat_reader(pid, proc_root)
-        if after != before:
-            continue
-        samples[pid] = ProcessSample(
+        ppid, pgid, started_at_ns, comm = identity
+        samples[pid] = native_process_sample(
             pid=pid,
             ppid=ppid,
             rss_kb=rss_kb,
-            command=command,
             pgid=pgid,
             elapsed_sec=max(0, int(uptime_sec - started_at_ns / 1_000_000_000)),
             started_at_ns=started_at_ns,
-            argv=argv,
+            bind_command=partial(
+                _linux_bind_command, pid, started_at_ns, comm, proc_root, stat_reader
+            ),
         )
     if not samples:
         raise ProcessSnapshotError("Linux /proc snapshot contained no stable rows")
@@ -784,21 +891,82 @@ def sample_processes_linux_proc(
 
 
 # ``kern.proc`` ``p_stat`` of a process that exited and awaits its parent's
-# ``wait()``. XNU keeps it listed under ``proc_listallpids`` with its birth,
-# parent and group intact, while every ``proc_pidinfo`` flavor answers ESRCH.
+# ``wait()``. XNU keeps its row, with birth, parent and group intact, until the
+# parent reaps it, while every ``proc_pidinfo`` flavor answers ESRCH.
 _DARWIN_SZOMB = 5
 _DARWIN_KINFO_PROC_SIZE = 648
+# <sys/sysctl.h>: CTL_KERN, KERN_PROC, and its KERN_PROC_ALL / KERN_PROC_PID
+# selectors; KERN_PROCARGS2 returns one process's argc and argv.
+_DARWIN_CTL_KERN = 1
+_DARWIN_KERN_PROC = 14
+_DARWIN_KERN_PROC_ALL = 0
+_DARWIN_KERN_PROC_PID = 1
+_DARWIN_KERN_PROCARGS2 = 49
+_DARWIN_ENOMEM = 12
+_DARWIN_TABLE_READ_ATTEMPTS = 8
 
 
 @dataclass(frozen=True, slots=True)
 class _DarwinKernelProcRow:
-    """One ``kern.proc.pid`` row: the kernel's own state and instance identity."""
+    """One ``kern.proc`` row: the kernel's own state and instance identity.
+
+    ``uid`` is the effective uid. XNU answers ``KERN_PROCARGS2`` and
+    ``PROC_PIDTASKINFO`` only for a process whose effective uid equals the
+    caller's, unless the caller is root.
+    """
 
     status: int
     ppid: int
     pgid: int
     started_at_ns: int
     command: str
+    uid: int
+
+
+@dataclass(frozen=True, slots=True)
+class _DarwinKinfoLayout:
+    """Byte offsets of the ``struct kinfo_proc`` fields the sampler reads.
+
+    The offsets come from the ctypes layout of the 64-bit ABI, whose total
+    size is checked against the kernel's 648 bytes before any read.
+    """
+
+    size: int
+    start_sec: int
+    start_usec: int
+    status: int
+    pid: int
+    comm: int
+    comm_size: int
+    ppid: int
+    pgid: int
+    uid: int
+
+    def row(self, raw: bytes, base: int) -> tuple[int, _DarwinKernelProcRow] | None:
+        """Parse one row at ``base``; None for a row with no birth."""
+
+        pid = _DARWIN_I32.unpack_from(raw, base + self.pid)[0]
+        seconds = _DARWIN_I64.unpack_from(raw, base + self.start_sec)[0]
+        micros = _DARWIN_I32.unpack_from(raw, base + self.start_usec)[0]
+        started_at_ns = seconds * 1_000_000_000 + micros * 1_000
+        if pid <= 0 or started_at_ns <= 0:
+            return None
+        comm = raw[base + self.comm : base + self.comm + self.comm_size]
+        name = comm.split(b"\0", 1)[0].decode(errors="replace")
+        return pid, _DarwinKernelProcRow(
+            status=_DARWIN_I8.unpack_from(raw, base + self.status)[0],
+            ppid=_DARWIN_I32.unpack_from(raw, base + self.ppid)[0],
+            pgid=_DARWIN_I32.unpack_from(raw, base + self.pgid)[0],
+            started_at_ns=started_at_ns,
+            command=name or f"pid:{pid}",
+            uid=_DARWIN_U32.unpack_from(raw, base + self.uid)[0],
+        )
+
+
+_DARWIN_I8 = struct.Struct("=b")
+_DARWIN_I32 = struct.Struct("=i")
+_DARWIN_U32 = struct.Struct("=I")
+_DARWIN_I64 = struct.Struct("=q")
 
 
 @dataclass(frozen=True, slots=True)
@@ -808,58 +976,73 @@ class _DarwinProcessAuthority:
     ctypes: Any
     libproc: Any
     libsystem: Any
-    proc_bsd_info_type: type[Any]
     proc_task_info_type: type[Any]
-    kinfo_proc_type: type[Any]
+    kinfo: _DarwinKinfoLayout
     proc_pidinfo: Callable[..., int]
-    proc_listallpids: Callable[..., int]
     sysctl: Callable[..., int]
+
+    def kernel_table(self) -> dict[int, _DarwinKernelProcRow]:
+        """Read every ``kern.proc`` row in one ``KERN_PROC_ALL`` sysctl.
+
+        This is the table ``ps`` reads. The kernel fills each row from one
+        referenced process, so its parent, group and birth describe one
+        instance. Exited, unreaped processes stay listed with ``SZOMB``.
+        """
+        ctypes = self.ctypes
+        mib = (ctypes.c_int * 3)(
+            _DARWIN_CTL_KERN, _DARWIN_KERN_PROC, _DARWIN_KERN_PROC_ALL
+        )
+        row_size = self.kinfo.size
+        for _attempt in range(_DARWIN_TABLE_READ_ATTEMPTS):
+            size = ctypes.c_size_t(0)
+            if self.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0:
+                raise OSError(ctypes.get_errno(), "KERN_PROC_ALL size query failed")
+            # Headroom for processes born between the size query and the read.
+            capacity = size.value + size.value // 8 + 64 * row_size
+            buffer = ctypes.create_string_buffer(capacity)
+            size = ctypes.c_size_t(capacity)
+            if self.sysctl(mib, 3, buffer, ctypes.byref(size), None, 0) == 0:
+                break
+            error = ctypes.get_errno()
+            if error != _DARWIN_ENOMEM:
+                raise OSError(error, "KERN_PROC_ALL read failed")
+        else:
+            raise OSError(_DARWIN_ENOMEM, "KERN_PROC_ALL kept outgrowing its buffer")
+        if size.value % row_size:
+            raise OSError(
+                f"KERN_PROC_ALL returned {size.value} bytes, "
+                f"not a multiple of the {row_size}-byte kinfo_proc"
+            )
+        raw = buffer.raw[: size.value]
+        table: dict[int, _DarwinKernelProcRow] = {}
+        for base in range(0, size.value, row_size):
+            parsed = self.kinfo.row(raw, base)
+            if parsed is not None:
+                table[parsed[0]] = parsed[1]
+        return table
 
     def kernel_row(self, pid: int) -> _DarwinKernelProcRow | None:
         """Read one ``kern.proc.pid`` row; None once the pid has been reaped.
 
-        This is the table ``ps`` reads. Unlike ``proc_pidinfo`` it still
-        answers for a process that exited and awaits ``wait()``, and its
-        ``p_starttime`` is the same birth clock as ``pbi_start_tvsec``, so an
-        identity bound here equals one bound through libproc.
+        Unlike ``proc_pidinfo`` it still answers for a process that exited and
+        awaits ``wait()``, and for another user's process.
         """
-        info = self.kinfo_proc_type()
-        expected = self.ctypes.sizeof(info)
-        size = self.ctypes.c_size_t(expected)
-        # CTL_KERN, KERN_PROC, KERN_PROC_PID
-        mib = (self.ctypes.c_int * 4)(1, 14, 1, pid)
+        ctypes = self.ctypes
+        row_size = self.kinfo.size
+        buffer = ctypes.create_string_buffer(row_size)
+        size = ctypes.c_size_t(row_size)
+        mib = (ctypes.c_int * 4)(
+            _DARWIN_CTL_KERN, _DARWIN_KERN_PROC, _DARWIN_KERN_PROC_PID, pid
+        )
         if (
-            self.sysctl(
-                mib, 4, self.ctypes.byref(info), self.ctypes.byref(size), None, 0
-            )
-            != 0
-            or size.value != expected
-            or int(info.kp_proc.p_pid) != pid
+            self.sysctl(mib, 4, buffer, ctypes.byref(size), None, 0) != 0
+            or size.value != row_size
         ):
             return None
-        start = info.kp_proc.p_starttime
-        started_at_ns = int(start.tv_sec) * 1_000_000_000 + int(start.tv_usec) * 1_000
-        if started_at_ns <= 0:
+        parsed = self.kinfo.row(buffer.raw, 0)
+        if parsed is None or parsed[0] != pid:
             return None
-        raw_name = bytes(info.kp_proc.p_comm).split(b"\0", 1)[0]
-        return _DarwinKernelProcRow(
-            status=int(info.kp_proc.p_stat),
-            ppid=int(info.kp_eproc.e_ppid),
-            pgid=int(info.kp_eproc.e_pgid),
-            started_at_ns=started_at_ns,
-            command=raw_name.decode(errors="replace") or f"pid:{pid}",
-        )
-
-    def pids(self) -> list[int]:
-        """Enumerate every pid the kernel lists, exited-unreaped ones included."""
-        count = self.proc_listallpids(None, 0)
-        if count <= 0:
-            raise OSError("proc_listallpids reported no processes")
-        buffer = (self.ctypes.c_int * (count + 64))()
-        returned = self.proc_listallpids(buffer, self.ctypes.sizeof(buffer))
-        if returned <= 0:
-            raise OSError("proc_listallpids failed")
-        return [int(buffer[index]) for index in range(returned) if buffer[index] > 0]
+        return parsed[1]
 
     def resident_kb(self, pid: int) -> int | None:
         """Resident set in kB; None when the kernel withholds task info."""
@@ -870,30 +1053,8 @@ class _DarwinProcessAuthority:
             return None
         return int(info.pti_resident_size) // 1024
 
-    def metadata(self, pid: int) -> tuple[int, int, int, str] | None:
-        info = self.proc_bsd_info_type()
-        size = self.ctypes.sizeof(info)
-        returned = self.proc_pidinfo(
-            pid,
-            3,
-            0,
-            self.ctypes.byref(info),
-            size,
-        )
-        if returned != size or info.pbi_start_tvsec <= 0:
-            return None
-        started_at_ns = (
-            int(info.pbi_start_tvsec) * 1_000_000_000
-            + int(info.pbi_start_tvusec) * 1_000
-        )
-        raw_name = bytes(info.pbi_name).split(b"\0", 1)[0]
-        if not raw_name:
-            raw_name = bytes(info.pbi_comm).split(b"\0", 1)[0]
-        command = raw_name.decode(errors="replace") or f"pid:{pid}"
-        return int(info.pbi_ppid), int(info.pbi_pgid), started_at_ns, command
-
     def argv(self, pid: int) -> tuple[str, ...] | None:
-        mib = (self.ctypes.c_int * 3)(1, 49, pid)
+        mib = (self.ctypes.c_int * 3)(_DARWIN_CTL_KERN, _DARWIN_KERN_PROCARGS2, pid)
         size = self.ctypes.c_size_t(0)
         if (
             self.sysctl(mib, 3, None, self.ctypes.byref(size), None, 0) != 0
@@ -932,39 +1093,9 @@ class _DarwinProcessAuthority:
             offset = end + 1
         return tuple(argv) if len(argv) == argc else None
 
-    def command(self, pid: int) -> str | None:
-        argv = self.argv(pid)
-        return shlex.join(argv) if argv is not None else None
-
 
 def _load_darwin_process_authority() -> _DarwinProcessAuthority:
     import ctypes
-
-    class ProcBsdInfo(ctypes.Structure):
-        _fields_ = [
-            ("pbi_flags", ctypes.c_uint32),
-            ("pbi_status", ctypes.c_uint32),
-            ("pbi_xstatus", ctypes.c_uint32),
-            ("pbi_pid", ctypes.c_uint32),
-            ("pbi_ppid", ctypes.c_uint32),
-            ("pbi_uid", ctypes.c_uint32),
-            ("pbi_gid", ctypes.c_uint32),
-            ("pbi_ruid", ctypes.c_uint32),
-            ("pbi_rgid", ctypes.c_uint32),
-            ("pbi_svuid", ctypes.c_uint32),
-            ("pbi_svgid", ctypes.c_uint32),
-            ("pbi_rfu_1", ctypes.c_uint32),
-            ("pbi_comm", ctypes.c_char * 16),
-            ("pbi_name", ctypes.c_char * 32),
-            ("pbi_nfiles", ctypes.c_uint32),
-            ("pbi_pgid", ctypes.c_uint32),
-            ("pbi_pjobc", ctypes.c_uint32),
-            ("e_tdev", ctypes.c_uint32),
-            ("e_tpgid", ctypes.c_uint32),
-            ("pbi_nice", ctypes.c_int32),
-            ("pbi_start_tvsec", ctypes.c_uint64),
-            ("pbi_start_tvusec", ctypes.c_uint64),
-        ]
 
     class ProcTaskInfo(ctypes.Structure):
         _fields_ = [
@@ -1101,6 +1232,21 @@ def _load_darwin_process_authority() -> _DarwinProcessAuthority:
             f"kinfo_proc layout is {ctypes.sizeof(KinfoProc)} bytes, "
             f"kernel ABI needs {_DARWIN_KINFO_PROC_SIZE}"
         )
+    proc_offset = KinfoProc.kp_proc.offset
+    eproc_offset = KinfoProc.kp_eproc.offset
+    start_offset = proc_offset + ExternProc.p_starttime.offset
+    kinfo = _DarwinKinfoLayout(
+        size=ctypes.sizeof(KinfoProc),
+        start_sec=start_offset + Timeval.tv_sec.offset,
+        start_usec=start_offset + Timeval.tv_usec.offset,
+        status=proc_offset + ExternProc.p_stat.offset,
+        pid=proc_offset + ExternProc.p_pid.offset,
+        comm=proc_offset + ExternProc.p_comm.offset,
+        comm_size=ExternProc.p_comm.size,
+        ppid=eproc_offset + Eproc.e_ppid.offset,
+        pgid=eproc_offset + Eproc.e_pgid.offset,
+        uid=eproc_offset + Eproc.e_ucred.offset + Ucred.cr_uid.offset,
+    )
 
     libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
     proc_pidinfo = libproc.proc_pidinfo
@@ -1112,9 +1258,6 @@ def _load_darwin_process_authority() -> _DarwinProcessAuthority:
         ctypes.c_int,
     ]
     proc_pidinfo.restype = ctypes.c_int
-    proc_listallpids = libproc.proc_listallpids
-    proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    proc_listallpids.restype = ctypes.c_int
 
     libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
     sysctl = libsystem.sysctl
@@ -1131,11 +1274,9 @@ def _load_darwin_process_authority() -> _DarwinProcessAuthority:
         ctypes=ctypes,
         libproc=libproc,
         libsystem=libsystem,
-        proc_bsd_info_type=ProcBsdInfo,
         proc_task_info_type=ProcTaskInfo,
-        kinfo_proc_type=KinfoProc,
+        kinfo=kinfo,
         proc_pidinfo=proc_pidinfo,
-        proc_listallpids=proc_listallpids,
         sysctl=sysctl,
     )
 
@@ -1164,38 +1305,23 @@ def _darwin_process_authority() -> _DarwinProcessAuthority | None:
     return None if cached is None else cast(_DarwinProcessAuthority, cached)
 
 
-def _darwin_proc_table() -> dict[int, int]:
-    """Enumerate every live pid with its resident kB through libproc.
-
-    One ``proc_listallpids`` call replaces the ``ps`` subprocess and its hard
-    timeout. ``PROC_PIDTASKINFO`` is uid-restricted, so another user's
-    process carries zero resident kB; the guard never sizes those, because
-    global RSS sums only Molt-owned process groups.
-    """
+def _darwin_proc_table() -> dict[int, _DarwinKernelProcRow]:
+    """Every ``kern.proc`` row of the host, from one sysctl."""
 
     authority = _darwin_process_authority()
     if authority is None:
         raise ProcessSnapshotError("Darwin process authority is unavailable")
     try:
-        pids = authority.pids()
+        table = authority.kernel_table()
     except (AttributeError, OSError, TypeError, ValueError) as exc:
         raise ProcessSnapshotError(f"Darwin process enumeration failed: {exc}") from exc
-    table: dict[int, int] = {}
-    for pid in pids:
-        if type(pid) is not int or pid <= 0:
-            continue
-        try:
-            resident_kb = authority.resident_kb(pid)
-        except (AttributeError, OSError, TypeError, ValueError):
-            resident_kb = None
-        table[pid] = 0 if resident_kb is None else max(0, int(resident_kb))
     if not table:
         raise ProcessSnapshotError("Darwin process enumeration contained no rows")
     return table
 
 
-def _darwin_proc_metadata(pid: int) -> tuple[int, int, int, str] | None:
-    """Return instance-bound Darwin parent, group, start marker, and name."""
+def _darwin_proc_kernel_row(pid: int) -> _DarwinKernelProcRow | None:
+    """Return the kernel's own row for one pid; None once it is reaped."""
 
     if sys.platform != "darwin" or pid <= 0:
         return None
@@ -1203,14 +1329,55 @@ def _darwin_proc_metadata(pid: int) -> tuple[int, int, int, str] | None:
     if authority is None:
         return None
     try:
-        return authority.metadata(pid)
+        return authority.kernel_row(pid)
     except (AttributeError, OSError, TypeError, ValueError):
         return None
 
 
+def _darwin_row_withholds_detail(row: _DarwinKernelProcRow) -> bool:
+    """True when XNU refuses this caller the row's argv and task info.
+
+    ``KERN_PROCARGS2`` and ``PROC_PIDTASKINFO`` answer only a caller whose
+    effective uid matches the process's, or root. Such a row (a system daemon,
+    another user's process, a setuid child) binds no ancestry or birth, as
+    when the sampler read its argv and found it withheld.
+    """
+
+    viewer_uid = _darwin_viewer_uid()
+    return viewer_uid != 0 and row.uid != viewer_uid
+
+
+def _darwin_viewer_uid() -> int:
+    """The effective uid XNU checks a detail read against."""
+
+    return os.geteuid()
+
+
+def _darwin_proc_live_row(pid: int) -> _DarwinKernelProcRow | None:
+    """The kernel row of a live process whose detail this caller may read."""
+
+    row = _darwin_proc_kernel_row(pid)
+    if row is None or row.status == _DARWIN_SZOMB or _darwin_row_withholds_detail(row):
+        return None
+    return row
+
+
 def _darwin_proc_started_at_ns(pid: int) -> int | None:
-    metadata = _darwin_proc_metadata(pid)
-    return None if metadata is None else metadata[2]
+    row = _darwin_proc_live_row(pid)
+    return None if row is None else row.started_at_ns
+
+
+def _darwin_proc_resident_kb(pid: int) -> int:
+    """Resident kB of one live process this caller may size; 0 otherwise."""
+
+    authority = _darwin_process_authority()
+    if authority is None:
+        return 0
+    try:
+        resident_kb = authority.resident_kb(pid)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return 0
+    return 0 if resident_kb is None else max(0, int(resident_kb))
 
 
 def _darwin_proc_argv(pid: int) -> tuple[str, ...] | None:
@@ -1231,20 +1398,6 @@ def _darwin_proc_argv(pid: int) -> tuple[str, ...] | None:
     ):
         return None
     return argv
-
-
-def _darwin_proc_command(pid: int) -> str | None:
-    """Read Darwin argv from KERN_PROCARGS2 for one process instance."""
-
-    if sys.platform != "darwin" or pid <= 0:
-        return None
-    authority = _darwin_process_authority()
-    if authority is None:
-        return None
-    try:
-        return authority.command(pid)
-    except (AttributeError, OSError, TypeError, ValueError):
-        return None
 
 
 def process_started_at_ns(pid: int) -> int | None:
@@ -1333,113 +1486,64 @@ def sample_processes_posix() -> dict[int, ProcessSample]:
     return samples
 
 
-def _darwin_proc_kernel_row(pid: int) -> _DarwinKernelProcRow | None:
-    """Return the kernel's own row for a pid libproc no longer answers for."""
+def _darwin_bind_command(pid: int, row: _DarwinKernelProcRow) -> NativeCommandBinding:
+    """Bind ``KERN_PROCARGS2`` argv to the sampled birth, or leave it unknown.
 
-    if sys.platform != "darwin" or pid <= 0:
-        return None
-    authority = _darwin_process_authority()
-    if authority is None:
-        return None
-    try:
-        return authority.kernel_row(pid)
-    except (AttributeError, OSError, TypeError, ValueError):
-        return None
-
-
-def _darwin_sample_from_kernel_row(
-    pid: int, rss_kb: int, *, now_ns: int
-) -> ProcessSample | None:
-    """Sample a pid libproc will not describe, from ``kern.proc.pid``.
-
-    A pid with no row was reaped between two reads. A ``SZOMB`` row has
-    exited: it holds no memory, no signal reaches it, and only its parent's
-    ``wait()`` remains, so it is no live member of any tree. Any other row is
-    a process libproc withholds (a system daemon such as launchd) or one
-    still leaving; it binds the exact birth the kernel kept when its argv is
-    readable, and otherwise stays unbound like any libproc row without argv.
+    The kernel row read after argv proves the pid still names the sampled
+    live instance. Otherwise the row keeps its sampled identity and the kernel
+    name, with an explicitly unknown argv.
     """
 
-    before = _darwin_proc_kernel_row(pid)
-    if before is None or before.status == _DARWIN_SZOMB:
-        return None
     argv = _darwin_proc_argv(pid)
     after = _darwin_proc_kernel_row(pid)
-    if after is None or after.status == _DARWIN_SZOMB:
-        return None
-    if before != after or argv is None:
-        return ProcessSample(
-            pid=pid,
-            ppid=0,
-            rss_kb=rss_kb,
-            command=before.command,
-            pgid=before.pgid,
-            elapsed_sec=None,
-            started_at_ns=None,
-            argv=(),
-        )
-    return ProcessSample(
-        pid=pid,
-        ppid=max(0, before.ppid),
-        rss_kb=rss_kb,
-        command=shlex.join(argv),
-        pgid=before.pgid,
-        elapsed_sec=max(0, (now_ns - before.started_at_ns) // 1_000_000_000),
-        started_at_ns=before.started_at_ns,
-        argv=argv,
-    )
+    if (
+        argv is None
+        or after is None
+        or after.status == _DARWIN_SZOMB
+        or after.started_at_ns != row.started_at_ns
+    ):
+        return row.command, (), "full"
+    return shlex.join(argv), argv, "full"
 
 
 def _sample_processes_darwin() -> dict[int, ProcessSample]:
-    """Instance-bound Darwin samples without a `ps` subprocess.
+    """Instance-bound Darwin samples from one ``kern.proc`` table read.
 
-    ``proc_listallpids`` also lists processes that exited and await their
-    parent's ``wait()``, and ``proc_pidinfo`` answers ESRCH for them. Such a
-    pid is read from ``kern.proc.pid`` instead, which leaves exited processes
-    out and binds a still-leaving one exactly. Each live row reads its BSD
-    metadata before and after argv so a pid recycled mid-read cannot bind a
-    stale instance; such a row, like one whose argv is unreadable, keeps its
-    resident kB but carries no ancestry or creation marker.
+    One ``KERN_PROC_ALL`` sysctl returns parent, group, birth, status, name
+    and effective uid for every process; ``PROC_PIDTASKINFO`` sizes the ones
+    this caller may read. An exited, unreaped (``SZOMB``) row is no live member
+    of any tree and is left out. A row whose detail the kernel withholds keeps
+    its group and name but binds no ancestry or birth. Every other row binds
+    its argv on first read (``_darwin_bind_command``), so a snapshot costs one
+    sysctl plus one task-info read per readable process, and argv reads only
+    for the processes a decision visits.
     """
 
     now_ns = time.time_ns()
     samples: dict[int, ProcessSample] = {}
-    for pid, rss_kb in _darwin_proc_table().items():
-        before = _darwin_proc_metadata(pid)
-        if before is None:
-            sample = _darwin_sample_from_kernel_row(pid, rss_kb, now_ns=now_ns)
-            if sample is not None:
-                samples[pid] = sample
+    for pid, row in _darwin_proc_table().items():
+        if row.status == _DARWIN_SZOMB:
             continue
-        argv = _darwin_proc_argv(pid)
-        after = _darwin_proc_metadata(pid)
-        if after is None:
-            sample = _darwin_sample_from_kernel_row(pid, rss_kb, now_ns=now_ns)
-            if sample is not None:
-                samples[pid] = sample
-            continue
-        if before != after or argv is None:
+        if _darwin_row_withholds_detail(row):
             samples[pid] = ProcessSample(
                 pid=pid,
                 ppid=0,
-                rss_kb=rss_kb,
-                command=before[3],
-                pgid=before[1],
+                rss_kb=0,
+                command=row.command,
+                pgid=row.pgid,
                 elapsed_sec=None,
                 started_at_ns=None,
                 argv=(),
             )
             continue
-        ppid, pgid, started_at_ns, _native_name = before
-        samples[pid] = ProcessSample(
+        samples[pid] = native_process_sample(
             pid=pid,
-            ppid=max(0, ppid),
-            rss_kb=rss_kb,
-            command=shlex.join(argv),
-            pgid=pgid,
-            elapsed_sec=max(0, (now_ns - started_at_ns) // 1_000_000_000),
-            started_at_ns=started_at_ns,
-            argv=argv,
+            ppid=max(0, row.ppid),
+            rss_kb=_darwin_proc_resident_kb(pid),
+            pgid=row.pgid,
+            elapsed_sec=max(0, (now_ns - row.started_at_ns) // 1_000_000_000),
+            started_at_ns=row.started_at_ns,
+            bind_command=partial(_darwin_bind_command, pid, row),
         )
     return samples
 
@@ -1656,7 +1760,7 @@ def ancestry_resolves_to_confirmed_orphan(
     samples: Mapping[int, ProcessSample],
     pid: int,
     *,
-    host_control_plane_pids: set[int] | None = None,
+    host_control_plane_pids: Container[int] | None = None,
 ) -> bool:
     """Return true only when ancestry is fully observed to a non-host orphan root.
 
@@ -1669,11 +1773,7 @@ def ancestry_resolves_to_confirmed_orphan(
     if pid <= 0:
         return False
     if host_control_plane_pids is None:
-        host_control_plane_pids = {
-            sample.pid
-            for sample in samples.values()
-            if is_host_control_plane_process(sample)
-        }
+        host_control_plane_pids = _HostControlPlanePids(samples)
     seen: set[int] = set()
     current = pid
     while True:
@@ -1727,60 +1827,194 @@ def descendant_pids(samples: Mapping[int, ProcessSample], root_pid: int) -> set[
     return descendants
 
 
+class _HostControlPlanePids(AbcSet[int]):
+    """Sampled pids whose own command is the host control plane, read on demand.
+
+    Membership classifies one row, so only the rows a decision visits bind
+    their argv. Iteration classifies every row.
+    """
+
+    __slots__ = ("_samples", "_verdicts")
+
+    def __init__(self, samples: Mapping[int, ProcessSample]) -> None:
+        self._samples = samples
+        self._verdicts: dict[int, bool] = {}
+
+    def __contains__(self, pid: object) -> bool:
+        if type(pid) is not int:
+            return False
+        verdict = self._verdicts.get(pid)
+        if verdict is None:
+            sample = self._samples.get(pid)
+            verdict = sample is not None and is_host_control_plane_process(sample)
+            self._verdicts[pid] = verdict
+        return verdict
+
+    def __iter__(self) -> Iterator[int]:
+        return iter([pid for pid in self._samples if pid in self])
+
+    def __len__(self) -> int:
+        return sum(1 for pid in self._samples if pid in self)
+
+    @classmethod
+    def _from_iterable(cls, iterable: Iterable[int]) -> set[int]:
+        return set(iterable)
+
+
+class ProtectedProcessGroups(AbcSet[int]):
+    """Process groups a guard must never signal, decided per group on demand.
+
+    A group is protected when it is the guard's own group, or when any member
+    is an ancestor of the guard, is a host control-plane process, descends
+    from one without being a birth-verified descendant of the guard, or is
+    neither explicitly owned nor a confirmed orphan. Membership decides only
+    the queried group, reading argv for its members and their ancestry alone,
+    so a guard deciding about its own tree pays for that tree. Iteration and
+    ``len`` decide every group, for reports that list the whole set.
+    """
+
+    __slots__ = (
+        "_all",
+        "_custody",
+        "_host",
+        "_members",
+        "_owned_pids",
+        "_samples",
+        "_self_ancestor_ids",
+        "_self_pgid",
+        "_self_pid",
+        "_verdicts",
+    )
+
+    def __init__(
+        self,
+        samples: Mapping[int, ProcessSample],
+        *,
+        self_pid: int | None,
+        self_pgid: int | None,
+        owned_pids: Collection[int],
+    ) -> None:
+        self._samples = samples
+        self._self_pid = self_pid
+        self._self_pgid = self_pgid if self_pgid is not None and self_pgid > 0 else None
+        self._owned_pids = frozenset(owned_pids)
+        self._host = _HostControlPlanePids(samples)
+        self._self_ancestor_ids: set[int] | None = None
+        self._custody: tuple[set[int], set[int]] | None = None
+        self._members: dict[int, list[ProcessSample]] | None = None
+        self._verdicts: dict[int, bool] = {}
+        self._all: frozenset[int] | None = None
+
+    def _self_ancestors(self) -> set[int]:
+        if self._self_ancestor_ids is None:
+            self._self_ancestor_ids = ancestor_pids(self._samples, self._self_pid)
+        return self._self_ancestor_ids
+
+    def _self_custody(self) -> tuple[set[int], set[int]]:
+        """The guard's birth-verified descendants, and every explicit owner."""
+
+        if self._custody is None:
+            self_descendant_ids: set[int] = set()
+            current = (
+                self._samples.get(self._self_pid)
+                if self._self_pid is not None
+                else None
+            )
+            if current is not None and type(current.started_at_ns) is int:
+                descendants, _unresolved = birth_fenced_descendants(
+                    self._samples, {current.pid: current.started_at_ns}
+                )
+                self_descendant_ids.update(descendants)
+            # Possible host ancestry remains conservative. Exempting a current
+            # child from that protection requires positive birth-fenced ancestry.
+            self._custody = (
+                self_descendant_ids,
+                set(self._owned_pids) | self_descendant_ids,
+            )
+        return self._custody
+
+    def _member_protects_group(self, sample: ProcessSample) -> bool:
+        host = self._host
+        if sample.pid in self._self_ancestors() or sample.pid in host:
+            return True
+        self_descendant_ids, explicitly_owned = self._self_custody()
+        if sample.pid not in self_descendant_ids and any(
+            ancestor in host for ancestor in ancestor_pids(self._samples, sample.pid)
+        ):
+            return True
+        return (
+            sample.pid not in explicitly_owned
+            and not ancestry_resolves_to_confirmed_orphan(
+                self._samples,
+                sample.pid,
+                host_control_plane_pids=host,
+            )
+        )
+
+    def _group_members(self) -> dict[int, list[ProcessSample]]:
+        if self._members is None:
+            members: dict[int, list[ProcessSample]] = {}
+            for sample in self._samples.values():
+                members.setdefault(sample_pgid_or_pid(sample), []).append(sample)
+            self._members = members
+        return self._members
+
+    def __contains__(self, pgid: object) -> bool:
+        if type(pgid) is not int:
+            return False
+        if pgid == self._self_pgid:
+            return True
+        verdict = self._verdicts.get(pgid)
+        if verdict is None:
+            verdict = any(
+                self._member_protects_group(sample)
+                for sample in self._group_members().get(pgid, ())
+            )
+            self._verdicts[pgid] = verdict
+        return verdict
+
+    def _decided(self) -> frozenset[int]:
+        if self._all is None:
+            protected = {pgid for pgid in self._group_members() if pgid in self}
+            if self._self_pgid is not None:
+                protected.add(self._self_pgid)
+            self._all = frozenset(protected)
+        return self._all
+
+    def __iter__(self) -> Iterator[int]:
+        return iter(self._decided())
+
+    def __len__(self) -> int:
+        return len(self._decided())
+
+    @classmethod
+    def _from_iterable(cls, iterable: Iterable[int]) -> set[int]:
+        return set(iterable)
+
+    def __repr__(self) -> str:
+        return f"ProtectedProcessGroups({sorted(self._decided())!r})"
+
+
 def protected_process_group_ids(
     samples: Mapping[int, ProcessSample],
     *,
     self_pid: int | None = None,
     self_pgid: int | None = None,
     owned_pids: Collection[int] = (),
-) -> set[int]:
-    protected: set[int] = set()
-    if self_pgid is not None and self_pgid > 0:
-        protected.add(self_pgid)
-    ancestor_ids = ancestor_pids(samples, self_pid)
-    self_descendant_ids: set[int] = set()
-    current = samples.get(self_pid) if self_pid is not None else None
-    if current is not None and type(current.started_at_ns) is int:
-        descendants, _unresolved = birth_fenced_descendants(
-            samples, {current.pid: current.started_at_ns}
-        )
-        self_descendant_ids.update(descendants)
-    # Possible host ancestry remains conservative. Exempting a current child
-    # from that protection, however, requires positive birth-fenced ancestry.
-    explicitly_owned = set(owned_pids) | self_descendant_ids
-    host_control_plane_pids = {
-        sample.pid
-        for sample in samples.values()
-        if is_host_control_plane_process(sample)
-    }
-    for sample in samples.values():
-        if sample.pid in ancestor_ids or sample.pid in host_control_plane_pids:
-            protected.add(sample_pgid_or_pid(sample))
-            continue
-        sample_ancestors = ancestor_pids(samples, sample.pid)
-        if (
-            host_control_plane_pids.intersection(sample_ancestors)
-            and sample.pid not in self_descendant_ids
-        ):
-            protected.add(sample_pgid_or_pid(sample))
-            continue
-        if (
-            sample.pid not in explicitly_owned
-            and not ancestry_resolves_to_confirmed_orphan(
-                samples,
-                sample.pid,
-                host_control_plane_pids=host_control_plane_pids,
-            )
-        ):
-            protected.add(sample_pgid_or_pid(sample))
-    return protected
+) -> ProtectedProcessGroups:
+    return ProtectedProcessGroups(
+        samples,
+        self_pid=self_pid,
+        self_pgid=self_pgid,
+        owned_pids=owned_pids,
+    )
 
 
 def root_pid_is_kill_eligible(
     samples: Mapping[int, ProcessSample],
     root_pid: int,
     *,
-    protected_pgids: set[int],
+    protected_pgids: AbcSet[int],
     root_owned: bool,
     current_pid: int,
 ) -> bool:
@@ -1805,7 +2039,7 @@ def filter_protected_watched_pids(
     samples: Mapping[int, ProcessSample],
     watched: set[int],
     *,
-    protected_pgids: set[int],
+    protected_pgids: AbcSet[int],
     current_pid: int | None = None,
 ) -> set[int]:
     filtered: set[int] = set()
@@ -1834,7 +2068,7 @@ def watched_pids(
     root_pid: int,
     *,
     tracker: ProcessTreeTracker | None = None,
-    protected_pgids: set[int] | None = None,
+    protected_pgids: AbcSet[int] | None = None,
 ) -> set[int]:
     if tracker is not None:
         observed = tracker.update(samples)
@@ -1861,7 +2095,7 @@ def peak_rss(
     root_pid: int,
     watched: set[int] | None = None,
     tracker: ProcessTreeTracker | None = None,
-    protected_pgids: set[int] | None = None,
+    protected_pgids: AbcSet[int] | None = None,
 ) -> RssViolation | None:
     observed = (
         watched
@@ -1890,7 +2124,7 @@ def total_rss(
     root_pid: int,
     watched: set[int] | None = None,
     tracker: ProcessTreeTracker | None = None,
-    protected_pgids: set[int] | None = None,
+    protected_pgids: AbcSet[int] | None = None,
 ) -> RssViolation | None:
     observed = (
         watched
@@ -1921,7 +2155,7 @@ def find_rss_violation(
     max_total_rss_kb: int | None = None,
     watched: set[int] | None = None,
     tracker: ProcessTreeTracker | None = None,
-    protected_pgids: set[int] | None = None,
+    protected_pgids: AbcSet[int] | None = None,
 ) -> RssViolation | None:
     observed = (
         watched
@@ -1998,9 +2232,9 @@ def process_command_argv(pid: int) -> tuple[str, ...] | None:
         argv = _linux_proc_argv(pid)
         after = _linux_proc_stat_identity(pid)
     elif sys.platform == "darwin":
-        before = _darwin_proc_metadata(pid)
+        before = _darwin_proc_live_row(pid)
         argv = _darwin_proc_argv(pid)
-        after = _darwin_proc_metadata(pid)
+        after = _darwin_proc_live_row(pid)
     else:
         return None
     return argv if before is not None and before == after else None
