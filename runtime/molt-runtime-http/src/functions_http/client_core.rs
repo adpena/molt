@@ -299,10 +299,9 @@ pub(super) fn urllib_response_with<T>(
 pub(super) fn urllib_response_drop(_py: &molt_runtime_core::CoreGilToken, handle: i64) {
     if let Ok(mut guard) = urllib_response_registry().lock()
         && let Some(mut response) = guard.remove(&(handle as u64))
+        && let Some(bits) = response.headers_list_cache.take()
     {
-        if let Some(bits) = response.headers_list_cache.take() {
-            dec_ref_bits(_py, bits);
-        }
+        dec_ref_bits(_py, bits);
     }
 }
 
