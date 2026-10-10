@@ -6,7 +6,7 @@
 # Workflows retain only executor mechanics.  Do not add path classifiers to
 # workflow YAML or another tool.
 
-schema = "molt.proof-plan.v5"
+schema = "molt.proof-plan.v6"
 
 authority_inputs = [
   "tools/compatibility_error_protocol.py",
@@ -1352,7 +1352,7 @@ resource_class = "scheduled-suite"
 # command spelling is never duplicated in YAML.
 [[command]]
 id = "nightly.shards.prepare"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "nightly_shard_prepare"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1424,7 +1424,7 @@ toolchains = ["python", "uv"]
 # outlive it.
 [[command]]
 id = "nightly.determinism.compiler-prewarm"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "nightly_determinism"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1438,7 +1438,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
 [[command]]
 id = "nightly.determinism.runtime"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "nightly_determinism"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1477,7 +1477,7 @@ toolchains = ["python", "uv", "rustc", "cargo"]
 # outlive it.
 [[command]]
 id = "nightly.verification-t3.compiler-prewarm"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1496,7 +1496,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 # `-u` streams progress, so a timeout shows how far the sweep got.
 [[command]]
 id = "nightly.verification-t3.reproducibility"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1513,7 +1513,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "clang"]
 # room for 100 after the cold prewarm.
 [[command]]
 id = "nightly.verification-t3.fuzz-compiler"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1542,7 +1542,7 @@ toolchains = ["python", "uv"]
 # other Tier 3 suites in Nightly run 37953183680.
 [[command]]
 id = "nightly.verification-t3.translation"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1690,7 +1690,7 @@ toolchains = ["python", "uv"]
 
 [[command]]
 id = "portability.rust.macos.clippy-workspace"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "platform_portability"
 cell = "macos-arm64-py312-rust-native-dev"
 tiers = ["pr", "main"]
@@ -1708,7 +1708,7 @@ toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "portability.rust.linux-aarch64.clippy-workspace"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "platform_portability"
 cell = "linux-aarch64-py312-rust-native-dev"
 tiers = ["pr", "main"]
@@ -1727,7 +1727,7 @@ toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "portability.rust.macos.runtime-gate"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "platform_portability"
 cell = "macos-arm64-py312-rust-native-dev"
 tiers = ["main"]
@@ -2116,7 +2116,7 @@ toolchains = ["python", "uv", "node", "wasm-tools", "rustc", "cargo"]
 
 [[command]]
 id = "wasm.build.host"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c"] }
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
@@ -2406,7 +2406,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools
 
 [[command]]
 id = "wasm.test.finally-pending-observer-parity"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
@@ -2423,7 +2423,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-config", "ld.lld"
 # admit that once through the CLI, without a second build-only pass.
 [[command]]
 id = "wasm.test.import-from-codec-parity"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 evidence_outputs = ["proof-receipts/evidence/import-from-codec"]
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
@@ -2683,7 +2683,7 @@ toolchains = ["python", "uv", "rustc", "clang", "llvm-ar", "llvm-nm", "wasm-ld"]
 
 [[command]]
 id = "native.integration.bench-cli"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "native_integration"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["main"]
@@ -2699,7 +2699,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 # build and reuse its dev-fast native backend instead of building their own.
 [[command]]
 id = "native.integration.capability-manifest"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "native_integration"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["pr", "main"]
@@ -2775,7 +2775,7 @@ toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "rust.test.default-truth"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
@@ -2791,7 +2791,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "wasm-ld"]
 
 [[command]]
 id = "rust.test.compiler-authorities"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c"] }
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
@@ -2812,7 +2812,7 @@ toolchains = ["rustc", "cargo", "lune", "node", "wasm-ld"]
 
 [[command]]
 id = "rust.test.ir-wasm-runtime-authorities"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c"] }
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
@@ -2835,7 +2835,7 @@ toolchains = ["rustc", "cargo", "node", "wasm-ld"]
 
 [[command]]
 id = "rust.test.runtime-cold-lifecycle"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "rust"
 cell = "linux-x86_64-rust-native-release-output"
 tiers = ["pre-push", "pr", "main"]
@@ -2855,7 +2855,7 @@ toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
 id = "rust.test.runtime-extension-admission"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 evidence_outputs = ["proof-receipts/evidence/runtime-extension-admission"]
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
@@ -2874,7 +2874,7 @@ toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
 id = "rust.clippy.workspace-default"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
@@ -2899,7 +2899,7 @@ toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "llvm.build.backend"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c"] }
 family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["pre-push", "pr", "main", "scheduled"]
@@ -2912,7 +2912,7 @@ toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]
 id = "llvm.test.lowering"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c"] }
 family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["pre-push", "pr", "main", "scheduled"]
@@ -2927,7 +2927,7 @@ toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]
 id = "linker.test.generated-object-admission"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c"] }
 family = "llvm"
 cell = "linux-x86_64-py312-linker-release-fast"
 tiers = ["pre-push", "pr", "main", "scheduled"]
@@ -2940,7 +2940,7 @@ toolchains = ["rustc", "cargo", "clang", "llvm-config", "ld.lld"]
 
 [[command]]
 id = "llvm.clippy.backend"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c"] }
 family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["pre-push", "pr", "main", "scheduled"]
@@ -2953,6 +2953,7 @@ toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]
 id = "mlir.test.backend"
+cargo_native_units = { host = ["c++"] }
 family = "llvm"
 cell = "linux-x86_64-py312-mlir-dev"
 tiers = ["pre-push", "pr", "main", "scheduled"]
@@ -2978,7 +2979,7 @@ toolchains = ["python", "uv", "clang", "llvm-config", "ld.lld"]
 
 [[command]]
 id = "llvm.test.differential"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["main", "scheduled"]
@@ -4038,14 +4039,14 @@ id = "runtime.abi-fixture-authorities"
 description = "Compile and execute the complete CPython ABI integration-test family, including native C shims and fixture lifetime controls."
 argv = ["cargo", "test", "--locked", "--no-fail-fast", "--profile", "dev-fast", "-p", "molt-lang-cpython-abi", "--tests", "--", "--test-threads=4"]
 toolchains = ["cargo", "rustc", "python"]
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c"] }
 resource_family = "rust"
 contention_key = "cargo:molt-lang-cpython-abi"
 timeout_seconds = 1800
 
 [[named_lane]]
 id = "pact.witness.acceptance.native"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 description = "Pact Kernel A native acceptance: build and execute field_solve.py, compare the oracle, publish a portable acceptance receipt."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/pact_witness_acceptance.py", "--target", "native"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang"]
@@ -4077,7 +4078,7 @@ timeout_seconds = 900
 
 [[named_lane]]
 id = "r6.target-version-parity.py312"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 description = "R6 target-version parity for CPython 3.12: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.12", "--build-profile", "dev", "--fail-fast", "tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
@@ -4087,7 +4088,7 @@ timeout_seconds = 900
 
 [[named_lane]]
 id = "r6.target-version-parity.py313"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 description = "R6 target-version parity for CPython 3.13: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.13", "--build-profile", "dev", "--fail-fast", "tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
@@ -4097,7 +4098,7 @@ timeout_seconds = 900
 
 [[named_lane]]
 id = "r6.target-version-parity.py314"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 description = "R6 target-version parity for CPython 3.14: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.14", "--build-profile", "dev", "--fail-fast", "tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
@@ -4321,7 +4322,7 @@ resource_class = "compiler-build-resource"
 
 [[command]]
 id = "runtime.cost.candidate"
-cargo_native_c_units = ["target"]
+cargo_native_units = { target = ["c", "c++"] }
 family = "runtime_candidate_costs"
 cell = "linux-x86_64-rust-native-release"
 tiers = ["scheduled"]

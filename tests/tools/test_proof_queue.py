@@ -17024,12 +17024,15 @@ def test_native_c_registration_is_canonical_and_persisted_envelope_cannot_drop_i
         )
     )
     envelope = command_admission.envelope_for_command(command)
-    assert envelope["cargo_native_c_units"] == ["target"]
+    assert envelope["cargo_native_units"] == {"target": ["c"]}
     command_admission.validate_envelope(envelope, command)
     changed = dict(envelope)
-    changed["cargo_native_c_units"] = []
+    changed["cargo_native_units"] = {}
     with pytest.raises(ValueError):
         command_admission.validate_envelope(changed, command)
+    retired = dict(envelope, schema="molt.proof-command-envelope.v6")
+    with pytest.raises(ValueError):
+        command_admission.validate_envelope(retired, command)
 
 
 @pytest.mark.parametrize("spelling", ["split", "equals"])

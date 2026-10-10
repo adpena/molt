@@ -369,7 +369,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
     assert not test_packages(core) & test_packages(complement)
     assert core.dependencies == complement.dependencies == ()
     assert set(core.toolchains) == {"rustc", "cargo", "node", "wasm-ld"}
-    assert proof_plan.cargo_native_c_units(core.data) == ("target",)
+    assert proof_plan.cargo_native_units(core.data) == {"target": ["c"]}
     assert "seq_snapshot_bridge::" in core.argv[core.argv.index("--") + 1 :]
     assert "--lib" in core.argv
     assert [
@@ -508,7 +508,7 @@ def test_extension_admission_proof_executes_required_public_resolver_witness() -
     )
     assert job is not None
     assert command.data["evidence_outputs"][0] + "/" in job
-    assert proof_plan.cargo_native_c_units(command.data) == ("target",)
+    assert proof_plan.cargo_native_units(command.data) == {"target": ["c", "c++"]}
     assert {"python", "uv", "rustc", "cargo"} <= set(PLAN.required_toolchains(command))
 
 
@@ -4878,7 +4878,7 @@ def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
 def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
     plan = proof_plan.ProofPlan.load()
     declared = {
-        row.id for row in plan.commands if proof_plan.cargo_native_c_units(row.data)
+        row.id for row in plan.commands if proof_plan.cargo_native_units(row.data)
     }
     assert declared == {
         "wasm.build.host",
@@ -4892,6 +4892,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
         "native.integration.capability-manifest",
         "llvm.test.differential",
         "llvm.build.backend",
+        "mlir.test.backend",
         "llvm.test.lowering",
         "linker.test.generated-object-admission",
         "llvm.clippy.backend",
@@ -4909,37 +4910,56 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
         "nightly.verification-t3.translation",
         "wasm.test.import-from-codec-parity",
     }
+    # Actual wrapper/alloca/native-micro producers use C only. Full-capable
+    # runtime operations additionally compile simdutf; TableGen is host C++.
+    c_only = {
+        "wasm.build.host",
+        "rust.test.compiler-authorities",
+        "rust.test.ir-wasm-runtime-authorities",
+        "llvm.build.backend",
+        "llvm.test.lowering",
+        "linker.test.generated-object-admission",
+        "llvm.clippy.backend",
+    }
     from tools.proof_queue_pkg.policy import _canonical_cargo_proof_command
 
     for row in plan.commands:
         if row.id not in declared:
             continue
+        required = (
+            {"host": ["c++"]}
+            if row.id == "mlir.test.backend"
+            else {"target": ["c"] if row.id in c_only else ["c", "c++"]}
+        )
         envelope = command_admission.envelope_for_command(list(row.argv))
         assert row.id in envelope["proof_plan_command_ids"]
-        assert envelope["cargo_native_c_units"] == ["target"]
+        assert envelope["cargo_native_units"] == required
         if row.argv[0] == "cargo":
             wrapped = _canonical_cargo_proof_command(list(row.argv[1:]))
             delegated = command_admission.envelope_for_command(wrapped)
-            assert delegated["cargo_native_c_units"] == ["target"]
-            assert delegated["delegated"]["cargo_native_c_units"] == ["target"]
+            assert delegated["cargo_native_units"] == required
+            assert delegated["delegated"]["cargo_native_units"] == required
     for name in ("wasm.build.shared-runtime", "wasm.build.split-runtime-release"):
         row = next(row for row in plan.commands if row.id == name)
-        assert proof_plan.cargo_native_c_units(row.data) == ()
+        assert proof_plan.cargo_native_units(row.data) == {}
 
 
 @pytest.mark.parametrize(
     "units,tools",
     [
-        (["target", "target"], ["cargo", "rustc"]),
-        (["everything"], ["cargo", "rustc"]),
-        (["target"], ["rustc"]),
-        (["host"], ["cargo"]),
+        (["target"], ["cargo", "rustc"]),
+        ({"everything": ["c"]}, ["cargo", "rustc"]),
+        ({"target": []}, ["cargo", "rustc"]),
+        ({"target": ["c", "c"]}, ["cargo", "rustc"]),
+        ({"host": ["rust"]}, ["cargo", "rustc"]),
+        ({"target": ["c"]}, ["rustc"]),
+        ({"host": ["c++"]}, ["cargo"]),
     ],
 )
 def test_native_c_declaration_rejects_unbound_or_duplicate_units(units, tools):
-    with pytest.raises(ValueError, match="native C|cargo_native_c_units"):
-        proof_plan.cargo_native_c_units(
-            {"cargo_native_c_units": units, "toolchains": tools}
+    with pytest.raises(ValueError, match="native C|cargo_native_units"):
+        proof_plan.cargo_native_units(
+            {"cargo_native_units": units, "toolchains": tools}
         )
 
 
@@ -5075,3 +5095,37 @@ def test_fingerprint_mock_preserves_unrelated_process_sampler_boundary(monkeypat
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "independent-process-boundary"
+
+
+def test_native_build_declaration_rejects_retired_field_and_normalizes_roles():
+    with pytest.raises(ValueError, match="cargo_native_units"):
+        proof_plan.cargo_native_units(
+            {
+                "cargo_native_c_units": ["target"],
+                "toolchains": ["cargo", "rustc"],
+            }
+        )
+    assert proof_plan.cargo_native_units(
+        {
+            "cargo_native_units": {"host": ["c++"], "target": ["c++", "c"]},
+            "toolchains": ["cargo", "rustc"],
+        }
+    ) == {"target": ["c", "c++"], "host": ["c++"]}
+
+
+@pytest.mark.parametrize("kind", ["command", "named-lane"])
+def test_native_build_envelope_cannot_mutate_cached_plan_authority(kind):
+    from tools.proof_queue_pkg import command_admission
+
+    plan = proof_plan.ProofPlan.load()
+    rows = plan.commands if kind == "command" else plan.named_lanes
+    row = next(row for row in rows if proof_plan.cargo_native_units(row.data))
+    command = list(row.argv)
+    expected = proof_plan.cargo_native_units(row.data)
+    envelope = command_admission.envelope_for_command(command)
+    for languages in envelope["cargo_native_units"].values():
+        languages.clear()
+    assert (
+        command_admission.envelope_for_command(command)["cargo_native_units"]
+        == expected
+    )
