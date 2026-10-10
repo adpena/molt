@@ -347,7 +347,9 @@ def _resolve_outer_executable(token: str, *, cwd: Path, env: Mapping[str, str]) 
 
         try:
             token = str(
-                resolve_wasi_sdk_tool(proof_plan.ROOT, "wasm-ld", environ=dict(env))
+                resolve_wasi_sdk_tool(
+                    proof_plan.ROOT, "wasm-ld", environ=dict(env), cwd=cwd
+                )
             )
         except LlvmToolchainConfigError as exc:
             raise ValueError(f"wasm-ld toolchain selection failed: {exc}") from exc
@@ -1383,7 +1385,9 @@ def _tool_identity(
     if sdk_role is not None:
         from molt.llvm_toolchain import resolve_wasi_sdk_tool
 
-        path = resolve_wasi_sdk_tool(proof_plan.ROOT, sdk_role, environ=dict(env))
+        path = resolve_wasi_sdk_tool(
+            proof_plan.ROOT, sdk_role, environ=dict(env), cwd=cwd
+        )
     elif name == "cargo":
         path = _cargo_executable_path(envelope, exact, cwd=probe_cwd, env=env)
     elif payload := _bound_tool_payload(envelope, exact, requested):
@@ -1590,7 +1594,7 @@ def _capture_tool_identity(
         content_resolver_identity = _executable_identity(resolver)
     sdk_closure = None
     if policy.data.get("wasi_sdk_tool") is not None:
-        sdk_closure = capture_wasi_sdk_selection(root=proof_plan.ROOT, env=env)
+        sdk_closure = capture_wasi_sdk_selection(root=proof_plan.ROOT, env=env, cwd=cwd)
         process_images = toolchain_capture.capture_wasi_sdk_images(sdk_closure)
         launcher_image = next(
             (image for image in process_images if image["path"] == str(path)), None

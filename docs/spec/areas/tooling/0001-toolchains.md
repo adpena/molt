@@ -148,6 +148,35 @@ contract and carry no SDK field. These development captures and checks add no
 guest instrumentation. Required Cargo library,
 installed-package, and hosted-platform acceptance remain separate proof cells.
 
+## Toolchain state selection
+
+`molt.dx.canonical_toolchain_root` owns mutable tool-state selection for generic
+pinned tools, WASI SDK, managed native LLVM, Binaryen and DX/proof consumers.
+The compiler source owns release manifests; the invoking guest project does not
+select another manifest or turn an installed compiler into a development checkout.
+
+A valid explicit `MOLT_TARGET_ROOT` selects the root, including a root that is
+not yet provisioned. Admission rejects invalid selected paths, and missing tools are diagnosed at the
+selected root without searching another installation.
+Without an explicit root, installed bundles and wheels use
+`<MOLT_HOME>/target-root`, taking the existing platform default home when
+`MOLT_HOME` is unset. Development retains the checkout/hosted/scratch custody
+rules. A known damaged installation fails admission rather than silently becoming
+a development checkout. The shared `molt.default_paths` module owns home paths.
+
+Selection does not create directories, probe writability, provision tools, scan
+the installation tree or execute a tool. Explicit provisioners and read-only
+consumers use the same selector and child environment. Existing explicit
+per-tool selectors retain their precedence and validation. Source identity,
+checkout custody and Cargo output remain separate authorities; tool state is
+outside installed source. These operations belong to the compiler and development
+apparatus and add no work to emitted guest programs.
+
+Artifact-only guards preserve explicit selectors and bind an installed default
+tool root before adding artifact/cache defaults. Actual managed-tool consumers
+own root admission and provisioning. Guard artifact setup therefore leaves an
+unused managed root unvalidated when an independent external tool was selected.
+
 ## CI toolchain admission
 
 `.github/actions/setup-project` is the shared CI provisioner on Linux, macOS,
@@ -297,10 +326,15 @@ PATH-resolved name must retain its lexical role. Mutable external readers pass
 resolved-content custody before probing and retain execution/cache-reuse checks.
 Quoted paths preserve spaces and native separators without admitting arguments.
 
-Optimized linked WASM builds require Binaryen from
+Optimized linked WASM builds require Binaryen. Managed installations come from
 `config/binaryen_releases.toml`, provisioned by `tools/provision_binaryen.py`.
 The manifest owns each host archive and extracted-tree identity, not
-`config/tool_releases.toml`'s standalone validator executables. Hosted WASM CI
+`config/tool_releases.toml`'s standalone validator executables. Managed admission
+checks the live executable digest before running it and requires the exact tagged
+release version. An explicitly selected external release may report the upstream
+numeric-only version or its matching release tag; cache and publication identity
+retain the exact reported spelling. Manifest, receipt and executable version
+records share an ASCII decimal release grammar. Hosted WASM CI
 uses `.github/actions/setup-binaryen` alongside pinned `wasm-tools` provisioning
 and passes its exact `wasm_opt` output as `MOLT_WASM_OPT` to the proof partitions.
 Link fingerprints require optimizer identity only when optimization is selected;
@@ -484,7 +518,8 @@ WASM targets:
   standard library.
 - Provision the host wasi-sdk explicitly with
   `uv run --python 3.12 python tools/provision_wasi_sdk.py`. It installs under
-  this checkout's toolchain custody root (or `--toolchain-root`) and prints the
+  the [selected toolchain state root](#toolchain-state-selection)
+  (or explicit `--toolchain-root`) and prints the
   install prefix. `uv run --python 3.12 python -m molt.llvm_toolchain
   --verify-wasm --wasi-sdk <install> --format json` verifies it and reports the
   `wasi_sysroot`, `wasm_ld`, and `llvm_nm` paths to export as

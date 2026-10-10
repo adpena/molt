@@ -173,6 +173,7 @@
     "src/molt/artifact_publication.py",
     "src/molt/portable_paths.py",
     "src/molt/dx.py",
+    "src/molt/default_paths.py",
     "src/molt/environment_registry.py",
     "src/molt/_environment_registry.py",
     "src/molt/environment_registry.toml",
@@ -341,7 +342,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "6818d16958727c1be762625efc54d3c0906e075b04bdb12ff68f91d55ceb82fc",
+  "authority_sha256": "7baa25b4d6546cfa652b2151326c8d3fce601e532e7b782d3c86ac281882ffce",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",

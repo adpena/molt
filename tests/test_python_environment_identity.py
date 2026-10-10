@@ -1651,3 +1651,17 @@ def test_capture_authority_preserves_installed_package_and_explicit_source_owner
     assert selected / "src/molt/python_environment_identity.py" in projected
     assert selected / "src/molt/package_import_custody.py" in projected
     assert installed / "package_import_custody.py" not in projected
+
+
+def test_promoted_default_paths_belongs_to_loaded_and_projected_python_custody(
+    tmp_path,
+):
+    captured = identity.python_capture_authority_paths()
+    assert Path(identity.__file__).parent / "default_paths.py" in captured
+    assert not any(
+        path.as_posix().endswith("molt/cli/default_paths.py") for path in captured
+    )
+    assert (
+        tmp_path / "src/molt/default_paths.py"
+        in identity.python_capture_authority_paths(source_root=tmp_path)
+    )

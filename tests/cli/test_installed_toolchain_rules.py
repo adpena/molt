@@ -119,7 +119,7 @@ def test_missing_manifest_in_a_packaged_distribution_is_damage(tmp_path, monkeyp
     packaged = tmp_path / "prefix" / "share" / "molt" / "distribution"
     (packaged / "source").mkdir(parents=True)
     monkeypatch.delenv("MOLT_BUNDLE_ROOT", raising=False)
-    monkeypatch.setattr(distribution, "packaged_distribution_root", lambda: packaged)
+    monkeypatch.setattr("molt.source_root.packaged_distribution_root", lambda: packaged)
     with pytest.raises(ValueError, match="manifest is missing"):
         distribution.installed_compiler(packaged / "source")
     assert distribution.installed_compiler(tmp_path) is None

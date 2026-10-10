@@ -46,8 +46,20 @@ def test_a_missing_pinned_sccache_is_never_downloaded(monkeypatch, tmp_path):
     assert not (tmp_path / "target-root").exists()
 
 
-def test_no_toolchain_root_means_no_pinned_sccache():
+def test_default_tool_root_without_sccache_means_no_pinned_sccache(
+    tmp_path, monkeypatch
+):
+    # With no explicit root, discovery reads only the selected default root.
+    empty = tmp_path / "target-root"
+    custody = dx.CheckoutCustody(
+        source_root=tmp_path,
+        custody_root=tmp_path,
+        toolchain_root=empty,
+        kind="durable",
+    )
+    monkeypatch.setattr(dx, "checkout_custody", lambda *_a, **_k: custody)
     assert dx.pinned_sccache({}) is None
+    assert not empty.exists()
 
 
 def test_degrades_loudly_when_unavailable(monkeypatch, capsys):
@@ -330,3 +342,62 @@ def test_lld_link_respects_explicit_override(monkeypatch):
     env = {"CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": "custom-linker"}
     ce._maybe_enable_lld_link(env)
     assert env["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"] == "custom-linker"
+
+
+def test_dx_sccache_provisioner_receives_the_selected_tool_root(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    tools = tmp_path / "tools"
+    artifacts = tmp_path / "artifacts"
+    seen = []
+    monkeypatch.setattr(
+        dx,
+        "pinned_sccache",
+        lambda env: seen.append(Path(env["MOLT_TARGET_ROOT"])) or "/selected/sccache",
+    )
+    env = dx.RunContext(project).dx_env(
+        {
+            "MOLT_TARGET_ROOT": str(tools),
+            "MOLT_EXT_ROOT": str(artifacts),
+            "MOLT_USE_SCCACHE": "1",
+        },
+        create_dirs=False,
+    )
+    assert seen == [tools]
+    assert env["MOLT_TARGET_ROOT"] == str(tools)
+    assert env["RUSTC_WRAPPER"] == "/selected/sccache"
+    assert not tools.exists() and not artifacts.exists()
+
+
+def test_direct_cargo_sccache_uses_selected_environment_and_installed_home(
+    tmp_path, monkeypatch
+):
+    from tests.test_tool_releases import _installed_demo
+    from molt import tool_releases
+    from molt.cli import cargo_execution
+
+    discovery = _installed_demo(tmp_path, monkeypatch)
+    source = tmp_path / "bundle/source"
+    source.mkdir(parents=True)
+    (source / "release-compiler-source.json").write_text("layout only")
+    monkeypatch.setattr(tool_releases, "compiler_source_root", lambda: source)
+    # Reuse the actual attested fixture generation at the generic release owner.
+    monkeypatch.setattr(
+        tool_releases,
+        "load_tool_releases",
+        lambda _root: {"sccache": discovery.release},
+    )
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "wrong-ambient-root"))
+    assert cargo_execution.pinned_sccache({"MOLT_HOME": str(tmp_path)}) == str(
+        discovery.executable
+    )
+    assert (
+        cargo_execution.pinned_sccache({"MOLT_TARGET_ROOT": str(tmp_path / "missing")})
+        is None
+    )
+    invalid = tmp_path / "invalid"
+    invalid.write_text("not a directory")
+    import pytest
+
+    with pytest.raises(tool_releases.ToolReleaseError, match="not a directory"):
+        cargo_execution.pinned_sccache({"MOLT_TARGET_ROOT": str(invalid)})

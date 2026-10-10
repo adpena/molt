@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from molt.cli.atomic_io import _atomic_write_text
-from molt.cli.default_paths import _default_molt_cache
+from molt.default_paths import _default_molt_cache
 from molt.file_hashing import _sha256_file
 
 

@@ -1216,7 +1216,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BIN",
-      "owner": "src/molt/cli/default_paths.py",
+      "owner": "src/molt/default_paths.py",
       "summary": "Directory for Molt-installed binaries; a relative path resolves against the current directory and unset means <MOLT_HOME>/bin, while the conformance harness (tests/harness/run_molt_conformance.py, fed by src/molt/harness_layers.py) reads it as the shell command that invokes the Molt CLI.",
       "values": []
     },
@@ -1343,7 +1343,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_BUNDLE_ROOT",
-      "owner": "src/molt/compiler_distribution.py",
+      "owner": "src/molt/source_root.py",
       "summary": "packaging/bootstrap.py sets it to the installed bundle root for the molt process it launches; molt reads it to recognise <bundle>/source as an installed compiler root that must carry a manifest.",
       "values": []
     },
@@ -1352,7 +1352,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_CACHE",
-      "owner": "src/molt/cli/default_paths.py",
+      "owner": "src/molt/default_paths.py",
       "summary": "Molt cache directory for build outputs, installed tool roots, and the backend TIR cache; a relative path resolves against the current directory, unset uses <MOLT_EXT_ROOT>/.molt_cache when that directory exists, else LOCALAPPDATA/Molt on Windows or XDG_CACHE_HOME/molt (default ~/.cache/molt), while molt-backend alone falls back to ./.molt_cache, and molt dx sets <artifact root>/.molt_cache.",
       "values": []
     },
@@ -3929,7 +3929,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_HOME",
-      "owner": "src/molt/cli/default_paths.py",
+      "owner": "src/molt/default_paths.py",
       "summary": "Root of Molt's provisioned home for the compiler toolchain, the bin directory, and the default build root; a relative path resolves against the current directory, unset derives home under the Molt cache (MOLT_CACHE, else MOLT_EXT_ROOT/.molt_cache, else the platform cache directory), molt-embed also looks for MOLT_HOME/bin/molt, and CI workflows and the packaging bootstrap set it to a private root.",
       "values": []
     },
@@ -5699,7 +5699,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_TARGET_ROOT",
       "owner": "src/molt/dx.py",
-      "summary": "Durable toolchain custody root under which pinned tools (sccache, Binaryen, LLVM and WASI tools) are installed and found, and a wasi-sysroot candidate root for the runtime build script; src/molt/dx.py sets it to <custody root>/target-root in development artifact environments when it is unset or must be rehomed, and poison toolchain paths are rejected.",
+      "summary": "Selected toolchain state root under which pinned sccache, Binaryen, LLVM and WASI tools are installed and found; valid explicit selections are preserved, invalid paths are rejected, and an unset value uses MOLT_HOME/target-root for installed compilers or the existing checkout, hosted or scratch custody default for development.",
       "values": []
     },
     {

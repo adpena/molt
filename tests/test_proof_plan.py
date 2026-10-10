@@ -5040,3 +5040,13 @@ def test_fingerprint_mock_preserves_unrelated_process_sampler_boundary(monkeypat
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "independent-process-boundary"
+
+
+def test_execution_authority_includes_promoted_tool_state_home_owner():
+    ROOT = Path(__file__).resolve().parents[1]
+    assert ROOT / "src/molt/default_paths.py" in python_capture_authority_paths(
+        source_root=ROOT
+    )
+    source = (ROOT / "tools/proof_plan.toml").read_text(encoding="utf-8")
+    assert '"src/molt/default_paths.py"' in source
+    assert '"src/molt/cli/default_paths.py"' not in source

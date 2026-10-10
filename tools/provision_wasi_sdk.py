@@ -306,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
         "--toolchain-root",
         type=Path,
         default=None,
-        help="Toolchain custody root (default: this checkout's custody root).",
+        help="Toolchain state root (default: selected MOLT_TARGET_ROOT or installed/development state).",
     )
     parser.add_argument(
         "--downloads",
@@ -324,9 +324,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         toolchain_root = args.toolchain_root
         if toolchain_root is None:
-            from molt.dx import checkout_custody
+            from molt.dx import canonical_toolchain_root
 
-            toolchain_root = checkout_custody(ROOT).toolchain_root
+            toolchain_root = canonical_toolchain_root(ROOT, require_exists=False)
         prefix = provision_wasi_sdk(toolchain_root, downloads=args.downloads)
         installation = llvm_toolchain.load_wasi_sdk_installation(
             ROOT, prefix, verify_tree=False

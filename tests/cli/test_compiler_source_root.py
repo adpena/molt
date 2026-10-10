@@ -512,3 +512,37 @@ def test_dynamic_wasm_source_cache_is_root_bound(tmp_path, monkeypatch):
             assert exports._all_dynamic_runtime_owned_intrinsic_exports() == (name,)
     finally:
         exports._all_dynamic_runtime_owned_intrinsic_exports_for_root.cache_clear()
+
+
+@pytest.mark.parametrize("present", [False, True])
+def test_wheel_layout_classification_uses_own_install_scheme_without_attestation(
+    tmp_path, monkeypatch, present
+):
+    package = tmp_path / "env" / "lib" / "python3.12" / "site-packages" / "molt"
+    package.mkdir(parents=True)
+    bundle = tmp_path / "env" / "share" / "molt" / "distribution"
+    source = bundle / "source"
+    if present:
+        source.mkdir(parents=True)
+    # Deliberately missing manifest: known installation must not become source mode.
+    with monkeypatch.context() as patch:
+        patch.setattr(source_root, "__file__", str(package / "source_root.py"))
+        patch.setattr(source_root.sysconfig, "get_scheme_names", lambda: ("selected",))
+        patch.setattr(
+            source_root.sysconfig,
+            "get_paths",
+            lambda _scheme: {
+                "purelib": str(package.parent),
+                "platlib": str(package.parent),
+                "data": str(tmp_path / "env"),
+            },
+        )
+        assert source_root.packaged_distribution_root() == bundle
+        patch.delenv("MOLT_SOURCE_ROOT", raising=False)
+        assert source_root.compiler_source_root() == source
+        assert source_root.installed_distribution_root(source, environ={}) == bundle
+        assert (
+            source_root.installed_distribution_root(tmp_path / "guest", environ={})
+            is None
+        )
+    assert not (source / source_root.MANIFEST_NAME).exists()

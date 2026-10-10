@@ -712,8 +712,10 @@ persistent `$MOLT_EXT_ROOT/target`; caller-pinned `MOLT_SESSION_ID` or
 `--session-id` opts into `$MOLT_EXT_ROOT/target/sessions/<session component>` for
 deliberate isolation. Explicit `CARGO_TARGET_DIR` remains an operator-owned
 override. Defaults use the checkout-family custody root on every OS.
-Explicit `MOLT_TARGET_ROOT` remains authoritative; otherwise toolchains use
-checkout custody independently of artifact placement. RunContext selects
+Explicit `MOLT_TARGET_ROOT` remains authoritative; otherwise installed
+compilers use `<MOLT_HOME>/target-root` and checkouts use checkout custody,
+independently of artifact placement. See the
+[toolchain-root contract](../spec/areas/tooling/0001-toolchains.md#toolchain-state-selection). RunContext selects
 `UV_LINK_MODE=copy` from actual exFAT capability unless explicitly configured.
 
 In a fresh checkout/worktree, import RunContext with an already-installed host

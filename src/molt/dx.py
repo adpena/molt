@@ -21,7 +21,12 @@ from molt.environment_registry import (
     EnvironmentRegistryError,
     check_process_environment,
 )
-from molt.source_root import compiler_source_root
+from molt.source_root import compiler_source_root, installed_distribution_root
+from molt.default_paths import (
+    _default_molt_home,
+    executable_environment_value,
+    expand_user_path,
+)
 from molt.path_custody import (
     host_path_is_within,
     same_host_path,
@@ -1038,11 +1043,104 @@ def checkout_custody(
     )
 
 
-def canonical_toolchain_root(repo_root: Path, *, require_exists: bool = True) -> Path:
-    return (
-        canonical_molt_root(repo_root, require_exists=require_exists)
-        / DEFAULT_TARGET_ROOT_DIRNAME
+def _toolchain_root_selection(
+    repo_root: Path,
+    environment: Mapping[str, str],
+    *,
+    cwd: Path,
+    require_exists: bool = False,
+    custody: CheckoutCustody | None = None,
+) -> tuple[Path, Path | None]:
+    """Calculate a candidate; policy admission belongs to the selected consumer."""
+    raw = executable_environment_value(environment, "MOLT_TARGET_ROOT").strip()
+    if raw:
+        selected = expand_user_path(raw, environment=environment)
+        # Explicit membership classification needs neither source layout nor IO.
+        return (selected if selected.is_absolute() else cwd / selected), None
+    installed = installed_distribution_root(repo_root, environ=environment, cwd=cwd)
+    if installed is not None:
+        return _default_molt_home(
+            environ=environment, cwd=cwd
+        ) / DEFAULT_TARGET_ROOT_DIRNAME, installed
+    selected_custody = custody or checkout_custody(
+        repo_root, environment, require_exists=require_exists
     )
+    return selected_custody.toolchain_root, None
+
+
+def canonical_toolchain_root(
+    repo_root: Path,
+    env: Mapping[str, str] | None = None,
+    *,
+    require_exists: bool = True,
+    cwd: Path | None = None,
+    custody: CheckoutCustody | None = None,
+) -> Path:
+    """Select mutable tool state once, separately from compiler-source custody.
+
+    An explicit ``MOLT_TARGET_ROOT`` wins. An installed bundle or wheel uses
+    ``<MOLT_HOME>/target-root``; a checkout uses its custody root. Selection
+    never creates or attests a tree, and never selects state inside an
+    installed bundle. Reuse already selected checkout custody when given.
+    """
+    environment = os.environ if env is None else env
+    operation_cwd = Path.cwd() if cwd is None else cwd
+    try:
+        check_process_environment(environment, program="molt toolchain selection")
+        selected, installed = _toolchain_root_selection(
+            repo_root,
+            environment,
+            cwd=operation_cwd,
+            require_exists=require_exists,
+            custody=custody,
+        )
+        if (
+            installed is None
+            and executable_environment_value(environment, "MOLT_TARGET_ROOT").strip()
+        ):
+            installed = installed_distribution_root(
+                repo_root, environ=environment, cwd=operation_cwd
+            )
+        selected = selected.resolve(strict=False)
+        if installed is not None and host_path_is_within(selected, installed):
+            raise DxConfigError(
+                "Molt toolchain root must be outside the immutable bundle"
+            )
+        if selected.exists() and not selected.is_dir():
+            raise DxConfigError(f"Molt toolchain root is not a directory: {selected}")
+        if require_exists and not selected.is_dir():
+            raise DxConfigError(f"Molt toolchain root does not exist: {selected}")
+        return selected
+    except (EnvironmentRegistryError, OSError, ValueError) as exc:
+        if isinstance(exc, DxConfigError):
+            raise
+        raise DxConfigError(str(exc)) from exc
+
+
+def selected_toolchain_contains(
+    repo_root: Path,
+    member: Path,
+    env: Mapping[str, str] | None = None,
+    *,
+    cwd: Path | None = None,
+) -> bool:
+    """Classify an independently selected tool before admitting managed state.
+
+    An unresolvable unused candidate cannot contain a valid external selection.
+    This is membership only. Callers must admit a match through
+    canonical_toolchain_root; default discovery must call that strict owner
+    directly.
+    """
+    environment = os.environ if env is None else env
+    operation_cwd = Path.cwd() if cwd is None else cwd
+    try:
+        candidate, _installed = _toolchain_root_selection(
+            repo_root, environment, cwd=operation_cwd
+        )
+        matches = host_path_is_within(member, candidate)
+    except (OSError, ValueError):
+        return False
+    return matches
 
 
 def _requires_external_artifacts(env: Mapping[str, str]) -> bool:
@@ -1191,18 +1289,6 @@ def require_external_artifact_root(
             f"Checked candidates: {candidates}"
         )
     return None
-
-
-def configured_artifact_root_text(env: Mapping[str, str] | None = None) -> str | None:
-    """Return the operator's ``MOLT_EXT_ROOT`` text exactly, or None when unset.
-
-    For cache keys on hot paths: it touches no filesystem. The cached consumer
-    anchors and resolves the value once per distinct key.
-    """
-
-    view = os.environ if env is None else env
-    raw = view.get(ARTIFACT_ROOT_ENV, "").strip()
-    return raw or None
 
 
 def configured_artifact_root(
@@ -1406,15 +1492,10 @@ _sccache_degrade_warned = False
 
 
 def pinned_sccache(env: Mapping[str, str]) -> str | None:
-    """The pinned sccache already provisioned under ``MOLT_TARGET_ROOT``."""
-    raw_target_root = env.get("MOLT_TARGET_ROOT", "").strip()
-    if not raw_target_root:
-        return None
+    """The pinned sccache already provisioned under the selected toolchain root."""
     from molt import tool_releases
 
-    discovery = tool_releases.discover_tool(
-        tool_releases.tool_release("sccache"), Path(raw_target_root).expanduser()
-    )
+    discovery = tool_releases.discover_pinned_tool("sccache", environ=env)
     return None if discovery is None else str(discovery.executable)
 
 
@@ -1599,6 +1680,7 @@ class RunContext:
         *,
         create_dirs: bool = True,
         force_default_keys: Collection[str] = (),
+        admit_toolchain_root: bool = True,
     ) -> dict[str, str]:
         env = dict(os.environ if base is None else base)
         try:
@@ -1608,9 +1690,26 @@ class RunContext:
         _drop_ambient_tmpdir(env, prefer_external=self.prefer_external_artifacts)
         forced = set(force_default_keys)
         custody = checkout_custody(self.root, env)
+        # Artifact-only guards preserve the selection before installing cache
+        # defaults. The actual tool consumer owns admission of that state.
+        selected_toolchain_root = (
+            canonical_toolchain_root(
+                self.root, env, require_exists=False, cwd=self.root, custody=custody
+            )
+            if admit_toolchain_root
+            else executable_environment_value(env, "MOLT_TARGET_ROOT").strip()
+            or _toolchain_root_selection(
+                self.root, env, cwd=self.root, custody=custody
+            )[0]
+        )
+        root_keys = tuple(
+            key
+            for key in CANONICAL_ROOT_ENV_KEYS
+            if admit_toolchain_root or key != "MOLT_TARGET_ROOT"
+        )
 
         if custody.source_only:
-            for key in CANONICAL_ROOT_ENV_KEYS:
+            for key in root_keys:
                 raw = env.get(key, "").strip()
                 if raw and _path_is_within(self._resolve_env_path(raw), self.root):
                     raise DxConfigError(
@@ -1681,25 +1780,25 @@ class RunContext:
         install_default("UV_PROJECT_ENVIRONMENT", self.uv_project_env_dir(env))
         install_default("PIP_CACHE_DIR", ext_root / ".pip-cache")
         install_default("RUFF_CACHE_DIR", ext_root / ".ruff-cache")
-        # MOLT_TARGET_ROOT is durable toolchain custody, not scratch capacity.
-        # Keep it on the canonical Molt root even when build outputs are routed
-        # elsewhere explicitly.
-        default_toolchain_root = custody.toolchain_root
-        raw_target_root = env.get("MOLT_TARGET_ROOT")
-        if not raw_target_root:
-            env["MOLT_TARGET_ROOT"] = str(default_toolchain_root)
+        # MOLT_TARGET_ROOT is durable toolchain state, not scratch capacity. The
+        # same selector serves direct discovery, provisioning and DX children.
+        if os.name == "nt":
+            for key in tuple(env):
+                if key.casefold() == "molt_target_root":
+                    del env[key]
+        env["MOLT_TARGET_ROOT"] = str(selected_toolchain_root)
         install_default("PYTHONPYCACHEPREFIX", run_scratch / "pycache")
         install_default("TMPDIR", run_scratch)
         install_default("TMP", env["TMPDIR"])
         install_default("TEMP", env["TMPDIR"])
 
-        for key in CANONICAL_ROOT_ENV_KEYS:
+        for key in root_keys:
             value = env.get(key)
             if value:
                 env[key] = str(self._resolve_env_path(value))
                 value = env[key]
                 if key == "MOLT_TARGET_ROOT":
-                    continue  # Toolchain custody is independent of artifact placement.
+                    continue  # Toolchain state is independent of artifact placement.
                 _require_external_path(
                     key,
                     Path(value).expanduser(),
@@ -1708,7 +1807,7 @@ class RunContext:
                 )
 
         if create_dirs:
-            for key in CANONICAL_ROOT_ENV_KEYS:
+            for key in root_keys:
                 value = env.get(key)
                 if value:
                     Path(value).expanduser().mkdir(parents=True, exist_ok=True)

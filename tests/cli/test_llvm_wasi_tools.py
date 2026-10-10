@@ -1854,3 +1854,57 @@ def test_lexical_compiler_ordinary_relative_selection_is_absolute(tmp_path):
                 os.chdir(drive_cwd)
         finally:
             os.chdir(original_cwd)
+
+
+def test_freestanding_explicit_family_does_not_select_unused_sdk_state(
+    tmp_path, monkeypatch
+):
+    paths = _write_tool_family(tmp_path / "external/bin")
+    for path in paths.values():
+        path.chmod(0o755)
+    invalid = tmp_path / "invalid-state"
+    invalid.write_text("not a directory")
+    environment = {
+        "MOLT_WASM_CC": str(paths["cc"]),
+        "MOLT_TARGET_ROOT": str(invalid),
+        "PATH": "",
+    }
+    monkeypatch.setattr(llvm_wasi_tools, "_source_checkout_roots", lambda: ())
+    versions = []
+
+    def version(path, *, environment):
+        versions.append(path)
+        return "external LLVM"
+
+    monkeypatch.setattr(llvm_wasi_tools, "_tool_version", version)
+    probes = []
+
+    def probe(command, *, target_plan, environment):
+        probes.append((command, target_plan.target_triple))
+        return None
+
+    monkeypatch.setattr(
+        source_extension_toolchain, "_probe_wasm_source_extension_compiler", probe
+    )
+    target = source_extension_target.resolve_source_extension_target_plan(
+        "wasm32-unknown-unknown"
+    )
+    resolved = source_extension_toolchain._resolve_source_extension_wasm_toolchain(
+        target, environment=environment
+    )
+    assert resolved.ok and resolved.wasi_c_abi is None
+    assert resolved.tools.missing_roles() == ()
+    for role, path in paths.items():
+        assert getattr(resolved.tools, role).path == path
+        assert (
+            getattr(resolved.tools, role).sha256 == hashlib.sha256(b"tool").hexdigest()
+        )
+    assert versions == list(paths.values())
+    assert probes == [((str(paths["cc"]),), "wasm32-unknown-unknown")]
+    wasi = source_extension_target.resolve_source_extension_target_plan("wasm")
+    with pytest.raises(
+        llvm_toolchain.LlvmToolchainConfigError, match="toolchain custody is unresolved"
+    ):
+        source_extension_toolchain._resolve_source_extension_wasm_toolchain(
+            wasi, environment=environment
+        )

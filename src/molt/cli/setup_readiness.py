@@ -16,7 +16,7 @@ from molt.tool_releases import ToolReleaseError, require_pinned_tool
 from molt.dx import DX_ENV_KEYS, DxProject, configured_artifact_root
 from molt.cli import wasm_toolchain
 from molt.cli.backend_daemon_config import _backend_daemon_enabled
-from molt.cli.default_paths import _default_molt_cache
+from molt.default_paths import _default_molt_cache
 from molt.cli.installation_diagnostics import installation_checks
 from molt.cli.wasm_link_cache import _default_wasm_link_cache
 from molt.cli.models import _ToolchainReport
