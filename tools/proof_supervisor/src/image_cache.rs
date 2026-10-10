@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::{self, Read, Seek, SeekFrom};
 
-const MAX_CACHED_IDENTITIES: usize = 1024;
+const MAX_CACHED_IDENTITIES: usize = crate::BUDGET_IMAGE_CACHE_ENTRIES;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImageCacheKey {
@@ -86,6 +86,61 @@ impl ImageHashCache {
         );
         Ok(sha256)
     }
+}
+
+/// One opened-file identity/mutation authority for policy, transport and exec.
+#[cfg(unix)]
+pub fn opened_file_key(file: &std::fs::File) -> io::Result<ImageCacheKey> {
+    use std::os::unix::fs::MetadataExt;
+    let m = file.metadata()?;
+    Ok(ImageCacheKey::new(
+        format!("{:x}:{:x}", m.dev(), m.ino()),
+        format!(
+            "{}:{}:{}:{}:{}",
+            m.size(),
+            m.mtime(),
+            m.mtime_nsec(),
+            m.ctime(),
+            m.ctime_nsec()
+        ),
+    ))
+}
+#[cfg(windows)]
+pub fn opened_file_key(file: &std::fs::File) -> io::Result<ImageCacheKey> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandle,
+        GetFileInformationByHandleEx,
+    };
+    let handle = file.as_raw_handle();
+    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let mut basic: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0
+        || unsafe {
+            GetFileInformationByHandleEx(
+                handle,
+                FileBasicInfo,
+                &mut basic as *mut _ as _,
+                std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+            )
+        } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let size = (u64::from(information.nFileSizeHigh) << 32) | u64::from(information.nFileSizeLow);
+    Ok(ImageCacheKey::new(
+        format!(
+            "{:08x}:{:08x}{:08x}",
+            information.dwVolumeSerialNumber, information.nFileIndexHigh, information.nFileIndexLow
+        ),
+        format!("{size}:{}:{}", basic.LastWriteTime, basic.ChangeTime),
+    ))
+}
+#[cfg(not(any(unix, windows)))]
+pub fn opened_file_key(_file: &std::fs::File) -> io::Result<ImageCacheKey> {
+    Err(io::Error::other(
+        "opened-file identity unsupported on this platform",
+    ))
 }
 
 fn ensure_stable(before: &ImageCacheKey, after: &ImageCacheKey) -> io::Result<()> {

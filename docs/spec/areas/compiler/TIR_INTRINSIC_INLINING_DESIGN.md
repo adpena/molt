@@ -575,7 +575,7 @@ Box/unbox operations are already emitted as inline Cranelift IR:
 - `box_float_value`: `bitcast` (floats are stored as raw IEEE 754 bits)
 - `box_bool_value`: `select(val, 1, 0) | bor(QNAN | TAG_BOOL)`
 - `box_none`: constant `QNAN | TAG_NONE`
-- `unbox_ptr_value`: `band(val, POINTER_MASK) | ishl(16)` (pointer recovery)
+- `unbox_ptr_value`: `band(val, POINTER_MASK)` (unsigned 48-bit address recovery; no sign extension). Pointer boxing rejects addresses outside the payload, and decoding respects target pointer width.
 
 ### 2.3 TIR-Level Function Inlining
 

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.build_state_layout import build_state_root
 import tools.compile_governor as compile_governor
 from tests.process_guard_common import install_module_view
 
@@ -154,7 +155,7 @@ def test_guard_root_prefers_explicit_and_repo_canonical_overrides(
     env.pop("MOLT_COMPILE_GUARD_DIR")
     project = Path(compile_governor.__file__).resolve().parents[1]
     assert compile_governor._guard_root(env) == (
-        compile_governor.build_state_root(
+        build_state_root(
             project_root=project, cargo_target=cargo_target_dir, environment=env
         )
         / "compile_guard"
@@ -162,7 +163,7 @@ def test_guard_root_prefers_explicit_and_repo_canonical_overrides(
 
     env.pop("CARGO_TARGET_DIR")
     assert compile_governor._guard_root(env) == (
-        compile_governor.build_state_root(
+        build_state_root(
             project_root=project, cargo_target=project / "target", environment=env
         )
         / "compile_guard"
@@ -170,28 +171,34 @@ def test_guard_root_prefers_explicit_and_repo_canonical_overrides(
 
 
 def test_governor_default_target_matches_cli_and_daemon_with_artifact_root(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from molt.backend_daemon_custody import backend_daemon_build_state_root_from_env
-    from molt.cli.runtime_paths import _build_state_root_cached
+    from molt.backend_daemon_custody import backend_daemon_root_from_env
+    from molt.cli.runtime_paths import _build_state_root
 
     project = Path(compile_governor.__file__).resolve().parents[1]
     artifact = tmp_path / "canonical"
     env = {"MOLT_EXT_ROOT": str(artifact), "MOLT_SESSION_ID": "alpha"}
     target = project / "target" / "sessions" / "alpha"
-    expected = compile_governor.build_state_root(
+    expected = build_state_root(
         project_root=project, cargo_target=target, environment=env
     )
     assert compile_governor._guard_root(env) == expected / "compile_guard"
     assert (
-        backend_daemon_build_state_root_from_env(env, project_root=project) == expected
+        backend_daemon_root_from_env(env, project_root=project)
+        == expected / "backend_daemon"
     )
-    assert (
-        _build_state_root_cached(
-            str(project), None, None, str(project), "alpha", str(artifact)
-        )
-        == expected
-    )
+    for key in (
+        "CARGO_TARGET_DIR",
+        "MOLT_BUILD_STATE_DIR",
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+        "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+        "MOLT_SESSION_ID_GENERATED",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert _build_state_root(project) == expected
 
 
 def test_compile_slot_defaults_use_resource_pressure_plan(monkeypatch) -> None:

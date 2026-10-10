@@ -17,6 +17,13 @@ from molt.backend_executable_names import (
     DEFAULT_CODEGEN_BACKEND,
     CodegenBackend,
 )
+from molt.dx import scratch_dir
+from molt.source_root import compiler_source_root
+
+# The one input that places backend debug artifacts and scratch objects;
+# runtime/molt-ir/src/debug_artifacts.rs reads only this (HF-111).
+DEBUG_ARTIFACT_DIR_ENV = "MOLT_DEBUG_ARTIFACT_DIR"
+DEBUG_ARTIFACT_SCRATCH_PURPOSE = "molt-backend"
 
 _CATALOG = json.loads(Path(__file__).with_suffix(".json").read_text(encoding="utf-8"))
 _GROUPS = {
@@ -82,6 +89,21 @@ def codegen_environment_inputs(
     return {name: env[name] for name in sorted(keys) if name in env}
 
 
+def backend_debug_artifact_dir(env: Mapping[str, str]) -> Path:
+    """Return the directory the backend writes debug artifacts to.
+
+    An explicit ``MOLT_DEBUG_ARTIFACT_DIR`` wins, made absolute so a backend
+    daemon with another working directory agrees. Otherwise it is the
+    compiler's run scratch, ``molt.dx.scratch_dir(<compiler source>,
+    "molt-backend")``: never inside a checkout, and one directory per compiler
+    and artifact root, so the cache keys that bind it stay stable.
+    """
+    raw = env.get(DEBUG_ARTIFACT_DIR_ENV, "").strip()
+    if raw:
+        return Path(raw).expanduser().absolute()
+    return scratch_dir(compiler_source_root(), DEBUG_ARTIFACT_SCRATCH_PURPOSE, env)
+
+
 @dataclass(frozen=True, slots=True)
 class CodegenSelection:
     """Backend-process inputs that molt resolves from flags and configuration.
@@ -91,6 +113,8 @@ class CodegenSelection:
     key and daemon identity that binds that environment, through
     ``environment``. An unset optional field leaves the caller's value of that
     variable in place: ``MOLT_PORTABLE=0`` still opts in to host-CPU code.
+    The projection always names the backend's debug artifact directory
+    (`backend_debug_artifact_dir`); the backend never derives one itself.
     """
 
     backend: CodegenBackend = DEFAULT_CODEGEN_BACKEND
@@ -108,6 +132,7 @@ class CodegenSelection:
         """Return a copy of ``base`` with this selection applied."""
         env = dict(base)
         env["MOLT_BACKEND"] = self.backend
+        env[DEBUG_ARTIFACT_DIR_ENV] = str(backend_debug_artifact_dir(base))
         if self.portable:
             env["MOLT_PORTABLE"] = "1"
         if self.wasm_profile is not None:

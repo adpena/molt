@@ -363,12 +363,13 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
 def _cargo_build_env(source: Mapping[str, str] | None = None) -> dict[str, str]:
     env = dict(os.environ if source is None else source)
     if development_artifacts_requested(env):
-        root = compiler_source_root()
+        # The run context's target follows the one project rule
+        # (molt.dx.project_cargo_target_dir): only a pinned MOLT_SESSION_ID
+        # scopes it, never a per-process id.
         env = development_artifact_env(
-            root,
+            compiler_source_root(),
             env,
             session_prefix="cargo-build",
-            session_id=env.get("MOLT_SESSION_ID") or f"cargo-build-{os.getpid()}",
             create_dirs=True,
         )
     # Incremental compilation is the primary WARM-REBUILD accelerator: edit one

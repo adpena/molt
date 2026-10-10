@@ -236,6 +236,12 @@ and preserve the enclosing operation's exception/cleanup routing.
 
 ### 1.5 Runtime Call Convention Table
 
+Object pointer carriers contain unsigned 48-bit addresses. The runtime and every
+backend recover them without sign extension; bit 47 is an address bit, not a sign.
+Boxing rejects wider addresses in every profile. Target pointer-width checks and
+caller-owned storage lifetime remain independent requirements, including for
+`molt_object_init_stack`; scoped storage is not restricted to low-half addresses.
+
 The following summarizes the C-ABI that generated code and the runtime both commit to. This table is the contract; both sides must honor it:
 
 | Call site | Args | Return |

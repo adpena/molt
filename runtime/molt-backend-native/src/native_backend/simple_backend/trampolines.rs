@@ -77,8 +77,6 @@ impl SimpleBackend {
         builder.append_block_params_for_function_params(entry_block);
         builder.switch_to_block(entry_block);
         builder.seal_block(entry_block);
-        let nbc = NanBoxConsts::new();
-
         let closure_bits = builder.block_params(entry_block)[0];
         let args_ptr = builder.block_params(entry_block)[1];
         let args_len = builder.block_params(entry_block)[2];
@@ -130,7 +128,7 @@ impl SimpleBackend {
                         Self::import_runtime_func_id_split(module, import_ids, MOLT_INC_REF_OBJ);
                     let local_inc_ref_obj =
                         module.declare_func_in_func(inc_ref_obj_callee, builder.func);
-                    let task_ptr = unbox_ptr_value(&mut builder, task_obj, &nbc);
+                    let task_ptr = unbox_ptr_value(&mut builder, task_obj);
 
                     let mut offset = layout.payload_base_offset(GENERATOR_CONTROL_BYTES);
                     if has_closure {

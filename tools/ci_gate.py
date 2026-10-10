@@ -58,7 +58,7 @@ import tools.harness_memory_guard as harness_memory_guard  # noqa: E402
 import tools.compile_governor as compile_governor  # noqa: E402
 from tools._io_utf8 import force_utf8_stdio  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
-from molt.dx import CANONICAL_ROOT_ENV_KEYS, development_artifact_env  # noqa: E402
+from molt.dx import development_artifact_env  # noqa: E402
 
 # This gate captures and relays every check's subprocess stdout/stderr via
 # print(); on Windows a non-cp1252 byte in that relay would abort the whole run
@@ -1026,7 +1026,6 @@ def _apply_canonical_env_defaults(env: dict[str, str]) -> None:
         env,
         session_prefix="ci-gate",
         session_id=env.get("MOLT_SESSION_ID") or f"ci-gate-{os.getpid()}",
-        create_dirs=False,
     )
     # Replace the environment as one canonical value.  A dict overlay cannot
     # express provenance deletion, so it would retain an inherited
@@ -1034,11 +1033,6 @@ def _apply_canonical_env_defaults(env: dict[str, str]) -> None:
     env.clear()
     env.update(resolved)
     env.setdefault("CARGO_BUILD_JOBS", "2")
-    for key in CANONICAL_ROOT_ENV_KEYS:
-        if key not in env:
-            continue
-        with contextlib.suppress(OSError):
-            Path(env[key]).expanduser().mkdir(parents=True, exist_ok=True)
 
 
 def _truncate_output(text: str) -> str:

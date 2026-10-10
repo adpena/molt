@@ -3660,6 +3660,7 @@ mod tests {
             }
         }
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::with_gil_entry_nopanic!(py, {
             let none = MoltObject::none().bits();
             // Warm the selected exception class, then deny the real allocator.
@@ -3671,15 +3672,8 @@ mod tests {
                 ..Default::default()
             })));
             assert_eq!(raise_import_error(py, b"denied", none, none, none), none);
+            crate::test_support::assert_and_clear_emergency_memory_error(py);
             drop(budget);
-            assert!(exception_pending(py));
-            let error = ExceptionValue::adopt(py, molt_exception_last_pending());
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
-                py,
-                error.bits(),
-                "MemoryError"
-            ));
-            clear_exception(py);
             let _ = raise_import_error(py, b"recovered", none, none, none);
             let recovered = ExceptionValue::adopt(py, molt_exception_last_pending());
             assert!(crate::builtins::exceptions::exception_matches_builtin_name(

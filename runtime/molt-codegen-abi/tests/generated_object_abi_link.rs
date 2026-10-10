@@ -157,3 +157,39 @@ fn split_backend_runtime_generated_object_abi_fails_closed_in_both_directions() 
         }
     }
 }
+
+#[test]
+fn signed_pointer_revision_cannot_link_with_unsigned_pointer_revision() {
+    let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("pointer-abi-link")
+        .expect("create pointer ABI link-contract outputs within Cargo image custody");
+    for (mode, old_symbol, new_symbol) in [
+        (
+            "gil",
+            "molt_generated_object_abi_bf06a9269171acab_gil_v3",
+            GENERATED_OBJECT_ABI_GIL_SYMBOL,
+        ),
+        (
+            "free",
+            "molt_generated_object_abi_bf06a9269171acab_free_threaded_v3",
+            GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
+        ),
+    ] {
+        for (direction, expected, actual) in [
+            ("old_new", old_symbol, new_symbol),
+            ("new_old", new_symbol, old_symbol),
+        ] {
+            let label = format!("{mode}_{direction}");
+            let backend = compile_backend(&artifacts, &label, expected);
+            let result = link_runtime(&artifacts, &label, &backend, actual);
+            assert!(
+                !result.status.success(),
+                "{label} must reject mixed pointer contracts"
+            );
+            assert!(
+                String::from_utf8_lossy(&result.stderr).contains(expected),
+                "{label} must fail on missing pointer ABI witness {expected}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
+}

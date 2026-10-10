@@ -12,7 +12,7 @@ from pathlib import Path
 import tomllib
 from typing import Any
 
-from molt.backend_executable_names import DEFAULT_CODEGEN_BACKEND, CodegenBackend
+from molt.backend_executable_names import CodegenBackend
 from molt.portable_paths import portable_relative_path
 from molt.source_root import compiler_source_root
 from molt.toolchain_identity import (
@@ -24,11 +24,6 @@ from molt.verified_subset import VerifiedSubsetPolicy, capture_verified_subset_p
 
 SCHEMA = "molt.release-acceptance-matrix.v1"
 _CONFIG_PATH = "config/release_acceptance_matrix.toml"
-
-
-def lane_codegen_backend(backend: str) -> CodegenBackend:
-    """The ``molt build --backend`` value that a lane's backend name selects."""
-    return "llvm" if backend == "llvm" else DEFAULT_CODEGEN_BACKEND
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +40,7 @@ class ReleaseLane:
 
     @property
     def codegen_backend(self) -> CodegenBackend:
-        return lane_codegen_backend(self.backend)
+        return "llvm" if self.backend == "llvm" else "cranelift"
 
     @property
     def compiler_features(self) -> tuple[str, ...]:
@@ -58,14 +53,6 @@ class ReleaseLane:
             codegen_backend=self.codegen_backend,
         )
 
-    def build_args(self) -> tuple[str, ...]:
-        """The ``molt build`` flags that select this lane's code generator.
-
-        The CLI takes the code generator only as a flag; the environment never
-        selects it, so an ambient ``MOLT_BACKEND`` cannot change the lane.
-        """
-        return ("--backend", self.codegen_backend)
-
     def as_record(self) -> dict[str, str]:
         return {
             "backend": self.backend,
@@ -76,7 +63,7 @@ class ReleaseLane:
         }
 
     def environment(self) -> dict[str, str]:
-        """Pin the profile selectors; ``build_args`` selects the code generator."""
+        """Pin the existing producer selectors; no profile/ambient aliasing."""
         return {
             "MOLT_BACKEND_PROFILE": "release",
             "MOLT_RELEASE_BACKEND_CARGO_PROFILE": self.compiler_profile,

@@ -26,9 +26,8 @@ use std::sync::{OnceLock, RwLock};
 pub use molt_codegen_abi::{INT_MAX_INLINE as INLINE_INT_MAX, INT_MIN_INLINE as INLINE_INT_MIN};
 use molt_codegen_abi::{
     box_bool_bits, box_float_bits, box_int_bits, box_none_bits, box_pending_bits, box_ptr_bits,
-    canonical_addr_from_masked_bits, fits_inline_int, is_bool_bits, is_float_bits, is_int_bits,
-    is_none_bits, is_pending_bits, is_ptr_bits, ptr_payload_bits, unbox_bool_bits,
-    unbox_inline_int_bits,
+    fits_inline_int, is_bool_bits, is_float_bits, is_int_bits, is_none_bits, is_pending_bits,
+    is_ptr_bits, ptr_payload_bits, unbox_bool_bits, unbox_inline_int_bits,
 };
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -361,24 +360,13 @@ impl MoltObject {
 
     #[inline(always)]
     pub fn from_ptr(ptr: *mut u8) -> Self {
-        // In release builds, skip the registry — the NaN-box encoding already
-        // stores the canonical 48-bit address directly. The registry exists
-        // only for provenance safety checking in debug/dev builds.
+        // Address representability is checked before publication in every profile.
+        // The registry adds development-only provenance checks; it does not own
+        // the encoding or change the address recovered by generated code.
+        let bits = box_ptr_bits(ptr.expose_provenance() as u64) as u64;
         #[cfg(debug_assertions)]
-        {
-            let addr = register_ptr(ptr);
-            let high = addr >> 48;
-            debug_assert!(
-                high == 0 || high == 0xffff,
-                "Non-canonical pointer for MoltObject"
-            );
-            Self(box_ptr_bits(addr) as u64)
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            let addr = ptr as u64;
-            Self(box_ptr_bits(addr) as u64)
-        }
+        register_ptr(ptr);
+        Self(bits)
     }
 
     #[inline(always)]
@@ -432,8 +420,7 @@ impl MoltObject {
     #[inline(always)]
     pub fn as_ptr(&self) -> Option<*mut u8> {
         if self.is_ptr() {
-            let masked = ptr_payload_bits(self.0);
-            let addr = canonical_addr_from_masked_bits(masked);
+            let addr = ptr_payload_bits(self.0);
             // The NaN-boxed canonical address is the SINGLE source of truth for a
             // `TAG_PTR` value's identity, on every build profile. Recovering it via
             // `with_exposed_provenance_mut` is exactly what release does, and it is
@@ -565,9 +552,9 @@ mod bit_layout_contract {
     //! - **NaN canonicalization** ensures deterministic float representation across
     //!   CPUs.  Any NaN input (signaling, quiet, positive, negative) maps to the
     //!   single `CANONICAL_NAN_BITS` pattern.
-    //! - **48-bit pointer mask** (`POINTER_MASK = 0x0000_FFFF_FFFF_FFFF`) with
-    //!   sign extension via `canonical_addr_from_masked()` handles canonical
-    //!   addressing on x86-64, where the upper 16 bits must match bit 47.
+    //! - **Unsigned 48-bit user addresses** preserve every payload bit, including
+    //!   bit 47 on AArch64. Boxing rejects wider addresses in every profile;
+    //!   decoding never sign-extends a pointer or consults the compiler host.
     //! - **Integer range** is bounded by the 47-bit inline representation width.
     //!   Values outside `[-(2^46), 2^46 - 1]` must be routed through heap BigInt
     //!   constructors instead of `from_int`.
@@ -702,6 +689,41 @@ mod tests {
         release_ptr(ptr);
         unsafe {
             drop(Box::from_raw(ptr));
+        }
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn pointer_payload_preserves_unsigned_high_half_addresses() {
+        // Literal wire words are independent of the boxing helper. These are
+        // numeric identity checks only: synthetic addresses are not dereferenced.
+        for (bits, address) in [
+            (0x7ffc_0000_0000_0000, 0x0000_0000_0000_0000),
+            (0x7ffc_7fff_ffff_fff8, 0x0000_7fff_ffff_fff8),
+            (0x7ffc_8000_0000_0000, 0x0000_8000_0000_0000),
+            (0x7ffc_fa89_0c6a_ca20, 0x0000_fa89_0c6a_ca20),
+            (0x7ffc_ffff_ffff_fff8, 0x0000_ffff_ffff_fff8),
+        ] {
+            let decoded = MoltObject::from_bits(bits).as_ptr().expect("pointer tag");
+            assert_eq!(decoded.addr() as u64, address);
+            let pointer = std::ptr::without_provenance_mut(address as usize);
+            let boxed = MoltObject::from_ptr(pointer);
+            assert_eq!(boxed.bits(), bits);
+            assert_eq!(boxed.as_ptr().unwrap().addr() as u64, address);
+            release_ptr(pointer);
+        }
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn pointer_boxing_rejects_wide_addresses_before_aliasing() {
+        for address in [
+            0x0001_0000_0000_0000usize,
+            0xffff_8000_0000_0000,
+            usize::MAX,
+        ] {
+            let pointer = std::ptr::without_provenance_mut(address);
+            assert!(std::panic::catch_unwind(|| MoltObject::from_ptr(pointer)).is_err());
         }
     }
 
