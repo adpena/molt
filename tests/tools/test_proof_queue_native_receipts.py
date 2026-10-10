@@ -19,7 +19,11 @@ from tests.proof_queue_custody_test_support import (
     synthetic_python_toolchain,
 )
 from tools.proof_queue_pkg import supervisor_custody, supervisor_generation
-from tools.proof_queue_pkg import command_admission, toolchain_capture
+from tools.proof_queue_pkg import (
+    command_admission,
+    process_image_capture,
+    toolchain_capture,
+)
 from molt.toolchain_identity import find_executable
 
 pytestmark = pytest.mark.slow
@@ -92,9 +96,30 @@ def test_rust_link_capture_owns_workspace_inside_owner_selected_scratch(
         admitted_command=command,
         native_units=requirements,
     )
-    toolchain_capture.validate_rust_link_selection(
-        {"process_images": images, "link_selection": telemetry}
+    # Link capture owns descendants; the policy consumer also requires the
+    # launcher's real byte identity. Rustup resolution above selected one
+    # physical image for both launcher and content, so capture it once.
+    launcher = process_image_capture.capture_image(
+        "rustc-launcher", rustc, preserve_path=True
     )
+    rustc_identity = {
+        "path": launcher["path"],
+        "launcher_sha256": launcher["sha256"],
+        "content_path": launcher["path"],
+        "executable_sha256": launcher["sha256"],
+        "process_images": [launcher, *images],
+        "link_selection": telemetry,
+    }
+    projected = process_image_capture.toolchain_images("rustc", rustc_identity)
+    assert launcher in projected
+    for field, label in (("path", "launcher"), ("content_path", "content")):
+        incomplete = {
+            key: value for key, value in rustc_identity.items() if key != field
+        }
+        with pytest.raises(
+            ValueError, match=f"rustc toolchain has no {label} image identity"
+        ):
+            process_image_capture.toolchain_images("rustc", incomplete)
     assert bool(telemetry["native_build"]) is bool(requirements)
 
     assert {row["role"] for row in images} >= {"rust-linker"}
@@ -148,9 +173,7 @@ def test_rust_link_capture_owns_workspace_inside_owner_selected_scratch(
                 execution_env=execution_env,
                 cwd=tmp_path,
                 nonce=secrets.token_hex(32),
-                toolchains={
-                    "rustc": {"process_images": images, "link_selection": telemetry}
-                },
+                toolchains={"rustc": rustc_identity},
                 environment_executables={},
                 platform_process_images=(),
             )
