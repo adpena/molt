@@ -9,7 +9,6 @@ import platform
 import re
 import shlex
 import shutil
-import subprocess
 import sys
 import tempfile
 import tomllib
@@ -742,22 +741,69 @@ def _path_is_within(path: Path, parent: Path) -> bool:
     return host_path_is_within(path, parent)
 
 
-def git_checkout_head(repo_root: Path) -> str | None:
+_GIT_OBJECT_ID = re.compile(r"[0-9a-f]{40}")
+
+
+def _git_object_id(text: str) -> str | None:
+    value = text.strip().lower()
+    return value if _GIT_OBJECT_ID.fullmatch(value) else None
+
+
+def _git_directories(repo_root: Path) -> tuple[Path, Path] | None:
+    """The checkout's own Git directory and the repository's common directory."""
+    dot_git = repo_root / ".git"
     try:
-        proc = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            encoding="utf-8",
+        if dot_git.is_dir():
+            git_dir = dot_git
+        else:
+            pointer = dot_git.read_text(encoding="utf-8").strip()
+            if not pointer.startswith("gitdir:"):
+                return None
+            git_dir = (repo_root / pointer.removeprefix("gitdir:").strip()).resolve()
+        commondir = git_dir / "commondir"
+        common = (
+            (git_dir / commondir.read_text(encoding="utf-8").strip()).resolve()
+            if commondir.is_file()
+            else git_dir
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError:
         return None
-    head = proc.stdout.strip().lower()
-    return (
-        head if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", head) else None
-    )
+    return git_dir, common
+
+
+def git_checkout_head(repo_root: Path) -> str | None:
+    """The checkout's HEAD commit, read from the repository's own files.
+
+    Reading files needs no ``git`` on PATH, so a guarded child whose PATH names
+    only its toolchain still proves hosted custody. Detached HEAD, loose refs,
+    ``packed-refs`` and linked worktrees are read; any other ref storage
+    returns None, which hosted custody refuses.
+    """
+    directories = _git_directories(repo_root)
+    if directories is None:
+        return None
+    git_dir, common = directories
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not head.startswith("ref:"):
+        return _git_object_id(head)
+    ref = head.removeprefix("ref:").strip()
+    for base in (git_dir, common):
+        try:
+            return _git_object_id((base / ref).read_text(encoding="utf-8"))
+        except OSError:
+            continue
+    try:
+        packed = (common / "packed-refs").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in packed.splitlines():
+        object_id, _, name = line.partition(" ")
+        if name == ref:
+            return _git_object_id(object_id)
+    return None
 
 
 def _github_actions_checkout_custody(
