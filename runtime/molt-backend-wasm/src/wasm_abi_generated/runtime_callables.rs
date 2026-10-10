@@ -6066,7 +6066,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_thread_spawn_shared",
         import: WasmRuntimeImport::ThreadSpawnShared,
-        arity: 4,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_thread_timeout_max",
@@ -6091,7 +6091,7 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_thread_registry_register",
         import: WasmRuntimeImport::ThreadRegistryRegister,
-        arity: 4,
+        arity: 3,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_thread_registry_forget",

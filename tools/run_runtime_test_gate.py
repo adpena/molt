@@ -45,6 +45,7 @@ ISOLATED = (
     "state::runtime_state::tests::shutdown_refuses_attached_and_detached_foreign_thread_state_owners",
 )
 PROBES = (
+    "builtins::concurrent::tests::lifecycle_cost_probe",
     "cpython_abi_hooks::tests::single_thread_extension_call_preemption_bench",
     "object::gc::tests::generational_scan_reduction_bench",
     "object::gc::tests::repeated_reachable_collection_workspace_bench",
@@ -55,6 +56,7 @@ PROBES = (
 # `cfg(any(windows, target_os = "linux"))`; its row is keyed by `sys.platform`.
 # A probe absent from this table exists on every host.
 PROBE_PLATFORMS: dict[str, frozenset[str]] = {
+    "builtins::concurrent::tests::lifecycle_cost_probe": frozenset({"linux", "win32"}),
     "cpython_abi_hooks::tests::single_thread_extension_call_preemption_bench": (
         frozenset({"linux", "win32"})
     ),

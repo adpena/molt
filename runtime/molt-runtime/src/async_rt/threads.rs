@@ -7,7 +7,7 @@ use crate::concurrency::isolates::configured_thread_stack_size;
 #[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::{Receiver, Sender, unbounded};
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Condvar, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
@@ -50,62 +50,85 @@ enum ThreadWork {
 pub(crate) struct ThreadPool {
     sender: Sender<ThreadWork>,
     receiver: Receiver<ThreadWork>,
-    handles: Mutex<Vec<thread::JoinHandle<()>>>,
-    worker_count: AtomicUsize,
+    handles: crate::state::lifecycle::RuntimeServiceWorkers,
+    running: Arc<AtomicBool>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ThreadPool {
     pub(crate) fn new() -> Self {
         let (sender, receiver) = unbounded();
-        let pool = Self {
+        Self {
             sender,
             receiver,
-            handles: Mutex::new(Vec::new()),
-            worker_count: AtomicUsize::new(0),
-        };
-        pool.start_workers();
-        pool
-    }
-
-    fn start_workers(&self) {
-        let count = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-            .max(1);
-        let mut handles = self.handles.lock().unwrap();
-        self.worker_count.store(count, AtomicOrdering::Release);
-        for _ in 0..count {
-            let rx = self.receiver.clone();
-            let handle = if let Some(stack_size) = configured_thread_stack_size() {
-                let rx_builder = rx.clone();
-                thread::Builder::new()
-                    .stack_size(stack_size)
-                    .spawn(move || thread_worker(rx_builder))
-                    .unwrap_or_else(|_| thread::spawn(move || thread_worker(rx)))
-            } else {
-                thread::spawn(move || thread_worker(rx))
-            };
-            handles.push(handle);
+            handles: crate::state::lifecycle::RuntimeServiceWorkers::default(),
+            running: Arc::new(AtomicBool::new(true)),
         }
     }
 
-    fn submit(&self, item: ThreadWorkItem) {
-        let _ = self.sender.send(ThreadWork::Run(item));
+    pub(crate) fn start_workers(
+        &self,
+        origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+    ) -> std::io::Result<()> {
+        self.handles.start(origin, |handles| {
+            let count = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                .max(1);
+            for index in 0..count {
+                let rx = self.receiver.clone();
+                let tx = self.sender.clone();
+                let running = Arc::clone(&self.running);
+                let mut builder = thread::Builder::new().name(format!("molt-thread-pool-{index}"));
+                if let Some(stack_size) = configured_thread_stack_size() {
+                    builder = builder.stack_size(stack_size);
+                }
+                handles.push(crate::state::lifecycle::RuntimeServiceWorker::spawn(
+                    origin,
+                    builder,
+                    move || thread_worker(origin, rx, tx, running),
+                )?);
+            }
+            Ok(())
+        })
     }
 
-    pub(crate) fn shutdown(&self) {
-        let count = self.worker_count.load(AtomicOrdering::Acquire).max(1);
-        for _ in 0..count {
-            let _ = self.sender.send(ThreadWork::Shutdown);
+    fn submit(&self, item: ThreadWorkItem) -> Result<(), ThreadWorkItem> {
+        if !self.running.load(AtomicOrdering::Acquire) {
+            return Err(item);
         }
-        let handles = {
-            let mut guard = self.handles.lock().unwrap();
-            std::mem::take(&mut *guard)
-        };
-        for handle in handles {
-            let _ = handle.join();
+        self.sender
+            .send(ThreadWork::Run(item))
+            .map_err(|error| match error.0 {
+                ThreadWork::Run(item) => item,
+                ThreadWork::Shutdown => unreachable!(),
+            })
+    }
+
+    pub(crate) fn stop(&self) {
+        if self.running.swap(false, AtomicOrdering::AcqRel) {
+            for _ in 0..self.handles.count() {
+                let _ = self.sender.send(ThreadWork::Shutdown);
+            }
         }
+    }
+
+    pub(crate) fn join(&self) -> bool {
+        self.handles.join()
+    }
+
+    pub(crate) fn clear_stopped_queue(&self, py: &PyToken<'_>) -> bool {
+        assert!(!self.running.load(AtomicOrdering::Acquire));
+        let mut changed = false;
+        while let Ok(work) = self.receiver.try_recv() {
+            if let ThreadWork::Run(item) = work {
+                changed = true;
+                item.task.cancelled.store(true, AtomicOrdering::Release);
+                item.task.notify_done();
+                release_thread_work(py, item);
+            }
+        }
+        changed
     }
 }
 
@@ -161,18 +184,29 @@ impl ThreadTaskState {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn thread_worker(rx: Receiver<ThreadWork>) {
-    crate::state::run_runtime_worker(|| thread_worker_inner(rx));
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn thread_worker_inner(rx: Receiver<ThreadWork>) {
+fn thread_worker(
+    origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+    rx: Receiver<ThreadWork>,
+    tx: Sender<ThreadWork>,
+    running: Arc<AtomicBool>,
+) {
     while let Ok(work) = rx.recv() {
         match work {
             ThreadWork::Shutdown => break,
             ThreadWork::Run(item) => {
-                let _gil = GilGuard::new();
-                let _py = _gil.token();
+                let Some(execution) =
+                    crate::concurrency::execution::RuntimeServiceExecutionGuard::try_enter(origin)
+                else {
+                    // The published pool retains both channel ends until join.
+                    // Return owned work without touching runtime reference counts.
+                    assert!(tx.send(ThreadWork::Run(item)).is_ok());
+                    break;
+                };
+                if !running.load(AtomicOrdering::Acquire) {
+                    assert!(tx.send(ThreadWork::Run(item)).is_ok());
+                    break;
+                }
+                let _py = execution.token();
                 let _py = &_py;
                 let ThreadWorkItem {
                     task,
@@ -208,6 +242,17 @@ fn thread_worker_inner(rx: Receiver<ThreadWork>) {
                 let _ = wake_await_waiters(_py, task.future_ptr);
             }
         }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn release_thread_work(py: &PyToken<'_>, item: ThreadWorkItem) {
+    dec_ref_bits(py, item.callable_bits);
+    if !obj_from_bits(item.args_bits).is_none() {
+        dec_ref_bits(py, item.args_bits);
+    }
+    if !obj_from_bits(item.kwargs_bits).is_none() {
+        dec_ref_bits(py, item.kwargs_bits);
     }
 }
 
@@ -256,6 +301,15 @@ pub unsafe extern "C" fn molt_thread_submit(
     kwargs_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        if !runtime_state(_py).thread_borrow_admission_is_open() {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "runtime thread admission is closed",
+            );
+        }
+        // Complete startup before publishing future or callable ownership.
+        let pool = runtime_state(_py).thread_pool();
         let future_bits = molt_future_new(thread_poll_fn_addr(), 0);
         let Some(future_ptr) = resolve_obj_ptr(future_bits) else {
             return MoltObject::none().bits();
@@ -273,12 +327,25 @@ pub unsafe extern "C" fn molt_thread_submit(
         if !obj_from_bits(kwargs_bits).is_none() {
             inc_ref_bits(_py, kwargs_bits);
         }
-        runtime_state(_py).thread_pool().submit(ThreadWorkItem {
+        if let Err(item) = pool.submit(ThreadWorkItem {
             task: state,
             callable_bits,
             args_bits,
             kwargs_bits,
-        });
+        }) {
+            runtime_state(_py)
+                .thread_tasks
+                .lock()
+                .unwrap()
+                .remove(&PtrSlot(future_ptr));
+            release_thread_work(_py, item);
+            dec_ref_bits(_py, future_bits);
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "runtime thread admission is closed",
+            );
+        }
         future_bits
     })
 }

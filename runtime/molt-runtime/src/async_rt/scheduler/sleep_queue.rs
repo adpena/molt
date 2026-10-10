@@ -5,8 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::{
-    ASYNC_SLEEP_REGISTER_COUNT, ASYNC_WAKEUP_COUNT, GilGuard, PtrSlot, PyToken, profile_hit,
-    runtime_state,
+    ASYNC_SLEEP_REGISTER_COUNT, ASYNC_WAKEUP_COUNT, PtrSlot, PyToken, profile_hit, runtime_state,
 };
 
 use super::{async_trace_enabled, enqueue_task_ptr};
@@ -56,7 +55,7 @@ pub(crate) struct SleepQueue {
     #[cfg(not(target_arch = "wasm32"))]
     cv: Condvar,
     #[cfg(not(target_arch = "wasm32"))]
-    worker: Mutex<Option<thread::JoinHandle<()>>>,
+    worker: crate::state::lifecycle::RuntimeServiceWorkers,
 }
 
 impl SleepQueue {
@@ -72,14 +71,53 @@ impl SleepQueue {
             #[cfg(not(target_arch = "wasm32"))]
             cv: Condvar::new(),
             #[cfg(not(target_arch = "wasm32"))]
-            worker: Mutex::new(None),
+            worker: crate::state::lifecycle::RuntimeServiceWorkers::default(),
         }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn set_worker_handle(&self, handle: thread::JoinHandle<()>) {
-        let mut guard = self.worker.lock().unwrap();
-        *guard = Some(handle);
+    pub(crate) fn start_worker(
+        self: &Arc<Self>,
+        origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+    ) -> std::io::Result<()> {
+        self.worker.start(origin, |handles| {
+            let queue = Arc::clone(self);
+            handles.push(crate::state::lifecycle::RuntimeServiceWorker::spawn(
+                origin,
+                thread::Builder::new().name("molt-sleep".into()),
+                move || sleep_worker(origin, queue),
+            )?);
+            Ok(())
+        })
+    }
+
+    /// Exercise the actual retained owner and stop condition in descendant tests.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn install_joined_test_worker(
+        self: &Arc<Self>,
+        origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+        partial_start: bool,
+        worker: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<()> {
+        self.worker.start(origin, |handles| {
+            handles.push(crate::state::lifecycle::RuntimeServiceWorker::spawn(
+                origin,
+                thread::Builder::new().name("molt-joined-control".into()),
+                worker,
+            )?);
+            if partial_start {
+                Err(std::io::Error::other(
+                    "injected second worker startup failure",
+                ))
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn wait_for_test_stop(&self) {
+        assert!(!self.wait_until_scheduler_due());
     }
 
     pub(crate) fn register_scheduler(
@@ -257,28 +295,36 @@ impl SleepQueue {
         }
     }
 
-    pub(crate) fn shutdown(&self, _py: &PyToken<'_>) {
-        let _ = _py;
-        {
-            let mut guard = self.inner.lock().unwrap();
-            guard.shutdown = true;
-            guard.blocking.clear();
-            {
-                guard.tasks.clear();
-                guard.heap.clear();
-                #[cfg(not(target_arch = "wasm32"))]
-                self.cv.notify_all();
-            }
-        }
+    pub(crate) fn stop(&self) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.shutdown = true;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(handle) = self.worker.lock().unwrap().take() {
-            let _ = handle.join();
+        self.cv.notify_all();
+    }
+
+    pub(crate) fn join(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.worker.join()
         }
+        #[cfg(target_arch = "wasm32")]
+        {
+            true
+        }
+    }
+
+    pub(crate) fn shutdown(&self, _py: &PyToken<'_>) {
+        self.stop();
+        assert!(self.join(), "runtime timer worker failed; origin retained");
+        let mut guard = self.inner.lock().unwrap();
+        guard.blocking.clear();
+        guard.tasks.clear();
+        guard.heap.clear();
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn sleep_worker(queue: Arc<SleepQueue>) {
+fn sleep_worker(origin: crate::state::runtime_state::RuntimeWorkerOrigin, queue: Arc<SleepQueue>) {
     if async_trace_enabled() {
         eprintln!("molt async trace: sleep_worker_start");
     }
@@ -286,8 +332,12 @@ pub(crate) fn sleep_worker(queue: Arc<SleepQueue>) {
         if !queue.wait_until_scheduler_due() {
             return;
         }
-        let gil = GilGuard::new();
-        let py = gil.token();
+        let Some(execution) =
+            crate::concurrency::execution::RuntimeServiceExecutionGuard::try_enter(origin)
+        else {
+            return;
+        };
+        let py = execution.token();
         for task_ptr in queue.take_due_scheduler_tasks(&py) {
             profile_hit(&py, &ASYNC_WAKEUP_COUNT);
             if async_trace_enabled() {
@@ -331,6 +381,7 @@ pub(crate) fn instant_from_monotonic_secs(_py: &PyToken<'_>, secs: f64) -> Insta
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod custody_tests {
     use super::*;
+    use crate::GilGuard;
 
     #[test]
     fn cancellation_after_deadline_observation_prevents_raw_pointer_claim() {

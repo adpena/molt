@@ -137,7 +137,7 @@ pub(crate) struct IoPoller {
     pub(super) events: Mutex<Events>,
     waker: Waker,
     pub(super) running: AtomicBool,
-    worker: Mutex<Option<thread::JoinHandle<()>>>,
+    worker: crate::state::lifecycle::RuntimeServiceWorkers,
     next_token: AtomicUsize,
     pub(super) tokens: Mutex<HashMap<Token, usize>>,
     pub(super) sockets: Mutex<HashMap<usize, IoSocketEntry>>,
@@ -156,7 +156,7 @@ impl IoPoller {
             events: Mutex::new(Events::with_capacity(256)),
             waker,
             running: AtomicBool::new(true),
-            worker: Mutex::new(None),
+            worker: crate::state::lifecycle::RuntimeServiceWorkers::default(),
             next_token: AtomicUsize::new(1),
             tokens: Mutex::new(HashMap::new()),
             sockets: Mutex::new(HashMap::new()),
@@ -165,22 +165,33 @@ impl IoPoller {
         }
     }
 
-    pub(crate) fn start_worker(self: &Arc<Self>) {
-        let poller = Arc::clone(self);
-        let handle = thread::spawn(move || io_worker(poller));
-        let mut guard = self.worker.lock().unwrap();
-        *guard = Some(handle);
+    pub(crate) fn start_worker(
+        self: &Arc<Self>,
+        origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+    ) -> std::io::Result<()> {
+        self.worker.start(origin, |handles| {
+            let poller = Arc::clone(self);
+            handles.push(crate::state::lifecycle::RuntimeServiceWorker::spawn(
+                origin,
+                thread::Builder::new().name("molt-io-poller".into()),
+                move || io_worker(origin, poller),
+            )?);
+            Ok(())
+        })
+    }
+
+    pub(crate) fn stop(&self) {
+        self.running.store(false, AtomicOrdering::Release);
+        let _ = self.waker.wake();
+    }
+
+    pub(crate) fn join(&self) -> bool {
+        self.worker.join()
     }
 
     pub(crate) fn shutdown(&self) {
-        if !self.running.swap(false, AtomicOrdering::SeqCst) {
-            return;
-        }
-        let _ = self.waker.wake();
-        let handle = { self.worker.lock().unwrap().take() };
-        if let Some(handle) = handle {
-            let _ = handle.join();
-        }
+        self.stop();
+        assert!(self.join(), "runtime I/O worker failed; origin retained");
     }
 
     fn rollback_wait_registration(&self, rollback: IoRegistrationRollback) {

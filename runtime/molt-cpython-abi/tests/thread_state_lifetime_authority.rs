@@ -62,7 +62,7 @@ fn every_thread_state_creation_is_owned_by_prepare_anchor_arm_lifetime() {
     assert!(
         process_exit.find("touch_tls_guard()").unwrap()
             < process_exit
-                .find("attach_runtime_execution_thread()")
+                .find("attach_runtime_execution_thread(")
                 .unwrap(),
         "process-exit attachment must cross lifetime preparation first"
     );

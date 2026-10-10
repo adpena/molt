@@ -48,7 +48,6 @@ def test_validator_roster_matches_the_owning_rust_call_sites() -> None:
         key: (value["role"], value["args"], value["exit_code"], value["completes"])
         for key, value in support.CONTRACT.items()
     }
-    assert len(roster) == 20
 
 
 @pytest.mark.parametrize(
@@ -60,6 +59,8 @@ def test_validator_roster_matches_the_owning_rust_call_sites() -> None:
         ([support.TRANSACTION], 9),
         ([support.LIFECYCLE], 3),
         ([support.DISCOVERY], 1),
+        ([support.ISOLATE_OWNER], 3),
+        ([support.THREAD_ADMISSION], 21),
     ],
     ids=[
         "parallel-trap-cold",
@@ -68,6 +69,8 @@ def test_validator_roster_matches_the_owning_rust_call_sites() -> None:
         "terminal-transaction",
         "lifecycle-ffi",
         "discovery-diagnostic",
+        "isolated-heap-retirement",
+        "native-thread-admission",
     ],
 )
 def test_completed_owners_with_bound_children_verify(tmp_path, owners, children):
@@ -90,18 +93,13 @@ def test_unrelated_binary_is_not_engaged_even_without_evidence(tmp_path):
     assert verify(fake) is None
 
 
-@pytest.mark.parametrize("index", range(19))
-def test_every_mandatory_child_is_derived_from_completed_owner_rows(tmp_path, index):
-    owners = [
-        support.EXIT,
-        *LIB_OWNERS,
-        *TRACE_OWNERS,
-        support.TRANSACTION,
-        support.LIFECYCLE,
-    ]
+@pytest.mark.parametrize("owner, mode", list(support.CONTRACT))
+def test_every_mandatory_child_is_derived_from_completed_owner_rows(tmp_path, owner, mode):
+    owners = [owner]
     image = support.make_image(tmp_path)
     records = support.family_records(image, owners)
-    removed = records.pop(index)
+    removed = next(row for row in records if row["mode"] == mode)
+    records.remove(removed)
     receipt = support.binary_receipt(
         tmp_path / "receipts", image, ["ordinary", *owners], records
     )
@@ -517,6 +515,11 @@ def test_lifecycle_modes_keep_their_actual_completion_contract(tmp_path, mode):
         (support.TRANSACTION, "ordinary", "ordinary-return", "stdout"),
         (support.LIFECYCLE, "init", "shutdown", "stderr"),
         (support.EXIT, "no-lease", "lease", "stdout"),
+        (support.ISOLATE_OWNER, "failed", "thread-state", "stdout"),
+        (support.THREAD_ADMISSION, "delayed-isolate", "delayed-shared", "stdout"),
+        (support.THREAD_ADMISSION, "spawn-failure-shared", "spawn-failure-bytes", "stdout"),
+        (support.THREAD_ADMISSION, "shared-payload-panic", "shared-cleanup-panic", "stdout"),
+        (support.THREAD_ADMISSION, "shared-cleanup-panic", "process-service-timeout", "stdout"),
     ],
 )
 def test_same_child_modes_cannot_exchange_valid_retained_output(
@@ -600,8 +603,89 @@ def test_mode_specific_proof_matches_each_literal_child_contract():
             "===MOLT_DISCOVERY_EXC: no pending exception on NULL return",
         ),
     )
+    # Literal Rust child contracts from concurrency/isolates.rs. Keep this
+    # independent of the validator's Outcome construction and fixture streams.
+    for mode in ("successful", "failed", "thread-state"):
+        expected[(support.ISOLATE_OWNER, mode)] = (
+            (f"isolate owner lifetime verified: {mode}\n",),
+            (
+                "MOLT_ISOLATE_TEARDOWN_PANIC: retaining failed isolate at",
+                "molt runtime shutdown refused: 1 active execution lease(s) remain live\n",
+            )
+            if mode != "successful"
+            else (),
+        )
+    for mode in (
+        "delayed-isolate",
+        "delayed-shared",
+        "cancel-before-start",
+        "spawn-failure-shared",
+        "spawn-failure-bytes",
+        "spawn-failure-isolate",
+        "nested-shared",
+        "shared-call-identity",
+        "shared-payload-panic",
+        "shared-cleanup-panic",
+        "joined-service-inflight",
+        "joined-service-admitted",
+        "joined-service-primary",
+        "joined-service-isolate",
+        "joined-service-partial-start",
+    ):
+        expected[(support.THREAD_ADMISSION, mode)] = (
+            (f"native thread lifetime verified: {mode}\n",),
+            (),
+        )
+    for mode in ("joined-service-failed-join", "joined-service-cleanup-panic"):
+        expected[(support.THREAD_ADMISSION, mode)] = (
+            (f"native thread lifetime verified: {mode}\n",),
+            (
+                "molt runtime lifecycle failed: runtime teardown refused: joined service workers failed; origin retained\n",
+            ),
+        )
+    expected.update(
+        {
+            (support.THREAD_ADMISSION, "joined-service-foreign-c"): (
+                ("native thread lifetime verified: joined-service-foreign-c\n",),
+                (
+                    "runtime teardown refused: foreign retained PyThreadState owners remain live",
+                ),
+            ),
+            (support.THREAD_ADMISSION, "process-service-timeout"): (
+                ("native thread lifetime verified: process-service-timeout\n",),
+                (
+                    "molt runtime lifecycle failed: runtime teardown refused: process workers remain live or failed; origin retained\n",
+                ),
+            ),
+            (support.THREAD_ADMISSION, "joined-service-exit"): (
+                (),
+                (
+                    "molt runtime process exit refused: joined service callback cannot retire its own runtime\n",
+                ),
+            ),
+            (support.THREAD_ADMISSION, "exit-with-pending-isolate"): (
+                (),
+                (
+                    "molt runtime process exit refused: 1 active execution lease(s) remain live\n",
+                ),
+            ),
+            # These owners use their separate panic/trace policies; they have
+            # no mode-specific stdout_markers or stderr_markers requirements.
+            (support.TRAP, "stale-exception"): ((), ()),
+            (support.COLD, "cold"): ((), ()),
+            (support.TRACE_CALLARGS, "trace_callargs_child"): ((), ()),
+            (support.TRACE_BIND_IC, "trace_call_bind_ic_child"): ((), ()),
+            (support.TRACE_BIND_META, "trace_function_bind_meta_child"): ((), ()),
+        }
+    )
+    assert set(expected) == set(support.CONTRACT)
+    assert set(expected) == {
+        (owner, mode)
+        for owner, spec in descendants.OWNERS.items()
+        for mode in spec.modes
+    }
     for (owner, mode), contract in support.CONTRACT.items():
-        stdout, stderr = expected.get((owner, mode), ((), ()))
+        stdout, stderr = expected[(owner, mode)]
         actual = descendants.OWNERS[owner].modes[mode]
         assert (actual.stdout_markers, actual.stderr_markers) == (stdout, stderr)
         assert all(marker in contract["stdout"] for marker in stdout)
@@ -699,4 +783,40 @@ def test_transaction_rejects_resealed_wrong_primary_failure(
         tmp_path / "receipts", image, [support.TRANSACTION], records
     )
     with pytest.raises(descendants.DescendantEvidenceError, match="stderr lacks"):
+        verify(receipt)
+
+
+@pytest.mark.parametrize("change", ["success", "abort", "completed", "missing-refusal"])
+def test_pending_native_reservation_process_exit_must_refuse_before_completion(tmp_path, change):
+    receipt, records = lib_receipt(tmp_path, owners=[support.THREAD_ADMISSION])
+    row = next(record for record in records if record["mode"] == "exit-with-pending-isolate")
+    if change == "success":
+        row["termination"] = {"kind": "exit", "code": 0}
+    elif change == "abort":
+        row["termination"] = deepcopy(support.ABORT[os.name])
+    elif change == "completed":
+        row["stdout"] = support.publish(Path(row["stdout"]["path"]), support.transcript([support.THREAD_ADMISSION]))
+    else:
+        row["stderr"] = support.publish(Path(row["stderr"]["path"]), "")
+    support.republish(receipt, "stderr", support.records_text(records))
+    with pytest.raises(descendants.DescendantEvidenceError, match="termination|before terminating inside it|lacks"):
+        verify(receipt)
+
+
+def test_process_service_timeout_requires_its_retained_owner_diagnostic(tmp_path):
+    receipt, records = lib_receipt(tmp_path, owners=[support.THREAD_ADMISSION])
+    row = next(record for record in records if record["mode"] == "process-service-timeout")
+    row["stderr"] = support.publish(Path(row["stderr"]["path"]), "unrelated worker timeout\n")
+    support.republish(receipt, "stderr", support.records_text(records))
+    with pytest.raises(descendants.DescendantEvidenceError, match="descendant stderr lacks"):
+        verify(receipt)
+
+
+@pytest.mark.parametrize("mode", ["joined-service-failed-join", "joined-service-cleanup-panic", "joined-service-foreign-c", "joined-service-exit"])
+def test_joined_service_failure_requires_retained_owner_diagnostic(tmp_path, mode):
+    receipt, records = lib_receipt(tmp_path, owners=[support.THREAD_ADMISSION])
+    row = next(record for record in records if record["mode"] == mode)
+    row["stderr"] = support.publish(Path(row["stderr"]["path"]), "unrelated worker failure\n")
+    support.republish(receipt, "stderr", support.records_text(records))
+    with pytest.raises(descendants.DescendantEvidenceError, match="descendant stderr lacks"):
         verify(receipt)

@@ -43,7 +43,7 @@ use crate::{
     SleepQueue, default_cancel_tokens,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{ThreadPool, ThreadTaskState, sleep_worker};
+use crate::{ThreadPool, ThreadTaskState};
 
 #[cfg(target_arch = "wasm32")]
 unsafe extern "C" {
@@ -522,6 +522,9 @@ impl SpecialCache {
 }
 
 pub(crate) struct RuntimeState {
+    /// External native threads borrowing this exact heap, plus its closed bit.
+    #[cfg(not(target_arch = "wasm32"))]
+    thread_borrow_admission: AtomicUsize,
     /// Interpreter policy shared by its threads; execution depth stays thread-local.
     pub(crate) recursion_limit: AtomicUsize,
     pub(crate) gc: crate::object::gc::GcRuntimeState,
@@ -551,11 +554,8 @@ pub(crate) struct RuntimeState {
     pub(crate) hash_secret: OnceLock<HashSecret>,
     pub(crate) utf8_index_cache: Mutex<Utf8CacheStore>,
     pub(crate) utf8_count_cache: Vec<Mutex<Utf8CountCacheStore>>,
-    pub(crate) scheduler_started: AtomicBool,
     pub(crate) scheduler: OnceLock<MoltScheduler>,
-    pub(crate) sleep_queue_started: AtomicBool,
     pub(crate) sleep_queue: OnceLock<Arc<SleepQueue>>,
-    pub(crate) io_poller_started: AtomicBool,
     pub(crate) io_poller: OnceLock<Arc<IoPoller>>,
     pub(crate) capabilities: OnceLock<HashSet<String>>,
     pub(crate) execution_target: OnceLock<String>,
@@ -603,9 +603,9 @@ pub(crate) struct RuntimeState {
     pub(crate) exit_registry: Mutex<ExitRegistry>,
     pub(crate) abc_invalidation_counter: AtomicU64,
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) thread_pool_started: AtomicBool,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) thread_pool: OnceLock<ThreadPool>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) thread_registry: OnceLock<Mutex<crate::concurrency::isolates::ThreadRegistry>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) thread_tasks: Mutex<HashMap<PtrSlot, Arc<ThreadTaskState>>>,
     pub(crate) process_registry: ProcessRegistry,
@@ -622,8 +622,17 @@ pub(crate) struct RuntimeState {
 }
 
 impl RuntimeState {
+    /// Stable while this runtime owns heap/C state. Failed teardown retains the
+    /// allocation, so a live owner identity cannot be reused by another isolate.
+    #[inline]
+    pub(crate) fn identity(&self) -> usize {
+        std::ptr::from_ref(self).expose_provenance()
+    }
+
     pub(crate) fn new() -> Self {
         Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            thread_borrow_admission: AtomicUsize::new(0),
             recursion_limit: AtomicUsize::new(super::recursion::DEFAULT_RECURSION_LIMIT),
             gc: crate::object::gc::GcRuntimeState::new(),
             gc_running: AtomicBool::new(false),
@@ -664,11 +673,8 @@ impl RuntimeState {
             hash_secret: OnceLock::new(),
             utf8_index_cache: Mutex::new(Utf8CacheStore::new()),
             utf8_count_cache: build_utf8_count_cache(),
-            scheduler_started: AtomicBool::new(false),
             scheduler: OnceLock::new(),
-            sleep_queue_started: AtomicBool::new(false),
             sleep_queue: OnceLock::new(),
-            io_poller_started: AtomicBool::new(false),
             io_poller: OnceLock::new(),
             capabilities: OnceLock::new(),
             execution_target: OnceLock::new(),
@@ -715,9 +721,9 @@ impl RuntimeState {
             exit_registry: Mutex::new(ExitRegistry::new()),
             abc_invalidation_counter: AtomicU64::new(0),
             #[cfg(not(target_arch = "wasm32"))]
-            thread_pool_started: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
             thread_pool: OnceLock::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            thread_registry: OnceLock::new(),
             #[cfg(not(target_arch = "wasm32"))]
             thread_tasks: Mutex::new(HashMap::new()),
             process_registry: ProcessRegistry::new(),
@@ -733,40 +739,43 @@ impl RuntimeState {
     }
 
     pub(crate) fn scheduler(&self) -> &MoltScheduler {
-        self.scheduler_started.store(true, AtomicOrdering::SeqCst);
-        self.scheduler.get_or_init(MoltScheduler::new)
+        let scheduler = self.scheduler.get_or_init(MoltScheduler::new);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Err(error) = scheduler.start_workers(RuntimeWorkerOrigin::new(self)) {
+            scheduler.stop();
+            panic!("runtime scheduler startup failed: {error}");
+        }
+        scheduler
     }
 
     pub(crate) fn sleep_queue(&self) -> &Arc<SleepQueue> {
-        self.sleep_queue.get_or_init(|| {
-            self.sleep_queue_started.store(true, AtomicOrdering::SeqCst);
-            let queue = Arc::new(SleepQueue::new());
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let worker_queue = Arc::clone(&queue);
-                let handle = thread::spawn(move || sleep_worker(worker_queue));
-                queue.set_worker_handle(handle);
-            }
-            queue
-        })
+        let queue = self.sleep_queue.get_or_init(|| Arc::new(SleepQueue::new()));
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Err(error) = queue.start_worker(RuntimeWorkerOrigin::new(self)) {
+            queue.stop();
+            panic!("runtime timer startup failed: {error}");
+        }
+        queue
     }
 
     pub(crate) fn io_poller(&self) -> &Arc<IoPoller> {
-        self.io_poller.get_or_init(|| {
-            self.io_poller_started.store(true, AtomicOrdering::SeqCst);
-            let poller = Arc::new(IoPoller::new());
-            #[cfg(not(target_arch = "wasm32"))]
-            poller.start_worker();
-            poller
-        })
+        let poller = self.io_poller.get_or_init(|| Arc::new(IoPoller::new()));
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Err(error) = poller.start_worker(RuntimeWorkerOrigin::new(self)) {
+            poller.stop();
+            panic!("runtime I/O startup failed: {error}");
+        }
+        poller
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn thread_pool(&self) -> &ThreadPool {
-        self.thread_pool.get_or_init(|| {
-            self.thread_pool_started.store(true, AtomicOrdering::SeqCst);
-            ThreadPool::new()
-        })
+        let pool = self.thread_pool.get_or_init(ThreadPool::new);
+        if let Err(error) = pool.start_workers(RuntimeWorkerOrigin::new(self)) {
+            pool.stop();
+            panic!("runtime thread pool startup failed: {error}");
+        }
+        pool
     }
 
     /// Returns a reference to the VFS state, lazily initialized from
@@ -920,6 +929,217 @@ pub(crate) fn runtime_is_ready() -> bool {
 
 const RUNTIME_EXECUTION_ADMISSION_CLOSED: usize = 1usize << (usize::BITS - 1);
 const RUNTIME_EXECUTION_COUNT_MASK: usize = !RUNTIME_EXECUTION_ADMISSION_CLOSED;
+// A single CAS word classifies independently owned entrants and callbacks whose
+// published service JoinHandle must be drained by this RuntimeState. The top
+// bit closes both roles; each bounded count has independent overflow checks.
+const RUNTIME_SERVICE_COUNT_SHIFT: u32 = usize::BITS / 2;
+const RUNTIME_SERVICE_COUNT_UNIT: usize = 1usize << RUNTIME_SERVICE_COUNT_SHIFT;
+const RUNTIME_ORDINARY_COUNT_MASK: usize = RUNTIME_SERVICE_COUNT_UNIT - 1;
+const RUNTIME_SERVICE_COUNT_MASK: usize =
+    RUNTIME_EXECUTION_COUNT_MASK & !RUNTIME_ORDINARY_COUNT_MASK;
+
+/// Reserve one unit without changing thread-local attachment/depth. The same
+/// CLOSED/count linearization owns process execution and origin heap borrows.
+fn try_acquire_admission_count(admission: &AtomicUsize) -> bool {
+    try_acquire_admission_units(admission, 1, RUNTIME_ORDINARY_COUNT_MASK)
+}
+
+fn try_acquire_admission_units(admission: &AtomicUsize, unit: usize, mask: usize) -> bool {
+    loop {
+        let observed = admission.load(AtomicOrdering::Acquire);
+        if observed & RUNTIME_EXECUTION_ADMISSION_CLOSED != 0 {
+            return false;
+        }
+        assert_ne!(
+            observed & mask,
+            mask,
+            "runtime lifetime admission count overflow"
+        );
+        if admission
+            .compare_exchange_weak(
+                observed,
+                observed + unit,
+                AtomicOrdering::AcqRel,
+                AtomicOrdering::Acquire,
+            )
+            .is_ok()
+        {
+            return true;
+        }
+    }
+}
+
+fn release_admission_count(admission: &AtomicUsize) {
+    release_admission_units(admission, 1, RUNTIME_ORDINARY_COUNT_MASK);
+}
+
+fn release_admission_units(admission: &AtomicUsize, unit: usize, mask: usize) {
+    // Valid custody owns one unit in this field. An invalid release is a
+    // fail-stop invariant violation, as with the original single-field counter.
+    let previous = admission.fetch_sub(unit, AtomicOrdering::AcqRel);
+    assert_ne!(
+        previous & mask,
+        0,
+        "runtime lifetime admission count underflow"
+    );
+}
+
+/// A process lifetime reservation transferable into a not-yet-started native
+/// worker. It is acquired before spawn; cancellation drops the same count.
+/// It establishes neither GIL custody nor thread-local execution attachment.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct RuntimeLifetimeLease {
+    runtime_owner: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RuntimeLifetimeLease {
+    pub(crate) fn try_acquire() -> Option<Self> {
+        let expected = runtime_ready_ptr()?;
+        if !try_acquire_admission_count(&RUNTIME_EXECUTION_ADMISSION) {
+            return None;
+        }
+        let lease = Self {
+            runtime_owner: expected.expose_provenance(),
+        };
+        if runtime_ready_ptr() == Some(expected) {
+            Some(lease)
+        } else {
+            drop(lease);
+            None
+        }
+    }
+
+    pub(crate) fn identity(&self) -> usize {
+        self.runtime_owner
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for RuntimeLifetimeLease {
+    fn drop(&mut self) {
+        release_admission_count(&RUNTIME_EXECUTION_ADMISSION);
+    }
+}
+
+/// A borrow of one exact RuntimeState. Callers already own either process
+/// admission or a retained native join owner before reading this allocation.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct RuntimeOriginBorrow {
+    runtime_owner: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RuntimeOriginBorrow {
+    pub(crate) fn try_acquire(state: &RuntimeState) -> Option<Self> {
+        if !try_acquire_admission_count(&state.thread_borrow_admission) {
+            return None;
+        }
+        Some(Self {
+            runtime_owner: state.identity(),
+        })
+    }
+
+    pub(crate) fn state_ptr(&self) -> *mut RuntimeState {
+        std::ptr::with_exposed_provenance_mut(self.runtime_owner)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for RuntimeOriginBorrow {
+    fn drop(&mut self) {
+        let state = unsafe { &*self.state_ptr() };
+        release_admission_count(&state.thread_borrow_admission);
+    }
+}
+
+/// Shared detached workers additionally reserve the process before scheduling.
+/// Joined services reuse the same origin borrow only while dispatching work;
+/// their existing native join owner retains storage through terminal cleanup.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct RuntimeThreadBorrow {
+    origin: RuntimeOriginBorrow,
+    _process: RuntimeLifetimeLease,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RuntimeThreadBorrow {
+    pub(crate) fn try_acquire(py: &PyToken<'_>) -> Option<Self> {
+        let process = RuntimeLifetimeLease::try_acquire()?;
+        let origin = RuntimeOriginBorrow::try_acquire(runtime_state(py))?;
+        Some(Self {
+            origin,
+            _process: process,
+        })
+    }
+
+    pub(crate) fn state_ptr(&self) -> *mut RuntimeState {
+        self.origin.state_ptr()
+    }
+}
+
+/// Exact origin transported only by a RuntimeState-owned service JoinHandle.
+/// This value is not a lifetime reservation: its owner must stop/join before
+/// freeing RuntimeState, and retain that allocation after any failed join.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+pub(crate) struct RuntimeWorkerOrigin {
+    runtime_owner: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RuntimeWorkerOrigin {
+    pub(crate) fn new(state: &RuntimeState) -> Self {
+        Self {
+            runtime_owner: state.identity(),
+        }
+    }
+
+    pub(crate) fn identity(self) -> usize {
+        self.runtime_owner
+    }
+
+    pub(crate) fn state(self) -> &'static RuntimeState {
+        unsafe { &*std::ptr::with_exposed_provenance::<RuntimeState>(self.runtime_owner) }
+    }
+
+    pub(crate) fn install(self) {
+        set_thread_runtime_state(std::ptr::with_exposed_provenance_mut(self.runtime_owner));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RuntimeState {
+    #[cfg(test)]
+    pub(crate) fn thread_borrow_count(&self) -> usize {
+        self.thread_borrow_admission.load(AtomicOrdering::Acquire) & RUNTIME_EXECUTION_COUNT_MASK
+    }
+
+    pub(crate) fn thread_borrow_admission_is_open(&self) -> bool {
+        self.thread_borrow_admission.load(AtomicOrdering::Acquire)
+            & RUNTIME_EXECUTION_ADMISSION_CLOSED
+            == 0
+    }
+
+    pub(crate) fn close_thread_borrow_admission(&self) {
+        self.thread_borrow_admission
+            .fetch_or(RUNTIME_EXECUTION_ADMISSION_CLOSED, AtomicOrdering::AcqRel);
+    }
+
+    pub(crate) fn assert_thread_borrows_drained(&self) {
+        let borrowers = self.thread_borrow_admission.load(AtomicOrdering::Acquire)
+            & RUNTIME_EXECUTION_COUNT_MASK;
+        assert_eq!(
+            borrowers, 0,
+            "runtime teardown refused: shared native thread borrowers remain live"
+        );
+    }
+}
+
+// The existing depth word carries one inherited role for its entire stack.
+// Depth zero is always untagged; global per-role bounds are smaller than this
+// word's count range, so successful admission cannot overflow its TLS count.
+const RUNTIME_EXECUTION_SERVICE_ROLE: usize = 1 << (usize::BITS - 1);
 
 /// Acquire lifecycle custody before an execution boundary can proceed toward
 /// GIL/thread-state attachment.
@@ -929,6 +1149,21 @@ const RUNTIME_EXECUTION_COUNT_MASK: usize = !RUNTIME_EXECUTION_ADMISSION_CLOSED;
 /// runtime: shutdown closes the high bit atomically and cannot free RuntimeState
 /// while any caller that observed Ready still owns a count unit.
 pub(crate) fn try_acquire_runtime_execution_lease(requires_runtime: bool) -> Option<bool> {
+    let service = RUNTIME_EXECUTION_LEASE_DEPTH
+        .with(|depth| depth.get() & RUNTIME_EXECUTION_SERVICE_ROLE != 0);
+    try_acquire_runtime_execution_lease_kind(requires_runtime, service)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn try_acquire_runtime_service_execution_lease() -> Option<bool> {
+    assert!(
+        !current_thread_holds_runtime_execution_lease(),
+        "service dispatch requires its own outer execution boundary"
+    );
+    try_acquire_runtime_execution_lease_kind(true, true)
+}
+
+fn try_acquire_runtime_execution_lease_kind(requires_runtime: bool, service: bool) -> Option<bool> {
     #[cfg(test)]
     RUNTIME_EXECUTION_LEASE_ACQUIRE_ATTEMPTS.fetch_add(1, AtomicOrdering::Relaxed);
     if runtime_ready_ptr().is_none() {
@@ -949,67 +1184,68 @@ pub(crate) fn try_acquire_runtime_execution_lease(requires_runtime: bool) -> Opt
         };
     }
 
-    loop {
-        let observed = RUNTIME_EXECUTION_ADMISSION.load(AtomicOrdering::Acquire);
-        if observed & RUNTIME_EXECUTION_ADMISSION_CLOSED != 0 {
-            return None;
-        }
-        let count = observed & RUNTIME_EXECUTION_COUNT_MASK;
-        assert_ne!(
-            count, RUNTIME_EXECUTION_COUNT_MASK,
-            "runtime execution lease count overflow"
-        );
-        if RUNTIME_EXECUTION_ADMISSION
-            .compare_exchange_weak(
-                observed,
-                observed + 1,
-                AtomicOrdering::AcqRel,
-                AtomicOrdering::Acquire,
-            )
-            .is_err()
-        {
-            continue;
-        }
-        RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| {
-            depth.set(
-                depth
-                    .get()
-                    .checked_add(1)
-                    .expect("current-thread runtime execution lease depth overflow"),
-            );
-        });
-        #[cfg(test)]
-        if let Some((entered, release)) = RUNTIME_EXECUTION_LEASE_POST_CAS_TEST_GATE
-            .lock()
-            .unwrap()
-            .clone()
-        {
-            entered.wait();
-            release.wait();
-        }
-        if runtime_ready_ptr().is_some() {
-            return Some(true);
-        }
-        release_runtime_execution_lease();
+    let (unit, mask) = if service {
+        (RUNTIME_SERVICE_COUNT_UNIT, RUNTIME_SERVICE_COUNT_MASK)
+    } else {
+        (1, RUNTIME_ORDINARY_COUNT_MASK)
+    };
+    if !try_acquire_admission_units(&RUNTIME_EXECUTION_ADMISSION, unit, mask) {
         return None;
     }
+    RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| {
+        let current = depth.get() & !RUNTIME_EXECUTION_SERVICE_ROLE;
+        assert_ne!(
+            current,
+            RUNTIME_EXECUTION_SERVICE_ROLE - 1,
+            "current-thread runtime execution lease depth overflow"
+        );
+        depth.set(
+            (current + 1)
+                | if service {
+                    RUNTIME_EXECUTION_SERVICE_ROLE
+                } else {
+                    0
+                },
+        );
+    });
+    #[cfg(test)]
+    if let Some((entered, release)) = RUNTIME_EXECUTION_LEASE_POST_CAS_TEST_GATE
+        .lock()
+        .unwrap()
+        .clone()
+    {
+        entered.wait();
+        release.wait();
+    }
+    if runtime_ready_ptr().is_some() {
+        return Some(true);
+    }
+    release_runtime_execution_lease();
+    None
 }
 
 pub(crate) fn release_runtime_execution_lease() {
-    RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| {
+    let service = RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| {
         let current = depth.get();
-        assert_ne!(
-            current, 0,
-            "current-thread runtime execution lease underflow"
-        );
-        depth.set(current - 1);
+        let count = current & !RUNTIME_EXECUTION_SERVICE_ROLE;
+        assert_ne!(count, 0, "current-thread runtime execution lease underflow");
+        depth.set(if count == 1 { 0 } else { current - 1 });
+        current & RUNTIME_EXECUTION_SERVICE_ROLE != 0
     });
-    let previous = RUNTIME_EXECUTION_ADMISSION.fetch_sub(1, AtomicOrdering::AcqRel);
-    assert_ne!(
-        previous & RUNTIME_EXECUTION_COUNT_MASK,
-        0,
-        "runtime execution lease count underflow"
-    );
+    if service {
+        release_admission_units(
+            &RUNTIME_EXECUTION_ADMISSION,
+            RUNTIME_SERVICE_COUNT_UNIT,
+            RUNTIME_SERVICE_COUNT_MASK,
+        );
+    } else {
+        release_admission_count(&RUNTIME_EXECUTION_ADMISSION);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn current_thread_holds_runtime_service_execution_lease() -> bool {
+    RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| depth.get() & RUNTIME_EXECUTION_SERVICE_ROLE != 0)
 }
 
 pub(crate) fn current_thread_holds_runtime_execution_lease() -> bool {
@@ -1035,9 +1271,88 @@ fn reopen_runtime_execution_admission() {
     );
 }
 
+/// Close admission before unpublishing Ready or touching roots. Process exit
+/// may inherit this thread's existing execution lease; pending native workers
+/// and every other thread remain independent lifetime owners in both modes.
+fn close_process_retirement_admission(allow_current_execution: bool, operation: &str) -> bool {
+    let counts = close_runtime_execution_admission();
+    if RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| depth.get() & RUNTIME_EXECUTION_SERVICE_ROLE != 0)
+    {
+        eprintln!(
+            "molt runtime {operation} refused: joined service callback cannot retire its own runtime"
+        );
+        reopen_runtime_execution_admission();
+        return false;
+    }
+    let active = counts & RUNTIME_ORDINARY_COUNT_MASK;
+    let joined = (counts & RUNTIME_SERVICE_COUNT_MASK) >> RUNTIME_SERVICE_COUNT_SHIFT;
+    let current = if allow_current_execution {
+        RUNTIME_EXECUTION_LEASE_DEPTH.with(|depth| depth.get())
+    } else {
+        0
+    };
+    assert!(
+        active >= current,
+        "current execution count exceeds process custody"
+    );
+    if active != current {
+        eprintln!(
+            "molt runtime {operation} refused: {} active execution lease(s) remain live",
+            active - current
+        );
+        reopen_runtime_execution_admission();
+        return false;
+    }
+    // A service callback may have suspended its GIL while retaining C state.
+    // Its published owner drains it before the foreign-C-owner assertion in
+    // runtime teardown. Failure there is terminal and retains original storage;
+    // no collector, atexit, or root retirement has run.
+    if joined != 0 {
+        return true;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let attachments = molt_cpython_abi::api::object::runtime_execution_attachment_count();
+        let own_attachment = usize::from(
+            allow_current_execution
+                && molt_cpython_abi::api::object::runtime_execution_thread_is_attached(),
+        );
+        assert!(
+            attachments >= own_attachment,
+            "current attachment exceeds process custody"
+        );
+        if attachments != own_attachment {
+            eprintln!(
+                "molt runtime {operation} refused: {} runtime execution attachment(s) remain live",
+                attachments - own_attachment
+            );
+            reopen_runtime_execution_admission();
+            return false;
+        }
+        let retained = molt_cpython_abi::api::object::runtime_retained_thread_state_count();
+        let current =
+            usize::from(molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
+        assert!(
+            retained >= current,
+            "current retained PyThreadState is absent from the global count"
+        );
+        let foreign = retained - current;
+        if foreign != 0 {
+            eprintln!(
+                "molt runtime {operation} refused: {foreign} foreign retained PyThreadState owner(s) remain live"
+            );
+            reopen_runtime_execution_admission();
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 pub(crate) fn active_runtime_execution_lease_count() -> usize {
-    RUNTIME_EXECUTION_ADMISSION.load(AtomicOrdering::Acquire) & RUNTIME_EXECUTION_COUNT_MASK
+    let counts = RUNTIME_EXECUTION_ADMISSION.load(AtomicOrdering::Acquire);
+    (counts & RUNTIME_ORDINARY_COUNT_MASK)
+        + ((counts & RUNTIME_SERVICE_COUNT_MASK) >> RUNTIME_SERVICE_COUNT_SHIFT)
 }
 
 thread_local! {
@@ -1177,6 +1492,18 @@ pub(crate) fn owns_process_cpython_state(state: &RuntimeState) -> bool {
 }
 
 pub(crate) fn runtime_state_for_gil() -> Option<&'static RuntimeState> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if current_thread_holds_runtime_service_execution_lease() {
+        // An admitted callback may finish after shutdown closes new work. Its
+        // published join owner and origin borrow retain this exact allocation.
+        return runtime_state_tls();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(origin) = crate::concurrency::execution::retained_shutdown_worker_origin() {
+        // Only a worker whose native join owner retains this exact allocation
+        // can establish this destruction-only capability during Finalizing.
+        return Some(origin.state());
+    }
     if let Some(ptr) = runtime_ready_ptr() {
         return runtime_state_tls().or_else(|| Some(unsafe { &*ptr }));
     }
@@ -1278,8 +1605,8 @@ fn trace_runtime_init(stage: &str) {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
     runtime_lifecycle_entry!(runtime_exit(code_bits));
-    // runtime_exit ends the process; returning here means its finalization
-    // panicked and the lifecycle is already Failed.
+    // runtime_exit normally ends the process. Refused lifetime admission or
+    // a caught finalization panic must terminate nonzero without further teardown.
     unsafe { libc::_exit(1) }
 }
 
@@ -1296,6 +1623,11 @@ fn runtime_exit(code_bits: u64) -> u64 {
             let mut phase = lifecycle.phase.lock().unwrap();
             match *phase {
                 RuntimeLifecyclePhase::Ready { ptr } => {
+                    if !close_process_retirement_admission(true, "process exit") {
+                        // The outer C entry terminates nonzero without mutating
+                        // roots still borrowed by another owner.
+                        return 0;
+                    }
                     RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
                     *phase = RuntimeLifecyclePhase::Finalizing { owner, ptr };
                     lifecycle.changed.notify_all();
@@ -1306,7 +1638,11 @@ fn runtime_exit(code_bits: u64) -> u64 {
         };
         if let Some(ptr) = ptr {
             #[cfg(not(target_arch = "wasm32"))]
-            molt_cpython_abi::api::object::attach_runtime_execution_thread();
+            molt_cpython_abi::api::object::attach_runtime_execution_thread(
+                runtime_state_for_gil()
+                    .expect("live runtime execution owner")
+                    .identity(),
+            );
             let state = unsafe { &*ptr };
             let py = gil.token();
             runtime_teardown_for_process_exit(&py, state);
@@ -1384,7 +1720,9 @@ fn initialize_runtime_state(gil: &GilGuard, state: &RuntimeState) {
     // after Ready publication; lazily installing the table on an unrelated ABI
     // call leaves the detached stub as a second, false initialization authority.
     let cpython_bootstrap_state =
-        molt_cpython_abi::api::object::RuntimeInitializationThreadStateGuard::enter();
+        molt_cpython_abi::api::object::RuntimeInitializationThreadStateGuard::enter(
+            state.identity(),
+        );
     assert!(
         crate::cpython_abi_hooks::register_cpython_hooks(),
         "primary runtime C-API bootstrap was rejected"
@@ -1566,39 +1904,8 @@ fn runtime_shutdown() -> u64 {
         RuntimeLifecyclePhase::Failed => return 0,
     };
     debug_assert_eq!(runtime_ready_ptr(), Some(ptr));
-    let active_executions = close_runtime_execution_admission();
-    if active_executions != 0 {
-        eprintln!(
-            "molt runtime shutdown refused: {active_executions} active execution lease(s) remain live"
-        );
-        reopen_runtime_execution_admission();
+    if !close_process_retirement_admission(false, "shutdown") {
         return 0;
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let attachments = molt_cpython_abi::api::object::runtime_execution_attachment_count();
-        if attachments != 0 {
-            eprintln!(
-                "molt runtime shutdown refused: {attachments} runtime execution attachment(s) remain live"
-            );
-            reopen_runtime_execution_admission();
-            return 0;
-        }
-        let retained = molt_cpython_abi::api::object::runtime_retained_thread_state_count();
-        let current =
-            usize::from(molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
-        assert!(
-            retained >= current,
-            "current retained PyThreadState is absent from the global count"
-        );
-        let foreign = retained - current;
-        if foreign != 0 {
-            eprintln!(
-                "molt runtime shutdown refused: {foreign} foreign retained PyThreadState owner(s) remain live"
-            );
-            reopen_runtime_execution_admission();
-            return 0;
-        }
     }
     RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
     *phase = RuntimeLifecyclePhase::Finalizing {
@@ -1614,7 +1921,11 @@ fn runtime_shutdown() -> u64 {
         // No callback-capable destruction may run while the lifecycle phase
         // mutex is held or after the builtin class authority is dismantled.
         touch_tls_guard();
-        molt_cpython_abi::api::object::attach_runtime_execution_thread();
+        molt_cpython_abi::api::object::attach_runtime_execution_thread(
+            runtime_state_for_gil()
+                .expect("live runtime execution owner")
+                .identity(),
+        );
     }
 
     let state = unsafe { &*ptr };
@@ -1736,13 +2047,10 @@ pub(crate) fn clear_thread_runtime_state() {
 /// 3. The caller will immediately re-initialize via `molt_runtime_init()`.
 #[cfg(test)]
 pub(crate) fn molt_runtime_reset_for_testing() {
-    RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
     assert_eq!(
-        RUNTIME_EXECUTION_ADMISSION
-            .swap(RUNTIME_EXECUTION_ADMISSION_CLOSED, AtomicOrdering::AcqRel,)
-            & RUNTIME_EXECUTION_COUNT_MASK,
-        0,
-        "runtime test reset crossed active execution leases"
+        RUNTIME_EXECUTION_ADMISSION.load(AtomicOrdering::Acquire),
+        RUNTIME_EXECUTION_ADMISSION_CLOSED,
+        "runtime test reset requires closed admission with no active execution leases"
     );
     let lifecycle = runtime_lifecycle();
     let mut phase = lifecycle.phase.lock().unwrap();
@@ -1751,6 +2059,17 @@ pub(crate) fn molt_runtime_reset_for_testing() {
         *phase,
         RuntimeLifecyclePhase::Failed,
         "a failed runtime cannot be reset: partial native roots remain live"
+    );
+    assert!(
+        matches!(
+            *phase,
+            RuntimeLifecyclePhase::Uninitialized | RuntimeLifecyclePhase::Shutdown
+        ),
+        "runtime test reset requires completed teardown"
+    );
+    assert!(
+        runtime_ready_ptr().is_none(),
+        "runtime test reset found a published owner"
     );
     *phase = RuntimeLifecyclePhase::Uninitialized;
     lifecycle.changed.notify_all();
@@ -1769,6 +2088,73 @@ pub(crate) fn molt_runtime_reset_for_testing() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn admission_roles_do_not_carry_borrow_or_reopen_each_other() {
+        use super::*;
+        let word = AtomicUsize::new(3 * RUNTIME_SERVICE_COUNT_UNIT + 2);
+        assert!(try_acquire_admission_count(&word));
+        assert_eq!(
+            word.load(AtomicOrdering::Acquire),
+            3 * RUNTIME_SERVICE_COUNT_UNIT + 3
+        );
+        assert!(try_acquire_admission_units(
+            &word,
+            RUNTIME_SERVICE_COUNT_UNIT,
+            RUNTIME_SERVICE_COUNT_MASK
+        ));
+        assert_eq!(
+            word.load(AtomicOrdering::Acquire),
+            4 * RUNTIME_SERVICE_COUNT_UNIT + 3
+        );
+        word.fetch_or(RUNTIME_EXECUTION_ADMISSION_CLOSED, AtomicOrdering::AcqRel);
+        assert!(!try_acquire_admission_count(&word));
+        assert!(!try_acquire_admission_units(
+            &word,
+            RUNTIME_SERVICE_COUNT_UNIT,
+            RUNTIME_SERVICE_COUNT_MASK
+        ));
+        release_admission_units(
+            &word,
+            RUNTIME_SERVICE_COUNT_UNIT,
+            RUNTIME_SERVICE_COUNT_MASK,
+        );
+        release_admission_count(&word);
+        assert_eq!(
+            word.load(AtomicOrdering::Acquire),
+            RUNTIME_EXECUTION_ADMISSION_CLOSED + 3 * RUNTIME_SERVICE_COUNT_UNIT + 2
+        );
+        for (unit, mask, initial) in [
+            (
+                1,
+                RUNTIME_ORDINARY_COUNT_MASK,
+                RUNTIME_ORDINARY_COUNT_MASK + RUNTIME_SERVICE_COUNT_UNIT,
+            ),
+            (
+                RUNTIME_SERVICE_COUNT_UNIT,
+                RUNTIME_SERVICE_COUNT_MASK,
+                RUNTIME_SERVICE_COUNT_MASK + 1,
+            ),
+        ] {
+            let full = AtomicUsize::new(initial);
+            assert!(
+                std::panic::catch_unwind(|| try_acquire_admission_units(&full, unit, mask))
+                    .is_err()
+            );
+            assert_eq!(
+                full.load(AtomicOrdering::Acquire),
+                initial,
+                "overflow changed another role"
+            );
+            let empty_role = initial & !mask;
+            let empty = AtomicUsize::new(empty_role);
+            assert!(
+                std::panic::catch_unwind(|| release_admission_units(&empty, unit, mask)).is_err()
+            );
+            // Invalid custody is fail-stop; do not reuse the corrupted word.
+            // Valid cross-role decrement independence was asserted above.
+        }
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1974,6 +2360,40 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn closing_winner_refuses_transferable_admission_before_ready_unpublication() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let entry = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+        let ready = runtime_ready_ptr().unwrap();
+        let baseline = active_runtime_execution_lease_count();
+        let (attempt_tx, attempt_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            attempt_rx.recv().unwrap();
+            let reservation = RuntimeLifetimeLease::try_acquire();
+            done_tx.send(reservation.is_none()).unwrap();
+        });
+        // Exercise the actual ProcessExit closure, which admits only this
+        // exact current execution depth, before Ready is unpublished.
+        assert!(close_process_retirement_admission(
+            true,
+            "test process exit"
+        ));
+        attempt_tx.send(()).unwrap();
+        let refused = done_rx.recv().unwrap();
+        reopen_runtime_execution_admission();
+        worker.join().unwrap();
+        assert!(refused);
+        assert_eq!(runtime_ready_ptr(), Some(ready));
+        assert_eq!(active_runtime_execution_lease_count(), baseline);
+        let reservation = RuntimeLifetimeLease::try_acquire().expect("reopened admission");
+        assert_eq!(reservation.identity(), ready.expose_provenance());
+        drop(reservation);
+        assert_eq!(active_runtime_execution_lease_count(), baseline);
+        drop(entry);
+    }
+
+    #[test]
     fn lease_ready_recheck_rollback_balances_local_and_global_custody() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         let ready = runtime_ready_ptr().expect("test runtime Ready");
@@ -2135,7 +2555,11 @@ mod tests {
             let worker = std::thread::spawn(move || {
                 touch_tls_guard();
                 let gil = GilGuard::new();
-                molt_cpython_abi::api::object::attach_runtime_execution_thread();
+                molt_cpython_abi::api::object::attach_runtime_execution_thread(
+                    runtime_state_for_gil()
+                        .expect("live runtime execution owner")
+                        .identity(),
+                );
                 drop(gil);
                 attached_tx.send(()).unwrap();
                 release_rx.recv().unwrap();
@@ -2145,7 +2569,7 @@ mod tests {
                 detached_tx.send(()).unwrap();
                 cleanup_rx.recv().unwrap();
                 let _gil = GilGuard::new();
-                molt_cpython_abi::api::object::clear_runtime_execution_thread_state();
+                molt_cpython_abi::api::object::clear_runtime_execution_thread_state(|| false);
             });
             attached_rx.recv().unwrap();
             assert_eq!(

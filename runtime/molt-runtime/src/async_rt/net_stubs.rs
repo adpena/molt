@@ -11,7 +11,16 @@ impl IoPoller {
     pub(crate) fn new() -> Self {
         Self
     }
-    pub(crate) fn start_worker(self: &std::sync::Arc<Self>) {}
+    pub(crate) fn start_worker(
+        self: &std::sync::Arc<Self>,
+        _origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+    ) -> Result<(), std::io::Error> {
+        Ok(())
+    }
+    pub(crate) fn stop(&self) {}
+    pub(crate) fn join(&self) -> bool {
+        true
+    }
     pub(crate) fn wait_blocking(
         &self,
         _socket_ptr: *mut u8,

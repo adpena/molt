@@ -379,7 +379,9 @@ impl AbiTestThreadStateTransaction {
         molt_cpython_abi::api::object::prepare_runtime_thread_state_lifetime();
         molt_cpython_abi::api::object::arm_runtime_thread_state_lifetime();
         assert!(
-            molt_cpython_abi::api::object::attach_runtime_execution_thread(),
+            molt_cpython_abi::api::object::attach_runtime_execution_thread(
+                std::ptr::from_ref(&ABI_TEST_LOCK).expose_provenance(),
+            ),
             "ABI integration test inherited an attached PyThreadState"
         );
         molt_cpython_abi::bridge::molt_cpython_abi_init();
@@ -400,7 +402,7 @@ impl Drop for AbiTestThreadStateTransaction {
             // This does not sweep fixture-owned nodes or forgive leaked edges.
             unsafe { molt_cpython_abi::abi_types::retire_builtin_static_type_runtime_state() };
             molt_cpython_abi::api::object::detach_runtime_execution_thread();
-            molt_cpython_abi::api::object::clear_runtime_execution_thread_state();
+            molt_cpython_abi::api::object::clear_runtime_execution_thread_state(|| false);
             NATIVE_GC_NODES.with(|nodes| {
                 let nodes = nodes.borrow();
                 assert!(

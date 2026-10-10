@@ -135,7 +135,30 @@ Main CI `38063172584` at `df5226c5f` retains the runtime lifecycle cascade:
 seven serial children pass, while the parallel child reports 480 failures after
 unnamed-worker class retirement finds surviving native owners. This is an
 observed shared failure mechanism, not evidence of 480 independent defects.
-The preserved GC, thread-identity and joined-service proposals remain unqualified.
+The GC, thread-identity and joined-service proposals are reconciled with current
+main in one source composition. Exact runtime ownership now governs isolate GC,
+C records, native admission and retained service joins; shared-thread arguments
+belong to their native handle across the complete generated ABI family.
+Adversarial review found two additional affected lifetime sites: process exit
+must leave its waiter revocable until GIL-held claim, and completed nonwaiting
+executors require bounded reclamation. Both repairs are integrated in candidate
+source, including actual cancellation/observer-identity and retained-owner controls.
+The independent descendant-receipt literal roster now covers every added mode
+and rejects missing contracts instead of treating them as empty expectations.
+The thread, receipt and runtime-gate consumer cohorts pass 389 host Python
+checks with one platform skip. The new public threading fixture matches
+CPython 3.12. Source review also corrected blocking join versus background
+reaping, sibling self-join cycles, and constant-budget completed-pool backlog.
+One shared join authority retains every disposition; cold reclamation work
+scales with pool worker count while hot safepoint work stays bounded. The
+existing runtime libtest now carries a separate ignored lifecycle cost probe,
+using the shared calibration/affinity utilities through a development-only
+dependency. Measurements are not semantic passes or release acceptance.
+Rust compilation, actual child execution, negative mutations, lifecycle costs
+and all unexecuted platform/profile cells remain required before qualification.
+Development receipts and their inventories add no work to emitted binaries;
+service ownership and the bounded executor-reaping safepoint do affect runtime
+execution and require explicit cost measurements.
 The same CI reports a macOS SIGTERM cleanup failure (2,100 other Python tests
 pass) and a macOS runtime build exceeding its 2.29 GB process-tree budget with
 unresolved artifact custody. Their existing V1-12/resource/closure obligations

@@ -65,10 +65,6 @@ struct ProcessCompletionState {
     wait_future: Mutex<Option<PtrSlot>>,
 }
 
-struct ProcessExitPublication {
-    wait_future: Option<PtrSlot>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ProcessWaiterId(NonZeroUsize);
 
@@ -110,11 +106,13 @@ impl ProcessCompletionState {
         self.exit_code() == PROCESS_EXIT_PENDING
     }
 
-    fn publish_exit(&self, exit_code: i32) -> Option<ProcessExitPublication> {
+    fn publish_exit(&self, exit_code: i32) -> Option<()> {
         if exit_code == PROCESS_EXIT_PENDING {
             return None;
         }
-        let mut wait_future = self.wait_future.lock().unwrap();
+        // Serialize with installation/cancellation and the blocking-wait CV,
+        // but leave the raw waiter revocable until GIL-held dispatch claims it.
+        let _wait_future = self.wait_future.lock().unwrap();
         if self
             .exit_code
             .compare_exchange(
@@ -127,13 +125,25 @@ impl ProcessCompletionState {
         {
             return None;
         }
-        Some(ProcessExitPublication {
-            wait_future: wait_future.take(),
-        })
+        Some(())
     }
 
     fn wait_future(&self) -> Option<PtrSlot> {
         *self.wait_future.lock().unwrap()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn has_wait_future(&self) -> bool {
+        self.wait_future.lock().unwrap().is_some()
+    }
+
+    fn claim_wait_future(&self, _py: &PyToken<'_>) -> Option<PtrSlot> {
+        crate::gil_assert();
+        assert!(
+            !self.is_pending(),
+            "process waiter claimed before terminal publication"
+        );
+        self.wait_future.lock().unwrap().take()
     }
 
     fn install_wait_future(&self, future: PtrSlot) -> ProcessWaitFutureInstall {
@@ -287,51 +297,21 @@ pub unsafe extern "C" fn molt_process_spawn(
             );
         }
 
-        let mut process_stdio =
+        let process_stdio =
             match configure_native_stdio(_py, &mut cmd, stdin_mode, stdout_mode, stderr_mode) {
                 Ok(stdio) => stdio,
                 Err(err) => return err,
             };
 
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
-            Err(err) => {
-                process_stdio.drop_streams();
-                return raise_os_error::<u64>(_py, err, "spawn");
-            }
+        let state = match runtime_state(_py).process_registry.spawn(
+            _py,
+            &mut cmd,
+            process_stdio,
+            owns_process_group,
+        ) {
+            Ok(state) => state,
+            Err(err) => return raise_os_error::<u64>(_py, err, "spawn"),
         };
-
-        attach_process_stdio(&mut child, &mut process_stdio);
-
-        let pid = child.id();
-        let owned_process_group = if owns_process_group {
-            Some(pid as i32)
-        } else {
-            None
-        };
-        let registry_id = runtime_state(_py).process_registry.allocate_id();
-        let state = Arc::new(ProcessState {
-            registry_id,
-            child: Mutex::new(child),
-            pid,
-            owned_process_group,
-            completion: ProcessCompletionState::pending(),
-            kill_requested: AtomicBool::new(false),
-            teardown_draining: AtomicBool::new(false),
-            streams_released: AtomicBool::new(false),
-            stdin_stream: process_stdio.stdin_stream,
-            stdout_stream: process_stdio.stdout_stream,
-            stderr_stream: process_stdio.stderr_stream,
-            condvar: Condvar::new(),
-        });
-        runtime_state(_py)
-            .process_registry
-            .register_pending(Arc::clone(&state));
-        let worker_state = Arc::clone(&state);
-        let wait_thread = thread::spawn(move || process_wait_worker(worker_state));
-        runtime_state(_py)
-            .process_registry
-            .attach_wait_thread(registry_id, wait_thread);
         let handle = Box::new(MoltProcessHandle { state });
         opaque_handle_bits(Box::into_raw(handle) as *mut u8)
     })
@@ -466,51 +446,21 @@ pub unsafe extern "C" fn molt_process_spawn_ex(
         #[cfg(unix)]
         apply_child_memory_rlimit(&mut cmd);
 
-        let mut process_stdio =
+        let process_stdio =
             match configure_native_stdio(_py, &mut cmd, stdin_mode, stdout_mode, stderr_mode) {
                 Ok(stdio) => stdio,
                 Err(err) => return err,
             };
 
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
-            Err(err) => {
-                process_stdio.drop_streams();
-                return raise_os_error::<u64>(_py, err, "spawn");
-            }
+        let state = match runtime_state(_py).process_registry.spawn(
+            _py,
+            &mut cmd,
+            process_stdio,
+            owns_process_group,
+        ) {
+            Ok(state) => state,
+            Err(err) => return raise_os_error::<u64>(_py, err, "spawn"),
         };
-
-        attach_process_stdio(&mut child, &mut process_stdio);
-
-        let pid = child.id();
-        let owned_process_group = if owns_process_group {
-            Some(pid as i32)
-        } else {
-            None
-        };
-        let registry_id = runtime_state(_py).process_registry.allocate_id();
-        let state = Arc::new(ProcessState {
-            registry_id,
-            child: Mutex::new(child),
-            pid,
-            owned_process_group,
-            completion: ProcessCompletionState::pending(),
-            kill_requested: AtomicBool::new(false),
-            teardown_draining: AtomicBool::new(false),
-            streams_released: AtomicBool::new(false),
-            stdin_stream: process_stdio.stdin_stream,
-            stdout_stream: process_stdio.stdout_stream,
-            stderr_stream: process_stdio.stderr_stream,
-            condvar: Condvar::new(),
-        });
-        runtime_state(_py)
-            .process_registry
-            .register_pending(Arc::clone(&state));
-        let worker_state = Arc::clone(&state);
-        let wait_thread = thread::spawn(move || process_wait_worker(worker_state));
-        runtime_state(_py)
-            .process_registry
-            .attach_wait_thread(registry_id, wait_thread);
         let handle = Box::new(MoltProcessHandle { state });
         opaque_handle_bits(Box::into_raw(handle) as *mut u8)
     })
@@ -764,6 +714,10 @@ pub unsafe extern "C" fn molt_process_drop(proc_bits: u64) -> u64 {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct ProcessState {
     registry_id: u64,
+    // The registry is inside this origin and cannot retire it until every
+    // actual worker has joined. Only the waiter uses this pointer, under
+    // canonical execution custody and a second teardown check.
+    origin_runtime: usize,
     child: Mutex<std::process::Child>,
     pub(crate) pid: u32,
     #[cfg_attr(not(unix), allow(dead_code))]
@@ -797,11 +751,11 @@ impl ProcessState {
         self.completion.install_wait_future(future)
     }
 
-    fn publish_exit(&self, exit_code: i32) -> Option<ProcessExitPublication> {
-        let publication = self.completion.publish_exit(exit_code)?;
+    fn publish_exit(&self, exit_code: i32) -> Option<()> {
+        self.completion.publish_exit(exit_code)?;
         #[cfg(not(target_arch = "wasm32"))]
         self.condvar.notify_all();
-        Some(publication)
+        Some(())
     }
 
     fn cancel_wait(&self, waiter_id: ProcessWaiterId) -> bool {
@@ -815,14 +769,65 @@ impl ProcessState {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+struct ProcessWorker {
+    handle: Option<JoinHandle<()>>,
+    joined: bool,
+    // A failed worker may have failed runtime/TLS cleanup. Retain its exact
+    // disposition and origin, even though its native thread has terminated.
+    panic: Option<Box<dyn std::any::Any + Send + 'static>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 struct ProcessRegistryEntry {
     state: Arc<ProcessState>,
-    wait_thread: Option<JoinHandle<()>>,
+    workers: Vec<ProcessWorker>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ProcessRegistryEntry {
+    fn spawn_worker(
+        &mut self,
+        name: &'static str,
+        worker: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<()> {
+        #[cfg(test)]
+        if PROCESS_WORKER_SPAWN_FAILURE_AFTER.with(|remaining| match remaining.get() {
+            Some(0) => {
+                remaining.set(None);
+                true
+            }
+            Some(count) => {
+                remaining.set(Some(count - 1));
+                false
+            }
+            None => false,
+        }) {
+            return Err(std::io::Error::other(
+                "injected process worker spawn failure",
+            ));
+        }
+        let handle = thread::Builder::new().name(name.into()).spawn(worker)?;
+        self.workers.push(ProcessWorker {
+            handle: Some(handle),
+            joined: false,
+            panic: None,
+        });
+        Ok(())
+    }
+
+    fn is_closed(&self) -> bool {
+        !self.state.is_pending()
+            && self
+                .workers
+                .iter()
+                .all(|worker| worker.joined && worker.panic.is_none())
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 struct ProcessRegistryInner {
     next_id: u64,
+    closed: bool,
     entries: HashMap<u64, ProcessRegistryEntry>,
 }
 
@@ -837,102 +842,271 @@ impl ProcessRegistry {
         Self {
             inner: Mutex::new(ProcessRegistryInner {
                 next_id: 1,
+                closed: false,
                 entries: HashMap::new(),
             }),
         }
     }
 
-    pub(crate) fn allocate_id(&self) -> u64 {
-        let mut guard = self.inner.lock().unwrap();
-        let id = guard.next_id;
-        guard.next_id = guard.next_id.checked_add(1).unwrap_or(1);
-        id
+    fn spawn(
+        &self,
+        py: &PyToken<'_>,
+        command: &mut std::process::Command,
+        mut stdio: stdio::NativeProcessStdio,
+        owns_process_group: bool,
+    ) -> std::io::Result<Arc<ProcessState>> {
+        self.reap_finished();
+        // Admission and publication share the registry mutex. Teardown cannot
+        // observe an empty registry while an admitted child is being spawned.
+        let mut inner = self.inner.lock().unwrap();
+        if inner.closed {
+            drop(inner);
+            stdio.drop_streams();
+            return Err(std::io::Error::other("runtime process admission is closed"));
+        }
+        let registry_id = inner.next_id;
+        let next_id = registry_id
+            .checked_add(1)
+            .ok_or_else(|| std::io::Error::other("runtime process id exhausted"));
+        let next_id = match next_id {
+            Ok(id) => id,
+            Err(error) => {
+                drop(inner);
+                stdio.drop_streams();
+                return Err(error);
+            }
+        };
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                drop(inner);
+                stdio.drop_streams();
+                return Err(error);
+            }
+        };
+        let pid = child.id();
+        inner.next_id = next_id;
+        let state = Arc::new(ProcessState {
+            registry_id,
+            origin_runtime: (runtime_state(py) as *const RuntimeState).expose_provenance(),
+            child: Mutex::new(child),
+            pid,
+            owned_process_group: owns_process_group.then_some(pid as i32),
+            completion: ProcessCompletionState::pending(),
+            kill_requested: AtomicBool::new(false),
+            teardown_draining: AtomicBool::new(false),
+            streams_released: AtomicBool::new(false),
+            stdin_stream: stdio.stdin_stream,
+            stdout_stream: stdio.stdout_stream,
+            stderr_stream: stdio.stderr_stream,
+            condvar: Condvar::new(),
+        });
+        let entry = inner
+            .entries
+            .entry(registry_id)
+            .or_insert_with(|| ProcessRegistryEntry {
+                state: Arc::clone(&state),
+                workers: Vec::with_capacity(
+                    1 + usize::from(stdio.stdin_stream != 0)
+                        + usize::from(stdio.stdout_stream != 0)
+                        + usize::from(stdio.stderr_stream != 0),
+                ),
+            });
+        // Publish the allocation before the first native spawn. If a later
+        // spawn fails, this same entry retains every already-started worker.
+        let worker_state = Arc::clone(&state);
+        let started = entry
+            .spawn_worker("molt-process-wait", move || {
+                process_wait_worker(worker_state)
+            })
+            .and_then(|()| {
+                let mut child = state.child.lock().unwrap();
+                attach_process_stdio(&mut child, &mut stdio, &state, entry)
+            });
+        if let Err(error) = started {
+            state.teardown_draining.store(true, AtomicOrdering::Release);
+            state.close_owned_streams();
+            drop(inner);
+            let closed = self.settle_workers(
+                std::slice::from_ref(&state),
+                Duration::ZERO,
+                process_teardown_duration(
+                    PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_ENV,
+                    PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_DEFAULT,
+                ),
+            );
+            return if closed {
+                Err(error)
+            } else {
+                Err(std::io::Error::other(format!(
+                    "{error}; process worker closure incomplete; origin retained"
+                )))
+            };
+        }
+        Ok(state)
     }
 
-    pub(crate) fn register_pending(&self, state: Arc<ProcessState>) {
-        let mut guard = self.inner.lock().unwrap();
-        guard.entries.insert(
-            state.registry_id,
-            ProcessRegistryEntry {
-                state,
-                wait_thread: None,
-            },
-        );
-    }
-
-    pub(crate) fn attach_wait_thread(&self, id: u64, wait_thread: JoinHandle<()>) {
-        let mut wait_thread = Some(wait_thread);
+    fn reap_finished(&self) {
+        // A finished native function may still be running its TLS destructors.
+        // Never retain the GIL while completing the actual native join.
         {
-            let mut guard = self.inner.lock().unwrap();
-            if let Some(entry) = guard.entries.get_mut(&id) {
-                entry.wait_thread = wait_thread.take();
+            let _release = crate::gil_held().then(GilReleaseGuard::suspend);
+            self.join_finished();
+        }
+        self.release_closed_entries();
+    }
+
+    fn join_finished(&self) {
+        let ready = {
+            let mut inner = self.inner.lock().unwrap();
+            let mut ready = Vec::new();
+            for (&id, entry) in &mut inner.entries {
+                for (index, worker) in entry.workers.iter_mut().enumerate() {
+                    if worker.handle.as_ref().is_some_and(JoinHandle::is_finished) {
+                        ready.push((id, index, worker.handle.take().unwrap()));
+                    }
+                }
+            }
+            ready
+        };
+        // Neither the registry mutex nor the GIL may surround a native join:
+        // the thread's final TLS destructor can itself enter runtime code.
+        for (id, index, handle) in ready {
+            let outcome = handle.join();
+            let mut inner = self.inner.lock().unwrap();
+            let worker = &mut inner
+                .entries
+                .get_mut(&id)
+                .expect("joining process entry")
+                .workers[index];
+            worker.panic = outcome.err();
+            worker.joined = true;
+        }
+    }
+
+    fn release_closed_entries(&self) {
+        let closed = {
+            let mut inner = self.inner.lock().unwrap();
+            let ids: Vec<_> = inner
+                .entries
+                .iter()
+                .filter_map(|(&id, entry)| entry.is_closed().then_some(id))
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| inner.entries.remove(&id))
+                .collect::<Vec<_>>()
+        };
+        // Stream release can enter the runtime. The caller's GIL/custody is
+        // restored, and no registry mutex is held while owners are dropped.
+        drop(closed);
+    }
+
+    fn settle_workers(
+        &self,
+        states: &[Arc<ProcessState>],
+        term_grace: Duration,
+        join_timeout: Duration,
+    ) -> bool {
+        let all_closed;
+        {
+            let _release = crate::gil_held().then(GilReleaseGuard::suspend);
+            for state in states {
+                state.request_terminate_for_teardown();
+            }
+            let term_deadline = Instant::now() + term_grace;
+            while Instant::now() < term_deadline {
+                let mut pending = false;
+                for state in states {
+                    // Also reaps a child whose waiter failed to start. Both
+                    // this path and the waiter use the same child mutex and
+                    // exactly-once terminal publication.
+                    let _ = state.poll_child_exit();
+                    pending |= state.is_pending();
+                }
+                if !pending {
+                    break;
+                }
+                thread::sleep(
+                    Duration::from_millis(1)
+                        .min(term_deadline.saturating_duration_since(Instant::now())),
+                );
+            }
+            for state in states {
+                state.request_kill_for_teardown();
+            }
+            let join_deadline = Instant::now() + join_timeout;
+            loop {
+                for state in states {
+                    let _ = state.poll_child_exit();
+                }
+                self.join_finished();
+                let (closed, terminal) = {
+                    let inner = self.inner.lock().unwrap();
+                    let closed = states.iter().all(|state| {
+                        inner
+                            .entries
+                            .get(&state.registry_id)
+                            .is_none_or(ProcessRegistryEntry::is_closed)
+                    });
+                    let terminal = states.iter().all(|state| {
+                        !state.is_pending()
+                            && inner.entries.get(&state.registry_id).is_none_or(|entry| {
+                                entry.workers.iter().all(|worker| worker.joined)
+                            })
+                    });
+                    (closed, terminal)
+                };
+                if closed || terminal || Instant::now() >= join_deadline {
+                    all_closed = closed;
+                    break;
+                }
+                thread::sleep(
+                    Duration::from_millis(1)
+                        .min(join_deadline.saturating_duration_since(Instant::now())),
+                );
             }
         }
-        if let Some(wait_thread) = wait_thread
-            && wait_thread.is_finished()
-        {
-            let _ = wait_thread.join();
-        }
-    }
-
-    pub(crate) fn finish_wait_worker(&self, id: u64) {
-        let mut guard = self.inner.lock().unwrap();
-        guard.entries.remove(&id);
+        self.release_closed_entries();
+        all_closed
     }
 
     pub(crate) fn drain_for_teardown(&self) {
-        let entries = {
-            let mut guard = self.inner.lock().unwrap();
-            std::mem::take(&mut guard.entries)
-        };
-        if entries.is_empty() {
-            return;
-        }
-
-        let term_grace = process_teardown_duration(
-            PROCESS_TEARDOWN_TERM_GRACE_MS_ENV,
-            PROCESS_TEARDOWN_TERM_GRACE_MS_DEFAULT,
+        self.drain_with_deadlines(
+            process_teardown_duration(
+                PROCESS_TEARDOWN_TERM_GRACE_MS_ENV,
+                PROCESS_TEARDOWN_TERM_GRACE_MS_DEFAULT,
+            ),
+            process_teardown_duration(
+                PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_ENV,
+                PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_DEFAULT,
+            ),
         );
-        let join_timeout = process_teardown_duration(
-            PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_ENV,
-            PROCESS_TEARDOWN_JOIN_TIMEOUT_MS_DEFAULT,
-        );
-        for entry in entries.values() {
-            entry
-                .state
-                .teardown_draining
-                .store(true, AtomicOrdering::Release);
-            entry.state.request_terminate_for_teardown();
-        }
-        let term_deadline = Instant::now() + term_grace;
-        for entry in entries.values() {
-            let remaining = term_deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            let _ = entry.state.wait_for_exit(remaining);
-        }
-        for entry in entries.values() {
-            if entry.state.is_pending() {
-                entry.state.request_kill_for_teardown();
-            }
-            entry.state.release_owned_streams();
-        }
-        let join_deadline = Instant::now() + join_timeout;
-        for mut entry in entries {
-            if let Some(wait_thread) = entry.1.wait_thread.take() {
-                let remaining = join_deadline.saturating_duration_since(Instant::now());
-                if !remaining.is_zero() {
-                    let _ = entry.1.state.wait_for_exit(remaining);
-                }
-                if wait_thread.is_finished() {
-                    let _ = wait_thread.join();
-                }
-            }
-        }
     }
 
-    #[cfg(all(test, unix, not(target_arch = "wasm32")))]
+    fn drain_with_deadlines(&self, term_grace: Duration, join_timeout: Duration) {
+        let states = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.closed = true;
+            inner
+                .entries
+                .values()
+                .map(|entry| {
+                    entry
+                        .state
+                        .teardown_draining
+                        .store(true, AtomicOrdering::Release);
+                    entry.state.close_owned_streams();
+                    Arc::clone(&entry.state)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            self.settle_workers(&states, term_grace, join_timeout),
+            "runtime teardown refused: process workers remain live or failed; origin retained"
+        );
+    }
+
+    #[cfg(test)]
     fn live_count(&self) -> usize {
         self.inner.lock().unwrap().entries.len()
     }
@@ -968,6 +1142,20 @@ impl ProcessState {
             }
             let (next_guard, _) = self.condvar.wait_timeout(guard, remaining).unwrap();
             guard = next_guard;
+        }
+    }
+
+    fn close_owned_streams(&self) {
+        for stream_bits in [self.stdin_stream, self.stdout_stream, self.stderr_stream] {
+            if stream_bits == 0 {
+                continue;
+            }
+            let stream_ptr = ptr_from_bits(stream_bits);
+            if !stream_ptr.is_null() {
+                // The state owns these references until every worker joins.
+                let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
+                super::channels::stream_close_local(stream);
+            }
         }
     }
 
@@ -1037,6 +1225,12 @@ impl ProcessState {
 
     #[cfg(unix)]
     fn signal_unix(&self, signal: i32) -> Result<(), std::io::Error> {
+        // Serialize the liveness check and signal with the sole Child reaper.
+        // An unreaped child reserves its PID even if exit has already occurred.
+        let _child = self.child.lock().unwrap();
+        if !self.is_pending() {
+            return Ok(());
+        }
         if let Some(pgid) = self.owned_process_group {
             let rc = unsafe { libc::kill(-pgid as libc::pid_t, signal) };
             if rc == 0 {
@@ -1075,7 +1269,7 @@ struct MoltProcessHandle {
 impl Drop for MoltProcessHandle {
     fn drop(&mut self) {
         self.state.request_kill_for_drop();
-        self.state.release_owned_streams();
+        self.state.close_owned_streams();
     }
 }
 
@@ -1136,44 +1330,100 @@ fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn process_wait_worker(state: Arc<ProcessState>) {
-    loop {
-        if !state.is_pending() {
-            break;
+impl ProcessState {
+    fn poll_child_exit(&self) -> Option<()> {
+        let mut child = self.child.lock().unwrap();
+        if !self.is_pending() {
+            return None;
         }
+        let status = child.try_wait().ok().flatten()?;
+        let code = exit_code_from_status(status);
+        if trace_process_io() {
+            eprintln!("molt_process_wait exit_code={code}");
+        }
+        let publication = self.publish_exit(code);
+        if self.stdin_stream != 0 {
+            let ptr = ptr_from_bits(self.stdin_stream);
+            if !ptr.is_null() {
+                // A terminal child cannot consume more input. Stop its writer
+                // without truncating still-readable stdout/stderr queues.
+                let stream = unsafe { &*(ptr as *mut MoltStream) };
+                super::channels::stream_close_local(stream);
+            }
+        }
+        publication
+    }
+
+    fn with_runtime_for_wake(&self, wake: impl FnOnce(&PyToken<'_>)) {
+        if self.teardown_draining.load(AtomicOrdering::Acquire) {
+            return;
+        }
+        assert_ne!(
+            self.origin_runtime, 0,
+            "process callback lost its runtime origin"
+        );
+        #[cfg(test)]
+        PROCESS_WAKE_PAUSE.with(|slot| {
+            if let Some((ready, proceed)) = slot.borrow_mut().take() {
+                ready.send(()).unwrap();
+                proceed.recv().unwrap();
+            }
+        });
+        // Registry-first teardown retains this exact allocation through native
+        // join. Set origin before try_ready's TLS/attachment initialization.
+        crate::state::runtime_state::set_thread_runtime_state(
+            std::ptr::with_exposed_provenance_mut(self.origin_runtime),
+        );
+        if let Some(execution) = crate::concurrency::RuntimeExecutionGuard::try_ready() {
+            let py = execution.token();
+            if !self.teardown_draining.load(AtomicOrdering::Acquire) {
+                assert_eq!(
+                    (runtime_state(&py) as *const RuntimeState).expose_provenance(),
+                    self.origin_runtime,
+                    "process callback resolved a different runtime"
+                );
+                wake(&py);
+            }
+            // WorkerEnd performs the canonical runtime/C TLS fixed point.
+            // If cleanup panics, origin TLS remains and the retained join
+            // disposition prevents the owning runtime from being destroyed.
+            drop(execution);
+        }
+        crate::state::runtime_state::clear_thread_runtime_state();
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    // One-shot failure at the external native spawn boundary. Already-started
+    // worker handles and the actual child still follow ordinary settlement.
+    static PROCESS_WORKER_SPAWN_FAILURE_AFTER: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static PROCESS_WAKE_PAUSE: std::cell::RefCell<Option<(
+        std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>
+    )>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn process_wait_worker(state: Arc<ProcessState>) {
+    while state.is_pending() {
         if state.kill_requested.load(AtomicOrdering::Acquire) {
             let _ = state.request_kill();
         }
-        let mut guard = state.child.lock().unwrap();
-        match guard.try_wait() {
-            Ok(Some(status)) => {
-                let code = exit_code_from_status(status);
-                let publication = state.publish_exit(code);
-                if trace_process_io() {
-                    eprintln!("molt_process_wait exit_code={code}");
+        if state.poll_child_exit().is_some() && state.completion.has_wait_future() {
+            state.with_runtime_for_wake(|py| {
+                // Cancellation/free remains able to revoke this publication
+                // while the native worker waits for exact-origin GIL custody.
+                if let Some(future) = state.completion.claim_wait_future(py) {
+                    let _ = wake_await_waiters(py, future.0);
                 }
-                drop(guard);
-                if let Some(publication) = publication
-                    && !state.teardown_draining.load(AtomicOrdering::Acquire)
-                    && let Some(future) = publication.wait_future
-                {
-                    let gil = GilGuard::new();
-                    let py = gil.token();
-                    let _ = wake_await_waiters(&py, future.0);
-                }
-                break;
-            }
-            Ok(None) => {}
-            Err(_) => {}
+            });
         }
-        drop(guard);
-        thread::sleep(Duration::from_millis(10));
+        if state.is_pending() {
+            thread::sleep(Duration::from_millis(10));
+        }
     }
-    if let Some(runtime) = crate::state::runtime_state::runtime_state_for_gil() {
-        runtime
-            .process_registry
-            .finish_wait_worker(state.registry_id);
-    }
+    // Only the registry's completed join can remove this entry. Terminal child
+    // publication alone says nothing about pipe workers or native TLS cleanup.
 }
 
 #[cfg(test)]
@@ -1237,8 +1487,8 @@ mod process_completion_state_tests {
         assert!(!completion.cancel_wait_future(ProcessWaiterId::from_slot(second)));
         assert_eq!(completion.wait_future(), Some(first));
 
-        let publication = completion.publish_exit(17).expect("first terminal publish");
-        assert_eq!(publication.wait_future, Some(first));
+        completion.publish_exit(17).expect("first terminal publish");
+        assert_eq!(completion.wait_future(), Some(first));
         assert_eq!(completion.exit_code(), 17);
         assert!(completion.publish_exit(23).is_none());
         assert!(completion.publish_exit(PROCESS_EXIT_PENDING).is_none());
@@ -1246,6 +1496,7 @@ mod process_completion_state_tests {
             completion.install_wait_future(second),
             ProcessWaitFutureInstall::Terminal(17)
         ));
+        assert!(completion.cancel_wait_future(ProcessWaiterId::from_slot(first)));
         assert_eq!(completion.wait_future(), None);
     }
 
@@ -1290,13 +1541,13 @@ mod process_completion_state_tests {
 
             barrier.wait();
             let installation = installer.join().unwrap();
-            let publication = publisher.join().unwrap().expect("publisher wins once");
+            publisher.join().unwrap().expect("publisher wins once");
             match installation {
                 ProcessWaitFutureInstall::Installed => {
-                    assert_eq!(publication.wait_future, Some(waiter));
+                    assert_eq!(completion.wait_future(), Some(waiter));
                 }
                 ProcessWaitFutureInstall::Terminal(31) => {
-                    assert_eq!(publication.wait_future, None);
+                    assert_eq!(completion.wait_future(), None);
                 }
                 ProcessWaitFutureInstall::AlreadyInstalled(_) => {
                     panic!("single installer cannot observe another waiter")
@@ -1305,6 +1556,7 @@ mod process_completion_state_tests {
                     panic!("unexpected terminal code {other}")
                 }
             }
+            completion.cancel_wait_future(ProcessWaiterId::from_slot(waiter));
             assert_eq!(completion.wait_future(), None);
             assert_eq!(completion.exit_code(), 31);
         }
@@ -1312,7 +1564,7 @@ mod process_completion_state_tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn cancel_and_publish_race_has_exactly_one_waiter_owner() {
+    fn terminal_publication_does_not_take_cancellation_custody() {
         use std::sync::Barrier;
 
         for iteration in 0..64 {
@@ -1341,8 +1593,11 @@ mod process_completion_state_tests {
 
             barrier.wait();
             let cancelled = canceller.join().unwrap();
-            let publication = publisher.join().unwrap().expect("publisher wins once");
-            assert_eq!(publication.wait_future == Some(waiter), !cancelled);
+            publisher.join().unwrap().expect("publisher wins once");
+            assert!(
+                cancelled,
+                "terminal publication must not steal raw waiter custody"
+            );
             assert_eq!(completion.wait_future(), None);
             assert_eq!(completion.exit_code(), 47);
         }
@@ -1375,6 +1630,7 @@ mod process_wait_state_tests {
         let child = inert_child();
         Arc::new(ProcessState {
             registry_id: 0,
+            origin_runtime: 0,
             pid: child.id(),
             child: Mutex::new(child),
             owned_process_group: None,
@@ -1440,8 +1696,8 @@ mod process_wait_state_tests {
         });
 
         std::thread::sleep(Duration::from_millis(20));
-        let publication = state.publish_exit(9).expect("first terminal publish");
-        assert_eq!(publication.wait_future, Some(waiter));
+        state.publish_exit(9).expect("first terminal publish");
+        assert_eq!(state.wait_future(), Some(waiter));
         assert!(state.publish_exit(10).is_none());
         rx.recv_timeout(Duration::from_secs(1))
             .expect("completed process wait must wake");
@@ -1460,28 +1716,19 @@ mod process_registry_tests {
     fn registered_child(cmd: &mut Command, registry: &ProcessRegistry) -> Arc<ProcessState> {
         let owns_process_group = configure_unix_owned_process_group(cmd, false, None);
         assert!(owns_process_group);
-        let child = cmd.spawn().expect("spawn test child");
-        let pid = child.id();
-        let registry_id = registry.allocate_id();
-        let state = Arc::new(ProcessState {
-            registry_id,
-            child: Mutex::new(child),
-            pid,
-            owned_process_group: Some(pid as i32),
-            completion: ProcessCompletionState::pending(),
-            kill_requested: AtomicBool::new(false),
-            teardown_draining: AtomicBool::new(false),
-            streams_released: AtomicBool::new(false),
-            stdin_stream: 0,
-            stdout_stream: 0,
-            stderr_stream: 0,
-            condvar: Condvar::new(),
-        });
-        registry.register_pending(Arc::clone(&state));
-        let worker_state = Arc::clone(&state);
-        let wait_thread = thread::spawn(move || process_wait_worker(worker_state));
-        registry.attach_wait_thread(registry_id, wait_thread);
-        state
+        let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+        let py = execution.token();
+        let stdio = configure_native_stdio(
+            &py,
+            cmd,
+            stdio::PROCESS_STDIO_INHERIT,
+            stdio::PROCESS_STDIO_INHERIT,
+            stdio::PROCESS_STDIO_INHERIT,
+        )
+        .unwrap();
+        registry
+            .spawn(&py, cmd, stdio, owns_process_group)
+            .expect("spawn test child")
     }
 
     fn unique_temp_path(name: &str) -> std::path::PathBuf {
@@ -1522,6 +1769,7 @@ mod process_registry_tests {
 
     #[test]
     fn handle_drop_kills_child_even_while_wait_worker_holds_state() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
         let registry = ProcessRegistry::new();
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("sleep 30");
@@ -1538,6 +1786,7 @@ mod process_registry_tests {
 
     #[test]
     fn registry_teardown_kills_owned_process_group_descendants() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
         let registry = ProcessRegistry::new();
         let pid_path = unique_temp_path("process-group");
         let mut cmd = Command::new("sh");
@@ -1555,3 +1804,649 @@ mod process_registry_tests {
         assert_process_exits(sleep_pid);
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod process_worker_lifetime_tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::mpsc;
+
+    fn inert_command() -> std::process::Command {
+        #[cfg(windows)]
+        {
+            let mut command = std::process::Command::new("cmd");
+            command.args(["/C", "exit", "0"]);
+            command
+        }
+        #[cfg(not(windows))]
+        {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "exit 0"]);
+            command
+        }
+    }
+
+    fn reader_state(
+        py: &PyToken<'_>,
+        registry: &ProcessRegistry,
+        reader: os_pipe::PipeReader,
+    ) -> Arc<ProcessState> {
+        let child = inert_command().spawn().unwrap();
+        let stream = super::super::channels::stream_new_with_byte_budget(0, 64 * 1024);
+        let mut stdio = stdio::NativeProcessStdio {
+            stdin_stream: 0,
+            stdout_stream: stream,
+            stderr_stream: 0,
+            merged_stdout_reader: Some(reader),
+        };
+        let mut inner = registry.inner.lock().unwrap();
+        assert!(!inner.closed);
+        let id = inner.next_id;
+        inner.next_id += 1;
+        let state = Arc::new(ProcessState {
+            registry_id: id,
+            origin_runtime: (runtime_state(py) as *const RuntimeState).expose_provenance(),
+            pid: child.id(),
+            child: Mutex::new(child),
+            owned_process_group: None,
+            completion: ProcessCompletionState::pending(),
+            kill_requested: AtomicBool::new(false),
+            teardown_draining: AtomicBool::new(false),
+            streams_released: AtomicBool::new(false),
+            stdin_stream: 0,
+            stdout_stream: stream,
+            stderr_stream: 0,
+            condvar: Condvar::new(),
+        });
+        let entry = inner
+            .entries
+            .entry(id)
+            .or_insert_with(|| ProcessRegistryEntry {
+                state: Arc::clone(&state),
+                workers: Vec::with_capacity(4),
+            });
+        let worker = Arc::clone(&state);
+        entry
+            .spawn_worker("molt-process-wait", move || process_wait_worker(worker))
+            .unwrap();
+        attach_process_stdio(&mut state.child.lock().unwrap(), &mut stdio, &state, entry).unwrap();
+        state
+    }
+
+    #[test]
+    fn inherited_pipe_timeout_retains_exact_worker_and_stream_until_join() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let registry = ProcessRegistry::new();
+        let (reader, mut inherited_writer) = os_pipe::pipe().unwrap();
+        let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+        let state = reader_state(&execution.token(), &registry, reader);
+        let stream_bits = state.stdout_stream;
+        let stream_ptr = ptr_from_bits(stream_bits);
+        let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
+        // Observe real pipe I/O before retaining the write endpoint across the
+        // direct child's exit. This is not an is_finished/sleep timing oracle.
+        inherited_writer.write_all(b"pipe-worker-is-live").unwrap();
+        let observed = stream
+            .receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        super::super::channels::stream_release_queued_bytes(stream, observed.len());
+        assert_eq!(observed, b"pipe-worker-is-live");
+        let state_weak = Arc::downgrade(&state);
+        drop(execution);
+        let gil = GilGuard::new();
+        let rejected = crate::test_support::catch_expected_unwind(|| {
+            registry.drain_with_deadlines(Duration::ZERO, Duration::from_millis(10));
+        });
+        assert!(rejected.is_err());
+        assert_eq!(registry.live_count(), 1);
+        assert_eq!(ptr_from_bits(stream_bits), stream_ptr);
+        assert!(!state.streams_released.load(AtomicOrdering::Acquire));
+        {
+            let inner = registry.inner.lock().unwrap();
+            let retained = &inner.entries[&state.registry_id];
+            assert!(Arc::ptr_eq(&retained.state, &state));
+            assert!(
+                retained
+                    .workers
+                    .iter()
+                    .any(|worker| worker.handle.is_some())
+            );
+        }
+        // EOF makes the same retained pipe worker finish; no replacement
+        // worker, synthetic close outcome, or runtime-entry fallback is used.
+        drop(inherited_writer);
+        registry.drain_with_deadlines(Duration::ZERO, Duration::from_secs(2));
+        assert_eq!(registry.live_count(), 0);
+        drop(state);
+        assert!(state_weak.upgrade().is_none());
+        assert!(ptr_from_bits(stream_bits).is_null());
+        drop(gil);
+    }
+
+    #[test]
+    fn terminal_process_waiter_cancellation_prevents_dispatch_after_gil_claim() {
+        use super::super::scheduler::{
+            await_waiter_clear, await_waiter_register, task_waiting_on_future,
+        };
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+        let py = execution.token();
+        let registry = ProcessRegistry::new();
+        // Retain a real child and real waiter worker in the existing registry.
+        // Install its future before starting the waiter, so even an immediate
+        // child exit cannot bypass the controlled pre-GIL interval.
+        let child = inert_command().spawn().unwrap();
+        let state = Arc::new(ProcessState {
+            registry_id: 1,
+            origin_runtime: runtime_state(&py).identity(),
+            pid: child.id(),
+            child: Mutex::new(child),
+            owned_process_group: None,
+            completion: ProcessCompletionState::pending(),
+            kill_requested: AtomicBool::new(false),
+            teardown_draining: AtomicBool::new(false),
+            streams_released: AtomicBool::new(false),
+            stdin_stream: 0,
+            stdout_stream: 0,
+            stderr_stream: 0,
+            condvar: Condvar::new(),
+        });
+        let handle = opaque_handle_bits(Box::into_raw(Box::new(MoltProcessHandle {
+            state: Arc::clone(&state),
+        })) as *mut u8);
+        let original = unsafe { molt_process_wait_future(handle) };
+        let original_ptr = resolve_obj_ptr(original).unwrap();
+        let original_task = process_task_state(&py, original_ptr).unwrap();
+        let observer = molt_future_new(0, 0);
+        let observer_ptr = resolve_obj_ptr(observer).unwrap();
+        await_waiter_register(&py, observer_ptr, original_ptr);
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (proceed_tx, proceed_rx) = mpsc::channel();
+        let worker_state = Arc::clone(&state);
+        {
+            let mut inner = registry.inner.lock().unwrap();
+            inner.next_id = 2;
+            let entry = inner
+                .entries
+                .entry(1)
+                .or_insert_with(|| ProcessRegistryEntry {
+                    state: Arc::clone(&state),
+                    workers: Vec::new(),
+                });
+            entry
+                .spawn_worker("molt-process-revocable-wait-test", move || {
+                    PROCESS_WAKE_PAUSE
+                        .with(|slot| *slot.borrow_mut() = Some((ready_tx, proceed_rx)));
+                    process_wait_worker(worker_state);
+                })
+                .unwrap();
+        }
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            state.exit_code(),
+            0,
+            "pause must follow actual terminal publication"
+        );
+        // Cancellation is the real ProcessTaskState operation, not a forged
+        // map key. The old pre-GIL take makes this assertion fail. Keep the
+        // original future and its real observer edge alive so an incorrectly
+        // copied pre-GIL waiter also fails deterministically after dispatch.
+        assert!(
+            original_task.cancel_wait(),
+            "exit publication stole cancellation custody"
+        );
+        assert_eq!(state.wait_future(), None);
+        assert_eq!(
+            task_waiting_on_future(&py, observer_ptr),
+            Some(original_ptr),
+            "cancellation must leave the observer edge available to detect stale dispatch"
+        );
+        proceed_tx.send(()).unwrap();
+        {
+            let _release = GilReleaseGuard::suspend();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                registry.join_finished();
+                if registry.inner.lock().unwrap().entries[&1]
+                    .workers
+                    .iter()
+                    .all(|worker| worker.joined)
+                {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "paused waiter did not finish");
+                thread::yield_now();
+            }
+        }
+        assert!(
+            registry.inner.lock().unwrap().entries[&1]
+                .workers
+                .iter()
+                .all(|worker| worker.panic.is_none())
+        );
+        assert_eq!(
+            task_waiting_on_future(&py, observer_ptr),
+            Some(original_ptr),
+            "cancelled process completion consumed the observer's await edge"
+        );
+        assert_eq!(state.wait_future(), None);
+        await_waiter_clear(&py, observer_ptr);
+        unsafe {
+            assert_eq!((*header_from_obj_ptr(original_ptr)).ref_count_snapshot(), 1);
+        }
+        dec_ref_bits(&py, original);
+        assert!(process_task_state(&py, original_ptr).is_none());
+        dec_ref_bits(&py, observer);
+        unsafe {
+            molt_process_drop(handle);
+        }
+        registry.reap_finished();
+        assert_eq!(registry.live_count(), 0);
+    }
+
+    #[test]
+    fn process_wake_rechecks_teardown_after_waiting_for_execution_custody() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+        let registry = ProcessRegistry::new();
+        let mut command = inert_command();
+        let stdio = configure_native_stdio(&execution.token(), &mut command, 0, 0, 0).unwrap();
+        let state = registry
+            .spawn(&execution.token(), &mut command, stdio, false)
+            .unwrap();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (proceed_tx, proceed_rx) = mpsc::channel();
+        let called = Arc::new(AtomicBool::new(false));
+        let worker_called = Arc::clone(&called);
+        let worker_state = Arc::clone(&state);
+        {
+            let mut inner = registry.inner.lock().unwrap();
+            inner
+                .entries
+                .get_mut(&state.registry_id)
+                .unwrap()
+                .spawn_worker("molt-process-wake-test", move || {
+                    PROCESS_WAKE_PAUSE
+                        .with(|slot| *slot.borrow_mut() = Some((ready_tx, proceed_rx)));
+                    worker_state.with_runtime_for_wake(|_| {
+                        worker_called.store(true, AtomicOrdering::Release);
+                    });
+                })
+                .unwrap();
+        }
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        // The initial draining check has already admitted the callback. The
+        // origin is still Ready, so only the post-custody check can refuse it.
+        state.teardown_draining.store(true, AtomicOrdering::Release);
+        proceed_tx.send(()).unwrap();
+        registry.drain_with_deadlines(Duration::ZERO, Duration::from_secs(2));
+        assert!(!called.load(AtomicOrdering::Acquire));
+        assert_eq!(registry.live_count(), 0);
+        drop(state);
+        drop(execution);
+    }
+
+    #[test]
+    fn normal_pipe_completion_preserves_bytes_and_reaps_all_handles() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let registry = ProcessRegistry::new();
+        let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = std::process::Command::new("cmd");
+            command.args(["/C", "echo molt-stdout & echo molt-stderr 1>&2"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "printf molt-stdout; printf molt-stderr >&2"]);
+            command
+        };
+        let stdio = configure_native_stdio(
+            &execution.token(),
+            &mut command,
+            stdio::PROCESS_STDIO_PIPE,
+            stdio::PROCESS_STDIO_PIPE,
+            stdio::PROCESS_STDIO_PIPE,
+        )
+        .unwrap();
+        let state = registry
+            .spawn(&execution.token(), &mut command, stdio, false)
+            .unwrap();
+        let output = |bits| {
+            let stream = unsafe { &*(ptr_from_bits(bits) as *mut MoltStream) };
+            let bytes = stream
+                .receiver
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+            super::super::channels::stream_release_queued_bytes(stream, bytes.len());
+            bytes
+        };
+        let stdout = output(state.stdout_stream);
+        let stderr = output(state.stderr_stream);
+        #[cfg(not(windows))]
+        assert_eq!(
+            (&stdout[..], &stderr[..]),
+            (&b"molt-stdout"[..], &b"molt-stderr"[..])
+        );
+        #[cfg(windows)]
+        {
+            let stdout = String::from_utf8(stdout).unwrap();
+            let stderr = String::from_utf8(stderr).unwrap();
+            assert_eq!(
+                (stdout.trim(), stderr.trim()),
+                ("molt-stdout", "molt-stderr")
+            );
+        }
+        assert!(state.wait_for_exit(Duration::from_secs(2)));
+        registry.drain_with_deadlines(Duration::ZERO, Duration::from_secs(2));
+        assert_eq!(registry.live_count(), 0);
+        assert_eq!(state.exit_code(), 0);
+        drop(state);
+        drop(execution);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ordinary_stdin_close_drains_bytes_queued_before_worker_start() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+        let registry = ProcessRegistry::new();
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "cat"]);
+        let stdio = configure_native_stdio(
+            &execution.token(),
+            &mut command,
+            stdio::PROCESS_STDIO_PIPE,
+            stdio::PROCESS_STDIO_PIPE,
+            stdio::PROCESS_STDIO_DEVNULL,
+        )
+        .unwrap();
+        let expected = b"queued-before-close\nsecond-line\n";
+        let input = unsafe { &*(ptr_from_bits(stdio.stdin_stream) as *mut MoltStream) };
+        assert!(super::super::channels::stream_enqueue_bytes_blocking(
+            input,
+            expected.to_vec()
+        ));
+        // Close before native worker creation, so scheduling cannot hide an
+        // implementation which discards queued bytes on ordinary close.
+        super::super::channels::stream_close_local(input);
+        let state = registry
+            .spawn(&execution.token(), &mut command, stdio, false)
+            .unwrap();
+        let output = unsafe { &*(ptr_from_bits(state.stdout_stream) as *mut MoltStream) };
+        let mut actual = Vec::new();
+        while actual.len() < expected.len() {
+            let bytes = output
+                .receiver
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+            super::super::channels::stream_release_queued_bytes(output, bytes.len());
+            actual.extend_from_slice(&bytes);
+        }
+        assert_eq!(actual, expected);
+        assert!(state.wait_for_exit(Duration::from_secs(2)));
+        assert_eq!(state.exit_code(), 0);
+        registry.drain_with_deadlines(Duration::ZERO, Duration::from_secs(2));
+        assert_eq!(registry.live_count(), 0);
+    }
+
+    #[test]
+    fn closed_registry_refuses_new_process_before_os_spawn() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+        let registry = ProcessRegistry::new();
+        registry.drain_with_deadlines(Duration::ZERO, Duration::ZERO);
+        let mut command =
+            std::process::Command::new("molt-does-not-exist-process-admission-oracle");
+        let stdio = configure_native_stdio(&execution.token(), &mut command, 0, 0, 0).unwrap();
+        let error = match registry.spawn(&execution.token(), &mut command, stdio, false) {
+            Ok(_) => panic!("closed registry spawned a child"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "runtime process admission is closed");
+        assert_eq!(registry.live_count(), 0);
+        assert_eq!(registry.inner.lock().unwrap().next_id, 1);
+    }
+
+    #[test]
+    fn process_spawn_error_releases_unpublished_pipe_streams() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+        let registry = ProcessRegistry::new();
+        let mut command =
+            std::process::Command::new("molt-does-not-exist-process-admission-oracle");
+        let stdio = configure_native_stdio(&execution.token(), &mut command, 1, 1, 1).unwrap();
+        let streams = [stdio.stdin_stream, stdio.stdout_stream, stdio.stderr_stream];
+        assert!(
+            registry
+                .spawn(&execution.token(), &mut command, stdio, false)
+                .is_err()
+        );
+        assert_eq!(registry.live_count(), 0);
+        for stream in streams {
+            assert!(ptr_from_bits(stream).is_null());
+        }
+    }
+
+    #[test]
+    fn partial_process_worker_start_failure_joins_before_stream_release() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+        // Waiter, stdin writer, stdout reader, then stderr reader. Every
+        // preceding native spawn is real; only the named failing call is fake.
+        for started_workers in 0..4 {
+            let registry = ProcessRegistry::new();
+            let mut command = inert_command();
+            let stdio = configure_native_stdio(
+                &execution.token(),
+                &mut command,
+                stdio::PROCESS_STDIO_PIPE,
+                stdio::PROCESS_STDIO_PIPE,
+                stdio::PROCESS_STDIO_PIPE,
+            )
+            .unwrap();
+            let streams = [stdio.stdin_stream, stdio.stdout_stream, stdio.stderr_stream];
+            PROCESS_WORKER_SPAWN_FAILURE_AFTER
+                .with(|remaining| remaining.set(Some(started_workers)));
+            let error = match registry.spawn(&execution.token(), &mut command, stdio, false) {
+                Ok(_) => panic!("injected worker-start failure was not reached"),
+                Err(error) => error,
+            };
+            assert_eq!(error.to_string(), "injected process worker spawn failure");
+            assert!(PROCESS_WORKER_SPAWN_FAILURE_AFTER.with(|remaining| remaining.get().is_none()));
+            assert_eq!(
+                registry.live_count(),
+                0,
+                "already-started worker was not joined"
+            );
+            assert_eq!(
+                registry.inner.lock().unwrap().next_id,
+                2,
+                "no actual child was admitted"
+            );
+            for stream in streams {
+                assert!(
+                    ptr_from_bits(stream).is_null(),
+                    "unpublished stream was retained after complete closure"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn panicking_worker_disposition_is_retained_and_cannot_close_origin() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+        let registry = ProcessRegistry::new();
+        let mut command = inert_command();
+        let stdio = configure_native_stdio(&execution.token(), &mut command, 0, 0, 0).unwrap();
+        let state = registry
+            .spawn(&execution.token(), &mut command, stdio, false)
+            .unwrap();
+        {
+            let mut inner = registry.inner.lock().unwrap();
+            inner
+                .entries
+                .get_mut(&state.registry_id)
+                .unwrap()
+                .spawn_worker("molt-process-panic-test", || {
+                    crate::test_support::with_expected_panic(|| {
+                        panic!("retained process worker failure")
+                    });
+                })
+                .unwrap();
+        }
+        assert!(
+            crate::test_support::catch_expected_unwind(|| {
+                registry.drain_with_deadlines(Duration::ZERO, Duration::from_secs(2));
+            })
+            .is_err()
+        );
+        assert_eq!(registry.live_count(), 1);
+        let inner = registry.inner.lock().unwrap();
+        let entry = &inner.entries[&state.registry_id];
+        assert!(entry.workers.iter().all(|worker| worker.handle.is_none()));
+        assert!(
+            entry
+                .workers
+                .iter()
+                .any(|worker| worker.panic.as_ref().is_some_and(|panic| {
+                    panic.downcast_ref::<&str>() == Some(&"retained process worker failure")
+                }))
+        );
+        assert!(!entry.is_closed());
+        drop(inner);
+        // This isolated registry fixture injected a plain Rust panic and has
+        // observed every actual join. The production origin never discards
+        // this retained failure; terminal RuntimeState coverage owns that gate.
+        drop(registry);
+        drop(state);
+    }
+
+    pub(crate) struct ProcessServiceTimeoutFixture {
+        origin: usize,
+        state: Arc<ProcessState>,
+        inherited_writer: Option<os_pipe::PipeWriter>,
+    }
+
+    impl ProcessServiceTimeoutFixture {
+        // The terminal child owner first verifies its original RuntimeState
+        // storage is retained. Failed teardown intentionally leaves this same
+        // allocation live; none of these observations enter a runtime.
+        fn registry(&self) -> &ProcessRegistry {
+            let origin: *const RuntimeState = std::ptr::with_exposed_provenance(self.origin);
+            &unsafe { &*origin }.process_registry
+        }
+
+        pub(crate) fn assert_retained(&self) {
+            let inner = self.registry().inner.lock().unwrap();
+            assert!(inner.closed);
+            let entry = inner
+                .entries
+                .get(&self.state.registry_id)
+                .expect("retained process entry");
+            assert!(Arc::ptr_eq(&entry.state, &self.state));
+            assert!(entry.workers.iter().any(|worker| worker.handle.is_some()));
+            assert!(!self.state.streams_released.load(AtomicOrdering::Acquire));
+            assert!(!ptr_from_bits(self.state.stdout_stream).is_null());
+        }
+
+        pub(crate) fn release_and_assert_closed(mut self) {
+            drop(self.inherited_writer.take());
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                // Joining is pure native custody. Do not call the normal
+                // reaper, drop streams, or fabricate admission in Failed.
+                self.registry().join_finished();
+                let joined = {
+                    let inner = self.registry().inner.lock().unwrap();
+                    let entry = &inner.entries[&self.state.registry_id];
+                    assert!(entry.workers.iter().all(|worker| worker.panic.is_none()));
+                    entry.workers.iter().all(|worker| worker.joined)
+                };
+                if joined {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "released pipe worker did not finish"
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+            assert!(!self.state.streams_released.load(AtomicOrdering::Acquire));
+            assert!(!ptr_from_bits(self.state.stdout_stream).is_null());
+            assert_eq!(self.registry().live_count(), 1);
+        }
+    }
+
+    pub(crate) fn install_process_service_timeout_fixture(
+        py: &PyToken<'_>,
+    ) -> ProcessServiceTimeoutFixture {
+        let origin = (runtime_state(py) as *const RuntimeState).expose_provenance();
+        let registry = &runtime_state(py).process_registry;
+        assert_eq!(registry.live_count(), 0);
+        let (reader, mut writer) = os_pipe::pipe().unwrap();
+        let state = reader_state(py, registry, reader);
+        writer.write_all(b"retained-origin-pipe").unwrap();
+        let stream = unsafe { &*(ptr_from_bits(state.stdout_stream) as *mut MoltStream) };
+        let observed = stream
+            .receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        super::super::channels::stream_release_queued_bytes(stream, observed.len());
+        assert_eq!(observed, b"retained-origin-pipe");
+        assert!(state.wait_for_exit(Duration::from_secs(2)));
+        ProcessServiceTimeoutFixture {
+            origin,
+            state,
+            inherited_writer: Some(writer),
+        }
+    }
+
+    // Called by the existing native-lifetime child family while its selected
+    // primary or isolate RuntimeState is live; no second child runner/registry.
+    pub(crate) fn assert_origin_wake(py: &PyToken<'_>) {
+        let origin = (runtime_state(py) as *const RuntimeState).expose_provenance();
+        let registry = &runtime_state(py).process_registry;
+        let mut command = inert_command();
+        let stdio = configure_native_stdio(py, &mut command, 0, 0, 0).unwrap();
+        let state = registry.spawn(py, &mut command, stdio, false).unwrap();
+        let observed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker_observed = Arc::clone(&observed);
+        let worker_state = Arc::clone(&state);
+        let worker = thread::spawn(move || {
+            worker_state.with_runtime_for_wake(|py| {
+                worker_observed.store(
+                    (runtime_state(py) as *const RuntimeState).expose_provenance(),
+                    AtomicOrdering::Release,
+                );
+            });
+        });
+        {
+            let _release = GilReleaseGuard::suspend();
+            worker.join().unwrap();
+        }
+        assert_eq!(observed.load(AtomicOrdering::Acquire), origin);
+        assert!(state.wait_for_exit(Duration::from_secs(2)));
+        assert!(registry.settle_workers(
+            std::slice::from_ref(&state),
+            Duration::ZERO,
+            Duration::from_secs(2)
+        ));
+    }
+
+    #[test]
+    fn process_callback_uses_captured_runtime_and_cleans_worker_attachment() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+        assert_origin_wake(&execution.token());
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use process_worker_lifetime_tests::{
+    assert_origin_wake as assert_process_origin_wake, install_process_service_timeout_fixture,
+};

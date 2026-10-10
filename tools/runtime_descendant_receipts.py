@@ -108,7 +108,98 @@ LIFECYCLE = (
     "state::runtime_state::tests::lifecycle_ffi_panics_fail_closed_without_unwinding"
 )
 DISCOVERY = "tests::pending_diagnostic_prints_and_retires_original_error_after_summary_encoding_failure"
+ISOLATE_OWNER = (
+    "concurrency::isolates::bootstrap_failure_tests::"
+    "failed_isolate_preserves_state_and_blocks_process_retirement"
+)
+THREAD_ADMISSION = (
+    "concurrency::isolates::bootstrap_failure_tests::"
+    "native_thread_admission_and_origin_retirement"
+)
 OWNERS: Mapping[str, Owner] = {
+    ISOLATE_OWNER: Owner(
+        "isolate-owner-lifetime",
+        ISOLATE_OWNER,
+        {
+            mode: Outcome(
+                0,
+                True,
+                stdout_markers=(f"isolate owner lifetime verified: {mode}\n",),
+                stderr_markers=(
+                    (
+                        "MOLT_ISOLATE_TEARDOWN_PANIC: retaining failed isolate at",
+                        "molt runtime shutdown refused: 1 active execution lease(s) remain live\n",
+                    )
+                    if mode != "successful"
+                    else ()
+                ),
+            )
+            for mode in ("successful", "failed", "thread-state")
+        },
+    ),
+    THREAD_ADMISSION: Owner(
+        "native-thread-admission",
+        THREAD_ADMISSION,
+        {
+            **{
+                mode: Outcome(
+                    0,
+                    True,
+                    stdout_markers=(f"native thread lifetime verified: {mode}\n",),
+                )
+                for mode in (
+                    "delayed-isolate",
+                    "delayed-shared",
+                    "cancel-before-start",
+                    "spawn-failure-shared",
+                    "spawn-failure-bytes",
+                    "spawn-failure-isolate",
+                    "nested-shared",
+                    "shared-call-identity",
+                    "shared-payload-panic",
+                    "shared-cleanup-panic",
+                    "joined-service-inflight",
+                    "joined-service-admitted",
+                    "joined-service-primary",
+                    "joined-service-isolate",
+                    "joined-service-partial-start",
+                )
+            },
+            "joined-service-failed-join": Outcome(
+                0, True,
+                stdout_markers=("native thread lifetime verified: joined-service-failed-join\n",),
+                stderr_markers=("molt runtime lifecycle failed: runtime teardown refused: joined service workers failed; origin retained\n",),
+            ),
+            "joined-service-cleanup-panic": Outcome(
+                0, True,
+                stdout_markers=("native thread lifetime verified: joined-service-cleanup-panic\n",),
+                stderr_markers=("molt runtime lifecycle failed: runtime teardown refused: joined service workers failed; origin retained\n",),
+            ),
+            "joined-service-foreign-c": Outcome(
+                0, True,
+                stdout_markers=("native thread lifetime verified: joined-service-foreign-c\n",),
+                stderr_markers=("runtime teardown refused: foreign retained PyThreadState owners remain live",),
+            ),
+            "joined-service-exit": Outcome(
+                1,
+                stderr_markers=("molt runtime process exit refused: joined service callback cannot retire its own runtime\n",),
+            ),
+            "process-service-timeout": Outcome(
+                0,
+                True,
+                stdout_markers=("native thread lifetime verified: process-service-timeout\n",),
+                stderr_markers=(
+                    "molt runtime lifecycle failed: runtime teardown refused: process workers remain live or failed; origin retained\n",
+                ),
+            ),
+            "exit-with-pending-isolate": Outcome(
+                1,
+                stderr_markers=(
+                    "molt runtime process exit refused: 1 active execution lease(s) remain live\n",
+                ),
+            ),
+        },
+    ),
     DISCOVERY: Owner(
         "discovery-pending-diagnostic",
         "tests::pending_diagnostic_child",

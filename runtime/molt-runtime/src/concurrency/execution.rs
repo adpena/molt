@@ -186,7 +186,8 @@ fn leave_c_extension_execution_context() {
 }
 
 pub(crate) struct ShutdownDrainExecutionCustody {
-    _private: (),
+    #[cfg(not(target_arch = "wasm32"))]
+    retained_origin: bool,
 }
 
 impl ShutdownDrainExecutionCustody {
@@ -221,8 +222,37 @@ impl ShutdownDrainExecutionCustody {
             depth.set(1);
         });
         enter_c_extension_execution_context();
-        Self { _private: () }
+        Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            retained_origin: false,
+        }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ShutdownDrainExecutionCustody {
+    pub(crate) fn for_retained_worker(
+        origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+    ) -> Self {
+        let mut custody = Self::enter();
+        SHUTDOWN_DRAIN_WORKER_ORIGIN.with(|slot| {
+            assert!(
+                slot.replace(Some(origin)).is_none(),
+                "duplicate retained worker origin"
+            );
+        });
+        custody.retained_origin = true;
+        custody
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn retained_shutdown_worker_origin()
+-> Option<crate::state::runtime_state::RuntimeWorkerOrigin> {
+    SHUTDOWN_DRAIN_WORKER_ORIGIN
+        .try_with(Cell::get)
+        .ok()
+        .flatten()
 }
 
 impl Drop for ShutdownDrainExecutionCustody {
@@ -237,6 +267,12 @@ impl Drop for ShutdownDrainExecutionCustody {
             });
         }));
         let depth_result = catch_unwind(AssertUnwindSafe(|| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if self.retained_origin {
+                SHUTDOWN_DRAIN_WORKER_ORIGIN.with(|slot| {
+                    assert!(slot.take().is_some(), "retained worker origin lost");
+                });
+            }
             SHUTDOWN_DRAIN_EXECUTION_DEPTH.with(|depth| {
                 let previous = depth.replace(0);
                 assert_eq!(previous, 1, "shutdown drain execution custody corrupted");
@@ -305,7 +341,11 @@ impl RuntimeExecutionCustody {
                 };
             }
             let created_by_boundary =
-                molt_cpython_abi::api::object::attach_runtime_execution_thread();
+                molt_cpython_abi::api::object::attach_runtime_execution_thread(
+                    crate::state::runtime_state::runtime_state_for_gil()
+                        .expect("live runtime execution owner")
+                        .identity(),
+                );
             let established_attachment = !attached_before
                 && molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
             let owns_outer_boundary = acquired_outer_gil || established_attachment;
@@ -350,13 +390,18 @@ impl RuntimeExecutionCustody {
     fn finish(self, py: &PyToken<'_>) {
         cleanup_detach_then_release(
             || {
+                #[cfg(test)]
                 if self.clear_worker_state {
-                    #[cfg(test)]
                     RUNTIME_EXECUTION_CLEANUP_TEST_PANIC.with(|panic_next| {
                         if panic_next.replace(false) {
                             panic!("injected execution cleanup panic");
                         }
                     });
+                }
+                // An owned C record and runtime TLS reach quiescence together
+                // after detach; retained-state boundaries keep their policy.
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.clear_worker_state && !self.destroy_thread_state {
                     crate::state::clear_worker_thread_state(py);
                 }
             },
@@ -365,7 +410,9 @@ impl RuntimeExecutionCustody {
                 if self.established_attachment {
                     molt_cpython_abi::api::object::detach_runtime_execution_thread();
                     if self.destroy_thread_state {
-                        molt_cpython_abi::api::object::clear_runtime_execution_thread_state();
+                        molt_cpython_abi::api::object::clear_runtime_execution_thread_state(|| {
+                            self.clear_worker_state && crate::state::clear_worker_thread_state(py)
+                        });
                     }
                     #[cfg(test)]
                     RUNTIME_EXECUTION_DETACH_TEST_PANIC.with(|panic_next| {
@@ -381,6 +428,11 @@ impl RuntimeExecutionCustody {
                         assert_ne!(previous, 0, "wasm runtime execution depth underflow");
                         depth.set(previous - 1);
                     });
+                    if self.clear_worker_state {
+                        molt_cpython_abi::api::object::clear_runtime_execution_thread_state(|| {
+                            crate::state::clear_worker_thread_state(py)
+                        });
+                    }
                 }
             },
             || {
@@ -432,6 +484,66 @@ impl RuntimeExecutionCustody {
     }
 }
 
+/// One service callback owns process entry and its exact origin borrow. Field
+/// destruction completes WorkerEnd before releasing origin admission. Native
+/// service failure remains owned by its retained JoinHandle through teardown.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct RuntimeServiceExecutionGuard {
+    execution: RuntimeExecutionGuard,
+    _origin: crate::state::runtime_state::RuntimeOriginBorrow,
+    _admission: RuntimeServiceAdmission,
+}
+
+// Release joined-service process admission after WorkerEnd and origin borrow.
+#[cfg(not(target_arch = "wasm32"))]
+struct RuntimeServiceAdmission(bool);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for RuntimeServiceAdmission {
+    fn drop(&mut self) {
+        if self.0 {
+            crate::state::runtime_state::release_runtime_execution_lease();
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RuntimeServiceExecutionGuard {
+    pub(crate) fn try_enter(
+        origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+    ) -> Option<Self> {
+        // Process admission precedes the origin count: finalization cannot
+        // observe a transient borrower whose process admission was refused.
+        if !crate::state::runtime_state::runtime_is_ready() {
+            return None;
+        }
+        let admission = RuntimeServiceAdmission(
+            crate::state::runtime_state::try_acquire_runtime_service_execution_lease()?,
+        );
+        let origin_borrow =
+            crate::state::runtime_state::RuntimeOriginBorrow::try_acquire(origin.state())?;
+        let execution = RuntimeExecutionGuard::try_ready()?;
+        // Closing an isolate's origin need not close the primary Ready state.
+        // Reject a callback that was waiting for GIL across origin closure.
+        if !origin.state().thread_borrow_admission_is_open() {
+            return None;
+        }
+        assert_eq!(
+            crate::runtime_state(&execution.token()).identity(),
+            origin.identity()
+        );
+        Some(Self {
+            execution,
+            _origin: origin_borrow,
+            _admission: admission,
+        })
+    }
+
+    pub(crate) fn token(&self) -> PyToken<'_> {
+        self.execution.token()
+    }
+}
+
 /// GIL plus the exact attachment and worker-TLS obligations established at a
 /// public execution boundary.
 pub(crate) struct RuntimeExecutionGuard {
@@ -460,13 +572,25 @@ impl RuntimeExecutionGuard {
     }
 
     fn enter_with_policy(initialize_runtime: bool, cleanup_policy: ExecutionCleanupPolicy) -> Self {
-        if (crate::state::runtime_state::current_thread_holds_runtime_execution_lease()
-            || current_thread_holds_shutdown_drain_custody())
-            && let Some(gil) = GilGuard::new_if_held()
+        if crate::state::runtime_state::current_thread_holds_runtime_execution_lease()
+            || current_thread_holds_shutdown_drain_custody()
         {
+            if let Some(gil) = GilGuard::new_if_held() {
+                return Self {
+                    gil: Some(gil),
+                    custody: None,
+                    active_lifecycle_lease: false,
+                };
+            }
+            // Admission/retained shutdown custody survives GIL suspension.
+            // Reentry must not wait for Ready: the finalization owner may be
+            // joining this very worker. Own only newly acquired GIL/attachment
+            // obligations and preserve the caller's requested cleanup policy.
+            let gil = GilGuard::new();
+            let custody = RuntimeExecutionCustody::enter(true, cleanup_policy);
             return Self {
                 gil: Some(gil),
-                custody: None,
+                custody: Some(custody),
                 active_lifecycle_lease: false,
             };
         }
@@ -688,6 +812,8 @@ struct PersistentRuntimeExecution {
 thread_local! {
     static PERSISTENT_RUNTIME_EXECUTION: Cell<Option<PersistentRuntimeExecution>> = const { Cell::new(None) };
     static SHUTDOWN_DRAIN_EXECUTION_DEPTH: Cell<u8> = const { Cell::new(0) };
+    #[cfg(not(target_arch = "wasm32"))]
+    static SHUTDOWN_DRAIN_WORKER_ORIGIN: Cell<Option<crate::state::runtime_state::RuntimeWorkerOrigin>> = const { Cell::new(None) };
     static CEXT_EXECUTION_CONTEXT_DEPTH: Cell<u32> = const { Cell::new(0) };
     #[cfg(target_arch = "wasm32")]
     static WASM_RUNTIME_EXECUTION_DEPTH: Cell<usize> = const { Cell::new(0) };
@@ -774,6 +900,51 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn suspended_gil_entry_inherits_ordinary_and_shutdown_custody() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
+        for shutdown in [false, true] {
+            let gil = GilGuard::new();
+            let ordinary = (!shutdown).then(RuntimeExecutionGuard::enter_with_worker_cleanup);
+            let terminal = shutdown
+                .then(ShutdownDrainExecutionCustody::enter_if_needed)
+                .flatten();
+            assert_eq!(terminal.is_some(), shutdown);
+            let count = crate::state::runtime_state::active_runtime_execution_lease_count();
+            let attached = molt_cpython_abi::api::object::runtime_execution_thread_is_attached();
+            {
+                let _release = crate::GilReleaseGuard::suspend();
+                assert!(!crate::gil_held());
+                let token = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
+                assert!(crate::gil_held());
+                assert!(
+                    crate::obj_from_bits(crate::molt_getrecursionlimit())
+                        .as_int()
+                        .unwrap()
+                        > 0
+                );
+                assert_eq!(
+                    crate::state::runtime_state::active_runtime_execution_lease_count(),
+                    count
+                );
+                unsafe { molt_cpython_abi::api::object::PyGILState_Release(token) };
+                assert!(!crate::gil_held());
+                assert_eq!(
+                    molt_cpython_abi::api::object::runtime_execution_thread_is_attached(),
+                    attached
+                );
+                assert_eq!(
+                    crate::state::runtime_state::active_runtime_execution_lease_count(),
+                    count
+                );
+            }
+            drop(terminal);
+            drop(ordinary);
+            drop(gil);
+        }
+    }
 
     #[test]
     fn shutdown_custody_inherits_only_real_lifetime_capabilities() {

@@ -145,7 +145,6 @@ _local_get_dict = _MOLT_LOCAL_GET_DICT
 _local_drop = _MOLT_LOCAL_DROP
 
 _THREAD_COUNTER = 0
-_THREAD_TOKEN_COUNTER = 0
 _MAIN_THREAD: "Thread" | None = None
 
 _TRACE_HOOK: Callable[[Any, str, Any], Any] | None = None
@@ -208,11 +207,6 @@ def _next_thread_name() -> str:
     global _THREAD_COUNTER
     _THREAD_COUNTER += 1
     return "Thread-" + str(_THREAD_COUNTER)
-
-def _next_thread_token() -> int:
-    global _THREAD_TOKEN_COUNTER
-    _THREAD_TOKEN_COUNTER += 1
-    return _THREAD_TOKEN_COUNTER
 
 def get_ident() -> int:
     return _expect_int(_thread_current_ident())
@@ -619,7 +613,6 @@ class Thread:
         self._ident_cache: int | None = None
         self._native_id_cache: int | None = None
         self._synthetic_alive: bool | None = None
-        self._token: int | None = None
         if daemon is not None:
             self._daemon = bool(daemon)
         elif _MAIN_THREAD is None:
@@ -689,13 +682,11 @@ class Thread:
                 if sys.flags.thread_inherit_context
                 else _contextvars.Context()
             )
-        token = _next_thread_token()
-        self._token = token
-        handle = _thread_spawn_shared(token, self._bootstrap, (), {})
+        handle = _thread_spawn_shared(self._bootstrap, (), {})
         self._handle = handle
         self._started = True
         self._synthetic_alive = True
-        _thread_registry_register(self._handle, token, self._name, self._daemon)
+        _thread_registry_register(self._handle, self._name, self._daemon)
         ident = _thread_ident(self._handle)
         if ident is not None:
             self._ident_cache = _expect_int(ident)
@@ -734,11 +725,10 @@ class Thread:
             self._synthetic_alive = False
 
     def _drop(self) -> None:
-        if self._token is not None:
-            _thread_registry_forget(self._token)
         if self._handle is None:
             self._synthetic_alive = False
             return
+        _thread_registry_forget(self._handle)
         _thread_drop(self._handle)
         self._handle = None
         self._synthetic_alive = False

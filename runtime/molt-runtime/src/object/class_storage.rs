@@ -725,14 +725,38 @@ impl RuntimeClassRetirement {
     /// Retire C aliases only after both thread-state owner domains have drained.
     /// Native owners and saved C errors cannot be indexed through ManagedView;
     /// their ordinary release must finish before any C identity is invalidated.
-    pub(crate) fn retire_projections(&self) -> bool {
-        if crate::object::gc::gc_has_live_native_nodes()
-            || molt_cpython_abi::api::object::runtime_retained_thread_state_count() != 0
+    pub(crate) fn retire_projections(&self, py: &PyToken<'_>) -> bool {
+        if self.has_native_owners(py)
+            || self.retained_thread_states(py) != 0
+            || self.has_isolate_owners(py)
         {
             return false;
         }
         let roots: Vec<_> = self.classes.iter().map(|class| class.bits).collect();
         molt_cpython_abi::bridge::GLOBAL_BRIDGE.retire_runtime_type_views(&roots)
+    }
+
+    fn has_isolate_owners(&self, py: &PyToken<'_>) -> bool {
+        crate::state::runtime_state::owns_process_cpython_state(crate::runtime_state(py))
+            && crate::object::gc::gc_has_live_isolate_owners()
+    }
+
+    fn has_native_owners(&self, py: &PyToken<'_>) -> bool {
+        let state = crate::runtime_state(py);
+        if crate::state::runtime_state::owns_process_cpython_state(state) {
+            crate::object::gc::gc_has_live_native_nodes()
+        } else {
+            crate::object::gc::gc_has_live_native_nodes_for(state)
+        }
+    }
+
+    fn retained_thread_states(&self, py: &PyToken<'_>) -> usize {
+        let state = crate::runtime_state(py);
+        if crate::state::runtime_state::owns_process_cpython_state(state) {
+            molt_cpython_abi::api::object::runtime_retained_thread_state_count()
+        } else {
+            molt_cpython_abi::api::object::runtime_retained_thread_state_count_for(state.identity())
+        }
     }
 
     pub(crate) fn contents_empty(&self) -> bool {
@@ -830,14 +854,18 @@ impl RuntimeClassRetirement {
                 }
             }
         }
+        assert!(
+            !self.has_isolate_owners(py),
+            "isolate owners survived the last callback drain before class retirement"
+        );
         // Managed views and all incoming projection aliases were retired in
         // the callback-capable fixed point, before reaching this sealed tail.
         assert!(
-            !crate::object::gc::gc_has_live_native_nodes(),
+            !self.has_native_owners(py),
             "native owners survived the last callback drain before class retirement"
         );
         assert_eq!(
-            molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+            self.retained_thread_states(py),
             0,
             "C thread-state owners survived the last callback drain before class retirement"
         );

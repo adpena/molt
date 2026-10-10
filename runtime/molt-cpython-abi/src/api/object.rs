@@ -4101,6 +4101,7 @@ static mut MOLT_INTERPRETER_STATE: PyInterpreterState = PyInterpreterState { _mo
 static NEXT_THREAD_STATE_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ThreadStateRegistration {
+    runtime_owner: usize,
     owner: std::thread::ThreadId,
     id: u64,
 }
@@ -4134,6 +4135,7 @@ impl OwnedCError {
 }
 
 struct ThreadStateRecord {
+    runtime_owner: usize,
     state: PyThreadState,
     id: u64,
     attached: bool,
@@ -4198,12 +4200,14 @@ impl Drop for ThreadStateDrainPhase {
 }
 
 impl ThreadStateRecord {
-    fn new() -> Box<Self> {
+    fn new(runtime_owner: usize) -> Box<Self> {
+        assert_ne!(runtime_owner, 0, "PyThreadState requires a runtime owner");
         let id = NEXT_THREAD_STATE_ID
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .expect("PyThreadState ID space exhausted");
         assert_ne!(id, 0, "PyThreadState IDs must be nonzero");
         let mut record = Box::new(Self {
+            runtime_owner,
             state: PyThreadState {
                 interp: &raw mut MOLT_INTERPRETER_STATE,
                 current_exception: ptr::null_mut(),
@@ -4227,6 +4231,7 @@ impl ThreadStateRecord {
         let previous = THREAD_STATE_REGISTRY.lock().unwrap().insert(
             ptr,
             ThreadStateRegistration {
+                runtime_owner,
                 owner: std::thread::current().id(),
                 id,
             },
@@ -4253,6 +4258,7 @@ impl Drop for ThreadStateRecord {
         assert_eq!(
             removed,
             Some(ThreadStateRegistration {
+                runtime_owner: self.runtime_owner,
                 owner: std::thread::current().id(),
                 id: self.id,
             })
@@ -4289,7 +4295,7 @@ enum ThreadStatePanicBoundary {
 #[derive(Clone, Copy)]
 enum ThreadStateDropCustodyMode {
     Acquire,
-    ShutdownOwner,
+    RuntimeOwner,
 }
 
 struct RuntimeThreadStateLifetime;
@@ -4459,11 +4465,11 @@ fn drain_current_thread_state_managed_edges(
     }
     let _custody = match custody_mode {
         ThreadStateDropCustodyMode::Acquire => Some(ThreadStateDropCustody::enter()),
-        ThreadStateDropCustodyMode::ShutdownOwner => {
+        ThreadStateDropCustodyMode::RuntimeOwner => {
             assert_ne!(
                 unsafe { (hooks_or_stubs().gil_check)() },
                 0,
-                "shutdown-owned PyThreadState drain requires GIL custody"
+                "runtime-owned PyThreadState drain requires GIL custody"
             );
             None
         }
@@ -4528,7 +4534,7 @@ fn drain_current_thread_state_managed_edges(
     true
 }
 
-fn create_prepared_current_thread_state() -> bool {
+fn create_prepared_current_thread_state(runtime_owner: usize) -> bool {
     RUNTIME_THREAD_STATE_PREPARATION.with(|state| {
         assert_eq!(
             state.get(),
@@ -4538,10 +4544,14 @@ fn create_prepared_current_thread_state() -> bool {
     });
     MOLT_THREAD_STATE.with(|slot| {
         let mut slot = slot.borrow_mut();
-        if slot.is_some() {
+        if let Some(record) = slot.as_deref() {
+            assert_eq!(
+                record.runtime_owner, runtime_owner,
+                "PyThreadState crossed runtime ownership"
+            );
             false
         } else {
-            *slot = Some(ThreadStateRecord::new());
+            *slot = Some(ThreadStateRecord::new(runtime_owner));
             true
         }
     })
@@ -4594,12 +4604,12 @@ pub struct RuntimeInitializationThreadStateGuard {
 }
 
 impl RuntimeInitializationThreadStateGuard {
-    pub fn enter() -> Self {
+    pub fn enter(runtime_owner: usize) -> Self {
         assert!(
             existing_current_thread_state().is_none(),
             "runtime initialization inherited a CPython thread state"
         );
-        let created = create_prepared_current_thread_state();
+        let created = create_prepared_current_thread_state(runtime_owner);
         assert!(
             created,
             "runtime initialization thread-state publication lost"
@@ -4759,7 +4769,9 @@ impl AbiTestThreadStateTransaction {
         prepare_runtime_thread_state_lifetime();
         arm_runtime_thread_state_lifetime();
         assert!(
-            create_prepared_current_thread_state(),
+            create_prepared_current_thread_state(
+                (&raw const MOLT_INTERPRETER_STATE).expose_provenance()
+            ),
             "ABI unit-test PyThreadState publication must be exclusive"
         );
         install_abi_unit_test_native_gc_hooks();
@@ -4824,7 +4836,11 @@ fn set_current_thread_state_attached(attached: bool) {
 /// boundary. Runtime initialization alone is deliberately insufficient: the
 /// native main/embedding boundary must hold execution custody and call this
 /// after acquiring it.
-pub fn attach_runtime_execution_thread() -> bool {
+pub fn attach_runtime_execution_thread(runtime_owner: usize) -> bool {
+    assert_ne!(
+        runtime_owner, 0,
+        "runtime execution attachment requires an owner"
+    );
     assert_runtime_initialized("runtime execution attachment");
     assert_ne!(
         unsafe { (hooks_or_stubs().gil_check)() },
@@ -4832,10 +4848,20 @@ pub fn attach_runtime_execution_thread() -> bool {
         "runtime execution attachment requires current-thread execution custody"
     );
     RUNTIME_EXECUTION_ATTACHMENT.with(|owned| {
+        // Verify even nested attachment: an existing C record must never silently
+        // lend its exception/dictionary owners to a different interpreter.
+        MOLT_THREAD_STATE.with(|slot| {
+            if let Some(record) = slot.borrow().as_deref() {
+                assert_eq!(
+                    record.runtime_owner, runtime_owner,
+                    "PyThreadState crossed runtime ownership"
+                );
+            }
+        });
         if owned.get() || current_thread_state_attached() {
             return false;
         }
-        let created = create_prepared_current_thread_state();
+        let created = create_prepared_current_thread_state(runtime_owner);
         let _ = ensure_current_thread_state();
         set_current_thread_state_attached(true);
         owned.set(true);
@@ -4869,7 +4895,10 @@ pub fn detach_runtime_execution_thread() {
 /// pending-error indicator and context must survive until the next call on the
 /// same native thread. True embedding/worker boundaries invoke this after
 /// their final detach so owned state is still released deterministically.
-pub fn clear_runtime_execution_thread_state() {
+/// The caller retains GIL/execution custody through the complete two-domain
+/// drain. Runtime TLS activity forces another pass, including when no initial
+/// C record exists; C finalizers may republish runtime TLS in that same drain.
+pub fn clear_runtime_execution_thread_state(cleanup_runtime_tls: impl FnMut() -> bool) {
     assert!(
         !runtime_execution_thread_is_attached(),
         "runtime execution thread-state cleanup requires a detached boundary"
@@ -4881,13 +4910,11 @@ pub fn clear_runtime_execution_thread_state() {
             "runtime execution thread-state cleanup crossed live PyGILState custody"
         );
     });
-    if existing_current_thread_state().is_some() {
-        destroy_current_thread_state(
-            ThreadStatePanicBoundary::Propagate,
-            ThreadStateDropCustodyMode::Acquire,
-            || false,
-        );
-    }
+    destroy_current_thread_state(
+        ThreadStatePanicBoundary::Propagate,
+        ThreadStateDropCustodyMode::RuntimeOwner,
+        cleanup_runtime_tls,
+    );
 }
 
 static RUNTIME_EXECUTION_ATTACHMENT_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -4901,8 +4928,8 @@ pub fn runtime_execution_thread_is_attached() -> bool {
     RUNTIME_EXECUTION_ATTACHMENT.with(|owned| owned.get())
 }
 
-/// Number of native threads retaining a CPython thread-state record for this
-/// runtime, whether attached or detached.
+/// Process-wide number of native threads retaining a CPython thread-state
+/// record, whether attached or detached.
 ///
 /// A detached record may still own managed exception, context, and dictionary
 /// edges. Runtime shutdown therefore treats this count as a lifetime authority,
@@ -4910,6 +4937,21 @@ pub fn runtime_execution_thread_is_attached() -> bool {
 /// retained owner remains.
 pub fn runtime_retained_thread_state_count() -> usize {
     RETAINED_THREAD_STATE_COUNT.load(Ordering::Acquire)
+}
+
+/// Count retained C owner records for one runtime without adding a second
+/// ledger. Called at retirement, never on the ordinary attachment hot path.
+pub fn runtime_retained_thread_state_count_for(runtime_owner: usize) -> usize {
+    assert_ne!(
+        runtime_owner, 0,
+        "retained-state inquiry requires a runtime owner"
+    );
+    THREAD_STATE_REGISTRY
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|record| record.runtime_owner == runtime_owner)
+        .count()
 }
 
 pub fn current_thread_has_retained_runtime_state() -> bool {
@@ -4944,7 +4986,7 @@ pub fn clear_current_thread_state_for_runtime_shutdown(cleanup_runtime_tls: impl
     });
     destroy_current_thread_state(
         ThreadStatePanicBoundary::AbortProcess,
-        ThreadStateDropCustodyMode::ShutdownOwner,
+        ThreadStateDropCustodyMode::RuntimeOwner,
         cleanup_runtime_tls,
     );
 }

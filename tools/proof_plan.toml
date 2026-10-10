@@ -2848,7 +2848,7 @@ timeout_budget = "shipping"
 cache_domain = "cargo-workspace"
 dependencies = []
 # Full default-feature shipping runtime: parallel remainder plus seven separate
-# fresh-process lifecycle/GIL witnesses. Four performance probes remain explicit
+# fresh-process lifecycle/GIL witnesses. Performance probes remain explicit
 # unrun entries; no missing child or incomplete result accounting can pass.
 argv = ["uv", "run", "--frozen", "python3", "tools/run_runtime_test_gate.py", "--profile", "release-output", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120", "--parallel-threads", "8"]
 toolchains = ["python", "uv", "rustc", "cargo"]
