@@ -1246,7 +1246,6 @@ def project_cargo_target_dir(
     project_root: Path,
     env: Mapping[str, str],
     *,
-    cwd: Path | None = None,
     session_scoped: bool = True,
 ) -> Path:
     """Return the Cargo target a Molt command builds ``project_root`` into.
@@ -1255,8 +1254,8 @@ def project_cargo_target_dir(
     build, build control, the backend daemon, the WASM host, the lock-check
     cache and the MLIR backend) reads it here.
 
-    An explicit ``CARGO_TARGET_DIR`` wins; a relative value is relative to
-    ``cwd`` (the working directory when omitted), as Cargo reads it. Without
+    An explicit ``CARGO_TARGET_DIR`` wins; a relative value is relative to the
+    working directory, as Cargo reads it. Without
     one, a development artifact request (``MOLT_PREFER_EXTERNAL_ARTIFACTS`` or
     ``MOLT_REQUIRE_EXTERNAL_ARTIFACTS``) builds under the run context's
     `artifact_root`, as ``molt dx run`` does; otherwise the project keeps
@@ -1271,7 +1270,7 @@ def project_cargo_target_dir(
     if raw:
         target = Path(raw).expanduser()
         if not target.is_absolute():
-            target = (Path.cwd() if cwd is None else cwd) / target
+            target = Path.cwd() / target
         target = target.absolute()
     else:
         root = project_cargo_target_base(project, env)
