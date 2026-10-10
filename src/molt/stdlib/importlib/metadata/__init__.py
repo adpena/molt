@@ -27,16 +27,12 @@ import sys
 import textwrap
 import warnings
 
-_require_intrinsic("molt_stdlib_probe")
 _MOLT_IMPORTLIB_READ_FILE = _require_intrinsic("molt_importlib_read_file")
 _MOLT_IMPORTLIB_METADATA_DIST_PATHS = _require_intrinsic(
     "molt_importlib_metadata_dist_paths"
 )
 _MOLT_IMPORTLIB_BOOTSTRAP_PAYLOAD = _require_intrinsic(
     "molt_importlib_bootstrap_payload"
-)
-_MOLT_IMPORTLIB_METADATA_ENTRY_POINTS_SELECT_PAYLOAD = _require_intrinsic(
-    "molt_importlib_metadata_entry_points_select_payload"
 )
 _MOLT_IMPORTLIB_METADATA_ENTRY_POINTS_FILTER_PAYLOAD = _require_intrinsic(
     "molt_importlib_metadata_entry_points_filter_payload"

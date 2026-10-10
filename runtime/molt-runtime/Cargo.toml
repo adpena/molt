@@ -85,7 +85,7 @@ stdlib_edge = [
 stdlib_standard = [
     "stdlib_edge",
     "stdlib_path", "stdlib_signal",
-    "stdlib_text", "stdlib_difflib",
+    "stdlib_text",
     "builtin_complex",
 ]
 
@@ -137,7 +137,6 @@ stdlib_text = ["molt-stdlib-text/stdlib_text"]
 stdlib_itertools = ["dep:molt-runtime-itertools"]
 stdlib_serial = ["dep:molt-runtime-serial"]
 stdlib_csv = ["stdlib_serial"]
-stdlib_difflib = ["dep:molt-stdlib-difflib"]
 stdlib_graphlib = ["dep:molt-stdlib-graphlib"]
 stdlib_http = ["dep:molt-runtime-http"]
 stdlib_logging_ext = ["dep:molt-runtime-logging"]
@@ -201,7 +200,6 @@ molt-runtime-regex = { path = "../molt-runtime-regex", optional = true }
 molt-stdlib-text = { path = "../molt-stdlib-text", default-features = false }
 molt-runtime-itertools = { path = "../molt-runtime-itertools", optional = true }
 molt-runtime-serial = { path = "../molt-runtime-serial", optional = true }
-molt-stdlib-difflib = { path = "../molt-stdlib-difflib", optional = true }
 molt-stdlib-graphlib = { path = "../molt-stdlib-graphlib", optional = true }
 molt-runtime-logging = { path = "../molt-runtime-logging", optional = true }
 molt-runtime-http = { path = "../molt-runtime-http", optional = true }

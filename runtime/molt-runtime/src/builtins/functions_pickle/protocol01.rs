@@ -2,51 +2,6 @@
 
 use super::*;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pickle_encode_protocol0(parts_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let parts_obj = obj_from_bits(parts_bits);
-        let Some(parts_ptr) = parts_obj.as_ptr() else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "pickle opcode chunks must be a sequence",
-            );
-        };
-        let parts_type = unsafe { object_type_id(parts_ptr) };
-        if parts_type != TYPE_ID_LIST && parts_type != TYPE_ID_TUPLE {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "pickle opcode chunks must be a sequence",
-            );
-        }
-        let joined = unsafe {
-            crate::object::seq_access::with_borrowed(parts_ptr, |elems| {
-                let mut joined = String::new();
-                for &elem_bits in elems {
-                    let chunk = string_obj_to_owned(obj_from_bits(elem_bits))?;
-                    joined.push_str(&chunk);
-                }
-                Some(joined)
-            })
-        };
-        let Some(joined) = joined else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "pickle opcode chunks must contain str values",
-            );
-        };
-        let bytes_ptr = crate::alloc_bytes(_py, joined.as_bytes());
-        if bytes_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(bytes_ptr).bits()
-        }
-    })
-}
-
 #[derive(Clone, Debug)]
 enum PickleStackItem {
     Value(u64),

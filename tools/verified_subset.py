@@ -25,6 +25,7 @@ else:
 
 bind_repository_imports(__file__)
 
+from molt.dx import scratch_dir  # noqa: E402
 from molt.exact_json import ExactJsonError, loads_exact  # noqa: E402
 from molt._host_capabilities_generated import EXPLICIT_CAPABILITY_TIER  # noqa: E402
 from molt.file_publication import is_link_like  # noqa: E402
@@ -862,7 +863,7 @@ def _run_coordinate(
         receipt_path=receipt_path,
         source_sha=source_sha,
     )
-    temp_root = ROOT / "tmp" / "verified-subset"
+    temp_root = scratch_dir(ROOT, "verified-subset")
     temp_root.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f"{coordinate.id}-", dir=temp_root))
     summary_path = stage / "summary.json"

@@ -18,6 +18,7 @@ from molt.harness_layers import (
     harness_memory_limits,
     harness_repo_sentinel,
 )
+from molt.dx import scratch_dir
 from molt.process_guard import GuardInfrastructureError
 from molt.harness_report import (
     Baseline,
@@ -26,7 +27,6 @@ from molt.harness_report import (
     LayerStatus,
 )
 
-REPORTS_DIR = Path("tests/harness/reports")
 BASELINE_PATH = Path("tests/harness/baselines/baseline.json")
 
 
@@ -84,7 +84,8 @@ def run_harness(
 
     print(report.to_console_table(), file=sys.stderr)
 
-    report.save(config.project_root / REPORTS_DIR)
+    # Run reports are scratch, never written into the checkout.
+    report.save(scratch_dir(config.project_root, "harness/reports"))
 
     if check_baseline:
         baseline_path = config.project_root / BASELINE_PATH

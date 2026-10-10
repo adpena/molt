@@ -218,16 +218,13 @@ def write_github_env(path: Path, plan: CiResourcePlan) -> None:
             handle.write(f"{line}\n")
 
 
-def darwin_memory_breakdown(vm_stat_text: str) -> str | None:
+def darwin_memory_breakdown(page_size: int, pages: Mapping[str, int]) -> str:
     """Name the macOS page classes behind the plan's available-memory figure.
 
     The guard counts only some page classes as available; logging all of them
-    lets a small runner's budget be judged from evidence (HF-68).
+    lets a small runner's budget be judged from evidence (HF-68). The page
+    counts are vm_stat's rows, read by ``memory_guard.darwin_vm_pages``.
     """
-    parsed = memory_guard.parse_darwin_vm_stat(vm_stat_text)
-    if parsed is None:
-        return None
-    page_size, pages = parsed
     rows = (
         ("free", "Pages free"),
         ("inactive", "Pages inactive"),
@@ -278,10 +275,9 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         if sys.platform == "darwin":
-            text = memory_guard.darwin_vm_stat_text()
-            breakdown = None if text is None else darwin_memory_breakdown(text)
-            if breakdown is not None:
-                print(breakdown, flush=True)
+            vm_pages = memory_guard.darwin_vm_pages()
+            if vm_pages is not None:
+                print(darwin_memory_breakdown(*vm_pages), flush=True)
     return 0
 
 

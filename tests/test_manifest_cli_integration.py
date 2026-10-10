@@ -43,26 +43,49 @@ def test_parse_audit_log_flag_accepts_all_valid_sinks():
         assert env["MOLT_AUDIT_SINK"] == sink
 
 
-def test_build_slot_dir_defaults_to_repo_tmp(monkeypatch, tmp_path: Path):
+def test_build_slot_dir_never_lands_in_the_checkout(monkeypatch, tmp_path: Path):
+    from molt import custody_layout, dx
     from molt.cli import cargo_execution
 
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
-    for name in ("MOLT_DIFF_TMPDIR", "TMPDIR", "TMP", "TEMP"):
-        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(cargo_execution, "compiler_source_root", lambda: tmp_path)
+    # The synthetic checkout is a plain clone, not explicit host scratch.
+    monkeypatch.setattr(
+        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
 
-    assert cargo_execution._build_slot_dir() == tmp_path / "tmp" / "molt-build-slots"
+    slots = cargo_execution._build_slot_dir()
+
+    assert slots == custody_layout.out_of_tree_scratch_root(tmp_path) / (
+        "molt-build-slots"
+    )
+    assert not slots.is_relative_to(tmp_path.resolve())
 
 
-def test_build_slot_dir_prefers_ext_root(monkeypatch, tmp_path: Path):
+def test_build_slot_dir_follows_the_artifact_root_not_tmpdir(
+    monkeypatch, tmp_path: Path
+):
     from molt.cli import cargo_execution
 
     ext_root = tmp_path / "external"
-    for name in ("MOLT_DIFF_TMPDIR", "TMPDIR", "TMP", "TEMP"):
-        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
+    monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "guest"))
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "control"))
 
-    assert cargo_execution._build_slot_dir() == ext_root / "tmp" / "molt-build-slots"
+    assert cargo_execution._build_slot_dir() == (
+        ext_root.resolve() / "tmp" / "molt-build-slots"
+    )
+
+
+def test_build_slot_dir_stays_on_disk_under_memory_scratch(monkeypatch, tmp_path: Path):
+    from molt.cli import cargo_execution
+
+    ram = tmp_path / "ram"
+    ram.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "external"))
+    monkeypatch.setenv("MOLT_SCRATCH_STORAGE", str(ram))
+
+    assert not cargo_execution._build_slot_dir().is_relative_to(ram.resolve())
 
 
 def test_build_slot_acquires_cross_platform_lock(monkeypatch, tmp_path: Path):
@@ -75,19 +98,6 @@ def test_build_slot_acquires_cross_platform_lock(monkeypatch, tmp_path: Path):
     with cargo_execution._build_slot() as slot:
         assert slot == 0
         assert (tmp_path / "tmp" / "molt-build-slots" / "slot-0.lock").exists()
-
-
-def test_build_slot_ignores_diff_payload_tmp_without_artifact_root(
-    monkeypatch, tmp_path: Path
-):
-    from molt.cli import cargo_execution
-
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
-    monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "guest"))
-    monkeypatch.setenv("TMPDIR", str(tmp_path / "control"))
-    assert (
-        cargo_execution._build_slot_dir() == tmp_path / "control" / "molt-build-slots"
-    )
 
 
 def test_build_lock_creates_cross_platform_lock_file(monkeypatch, tmp_path: Path):

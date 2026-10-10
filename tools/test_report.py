@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Human-readable report generator for Molt nightly/weekly test runs.
 
-Reads JSON results from ``$MOLT_EXT_ROOT/test_reports/`` or the repo-local
-``tmp/molt_testing/test_reports`` canonical root and produces markdown
-summaries with trend analysis.
+Reads JSON results from ``test_reports/`` under the artifact root
+(``molt.dx.artifact_root``: ``$MOLT_EXT_ROOT``, else the checkout family root)
+and produces markdown summaries with trend analysis.
 
 Usage::
 
@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,16 +35,14 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-_REPO_EXT_ROOT_DEFAULT = REPO_ROOT / "tmp" / "molt_testing"
 
 
 def _reports_root(override: str | None = None) -> Path:
     if override:
         return Path(override).expanduser()
-    raw = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if raw:
-        return Path(raw).expanduser() / "test_reports"
-    return _REPO_EXT_ROOT_DEFAULT / "test_reports"
+    from molt.dx import artifact_root
+
+    return artifact_root(REPO_ROOT) / "test_reports"
 
 
 # ---------------------------------------------------------------------------

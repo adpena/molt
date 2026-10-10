@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 import importlib.util
 import os
@@ -11,7 +10,6 @@ import sys
 from types import ModuleType
 from typing import Any
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 _THIS_FILE = Path(__file__).resolve()
 _THIS_DIR = _THIS_FILE.parent
@@ -126,6 +124,3 @@ def __getattr__(name: str) -> Any:
     if _LOADED_EXTERNAL:
         raise AttributeError(name)
     raise RuntimeError(f"MOLT_COMPAT_ERROR: test.support.{name} is not supported")
-
-
-globals().pop("_require_intrinsic", None)

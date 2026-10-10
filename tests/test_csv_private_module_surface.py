@@ -43,7 +43,6 @@ _fake_csv.writer = lambda target, *args, **kwargs: ("writer", target)
 sys.modules["csv"] = _fake_csv
 
 install_registry({{
-    "molt_csv_runtime_ready": lambda: None,
 }})
 
 

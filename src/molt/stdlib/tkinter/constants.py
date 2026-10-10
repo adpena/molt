@@ -1,12 +1,9 @@
 """Intrinsic-backed constants for `tkinter`."""
 
 import _tkinter as _tkimpl
-from _intrinsics import require_intrinsic as _require_intrinsic
 from ._support import _has_gui_capability as _has_gui_capability
 from ._support import _tk_available as _tk_available
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-_MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available")
 
 NO = 0
 FALSE = 0
@@ -110,5 +107,3 @@ TK_AVAILABLE = _tk_available()
 HAS_GUI_CAPABILITY = _has_gui_capability()
 
 __all__ = [name for name in globals() if name.isupper() and not name.startswith("_")]
-
-globals().pop("_require_intrinsic", None)

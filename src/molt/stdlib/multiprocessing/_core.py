@@ -46,16 +46,12 @@ _MP_START_METHOD_ENV = "MOLT_MP_START_METHOD"
 _MP_ENTRY_OVERRIDE = "multiprocessing.spawn"
 
 _MOLT_PROCESS_SPAWN = _intrinsics_require("molt_process_spawn", globals())
-_MOLT_PROCESS_WAIT = _intrinsics_require("molt_process_wait_future", globals())
-_MOLT_PROCESS_POLL = _intrinsics_require("molt_process_poll", globals())
 _MOLT_PROCESS_PID = _intrinsics_require("molt_process_pid", globals())
 _MOLT_PROCESS_RETURN = _intrinsics_require("molt_process_returncode", globals())
 _MOLT_PROCESS_KILL = _intrinsics_require("molt_process_kill", globals())
 _MOLT_PROCESS_TERM = _intrinsics_require("molt_process_terminate", globals())
 _MOLT_PROCESS_STDIN = _intrinsics_require("molt_process_stdin", globals())
 _MOLT_PROCESS_STDOUT = _intrinsics_require("molt_process_stdout", globals())
-_MOLT_PROCESS_STDERR = _intrinsics_require("molt_process_stderr", globals())
-_MOLT_PROCESS_DROP = _intrinsics_require("molt_process_drop", globals())
 _MOLT_STREAM_SEND = _intrinsics_require("molt_stream_send_obj", globals())
 _MOLT_STREAM_RECV = _intrinsics_require("molt_stream_recv", globals())
 _MOLT_STREAM_CLOSE = _intrinsics_require("molt_stream_close", globals())

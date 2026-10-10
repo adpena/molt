@@ -6,7 +6,6 @@ import builtins as _builtins
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 CancelledError = _require_intrinsic("molt_builtin_class_lookup")("CancelledError")
 

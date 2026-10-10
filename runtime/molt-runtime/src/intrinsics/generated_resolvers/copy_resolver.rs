@@ -23,10 +23,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_copy_error",
             crate::molt_copy_error as *const (),
         )),
-        "molt_copy_replace" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_copy_replace",
-            crate::molt_copy_replace as *const (),
-        )),
         _ => None,
     }
 }

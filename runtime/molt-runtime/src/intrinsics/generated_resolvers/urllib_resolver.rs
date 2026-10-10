@@ -228,13 +228,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             ))
         }
         #[cfg(feature = "stdlib_http")]
-        "molt_urllib_request_response_getheaders" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_urllib_request_response_getheaders",
-                crate::molt_urllib_request_response_getheaders as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_http")]
         "molt_urllib_request_response_getheaders_list" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_urllib_request_response_getheaders_list",

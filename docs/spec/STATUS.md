@@ -1453,9 +1453,9 @@ regression coverage, not an installed release receipt or other-platform proof.
 	  detection follows the same split. Source-only scan records bind scan policy;
 	  each graph walk resolves live filesystem candidates and the stdlib allowlist.
 	  Completed graphs and derived imports are not persisted. Darwin memory-guard sizing now
-	  uses `vm_stat` free/inactive/speculative/purgeable pages as the live
-	  available-memory source instead of falling back to physical-RAM-only
-	  budgeting. Import graph
+	  uses the free/inactive/speculative/purgeable pages `vm_stat` prints, read
+	  from one `host_statistics64` call, as the live available-memory source
+	  instead of falling back to physical-RAM-only budgeting. Import graph
 	  materialization now has one immutable `ImportPlan`: entry planning owns the
 	  runtime-import support closure, while final materialization owns namespace
 		  stubs, generated importer modules, known-module sets, allowlist snapshots,
@@ -1520,7 +1520,7 @@ regression coverage, not an installed release receipt or other-platform proof.
 ## Compatibility Summary
 
 <!-- GENERATED:compat-summary:start -->
-- Stdlib lowering audit: `949` modules audited; `41` intrinsic-backed; `906` intrinsic-partial; `0` policy-gate; `0` python-only.
+- Stdlib lowering audit: `949` modules audited; `37` intrinsic-backed; `239` intrinsic-partial; `30` intrinsic-support; `263` python-compiled; `380` stub; `0` policy-gate.
 - Platform availability metadata: `66` modules with explicit availability notes; `41` WASI-blocked; `37` Emscripten-blocked in CPython docs.
 - Deep evidence: see the stdlib intrinsics audit and platform availability matrices under `docs/spec/areas/compat/surfaces/stdlib/`.
 <!-- GENERATED:compat-summary:end -->

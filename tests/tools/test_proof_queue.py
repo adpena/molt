@@ -36,9 +36,11 @@ from molt import tool_releases
 from molt.exact_json import ExactJsonError, canonical_json_sha256
 from tests.python_environment_test_support import (
     build_environment_manifest,
+    create_owned_python_venv,
     create_test_venv,
 )
 from tests import proof_queue_owned_roots
+from tests.executable_test_support import custody_spelling, native_executable_name
 from tests.proof_queue_custody_test_support import (
     ReceiptCustodyFactory,
     assert_execution_context_rejects_substitutions,
@@ -977,6 +979,10 @@ def test_guarded_exec_rejects_ambiguous_or_unbounded_spelling(
         ["uv", "run", "pytest", "tests/tools/test_guarded_exec.py"],
         ["python", "-m", "other.guarded_exec", "--", "git", "--version"],
         ["python", "-c", "print('guarded_exec delegation')"],
+        ["python", "-B", "-c", "__import__('tools.guarded_exec')"],
+        ["python", "-m", "runpy", "tools/guarded_exec.py", "--", "git"],
+        ["python", "-B", "bootstrap.py", "script", "0", "tools/guarded_exec.py"],
+        ["python", "-m", "tools.proof_queue_pkg.guarded_execution"],
         ["python", "-W", "ignore:guarded_exec", "example.py", "tools/guarded_exec.py"],
         ["python", "-X", "guarded_exec", "-", "tools.guarded_exec"],
         ["node", "example.js", "tools/guarded_exec.py"],
@@ -1652,7 +1658,7 @@ def test_environment_selected_executable_inputs_are_content_bound(
     )
     assert before["RUSTC_WRAPPER"]["argument_count"] == 1
     assert set(before) == set(environment)
-    assert before["RUSTC_WRAPPER"]["executable"]["path"] == str(wrapper.resolve())
+    assert before["RUSTC_WRAPPER"]["executable"]["path"] == custody_spelling(wrapper)
     wrapper.write_bytes(wrapper.read_bytes() + b"custody-mutation")
     after = execution_environment._execution_environment_executable_identities(
         environment, cwd=tmp_path
@@ -1685,7 +1691,7 @@ def test_environment_tool_paths_with_spaces_share_execution_resolution(
     assert set(identities) == set(environment)
     for record in identities.values():
         assert record["argument_count"] == 0
-        assert record["executable"]["path"] == str(tool)
+        assert record["executable"]["path"] == custody_spelling(tool)
         assert record["executable"]["sha256"] == command_identity._hash_file(tool)
 
 
@@ -2804,12 +2810,14 @@ def guarded_execution_authorities(
 @pytest.fixture(scope="module")
 def python_location_authorities(
     tmp_path_factory: pytest.TempPathFactory,
-    custody_python: Path,
 ) -> GuardedExecutionAuthorities:
     # Location/image joins need a real interpreter, but no installed project or
     # third-party packages. Keep the full environment in queue execution tests.
+    # The join tests hardlink the selected interpreter, so it is a private copy,
+    # never the host's shared installation.
     return _capture_guarded_execution_authorities(
-        custody_python, tmp_path_factory.mktemp("python-location-source")
+        create_owned_python_venv(tmp_path_factory.mktemp("owned-python")),
+        tmp_path_factory.mktemp("python-location-source"),
     )
 
 
@@ -3424,7 +3432,7 @@ def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
     )
     executable = context["command_executable"]
     assert executable["identical"] is True
-    assert executable["prelaunch"]["path"] == str(Path(os.path.abspath(sys.executable)))
+    assert executable["prelaunch"]["path"] == custody_spelling(Path(sys.executable))
     assert executable["prelaunch"]["resolved_path"] == str(
         Path(sys.executable).resolve()
     )
@@ -4372,7 +4380,7 @@ def test_rustup_role_content_resolution_tracks_physical_component_before_reuse(
     resolutions, versions = [], []
 
     def resolve(argv, **kwargs):
-        assert argv == [str(rustup), "which", role]
+        assert argv == [custody_spelling(rustup), "which", role]
         assert kwargs["env"] == environment and kwargs["cwd"] == tmp_path
         resolutions.append(list(argv))
         return subprocess.CompletedProcess(argv, 0, str(selected[0]) + "\n", "")
@@ -9021,9 +9029,8 @@ def test_proof_queue_named_lane_can_queue_without_runner(
             str(logs),
             "--repo-root",
             str(state.ROOT),
-            "r6-target-version-parity",
-            "--python-version",
-            "3.12",
+            "named-lane",
+            "r6.target-version-parity.py312",
             "--queue-only",
             "--note",
             "queue-only R6 parking smoke",
@@ -9062,7 +9069,8 @@ def test_proof_queue_named_lane_rejects_queue_only_with_detach(
                 str(logs),
                 "--repo-root",
                 str(state.ROOT),
-                "r6-target-version-parity",
+                "named-lane",
+                "r6.target-version-parity.py312",
                 "--queue-only",
                 "--detach",
             ]
@@ -9086,7 +9094,8 @@ def test_proof_queue_queued_missing_log_is_not_running_evidence(
                 str(logs),
                 "--repo-root",
                 str(state.ROOT),
-                "r6-target-version-parity",
+                "named-lane",
+                "r6.target-version-parity.py312",
                 "--queue-only",
             ]
         )
@@ -14787,95 +14796,37 @@ def test_proof_queue_prune_stale_explicitly_cancels_selected_queued_row(
     assert row["returncode"] == custody.PROOF_QUEUE_STALE_EXIT_CODE
 
 
-def test_proof_queue_r6_target_version_parity_is_queue_native() -> None:
-    spec = pact._r6_target_version_parity_spec("3.12")
+def test_r6_target_version_lanes_cover_every_supported_target_python() -> None:
+    from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 
-    assert spec["logical_id"] == "r6-target-version-parity-py312"
-    assert spec["resource_family"] == "python"
-    assert spec["contention_key"] == "python:r6-target-version-py312"
-    command = list(spec["command"])
-    assert command[:9] == [
-        "uv",
-        "run",
-        "--active",
-        "--project",
-        ".",
-        "--python",
-        "3.12",
-        "--no-sync",
-        "--no-config",
-    ]
-    assert command[9:11] == ["python", "tests/molt_diff.py"]
-    assert command[command.index("--python-version") + 1] == "3.12"
-    assert command[command.index("--jobs") + 1] == "1"
-    assert "--fail-fast" in command
-    assert "tests/differential/stdlib/sys_metadata_intrinsics.py" in command
-    assert "tests/differential/stdlib/queue_shutdown_version_gate.py" in command
-    assert "tests/differential/stdlib/removed_stdlib_modules_version_gate.py" in command
-    assert "src/molt/python_interpreter.py" in spec["scopes"]
-    assert "src/molt/stdlib/sys.py" in spec["scopes"]
-    assert "src/molt/stdlib/_sys_impl.py" not in spec["scopes"]
-    assert "src/molt/stdlib/queue.py" in spec["scopes"]
-    assert any(
-        "serial fail-fast differential custody" in note for note in spec["notes"]
-    )
-    assert any("Selected R6 fixtures:" in note for note in spec["notes"])
-    assert any("missing target interpreters" in note for note in spec["notes"])
-    assert policy._proof_command_policy_error(command) is None
+    plan = proof_plan.ProofPlan.load()
+    lanes = {
+        lane.id: lane
+        for lane in plan.named_lanes
+        if lane.id.startswith("r6.target-version-parity.")
+    }
+    expected = {
+        "r6.target-version-parity.py" + version.replace(".", ""): version
+        for version in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+    }
+    assert set(lanes) == set(expected)
+    for lane_id, version in expected.items():
+        argv = list(lanes[lane_id].argv)
+        assert argv[argv.index("--python-version") + 1] == version
 
 
-def test_proof_queue_r6_target_version_parity_can_select_fixture_subset() -> None:
-    spec = pact._r6_target_version_parity_spec(
-        "3.12",
-        fixtures=[
-            "removed_stdlib_modules_version_gate",
-            "tests/differential/stdlib/sys_metadata_intrinsics.py",
-            "removed_stdlib_modules_version_gate.py",
-        ],
-    )
-    command = list(spec["command"])
-
-    assert (
-        spec["logical_id"]
-        == "r6-target-version-parity-py312-removed-stdlib-modules-version-gate-"
-        "sys-metadata-intrinsics"
-    )
-    assert command[-2:] == [
-        "tests/differential/stdlib/removed_stdlib_modules_version_gate.py",
-        "tests/differential/stdlib/sys_metadata_intrinsics.py",
-    ]
-    assert "tests/differential/stdlib/queue_shutdown_version_gate.py" not in command
-    assert (
-        "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"
-        in spec["scopes"]
-    )
-    assert (
-        "tests/differential/stdlib/queue_shutdown_version_gate.py" not in spec["scopes"]
-    )
-    assert any(
-        "tests/differential/stdlib/removed_stdlib_modules_version_gate.py" in note
-        for note in spec["notes"]
-    )
-
-
-def test_proof_queue_r6_target_version_parity_rejects_unknown_fixture() -> None:
-    with pytest.raises(SystemExit) as exc:
-        pact._r6_target_version_parity_spec(
-            "3.12",
-            fixtures=["queue_shutdown_version_gate.py", "not_a_fixture"],
-        )
-
-    assert "unknown R6 target-version fixture 'not_a_fixture'" in str(exc.value)
-    assert "removed_stdlib_modules_version_gate.py" in str(exc.value)
-
-
-def test_proof_queue_r6_target_version_parity_uses_target_tag() -> None:
-    spec = pact._r6_target_version_parity_spec("3.13")
+def test_r6_target_version_lane_spawns_under_its_declared_toolchains() -> None:
+    """A molt_diff run builds native code, so it must not be a leaf."""
+    spec = pact._named_lane_spec("r6.target-version-parity.py313")
     command = list(spec["command"])
 
     assert spec["logical_id"] == "r6-target-version-parity-py313"
     assert spec["contention_key"] == "python:r6-target-version-py313"
-    assert command[command.index("--python-version") + 1] == "3.13"
+    assert policy._proof_command_policy_error(command) is None
+    closure = command_admission.envelope_for_command(command)["process_closure"]
+    assert closure["kind"] == "named-lane"
+    assert closure["descendants"] == "declared-toolchains"
+    assert {"rustc", "cargo"} <= set(closure["toolchains"])
 
 
 def test_proof_queue_native_molt_run_is_queue_native(tmp_path: Path) -> None:
@@ -15389,27 +15340,18 @@ def test_proof_queue_r6_target_version_parity_print_spec(
                 str(tmp_path / "runs"),
                 "--repo-root",
                 str(state.ROOT),
-                "r6-target-version-parity",
-                "--python-version",
-                "3.13",
-                "--fixture",
-                "removed_stdlib_modules_version_gate.py",
+                "named-lane",
+                "r6.target-version-parity.py313",
                 "--print-spec",
             ]
         )
         == 0
     )
     spec = json.loads(capsys.readouterr().out)
-    assert (
-        spec["logical_id"]
-        == "r6-target-version-parity-py313-removed-stdlib-modules-version-gate"
-    )
-    assert spec["command"][spec["command"].index("--python-version") + 1] == "3.13"
-    assert "--fail-fast" in spec["command"]
-    assert spec["command"][-1] == (
-        "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"
-    )
+    assert spec["logical_id"] == "r6-target-version-parity-py313"
+    assert spec["command"] == pact.named_lane_argv("r6.target-version-parity.py313")
     assert spec["resource_family"] == "python"
+    assert not db.exists()
 
 
 def test_proof_queue_pact_witness_acceptance_admits_staged_extension_roots(
@@ -16789,8 +16731,11 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
     )
     for directory in (selected_dir, proxy_dir, explicit_dir):
         directory.mkdir()
+    # Windows runs only a suffixed image: an extensionless token selects it
+    # through PATHEXT, and the payload binds the image's own path.
+    image_name = name if name.endswith(".exe") else native_executable_name(name)
     selected, proxy, supplied = (
-        directory / name for directory in (selected_dir, proxy_dir, explicit_dir)
+        directory / image_name for directory in (selected_dir, proxy_dir, explicit_dir)
     )
     for path, content in (
         (selected, b"selected Cargo"),
@@ -16799,7 +16744,7 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
     ):
         path.write_bytes(content)
         path.chmod(0o755)
-    token = str(supplied) if explicit else name
+    token = str(explicit_dir / name) if explicit else name
     payload = [
         token,
         "build",
@@ -16865,7 +16810,9 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
     configured = execution_environment._execution_environment_executable_identities(
         env, cwd=state.ROOT
     )
-    assert configured["CARGO"]["executable"]["path"] == env["CARGO"]
+    assert configured["CARGO"]["executable"]["path"] == custody_spelling(
+        Path(env["CARGO"])
+    )
     if mode in {"py-module", "uv-module"}:
         exact = list(command)
     else:
@@ -16878,10 +16825,10 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
     assert actual == [str(expected), *payload[1:]]
     if mode != "direct":
         assert exact[1 : len(prefix)] == prefix[1:]
-        assert exact[len(prefix)] == str(
+        assert exact[len(prefix)] == custody_spelling(
             (state.ROOT / "tools/guarded_exec.py").resolve()
         )
-        assert delegated["path"] == str(expected)
+        assert delegated["path"] == custody_spelling(expected)
         assert delegated["sha256"] == hashlib.sha256(expected.read_bytes()).hexdigest()
     # Exercise the Cargo identity owner too, stopping only before its version probe.
     monkeypatch.setattr(
@@ -16892,7 +16839,7 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
     captured = command_identity._tool_identity(
         proof_plan.ProofPlan.load(), "cargo", envelope, exact, cwd=state.ROOT, env=env
     )
-    assert captured == {"selected": str(expected)}
+    assert captured == {"selected": custody_spelling(expected)}
 
 
 @pytest.mark.parametrize("selector", [None, "", "missing"])
@@ -16956,71 +16903,112 @@ def test_bound_cargo_executes_selected_child_instead_of_path_decoy(tmp_path):
     assert not decoy_marker.exists()
 
 
-@pytest.mark.parametrize("token", ["./cargo", "sub/../cargo"])
-def test_explicit_relative_executable_uses_command_cwd_not_path(
-    tmp_path, monkeypatch, token
-):
+def _cwd_and_ambient_cargo(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     selected_dir, ambient = tmp_path / "selected", tmp_path / "ambient"
     for directory in (selected_dir, ambient):
         directory.mkdir()
-        image = directory / "cargo"
+        image = directory / native_executable_name("cargo")
         image.write_bytes(directory.name.encode())
         image.chmod(0o755)
     (selected_dir / "sub").mkdir()
-    monkeypatch.chdir(ambient)
-    environment = {"PATH": str(ambient)}
-    expected = selected_dir / "cargo"
+    return selected_dir, {"PATH": str(ambient)}
+
+
+def test_explicit_relative_executable_uses_command_cwd_not_path(tmp_path, monkeypatch):
+    selected_dir, environment = _cwd_and_ambient_cargo(tmp_path)
+    monkeypatch.chdir(environment["PATH"])
+    token = "./" + native_executable_name("cargo")
+    expected = selected_dir / native_executable_name("cargo")
     assert (
         command_identity._resolve_outer_executable(
             token, cwd=selected_dir, env=environment
         )
         == expected
     )
-    assert (
-        execution_custody._resolve_child_executable(
-            token, environment, str(selected_dir)
-        )
-        == expected
+    child = execution_custody._resolve_child_executable(
+        token, environment, str(selected_dir)
     )
+    assert child is not None and str(child) == custody_spelling(expected)
+
+
+def test_parent_traversal_executable_is_refused_by_outer_and_child_custody(
+    tmp_path, monkeypatch
+):
+    selected_dir, environment = _cwd_and_ambient_cargo(tmp_path)
+    monkeypatch.chdir(environment["PATH"])
+    with pytest.raises(ValueError, match="parent traversal"):
+        command_identity._resolve_outer_executable(
+            "sub/../cargo", cwd=selected_dir, env=environment
+        )
+    with pytest.raises(ValueError, match="parent traversal"):
+        execution_custody._resolve_child_executable(
+            "sub/../cargo", environment, str(selected_dir)
+        )
 
 
 def test_relative_execution_path_entries_use_command_cwd(tmp_path, monkeypatch):
     selected, ambient = tmp_path / "selected", tmp_path / "ambient"
     for directory in (selected, ambient):
         (directory / "bin").mkdir(parents=True)
-        image = directory / "bin/cargo"
+        image = directory / "bin" / native_executable_name("cargo")
         image.write_bytes(directory.name.encode())
         image.chmod(0o755)
     monkeypatch.chdir(ambient)
     environment = {"PATH": "bin"}
-    expected = selected / "bin/cargo"
+    expected = selected / "bin" / native_executable_name("cargo")
     assert (
         command_identity._resolve_outer_executable(
             "cargo", cwd=selected, env=environment
         )
         == expected
     )
-    assert (
-        execution_custody._resolve_child_executable("cargo", environment, str(selected))
-        == expected
+    child = execution_custody._resolve_child_executable(
+        "cargo", environment, str(selected)
     )
+    assert child is not None and str(child) == custody_spelling(expected)
 
 
 def test_child_explicit_environment_without_path_does_not_inherit_parent_path(
     tmp_path, monkeypatch
 ):
     # CPython os.get_exec_path({}) selects os.defpath, not the parent's PATH.
-    name = "molt-only-in-parent-path" + (".exe" if os.name == "nt" else "")
-    decoy = tmp_path / name
+    # Windows os.defpath begins with ".", so the child cwd stays separate from
+    # the parent PATH directory that holds the decoy.
+    parent_path, child_cwd = tmp_path / "parent-path", tmp_path / "child-cwd"
+    parent_path.mkdir()
+    child_cwd.mkdir()
+    name = native_executable_name("molt-only-in-parent-path")
+    decoy = parent_path / name
     decoy.write_bytes(b"ambient executable must not be selected")
     decoy.chmod(0o755)
-    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("PATH", str(parent_path))
     assert os.get_exec_path({}) == os.defpath.split(os.pathsep)
-    assert execution_custody._resolve_child_executable(name, {}, str(tmp_path)) is None
-    assert (
-        execution_custody._resolve_child_executable(name, None, str(tmp_path))
-        == decoy.resolve()
-    )
+    assert execution_custody._resolve_child_executable(name, {}, str(child_cwd)) is None
+    inherited = execution_custody._resolve_child_executable(name, None, str(child_cwd))
+    assert inherited is not None and str(inherited) == custody_spelling(decoy)
+
+
+def test_absent_custody_file_is_the_owner_typed_refusal_on_every_host(tmp_path):
+    # Windows custody looks up real directory entries; POSIX custody is
+    # lexical. An absent image must reach each owner's typed refusal on both
+    # hosts, never a host-specific lookup error.
+    tool = tmp_path / native_executable_name("present-tool")
+    tool.write_bytes(b"present image")
+    tool.chmod(0o755)
+    missing = tmp_path / "absent-directory" / native_executable_name("absent-tool")
+    assert process_image_capture.custody_file(missing) is None
+    assert process_image_capture.custody_file(tmp_path) is None
+    assert str(process_image_capture.custody_file(tool)) == custody_spelling(tool)
+    image = process_image_capture.capture_image("tool", tool)
+    tool.unlink()
+    with pytest.raises(ValueError, match="process image is unavailable"):
+        process_image_capture.canonical_images([image])
+    with pytest.raises(ValueError, match="supervisor root executable is unavailable"):
+        supervisor_custody._supervisor_fixed_images({}, {}, [str(tool)])
+    with pytest.raises(ValueError, match="CLANG_PATH must name one executable file"):
+        toolchain_capture.select_cargo_build_tool_environment(
+            cwd=tmp_path, env={"CLANG_PATH": str(missing)}
+        )
 
 
 def test_native_c_registration_is_canonical_and_persisted_envelope_cannot_drop_it():

@@ -7,7 +7,6 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 import enum as _enum
 
-_require_intrinsic("molt_stdlib_probe")
 
 # Signal constants from Rust intrinsics
 _MOLT_SIGNAL_SIG_DFL = _require_intrinsic("molt_signal_sig_dfl")

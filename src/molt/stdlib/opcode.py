@@ -26,10 +26,7 @@ __all__ = [
     "EXTENDED_ARG",
 ]
 
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
 _MOLT_OPCODE_PAYLOAD_312_JSON = _require_intrinsic("molt_opcode_payload_312_json")
-
-_MOLT_IMPORT_SMOKE_RUNTIME_READY()
 
 
 __all__.append("stack_effect")

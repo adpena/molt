@@ -7,21 +7,18 @@ from pathlib import Path
 
 import pytest
 
+from molt.dx import development_artifact_env
 from tests.native_process_guard import run_native_test_process
 
 
 def _native_molt_env(root: Path) -> dict[str, str]:
-    env = os.environ.copy()
+    env = development_artifact_env(
+        root,
+        os.environ,
+        session_prefix="test-gpu-kv-cache",
+        session_id="test-gpu-kv-cache",
+    )
     env["PYTHONPATH"] = str(root / "src")
-    env["MOLT_EXT_ROOT"] = str(root)
-    env["MOLT_SESSION_ID"] = "test-gpu-kv-cache"
-    env["CARGO_TARGET_DIR"] = str(root / "target" / "test-gpu-kv-cache")
-    env["MOLT_DIFF_CARGO_TARGET_DIR"] = env["CARGO_TARGET_DIR"]
-    env["MOLT_CACHE"] = str(root / ".molt_cache")
-    env["MOLT_DIFF_ROOT"] = str(root / "tmp" / "diff")
-    env["MOLT_DIFF_TMPDIR"] = str(root / "tmp")
-    env["UV_CACHE_DIR"] = str(root / ".uv-cache")
-    env["TMPDIR"] = str(root / "tmp")
     env["MOLT_HERMETIC_MODULE_ROOTS"] = "1"
     env["MOLT_BACKEND_DAEMON"] = "0"
     return env

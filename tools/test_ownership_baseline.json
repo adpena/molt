@@ -5,7 +5,6 @@
   "tests/cli/test_cli_runtime_tk_feature_plumbing.py",
   "tests/cli/test_compiler_source_root.py",
   "tests/cli/test_llvm_wasi_tools.py",
-  "tests/cli/test_runtime_native_generation.py",
   "tests/cli/test_source_extension_reproducibility.py",
   "tests/cli/test_traceback_carets.py",
   "tests/e2e/test_adversarial_ocr.py",
@@ -113,7 +112,6 @@
   "tests/test_wasm_split_runtime_imported_module.py",
   "tests/test_wasm_threading_gate.py",
   "tests/tools/test_artifact_cleanup.py",
-  "tests/tools/test_named_lanes.py",
   "tests/tools/test_orphan_reaper.py",
   "tests/tools/test_perf_history.py"
  ]

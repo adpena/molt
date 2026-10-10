@@ -153,10 +153,3 @@ def _webp(h):
 def _exr(h):
     if h.startswith(b"\x76\x2f\x31\x01"):
         return "exr"
-
-
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_require_intrinsic("molt_capabilities_has")
-
-globals().pop("_require_intrinsic", None)

@@ -11811,8 +11811,10 @@ def test_backend_ir_lease_streams_json_without_bytes_helper(
         ),
     )
 
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
     lease_path = cli._write_backend_ir_lease(
-        tmp_path,
+        tmp_path / "project",
         {
             "functions": [
                 {
@@ -11824,7 +11826,7 @@ def test_backend_ir_lease_streams_json_without_bytes_helper(
         },
     )
 
-    assert lease_path.parent == tmp_path / "tmp" / "backend-ir-leases"
+    assert lease_path.parent == artifacts.resolve() / "tmp" / "backend-ir-leases"
     payload = json.loads(lease_path.read_text(encoding="utf-8"))
     assert payload["functions"][0]["name"] == "main"
 
@@ -18554,6 +18556,8 @@ def test_build_one_shot_backend_compile_uses_ir_file_lease(
     backend_bin = tmp_path / "fake-backend"
     backend_bin.write_text("", encoding="utf-8")
 
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
@@ -18590,7 +18594,9 @@ def test_build_one_shot_backend_compile_uses_ir_file_lease(
     assert len(backend_inputs) == 1
     assert backend_inputs[0] is None
     assert len(backend_ir_files) == 1
-    assert backend_ir_files[0].parent == project / "tmp" / "backend-ir-leases"
+    assert backend_ir_files[0].parent == (
+        artifacts.resolve() / "tmp" / "backend-ir-leases"
+    )
     assert not backend_ir_files[0].exists()
 
 
@@ -19038,6 +19044,53 @@ def test_email_message_static_helper_scan_includes_policy_default_only() -> None
     assert "email.policy" not in module_init
     assert "email.policy" in helper_scan
     assert "email.generator" not in helper_scan
+
+
+def test_argparse_static_helper_scan_includes_formatter_imports() -> None:
+    # Usage and help formatting (every parse error prints usage) imports
+    # shutil and textwrap lazily; `append` defaults import copy.
+    tree = ast.parse((ROOT / "src/molt/stdlib/argparse.py").read_text(encoding="utf-8"))
+    lazy = {"copy", "shutil", "textwrap"}
+
+    module_init = set(
+        cli_module_import_scanner._collect_imports(
+            tree,
+            module_name="argparse",
+            import_scan_mode="module_init",
+        )
+    )
+    helper_scan = set(
+        cli_module_import_scanner._collect_imports(
+            tree,
+            module_name="argparse",
+            import_scan_mode="module_init_static_helpers",
+        )
+    )
+
+    assert lazy.isdisjoint(module_init)
+    assert lazy <= helper_scan
+
+
+def test_unittest_case_static_helper_scan_includes_assert_logs_context() -> None:
+    # unittest.case imports its siblings relatively, so the strict collector
+    # needs runtime custody; the graph projection carries the candidates.
+    tree = ast.parse(
+        (ROOT / "src/molt/stdlib/unittest/case.py").read_text(encoding="utf-8")
+    )
+
+    def graph_imports(import_scan_mode: str) -> set[str]:
+        projection = cli_module_import_scanner._collect_imports_for_graph(
+            tree,
+            module_name="unittest.case",
+            is_package=False,
+            import_scan_mode=import_scan_mode,
+        )
+        return set(projection.imports) | set(
+            projection.dynamic_relative_import_candidates
+        )
+
+    assert "unittest._log" not in graph_imports("module_init")
+    assert "unittest._log" in graph_imports("module_init_static_helpers")
 
 
 def test_stdlib_module_init_scan_excludes_lazy_regex_and_struct_edges() -> None:

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 
+from tests.process_guard_common import run_guarded_test_process
 import molt.dx as dx
 from molt import custody_layout
 import pytest
@@ -868,6 +870,166 @@ def test_clone_outside_a_checkout_family_keeps_scratch_out_of_the_source_tree(
     assert Path(env["TMPDIR"]) == custody_layout.out_of_tree_scratch_root(repo_root)
 
 
+def _family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """A durable checkout family, wherever the host keeps its temp root.
+
+    A project beneath the OS temp root has explicit scratch custody, and on a
+    hosted runner every ``tmp_path`` is beneath it, so the host temp root moves
+    to an unrelated directory.
+    """
+    monkeypatch.setattr(
+        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
+    family = tmp_path / "Molt"
+    lane = family / "worktrees" / "lane"
+    lane.mkdir(parents=True)
+    return family.resolve(), lane.resolve()
+
+
+def test_artifact_root_is_what_canonical_env_exports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    family, lane = _family(tmp_path, monkeypatch)
+    explicit = tmp_path / "external"
+
+    # Unset: the family root, never the worktree.
+    assert dx.artifact_root(lane, {}) == family
+    # Set: the operator's root; a relative value anchors at the checkout.
+    assert dx.artifact_root(lane, {"MOLT_EXT_ROOT": str(explicit)}) == (
+        explicit.resolve()
+    )
+    assert dx.artifact_root(lane, {"MOLT_EXT_ROOT": "out"}) == lane / "out"
+    for env in ({}, {"MOLT_EXT_ROOT": str(explicit)}):
+        exported = RunContext(lane).canonical_env(env, create_dirs=False)
+        assert Path(exported["MOLT_EXT_ROOT"]) == dx.artifact_root(lane, env)
+
+
+def test_configured_artifact_root_is_none_when_unset_or_blank(tmp_path: Path) -> None:
+    assert dx.configured_artifact_root({}, relative_to=tmp_path) is None
+    assert dx.configured_artifact_root(
+        {"MOLT_EXT_ROOT": " "}, relative_to=tmp_path
+    ) is (None)
+    assert (
+        dx.configured_artifact_root({"MOLT_EXT_ROOT": "rel"}, relative_to=tmp_path)
+        == (tmp_path / "rel").resolve()
+    )
+
+
+def test_artifact_root_refuses_the_checkout_when_external_is_required(
+    tmp_path: Path,
+) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with pytest.raises(dx.DxConfigError, match="outside the checkout"):
+        dx.artifact_root(
+            clone,
+            {"MOLT_EXT_ROOT": str(clone), "MOLT_REQUIRE_EXTERNAL_ARTIFACTS": "1"},
+        )
+
+
+def test_scratch_dir_and_tmpdir_share_one_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    family, lane = _family(tmp_path, monkeypatch)
+
+    assert dx.scratch_root(lane, {}) == family / "tmp"
+    assert dx.scratch_dir(lane, "bench", {}) == family / "tmp" / "bench"
+    assert dx.scratch_dir(lane, "runtime_safety/miri", {}) == (
+        family / "tmp" / "runtime_safety" / "miri"
+    )
+    exported = RunContext(lane).canonical_env({}, create_dirs=False)
+    assert Path(exported["TMPDIR"]) == dx.scratch_root(lane, {})
+
+
+@pytest.mark.parametrize("purpose", ["", "/abs", "a/../b", "a//b", ".", "a\\b"])
+def test_scratch_purpose_must_be_a_relative_name(tmp_path: Path, purpose: str) -> None:
+    with pytest.raises(ValueError, match="relative name"):
+        dx.scratch_dir(tmp_path, purpose, {})
+
+
+def test_scratch_never_lands_in_a_plain_clone(tmp_path: Path) -> None:
+    clone = tmp_path / "src" / "clone"
+    clone.mkdir(parents=True)
+    for env in ({}, {"MOLT_EXT_ROOT": str(clone)}):
+        for path in (
+            dx.scratch_root(clone, env),
+            dx.scratch_dir(clone, "bench", env),
+            dx.control_state_dir(clone, "memory_guard", env),
+            dx.proof_scratch_root(clone, env),
+        ):
+            assert clone.resolve() not in (path, *path.parents), (env, path)
+
+
+def test_memory_storage_moves_scratch_but_not_control_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    family, lane = _family(tmp_path, monkeypatch)
+    ram = tmp_path / "ram"
+    ram.mkdir()
+    env = {"MOLT_SCRATCH_STORAGE": str(ram)}
+
+    scratch = dx.scratch_root(lane, env)
+    assert scratch.parent == ram.resolve()
+    assert dx.scratch_dir(lane, "gs", env) == scratch / "gs"
+    # Locks and guard markers stay where every process looks for them.
+    assert dx.control_state_dir(lane, "memory_guard", env) == (
+        family / "tmp" / "memory_guard"
+    )
+    exported = RunContext(lane).canonical_env(env, create_dirs=False)
+    assert Path(exported["TMPDIR"]) == scratch
+    assert Path(exported["MOLT_DIFF_ROOT"]) == scratch / "diff"
+
+    shm = tmp_path / "shm"
+    shm.mkdir()
+    monkeypatch.setattr(dx, "SHARED_MEMORY_ROOT", shm)
+    assert dx.scratch_root(lane, {"MOLT_SCRATCH_STORAGE": "memory"}).parent == (
+        shm.resolve()
+    )
+
+
+@pytest.mark.parametrize("raw", ["", "disk"])
+def test_disk_storage_is_the_default(raw: str) -> None:
+    storage = dx.scratch_storage({"MOLT_SCRATCH_STORAGE": raw})
+    assert storage.mode == "disk"
+    assert storage.memory_root is None
+
+
+def test_memory_storage_never_creates_a_ram_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing = tmp_path / "not-mounted"
+    with pytest.raises(dx.DxConfigError, match="never creates or mounts"):
+        dx.scratch_storage({"MOLT_SCRATCH_STORAGE": str(missing)})
+    assert not missing.exists()
+    monkeypatch.setattr(dx, "SHARED_MEMORY_ROOT", missing)
+    with pytest.raises(dx.DxConfigError, match="does not have"):
+        dx.scratch_storage({"MOLT_SCRATCH_STORAGE": "memory"})
+    with pytest.raises(dx.DxConfigError, match="absolute path"):
+        dx.scratch_storage({"MOLT_SCRATCH_STORAGE": "ram"})
+
+
+def test_memory_storage_inside_the_checkout_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _family_root, lane = _family(tmp_path, monkeypatch)
+    inside = lane / "ram"
+    inside.mkdir()
+    with pytest.raises(dx.DxConfigError, match="outside the checkout"):
+        dx.scratch_root(lane, {"MOLT_SCRATCH_STORAGE": str(inside)})
+
+
+def test_proof_scratch_root_prefers_the_queue_issued_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    family, lane = _family(tmp_path, monkeypatch)
+    issued = tmp_path / "queue" / "scratch"
+
+    assert dx.proof_scratch_root(lane, {}) == family / "tmp"
+    assert dx.proof_scratch_root(lane, {"MOLT_PROOF_SCRATCH_ROOT": str(issued)}) == (
+        issued.resolve()
+    )
+
+
 def test_run_context_keeps_explicit_d_scratch_out_of_toolchain_custody(
     monkeypatch,
     tmp_path: Path,
@@ -1350,3 +1512,57 @@ def test_render_env_spells_hyphenated_names_per_shell() -> None:
 
     with pytest.raises(dx.DxConfigError, match="no underscore spelling"):
         dx.render_env({"ORPHAN-NAME": "x"}, ("ORPHAN-NAME",), "posix")
+
+
+def _git(repo: Path, *args: str) -> str:
+    completed = run_guarded_test_process(
+        ["git", "-C", str(repo), *args],
+        env={
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        },
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout.strip()
+
+
+@pytest.mark.parametrize("layout", ["branch", "packed", "detached", "worktree"])
+def test_checkout_head_is_read_from_git_files_without_git_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str
+) -> None:
+    if shutil.which("git") is None:
+        pytest.skip("git is required to build the oracle repository")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-q", "-m", "a")
+    checkout = repo
+    if layout == "packed":
+        _git(repo, "pack-refs", "--all")
+        assert not (repo / ".git" / "refs" / "heads" / "main").exists()
+    elif layout == "detached":
+        _git(repo, "checkout", "-q", "--detach")
+    elif layout == "worktree":
+        checkout = tmp_path / "linked"
+        _git(repo, "worktree", "add", "-q", "-b", "lane", str(checkout))
+        (checkout / "b.txt").write_text("b\n", encoding="utf-8")
+        _git(checkout, "add", "b.txt")
+        _git(checkout, "commit", "-q", "-m", "b")
+    oracle = _git(checkout, "rev-parse", "HEAD")
+    # Reading HEAD must not depend on a git executable.
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    assert dx.git_checkout_head(checkout) == oracle
+
+
+def test_checkout_head_refuses_an_unreadable_layout(tmp_path: Path) -> None:
+    (tmp_path / ".git").write_text("not a gitdir pointer\n", encoding="utf-8")
+    assert dx.git_checkout_head(tmp_path) is None
+    assert dx.git_checkout_head(tmp_path / "missing") is None

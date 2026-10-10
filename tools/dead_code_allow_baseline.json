@@ -1,6 +1,11 @@
 {
-  "baseline_total": 135,
+  "baseline_total": 133,
   "entries": [
+    {
+      "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::inner",
+      "owner": "runtime-authority-closure",
+      "waiver": "build-support source included by the molt-runtime and molt-cpython-abi build scripts through #[path]; each script uses a subset"
+    },
     {
       "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::emitted-by:write_unicode_range_module",
       "owner": "runtime-authority-closure",
@@ -8,11 +13,6 @@
     },
     {
       "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::emitted-by:write_unicode_titlecase_module",
-      "owner": "runtime-authority-closure",
-      "waiver": "build-support source included by the molt-runtime and molt-cpython-abi build scripts through #[path]; each script uses a subset"
-    },
-    {
-      "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::inner",
       "owner": "runtime-authority-closure",
       "waiver": "build-support source included by the molt-runtime and molt-cpython-abi build scripts through #[path]; each script uses a subset"
     },
@@ -42,12 +42,12 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/numeric_runtime_selector.rs::allow_dead_code::const:WASM_NUMERIC_RUNTIME_SELECTORS",
+      "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/numeric_runtime_selector.rs::allow_dead_code::struct:WasmNumericRuntimeSelectorSpec",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/numeric_runtime_selector.rs::allow_dead_code::struct:WasmNumericRuntimeSelectorSpec",
+      "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/numeric_runtime_selector.rs::allow_dead_code::const:WASM_NUMERIC_RUNTIME_SELECTORS",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
@@ -62,12 +62,12 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-cpython-abi/src/api/strings.rs::allow_dead_code::mod:unicode_decimal_table",
+      "id": "runtime/molt-cpython-abi/src/api/strings.rs::allow_dead_code::mod:unicode_digit_table",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-cpython-abi/src/api/strings.rs::allow_dead_code::mod:unicode_digit_table",
+      "id": "runtime/molt-cpython-abi/src/api/strings.rs::allow_dead_code::mod:unicode_decimal_table",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
@@ -77,12 +77,12 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-cpython-abi/src/api/strings.rs::allow_dead_code::mod:unicode_printable_table",
+      "id": "runtime/molt-cpython-abi/src/api/strings.rs::allow_dead_code::mod:unicode_space_table",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-cpython-abi/src/api/strings.rs::allow_dead_code::mod:unicode_space_table",
+      "id": "runtime/molt-cpython-abi/src/api/strings.rs::allow_dead_code::mod:unicode_printable_table",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
@@ -93,31 +93,6 @@
     },
     {
       "id": "runtime/molt-cpython-abi/tests/support/fake_strings.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "test-support source compiled into several test crates; each crate uses a subset"
-    },
-    {
-      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::fn:enter_abi_test",
-      "owner": "runtime-authority-closure",
-      "waiver": "test-support source compiled into several test crates; each crate uses a subset"
-    },
-    {
-      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::fn:enter_runtime_class_abi_test",
-      "owner": "runtime-authority-closure",
-      "waiver": "test-support source compiled into several test crates; each crate uses a subset"
-    },
-    {
-      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::fn:stub_runtime_hooks",
-      "owner": "runtime-authority-closure",
-      "waiver": "test-support source compiled into several test crates; each crate uses a subset"
-    },
-    {
-      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::fn:take_current_error_text",
-      "owner": "runtime-authority-closure",
-      "waiver": "test-support source compiled into several test crates; each crate uses a subset"
-    },
-    {
-      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::impl:StaticType",
       "owner": "runtime-authority-closure",
       "waiver": "test-support source compiled into several test crates; each crate uses a subset"
     },
@@ -152,6 +127,36 @@
       "waiver": "test-support source compiled into several test crates; each crate uses a subset"
     },
     {
+      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::impl:StaticType",
+      "owner": "runtime-authority-closure",
+      "waiver": "test-support source compiled into several test crates; each crate uses a subset"
+    },
+    {
+      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::fn:stub_runtime_hooks",
+      "owner": "runtime-authority-closure",
+      "waiver": "test-support source compiled into several test crates; each crate uses a subset"
+    },
+    {
+      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::fn:enter_abi_test",
+      "owner": "runtime-authority-closure",
+      "waiver": "test-support source compiled into several test crates; each crate uses a subset"
+    },
+    {
+      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::fn:enter_runtime_class_abi_test",
+      "owner": "runtime-authority-closure",
+      "waiver": "test-support source compiled into several test crates; each crate uses a subset"
+    },
+    {
+      "id": "runtime/molt-cpython-abi/tests/support/mod.rs::allow_dead_code::fn:take_current_error_text",
+      "owner": "runtime-authority-closure",
+      "waiver": "test-support source compiled into several test crates; each crate uses a subset"
+    },
+    {
+      "id": "runtime/molt-gpu/src/device/ane.rs::allow_dead_code::struct:IOSurfaceBuffer",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
       "id": "runtime/molt-gpu/src/device/ane.rs::allow_dead_code::fn:as_ptr",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
@@ -162,17 +167,12 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-gpu/src/device/ane.rs::allow_dead_code::struct:IOSurfaceBuffer",
+      "id": "runtime/molt-gpu/src/device/mod.rs::allow_dead_code::field:handle",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
       "id": "runtime/molt-gpu/src/device/mod.rs::allow_dead_code::enum:ProgramHandle",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-gpu/src/device/mod.rs::allow_dead_code::field:handle",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
@@ -202,9 +202,254 @@
       "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, included into several crates; each uses a subset"
     },
     {
-      "id": "runtime/molt-runtime-collections/src/argparse.rs::allow_dead_code::inner",
+      "id": "runtime/molt-runtime/src/async_rt/sockets/state.rs::allow_dead_code::field:sock_type",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/async_rt/sockets/state.rs::allow_dead_code::field:proto",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/async_rt/sockets/state.rs::allow_dead_code::fn:is_stream",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/async_rt/sockets.rs::allow_dead_code::fn:require_net_capability",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/bridge.rs::allow_dead_code::inner",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/fcntl.rs::allow_dead_code::inner",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs::allow_dead_code::inner",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/functions.rs::allow_dead_code::fn:alloc_string_tuple",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/functions.rs::allow_dead_code::fn:alloc_qsl_list",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/functions.rs::allow_dead_code::fn:alloc_qs_dict",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/module_table.rs::allow_dead_code::const:MODULE_KIND_NAMESPACE_PARENT",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/module_table.rs::allow_dead_code::const:MODULE_FLAG_REINIT_RESURRECT",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/module_table.rs::allow_dead_code::field:module_flags",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/module_table.rs::allow_dead_code::fn:legacy_cache_del",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/module_table.rs::allow_dead_code::fn:module_table_view_tombstone",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/platform.rs::allow_dead_code::fn:call_path_entry_finder_find_spec",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/platform.rs::allow_dead_code::fn:importlib_find_spec_via_path_hooks",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/platform_mod.rs::allow_dead_code::inner",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/platform_tests.rs::allow_dead_code::mod:cargo_test_artifacts",
+      "owner": "runtime-test-support",
+      "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs; resolver admission tests use the artifact directory subset"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/select.rs::allow_dead_code::field:kind",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/shutil.rs::allow_dead_code::inner",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/signal_ext.rs::allow_dead_code::inner",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/ssl.rs::allow_dead_code::inner",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/ssl.rs::allow_dead_code::const:PURPOSE_CLIENT_AUTH",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/subprocess_ext.rs::allow_dead_code::inner",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/builtins/tempfile_mod.rs::allow_dead_code::inner",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/c_api/cpython_abi_wasm_exports.rs::allow_dead_code::inner",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/c_api/mod.rs::allow_dead_code::inner",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/call/bind/arguments.rs::allow_dead_code::fn:callargs_positional_snapshot",
+      "owner": "runtime-authority-closure",
+      "waiver": "used only by molt-gpu-runtime and unit tests; cfg-gate it to those users (HF-87)"
+    },
+    {
+      "id": "runtime/molt-runtime/src/intrinsics/mod.rs::allow_dead_code::mod:generated",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/intrinsics/registry.rs::allow_dead_code::fn:manifest_snapshot",
+      "owner": "runtime-authority-closure",
+      "waiver": "used only on wasm32 and in unit tests; cfg-gate it to those targets (HF-87)"
+    },
+    {
+      "id": "runtime/molt-runtime/src/intrinsics/registry.rs::allow_dead_code::fn:manifest_bytes",
+      "owner": "runtime-authority-closure",
+      "waiver": "used only on wasm32 and in unit tests; cfg-gate it to those targets (HF-87)"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/layout.rs::allow_dead_code::fn:function_fn_ptr",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/layout.rs::allow_dead_code::fn:function_arity",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/layout.rs::allow_dead_code::fn:function_trampoline_ptr",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/layout.rs::allow_dead_code::fn:function_globals_bits",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/mod.rs::allow_dead_code::mod:heap_kinds_generated",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/mod.rs::allow_dead_code::mod:string_intern",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/mod.rs::allow_dead_code::mod:type_ids",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/mod.rs::allow_dead_code::field:closefd",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/mod.rs::allow_dead_code::field:buffer_size",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/ops_builtins.rs::allow_dead_code::fn:direct_call_1",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/ops_builtins.rs::allow_dead_code::fn:direct_call_2",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/ops_builtins.rs::allow_dead_code::fn:direct_call_3",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/ops_encoding.rs::allow_dead_code::fn:encode_utf16",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/ops_encoding.rs::allow_dead_code::fn:encode_utf32",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/ops_encoding.rs::allow_dead_code::fn:push_backslash_bytes",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/object/ops_format.rs::allow_dead_code::fn:format_string_repr",
+      "owner": "runtime-authority-closure",
+      "waiver": "legacy dead-code mask; owner must wire or delete"
+    },
+    {
+      "id": "runtime/molt-runtime/src/test_support.rs::allow_dead_code::mod:cargo_test_artifacts",
+      "owner": "runtime-authority-closure",
+      "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, included into several crates; each uses a subset"
+    },
+    {
+      "id": "runtime/molt-runtime/tests/debug_call_bind.rs::allow_dead_code::mod:cargo_test_artifacts",
+      "owner": "runtime-authority-closure",
+      "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, included into several crates; each uses a subset"
     },
     {
       "id": "runtime/molt-runtime-collections/src/collections_ext.rs::allow_dead_code::inner",
@@ -222,12 +467,12 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-runtime-constants/src/constants.rs::allow_dead_code::fn:wasm_table_base",
+      "id": "runtime/molt-runtime-constants/src/constants.rs::allow_dead_code::inner",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-runtime-constants/src/constants.rs::allow_dead_code::inner",
+      "id": "runtime/molt-runtime-constants/src/constants.rs::allow_dead_code::fn:wasm_table_base",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
@@ -242,12 +487,12 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-runtime-crypto/src/hmac.rs::allow_dead_code::field:block_size",
+      "id": "runtime/molt-runtime-crypto/src/hmac.rs::allow_dead_code::field:digest_size",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-runtime-crypto/src/hmac.rs::allow_dead_code::field:digest_size",
+      "id": "runtime/molt-runtime-crypto/src/hmac.rs::allow_dead_code::field:block_size",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
@@ -327,12 +572,12 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-runtime-serial/src/configparser.rs::allow_dead_code::fn:_suppress",
+      "id": "runtime/molt-runtime-serial/src/configparser.rs::allow_dead_code::inner",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-runtime-serial/src/configparser.rs::allow_dead_code::inner",
+      "id": "runtime/molt-runtime-serial/src/configparser.rs::allow_dead_code::fn:_suppress",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
@@ -402,261 +647,6 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-runtime/src/async_rt/sockets.rs::allow_dead_code::fn:require_net_capability",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/async_rt/sockets/state.rs::allow_dead_code::field:proto",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/async_rt/sockets/state.rs::allow_dead_code::field:sock_type",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/async_rt/sockets/state.rs::allow_dead_code::fn:is_stream",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/bridge.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/fcntl.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/functions.rs::allow_dead_code::fn:alloc_qs_dict",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/functions.rs::allow_dead_code::fn:alloc_qsl_list",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/functions.rs::allow_dead_code::fn:alloc_string_tuple",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/module_table.rs::allow_dead_code::const:MODULE_FLAG_REINIT_RESURRECT",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/module_table.rs::allow_dead_code::const:MODULE_KIND_NAMESPACE_PARENT",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/module_table.rs::allow_dead_code::field:module_flags",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/module_table.rs::allow_dead_code::fn:legacy_cache_del",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/module_table.rs::allow_dead_code::fn:module_table_view_tombstone",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/platform.rs::allow_dead_code::fn:call_path_entry_finder_find_spec",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/platform.rs::allow_dead_code::fn:importlib_find_spec_via_path_hooks",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/platform_mod.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/platform_tests.rs::allow_dead_code::mod:cargo_test_artifacts",
-      "owner": "runtime-test-support",
-      "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs; resolver admission tests use the artifact directory subset"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/select.rs::allow_dead_code::field:kind",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/shutil.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/signal_ext.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/ssl.rs::allow_dead_code::const:PURPOSE_CLIENT_AUTH",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/ssl.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/subprocess_ext.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/builtins/tempfile_mod.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/c_api/cpython_abi_wasm_exports.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/c_api/mod.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/call/bind/arguments.rs::allow_dead_code::fn:callargs_positional_snapshot",
-      "owner": "runtime-authority-closure",
-      "waiver": "used only by molt-gpu-runtime and unit tests; cfg-gate it to those users (HF-87)"
-    },
-    {
-      "id": "runtime/molt-runtime/src/intrinsics/mod.rs::allow_dead_code::mod:generated",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/intrinsics/registry.rs::allow_dead_code::fn:manifest_bytes",
-      "owner": "runtime-authority-closure",
-      "waiver": "used only on wasm32 and in unit tests; cfg-gate it to those targets (HF-87)"
-    },
-    {
-      "id": "runtime/molt-runtime/src/intrinsics/registry.rs::allow_dead_code::fn:manifest_snapshot",
-      "owner": "runtime-authority-closure",
-      "waiver": "used only on wasm32 and in unit tests; cfg-gate it to those targets (HF-87)"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/layout.rs::allow_dead_code::fn:function_arity",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/layout.rs::allow_dead_code::fn:function_fn_ptr",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/layout.rs::allow_dead_code::fn:function_globals_bits",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/layout.rs::allow_dead_code::fn:function_trampoline_ptr",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/mod.rs::allow_dead_code::field:buffer_size",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/mod.rs::allow_dead_code::field:closefd",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/mod.rs::allow_dead_code::mod:heap_kinds_generated",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/mod.rs::allow_dead_code::mod:string_intern",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/mod.rs::allow_dead_code::mod:type_ids",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/ops_builtins.rs::allow_dead_code::fn:direct_call_1",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/ops_builtins.rs::allow_dead_code::fn:direct_call_2",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/ops_builtins.rs::allow_dead_code::fn:direct_call_3",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/ops_encoding.rs::allow_dead_code::fn:encode_utf16",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/ops_encoding.rs::allow_dead_code::fn:encode_utf32",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/ops_encoding.rs::allow_dead_code::fn:push_backslash_bytes",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/object/ops_format.rs::allow_dead_code::fn:format_string_repr",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-runtime/src/test_support.rs::allow_dead_code::mod:cargo_test_artifacts",
-      "owner": "runtime-authority-closure",
-      "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, included into several crates; each uses a subset"
-    },
-    {
-      "id": "runtime/molt-runtime/tests/debug_call_bind.rs::allow_dead_code::mod:cargo_test_artifacts",
-      "owner": "runtime-authority-closure",
-      "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, included into several crates; each uses a subset"
-    },
-    {
-      "id": "runtime/molt-stdlib-difflib/src/lib.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
       "id": "runtime/molt-stdlib-graphlib/src/lib.rs::allow_dead_code::inner",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
@@ -667,12 +657,12 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-tir/src/passes/constant_fold.rs::allow_dead_code::fn:fold_constants_cross_block",
+      "id": "runtime/molt-tir/src/passes/constant_fold.rs::allow_dead_code::struct:BranchSnapshot",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-tir/src/passes/constant_fold.rs::allow_dead_code::struct:BranchSnapshot",
+      "id": "runtime/molt-tir/src/passes/constant_fold.rs::allow_dead_code::fn:fold_constants_cross_block",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     }

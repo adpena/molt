@@ -808,7 +808,11 @@ def main() -> int:
         )
 
     def measure_molt_build(label: str, target: str) -> None:
-        from molt.cli.default_paths import _default_home_str, _default_molt_home_cached
+        from molt.cli.default_paths import (
+            _configured_artifact_root_text,
+            _default_home_str,
+            _default_molt_home_cached,
+        )
 
         source_name = molt_source.name
         phases = []
@@ -824,7 +828,7 @@ def main() -> int:
                 str(REPO_ROOT),
                 _default_home_str(),
                 sys.platform,
-                env.get("MOLT_EXT_ROOT"),
+                _configured_artifact_root_text(env),
             ).resolve()
         )
         reuse_outer_guard = _outer_memory_guard_reuse_enabled(env)

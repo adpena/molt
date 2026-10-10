@@ -29,14 +29,12 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from molt.artifact_publication import atomic_write_json  # noqa: E402
+from molt.dx import scratch_dir  # noqa: E402
 from molt.cli.python_source_closure import (  # noqa: E402
     LocalPythonSourceClosure,
     local_python_import_closure,
     python_source_closure_cache_path,
 )
-
-
-DEFAULT_OUTPUT = ROOT / "tmp" / "python_source_closure" / "profile.json"
 
 
 def _batch(
@@ -160,7 +158,7 @@ def main() -> int:
     )
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--iterations", type=int, default=1)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
     payload = profile_closure(
         ROOT,
@@ -170,7 +168,8 @@ def main() -> int:
         workers=args.workers,
         iterations=args.iterations,
     )
-    atomic_write_json(args.output.resolve(), payload, sort_keys=True)
+    output = args.output or scratch_dir(ROOT, "python_source_closure") / "profile.json"
+    atomic_write_json(output.resolve(), payload, sort_keys=True)
     print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
     return 0
 

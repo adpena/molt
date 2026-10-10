@@ -4,7 +4,6 @@ import abc
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe")
 _MOLT_IMPORTLIB_LOAD_MODULE_SHIM = _require_intrinsic("molt_importlib_load_module_shim")
 from . import _bootstrap
 

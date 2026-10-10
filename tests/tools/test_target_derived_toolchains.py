@@ -33,6 +33,7 @@ from molt.source_extension_link_inputs import SourceExtensionLinkInputs
 from tools import proof_plan
 from tools.proof_queue_pkg import process_image_capture, toolchain_capture
 from tools.proof_queue_pkg import target_derived_toolchains as provider
+from tests.executable_test_support import custody_spelling
 from tests.process_guard_common import install_module_view
 
 
@@ -255,8 +256,7 @@ def test_windows_target_family_joins_product_paths_to_image_coordinates(
     images = provider.family_process_images(identity)
     assert images == identity["process_images"]
     selected = next(row for row in images if row["role"] == "source-extension:cc")
-    raw = str(resolved.tools.cc.path)
-    assert selected["path"] == raw[0].lower() + raw[1:]
+    assert selected["path"] == custody_spelling(resolved.tools.cc.path)
     assert (
         selected["sha256"]
         == hashlib.sha256(resolved.tools.cc.path.read_bytes()).hexdigest()
@@ -290,8 +290,7 @@ def test_wasi_process_projection_joins_sdk_receipt_without_alias_relaxation(
     command_identity._validate_toolchain_identity(plan, "wasi-clang", identity)
     closure = identity["wasi_sdk"]
     fact = closure["generation"]["facts"]["tools"]["clang"]
-    raw = str(Path(closure["sdk"]) / fact["path"])
-    expected_path = raw[0].lower() + raw[1:] if os.name == "nt" else raw
+    expected_path = custody_spelling(Path(closure["sdk"]) / fact["path"])
     assert identity["path"] == expected_path
     assert probes == [(expected_path, "--version")]
     assert closure["sdk"] == str(sdk)  # The managed SDK receipt is not rewritten.

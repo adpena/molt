@@ -10,17 +10,9 @@ pub fn resolve_symbol_with(
             "molt_runtime_serial::email::molt_email_message_new",
             crate::email::molt_email_message_new as *const (),
         )),
-        "molt_email_message_from_bytes" => Some(runtime_fn_addr(
-            "molt_runtime_serial::email::molt_email_message_from_bytes",
-            crate::email::molt_email_message_from_bytes as *const (),
-        )),
         "molt_email_message_set" => Some(runtime_fn_addr(
             "molt_runtime_serial::email::molt_email_message_set",
             crate::email::molt_email_message_set as *const (),
-        )),
-        "molt_email_message_get" => Some(runtime_fn_addr(
-            "molt_runtime_serial::email::molt_email_message_get",
-            crate::email::molt_email_message_get as *const (),
         )),
         "molt_email_message_set_content" => Some(runtime_fn_addr(
             "molt_runtime_serial::email::molt_email_message_set_content",
@@ -34,33 +26,9 @@ pub fn resolve_symbol_with(
             "molt_runtime_serial::email::molt_email_message_add_attachment",
             crate::email::molt_email_message_add_attachment as *const (),
         )),
-        "molt_email_message_is_multipart" => Some(runtime_fn_addr(
-            "molt_runtime_serial::email::molt_email_message_is_multipart",
-            crate::email::molt_email_message_is_multipart as *const (),
-        )),
-        "molt_email_message_payload" => Some(runtime_fn_addr(
-            "molt_runtime_serial::email::molt_email_message_payload",
-            crate::email::molt_email_message_payload as *const (),
-        )),
-        "molt_email_message_content" => Some(runtime_fn_addr(
-            "molt_runtime_serial::email::molt_email_message_content",
-            crate::email::molt_email_message_content as *const (),
-        )),
-        "molt_email_message_content_type" => Some(runtime_fn_addr(
-            "molt_runtime_serial::email::molt_email_message_content_type",
-            crate::email::molt_email_message_content_type as *const (),
-        )),
-        "molt_email_message_filename" => Some(runtime_fn_addr(
-            "molt_runtime_serial::email::molt_email_message_filename",
-            crate::email::molt_email_message_filename as *const (),
-        )),
         "molt_email_message_as_string" => Some(runtime_fn_addr(
             "molt_runtime_serial::email::molt_email_message_as_string",
             crate::email::molt_email_message_as_string as *const (),
-        )),
-        "molt_email_message_items" => Some(runtime_fn_addr(
-            "molt_runtime_serial::email::molt_email_message_items",
-            crate::email::molt_email_message_items as *const (),
         )),
         "molt_email_message_drop" => Some(runtime_fn_addr(
             "molt_runtime_serial::email::molt_email_message_drop",

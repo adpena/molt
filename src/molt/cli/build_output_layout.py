@@ -8,6 +8,7 @@ import sys
 
 from molt.cli.config_resolution import AUTO_STDLIB_PROFILE
 from molt.cli.default_paths import (
+    _configured_artifact_root_text,
     _default_home_str,
     _default_molt_bin,
     _default_molt_cache_cached,
@@ -79,7 +80,7 @@ def _wasm_runtime_root(project_root: Path) -> Path:
     return _wasm_runtime_root_cached(
         os.fspath(project_root),
         os.environ.get("MOLT_WASM_RUNTIME_DIR"),
-        os.environ.get("MOLT_EXT_ROOT"),
+        _configured_artifact_root_text(os.environ),
         os.fspath(Path.cwd()),
     )
 
@@ -117,7 +118,7 @@ def _default_build_root(output_base: str) -> Path:
         os.fspath(Path.cwd()),
         _default_home_str(),
         sys.platform,
-        os.environ.get("MOLT_EXT_ROOT"),
+        _configured_artifact_root_text(os.environ),
     )
 
 
@@ -157,7 +158,7 @@ def _resolve_cache_root(project_root: Path, cache_dir: str | None) -> Path:
         os.fspath(Path.cwd()),
         _default_home_str(),
         sys.platform,
-        os.environ.get("MOLT_EXT_ROOT"),
+        _configured_artifact_root_text(os.environ),
     )
 
 

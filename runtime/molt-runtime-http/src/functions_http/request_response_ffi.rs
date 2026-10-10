@@ -1099,24 +1099,6 @@ pub extern "C" fn molt_urllib_request_response_getheader(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_urllib_request_response_getheaders(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "response handle is invalid");
-        };
-        let Some(out) =
-            urllib_response_with_mut(handle, |resp| urllib_response_headers_dict_bits(_py, resp))
-        else {
-            return raise_exception::<_>(_py, "RuntimeError", "response handle is invalid");
-        };
-        match out {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_urllib_request_response_getheaders_list(handle_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let Some(handle) = to_i64(obj_from_bits(handle_bits)) else {

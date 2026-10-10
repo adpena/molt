@@ -34,7 +34,6 @@ def _exception_diagnostic(exc: BaseException) -> str:
     return name + (": " + "; ".join(details) if details else "")
 
 
-DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP = 5
 CARGO_COMPILER_EXECUTABLES = frozenset({"rustc", "clippy-driver"})
 
 
@@ -44,7 +43,7 @@ class CargoIncrementalQuarantineMove:
     quarantined_path: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class CargoIncrementalQuarantine:
     reason: str
     recorded_at: str
@@ -53,7 +52,6 @@ class CargoIncrementalQuarantine:
     command: tuple[str, ...]
     cwd: str
     moved_paths: tuple[CargoIncrementalQuarantineMove, ...] = ()
-    pruned_quarantine_dirs: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
     receipt_path: str | None = None
     ownership_status: str = "unavailable"
@@ -621,14 +619,6 @@ def _cargo_quarantine_id(recorded_at: str, pid: int, reason: str) -> str:
     return f"{safe_time}-pid{pid}-{safe_reason}"
 
 
-def _prune_cargo_incremental_quarantine(
-    parent: Path,
-    *,
-    keep: int = DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    return (), ("historical quarantine cleanup requires separate explicit custody",)
-
-
 def _cargo_incremental_quarantine_payload(
     receipt: CargoIncrementalQuarantine | None,
 ) -> dict[str, object] | None:
@@ -648,7 +638,6 @@ def _cargo_incremental_quarantine_payload(
             }
             for move in receipt.moved_paths
         ],
-        "pruned_quarantine_dirs": list(receipt.pruned_quarantine_dirs),
         "errors": list(receipt.errors),
         "receipt_path": receipt.receipt_path,
         "ownership_status": receipt.ownership_status,
@@ -700,7 +689,6 @@ def _quarantine_cargo_incremental_state(
     target_dir: Path,
     command: Sequence[str],
     cwd: str | Path,
-    retention_keep: int = DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP,
     observations: Sequence[CargoIncrementalObservation] = (),
     descendants_closed: bool = False,
     eligible_observations: frozenset[CargoIncrementalObservation] = frozenset(),
@@ -884,19 +872,16 @@ def _quarantine_cargo_incremental_state(
                 for source in sorted(units, key=str)
             ]
             planned_receipt = CargoIncrementalQuarantine(
-                reason,
-                recorded_at,
-                str(target_dir),
-                str(quarantine_dir),
-                tuple(command),
-                str(cwd),
-                (),
-                (),
-                (),
-                str(planned_receipt_path),
-                "cleanup_pending",
-                tuple(observations),
-                tuple(
+                reason=reason,
+                recorded_at=recorded_at,
+                target_dir=str(target_dir),
+                quarantine_dir=str(quarantine_dir),
+                command=tuple(command),
+                cwd=str(cwd),
+                receipt_path=str(planned_receipt_path),
+                ownership_status="cleanup_pending",
+                ownership_observations=tuple(observations),
+                recovery_observations=tuple(
                     sorted(
                         eligible_observations,
                         key=lambda item: (item.rustc_pid, item.rustc_started_at_ns),
@@ -925,19 +910,17 @@ def _quarantine_cargo_incremental_state(
             receipt_path = quarantine_dir / "receipt.json"
             status = "quarantined"
             receipt = CargoIncrementalQuarantine(
-                reason,
-                recorded_at,
-                str(target_dir),
-                str(quarantine_dir),
-                tuple(command),
-                str(cwd),
-                tuple(moved),
-                (),
-                (),
-                str(receipt_path),
-                "cleanup_pending",
-                tuple(observations),
-                tuple(
+                reason=reason,
+                recorded_at=recorded_at,
+                target_dir=str(target_dir),
+                quarantine_dir=str(quarantine_dir),
+                command=tuple(command),
+                cwd=str(cwd),
+                moved_paths=tuple(moved),
+                receipt_path=str(receipt_path),
+                ownership_status="cleanup_pending",
+                ownership_observations=tuple(observations),
+                recovery_observations=tuple(
                     sorted(
                         eligible_observations,
                         key=lambda item: (item.rustc_pid, item.rustc_started_at_ns),
@@ -974,19 +957,18 @@ def _quarantine_cargo_incremental_state(
         if cleanup_abort is not None:
             raise cleanup_abort
     final_receipt = CargoIncrementalQuarantine(
-        reason,
-        recorded_at,
-        str(target_dir),
-        None if quarantine_dir is None else str(quarantine_dir),
-        tuple(command),
-        str(cwd),
-        tuple(moved),
-        (),
-        tuple(errors),
-        None if receipt_path is None else str(receipt_path),
-        status,
-        tuple(observations),
-        tuple(
+        reason=reason,
+        recorded_at=recorded_at,
+        target_dir=str(target_dir),
+        quarantine_dir=None if quarantine_dir is None else str(quarantine_dir),
+        command=tuple(command),
+        cwd=str(cwd),
+        moved_paths=tuple(moved),
+        errors=tuple(errors),
+        receipt_path=None if receipt_path is None else str(receipt_path),
+        ownership_status=status,
+        ownership_observations=tuple(observations),
+        recovery_observations=tuple(
             sorted(
                 eligible_observations,
                 key=lambda item: (item.rustc_pid, item.rustc_started_at_ns),
@@ -1046,8 +1028,6 @@ def _cargo_incremental_quarantine_message(
             "memory_guard: checked Cargo incremental state after "
             f"{receipt.reason}: moved=0 target_dir={receipt.target_dir}"
         )
-    if receipt.pruned_quarantine_dirs:
-        base = f"{base} pruned={len(receipt.pruned_quarantine_dirs)}"
     if receipt.receipt_path:
         base = f"{base} receipt={receipt.receipt_path}"
     if error_count:

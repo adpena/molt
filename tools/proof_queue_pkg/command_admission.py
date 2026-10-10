@@ -1641,7 +1641,12 @@ def _envelope_for_command(
         )
 
     typed_python = None
-    if python is not None:
+    # An exact plan command is its own authority, even when a named lane runs
+    # the same program with other arguments.
+    if (
+        python is not None
+        and tuple(map(str, submitted_argv)) not in _proof_command_registry()["exact"]
+    ):
         invocation = parse_python_invocation(_python_invocation_argv(argv, python))
         typed_python = _typed_python_command_family(argv, python, invocation)
     registration_kind, toolchains, proof_plan_command_ids, native_c_units = (

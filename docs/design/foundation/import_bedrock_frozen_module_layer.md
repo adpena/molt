@@ -422,7 +422,7 @@ backing tag to the dict header with exactly two values:
   tag — so CPython-idiom code (`sys.modules.copy()`, `dict(sys.modules)`)
   works unmodified.
 
-`molt_sys_modules()` returns **the** view object (created during sys's
+`sys.modules` is **the** view object (created during sys's
 `ensure`, before any other module can run — sys is a `RuntimeBuiltin` row that
 every other row implicitly depends on). The bootstrap-empty-dict lie
 (incident 4) and the full-replay-on-sys-registration machinery (incident 3)
@@ -641,7 +641,7 @@ name literals at call sites, and trace scaffolding all net-delete.
 | 1 | `TypeError: module name must be str` on plain `import guardpkg` | Compiled import sites carry `const ModuleId: u32` — there is no string argument to corrupt. The *only* string-accepting surfaces are the CPython-parity API boundaries, which validate with CPython's exact error (§5.9) before converting to id. The `trace_bad_module_name_arg` debug lattice is deleted. |
 | 2 | Static-native init re-ran via alias bypass ("cannot load module more than once") | Aliases have no init of their own — `kind=Alias{target}` resolves inside `ensure`; init-exactly-once is the CAS `Uninit→Initializing` in one function. Per-init preambles no longer exist to be bypassed. Extension re-init is additionally impossible via the `ext_dict_copy` snapshot path (§5.8): PyInit has exactly one call site, guarded by the CAS. |
 | 3 | Two stores + sync/replay/first-init-wins | There is one store. `sys.modules` is a view of it; Python-side mutations are table transitions by construction. `molt_module_cache_set/get`, the replay loop, and first-init-wins are deleted (first-init-wins existed to mask duplicate init emission, which the init table makes unemittable). |
-| 4 | `molt_sys_modules()` bootstrap-empty dict | The intrinsic returns the singleton table view, created during sys's own `ensure`, which precedes every other module by a registry dependency edge. An "empty sys.modules while modules exist" state is unrepresentable. |
+| 4 | `molt_sys_modules()` bootstrap-empty dict | Nothing read the intrinsic, and HF-110 deleted it (2026-10-09). `sys.modules` is the singleton table view, created during sys's own `ensure`, which precedes every other module by a registry dependency edge. An "empty sys.modules while modules exist" state is unrepresentable. |
 | 5 | `manifest wasm_table_base 4135 above binary table base 2475` | The manifest is extracted from the linked binary's layout section — one computation, two projections. Digest-checked at build (G6) and load. |
 | 6 | `missing poll import for io_wait` panic | Import declarations are derived by iterating the same generated slot spec; a slot without an import cannot be expressed. Crate gate G5 instantiates every table spec per build. |
 | 7 | Generated-file staleness (`molt_PyArg_ParseTuple` missing) | Every projection embeds the authority digest; consumers const-assert it. Stale = compile error, enforced by existing generator `--check` gates extended to the registry (G7). |

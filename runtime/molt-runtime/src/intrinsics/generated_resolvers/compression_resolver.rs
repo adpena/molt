@@ -21,11 +21,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_inflate_raw as *const (),
         )),
         #[cfg(feature = "stdlib_compression")]
-        "molt_zlib_runtime_ready" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_zlib_runtime_ready",
-            crate::molt_zlib_runtime_ready as *const (),
-        )),
-        #[cfg(feature = "stdlib_compression")]
         "molt_bz2_compress" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_bz2_compress",
             crate::molt_bz2_compress as *const (),

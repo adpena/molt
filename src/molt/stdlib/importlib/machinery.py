@@ -562,7 +562,6 @@ def _ensure_intrinsics() -> None:
     global _MOLT_IMPORTLIB_INTRINSICS_READY
     if _MOLT_IMPORTLIB_INTRINSICS_READY:
         return
-    _require_intrinsic("molt_stdlib_probe")
     importlib_read_file = _require_intrinsic("molt_importlib_read_file")
     importlib_pathfinder_find_spec = _require_intrinsic(
         "molt_importlib_pathfinder_find_spec"

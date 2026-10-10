@@ -90,7 +90,8 @@ def test_wasm_bench_main_installs_repo_sentinel(monkeypatch, tmp_path: Path) -> 
     module.main()
 
     assert sentinel["repo_root"] == module.ROOT
-    assert sentinel["artifact_root"] == module.ROOT / "tmp" / "bench"
+    assert sentinel["artifact_root"].name == "bench"
+    assert not sentinel["artifact_root"].is_relative_to(module.ROOT.resolve())
     assert sentinel["label"] == "wasm_bench"
     assert sentinel["entered"] is True
     assert sentinel["exited"] is True
@@ -182,7 +183,8 @@ def test_luau_benchmark_main_installs_repo_sentinel(
     module.main()
 
     assert sentinel["repo_root"] == module.REPO_ROOT
-    assert sentinel["artifact_root"] == module.REPO_ROOT / "tmp" / "bench"
+    assert sentinel["artifact_root"].name == "bench"
+    assert not sentinel["artifact_root"].is_relative_to(module.REPO_ROOT.resolve())
     assert sentinel["label"] == "luau_run_benchmarks"
     assert sentinel["entered"] is True
     assert sentinel["exited"] is True

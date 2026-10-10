@@ -118,10 +118,6 @@ pub fn resolve_symbol_with(
             "molt_runtime_collections::collections_ext::molt_ordereddict_values",
             crate::collections_ext::molt_ordereddict_values as *const (),
         )),
-        "molt_defaultdict_copy" => Some(runtime_fn_addr(
-            "molt_runtime_collections::collections_ext::molt_defaultdict_copy",
-            crate::collections_ext::molt_defaultdict_copy as *const (),
-        )),
         "molt_defaultdict_drop" => Some(runtime_fn_addr(
             "molt_runtime_collections::collections_ext::molt_defaultdict_drop",
             crate::collections_ext::molt_defaultdict_drop as *const (),

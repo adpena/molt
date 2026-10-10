@@ -6,17 +6,8 @@
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 import re
 
-_molt_textwrap_dedent = _require_intrinsic("molt_textwrap_dedent")
-_molt_textwrap_fill = _require_intrinsic("molt_textwrap_fill")
-_molt_textwrap_fill_ex = _require_intrinsic("molt_textwrap_fill_ex")
-_molt_textwrap_indent = _require_intrinsic("molt_textwrap_indent")
-_molt_textwrap_indent_ex = _require_intrinsic("molt_textwrap_indent_ex")
-_molt_textwrap_shorten = _require_intrinsic("molt_textwrap_shorten")
-_molt_textwrap_wrap = _require_intrinsic("molt_textwrap_wrap")
-_molt_textwrap_wrap_ex = _require_intrinsic("molt_textwrap_wrap_ex")
 
 __all__ = ["TextWrapper", "wrap", "fill", "dedent", "indent", "shorten"]
 
@@ -402,5 +393,3 @@ def indent(text: str, prefix: str, predicate=None) -> str:
                 prefixed_lines.append(prefix)
             prefixed_lines.append(line)
     return "".join(prefixed_lines)
-
-globals().pop("_require_intrinsic", None)
