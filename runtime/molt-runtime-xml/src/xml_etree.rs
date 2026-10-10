@@ -387,19 +387,6 @@ fn indent_element(handle: i64, space: &str, level: usize) {
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_new(tag_bits: u64, _attrib_bits: u64) -> u64 {
-    with_core_gil!(_py, {
-        let tag = match string_obj_to_owned(obj_from_bits(tag_bits)) {
-            Some(s) => s,
-            None => return MoltObject::none().bits(),
-        };
-        let attrib = HashMap::new();
-        let handle = store_element(XmlElement::new(tag, attrib));
-        int_bits_from_i64(_py, handle)
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_tag(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
@@ -407,19 +394,6 @@ pub extern "C" fn molt_xml_element_tag(handle_bits: u64) -> u64 {
             Some(tag) => mk_str(_py, &tag),
             None => MoltObject::none().bits(),
         }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_set_tag(handle_bits: u64, tag_bits: u64) -> u64 {
-    with_core_gil!(_py, {
-        let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
-        let tag = match string_obj_to_owned(obj_from_bits(tag_bits)) {
-            Some(s) => s,
-            None => return MoltObject::none().bits(),
-        };
-        with_element_mut(handle, |e| e.tag = tag);
-        MoltObject::none().bits()
     })
 }
 
@@ -435,21 +409,6 @@ pub extern "C" fn molt_xml_element_text(handle_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_set_text(handle_bits: u64, text_bits: u64) -> u64 {
-    with_core_gil!(_py, {
-        let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
-        let text_obj = obj_from_bits(text_bits);
-        let text = if text_obj.is_none() {
-            None
-        } else {
-            string_obj_to_owned(text_obj)
-        };
-        with_element_mut(handle, |e| e.text = text);
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_tail(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
@@ -457,69 +416,6 @@ pub extern "C" fn molt_xml_element_tail(handle_bits: u64) -> u64 {
             Some(Some(t)) => mk_str(_py, &t),
             _ => MoltObject::none().bits(),
         }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_set_tail(handle_bits: u64, tail_bits: u64) -> u64 {
-    with_core_gil!(_py, {
-        let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
-        let tail_obj = obj_from_bits(tail_bits);
-        let tail = if tail_obj.is_none() {
-            None
-        } else {
-            string_obj_to_owned(tail_obj)
-        };
-        with_element_mut(handle, |e| e.tail = tail);
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_get_attrib(
-    handle_bits: u64,
-    key_bits: u64,
-    default_bits: u64,
-) -> u64 {
-    with_core_gil!(_py, {
-        let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
-        let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
-            Some(s) => s,
-            None => {
-                inc_ref_bits(_py, default_bits);
-                return default_bits;
-            }
-        };
-        match with_element(handle, |e| e.attrib.get(&key).cloned()) {
-            Some(Some(v)) => mk_str(_py, &v),
-            _ => {
-                inc_ref_bits(_py, default_bits);
-                default_bits
-            }
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_set_attrib(
-    handle_bits: u64,
-    key_bits: u64,
-    value_bits: u64,
-) -> u64 {
-    with_core_gil!(_py, {
-        let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
-        let key = match string_obj_to_owned(obj_from_bits(key_bits)) {
-            Some(s) => s,
-            None => return MoltObject::none().bits(),
-        };
-        let value = match string_obj_to_owned(obj_from_bits(value_bits)) {
-            Some(s) => s,
-            None => return MoltObject::none().bits(),
-        };
-        with_element_mut(handle, |e| {
-            e.attrib.insert(key, value);
-        });
-        MoltObject::none().bits()
     })
 }
 
@@ -551,28 +447,6 @@ pub extern "C" fn molt_xml_element_attrib_items(handle_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_append(parent_bits: u64, child_bits: u64) -> u64 {
-    with_core_gil!(_py, {
-        let parent = to_i64(obj_from_bits(parent_bits)).unwrap_or(0);
-        let child = to_i64(obj_from_bits(child_bits)).unwrap_or(0);
-        with_element_mut(parent, |e| e.children.push(child));
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_remove(parent_bits: u64, child_bits: u64) -> u64 {
-    with_core_gil!(_py, {
-        let parent = to_i64(obj_from_bits(parent_bits)).unwrap_or(0);
-        let child = to_i64(obj_from_bits(child_bits)).unwrap_or(0);
-        with_element_mut(parent, |e| {
-            e.children.retain(|&h| h != child);
-        });
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_element_children(handle_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
@@ -586,134 +460,6 @@ pub extern "C" fn molt_xml_element_children(handle_bits: u64) -> u64 {
             }
             None => MoltObject::none().bits(),
         }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_len(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
-        let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
-        match with_element(handle, |e| e.children.len() as i64) {
-            Some(n) => int_bits_from_i64(_py, n),
-            None => int_bits_from_i64(_py, 0),
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_find(handle_bits: u64, path_bits: u64) -> u64 {
-    with_core_gil!(_py, {
-        let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
-        let path = match string_obj_to_owned(obj_from_bits(path_bits)) {
-            Some(s) => s,
-            None => return MoltObject::none().bits(),
-        };
-        match with_element(handle, |e| {
-            for &child_h in &e.children {
-                let tag_matches = with_element(child_h, |c| c.tag == path).unwrap_or(false);
-                if tag_matches {
-                    return Some(child_h);
-                }
-            }
-            None
-        }) {
-            Some(Some(h)) => int_bits_from_i64(_py, h),
-            _ => MoltObject::none().bits(),
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_findall(handle_bits: u64, path_bits: u64) -> u64 {
-    with_core_gil!(_py, {
-        let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
-        let path = match string_obj_to_owned(obj_from_bits(path_bits)) {
-            Some(s) => s,
-            None => return MoltObject::none().bits(),
-        };
-        match with_element(handle, |e| {
-            let mut found = Vec::new();
-            for &child_h in &e.children {
-                let tag_matches =
-                    with_element(child_h, |c| c.tag == path || path == "*").unwrap_or(false);
-                if tag_matches {
-                    found.push(child_h);
-                }
-            }
-            found
-        }) {
-            Some(found) => {
-                let bits: Vec<u64> = found.iter().map(|&h| int_bits_from_i64(_py, h)).collect();
-                mk_list(_py, &bits)
-            }
-            None => MoltObject::none().bits(),
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_findtext(
-    handle_bits: u64,
-    path_bits: u64,
-    default_bits: u64,
-) -> u64 {
-    with_core_gil!(_py, {
-        let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
-        let path = match string_obj_to_owned(obj_from_bits(path_bits)) {
-            Some(s) => s,
-            None => {
-                inc_ref_bits(_py, default_bits);
-                return default_bits;
-            }
-        };
-        match with_element(handle, |e| {
-            for &child_h in &e.children {
-                let tag_matches = with_element(child_h, |c| c.tag == path).unwrap_or(false);
-                if tag_matches {
-                    return with_element(child_h, |c| c.text.clone());
-                }
-            }
-            None
-        }) {
-            Some(Some(Some(t))) => mk_str(_py, &t),
-            _ => {
-                inc_ref_bits(_py, default_bits);
-                default_bits
-            }
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_iter(handle_bits: u64, tag_bits: u64) -> u64 {
-    with_core_gil!(_py, {
-        let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
-        let tag_filter = if obj_from_bits(tag_bits).is_none() {
-            None
-        } else {
-            string_obj_to_owned(obj_from_bits(tag_bits))
-        };
-
-        fn collect(handle: i64, tag_filter: &Option<String>, result: &mut Vec<i64>) {
-            let matches = match tag_filter {
-                None => true,
-                Some(t) => with_element(handle, |e| e.tag == *t || t == "*").unwrap_or(false),
-            };
-            if matches {
-                result.push(handle);
-            }
-            if let Some(children) = with_element(handle, |e| e.children.clone()) {
-                for &child_h in &children {
-                    collect(child_h, tag_filter, result);
-                }
-            }
-        }
-
-        let mut result = Vec::new();
-        collect(handle, &tag_filter, &mut result);
-
-        let bits: Vec<u64> = result.iter().map(|&h| int_bits_from_i64(_py, h)).collect();
-        mk_list(_py, &bits)
     })
 }
 
@@ -741,41 +487,6 @@ pub extern "C" fn molt_xml_fromstring(xml_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_tostring(
-    handle_bits: u64,
-    encoding_bits: u64,
-    short_empty_bits: u64,
-) -> u64 {
-    with_core_gil!(_py, {
-        let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
-        let short_empty = is_truthy(_py, obj_from_bits(short_empty_bits));
-        let encoding = string_obj_to_owned(obj_from_bits(encoding_bits));
-
-        let xml_str = serialize_element(handle, short_empty);
-
-        match encoding.as_deref() {
-            Some("unicode") | None => mk_str(_py, &xml_str),
-            Some(enc) => {
-                let with_decl = format!("<?xml version='1.0' encoding='{}'?>\n{}", enc, xml_str);
-                mk_str(_py, &with_decl)
-            }
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_indent(handle_bits: u64, space_bits: u64, level_bits: u64) -> u64 {
-    with_core_gil!(_py, {
-        let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
-        let space =
-            string_obj_to_owned(obj_from_bits(space_bits)).unwrap_or_else(|| "  ".to_string());
-        let level = to_i64(obj_from_bits(level_bits)).unwrap_or(0) as usize;
-        indent_element(handle, &space, level);
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_xml_register_namespace(prefix_bits: u64, uri_bits: u64) -> u64 {
     with_core_gil!(_py, {
         let prefix = match string_obj_to_owned(obj_from_bits(prefix_bits)) {
@@ -787,20 +498,6 @@ pub extern "C" fn molt_xml_register_namespace(prefix_bits: u64, uri_bits: u64) -
             None => return MoltObject::none().bits(),
         };
         NS_MAP.with(|m| m.borrow_mut().insert(uri, prefix));
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xml_element_clear(handle_bits: u64) -> u64 {
-    with_core_gil!(_py, {
-        let handle = to_i64(obj_from_bits(handle_bits)).unwrap_or(0);
-        with_element_mut(handle, |e| {
-            e.text = None;
-            e.tail = None;
-            e.attrib.clear();
-            e.children.clear();
-        });
         MoltObject::none().bits()
     })
 }

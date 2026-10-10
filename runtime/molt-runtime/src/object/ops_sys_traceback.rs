@@ -1830,51 +1830,6 @@ fn traceback_payload_failure(py: &PyToken<'_>) -> u64 {
     }
 }
 
-pub(crate) fn traceback_exception_components_payload(
-    py: &PyToken<'_>,
-    value_bits: u64,
-    limit: Option<usize>,
-) -> Result<u64, u64> {
-    let value = ExceptionValue::pin(py, value_bits);
-    let Some(storage) = ExceptionStorage::for_exception(py, value.bits()) else {
-        return Err(raise_exception(
-            py,
-            "TypeError",
-            "value must be an exception instance",
-        ));
-    };
-    // Snapshot every physical field before source retrieval can call Python.
-    let traceback = exception_field(py, value.bits(), ExceptionFieldSlot::Traceback)
-        .ok_or_else(|| traceback_payload_failure(py))?;
-    let cause = exception_field(py, value.bits(), ExceptionFieldSlot::Cause)
-        .ok_or_else(|| traceback_payload_failure(py))?;
-    let context = exception_field(py, value.bits(), ExceptionFieldSlot::Context)
-        .ok_or_else(|| traceback_payload_failure(py))?;
-    let suppress_context = storage.suppress_context();
-    let payload = traceback_payload_from_source(py, traceback.bits(), limit);
-    if exception_pending(py) {
-        return Err(MoltObject::none().bits());
-    }
-    let frames = ExceptionValue::adopt(py, traceback_payload_to_list(py, &payload));
-    if obj_from_bits(frames.bits()).is_none() || exception_pending(py) {
-        return Err(traceback_payload_failure(py));
-    }
-    let tuple = alloc_tuple(
-        py,
-        &[
-            frames.bits(),
-            cause.bits(),
-            context.bits(),
-            MoltObject::from_bool(suppress_context).bits(),
-        ],
-    );
-    if tuple.is_null() {
-        Err(traceback_payload_failure(py))
-    } else {
-        Ok(MoltObject::from_ptr(tuple).bits())
-    }
-}
-
 pub(crate) fn traceback_exception_chain_collect<'a, 'py>(
     py: &'a PyToken<'py>,
     value_bits: u64,

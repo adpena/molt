@@ -159,10 +159,6 @@ struct SysBootstrapState {
     pythonpath_entries: Vec<String>,
     module_roots_entries: Vec<String>,
     venv_site_packages_entries: Vec<String>,
-    py_path_raw: String,
-    module_roots_raw: String,
-    virtual_env_raw: String,
-    capability_tier_raw: String,
     pwd: String,
     include_cwd: bool,
 }
@@ -187,7 +183,6 @@ fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBoots
     let path_sep = if windows_paths { '\\' } else { '/' };
     let pwd = resolve_bootstrap_pwd(&pwd_raw);
     let pythonpath_entries: Vec<String> = Vec::new();
-    let py_path_raw = String::new();
     let mut paths: Vec<String> = pythonpath_entries.clone();
     let mut paths_seen: HashSet<String> = pythonpath_entries.iter().cloned().collect();
 
@@ -208,7 +203,6 @@ fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBoots
     }
 
     let venv_site_packages_entries: Vec<String> = Vec::new();
-    let virtual_env_raw = String::new();
 
     // The working directory joins sys.path only at the full capability tier;
     // the default tier runs untrusted, as CI does.
@@ -223,10 +217,6 @@ fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBoots
         pythonpath_entries,
         module_roots_entries,
         venv_site_packages_entries,
-        py_path_raw,
-        module_roots_raw,
-        virtual_env_raw,
-        capability_tier_raw,
         pwd,
         include_cwd,
     }
@@ -1447,15 +1437,6 @@ fn removed_stdlib_313_missing_name(resolved: &str) -> Option<&'static str> {
 pub(crate) enum KnownImportAbsence {
     Provider(String),
     Dependency(&'static str),
-}
-
-impl KnownImportAbsence {
-    fn diagnostic_name(&self) -> &str {
-        match self {
-            Self::Provider(name) => name,
-            Self::Dependency(name) => name,
-        }
-    }
 }
 
 pub(crate) fn known_import_absence(

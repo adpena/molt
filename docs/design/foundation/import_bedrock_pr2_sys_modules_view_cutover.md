@@ -39,7 +39,6 @@ These are the bridge surfaces PR2 must delete, replace, or invert into gates.
 | `legacy_cache_lookup`, `legacy_cache_set`, `legacy_cache_del` | `runtime/molt-runtime/src/builtins/module_table.rs` | Delete the PR1 bridge helpers. Table state must not consult or backfill a legacy map. |
 | `publish_from_cache_set`, `unpublish_from_cache_del` | `runtime/molt-runtime/src/builtins/module_table.rs` | Delete once init publication and Python dict mutations enter the table directly. |
 | `module_table_view_replace`, `module_table_view_tombstone` | `runtime/molt-runtime/src/builtins/module_table.rs` | Promote from PR1 seam to production mutation entry points called by the dict-view write/delete primitives. |
-| `molt_sys_modules()` empty-dict intrinsic | `runtime/molt-runtime/src/builtins/sys_ext.rs` | Return the singleton table-backed dict view, not a fresh materialized dict. |
 | `PySys_GetObject` cache-first path | `runtime/molt-runtime/src/cpython_abi_hooks.rs` | Resolve `sys` and its attributes through the same table/view authority; no cache fallback or import retry loop. |
 | `hook_import_module` | `runtime/molt-runtime/src/cpython_abi_hooks.rs` | Validate the C API payload, resolve string to `ModuleId`, enter `molt_module_ensure`, and fail closed for non-admitted names. |
 | `module_cache_get/set` backend IR ops | `src/molt/cli/backend_ir.py` | Stop emitting cache probes and publication ops. Generated init bodies execute only through the init table/ensure path. |
@@ -123,7 +122,7 @@ sequence inside that arc, not permission to land partial states.
 1. Add the dict backing tag and materialized helpers with zero behavior change
    for ordinary dicts.
 2. Allocate the singleton `ModuleTableView` for `sys.modules` during sys/module
-   bootstrap and make `molt_sys_modules()` return it.
+   bootstrap and publish it as `sys.modules`.
 3. Route dict primitive reads, writes, deletes, len, iteration, copy, and view
    object construction through the backing tag.
 4. Move import readers to table/view reads: `molt_module_import_inner`,
@@ -164,7 +163,7 @@ Structural gates:
 Behavioral gates:
 
 - `sys.modules` is a dict object, has stable identity, and is the object
-  returned by `molt_sys_modules()`.
+  the sys bootstrap publishes.
 - `sys.modules[name] = sentinel` for a registry name makes a later import of
   that name return the sentinel value when CPython would accept the cached
   value.

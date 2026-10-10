@@ -78,8 +78,6 @@ fn str_bits(_py: &CoreGilToken, s: &str) -> u64 {
 // ---------------------------------------------------------------------------
 
 /// `os.listdir(path)` → list[str]
-/// Already implemented as `molt_path_listdir`; this variant exposes it under
-/// the canonical `molt_os_listdir` name so os.py can use either.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_listdir(path_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
@@ -359,8 +357,6 @@ fn walk_dir_collect(
 }
 
 /// `os.getcwd()` → str
-/// Note: molt_getcwd already exists in platform.rs under that name.
-/// This provides the canonical os-namespaced variant.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_os_getcwd() -> u64 {
     molt_runtime_core::with_core_gil!(_py, {

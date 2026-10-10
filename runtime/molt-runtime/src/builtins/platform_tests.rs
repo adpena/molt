@@ -680,7 +680,6 @@ fn sys_bootstrap_state_ignores_virtual_env_site_packages_when_present() {
         ],
         || {
             let state = sys_bootstrap_state_from_module_file(Some(bootstrap_module_file()));
-            assert!(state.virtual_env_raw.is_empty());
             assert!(state.venv_site_packages_entries.is_empty());
             assert!(!state.path.iter().any(|entry| entry == &site_packages_text));
         },
@@ -1784,7 +1783,6 @@ fn importlib_find_spec_payload_package_context_prefers_module_root_projection() 
                     let bootstrap =
                         sys_bootstrap_state_from_module_file(Some(bootstrap_module_file()));
                     assert!(bootstrap.include_cwd);
-                    assert_eq!(bootstrap.capability_tier_raw, "full");
                     let payload_result = importlib_find_spec_payload(
                         _py,
                         "nativepkg._native",

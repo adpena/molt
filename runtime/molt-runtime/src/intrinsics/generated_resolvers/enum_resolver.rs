@@ -39,10 +39,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_enum_str_value",
             crate::molt_enum_str_value as *const (),
         )),
-        "molt_enum_unique_check" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_enum_unique_check",
-            crate::molt_enum_unique_check as *const (),
-        )),
         "molt_enum_is_auto" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_enum_is_auto",
             crate::molt_enum_is_auto as *const (),

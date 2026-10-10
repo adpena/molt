@@ -128,7 +128,7 @@ def test_representative_symbols_map_to_link_affecting_features() -> None:
         "molt_base64_b64encode": "stdlib_serial",
         "molt_email_message_new": "stdlib_email",
         "molt_colorsys_rgb_to_hls": "stdlib_math",
-        "molt_xml_element_new": "stdlib_xml",
+        "molt_xml_fromstring": "stdlib_xml",
         "molt_ipaddress_ip_address": "stdlib_ipaddress",
     }
     for symbol, feature in cases.items():

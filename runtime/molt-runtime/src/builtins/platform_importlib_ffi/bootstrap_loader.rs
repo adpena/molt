@@ -86,105 +86,6 @@ pub extern "C" fn molt_sys_bootstrap_stdlib_root(module_file_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_bootstrap_payload(module_file_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let module_file = match module_file_from_bits(_py, module_file_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let state = sys_bootstrap_state_from_module_file(module_file);
-        let path_bits = match alloc_string_list_bits(_py, &state.path) {
-            Some(bits) => bits,
-            None => return MoltObject::none().bits(),
-        };
-        let pythonpath_entries_bits = match alloc_string_list_bits(_py, &state.pythonpath_entries) {
-            Some(bits) => bits,
-            None => return MoltObject::none().bits(),
-        };
-        let module_roots_entries_bits =
-            match alloc_string_list_bits(_py, &state.module_roots_entries) {
-                Some(bits) => bits,
-                None => return MoltObject::none().bits(),
-            };
-        let venv_site_packages_entries_bits =
-            match alloc_string_list_bits(_py, &state.venv_site_packages_entries) {
-                Some(bits) => bits,
-                None => return MoltObject::none().bits(),
-            };
-        let pythonpath_bits = match alloc_str_bits(_py, &state.py_path_raw) {
-            Ok(bits) => bits,
-            Err(err) => return err,
-        };
-        let module_roots_bits = match alloc_str_bits(_py, &state.module_roots_raw) {
-            Ok(bits) => bits,
-            Err(err) => return err,
-        };
-        let virtual_env_bits = match alloc_str_bits(_py, &state.virtual_env_raw) {
-            Ok(bits) => bits,
-            Err(err) => return err,
-        };
-        let capability_tier_bits = match alloc_str_bits(_py, &state.capability_tier_raw) {
-            Ok(bits) => bits,
-            Err(err) => return err,
-        };
-        let pwd_bits = match alloc_str_bits(_py, &state.pwd) {
-            Ok(bits) => bits,
-            Err(err) => return err,
-        };
-        let stdlib_root_bits = match state.stdlib_root {
-            Some(root) => match alloc_str_bits(_py, &root) {
-                Ok(bits) => bits,
-                Err(err) => return err,
-            },
-            None => MoltObject::none().bits(),
-        };
-        let include_cwd_bits = MoltObject::from_bool(state.include_cwd).bits();
-
-        let keys_and_values: [(&[u8], u64); 11] = [
-            (b"path", path_bits),
-            (b"pythonpath_entries", pythonpath_entries_bits),
-            (b"module_roots_entries", module_roots_entries_bits),
-            (
-                b"venv_site_packages_entries",
-                venv_site_packages_entries_bits,
-            ),
-            (b"pythonpath", pythonpath_bits),
-            (b"module_roots", module_roots_bits),
-            (b"virtual_env", virtual_env_bits),
-            (b"capability_tier", capability_tier_bits),
-            (b"pwd", pwd_bits),
-            (b"stdlib_root", stdlib_root_bits),
-            (b"include_cwd", include_cwd_bits),
-        ];
-        let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
-        let mut owned: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
-        for (key, value_bits) in keys_and_values {
-            let key_ptr = alloc_string(_py, key);
-            if key_ptr.is_null() {
-                for bits in owned {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let key_bits = MoltObject::from_ptr(key_ptr).bits();
-            pairs.push(key_bits);
-            pairs.push(value_bits);
-            owned.push(key_bits);
-            owned.push(value_bits);
-        }
-        let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-        for bits in owned {
-            dec_ref_bits(_py, bits);
-        }
-        if dict_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(dict_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_source_loader_payload(
     module_name_bits: u64,
     path_bits: u64,
@@ -263,30 +164,6 @@ pub extern "C" fn molt_importlib_extension_loader_payload(
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        match importlib_loader_resolution_payload_bits(_py, &resolution) {
-            Ok(bits) => bits,
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_sourceless_loader_payload(
-    module_name_bits: u64,
-    path_bits: u64,
-    spec_is_package_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let module_name = match string_arg_from_bits(_py, module_name_bits, "module name") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let path = match string_arg_from_bits(_py, path_bits, "path") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let spec_is_package = is_truthy(_py, obj_from_bits(spec_is_package_bits));
-        let resolution = sourceless_loader_resolution(&module_name, &path, spec_is_package);
         match importlib_loader_resolution_payload_bits(_py, &resolution) {
             Ok(bits) => bits,
             Err(bits) => bits,
@@ -1027,16 +904,6 @@ pub extern "C" fn molt_linecache_loader_get_source(loader_bits: u64, module_name
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_module_spec_is_package(module_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        match importlib_module_spec_is_package_bits(_py, module_bits) {
-            Ok(value) => MoltObject::from_bool(value).bits(),
-            Err(bits) => bits,
-        }
-    })
-}
-
 pub(super) fn importlib_coerce_module_name_bits(
     _py: &PyToken<'_>,
     module_bits: u64,
@@ -1451,17 +1318,6 @@ pub extern "C" fn molt_importlib_path_importer_cache_signature(
             Ok(bits) => bits,
             Err(err) => err,
         }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_path_is_archive_member(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let path = match string_arg_from_bits(_py, path_bits, "path") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        MoltObject::from_bool(importlib_is_archive_member_path(&path)).bits()
     })
 }
 

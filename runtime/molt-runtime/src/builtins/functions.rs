@@ -790,23 +790,6 @@ pub extern "C" fn molt_shlex_quote(text_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_shlex_split(text_bits: u64, whitespace_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "shlex.split argument must be str");
-        };
-        let Some(whitespace) = string_obj_to_owned(obj_from_bits(whitespace_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "shlex.split whitespace must be str");
-        };
-        let parts = match shlex_split_impl(&text, &whitespace, true, false, "#", true, "") {
-            Ok(parts) => parts,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
-        };
-        alloc_string_list(_py, &parts)
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_shlex_split_ex(
     text_bits: u64,
     whitespace_bits: u64,

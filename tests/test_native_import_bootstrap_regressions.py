@@ -3524,7 +3524,7 @@ def test_native_intrinsic_alias_preserves_namespace_compatible_signature(
         (
             "from _intrinsics import require_intrinsic as _ri\n"
             "_NS = globals()\n"
-            "fn = _ri('molt_bootstrap_descriptor_types', _NS)\n"
+            "fn = _ri('molt_gc_get_threshold', _NS)\n"
             "print(type(fn).__name__)\n"
             "print(type(fn()).__name__)\n"
         ),
