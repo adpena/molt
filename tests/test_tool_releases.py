@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from molt import tool_releases
+from molt import dx, tool_releases
 from molt.dx import TOOLCHAINS_DIRNAME
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -322,11 +322,13 @@ def test_pinned_executable_prefers_a_provisioned_release(
     release = tool_releases.tool_release("node", ROOT)
     toolchain_root = tmp_path / "toolchains"
 
-    class Custody:
-        pass
-
-    Custody.toolchain_root = toolchain_root
-    monkeypatch.setattr("molt.dx.checkout_custody", lambda root, *a, **k: Custody)
+    custody = dx.CheckoutCustody(
+        source_root=ROOT,
+        custody_root=tmp_path,
+        toolchain_root=toolchain_root,
+        kind="durable",
+    )
+    monkeypatch.setattr("molt.dx.checkout_custody", lambda root, *a, **k: custody)
     assert tool_releases.pinned_executable("node", ROOT) is None
 
     prefix = tool_releases.tool_prefix(toolchain_root, release)
@@ -354,12 +356,13 @@ def _installed_demo(tmp_path, monkeypatch):
     discovery = tool_releases.provision_tool(
         release, toolchain_root, downloads=downloads
     )
-    from types import SimpleNamespace
-
-    monkeypatch.setattr(
-        "molt.dx.checkout_custody",
-        lambda *_a, **_k: SimpleNamespace(toolchain_root=toolchain_root),
+    custody = dx.CheckoutCustody(
+        source_root=ROOT,
+        custody_root=tmp_path,
+        toolchain_root=toolchain_root,
+        kind="durable",
     )
+    monkeypatch.setattr("molt.dx.checkout_custody", lambda *_a, **_k: custody)
     return discovery
 
 
