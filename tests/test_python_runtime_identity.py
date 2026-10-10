@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import FunctionType, SimpleNamespace
 from typing import Any
 from pathlib import Path
 
@@ -12,6 +13,74 @@ from molt import python_runtime_identity as runtime
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
 from tests.process_guard_common import run_custody_subject_process
+
+
+@pytest.mark.parametrize(
+    "version,expected",
+    [
+        ("3.12.15 (main) [MSC v.1944 64 bit (AMD64)]", "x86_64"),
+        ("3.13.0 (main) [MSC v.1944 64 bit (ARM64)]", "arm64"),
+        ("3.14.0 (main) [MSC v.1944 32 bit (Intel)]", None),
+        ("3.14.0 (main) [MSC v.1944 32 bit (ARM)]", None),
+    ],
+)
+def test_windows_runtime_architecture_uses_cpython_build_without_host_query(
+    monkeypatch: pytest.MonkeyPatch, version: str, expected: str | None
+) -> None:
+    # Execute this interpreter's real CPython sysconfig selection against the
+    # independently specified Windows build banner; do not mirror its parser.
+    observed_sys = SimpleNamespace(**vars(runtime.sys))
+    observed_sys.platform = "win32"
+    observed_sys.version = version
+    actual_selector = runtime.sysconfig.get_platform
+    globals_ = dict(actual_selector.__globals__)
+    globals_.update(
+        sys=observed_sys,
+        os=SimpleNamespace(
+            name="nt",
+            environ={
+                "PROCESSOR_ARCHITECTURE": "wrong-host",
+                "PROCESSOR_ARCHITEW6432": "wrong-host",
+                "_PYTHON_HOST_PLATFORM": "wrong-cross-target",
+            },
+        ),
+    )
+    selector = FunctionType(actual_selector.__code__, globals_)
+
+    def forbidden_machine() -> str:
+        pytest.fail("runtime identity queried the host through platform.machine/WMI")
+
+    monkeypatch.setattr(runtime, "sys", observed_sys)
+    monkeypatch.setattr(
+        runtime,
+        "sysconfig",
+        SimpleNamespace(
+            get_platform=selector,
+            get_config_var=lambda name: {
+                "SOABI": "cpython-fixture-windows",
+                "Py_DEBUG": 0,
+                "Py_GIL_DISABLED": 0,
+            }.get(name),
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "platform",
+        SimpleNamespace(
+            machine=forbidden_machine,
+            python_version=lambda: version.split()[0],
+        ),
+    )
+    if expected is None:
+        with pytest.raises(
+            PythonEnvironmentIdentityError,
+            match="unsupported provisioned-Python architecture",
+        ):
+            runtime._platform_identity()
+    else:
+        identity = runtime._platform_identity()
+        assert identity["operating_system"] == "windows"
+        assert identity["architecture"] == expected
 
 
 @pytest.mark.parametrize(

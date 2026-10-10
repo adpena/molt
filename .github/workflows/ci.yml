@@ -187,6 +187,9 @@ jobs:
             ${{ steps.build-control.outputs.profile_log }}
             ${{ steps.build-control.outputs.profile_log != '' && format('{0}.1', steps.build-control.outputs.profile_log) || '' }}
             ${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT != '' && format('{0}/tmp/pytest-memory-guard/**/*.json', env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT) || '' }}
+            ${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/metadata-owner.json', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}
+            ${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json.events.*.tmp', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}
+            ${{ env.MOLT_PROOF_TEST_METADATA_ROOT != '' && format('{0}/**/*.supervisor-receipt.json.events.*.jsonl', env.MOLT_PROOF_TEST_METADATA_ROOT) || '' }}
           include-hidden-files: true
           if-no-files-found: warn
       - name: Save Cargo dependency cache

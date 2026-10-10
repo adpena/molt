@@ -318,6 +318,16 @@ Receipts follow one enforced lifecycle:
 contains process/image events only, and the receipt keeps their aggregate
 reconciliation; neither serializes ambient process or module inventories.
 
+Abrupt outer-guard termination can leave an unpublished adjacent staging journal
+named `<receipt>.events.<pid>.<counter>.tmp`. Accepted records are written directly
+to the file before event continuation. This prefix is diagnostic evidence only:
+it has no terminal receipt, may end in a partial record, and cannot establish
+complete observation or successful cleanup. Platform-portability CI retains
+these prefixes, published event journals, and fixture-owner metadata from its
+explicit test metadata root. The upload excludes raw policies, execution
+requests/results, command streams, and executable CAS contents. Native event
+records contain process/image observations, not the launch environment.
+
 Repeated executable classification uses a per-run bounded hash cache keyed by
 stable OS file identity plus a mutation token from the same open handle. Linux
 uses device/inode with size/mtime/ctime; Windows uses volume/file index with
