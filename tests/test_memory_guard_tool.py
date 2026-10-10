@@ -3153,42 +3153,71 @@ def test_adaptive_budget_clamps_large_hosts_below_rss_conversion_cap() -> None:
     assert memory_guard.max_rss_kb_from_gb(budget.max_process_rss_gb) > 0
 
 
-def test_parse_darwin_vm_stat_available_bytes() -> None:
-    text = """
-Mach Virtual Memory Statistics: (page size of 16384 bytes)
-Pages free:                             10.
-Pages active:                           99.
-Pages inactive:                         20.
-Pages speculative:                       3.
-Pages purgeable:                         2.
-Pages wired down:                       88.
-Pages occupied by compressor:            7.
-"""
+def test_darwin_available_bytes_counts_free_inactive_speculative_purgeable() -> None:
+    pages = {
+        "Pages free": 10,
+        "Pages active": 99,
+        "Pages inactive": 20,
+        "Pages speculative": 3,
+        "Pages purgeable": 2,
+        "Pages wired down": 88,
+        "Pages occupied by compressor": 7,
+    }
 
-    available = memory_guard._parse_darwin_vm_stat_available_bytes(text)
+    assert memory_guard.darwin_available_bytes(16_384, pages) == (
+        (10 + 20 + 3 + 2) * 16_384
+    )
+    assert memory_guard.darwin_available_bytes(16_384, {"Pages active": 9}) is None
 
-    assert available == (10 + 20 + 3 + 2) * 16_384
 
+def test_available_memory_bytes_reads_darwin_vm_pages_without_a_subprocess(
+    monkeypatch,
+) -> None:
+    def forbidden_run(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("available memory must not spawn vm_stat")
 
-def test_available_memory_bytes_uses_darwin_vm_stat(monkeypatch) -> None:
-    class Result:
-        returncode = 0
-        stdout = (
-            "Mach Virtual Memory Statistics: (page size of 4096 bytes)\n"
-            "Pages free: 2.\n"
-            "Pages inactive: 3.\n"
-            "Pages speculative: 5.\n"
-            "Pages purgeable: 7.\n"
-        )
-
-    monkeypatch.setattr(memory_guard.sys, "platform", "darwin")
+    limits = memory_limits
+    install_module_view(monkeypatch, "sys", sys, limits, platform="darwin")
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, limits, run=forbidden_run
+    )
     monkeypatch.setattr(
-        memory_guard.subprocess,
-        "run",
-        lambda *args, **kwargs: Result(),
+        limits,
+        "darwin_vm_pages",
+        lambda: (
+            4096,
+            {
+                "Pages free": 2,
+                "Pages inactive": 3,
+                "Pages speculative": 5,
+                "Pages purgeable": 7,
+                "Pages active": 11,
+            },
+        ),
     )
 
     assert memory_guard.available_memory_bytes(environ={}) == 17 * 4096
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin Mach VM statistics")
+def test_actual_darwin_vm_pages_match_vm_stat() -> None:
+    """vm_stat formats the same Mach counters through its own code path."""
+    text = str(
+        check_output_guarded_test_process(
+            ["vm_stat"], env={**os.environ, "LC_ALL": "C"}, timeout=30.0
+        )
+    )
+    page_size, pages = memory_guard.darwin_vm_pages()  # type: ignore[misc]
+    header = text.splitlines()[0]
+    assert f"page size of {page_size} bytes" in header
+    reported: dict[str, int] = {}
+    for line in text.splitlines()[1:]:
+        name, _, value = line.partition(":")
+        if value.strip().rstrip(".").isdigit():
+            reported[name.strip().strip('"')] = int(value.strip().rstrip("."))
+    for name, count in pages.items():
+        # The two reads are microseconds apart; a busy host moves a few pages.
+        assert abs(reported[name] - count) <= max(4096, reported[name] // 50), name
 
 
 def test_resolve_memory_limits_refreshes_dynamic_caps() -> None:
