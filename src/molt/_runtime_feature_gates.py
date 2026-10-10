@@ -122,7 +122,6 @@ RUNTIME_FEATURE_GATES: tuple[tuple[str, str], ...] = (
     ("molt_asyncio_", "stdlib_asyncio"),
     ("molt_event_loop_", "stdlib_asyncio"),
     ("molt_pipe_transport_", "stdlib_asyncio"),
-    ("molt_argparse_", "stdlib_collections"),
     ("molt_namedtuple_", "stdlib_collections"),
     ("molt_ordereddict_", "stdlib_collections"),
     ("molt_defaultdict_", "stdlib_collections"),
