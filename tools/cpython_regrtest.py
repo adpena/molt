@@ -33,6 +33,7 @@ from tools.command_execution import (  # noqa: E402
 bind_repository_imports(__file__)
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 
 
 REGRTEST_MEMORY_PREFIX = "MOLT_REGRTEST"
@@ -1175,6 +1176,18 @@ def run_rust_coverage(
             returncode=check.returncode,
             command=cmd,
             available=False,
+            message=message,
+        )
+    try:
+        admit_cargo_build(cmd, cwd=config.repo_root, env=command_env)
+    except ValueError as exc:  # DiskCapacityError, or an inconsistent target
+        message = f"cargo llvm-cov not started: {exc}"
+        log_line(log_handle, message)
+        return RustCoverageSummary(
+            output_dir=output_dir,
+            returncode=2,
+            command=cmd,
+            available=True,
             message=message,
         )
     rc = run_command(

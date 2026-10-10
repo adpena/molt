@@ -1105,6 +1105,7 @@ class FuncInfo(TypedDict):
     stateful_frame_plan: NotRequired[StatefulFunctionFramePlan]
     stateful_locals_layout: NotRequired[StatefulLocalsLayout]
     source_module_publication: NotRequired[SourceModulePublication]
+    gpu_body_origin: NotRequired[dict[str, Any]]
 
 
 class _TrackedOpsList(list[MoltOp]):

@@ -189,12 +189,14 @@ canonicalize.
   PY_MOD_GIL => {}` (two sites) and `PyUnstable_Module_SetGIL` was a stub.
   The one signal a future free-threaded molt needs — *which extensions are
   audited for no-GIL* — was thrown away. Fixed in Phase 2 (§4.1).
-- molt's overlay header pins `Py_GIL_DISABLED 0`
-  (`include/molt/Python.h:561`) — correct: extensions built against molt's
-  ABI get the GIL-build layout and never call `PyUnstable_Module_SetGIL`
-  (conformant callers guard with `#ifdef Py_GIL_DISABLED`). The slot path is
-  unguarded (numpy declares it on any 3.13+ target) and is the real
-  recording surface.
+- Both header transports leave `Py_GIL_DISABLED` undefined. Defining it to
+  `0` was incorrect: CPython and extensions use `#ifdef Py_GIL_DISABLED`, so
+  that definition still selects free-threaded code. The shared scalar-layout
+  header rejects any caller definition, including `0`, because its object
+  layout remains traditional. Molt's native atomic-refcount Cargo feature is
+  distinct from the CPython free-threaded ABI and still uses the global GIL.
+  The module slot path remains the recording surface for future admission;
+  recording `Py_MOD_GIL_NOT_USED` does not enable no-GIL execution today.
 
 ---
 

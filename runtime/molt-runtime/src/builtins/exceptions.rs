@@ -18,14 +18,13 @@ use crate::{
     builtin_classes, builtin_func_bits, bytes_like_slice, call_callable1, class_break_cycles,
     class_dict_bits, class_name_bits, class_name_for_error, code_filename_bits, code_name_bits,
     context_stack_unwind, current_task_key, current_task_ptr, current_token_id, dec_ref_bits,
-    dict_get_in_place, dict_order, dict_set_in_place, format_obj, header_from_obj_ptr,
-    inc_ref_bits, index_bigint_from_obj, init_atomic_bits, int_bits_from_i64, intern_static_name,
-    is_truthy, isinstance_bits, issubclass_bits, maybe_ptr_from_bits, module_dict_bits,
-    molt_class_set_base, molt_dec_ref, molt_repr_from_obj, molt_str_from_obj, obj_from_bits,
-    object_class_bits, object_type_id, profile_enabled, runtime_state, string_obj_to_owned,
-    task_exception_depths, task_exception_handler_stacks, task_exception_stacks,
-    task_last_exceptions, to_i64, token_is_cancelled, traceback_suppressed, tuple_from_iter_bits,
-    type_name, type_of_bits,
+    dict_get_in_place, dict_set_in_place, format_obj, header_from_obj_ptr, inc_ref_bits,
+    index_bigint_from_obj, init_atomic_bits, int_bits_from_i64, intern_static_name, is_truthy,
+    isinstance_bits, issubclass_bits, maybe_ptr_from_bits, module_dict_bits, molt_class_set_base,
+    molt_dec_ref, molt_repr_from_obj, molt_str_from_obj, obj_from_bits, object_class_bits,
+    object_type_id, profile_enabled, runtime_state, string_obj_to_owned, task_exception_depths,
+    task_exception_handler_stacks, task_exception_stacks, task_last_exceptions, to_i64,
+    token_is_cancelled, traceback_suppressed, tuple_from_iter_bits, type_name, type_of_bits,
 };
 use molt_obj_model::{
     BuiltinExceptionSpec, ExceptionBaseSpec, ExceptionFieldStorage, ExceptionLayoutKind,
@@ -377,6 +376,41 @@ pub(crate) fn raise_exception_bytes<T: ExceptionSentinel>(
     T::exception_sentinel()
 }
 
+/// Construct an IMPORT_FROM failure with one typed-field publication. The
+/// message and metadata are independent: Python observes the actual module
+/// name/origin objects even when their diagnostic spelling is customized.
+pub(crate) fn raise_import_error(
+    py: &PyToken<'_>,
+    message: &[u8],
+    name: u64,
+    path: u64,
+    name_from: u64,
+) -> u64 {
+    let ptr = alloc_exception_bytes(py, "ImportError", message);
+    if ptr.is_null() {
+        record_emergency_memory_error(py);
+        return MoltObject::none().bits();
+    }
+    let exception = ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits());
+    if let Err(message) = exception_typed_fields_replace_internal(
+        py,
+        exception.bits(),
+        &[
+            (ExceptionTypedField::ImportName, name),
+            (ExceptionTypedField::ImportPath, path),
+            (ExceptionTypedField::ImportNameFrom, name_from),
+        ],
+    ) {
+        if !exception_pending(py) {
+            return raise_exception(py, "SystemError", message);
+        }
+        return MoltObject::none().bits();
+    }
+    let owned = exception.into_bits();
+    record_exception_owned(py, crate::ptr_from_bits(owned));
+    MoltObject::none().bits()
+}
+
 #[inline]
 fn emergency_memory_error_pending_for_current() -> bool {
     THREAD_LAST_EXCEPTION.with(|state| state.emergency_memory_error_is_pending(current_task_ptr()))
@@ -553,21 +587,6 @@ pub(crate) fn raise_key_error_with_key<T: ExceptionSentinel>(
     dec_ref_bits(_py, msg_bits);
     dec_ref_bits(_py, args_bits);
     T::exception_sentinel()
-}
-
-pub(crate) fn raise_unsupported_inplace<T: ExceptionSentinel>(
-    _py: &PyToken<'_>,
-    op: &str,
-    lhs_bits: u64,
-    rhs_bits: u64,
-) -> T {
-    let lhs = type_name(_py, obj_from_bits(lhs_bits));
-    let rhs = type_name(_py, obj_from_bits(rhs_bits));
-    let msg = format!(
-        "unsupported operand type(s) for {}: '{}' and '{}'",
-        op, lhs, rhs
-    );
-    raise_exception::<T>(_py, "TypeError", &msg)
 }
 
 pub(crate) fn system_exit_code(_py: &PyToken<'_>, ptr: *mut u8) -> i32 {

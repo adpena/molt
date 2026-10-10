@@ -28,16 +28,14 @@ import contextlib
 from dataclasses import dataclass
 import os
 from pathlib import Path
-from typing import Any, Collection, Mapping, Sequence, cast, get_args
+from typing import Any, Collection, Mapping, Sequence, cast
 import uuid
 
 from molt._wasm_runtime_exports import wasm_cpython_abi_distribution_export_names
 from molt.cli import installed_runtime_contract as _runtime_contract
 from molt.cli.atomic_io import _atomic_copy_file, _remove_file_or_tree
-from molt.cli.cargo_profiles import _resolve_cargo_profile_name
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cli.default_paths import _default_molt_home
-from molt.cli.models import BuildProfile
 from molt.cli.native_link_custody import (
     NativeLinkCustodyError,
     NativeLinkCustodyAdmission,
@@ -88,6 +86,7 @@ from molt.file_publication import (
     resolve_owned_path,
 )
 from molt.release_matrix import RUST_TARGET_BY_COORDINATE
+from molt.release_lanes import ReleaseLane, capture_release_lanes
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     capture_stable_regular_file,
@@ -350,16 +349,16 @@ def native_runtime_cell_key(
 
 def wasm_runtime_cell_key(
     *,
-    cargo_profile: str,
+    runtime_profile: str,
     stdlib_profile: str | None,
     simd_enabled: bool,
     freestanding: bool,
 ) -> dict[str, Any]:
-    """Distributed WASM cells carry their tier ceiling and full C-API surface."""
+    """Key the resolved physical profile, full tier ceiling and C-API surface."""
     concrete = stdlib_profile or DEFAULT_RUNTIME_STDLIB_PROFILE
     return {
         "target_triple": WASM_RUNTIME_TARGET,
-        "cargo_profile": _resolve_wasm_cargo_profile(cargo_profile),
+        "cargo_profile": runtime_profile,
         "stdlib_profile": concrete,
         "runtime_features": sorted(
             set(runtime_wasm_distribution_features(concrete, freestanding=freestanding))
@@ -407,7 +406,7 @@ def select_installed_wasm_runtime(
     if installed is None:
         return None
     key = wasm_runtime_cell_key(
-        cargo_profile=cargo_profile,
+        runtime_profile=_resolve_wasm_cargo_profile(cargo_profile),
         stdlib_profile=stdlib_profile,
         simd_enabled=simd_enabled,
         freestanding=freestanding,
@@ -417,23 +416,29 @@ def select_installed_wasm_runtime(
 
 def installed_runtime_profile_readiness(
     installed: InstalledCompiler,
-) -> dict[str, dict[str, bool]]:
-    """Per target family, which guest profiles have at least one shipped cell."""
-    readiness: dict[str, dict[str, bool]] = {"native": {}, "wasm": {}}
-    for profile in get_args(BuildProfile):
-        cargo_profile, _error = _resolve_cargo_profile_name(profile)
-        wasm_profile = _resolve_wasm_cargo_profile(cargo_profile)
-        readiness["native"][profile] = any(
-            cell["kind"] == NATIVE_RUNTIME_CELL
-            and cell["key"]["target_triple"] == "native"
-            and cell["key"]["cargo_profile"] == cargo_profile
-            for cell in installed.runtime["cells"]
+) -> dict[ReleaseLane, bool]:
+    """Reported availability joins each declared lane to delivered bytes/features.
+
+    This is a selection report, not target execution qualification. Native and
+    LLVM share runtime members but still require distinct compiler capabilities.
+    """
+    inventory = capture_release_lanes(installed.source_root)
+    readiness: dict[ReleaseLane, bool] = {}
+    for lane in inventory.lanes:
+        features = lane.compiler_features
+        kind = NATIVE_RUNTIME_CELL if lane.target == "native" else WASM_RUNTIME_CELL
+        readiness[lane] = (
+            installed.record["profile"] == lane.compiler_profile
+            and set(features) <= set(installed.record["features"])
+            and any(
+                cell["kind"] == kind
+                and cell["key"]["cargo_profile"] == lane.runtime_profile
+                and cell["key"]["target_triple"]
+                == ("native" if lane.target == "native" else WASM_RUNTIME_TARGET)
+                for cell in installed.runtime["cells"]
+            )
         )
-        readiness["wasm"][profile] = any(
-            cell["kind"] == WASM_RUNTIME_CELL
-            and cell["key"]["cargo_profile"] == wasm_profile
-            for cell in installed.runtime["cells"]
-        )
+    inventory.verify()
     return readiness
 
 

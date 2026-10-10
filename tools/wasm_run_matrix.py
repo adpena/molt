@@ -13,7 +13,8 @@ Supported runtimes
 * ``node``             - Node.js >= 18 with ``wasm/run_wasm.js`` (canonical)
 * ``molt-wasm-host``   - Rust wasmtime embedder bundled in this repo
                          (``runtime/molt-wasm-host``). This is the
-                         "wasmtime" lane. Built on demand if missing.
+                         "wasmtime" lane. Uses a prebuilt dev-fast host or
+                         the explicit MOLT_WASM_HOST_BIN.
 * ``wasmtime``         - stock ``wasmtime`` CLI on PATH. Probed only.
                          Molt WASM imports a host shim under ``env.molt_*_host``
                          that the stock CLI cannot satisfy, so this lane is
@@ -77,11 +78,11 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 import harness_memory_guard  # noqa: E402
+from molt.cli.wasm_host import resolve_molt_wasm_host_binary  # noqa: E402
 from molt.node_runtime import resolve_node_runtime  # noqa: E402
 from molt.browser_asset_closure import (  # noqa: E402
     BROWSER_HOST_ENTRY_ASSETS,
-    canonical_wasm_loader_asset_bytes,
-    wasm_loader_asset_closure,
+    wasm_loader_asset_payloads,
 )
 from molt.wasm_artifact import read_wasm_imports, wasm_runtime_manifest_path  # noqa: E402
 
@@ -345,38 +346,13 @@ def _run_node(
     )
 
 
-def _resolve_molt_wasm_host() -> Path | None:
-    """Resolve the in-repo wasmtime embedder.
-
-    Search order:
-      1. ``MOLT_WASM_HOST_PATH`` env var
-      2. ``target/release-fast/molt-wasm-host`` (project's standard fast build)
-      3. ``target/release/molt-wasm-host``
-      4. ``target/debug/molt-wasm-host``
-      5. ``shutil.which("molt-wasm-host")``
-    """
-    override = os.environ.get("MOLT_WASM_HOST_PATH", "").strip()
-    if override:
-        path = Path(override).expanduser()
-        if path.exists():
-            return path
-    for profile in ("release-fast", "release", "debug"):
-        path = REPO_ROOT / "target" / profile / "molt-wasm-host"
-        if path.exists():
-            return path
-    found = shutil.which("molt-wasm-host")
-    if found:
-        return Path(found)
-    return None
-
-
 def _run_molt_wasm_host(
     case: SmokeCase,
     wasm: Path,
     *,
     limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> RunResult:
-    host = _resolve_molt_wasm_host()
+    host = resolve_molt_wasm_host_binary(REPO_ROOT, cargo_profile="dev-fast")
     if host is None:
         return RunResult(
             "molt-wasm-host",
@@ -384,7 +360,8 @@ def _run_molt_wasm_host(
             "skipped",
             detail=(
                 "molt-wasm-host binary not found; build with "
-                "`cargo build --release -p molt-wasm-host`"
+                "`cargo build --profile dev-fast -p molt-wasm-host` "
+                "or set MOLT_WASM_HOST_BIN"
             ),
         )
     manifest = wasm_runtime_manifest_path(wasm)
@@ -764,13 +741,12 @@ _BROWSER_HARNESS_HTML = r"""<!doctype html>
 def _stage_browser_static_assets(site: Path) -> tuple[str, ...]:
     """Stage the canonical browser-host dependency closure into ``site``."""
 
-    assets = wasm_loader_asset_closure(WASM_DIR, BROWSER_HOST_ENTRY_ASSETS)
-    for src_name in assets:
-        src = WASM_DIR.joinpath(*Path(src_name).parts)
+    assets = wasm_loader_asset_payloads(WASM_DIR, BROWSER_HOST_ENTRY_ASSETS)
+    for src_name, data in assets.items():
         dst = site.joinpath(*Path(src_name).parts)
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(canonical_wasm_loader_asset_bytes(src))
-    return assets
+        dst.write_bytes(data)
+    return tuple(assets)
 
 
 def _run_browser(
@@ -964,10 +940,11 @@ def _runtime_present(
             return False, str(exc)
         return True, ""
     if runtime == "molt-wasm-host":
-        if _resolve_molt_wasm_host() is None:
+        if resolve_molt_wasm_host_binary(REPO_ROOT, cargo_profile="dev-fast") is None:
             return False, (
                 "molt-wasm-host binary missing; "
-                "build with `cargo build --release -p molt-wasm-host`"
+                "build with `cargo build --profile dev-fast -p molt-wasm-host` "
+                "or set MOLT_WASM_HOST_BIN"
             )
         return True, ""
     if runtime == "wasmtime":
@@ -1128,15 +1105,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[matrix] runtimes={runtimes}")
     print(f"[matrix] out_dir={out_dir}")
 
-    # Probe runtime availability up front.
-    presence: dict[str, tuple[bool, str]] = {
-        rt: _runtime_present(rt, limits=limits) for rt in runtimes
-    }
-    for rt, (ok, why) in presence.items():
-        marker = "ok" if ok else "missing"
-        suffix = f" ({why})" if not ok and why else ""
-        print(f"[matrix] runtime {rt}: {marker}{suffix}")
-
     with harness_memory_guard.repo_process_sentinel(
         repo_root=REPO_ROOT,
         artifact_root=out_dir,
@@ -1152,6 +1120,15 @@ def main(argv: list[str] | None = None) -> int:
                 f"[matrix] built {len(artifacts)} smoke artifacts; build-only: exiting"
             )
             return 0
+
+        # Build-only work never probes execution runtimes.
+        presence: dict[str, tuple[bool, str]] = {
+            rt: _runtime_present(rt, limits=limits) for rt in runtimes
+        }
+        for rt, (ok, why) in presence.items():
+            marker = "ok" if ok else "missing"
+            suffix = f" ({why})" if not ok and why else ""
+            print(f"[matrix] runtime {rt}: {marker}{suffix}")
 
         results: list[RunResult] = []
         for rt in runtimes:

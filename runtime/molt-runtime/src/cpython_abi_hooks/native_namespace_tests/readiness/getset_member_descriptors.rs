@@ -512,12 +512,13 @@ unsafe fn assert_descriptor_system_error() {
             (&raw mut PyExc_SystemError).cast()
         );
         let raised = errors::PyErr_GetRaisedException();
+        let raised_owner = refcount::OwnedPyObject::from_owned(raised);
         assert!(
             !raised.is_null(),
             "invalid descriptors carry a normalized exception"
         );
         assert_eq!((*raised).ob_type, &raw mut PyExc_SystemError);
-        refcount::Py_DECREF(raised);
+        drop(raised_owner);
         assert!(errors::PyErr_Occurred().is_null());
     }
 }

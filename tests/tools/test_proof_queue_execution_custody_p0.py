@@ -15,6 +15,127 @@ from tests.process_guard_common import install_module_view, run_custody_subject_
 from tools.proof_queue_pkg import execution_custody, supervisor_custody
 
 
+@pytest.mark.skipif(os.name == "nt", reason="CPython POSIX exec-path contract")
+@pytest.mark.parametrize(
+    "selection",
+    [
+        "inherit",
+        "missing",
+        "empty",
+        "relative",
+        "lowercase",
+        "bytes-missing",
+        "bytes-empty",
+        "bytes-lowercase",
+    ],
+)
+def test_python_hook_broker_matches_cpython_child_path_selection(
+    tmp_path: Path, selection: str
+) -> None:
+    # Use real native interpreter aliases: the independent ordinary CPython
+    # launch is the oracle, and the broker sees the actual bootstrap hook.
+    image = Path(sys.executable).resolve(strict=True)
+    name = "molt-custody-child-" + tmp_path.name
+    parent_bin = tmp_path / "parent-bin"
+    child_cwd = tmp_path / "child-cwd"
+    for directory in (parent_bin, child_cwd, child_cwd / "bin"):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / name).symlink_to(image)
+    child_environment = {
+        "inherit": None,
+        "missing": {},
+        "empty": {"PATH": ""},
+        "relative": {"PATH": "bin"},
+        "lowercase": {"path": str(parent_bin)},
+        "bytes-missing": {b"OTHER": b"present"},
+        "bytes-empty": {b"PATH": b""},
+        "bytes-lowercase": {b"path": os.fsencode(parent_bin)},
+    }[selection]
+    payload = (
+        "import json, subprocess\n"
+        "try:\n"
+        f" result = subprocess.run([{name!r}, '-I', '-S', '-c', "
+        "\"print('selected-native-child')\"], "
+        f"env={child_environment!r}, cwd={str(child_cwd)!r}, "
+        "capture_output=True, text=True, timeout=10)\n"
+        " print(json.dumps({'returncode': result.returncode, 'stdout': result.stdout}))\n"
+        "except OSError as exc:\n"
+        " print(json.dumps({'error': type(exc).__name__}))\n"
+    )
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("MOLT_PROOF_CHILD_CUSTODY")
+    }
+    environment["PATH"] = str(parent_bin)
+    oracle = run_custody_subject_process(
+        [sys.executable, "-I", "-S", "-c", payload],
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert oracle.returncode == 0, oracle.stderr
+    expected = json.loads(oracle.stdout)
+    found = selection in {"inherit", "empty", "relative", "bytes-empty"}
+    assert expected == (
+        {"returncode": 0, "stdout": "selected-native-child\n"}
+        if found
+        else {"error": "FileNotFoundError"}
+    )
+    policy = {
+        "schema": execution_custody.CHILD_POLICY_SCHEMA,
+        "descendants": "declared-toolchains",
+        "allowed": [
+            {
+                "toolchain": "python",
+                "path": execution_custody._norm(directory / name),
+                "sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
+            }
+            for directory in (parent_bin, child_cwd, child_cwd / "bin")
+        ],
+    }
+    server = execution_custody.ChildCustodyEventServer("python", policy)
+    environment[execution_custody.CHILD_POLICY_ENV] = json.dumps(policy)
+    environment.update(server.environment())
+    bootstrap = Path(execution_custody.__file__).with_name(
+        "python_custody_bootstrap.py"
+    )
+    with server:
+        completed = run_custody_subject_process(
+            [sys.executable, bootstrap, "command", "0", payload],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == (
+        expected if found else {"error": "PermissionError"}
+    )
+    receipt = server.receipt()
+    assert receipt["broker_complete"] is True, receipt
+    assert receipt["errors"] == [], receipt
+    decisions = [
+        row for row in receipt["events"] if row.get("event") == "child-process"
+    ]
+    assert len(decisions) == 1, receipt
+    assert decisions[0]["admitted"] is found, decisions
+    selected_directory = (
+        parent_bin
+        if selection == "inherit"
+        else child_cwd / "bin"
+        if selection == "relative"
+        else child_cwd
+    )
+    assert decisions[0]["resolved"] == (
+        str(selected_directory / name) if found else None
+    ), decisions
+    assert bool(receipt["violations"]) is not found
+
+
 def test_python_payload_cannot_replace_private_audit_enforcement(
     tmp_path: Path,
 ) -> None:
@@ -109,17 +230,23 @@ def test_derived_child_admission_reuses_supervisor_provenance(tmp_path: Path):
         result_path=tmp_path / "receipt.json",
     )
     envelope = {"process_closure": {"descendants": "declared-toolchains"}}
-    policy = execution_custody.child_policy(envelope, {}, derived_roots=provenance)
+    policy = execution_custody.child_policy(
+        envelope, {}, environment_executables={}, derived_roots=provenance
+    )
     role = supervisor_custody.SCRATCH_OUTPUT_ROLE
     assert policy["derived_roots"] == [{"role": role, "path": str(scratch.resolve())}]
     with pytest.raises(ValueError, match="run-owned provenance"):
         execution_custody.child_policy(
-            envelope, {}, derived_roots=[{**provenance[0], "run_owned": False}]
+            envelope,
+            {},
+            environment_executables={},
+            derived_roots=[{**provenance[0], "run_owned": False}],
         )
     with pytest.raises(ValueError, match="run-owned provenance"):
         execution_custody.child_policy(
             {"process_closure": {"descendants": "forbidden"}},
             {},
+            environment_executables={},
             derived_roots=provenance,
         )
 
@@ -155,6 +282,7 @@ def test_derived_child_admission_rejects_symlink_escape(tmp_path: Path):
     policy = execution_custody.child_policy(
         {"process_closure": {"descendants": "declared-toolchains"}},
         {},
+        environment_executables={},
         derived_roots=[
             {"role": "scratch-output", "path": str(root), "run_owned": True}
         ],
@@ -286,3 +414,210 @@ def test_linux_root_watch_is_installed_before_recursive_enumeration(
 
     assert add_calls == [root]
     assert monitor._ready.is_set()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX native interpreter alias execution")
+def test_python_path_and_cargo_hook_launches_share_native_environment_custody(tmp_path):
+    import shutil
+    from tools import proof_plan
+    from tools.proof_queue_pkg import (
+        command_admission,
+        command_identity,
+        execution_environment,
+    )
+
+    path_bin = tmp_path / "path"
+    path_bin.mkdir()
+    path_tool, hook_tool = path_bin / "cargo", tmp_path / "selected-cargo"
+    for image in (path_tool, hook_tool):
+        shutil.copyfile(Path(sys.executable).resolve(strict=True), image)
+        image.chmod(0o755)
+    (tmp_path / "pyvenv.cfg").write_text(
+        f"home = {Path(sys._base_executable).resolve(strict=True).parent}\n",
+        encoding="utf-8",
+    )
+    environment = {**os.environ, "PATH": str(path_bin), "CARGO": str(hook_tool)}
+    environment, _ = execution_environment._deterministic_execution_environment(
+        environment, override_names=["CARGO"]
+    )
+    envelope = command_admission.envelope_for_command([sys.executable, "-c", "pass"])
+    identity = command_identity._tool_identity(
+        proof_plan.ProofPlan.load(),
+        "cargo",
+        envelope,
+        [sys.executable, "-c", "pass"],
+        cwd=tmp_path,
+        env=environment,
+    )
+    assert identity["path"] == str(path_tool)
+    configured = execution_environment._execution_environment_executable_identities(
+        environment, cwd=tmp_path
+    )
+    declared = {"process_closure": {"descendants": "declared-toolchains"}}
+    policy = execution_custody.child_policy(
+        declared, {"cargo": identity}, environment_executables=configured
+    )
+    _, fixed = supervisor_custody._supervisor_fixed_images(
+        {"cargo": identity}, configured, [sys.executable]
+    )
+    wanted = {str(path_tool), str(hook_tool)}
+    assert wanted <= {row["path"] for row in policy["allowed"]}
+    assert wanted <= {row["path"] for row in fixed}
+    payload = (
+        "import os, subprocess\n"
+        "for executable in ('cargo', os.environ['CARGO']):\n"
+        " subprocess.run([executable, '-I', '-S', '-c', \"print('actual-child')\"], check=True)\n"
+    )
+    server = execution_custody.ChildCustodyEventServer("python", policy)
+    environment[execution_custody.CHILD_POLICY_ENV] = json.dumps(policy)
+    environment.update(server.environment())
+    bootstrap = Path(execution_custody.__file__).with_name(
+        "python_custody_bootstrap.py"
+    )
+    with server:
+        completed = run_custody_subject_process(
+            [sys.executable, bootstrap, "command", "0", payload],
+            env=environment,
+            cwd=tmp_path,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.splitlines() == ["actual-child", "actual-child"]
+    receipt = server.receipt()
+    assert execution_custody.child_receipt_is_admitted(receipt), receipt
+    assert {
+        row["resolved"]
+        for row in receipt["events"]
+        if row.get("event") == "child-process"
+    } == wanted
+    # The recorded allowance binds bytes, rather than granting a directory.
+    hook_tool.write_bytes(b"replacement")
+    with execution_custody.ChildCustodyEventServer("python", policy) as changed:
+        assert not changed._decide_child({"requested": str(hook_tool)})["admitted"]
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "CARGO",
+        "RUSTC",
+        "RUSTFMT",
+        "RUSTDOC",
+        "CARGO_BUILD_RUSTC",
+        "CARGO_BUILD_RUSTDOC",
+    ],
+)
+def test_environment_rust_proxy_component_reaches_both_custody_consumers(
+    tmp_path, monkeypatch, selector
+):
+    import subprocess
+    from molt import process_guard
+    from tools.proof_queue_pkg import (
+        execution_environment,
+        toolchain_capture,
+        process_image_capture,
+    )
+
+    role = selector.removeprefix("CARGO_BUILD_").lower()
+    proxy = tmp_path / (role + (".exe" if os.name == "nt" else ""))
+    rustup = proxy.with_name("rustup.exe" if os.name == "nt" else "rustup")
+    physical = tmp_path / "physical" / proxy.name
+    physical.parent.mkdir()
+    for path in (proxy, rustup, physical):
+        path.write_bytes(b"proxy" if path != physical else b"actual component")
+        path.chmod(0o755)
+    calls = []
+
+    def which(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, str(physical) + "\n", "")
+
+    monkeypatch.setattr(process_guard, "run_completed_command", which)
+    captured = execution_environment._execution_environment_executable_identities(
+        {selector: str(proxy)}, cwd=tmp_path
+    )
+    assert calls == [[str(rustup), "which", role]]
+    images = process_image_capture.environment_images(captured)
+    expected_paths = {
+        process_image_capture._image_path_key(proxy),
+        process_image_capture._image_path_key(physical),
+    }
+    assert {row["path"] for row in images} == expected_paths
+    assert {
+        process_image_capture._image_path_key(Path(row.path))
+        for row in toolchain_capture.frozen_files(captured)
+    } >= expected_paths
+    assert set(execution_custody._identity_paths(captured)) >= {proxy, physical}
+    policy = execution_custody.child_policy(
+        {"process_closure": {"descendants": "declared-toolchains"}},
+        {},
+        environment_executables=captured,
+    )
+    _, native = supervisor_custody._supervisor_fixed_images(
+        {}, captured, [sys.executable]
+    )
+    expected = {(row["path"], row["sha256"]) for row in images}
+    assert {(row["path"], row["sha256"]) for row in policy["allowed"]} == expected
+    assert {
+        (row["path"], row["sha256"])
+        for row in native
+        if row["role"] == f"env:{selector}"
+    } == expected
+    physical.write_bytes(b"changed component")
+    assert (
+        execution_environment._execution_environment_executable_identities(
+            {selector: str(proxy)}, cwd=tmp_path
+        )
+        != captured
+    )
+    with pytest.raises(ValueError, match="changed while live custody"):
+        process_image_capture.revalidate_images(images)
+    incomplete = {
+        selector: {
+            key: value
+            for key, value in captured[selector].items()
+            if key != "process_images"
+        }
+    }
+    with pytest.raises(ValueError, match="no process-image closure"):
+        execution_custody.child_policy(
+            {"process_closure": {"descendants": "declared-toolchains"}},
+            {},
+            environment_executables=incomplete,
+        )
+    with pytest.raises(ValueError, match="no process-image closure"):
+        supervisor_custody._supervisor_fixed_images({}, incomplete, [sys.executable])
+
+
+def test_watch_custody_retains_ancestor_alias_and_deleted_entry(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    tool = target / "tool"
+    tool.write_bytes(b"same bytes")
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink capability unavailable: {exc}")
+    selected = alias / "tool"
+    specs = execution_custody.watch_specs(
+        source_root=source,
+        tracked_paths=[],
+        identities=[{"path": str(selected)}],
+        broad_roots=[],
+    )
+    assert any(spec.owns(tool) for spec in specs if spec.root == target)
+    alias_spec = next(spec for spec in specs if spec.root == tmp_path)
+    assert alias_spec.owns(alias)
+    alias.unlink()
+    assert alias_spec.owns(alias), "removed selection must retain a mutation event"
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    (replacement / "tool").write_bytes(tool.read_bytes())
+    alias.symlink_to(replacement, target_is_directory=True)
+    assert alias_spec.owns(alias), "same-byte alias retarget still changes selection"

@@ -165,6 +165,7 @@ def test_wiring_audit_locks_down_pytest_and_ci_gate_custody() -> None:
     assert contracts["pyproject.toml"] == ("molt.pytest_memory_guard_config_plugin",)
     assert contracts["src/molt/pytest_memory_guard_config_plugin.py"] == (
         "pytest_load_initial_conftests",
+        "pytest_configure",
         "pytest_runtest_call",
     )
     assert contracts["src/sitecustomize.py"] == (
@@ -175,6 +176,8 @@ def test_wiring_audit_locks_down_pytest_and_ci_gate_custody() -> None:
     assert contracts["src/molt/pytest_memory_guard_bootstrap.py"] == (
         "_bind_confirmed_test_repository",
         "pytest_load_initial_conftests",
+        "pytest_configure",
+        "pytest_runtest_logreport",
         "pytest_runtest_call",
         "MOLT_MEMORY_GUARD_ACTIVE",
         "MOLT_MEMORY_GUARD_PID",
@@ -994,7 +997,6 @@ def test_windows_pytest_cache_dir_arg_uses_canonical_tmp_cache(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
-    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
     args = ["tests/test_one.py", "-q"]
 
     assert pytest_memory_guard_bootstrap.install_windows_pytest_cache_dir_arg(args)
@@ -1131,7 +1133,6 @@ def test_windows_pytest_custody_roots_prepare_readable_defaults(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
-    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
     monkeypatch.delenv("PYTEST_DEBUG_TEMPROOT", raising=False)
 
     assert pytest_memory_guard_bootstrap.install_pytest_custody_roots()
@@ -1199,7 +1200,6 @@ def test_windows_pytest_custody_roots_preserve_explicit_temproot(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
     )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
-    monkeypatch.setenv("MOLT_ALLOW_C_DRIVE_ARTIFACTS", "1")
     explicit = tmp_path / "explicit-temproot"
     monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(explicit))
 
@@ -1699,3 +1699,208 @@ def test_pytest_current_test_writer_retries_windows_atomic_replace(
     payload = json.loads(current_test_path.read_text(encoding="utf-8"))
     assert payload["phase"] == "call"
     assert payload["nodeid"] == "tests/test_memory_guard_wiring.py::test_unit"
+
+
+def test_pytest_immediate_failures_register_once_and_only_format_failed_reports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    manager = pytest.PytestPluginManager()
+    events: list[object] = []
+
+    class Terminal:
+        def write_sep(self, separator: str, title: str) -> None:
+            events.append((separator, title))
+
+        def _outrep_summary(self, report: object) -> None:
+            events.append(report)
+
+        def flush(self) -> None:
+            events.append("flushed")
+
+    manager.register(Terminal(), "terminalreporter")
+    config = SimpleNamespace(
+        pluginmanager=manager, option=SimpleNamespace(tbstyle="auto")
+    )
+    # An inherited environment marker is not evidence that this config is a
+    # worker. Real xdist supplies config.workerinput on its worker instance.
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "inherited-worker")
+    pytest_memory_guard_config_plugin.pytest_configure(config)
+    pytest_memory_guard_bootstrap.pytest_configure(config)
+    reporter = manager.getplugin("molt-immediate-pytest-failures")
+    assert reporter is not None
+    manager.check_pending()
+    for outcome in ("passed", "skipped"):
+        report = SimpleNamespace(failed=False, outcome=outcome, when="call")
+        reporter.pytest_runtest_logreport(report)
+        reporter.pytest_collectreport(report)
+    assert events == []
+    for phase in ("setup", "call", "teardown", "collect"):
+        report = SimpleNamespace(
+            failed=True, when=phase, nodeid="test_probe.py::test_original"
+        )
+        # xdist annotates test reports, but its collection reports have no
+        # worker provenance. Preserve only the provenance actually supplied.
+        origin = ""
+        if phase != "collect":
+            report.worker_id = "gw0"
+            origin = " [gw0]"
+        if phase == "collect":
+            reporter.pytest_collectreport(report)
+        else:
+            reporter.pytest_runtest_logreport(report)
+        assert events[-3:] == [
+            (
+                "=",
+                f"Molt immediate pytest failure{origin}: test_probe.py::test_original ({phase})",
+            ),
+            report,
+            "flushed",
+        ]
+    assert len(events) == 12
+    worker_manager = pytest.PytestPluginManager()
+    pytest_memory_guard_bootstrap.pytest_configure(
+        SimpleNamespace(pluginmanager=worker_manager, workerinput={})
+    )
+    assert worker_manager.getplugin("molt-immediate-pytest-failures") is None
+
+
+@pytest.mark.parametrize(
+    ("workers", "abrupt", "tbstyle", "showcapture"),
+    [
+        (0, True, "auto", "all"),
+        (1, True, "auto", "all"),
+        (0, False, "auto", "all"),
+        (0, True, "no", "all"),
+        (0, True, "short", "no"),
+    ],
+    ids=(
+        "serial-abrupt",
+        "xdist-controller-abrupt",
+        "normal-pytest-outcome",
+        "traceback-suppressed-abrupt",
+        "capture-suppressed-abrupt",
+    ),
+)
+def test_pytest_failure_details_survive_later_abrupt_exit(
+    tmp_path: Path,
+    workers: int,
+    abrupt: bool,
+    tbstyle: str,
+    showcapture: str,
+) -> None:
+    """Actual pytest reports must reach output before a later session death."""
+    from tests.process_guard_common import run_guarded_test_process
+
+    fixture = tmp_path / "failure-probe"
+    fixture.mkdir()
+    finished = fixture / "session-finished"
+    (fixture / "conftest.py").write_text(
+        "import os\nfrom pathlib import Path\n"
+        "pytest_plugins = ['tests.conftest']\n"
+        "controller_abort = False\nfailed_seen = False\n"
+        "def pytest_configure(config):\n"
+        f"    global controller_abort\n    controller_abort = {abrupt!r} and "
+        "not hasattr(config, 'workerinput') and bool(getattr(config.option, 'numprocesses', 0))\n"
+        "def pytest_runtest_logreport(report):\n"
+        "    global failed_seen\n"
+        "    if report.failed:\n        failed_seen = True\n"
+        "def pytest_runtest_logstart(nodeid, location):\n"
+        "    if controller_abort and failed_seen and nodeid.endswith('::test_later_exit'):\n"
+        "        os._exit(86)\n"
+        "def pytest_sessionfinish(session, exitstatus):\n"
+        "    if not hasattr(session.config, 'workerinput'):\n"
+        f"        Path({str(finished)!r}).write_text(str(int(exitstatus)), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    test_file = fixture / "test_failure_probe.py"
+    test_file.write_text(
+        "import os\nimport sys\nimport pytest\n"
+        "def test_original_assertion():\n"
+        "    print('retained stdout marker')\n"
+        "    print('retained stderr marker', file=sys.stderr)\n"
+        "    actual, expected = 1729, 1733\n"
+        "    assert actual == expected, 'retained assertion marker \\u03bb'\n"
+        "def test_later_exit():\n"
+        f"    {'os._exit(86)' if abrupt and workers == 0 else 'pass'}\n"
+        "@pytest.mark.skip(reason='literal skip control')\n"
+        "def test_skip():\n    pass\n"
+        "@pytest.mark.xfail(reason='literal xfail control')\n"
+        "def test_xfail():\n    assert 0 == 1\n",
+        encoding="utf-8",
+    )
+    env = dict(os.environ)
+    # This is a fresh controller even when the owning test runs in a worker.
+    for name in (
+        "PYTEST_XDIST_WORKER",
+        "PYTEST_XDIST_WORKER_COUNT",
+        "PYTEST_XDIST_TESTRUNUID",
+        "PYTEST_ADDOPTS",
+    ):
+        env.pop(name, None)
+    env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-c",
+        str(REPO_ROOT / "pyproject.toml"),
+        "-p",
+        "molt.pytest_memory_guard_config_plugin",
+        "-p",
+        "molt.pytest_memory_guard_bootstrap",
+        "--rootdir",
+        str(fixture),
+        "--color=no",
+        f"--tb={tbstyle}",
+        f"--show-capture={showcapture}",
+        "-q",
+    ]
+    if workers:
+        command.extend(["-p", "xdist.plugin", "-n", str(workers), "--dist=loadfile"])
+    command.append(str(test_file))
+    result = run_guarded_test_process(
+        command,
+        cwd=REPO_ROOT,
+        env=env,
+        timeout=90,
+        check=False,
+    )
+    output = (result.stdout or "") + (result.stderr or "")
+    assert result.descendants_closed is True, output
+    assert result.infrastructure_failure is None, output
+    assert not result.timed_out, output
+    assert output.count("Molt immediate pytest failure") == 1, output
+    assert "test_failure_probe.py::test_original_assertion (call)" in output
+    if tbstyle == "no":
+        assert "assert 1729 == 1733" not in output
+        assert "retained assertion marker" not in output
+    else:
+        assert "assert 1729 == 1733" in output
+        assert "retained assertion marker" in output
+    if tbstyle != "no" and showcapture == "all":
+        assert "Captured stdout call" in output
+        assert "Captured stderr call" in output
+        assert "retained stdout marker" in output
+        assert "retained stderr marker" in output
+    else:
+        assert "Captured stdout call" not in output
+        assert "Captured stderr call" not in output
+        # With short/no traceback, these cannot leak through source excerpts.
+        assert "retained stdout marker" not in output
+        assert "retained stderr marker" not in output
+    if workers:
+        assert "Molt immediate pytest failure [gw0]:" in output
+    if abrupt:
+        assert result.child_returncode == 86, output
+        assert result.returncode != 0, output
+        assert not finished.exists(), output
+        assert "short test summary info" not in output
+        assert "FAILURES" not in output
+    else:
+        assert result.returncode == 1, output
+        assert result.child_returncode == 1, output
+        assert finished.read_text(encoding="utf-8") == "1"
+        assert "1 failed, 1 passed, 1 skipped, 1 xfailed" in output
+        assert "short test summary info" in output

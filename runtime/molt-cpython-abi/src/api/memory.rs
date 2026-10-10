@@ -208,7 +208,7 @@ pub(crate) unsafe fn molt_object_alloc_with_tail(
     };
     if !initialized.is_null()
         && unsafe { (*typeobj).tp_flags } & crate::abi_types::Py_TPFLAGS_HAVE_GC != 0
-        && unsafe { (crate::hooks::hooks_or_stubs().native_gc_allocate)(initialized.addr()) } < 0
+        && unsafe { crate::hooks::hooks_or_stubs().native_gc_allocate(initialized.addr()) } < 0
     {
         unsafe { crate::api::errors::check_native_status(-1, "native_gc_allocate") };
         crate::api::errors::with_preserved_error(|| unsafe {
@@ -1031,7 +1031,7 @@ pub(crate) unsafe fn restricted_memoryview_from_buffer(info: *const Py_buffer) -
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMemoryView_Check(op: *mut PyObject) -> c_int {
     crate::bridge::GLOBAL_BRIDGE.molt_handle_for_pyobj(op)
-        .is_some_and(|bits| unsafe { (crate::hooks::hooks_or_stubs().classify_heap)(bits.bits()) }
+        .is_some_and(|bits| unsafe { crate::hooks::hooks_or_stubs().classify_heap(bits.bits()) }
             == crate::abi_types::MoltTypeTag::MemoryView as u8) as c_int
 }
 

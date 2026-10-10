@@ -5,7 +5,6 @@ import io
 import re
 import shutil
 import tarfile
-import tomllib
 import zipfile
 from pathlib import Path
 
@@ -425,20 +424,13 @@ def test_wasi_sdk_update_reads_versions_and_moves_wasm_ld(tmp_path) -> None:
         wasi.llvm_version in old or re.escape(wasi.llvm_version) in old
         for old, _ in changed
     )
-    vendor = root / "vendor/wasm-builtins"
-    provenance = tomllib.loads((vendor / "provenance.toml").read_text(encoding="utf-8"))
-    assert provenance["wasi_sdk_archive_version"] == "99.0"
-    assert provenance["llvm_version"] == "99.1.0"
-    assert provenance["source_host"] == "linux-x86_64"
-    reference = builtins["linux-x86_64"]
-    for name, record in provenance["archives"].items():
-        assert (vendor / name).read_bytes() == reference
-        assert record["sha256"] == hashlib.sha256(reference).hexdigest()
-        assert record["members"] == 1
-        assert record["sdk_path"] in builtin_paths
+    assert not (root / "vendor/wasm-builtins").exists()
+    for asset in moved.targets:
+        assert asset.sha256 == hashlib.sha256(blobs[asset.url]).hexdigest()
+        assert asset.size == len(blobs[asset.url])
 
 
-def test_wasi_sdk_update_rejects_hosts_with_different_archive_members(
+def test_wasi_sdk_update_preserves_distinct_complete_host_assets(
     tmp_path,
 ) -> None:
     root = _pin_root(tmp_path)
@@ -469,10 +461,12 @@ def test_wasi_sdk_update_rejects_hosts_with_different_archive_members(
         wasi.provenance_url.replace(f"wasi-sdk-{old_tag}", "wasi-sdk-99"),
         blobs,
     )
-    before = (root / "config/llvm_toolchain_releases.toml").read_bytes()
-    with pytest.raises(PinFreshnessError, match="different .* members"):
-        pin_freshness.update(root, "wasi-sdk", upstream.fetchers())
-    assert (root / "config/llvm_toolchain_releases.toml").read_bytes() == before
+    pin_freshness.update(root, "wasi-sdk", upstream.fetchers())
+    moved = load_llvm_releases(root).wasi_sdk
+    assert len({asset.sha256 for asset in moved.targets}) == len(moved.targets)
+    for asset in moved.targets:
+        assert asset.sha256 == hashlib.sha256(blobs[asset.url]).hexdigest()
+    assert not (root / "vendor/wasm-builtins").exists()
 
 
 def test_update_rejects_pins_it_does_not_own(tmp_path) -> None:

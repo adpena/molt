@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.process_guard_common import run_isolated_python_probe
+
 from molt import toolchain_identity as identity
 from tests.operation_probe import same_thread_probe
 from tests.process_guard_common import install_module_view
@@ -198,8 +200,8 @@ def test_expected_path_stat_keeps_the_handle_mutation_fence(tmp_path, monkeypatc
     expected = path.lstat()
     hash_stream = identity._sha256_stream
 
-    def mutate_after_hash(stream):
-        digest = hash_stream(stream)
+    def mutate_after_hash(stream, *, max_bytes):
+        digest = hash_stream(stream, max_bytes=max_bytes)
         path.write_bytes(b"modified")
         os.utime(path, ns=(expected.st_atime_ns, expected.st_mtime_ns))
         return digest
@@ -493,9 +495,9 @@ def test_content_consumers_reject_write_restore_during_hash(
     original = identity._sha256_stream
     calls = []
 
-    def mutate(stream):
+    def mutate(stream, *, max_bytes):
         calls.append(stream)
-        result = original(stream)
+        result = original(stream, max_bytes=max_bytes)
         path.write_bytes(b"MZ" + b"1" * 64)
         path.write_bytes(data)
         os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
@@ -864,3 +866,391 @@ def test_attested_reader_rejects_declared_size_above_requested_limit(tmp_path):
     captured = identity.stable_regular_file_identity(path, label="fixture")
     with pytest.raises(ValueError, match="exceeds size limit"):
         identity.read_stable_regular_file(captured, label="fixture", max_bytes=4)
+
+
+@pytest.mark.parametrize("joined", [False, True])
+@pytest.mark.parametrize("prefix", ["", " \t"])
+def test_explicit_tool_command_preserves_embedded_quoted_option(
+    tmp_path, joined, prefix
+):
+    tool = tmp_path / "selected tools" / "clang.exe"
+    tool.parent.mkdir()
+    tool.write_bytes(b"selected compiler image")
+    option = (
+        '--sysroot="~/selected SDK/sysroot"'
+        if joined
+        else '--sysroot "~/selected SDK/sysroot"'
+    )
+    command = identity.resolve_explicit_tool_command(
+        f'{prefix}"{tool}" {option} ""', label="compiler", environment={}
+    )
+    expected = (
+        ("--sysroot=~/selected SDK/sysroot",)
+        if joined
+        else ("--sysroot", "~/selected SDK/sysroot")
+    )
+    assert command == (str(tool), *expected, "")
+
+
+@pytest.mark.parametrize("raw", ["", " \t\r\n", '"" -c'])
+def test_explicit_tool_command_rejects_missing_executable(tmp_path, raw):
+    with pytest.raises(ValueError, match="compiler is empty"):
+        identity.resolve_explicit_tool_command(
+            raw, label="compiler", environment={}, cwd=tmp_path
+        )
+
+
+def test_explicit_tool_literal_path_preserves_leading_filename_whitespace(tmp_path):
+    tool = tmp_path / " tools" / "compiler.exe"
+    tool.parent.mkdir()
+    tool.write_bytes(b"literal file selected before command parsing")
+    assert identity.resolve_explicit_tool_command(
+        " tools/compiler.exe", label="compiler", environment={}, cwd=tmp_path
+    ) == (str(tool),)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="actual native Windows quoting")
+def test_native_command_quotes_preserve_backslashes_empty_and_embedded_quotes():
+    assert identity.split_native_command(
+        r'"C:\selected tools\clang.exe" --sysroot="C:\SDK root\sysroot" "" --name=a\"b'
+    ) == (
+        r"C:\selected tools\clang.exe",
+        r"--sysroot=C:\SDK root\sysroot",
+        "",
+        '--name=a"b',
+    )
+
+
+@pytest.mark.parametrize("data, limit", [(b"", 0), (b"bounded", 7)])
+def test_snapshot_accepts_exact_finite_byte_allowance(tmp_path, data, limit):
+    source = tmp_path / "source"
+    source.write_bytes(data)
+    result = identity.snapshot_stable_regular_file(
+        source, tmp_path / "snapshot", label="bounded input", max_bytes=limit
+    )
+    assert result.snapshot.size == len(data)
+    assert result.snapshot.sha256 == hashlib.sha256(data).hexdigest()
+    assert (tmp_path / "snapshot").read_bytes() == data
+
+
+def test_snapshot_refuses_oversized_source_before_creating_output(tmp_path):
+    source = tmp_path / "source"
+    source.write_bytes(b"too many bytes")
+    with pytest.raises(identity.StableRegularFileSnapshotError, match="byte limit"):
+        identity.snapshot_stable_regular_file(
+            source, tmp_path / "snapshot", label="bounded input", max_bytes=4
+        )
+    assert not (tmp_path / "snapshot").exists()
+
+
+@pytest.mark.parametrize("allowance", [None, 4, 1000000])
+def test_snapshot_growth_cannot_write_beyond_pinned_byte_allowance(
+    tmp_path, monkeypatch, allowance
+):
+    source = tmp_path / "source"
+    source.write_bytes(b"tiny")
+    original_open = identity.open_stable_regular_file
+    original_unlink = identity._unlink_owned_file
+    copied_sizes = []
+
+    class GrowingStream:
+        def __init__(self, stream):
+            self.stream = stream
+            self.grown = False
+
+        def read(self, size=-1):
+            assert 0 < size <= 5
+            if not self.grown:
+                self.grown = True
+                with source.open("ab") as writer:
+                    writer.write(b"growing source" * 1000)
+                    writer.flush()
+                    os.fsync(writer.fileno())
+            return self.stream.read(size)
+
+    @contextmanager
+    def growing_open(path, **kwargs):
+        with original_open(path, **kwargs) as opened:
+            yield replace(opened, stream=GrowingStream(opened.stream))
+
+    def observe_cleanup(path, owner):
+        if path.exists():
+            copied_sizes.append(path.stat().st_size)
+        original_unlink(path, owner)
+
+    monkeypatch.setattr(
+        identity,
+        "open_stable_regular_file",
+        same_thread_probe(identity.open_stable_regular_file, growing_open),
+    )
+    monkeypatch.setattr(
+        identity,
+        "_unlink_owned_file",
+        same_thread_probe(identity._unlink_owned_file, observe_cleanup),
+    )
+    # Windows may deny the attempted conflicting append before any bytes change;
+    # either real OS denial or the finite stream limit must leave no snapshot.
+    with pytest.raises((identity.StableRegularFileError, OSError)) as caught:
+        identity.snapshot_stable_regular_file(
+            source, tmp_path / "snapshot", label="bounded input", max_bytes=allowance
+        )
+    if os.name != "nt":
+        # Existing linker consumers distinguish a changed source (retryable)
+        # from a broken destination snapshot (terminal).
+        assert isinstance(caught.value, identity.StableRegularFileChangedError)
+    assert copied_sizes and max(copied_sizes) <= 4
+    assert not (tmp_path / "snapshot").exists()
+
+
+@pytest.mark.parametrize("limit", [True, -1, 1.5])
+def test_snapshot_rejects_nonintegral_or_negative_byte_allowance(tmp_path, limit):
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        identity.snapshot_stable_regular_file(
+            tmp_path / "absent",
+            tmp_path / "snapshot",
+            label="bounded input",
+            max_bytes=limit,
+        )
+    assert not (tmp_path / "snapshot").exists()
+
+
+@pytest.mark.parametrize("data", [b"", b"one exact archive"])
+def test_retained_handle_hash_preserves_bytes_and_rewinds(tmp_path, data):
+    source = tmp_path / "source"
+    source.write_bytes(data)
+    with identity.open_stable_regular_file(source, label="pinned archive") as opened:
+        # A previously advanced consumer cursor cannot change the hash authority.
+        opened.stream.read(3)
+        captured = identity.stable_regular_file_handle_identity(
+            opened, label="pinned archive"
+        )
+        assert captured.size == len(data)
+        assert captured.sha256 == hashlib.sha256(data).hexdigest()
+        assert opened.stream.tell() == 0
+        assert opened.stream.read() == data
+
+
+@pytest.mark.parametrize("allowance", [None, 4, 1000000])
+def test_retained_handle_hash_growth_has_a_total_read_bound(tmp_path, allowance):
+    source = tmp_path / "source"
+    source.write_bytes(b"tiny")
+    consumed = []
+
+    class GrowingStream:
+        def __init__(self, stream):
+            self.stream = stream
+            self.grown = False
+
+        def seek(self, *args):
+            return self.stream.seek(*args)
+
+        def tell(self):
+            return self.stream.tell()
+
+        def read(self, size=-1):
+            if not self.grown:
+                self.grown = True
+                # Exercise the real same-file growth race after the opening stat.
+                # Native Windows may deny this append under its sharing lease.
+                with source.open("ab") as writer:
+                    writer.write(b"continued growth" * 1000)
+                    writer.flush()
+                    os.fsync(writer.fileno())
+            data = self.stream.read(size)
+            consumed.append(len(data))
+            return data
+
+    with pytest.raises((identity.StableRegularFileError, OSError)):
+        with identity.open_stable_regular_file(
+            source, label="pinned archive"
+        ) as opened:
+            identity.stable_regular_file_handle_identity(
+                replace(opened, stream=GrowingStream(opened.stream)),
+                label="pinned archive",
+                max_bytes=allowance,
+            )
+    # The captured source length, not a larger caller allowance, bounds every
+    # identity read. A single extra byte detects growth without consuming it all.
+    assert sum(consumed) <= 5
+    if os.name != "nt":
+        assert source.stat().st_size > 4
+        assert sum(consumed) == 5
+
+
+@pytest.mark.parametrize(
+    "consumer", ["chunks", "raw-artifact", "text", "runtime-stage", "observed-copy"]
+)
+def test_retained_file_consumers_bound_growth_before_acceptance(
+    tmp_path, monkeypatch, consumer
+):
+    from molt import artifact_publication
+    from molt.cli import backend_artifact_contract, runtime_wasm_generation
+    from molt.cli import static_archive_identity
+    from tests.runtime_build_identity_helper import runtime_build_identity
+
+    source = tmp_path / "source"
+    raw = b"finite admitted text\n" * 4
+    source.write_bytes(raw)
+    reloc = tmp_path / "reloc"
+    reloc.write_bytes(b"reloc fixture")
+    observed = identity.stable_regular_file_identity(source, label="copy input")
+    owners = {
+        "chunks": identity,
+        "raw-artifact": static_archive_identity,
+        "text": backend_artifact_contract,
+        "runtime-stage": runtime_wasm_generation,
+        "observed-copy": artifact_publication,
+    }
+    owner = owners[consumer]
+    destination = tmp_path / "copy-output"
+    destination.write_bytes(b"previous output")
+
+    def consume(output_root):
+        if consumer == "chunks":
+            with identity.open_stable_regular_file(
+                source, label="chunk input"
+            ) as opened:
+                return b"".join(
+                    identity.iter_stable_regular_file_chunks(opened, chunk_bytes=7)
+                )
+        if consumer == "raw-artifact":
+            return static_archive_identity.artifact_content_identity(source)
+        if consumer == "text":
+            contract = backend_artifact_contract.resolve_backend_artifact_contract(
+                target="rust", emit_mode="bin"
+            )
+            return contract.validate(source)
+        if consumer == "runtime-stage":
+            return runtime_wasm_generation.publish_runtime_wasm_generation(
+                output_root / "molt_runtime.wasm",
+                output_root / "molt_runtime_reloc.wasm",
+                shared_identity=runtime_build_identity("shared", "bounded-stage"),
+                reloc_identity=runtime_build_identity("reloc", "bounded-stage"),
+                source_shared=source,
+                source_reloc=reloc,
+            )
+        with artifact_publication.staged_copy_file(
+            source, destination, observed=observed
+        ) as staged:
+            return staged.read_bytes()
+
+    accepted = consume(tmp_path / "accepted")
+    if consumer in {"chunks", "observed-copy"}:
+        assert accepted == raw
+    elif consumer == "raw-artifact":
+        assert accepted == {
+            "schema": "molt.artifact-bytes.v1",
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "size_bytes": len(raw),
+        }
+    elif consumer == "runtime-stage":
+        assert accepted.shared.read_bytes() == raw
+        assert accepted.reloc.read_bytes() == b"reloc fixture"
+    else:
+        assert accepted is None
+
+    original_open = owner.open_stable_regular_file
+    consumed = []
+    attempts = []
+
+    class GrowingStream:
+        def __init__(self, stream):
+            self.stream = stream
+            self.grown = False
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def read(self, size=-1):
+            if not self.grown:
+                self.grown = True
+                attempts.append(source)
+                # Preserve the real opening stat and descriptor; grow the same
+                # regular file exactly at its first byte-read boundary. Windows
+                # may reject the conflicting write under its existing lease.
+                with source.open("ab") as writer:
+                    writer.write(b"continued late bytes\n" * 10000)
+            data = self.stream.read(size)
+            consumed.append(len(data))
+            return data
+
+    @contextmanager
+    def growing_open(path, **kwargs):
+        with original_open(path, **kwargs) as opened:
+            if Path(path) == source:
+                yield replace(opened, stream=GrowingStream(opened.stream))
+            else:
+                yield opened
+
+    monkeypatch.setattr(
+        owner,
+        "open_stable_regular_file",
+        same_thread_probe(original_open, growing_open),
+    )
+    error_type = (
+        backend_artifact_contract.BackendArtifactValidationError
+        if consumer == "text"
+        else ValueError
+    )
+    with pytest.raises(error_type) as failure:
+        consume(tmp_path / "rejected")
+    assert attempts == [source]
+    # Raw artifact admission probes eight magic bytes before rewinding to the
+    # canonical full-content identity. Its remaining read is still extent-bound.
+    prefix_probe = 8 if consumer == "raw-artifact" else 0
+    assert sum(consumed) <= len(raw) + 1 + prefix_probe
+    assert "changed" in str(failure.value)
+    assert destination.read_bytes() == b"previous output"
+    manifest = runtime_wasm_generation.runtime_wasm_generation_path(
+        tmp_path / "rejected" / "molt_runtime.wasm"
+    )
+    assert not manifest.exists()
+
+
+@pytest.mark.parametrize("data", [b"", b"one", b"0123456789"])
+def test_stable_chunk_iteration_preserves_exact_bytes_and_empty_files(tmp_path, data):
+    path = tmp_path / "data"
+    path.write_bytes(data)
+    with identity.open_stable_regular_file(path, label="chunk input") as opened:
+        assert (
+            b"".join(identity.iter_stable_regular_file_chunks(opened, chunk_bytes=3))
+            == data
+        )
+
+
+def test_hashing_does_not_keep_previous_read_buffer_live(tmp_path):
+    path = tmp_path / "hash-input"
+    data = b"finite file bytes\n" * (256 * 1024)
+    path.write_bytes(data)
+    expected = hashlib.sha256(data).hexdigest()
+    del data
+    observed = run_isolated_python_probe(
+        """
+        import gc
+        import json
+        from pathlib import Path
+        import sys
+        import tracemalloc
+        from molt import toolchain_identity as identity
+
+        path = Path(sys.argv[1])
+        warm = identity.stable_regular_file_identity(path, label="warm")
+        if tracemalloc.is_tracing():
+            raise RuntimeError("probe requires exclusive allocation tracing")
+        gc.collect()
+        tracemalloc.start()
+        try:
+            measured = identity.stable_regular_file_identity(path, label="measured")
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        print(json.dumps({"warm": warm.sha256, "sha256": measured.sha256, "peak": peak}))
+        """,
+        args=[path],
+    )
+    assert observed["warm"] == expected
+    assert observed["sha256"] == expected
+    # One 256-KiB content buffer plus generous metadata/interpreter headroom.
+    # A suspended producer or consuming loop must not retain its prior block
+    # while the next block is allocated. This measures live Python allocation.
+    assert observed["peak"] < 384 * 1024

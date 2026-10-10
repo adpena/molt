@@ -2,5 +2,12 @@
   "policy_schema": "molt.proof-process-closure.v2",
   "capability_schema": "molt.proof-supervisor-capability.v3",
   "receipt_schema": "molt.proof-process-closure-receipt.v4",
-  "event_log_schema": "molt.proof-process-event-log.v2"
+  "event_log_schema": "molt.proof-process-event-log.v2",
+  "policy_max_bytes": 16777216,
+  "export": {
+    "footer_magic": "\nMOLT-PROOF-SUPERVISOR-EXPORT-V1\n",
+    "length_hex_digits": 16,
+    "receipt_max_bytes": 65536,
+    "event_max_bytes": 8388608
+  }
 }

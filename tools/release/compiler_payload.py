@@ -67,6 +67,7 @@ REQUIRED_MARKERS = frozenset(
         "packaging/bootstrap.py",
         "packaging/INSTALL.md",
         "LICENSE",
+        "vendor/llvm/LICENSE.TXT",
     }
 )
 

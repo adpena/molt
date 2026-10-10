@@ -11,6 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
+# Cargo runs in this file are fakes; build capacity is not under test.
+pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DX_BUILD_TIMER = REPO_ROOT / "tools" / "dx_build_timer.py"
@@ -405,10 +408,12 @@ def test_trial_cache_overrides_project_config_through_real_dispatch(
     flag = command.index("--cache-dir")
     without_explicit_cache = command[:flag] + command[flag + 2 :]
     for candidate in (without_explicit_cache, command):
-        args = entrypoint_parser._build_entrypoint_parser().parse_args(candidate[3:])
+        parser = entrypoint_parser._build_entrypoint_parser()
+        args = parser.parse_args(candidate[3:])
         assert (
             entrypoint_dispatch._dispatch_entrypoint_command(
                 args,
+                parser=parser,
                 build_fn=observe_build,
                 config_root=tmp_path,
                 config={},

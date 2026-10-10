@@ -33,8 +33,9 @@ fn sequence_slice_failed_publication_retains_error_and_original_storage() {
         assert_eq!(GLOBAL_BRIDGE.handle_to_borrowed_pyobj(raised), raised_view);
         assert_eq!(crate::exception_last_bits_noinc(&py), Some(raised));
         let observed = errors::PyErr_GetRaisedException();
+        let observed_owner = refcount::OwnedPyObject::from_owned(observed);
         assert_eq!(observed, raised_view);
-        refcount::Py_DECREF(observed);
+        drop(observed_owner);
         assert_eq!(crate::list_len(list), 1);
         assert_eq!((&*crate::seq_vec_ptr(list))[0], item);
         dec_ref_bits(&py, raised);
@@ -381,14 +382,16 @@ fn sequence_headers_share_admission_materialization_and_pending_error_custody() 
                 c"incoming C error".as_ptr(),
             );
             let incoming = errors::PyErr_GetRaisedException();
+            let incoming_owner = refcount::OwnedPyObject::from_owned(incoming);
             assert!(!incoming.is_null());
             errors::PyErr_SetRaisedException(object::Py_NewRef(incoming));
             assert_eq!(probe(list_view), 1);
             assert_eq!(probe(dict_view), 0);
             let observed = errors::PyErr_GetRaisedException();
+            let observed_owner = refcount::OwnedPyObject::from_owned(observed);
             assert_eq!(observed, incoming);
-            refcount::Py_DECREF(observed);
-            refcount::Py_DECREF(incoming);
+            drop(observed_owner);
+            drop(incoming_owner);
             crate::raise_exception::<()>(&py, "LookupError", "incoming runtime error");
             let incoming = crate::builtins::exceptions::molt_exception_last_pending();
             assert_eq!(probe(list_view), 1);
@@ -557,12 +560,14 @@ fn managed_iteration_preserves_owned_values_completion_and_live_class_lookup() {
         );
         assert!(result.is_null());
         let observed = errors::PyErr_GetRaisedException();
+        let observed_owner = refcount::OwnedPyObject::from_owned(observed);
         assert_eq!(observed, failure_view);
-        refcount::Py_DECREF(observed);
+        drop(observed_owner);
         assert!(object::PyIter_Next(iter).is_null());
         let observed = errors::PyErr_GetRaisedException();
+        let observed_owner = refcount::OwnedPyObject::from_owned(observed);
         assert_eq!(observed, failure_view);
-        refcount::Py_DECREF(observed);
+        drop(observed_owner);
 
         // A previously projected class does not freeze its Python slot owner.
         projection_install(
@@ -856,6 +861,460 @@ fn list_root_sequence_slots_preserve_storage_and_follow_override_mutation() {
         for bits in [key, method, value] {
             dec_ref_bits(&py, bits);
         }
+        assert!(errors::PyErr_Occurred().is_null());
+        assert!(!crate::exception_pending(&py));
+    });
+}
+
+#[test]
+fn builtin_numeric_c_tables_keep_declaring_owner_and_complete_slot_domains() {
+    use molt_cpython_abi::api::refcount::OwnedPyObject;
+    use molt_cpython_abi::api::{abstract_number, numbers, typeobj};
+    use molt_cpython_abi::type_slots as slots;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil(|py| unsafe {
+        // Literal CPython number-table domains, independent of the producer's
+        // initializer and generated name mapping. Immutable types have no iop.
+        let common = [
+            slots::Py_nb_add,
+            slots::Py_nb_subtract,
+            slots::Py_nb_multiply,
+            slots::Py_nb_true_divide,
+            slots::Py_nb_power,
+            slots::Py_nb_negative,
+            slots::Py_nb_positive,
+            slots::Py_nb_absolute,
+            slots::Py_nb_bool,
+        ];
+        let real = [
+            slots::Py_nb_remainder,
+            slots::Py_nb_divmod,
+            slots::Py_nb_floor_divide,
+            slots::Py_nb_int,
+            slots::Py_nb_float,
+        ];
+        let integral = [
+            slots::Py_nb_invert,
+            slots::Py_nb_index,
+            slots::Py_nb_lshift,
+            slots::Py_nb_rshift,
+            slots::Py_nb_and,
+            slots::Py_nb_or,
+            slots::Py_nb_xor,
+        ];
+        for (class, has_real, has_integral) in [
+            (&raw mut abi_types::PyLong_Type, true, true),
+            (&raw mut abi_types::PyBool_Type, true, true),
+            (&raw mut abi_types::PyFloat_Type, true, false),
+            (&raw mut abi_types::PyComplex_Type, false, false),
+        ] {
+            for slot in common {
+                assert!(
+                    !typeobj::PyType_GetSlot(class, slot).is_null(),
+                    "slot {slot}"
+                );
+            }
+            for slot in real {
+                assert_eq!(
+                    !typeobj::PyType_GetSlot(class, slot).is_null(),
+                    has_real,
+                    "slot {slot}"
+                );
+            }
+            for slot in integral {
+                assert_eq!(
+                    !typeobj::PyType_GetSlot(class, slot).is_null(),
+                    has_integral,
+                    "slot {slot}"
+                );
+            }
+            for slot in [
+                slots::Py_nb_matrix_multiply,
+                slots::Py_nb_inplace_add,
+                slots::Py_nb_inplace_subtract,
+                slots::Py_nb_inplace_multiply,
+                slots::Py_nb_inplace_remainder,
+                slots::Py_nb_inplace_power,
+                slots::Py_nb_inplace_lshift,
+                slots::Py_nb_inplace_rshift,
+                slots::Py_nb_inplace_and,
+                slots::Py_nb_inplace_or,
+                slots::Py_nb_inplace_xor,
+                slots::Py_nb_inplace_floor_divide,
+                slots::Py_nb_inplace_true_divide,
+                slots::Py_nb_inplace_matrix_multiply,
+            ] {
+                assert!(
+                    typeobj::PyType_GetSlot(class, slot).is_null(),
+                    "immutable slot {slot}"
+                );
+            }
+        }
+        type Binary = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
+        let truth = (&raw mut abi_types::Py_True).cast::<PyObject>();
+        let integer = OwnedPyObject::from_owned(numbers::PyLong_FromLong(2));
+        for (slot, name, expected) in [
+            (slots::Py_nb_and, c"__and__", 1),
+            (slots::Py_nb_or, c"__or__", 1),
+            (slots::Py_nb_xor, c"__xor__", 0),
+        ] {
+            let int_fn: Binary = std::mem::transmute(typeobj::PyType_GetSlot(
+                &raw mut abi_types::PyLong_Type,
+                slot,
+            ));
+            let bool_fn: Binary = std::mem::transmute(typeobj::PyType_GetSlot(
+                &raw mut abi_types::PyBool_Type,
+                slot,
+            ));
+            assert_ne!(int_fn as usize, bool_fn as usize);
+            let raw_int = OwnedPyObject::from_owned(int_fn(truth, truth));
+            assert!(!raw_int.as_ptr().is_null(), "int {name:?} slot");
+            let raw_bool = OwnedPyObject::from_owned(bool_fn(truth, truth));
+            assert!(!raw_bool.as_ptr().is_null(), "bool {name:?} slot");
+            assert_eq!((*raw_int.as_ptr()).ob_type, &raw mut abi_types::PyLong_Type);
+            assert_eq!(
+                (*raw_bool.as_ptr()).ob_type,
+                &raw mut abi_types::PyBool_Type
+            );
+            assert_eq!(numbers::PyLong_AsLong(raw_int.as_ptr()), expected);
+            assert_eq!(numbers::PyLong_AsLong(raw_bool.as_ptr()), expected);
+            let mixed = OwnedPyObject::from_owned(bool_fn(truth, integer.as_ptr()));
+            assert!(!mixed.as_ptr().is_null());
+            assert_eq!((*mixed.as_ptr()).ob_type, &raw mut abi_types::PyLong_Type);
+            let descriptor = OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                (&raw mut abi_types::PyLong_Type).cast(),
+                name.as_ptr(),
+            ));
+            let mut arguments = [truth, truth];
+            let declared = OwnedPyObject::from_owned(object::PyObject_Vectorcall(
+                descriptor.as_ptr(),
+                arguments.as_mut_ptr(),
+                2,
+                std::ptr::null_mut(),
+            ));
+            assert!(!declared.as_ptr().is_null());
+            assert_eq!(
+                (*declared.as_ptr()).ob_type,
+                &raw mut abi_types::PyLong_Type
+            );
+            assert_eq!(numbers::PyLong_AsLong(declared.as_ptr()), expected);
+        }
+        // A physical power slot can be selected through the third operand.
+        // It must not validate the first operand as a Python float receiver.
+        type Power =
+            unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
+        let float_power: Power = std::mem::transmute(typeobj::PyType_GetSlot(
+            &raw mut abi_types::PyFloat_Type,
+            slots::Py_nb_power,
+        ));
+        let float = OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(1.5));
+        assert!(
+            float_power(
+                integer.as_ptr(),
+                &raw mut abi_types::Py_None,
+                float.as_ptr()
+            )
+            .is_null()
+        );
+        assert_eq!(
+            errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_TypeError).cast()),
+            1
+        );
+        errors::PyErr_Clear();
+        let result = OwnedPyObject::from_owned(float_power(
+            integer.as_ptr(),
+            integer.as_ptr(),
+            &raw mut abi_types::Py_None,
+        ));
+        assert!(!result.as_ptr().is_null());
+        assert_eq!(numbers::PyFloat_CheckExact(result.as_ptr()), 1);
+        assert_eq!(numbers::PyFloat_AsDouble(result.as_ptr()), 4.0);
+        let normal = OwnedPyObject::from_owned(abstract_number::PyNumber_And(truth, truth));
+        assert_eq!(normal.as_ptr(), truth);
+        assert!(errors::PyErr_Occurred().is_null());
+        assert!(!crate::exception_pending(&py));
+    });
+}
+
+#[test]
+fn builtin_numeric_declaring_slots_cover_unary_binary_power_and_truth() {
+    use molt_cpython_abi::api::refcount::OwnedPyObject;
+    use molt_cpython_abi::api::{abstract_number, numbers, typeobj};
+    use molt_cpython_abi::type_slots as slots;
+    type Unary = unsafe extern "C" fn(*mut PyObject) -> *mut PyObject;
+    type Binary = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
+    type Power = unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
+    type Truth = unsafe extern "C" fn(*mut PyObject) -> c_int;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil(|py| unsafe {
+        // Literal CPython arithmetic and exact result classes, independently of
+        // the slot table's declaring-owner selection. Keep every input alive.
+        let two = OwnedPyObject::from_owned(numbers::PyLong_FromLong(2));
+        let zero = OwnedPyObject::from_owned(numbers::PyLong_FromLong(0));
+        let three = OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(3.0));
+        let float_zero = OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(0.0));
+        let four = OwnedPyObject::from_owned(numbers::PyComplex_FromDoubles(4.0, 0.0));
+        let complex_zero = OwnedPyObject::from_owned(numbers::PyComplex_FromDoubles(0.0, 0.0));
+        for value in [&two, &zero, &three, &float_zero, &four, &complex_zero] {
+            assert!(!value.as_ptr().is_null());
+        }
+        let slot = |class, id| {
+            let pointer = typeobj::PyType_GetSlot(class, id);
+            assert!(!pointer.is_null(), "required numeric slot {id}");
+            pointer
+        };
+        let check = |result, class, real, imag, operation| {
+            let result = OwnedPyObject::from_owned(result);
+            assert!(!result.as_ptr().is_null(), "{operation}");
+            assert_eq!((*result.as_ptr()).ob_type, class, "{operation}");
+            let value = numbers::PyComplex_AsCComplex(result.as_ptr());
+            assert_eq!((value.real, value.imag), (real, imag), "{operation}");
+            assert!(errors::PyErr_Occurred().is_null(), "{operation}");
+        };
+        for (class, value, zero, result_class, negative, difference, square) in [
+            (
+                &raw mut abi_types::PyLong_Type,
+                two.as_ptr(),
+                zero.as_ptr(),
+                &raw mut abi_types::PyLong_Type,
+                -2.0,
+                0.0,
+                4.0,
+            ),
+            (
+                &raw mut abi_types::PyBool_Type,
+                (&raw mut abi_types::Py_True).cast(),
+                (&raw mut abi_types::Py_False).cast(),
+                &raw mut abi_types::PyLong_Type,
+                -1.0,
+                -1.0,
+                1.0,
+            ),
+            (
+                &raw mut abi_types::PyFloat_Type,
+                three.as_ptr(),
+                float_zero.as_ptr(),
+                &raw mut abi_types::PyFloat_Type,
+                -3.0,
+                1.0,
+                9.0,
+            ),
+            (
+                &raw mut abi_types::PyComplex_Type,
+                four.as_ptr(),
+                complex_zero.as_ptr(),
+                &raw mut abi_types::PyComplex_Type,
+                -4.0,
+                2.0,
+                16.0,
+            ),
+        ] {
+            let negative_slot: Unary = std::mem::transmute(slot(class, slots::Py_nb_negative));
+            let subtract_slot: Binary = std::mem::transmute(slot(class, slots::Py_nb_subtract));
+            let power_slot: Power = std::mem::transmute(slot(class, slots::Py_nb_power));
+            let truth_slot: Truth = std::mem::transmute(slot(class, slots::Py_nb_bool));
+            check(
+                negative_slot(value),
+                result_class,
+                negative,
+                0.0,
+                "raw negative",
+            );
+            check(
+                subtract_slot(value, two.as_ptr()),
+                result_class,
+                difference,
+                0.0,
+                "raw subtract",
+            );
+            check(
+                power_slot(value, two.as_ptr(), &raw mut abi_types::Py_None),
+                result_class,
+                square,
+                0.0,
+                "raw power",
+            );
+            assert_eq!(truth_slot(value), 1);
+            assert_eq!(truth_slot(zero), 0);
+            check(
+                abstract_number::PyNumber_Negative(value),
+                result_class,
+                negative,
+                0.0,
+                "public negative",
+            );
+            check(
+                abstract_number::PyNumber_Subtract(value, two.as_ptr()),
+                result_class,
+                difference,
+                0.0,
+                "public subtract",
+            );
+            check(
+                abstract_number::PyNumber_Power(value, two.as_ptr(), &raw mut abi_types::Py_None),
+                result_class,
+                square,
+                0.0,
+                "public power",
+            );
+        }
+        // Right-hand selection must keep operand order and use the selected
+        // numeric class, rather than the left operand's class or a carrier tag.
+        let complex = OwnedPyObject::from_owned(numbers::PyComplex_FromDoubles(3.0, 1.0));
+        for (class, right, real, imag) in [
+            (&raw mut abi_types::PyFloat_Type, three.as_ptr(), -1.0, 0.0),
+            (
+                &raw mut abi_types::PyComplex_Type,
+                complex.as_ptr(),
+                -1.0,
+                -1.0,
+            ),
+        ] {
+            let subtract: Binary = std::mem::transmute(slot(class, slots::Py_nb_subtract));
+            check(
+                subtract(two.as_ptr(), right),
+                class,
+                real,
+                imag,
+                "raw right-selected subtract",
+            );
+            check(
+                abstract_number::PyNumber_Subtract(two.as_ptr(), right),
+                class,
+                real,
+                imag,
+                "public right-selected subtract",
+            );
+            check(
+                abstract_number::PyNumber_Subtract(right, two.as_ptr()),
+                class,
+                -real,
+                -imag,
+                "public left-selected subtract",
+            );
+        }
+        assert!(errors::PyErr_Occurred().is_null());
+        assert!(!crate::exception_pending(&py));
+    });
+}
+
+#[test]
+fn builtin_container_number_tables_preserve_alias_and_view_fallback() {
+    use molt_cpython_abi::api::refcount::OwnedPyObject;
+    use molt_cpython_abi::api::{abstract_number, mapping, numbers, sequences, typeobj};
+    use molt_cpython_abi::type_slots as slots;
+    type Binary = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil(|py| unsafe {
+        let set_type = &raw mut abi_types::PySet_Type;
+        let frozen_type = &raw mut abi_types::PyFrozenSet_Type;
+        let dict_type = &raw mut abi_types::PyDict_Type;
+        for slot in [
+            slots::Py_nb_subtract,
+            slots::Py_nb_and,
+            slots::Py_nb_or,
+            slots::Py_nb_xor,
+        ] {
+            let mutable = typeobj::PyType_GetSlot(set_type, slot);
+            assert!(!mutable.is_null());
+            assert_eq!(mutable, typeobj::PyType_GetSlot(frozen_type, slot));
+        }
+        for slot in [
+            slots::Py_nb_inplace_subtract,
+            slots::Py_nb_inplace_and,
+            slots::Py_nb_inplace_or,
+            slots::Py_nb_inplace_xor,
+        ] {
+            assert!(!typeobj::PyType_GetSlot(set_type, slot).is_null());
+            assert!(typeobj::PyType_GetSlot(frozen_type, slot).is_null());
+            assert_eq!(
+                typeobj::PyType_GetSlot(dict_type, slot).is_null(),
+                slot != slots::Py_nb_inplace_or
+            );
+        }
+        for slot in [
+            slots::Py_nb_add,
+            slots::Py_nb_multiply,
+            slots::Py_nb_power,
+            slots::Py_nb_negative,
+            slots::Py_nb_index,
+        ] {
+            for class in [set_type, frozen_type, dict_type] {
+                assert!(typeobj::PyType_GetSlot(class, slot).is_null());
+            }
+        }
+        let one = OwnedPyObject::from_owned(numbers::PyLong_FromLong(1));
+        let two = OwnedPyObject::from_owned(numbers::PyLong_FromLong(2));
+        let left = OwnedPyObject::from_owned(sequences::PySet_New(std::ptr::null_mut()));
+        let right = OwnedPyObject::from_owned(sequences::PySet_New(std::ptr::null_mut()));
+        assert_eq!(sequences::PySet_Add(left.as_ptr(), one.as_ptr()), 0);
+        assert_eq!(sequences::PySet_Add(right.as_ptr(), two.as_ptr()), 0);
+        let before = (*left.as_ptr()).ob_refcnt;
+        let raw: Binary =
+            std::mem::transmute(typeobj::PyType_GetSlot(set_type, slots::Py_nb_inplace_or));
+        let aliased = OwnedPyObject::from_owned(raw(left.as_ptr(), right.as_ptr()));
+        assert_eq!(aliased.as_ptr(), left.as_ptr());
+        assert_eq!((*left.as_ptr()).ob_refcnt, before + 1);
+        assert_eq!(sequences::PySet_Size(left.as_ptr()), 2);
+        drop(aliased);
+        assert_eq!((*left.as_ptr()).ob_refcnt, before);
+
+        let dictionary = OwnedPyObject::from_owned(mapping::PyDict_New());
+        assert_eq!(
+            mapping::PyDict_SetItem(dictionary.as_ptr(), two.as_ptr(), one.as_ptr()),
+            0
+        );
+        let dictionary_bits = GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(dictionary.as_ptr())
+            .unwrap()
+            .bits();
+        let keys = OwnedPyObject::from_owned(
+            GLOBAL_BRIDGE.owned_handle_to_pyobj(crate::molt_dict_keys(dictionary_bits)),
+        );
+        let declined = OwnedPyObject::from_owned(raw(left.as_ptr(), keys.as_ptr()));
+        assert_eq!(
+            declined.as_ptr(),
+            &raw mut abi_types::Py_NotImplementedSentinel
+        );
+        assert_eq!(sequences::PySet_Size(left.as_ptr()), 2);
+        let fallback = OwnedPyObject::from_owned(abstract_number::PyNumber_InPlaceAnd(
+            left.as_ptr(),
+            keys.as_ptr(),
+        ));
+        assert!(!fallback.as_ptr().is_null());
+        assert_ne!(fallback.as_ptr(), left.as_ptr());
+        assert_eq!(sequences::PySet_Size(fallback.as_ptr()), 1);
+        assert_eq!(
+            sequences::PySet_Contains(fallback.as_ptr(), two.as_ptr()),
+            1
+        );
+        assert_eq!(sequences::PySet_Size(left.as_ptr()), 2);
+
+        let pair = crate::alloc_tuple(
+            &py,
+            &[
+                MoltObject::from_int(7).bits(),
+                MoltObject::from_int(8).bits(),
+            ],
+        );
+        assert!(!pair.is_null());
+        let pair_bits = MoltObject::from_ptr(pair).bits();
+        let pairs = crate::alloc_list(&py, &[pair_bits]);
+        dec_ref_bits(&py, pair_bits);
+        assert!(!pairs.is_null());
+        let pairs = OwnedPyObject::from_owned(
+            GLOBAL_BRIDGE.owned_handle_to_pyobj(MoltObject::from_ptr(pairs).bits()),
+        );
+        let updated = OwnedPyObject::from_owned(abstract_number::PyNumber_InPlaceOr(
+            dictionary.as_ptr(),
+            pairs.as_ptr(),
+        ));
+        assert_eq!(updated.as_ptr(), dictionary.as_ptr());
+        let key = OwnedPyObject::from_owned(numbers::PyLong_FromLong(7));
+        assert_eq!(
+            numbers::PyLong_AsLong(mapping::PyDict_GetItem(dictionary.as_ptr(), key.as_ptr())),
+            8
+        );
         assert!(errors::PyErr_Occurred().is_null());
         assert!(!crate::exception_pending(&py));
     });

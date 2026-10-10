@@ -445,7 +445,7 @@ impl ObjectBridge {
             return false;
         };
         let runtime_owners = if MoltObject::from_bits(entry.bits).as_ptr().is_some() {
-            let runtime_refs = unsafe { (crate::hooks::hooks_or_stubs().ref_count)(entry.bits) };
+            let runtime_refs = unsafe { crate::hooks::hooks_or_stubs().ref_count(entry.bits) };
             if runtime_refs == molt_codegen_abi::IMMORTAL_REFCOUNT as usize {
                 return false;
             }
@@ -480,6 +480,28 @@ impl ObjectBridge {
                     .unwrap_or(0),
             ),
         )
+    }
+
+    /// Mirror-adjusted ownership for a live runtime handle. None positively
+    /// identifies absence of a managed view; a changed/finalizing view refuses.
+    /// The runtime caller holds its ordinary GIL/object lifetime custody.
+    pub fn managed_handle_is_uniquely_referenced(&self, bits: AbiHandle) -> Option<bool> {
+        let addr = {
+            let handle = self.handle_shard(bits).lock();
+            let entry = handle.to_py.get(&bits)?;
+            entry.view.py_obj().addr()
+        };
+        let (address, handle) = self.lock_address_then_handle(addr, bits);
+        let Some(entry) = handle.to_py.get(&bits) else {
+            return Some(false);
+        };
+        if entry.view.py_obj().addr() != addr {
+            return Some(false);
+        }
+        Some(self.managed_entry_is_unique(
+            entry,
+            address.projection_refs.get(&addr).copied().unwrap_or(0),
+        ))
     }
 
     /// Check and promote in one transaction. The stable runtime hold becomes
@@ -639,7 +661,7 @@ impl ObjectBridge {
                 release_bridge_entry(*entry);
                 return ManagedDecref::RetiredInline;
             }
-            let runtime_refs = unsafe { (crate::hooks::hooks_or_stubs().ref_count)(bits) };
+            let runtime_refs = unsafe { crate::hooks::hooks_or_stubs().ref_count(bits) };
             if runtime_refs > 1 {
                 unsafe { (*ptr).ob_refcnt = 1 };
                 entry.lifecycle = BridgeLifecycle::RuntimeOwned;
@@ -1238,7 +1260,7 @@ impl ObjectBridge {
                 unsafe { (*entry.view.py_obj()).ob_refcnt = 1 };
                 return CRefZero::ViewRetained;
             }
-            let runtime_refs = unsafe { (crate::hooks::hooks_or_stubs().ref_count)(bits) };
+            let runtime_refs = unsafe { crate::hooks::hooks_or_stubs().ref_count(bits) };
             if runtime_refs > 1 {
                 unsafe { (*entry.view.py_obj()).ob_refcnt = 1 };
                 entry.lifecycle = BridgeLifecycle::RuntimeOwned;

@@ -36,6 +36,8 @@ molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavail
     "molt-cext-discovery"
 ));
 
+use molt_cpython_abi::abi_types::PyTypeObject;
+use molt_cpython_abi::api::{errors, refcount::OwnedPyObject, strings, typeobj};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::panic::AssertUnwindSafe;
@@ -127,22 +129,10 @@ pub unsafe extern "C" fn molt_cext_discovery_load(
     }
 }
 
-unsafe extern "C" {
-    fn PyErr_Occurred() -> *mut std::os::raw::c_void;
-    fn PyErr_Fetch(
-        ptype: *mut *mut std::os::raw::c_void,
-        pvalue: *mut *mut std::os::raw::c_void,
-        ptraceback: *mut *mut std::os::raw::c_void,
-    );
-    fn PyErr_Print();
-    fn PyObject_Str(o: *mut std::os::raw::c_void) -> *mut std::os::raw::c_void;
-    fn PyUnicode_AsUTF8(o: *mut std::os::raw::c_void) -> *const c_char;
-}
-
 /// Print the pending CPython-ABI exception (type + stringified value) — this is
 /// the message that names the exact init-time semantic frontier numpy hit.
 unsafe fn dump_pending_exception() {
-    let occ = unsafe { PyErr_Occurred() };
+    let occ = unsafe { errors::PyErr_Occurred() };
     if occ.is_null() {
         eprintln!(
             "===MOLT_DISCOVERY_EXC: no pending exception on NULL return (numpy bailed silently — likely a failed ABI call that did not set an exception; run under lldb to localise)"
@@ -155,7 +145,7 @@ unsafe fn dump_pending_exception() {
     #[cfg(unix)]
     {
         let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
-        if unsafe { libc::dladdr(occ, &mut info) } != 0 && !info.dli_sname.is_null() {
+        if unsafe { libc::dladdr(occ.cast(), &mut info) } != 0 && !info.dli_sname.is_null() {
             let sym = unsafe { CStr::from_ptr(info.dli_sname) }.to_string_lossy();
             eprintln!("===MOLT_DISCOVERY_EXC_TYPE (dladdr symbol): {sym}");
         } else {
@@ -166,8 +156,8 @@ unsafe fn dump_pending_exception() {
     }
     #[cfg(not(unix))]
     eprintln!("===MOLT_DISCOVERY_EXC_TYPE: exception type at {occ:p}");
-    // Secondary: try tp_name at the CPython PyTypeObject offset (24).
-    let tp_name_ptr = unsafe { *(occ.cast::<u8>().add(24) as *const *const c_char) };
+    // Secondary: use the canonical C type layout for its declared name.
+    let tp_name_ptr = unsafe { (*occ.cast::<PyTypeObject>()).tp_name };
     if !tp_name_ptr.is_null() {
         let name = unsafe { CStr::from_ptr(tp_name_ptr) }.to_string_lossy();
         if !name.is_empty() {
@@ -177,29 +167,141 @@ unsafe fn dump_pending_exception() {
     let mut ptype = std::ptr::null_mut();
     let mut pvalue = std::ptr::null_mut();
     let mut ptb = std::ptr::null_mut();
-    unsafe { PyErr_Fetch(&mut ptype, &mut pvalue, &mut ptb) };
-    let mut printed = false;
-    if !pvalue.is_null() {
-        let s = unsafe { PyObject_Str(pvalue) };
-        if !s.is_null() {
-            let utf8 = unsafe { PyUnicode_AsUTF8(s) };
-            if !utf8.is_null() {
-                let msg = unsafe { CStr::from_ptr(utf8) }
-                    .to_string_lossy()
-                    .into_owned();
-                eprintln!("===MOLT_DISCOVERY_EXC: pending exception value = {msg:?}");
-                printed = true;
+    unsafe { errors::PyErr_Fetch(&mut ptype, &mut pvalue, &mut ptb) };
+    let type_owner = unsafe { OwnedPyObject::from_owned(ptype) };
+    let value_owner = unsafe { OwnedPyObject::from_owned(pvalue) };
+    let traceback_owner = unsafe { OwnedPyObject::from_owned(ptb) };
+    // witness_iter consumes this summary marker independently of the
+    // ABI printer. A rendering/encoding failure must not replace the original.
+    let printed = !pvalue.is_null()
+        && errors::with_preserved_error(|| unsafe {
+            let rendered = OwnedPyObject::from_owned(typeobj::PyObject_Str(pvalue));
+            if rendered.as_ptr().is_null() {
+                return false;
             }
-        }
-    }
+            let utf8 = strings::PyUnicode_AsUTF8(rendered.as_ptr());
+            if utf8.is_null() {
+                return false;
+            }
+            let message = CStr::from_ptr(utf8).to_string_lossy();
+            eprintln!("===MOLT_DISCOVERY_EXC: pending exception value = {message:?}");
+            true
+        });
     if !printed {
         eprintln!(
             "===MOLT_DISCOVERY_EXC: pending exception present (type ptr={ptype:p}, value ptr={pvalue:p}); could not stringify via PyObject_Str/PyUnicode_AsUTF8"
         );
     }
-    // Restore + let the ABI's own printer render it (traceback etc.).
-    // (PyErr_Fetch cleared it; re-raise so PyErr_Print has something to show.)
+    // An allocation-free emergency indicator deliberately yields no Fetch
+    // outputs. Preserve that indicator; otherwise hand the exact triple back
+    // to the ABI printer, including its original traceback and type.
+    if !ptype.is_null() || !pvalue.is_null() || !ptb.is_null() {
+        unsafe {
+            errors::PyErr_Restore(
+                type_owner.into_ptr(),
+                value_owner.into_ptr(),
+                traceback_owner.into_ptr(),
+            )
+        };
+    }
     eprintln!("===MOLT_DISCOVERY_EXC_PRINT (PyErr_Print):");
-    // Best-effort: molt's PyErr_Print may route to its own sys.stderr.
-    unsafe { PyErr_Print() };
+    unsafe { errors::PyErr_Print() };
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+mod cargo_test_artifacts {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/cargo_test_artifacts.rs"
+    ));
+}
+
+#[cfg(test)]
+mod captured_runtime_children {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/captured_runtime_children.rs"
+    ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use molt_cpython_abi::abi_types::PyExc_ValueError;
+    use molt_cpython_abi::api::sequences;
+
+    #[test]
+    fn pending_diagnostic_prints_and_retires_original_error_after_summary_encoding_failure() {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "tests::pending_diagnostic_child",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ]);
+        let output = captured_runtime_children::capture(
+            &mut command,
+            "discovery-pending-diagnostic",
+            "render-and-drain",
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "discovery child failed: {stderr}");
+        for expected in [
+            "[molt-cpython-abi] PyErr_Print: discovery exception custody\n",
+            "[molt-cpython-abi] PyErr_Print: \\ud800\n",
+            "===MOLT_DISCOVERY_EXC: pending exception value = \"discovery exception custody\"\n",
+            "===MOLT_DISCOVERY_EXC: no pending exception on NULL return",
+        ] {
+            assert!(stderr.contains(expected), "missing {expected:?}: {stderr}");
+        }
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains("discovery diagnostic final drain verified\n")
+        );
+    }
+
+    #[test]
+    #[ignore = "executed by the captured discovery diagnostic owner"]
+    fn pending_diagnostic_child() {
+        assert_eq!(molt_runtime::lifecycle::init(), 1);
+        assert!(molt_runtime::cpython_abi_hooks::register_cpython_hooks());
+        molt_runtime::lifecycle::with_ready_execution(|| unsafe {
+            // Ordinary text exercises the machine-readable summary. The
+            // lone surrogate rejects its strict UTF-8 path, while the ABI
+            // printer must still consume the original ValueError safely.
+            for surrogate in [false, true] {
+                let args = OwnedPyObject::from_owned(sequences::PyTuple_New(1));
+                assert!(!args.as_ptr().is_null());
+                let text = OwnedPyObject::from_owned(if surrogate {
+                    strings::PyUnicode_FromOrdinal(0xd800)
+                } else {
+                    strings::PyUnicode_FromString(c"discovery exception custody".as_ptr())
+                });
+                assert!(!text.as_ptr().is_null());
+                assert_eq!(
+                    sequences::PyTuple_SetItem(args.as_ptr(), 0, text.into_ptr()),
+                    0
+                );
+                let error = OwnedPyObject::from_owned(errors::molt_native_exception_new(
+                    &raw mut PyExc_ValueError,
+                    args.as_ptr(),
+                    std::ptr::null_mut(),
+                ));
+                assert!(!error.as_ptr().is_null());
+                errors::PyErr_SetRaisedException(error.into_ptr());
+                dump_pending_exception();
+                assert!(errors::PyErr_Occurred().is_null());
+            }
+            dump_pending_exception();
+            assert!(errors::PyErr_Occurred().is_null());
+        })
+        .expect("initialized discovery runtime must admit execution");
+        // Use the real embedding drain: sys.last_* can legitimately retain
+        // the printed value, but no unowned Fetch/rendering reference can
+        // survive final native/class retirement. Make no calls after shutdown.
+        assert_eq!(molt_runtime::lifecycle::shutdown(), 1);
+        println!("discovery diagnostic final drain verified");
+    }
 }

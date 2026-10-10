@@ -305,13 +305,16 @@ pub extern "C" fn molt_re_match_groupdict(
             return raise_exception::<_>(_py, "TypeError", "group_names must be a dict");
         }
 
+        // Iterate over group_names dict.
+        let Some(order) = (unsafe { dict_snapshot(_py, gn_ptr) }) else {
+            return MoltObject::none().bits();
+        };
+
         let result_ptr = alloc_dict_with_pairs(_py, &[]);
         if result_ptr.is_null() {
             return MoltObject::none().bits();
         }
 
-        // Iterate over group_names dict.
-        let order = unsafe { dict_order_clone(_py, gn_ptr) };
         for pair in order.chunks(2) {
             if pair.len() != 2 {
                 continue;

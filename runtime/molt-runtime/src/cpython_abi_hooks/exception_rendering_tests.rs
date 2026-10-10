@@ -776,7 +776,7 @@ fn c_error_bootstrap_admits_type_only_before_constructor_allocation() {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         if mode == "partial" {
             let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
-            hooks.alloc_str = unavailable_bootstrap_text;
+            hooks.alloc_str = Some(unavailable_bootstrap_text);
             assert!(unsafe { molt_cpython_abi::hooks::try_set_runtime_hooks(hooks) });
         } else {
             assert_eq!(mode, "pre-init");

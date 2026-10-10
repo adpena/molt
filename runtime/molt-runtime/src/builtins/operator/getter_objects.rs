@@ -4,7 +4,7 @@ use molt_obj_model::MoltObject;
 
 use crate::object::ObjectShapeId;
 use crate::{
-    PyToken, TYPE_ID_DICT, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_string, alloc_tuple, dec_ref_bits,
+    PyToken, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_string, alloc_tuple, dec_ref_bits,
     exception_pending, inc_ref_bits, molt_getattr_builtin, molt_index, obj_from_bits,
     object_type_id, raise_exception, string_obj_to_owned,
 };
@@ -584,37 +584,11 @@ pub extern "C" fn molt_operator_methodcaller_call(self_bits: u64, obj_bits: u64)
             None
         };
         let arg_list = arg_snapshot.as_deref().unwrap_or(&[]);
-        let kw_ptr = obj_from_bits(kwargs_bits).as_ptr();
-        let mut kw_pairs: Vec<(u64, u64)> = Vec::new();
-        if let Some(kw_ptr) = kw_ptr {
-            unsafe {
-                if object_type_id(kw_ptr) == TYPE_ID_DICT {
-                    let order = crate::dict_order(kw_ptr);
-                    let mut idx = 0;
-                    while idx + 1 < order.len() {
-                        kw_pairs.push((order[idx], order[idx + 1]));
-                        idx += 2;
-                    }
-                }
-            }
-        }
-        let builder_bits = crate::molt_callargs_new(arg_list.len() as u64, kw_pairs.len() as u64);
-        if builder_bits == 0 {
-            return MoltObject::none().bits();
-        }
-        for &arg_bits in arg_list.iter() {
-            unsafe {
-                let _ = crate::molt_callargs_push_pos(builder_bits, arg_bits);
-            }
-        }
-        for (name_bits, val_bits) in kw_pairs.iter() {
-            unsafe {
-                let _ = crate::molt_callargs_push_kw(builder_bits, *name_bits, *val_bits);
-            }
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-        }
-        crate::molt_call_bind(method_bits, builder_bits)
+        let mapping = if obj_from_bits(kwargs_bits).as_ptr().is_some() {
+            kwargs_bits
+        } else {
+            MoltObject::none().bits()
+        };
+        unsafe { crate::call::bind::call_bind_capi(_py, method_bits, None, arg_list, mapping) }
     })
 }

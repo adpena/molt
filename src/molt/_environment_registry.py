@@ -160,6 +160,13 @@ _REGISTRY_JSON = r"""{
   ],
   "retired": [
     {
+      "name": "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_EXT_ROOT",
+      "retired": "2026-10-09"
+    },
+    {
       "name": "MOLT_BACKEND_TIR_CACHE_DISK_BYTES",
       "note": "",
       "rejected_by": [],
@@ -286,6 +293,13 @@ _REGISTRY_JSON = r"""{
       "retired": "2026-10-06"
     },
     {
+      "name": "MOLT_PRESERVE_TARGET_ROOT",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_TARGET_ROOT",
+      "retired": "2026-10-09"
+    },
+    {
       "name": "MOLT_SPLIT_RUNTIME",
       "note": "use `molt build --split-runtime`",
       "rejected_by": [],
@@ -307,6 +321,13 @@ _REGISTRY_JSON = r"""{
       "retired": "2026-10-06"
     },
     {
+      "name": "MOLT_WASM_BUILTINS_ARCHIVE",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_WASI_C_ABI_PLAN",
+      "retired": "2026-10-07"
+    },
+    {
       "name": "MOLT_WASM_DB_EXPORTS",
       "note": "",
       "rejected_by": [],
@@ -319,6 +340,13 @@ _REGISTRY_JSON = r"""{
       "rejected_by": [],
       "replacement": "MOLT_WORKER_CMD",
       "retired": "2026-10-06"
+    },
+    {
+      "name": "MOLT_WASM_LONGDOUBLE_ARCHIVE",
+      "note": "",
+      "rejected_by": [],
+      "replacement": "MOLT_WASI_C_ABI_PLAN",
+      "retired": "2026-10-07"
     },
     {
       "name": "MOLT_WASM_PRECOMPILED_WRITE",
@@ -744,15 +772,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_AGENT_ID",
       "owner": "tools/agent_coordination.py",
       "summary": "Agent identity written into a coordination task record when no --agent argument is given; unset falls back to MOLT_SESSION_ID, then to agent-<task>-<pid>.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
-      "owner": "src/molt/dx.py",
-      "summary": "Lets the dx RunContext keep build artifacts on the Windows C: drive even when MOLT_REQUIRE_EXTERNAL_ARTIFACTS asks for an external root; 1/true/yes/on enable, and RunContext sets it to 1 for child processes once it has accepted a C: artifact root.",
       "values": []
     },
     {
@@ -4712,15 +4731,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "developer",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_PRESERVE_TARGET_ROOT",
-      "owner": "src/molt/dx.py",
-      "summary": "Windows only; set to 1, true, yes, or on to keep an inherited toolchain target root on a different drive from the artifact root instead of treating it as a custody conflict; a D: root is always rejected; default off.",
-      "values": []
-    },
-    {
       "audience": "user",
       "default": "",
       "kind": "int",
@@ -4879,7 +4889,7 @@ _REGISTRY_JSON = r"""{
       "kind": "string",
       "name": "MOLT_PROOF_SOURCE_EXTENSION_LINK_INPUTS",
       "owner": "src/molt/source_extension_link_inputs.py",
-      "summary": "JSON record (schema molt.source-extension-link-inputs.v1) of the captured source-extension link inputs for a target triple; the guarded proof runner sets it for typed producer commands, the CLI validates and uses it instead of capturing the inputs itself, and the execution environment refuses user-supplied values.",
+      "summary": "JSON record (schema molt.source-extension-link-inputs.v2) of the captured source-extension link inputs for a target triple; the guarded proof runner sets it for typed producer commands, the CLI validates and uses it instead of capturing the inputs itself, and the execution environment refuses user-supplied values.",
       "values": []
     },
     {
@@ -5149,7 +5159,7 @@ _REGISTRY_JSON = r"""{
       "kind": "bool",
       "name": "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
       "owner": "src/molt/dx.py",
-      "summary": "Set to 1, true, yes, or on to fail closed when no healthy external artifact root is available instead of falling back to repo-local roots; MOLT_ALLOW_C_DRIVE_ARTIFACTS=1 cancels it, and tools/dev.py defaults it to 1 on a Windows C: checkout; default off.",
+      "summary": "Set to 1, true, yes, or on to fail closed when no healthy external artifact root is available instead of falling back to repo-local roots; explicit artifact paths must also remain outside the checkout on every platform; this does not require another physical device; default off.",
       "values": []
     },
     {
@@ -5550,7 +5560,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_STARTUP_PYTHON",
       "owner": "tools/startup_bench.py",
-      "summary": "Path of the baseline CPython interpreter that tools/startup_bench.py measures against; unset uses C:\\Molt\\molt-src\\.venv\\Scripts\\python.exe when that file exists, else the running interpreter.",
+      "summary": "Path of the development baseline CPython interpreter that tools/startup_bench.py measures against; unset uses the running interpreter. The selected interpreter is verified before measurement; an invalid explicit path fails without substitution. This does not select an interpreter for compiled Molt programs.",
       "values": []
     },
     {
@@ -7119,6 +7129,15 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "",
+      "kind": "string",
+      "name": "MOLT_WASI_C_ABI_PLAN",
+      "owner": "src/molt/wasi_sdk_identity.py",
+      "summary": "Bounded versioned projection of the manifest-selected WASI SDK C runtime, shared by Python consumers and Rust build scripts. Contains the exact single-thread wasip1 target, SDK roots and libc/long-double/compiler-rt/CRT content identities. Missing, malformed or conflicting projections refuse C-runtime builds; environment text is not native content-use attestation.",
+      "values": []
+    },
+    {
       "audience": "user",
       "default": "",
       "kind": "path",
@@ -7170,15 +7189,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_WASM_BUILD_TIMEOUT_SEC",
       "owner": "tools/bench_wasm.py",
       "summary": "Wall-clock limit in seconds for each molt build --target wasm that tools/bench_wasm.py runs; non-numeric or non-positive values raise RuntimeError; blank or unset means 90.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "path",
-      "name": "MOLT_WASM_BUILTINS_ARCHIVE",
-      "owner": "src/molt/cli/wasm_link_inputs.py",
-      "summary": "Path to the compiler-rt libclang_rt.builtins-wasm32.a archive that wasm32 runtime links need for binary128 soft-float; molt resolves it from the WASI sysroot multilib, a wasi-sdk resource dir or the vendored copy, exports it to the molt-runtime build script, and that script falls back to the WASI sysroot when the value is unset, blank or not a file.",
       "values": []
     },
     {
@@ -7353,7 +7363,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_WASM_HOST_BIN",
       "owner": "src/molt/cli/wasm_host.py",
-      "summary": "Explicit path of the molt-wasm-host executable; a value that is not a regular file resolves to no host, and when unset the resolver searches the caller's target directory, CARGO_TARGET_DIR, then <root>/target for <cargo profile>/molt-wasm-host.",
+      "summary": "Explicit path of the prebuilt molt-wasm-host executable for compiler, benchmark and validation consumers; a value that is not a regular file resolves to no host. When unset, select the caller's target directory, CARGO_TARGET_DIR, or <root>/target in that order, using only the requested Cargo profile and native executable suffix; a missing selected binary never falls through to another build.",
       "values": []
     },
     {
@@ -7372,15 +7382,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_WASM_HOST_LOG",
       "owner": "runtime/molt-wasm-host/src/main.rs",
       "summary": "env_logger filter directive for molt-wasm-host stderr diagnostics, for example off,molt_wasm_host::precompiled=debug; when unset the filter is off, or off,molt_wasm_host=debug when MOLT_WASM_HOST_DEBUG is set.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "",
-      "kind": "path",
-      "name": "MOLT_WASM_HOST_PATH",
-      "owner": "tools/bench_wasm.py",
-      "summary": "Path of a prebuilt molt-wasm-host for the wasmtime runner in tools/bench_wasm.py and tools/wasm_run_matrix.py; bench_wasm.py fails when the path does not exist, wasm_run_matrix.py ignores a missing path, and when unset both fall back to target/<profile>/molt-wasm-host (bench_wasm.py builds the release binary when it is missing).",
       "values": []
     },
     {
@@ -7453,15 +7454,6 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_WASM_LOG",
       "owner": "tools/bench_wasm.py",
       "summary": "Path of a file to which tools/bench_wasm.py appends subprocess output when --log-file is not given; unset means no log file.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "path",
-      "name": "MOLT_WASM_LONGDOUBLE_ARCHIVE",
-      "owner": "src/molt/cli/wasm_link_inputs.py",
-      "summary": "Path of wasi-libc's libc-printscan-long-double.a that wasm links place ahead of libc.a to override the long_double_not_supported stub; the Python resolver honors it as an override and otherwise finds the archive in the WASI sysroot lib/wasm32-wasip1 (or lib/wasm32-wasi) directory or the vendored vendor/wasm-builtins copy, then exports the resolved path to the molt-runtime build script, which ignores a value that is not a regular file.",
       "values": []
     },
     {

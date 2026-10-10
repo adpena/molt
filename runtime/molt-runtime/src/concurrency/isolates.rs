@@ -930,7 +930,7 @@ mod bootstrap_failure_tests {
 
                         let name = b"rejected_isolate_callable";
                         let producer_result = unsafe {
-                            (molt_cpython_abi::hooks::hooks_or_stubs().register_c_function)(
+                            molt_cpython_abi::hooks::hooks_or_stubs().register_c_function(
                                 rejected_isolate_noargs as *const () as usize as u64,
                                 molt_cpython_abi::abi_types::METH_NOARGS,
                                 MoltObject::none().bits(),

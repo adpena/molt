@@ -75,6 +75,7 @@ from molt.file_publication import (  # noqa: E402
 )
 from molt.portable_paths import portable_path_component, portable_relative_path  # noqa: E402
 from molt.toolchain_identity import (  # noqa: E402
+    StableRegularFileChangedError,
     open_stable_regular_file,
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
@@ -290,9 +291,13 @@ def _read_bytes(path: Path, *, label: str) -> bytes:
     with open_stable_regular_file(path, label=label) as opened:
         if opened.stat.st_size > _MAX_JSON_BYTES:
             raise ValueError(f"{label} exceeds size limit: {path}")
-        raw = opened.stream.read(_MAX_JSON_BYTES + 1)
+        raw = opened.stream.read(opened.stat.st_size + 1)
         if len(raw) > _MAX_JSON_BYTES:
             raise ValueError(f"{label} exceeds size limit: {path}")
+        if len(raw) != opened.stat.st_size:
+            raise StableRegularFileChangedError(
+                f"{label} size changed during read: {path}"
+            )
     return raw
 
 

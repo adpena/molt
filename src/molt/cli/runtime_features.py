@@ -104,7 +104,6 @@ _ALL_BUILTIN_FEATURES: tuple[str, ...] = (
     "builtin_set",
     "builtin_memoryview",
     "builtin_complex",
-    "builtin_contextvars",
     "builtin_fcntl",
 )
 

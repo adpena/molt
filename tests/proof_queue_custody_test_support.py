@@ -314,7 +314,15 @@ def synthetic_receipt_custody(
         return subprocess.CompletedProcess(
             command,
             0 if unchanged else 1,
-            json.dumps({"capability": capability}),
+            json.dumps(
+                {
+                    "capability": capability,
+                    "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+                    "receipt_bytes": len(receipt_bytes),
+                    "policy_input_sha256": hashlib.sha256(policy_bytes).hexdigest(),
+                    "policy_input_bytes": len(policy_bytes),
+                }
+            ),
             "",
         )
 

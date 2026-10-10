@@ -81,7 +81,7 @@ pub unsafe extern "C" fn object_repr(bits: u64) -> OwnedHandleResult {
 }
 
 pub fn wire(hooks: &mut RuntimeHooks) {
-    hooks.alloc_str = alloc_str;
+    hooks.alloc_str = Some(alloc_str);
     hooks.str_data = str_data;
     hooks.object_str = object_str;
     hooks.object_repr = object_repr;

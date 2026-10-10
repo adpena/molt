@@ -21,6 +21,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from molt.cargo_execution_policy import require_cargo_build_capacity  # noqa: E402
 from molt.dx import development_artifact_env  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.windows_process_api import bind_process_query_api  # noqa: E402
@@ -172,18 +173,19 @@ def _verifier_environment() -> dict[str, str]:
     return development_artifact_env(ROOT)
 
 
+_BUILD_COMMAND = ("cargo", "build", "-p", "molt-ir", "--bin", "molt-ir-verify")
+
+
 def verifier_binary(*, env: dict[str, str] | None = None) -> Path:
     env = _verifier_environment() if env is None else env
     target_root = Path(env["CARGO_TARGET_DIR"])
     binary = target_root / "debug" / _BINARY_NAME
     with _BUILD_LOCK:
         if binary not in _BINARY_READY:
-            _COMMANDS.run(
-                ["cargo", "build", "-p", "molt-ir", "--bin", "molt-ir-verify"],
-                cwd=ROOT,
-                env=env,
-                check=True,
-            )
+            # Cargo compiles whenever the binary is stale; below the build
+            # floor no Cargo starts, even for an up-to-date binary.
+            require_cargo_build_capacity(_BUILD_COMMAND, cwd=ROOT, env=env)
+            _COMMANDS.run(list(_BUILD_COMMAND), cwd=ROOT, env=env, check=True)
             _BINARY_READY.add(binary)
     if not binary.is_file():
         raise FileNotFoundError(f"Rust IR verifier build did not produce {binary}")

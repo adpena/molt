@@ -677,12 +677,13 @@ Read these first instead of rediscovering project structure:
   - prune stale artifacts regularly, especially large logs, old benchmark bundles, scratch tmp trees, and abandoned debug outputs;
   - remove no-longer-needed artifacts at the end of a task unless they are required for reproducible evidence or are part of the intended checked-in output.
 - Molt maintainer/agent builds, tests, benchmarks, and proof lanes must use the
-  DX resolver instead of raw repo-local defaults. On Windows checkouts on `C:`,
-  maintainer/agent wrappers must opt into the hard gate with
-  `MOLT_REQUIRE_EXTERNAL_ARTIFACTS=1` unless an emergency override is active;
+  DX resolver instead of raw repo-local defaults. Explicit
+  `MOLT_REQUIRE_EXTERNAL_ARTIFACTS=1` requires healthy output roots outside the
+  checkout; it does not guarantee a different physical storage device.
   `prefer_external_artifacts` and `MOLT_PREFER_EXTERNAL_ARTIFACTS=1` select a
-  healthy external root when one is available but are not public compile
-  location bans. macOS/Linux use the configured external candidate roots. This
+  healthy configured root when one is available, without a public compile
+  location ban. Root selection is independent of drive letters and directory
+  names. This
   is development self-protection for people and agents working on Molt itself.
   Do not make external artifact placement a required public CLI default,
   installer behavior, or user documentation promise unless a user explicitly
@@ -698,10 +699,11 @@ Read these first instead of rediscovering project structure:
   `<MOLT_EXT_ROOT>/target` directory so warm Cargo incremental state survives
   across commands and work sessions. A caller-pinned `MOLT_SESSION_ID`
   (`--session-id` or an explicitly exported value before resolving RunContext)
-  opts into `<MOLT_EXT_ROOT>/target/sessions/<MOLT_SESSION_ID>` for perf,
+  opts into `<MOLT_EXT_ROOT>/target/sessions/<session component>` for perf,
   benchmark, test-shard, or other deliberate isolation lanes. Explicit
   `CARGO_TARGET_DIR` remains an operator-owned override.
-- DX wrappers prefer the canonical workstation artifact root when configured (`prefer_external_artifacts`, `MOLT_PREFER_EXTERNAL_ARTIFACTS=1`, or `tools/run_context_env.py --prefer-external-artifacts`). On this workstation `C:\Molt` is the primary NVMe checkout/artifact authority (faster than the external USB `D:` exFAT for git+cargo small-file workload; 2026-07-08 dev-velocity migration). **Do NOT override the root back to `D:`/`E:`** (exFAT fallback/overflow). Stale artifacts self-clean by default (dx.py auto-janitor). Windows defaults select `C:\Molt`, the checkout's custody root, and never a volume by label; old `D:\Molt`, `E:\Molt`, `D:\molt-target`, and `E:\molt-target` roots are stale inherited state unless `MOLT_PRESERVE_LEGACY_ARTIFACT_ROOTS=1` explicitly opts into fallback. `MOLT_TARGET_ROOT` is derived from the selected artifact root as `C:\Molt\target-root` on this workstation; preserve an intentional off-default toolchain root only with `MOLT_PRESERVE_TARGET_ROOT=1`. RunContext emits `UV_LINK_MODE=copy` for exFAT fallback roots unless an explicit operator value is present. POSIX hosts, like Windows, default to the checkout's custody root (`~/Molt` for `~/Molt/molt-src`); select another volume explicitly with `MOLT_EXTERNAL_ARTIFACT_ROOTS` and tune health gating with `MOLT_EXTERNAL_MIN_FREE_GB`. Set `MOLT_REQUIRE_EXTERNAL_ARTIFACTS=1` only for maintainer/agent lanes that must fail closed instead of falling back.
+- DX defaults use the checkout-family custody root on every OS. Select another artifact root explicitly with `MOLT_EXTERNAL_ARTIFACT_ROOTS` or `MOLT_EXT_ROOT`, and tune capacity admission with `MOLT_EXTERNAL_MIN_FREE_GB`. Explicit `MOLT_TARGET_ROOT` remains authoritative; otherwise toolchains use the checkout custody root, independently of artifact capacity. RunContext chooses `UV_LINK_MODE=copy` from the actual exFAT filesystem capability unless explicitly configured. Drive letters, volume labels, and cloud-brand directory names do not establish custody.
+
 - In a fresh checkout/worktree, import RunContext with an already-installed host
   Python 3.12+ before the first `uv` command so `UV_LINK_MODE=copy` is present
   before uv touches `.venv` on an exFAT fallback root. Windows bootstrap:
@@ -715,9 +717,6 @@ Read these first instead of rediscovering project structure:
   is preserved. Do not use `uv run` to obtain this first env in a cold checkout,
   and never run parallel uv bootstrap/sync commands against the same project
   environment.
-- `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1` is an explicit emergency override for
-  developer machines only. Do not set it in normal agent work, CI, proof lanes,
-  or benchmark runs.
 - Explicit canonical env vars remain authoritative: if an operator sets `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`, `MOLT_CACHE`, `TMPDIR`, or related roots, wrappers must derive only missing defaults and must not overwrite the explicit value.
 - Backend daemon sockets are control-plane state, not bulk artifacts. Keep `MOLT_BACKEND_DAEMON_SOCKET_DIR` under a short local socket-capable path by default (for example `/tmp/molt-backend-<repo-hash>`), and override it only to a filesystem proven to support Unix sockets.
 - Canonical cleanup commands:

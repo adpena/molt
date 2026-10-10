@@ -11,14 +11,20 @@ Runtime hook installation is process-first-wins. Every test in one integration
 binary must install the same table. Model per-test failures inside that table
 with thread-local capability state, not a competing installation.
 
-Use `prepare_runtime_class_abi_test_thread` when a cohort needs managed scalar
+Keep the returned transaction in a named local binding for the complete test,
+before creating fixture values. Helper installers return that same transaction.
+Cleanup then runs before the test returns, so leak assertions are test failures
+and an original panic survives a secondary cleanup assertion. No transaction
+is retained until thread-local destruction.
+
+Use `enter_runtime_class_abi_test` when a cohort needs managed scalar
 classes or normalized exception values. It installs class observation and
 subtyping alongside the thread-state transaction, then binds canonical builtin
 classes before any C-API callback. Every `fake_runtime::wire` consumer uses this
 boundary, including native from-spec fixtures that also need runtime-owned
 strings and dictionaries. Scoped transactions and custom class-hook providers
 explicitly call `prepare_class_bindings` after attachment. Bare native fixtures
-without class hooks retain `prepare_abi_test_thread`.
+without class hooks retain `enter_abi_test`.
 
 The shared model observes bool as a subtype of int and distinguishes class
 objects from instances. Its class anchors resolve to canonical physical C type
@@ -59,3 +65,17 @@ construction), and `Objects/tupleobject.c` (element-wise rich comparison).
 Architecture witnesses follow the current include graph and source owner.
 Transport forwarding macros are not duplicate local classifiers. Tuple
 write-once exports must remain distinct from checked replacement setters.
+
+Numeric protocol fixtures use `fake_runtime`'s existing reference-counted owner
+for boxed integer, float, and complex values, including payload extraction and
+view admission. C-only construction/layout fixtures may leave numeric ownership
+absent; a semantic crossing must then fail explicitly. Do not use token-only
+heap addresses to claim numeric ownership. `wire_numeric` supplies the complete
+numeric payload/refcount/mark contract, while `wire_sequences` additionally owns
+container edges. Custom comparison or arithmetic fixtures keep independent
+literal oracles over these owned values.
+
+RuntimeHooks absence-selected fields are `Option<callback>`. Fixture overrides
+install `Some(callback)`; absence is `None`, never a function-address comparison.
+The invocation methods select the existing failure callback only for `None`.
+The explicit module table is built at runtime and transports the same schema.

@@ -44,12 +44,15 @@ extern "C" fn atexit_callback() -> u64 {
 extern "C" fn flush_callback(_self: u64) -> u64 {
     observe_callback("flush");
     #[cfg(not(target_arch = "wasm32"))]
-    if std::env::var_os("MOLT_SHUTDOWN_CUSTODY_TEST_CHILD").is_some() {
+    if let Some(mode) = std::env::var_os("MOLT_SHUTDOWN_CUSTODY_TEST_CHILD") {
         assert_eq!(
             *CALLBACKS.lock().unwrap(),
             ["cycle", "pending", "atexit", "flush"]
         );
-        println!("shutdown callbacks verified before process exit");
+        println!(
+            "shutdown callbacks verified before process exit: {}",
+            mode.to_str().expect("ASCII child mode")
+        );
     }
     MoltObject::none().bits()
 }
@@ -303,9 +306,14 @@ fn embedding_shutdown_collects_native_type_cycles_across_module_retirement() {
 fn process_exit_covers_collection_before_pending_callbacks_with_or_without_lease() {
     const CHILD: &str = "MOLT_SHUTDOWN_CUSTODY_TEST_CHILD";
     if let Some(mode) = std::env::var_os(CHILD) {
+        assert!(mode == "lease" || mode == "no-lease", "unknown child mode");
         crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
             prepare_callbacks(true, false);
             let _execution = (mode == "lease").then(RuntimeExecutionGuard::enter);
+            assert_eq!(
+                current_thread_holds_runtime_execution_lease(),
+                mode == "lease"
+            );
             crate::state::runtime_state::molt_runtime_exit(0);
         });
         panic!("process exit returned");
@@ -326,8 +334,9 @@ fn process_exit_covers_collection_before_pending_callbacks_with_or_without_lease
         );
         assert!(output.status.success(), "{mode}: {output:?}");
         assert!(
-            String::from_utf8_lossy(&output.stdout)
-                .contains("shutdown callbacks verified before process exit"),
+            String::from_utf8_lossy(&output.stdout).contains(&format!(
+                "shutdown callbacks verified before process exit: {mode}\n"
+            )),
             "{mode}: {output:?}",
         );
     }

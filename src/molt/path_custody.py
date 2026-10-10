@@ -1,14 +1,11 @@
-"""Host-neutral path roles for Molt source, custody, and scratch locations.
+"""Host-neutral canonical path and containment checks.
 
-Path syntax and custody policy are deliberately separate.  A Windows path can
-be inspected on a POSIX review host without constructing ``WindowsPath`` (which
-is not supported there), and hosted-runner paths are validated under their
-ephemeral role instead of being mistaken for durable Molt authority.
+Foreign path syntax can be compared without constructing a concrete host Path.
+Actual source/custody roles belong to the verified CheckoutCustody owner.
 """
 
 from __future__ import annotations
 
-from enum import Enum
 import ntpath
 import os
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
@@ -18,41 +15,12 @@ from typing import TypeAlias
 PathInput: TypeAlias = str | os.PathLike[str]
 
 
-class CustodyPathRole(str, Enum):
-    DURABLE_AUTHORITY = "durable-authority"
-    HOSTED_SOURCE = "hosted-source"
-    HOSTED_EXECUTION = "hosted-execution"
-    EXPLICIT_SCRATCH = "explicit-scratch"
-
-
 class PathCustodyError(ValueError):
     pass
 
 
-# D: is poison for durable Molt authority. Hosted Windows runners use D:\a for
-# source and per-run temp storage; those paths are accepted only because their
-# role is explicitly non-durable, never because the drive was allowlisted.
-_FORBIDDEN_DURABLE_WINDOWS_DRIVES = frozenset({"D:"})
-
-
 def _text(raw: PathInput) -> str:
     return os.fspath(raw).strip()
-
-
-def windows_drive(raw: PathInput) -> str:
-    """Return a lexical Windows drive on every host, without concrete Paths."""
-
-    rendered = _text(raw).replace("/", "\\")
-    # pathlib retains Win32 device prefixes in ``drive`` (``\\?\D:`` and
-    # ``\\.\D:``), while the NT object-manager spelling ``\??\D:`` is parsed
-    # as merely rooted. Normalize these namespaces before classification.
-    for prefix in ("\\\\?\\", "\\\\.\\", "\\??\\", "\\\\??\\"):
-        if rendered.startswith(prefix):
-            rendered = rendered[len(prefix) :]
-            break
-    if len(rendered) >= 2 and rendered[0].isalpha() and rendered[1] == ":":
-        return rendered[:2].upper()
-    return PureWindowsPath(rendered).drive.upper()
 
 
 def _looks_windows_absolute(raw: PathInput) -> bool:
@@ -124,40 +92,20 @@ def host_path_is_within(path: PathInput, parent: PathInput) -> bool:
         return False
 
 
-def forbidden_for_role(raw: PathInput, role: CustodyPathRole) -> bool:
-    """Return whether ``raw`` violates the named custody role."""
-
-    if role is not CustodyPathRole.DURABLE_AUTHORITY:
-        return False
-    return windows_drive(raw) in _FORBIDDEN_DURABLE_WINDOWS_DRIVES
-
-
-def validate_path_role(
-    raw: PathInput, role: CustodyPathRole, *, authority: str
-) -> None:
-    if forbidden_for_role(raw, role):
-        raise PathCustodyError(
-            f"{authority} cannot use forbidden D: durable authority: {raw}"
-        )
-
-
 def canonical_host_path(
     raw: PathInput,
-    role: CustodyPathRole,
     *,
     authority: str,
     require_exists: bool = False,
 ) -> Path:
     """Return one absolute, resolved host spelling or reject path aliases.
 
-    Durable-path policy is checked against the original spelling before any
-    normalization, so a forbidden Windows drive cannot be hidden by a host
-    alias.  The lexical absolute spelling must then equal the filesystem's
+    Drive letters and directory names do not establish custody. The lexical
+    absolute spelling must equal the filesystem's
     resolved spelling.  This rejects ``..`` traversal, symlinks, and Windows
     junction aliases instead of silently promoting them into custody.
     """
 
-    validate_path_role(raw, role, authority=authority)
     expanded = Path(raw).expanduser()
     if not expanded.is_absolute():
         raise PathCustodyError(f"{authority} must be absolute: {raw}")

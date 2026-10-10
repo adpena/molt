@@ -99,13 +99,11 @@ fn env_from_bits_wasm(
         if object_type_id(ptr) != TYPE_ID_DICT {
             return Err("env must be a dict".to_string());
         }
-        let order = dict_order(ptr);
-        let mut out = Vec::with_capacity(order.len() / 2);
+        let mut out = Vec::with_capacity(dict_len(ptr));
         let mut overlay = false;
-        let mut idx = 0;
-        while idx + 1 < order.len() {
-            let key_bits = order[idx];
-            let val_bits = order[idx + 1];
+        for row in dict_live_entries(ptr) {
+            let key_bits = row.key;
+            let val_bits = row.value;
             let key = string_from_bits_wasm(_py, key_bits, "env key")?;
             let value = string_from_bits_wasm(_py, val_bits, "env value")?;
             if key == "MOLT_ENV_OVERLAY" && value == "1" {
@@ -113,7 +111,6 @@ fn env_from_bits_wasm(
             } else {
                 out.push((key, value));
             }
-            idx += 2;
         }
         Ok((Some(out), overlay))
     }

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import os
 from pathlib import Path
 import re
 import sys
 from typing import Mapping, Sequence
+
+from molt.llvm_linker_roles import lexical_path_identity
 
 
 PROCESS_IMAGE_SCHEMA = "molt.proof-process-image-capture.v1"
@@ -15,15 +16,26 @@ _ROOT_EXIT_DISPOSITIONS = frozenset({"require-exit", "terminate"})
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
-def _filesystem_path(path: Path) -> Path:
-    """Normalize kernel-reported Windows device paths without deriving layout."""
+def require_custody_coordinate(path: Path) -> None:
+    """Refuse unsupported traversal before any executable probe or file hash."""
+    if ".." in path.parts:
+        raise ValueError(
+            "proof path custody does not support parent traversal; select an explicit entrypoint"
+        )
+    if sys.platform == "win32" and str(path).startswith("\\\\?\\"):
+        # Probe-only callers need the same namespace refusal as image capture.
+        # Reuse the sole lexical owner rather than copying its prefix grammar.
+        lexical_path_identity(path)
 
-    raw = os.fspath(path)
-    if os.name == "nt" and raw.startswith("\\\\?\\UNC\\"):
-        return Path("\\\\" + raw[8:])
-    if os.name == "nt" and raw.startswith("\\\\?\\"):
-        return Path(raw[4:])
-    return path
+
+def custody_path(path: Path) -> Path:
+    """Admit a lexical coordinate that current image/watch custody can retain."""
+    require_custody_coordinate(path)
+    return lexical_path_identity(path)
+
+
+def _image_path_key(path: Path) -> str:
+    return str(custody_path(path))
 
 
 def capture_image(
@@ -42,11 +54,11 @@ def capture_image(
             "process image has invalid root-exit disposition: "
             f"{root_exit_disposition!r}"
         )
-    selected = _filesystem_path(path)
+    selected = custody_path(path)
+    # Resolution can restore OS drive spelling; serialized image coordinates
+    # still belong to the same lexical authority as canonical_images.
     resolved = (
-        Path(os.path.abspath(selected))
-        if preserve_path
-        else selected.resolve(strict=True)
+        selected if preserve_path else custody_path(selected.resolve(strict=True))
     )
     if not resolved.is_file():
         raise ValueError(f"process image is not a file: {resolved}")
@@ -73,6 +85,7 @@ def revalidate_images(
     """Rehash captured images by exact path and reject any identity drift."""
 
     current_rows: list[dict[str, object]] = []
+    verified_paths: dict[str, dict[str, object]] = {}
     for raw in rows:
         if not isinstance(raw, Mapping):
             raise ValueError("process image row is malformed")
@@ -93,15 +106,37 @@ def revalidate_images(
             raise ValueError("process image has invalid root-exit disposition")
         if path_kind not in {"resolved", "selection"}:
             raise ValueError("process image has invalid path kind")
-        current = capture_image(
-            role,
-            Path(raw_path),
-            disposition,
-            preserve_path=path_kind == "selection",
+        actual_path = (
+            custody_path(Path(raw_path))
+            if path_kind == "selection"
+            else custody_path(Path(raw_path)).resolve(strict=True)
         )
+        key = _image_path_key(actual_path)
+        if key not in verified_paths:
+            verified_paths[key] = capture_image(
+                role, actual_path, disposition, preserve_path=path_kind == "selection"
+            )
+        captured = verified_paths[key]
+        current = {
+            "schema": PROCESS_IMAGE_SCHEMA,
+            "role": role,
+            # Reuse the exact lexical key already checked above, including
+            # after resolution. Do not compare an OS spelling to a custody key.
+            "path": key,
+            "sha256": captured["sha256"],
+            "size_bytes": captured["size_bytes"],
+        }
+        if disposition != "require-exit":
+            current["root_exit_disposition"] = disposition
+        if path_kind == "selection":
+            current["path_kind"] = path_kind
         if current != dict(raw):
+            changed = [name for name in current if current[name] != raw.get(name)]
+            if raw.keys() - current.keys():
+                changed.append("unexpected fields")
             raise ValueError(
-                f"process image changed while live custody armed: {raw_path}"
+                f"process image changed while live custody armed: {raw_path} "
+                f"(differing fields: {', '.join(changed)})"
             )
         current_rows.append(current)
     return current_rows
@@ -112,7 +147,7 @@ def canonical_images(
 ) -> list[dict[str, object]]:
     """Validate and deterministically order one exact executable-image set."""
 
-    identities: dict[str, tuple[str, str]] = {}
+    identities: dict[str, tuple[str, str, int]] = {}
     canonical: dict[tuple[str, str], dict[str, object]] = {}
     for raw in rows:
         if not isinstance(raw, Mapping) or raw.get("schema") != PROCESS_IMAGE_SCHEMA:
@@ -138,11 +173,11 @@ def canonical_images(
             raise ValueError("process image has invalid root-exit disposition")
         if path_kind not in {"resolved", "selection"}:
             raise ValueError("process image has invalid path kind")
-        path = Path(raw_path)
+        path = custody_path(Path(raw_path))
         if not path.is_file():
             raise ValueError(f"process image is unavailable: {path}")
-        normalized = os.path.normcase(os.path.abspath(path))
-        identity = (digest, disposition)
+        normalized = _image_path_key(path)
+        identity = (digest, disposition, size)
         prior = identities.get(normalized)
         if prior is not None and prior != identity:
             raise ValueError(f"process image has conflicting identities: {path}")
@@ -181,6 +216,10 @@ def toolchain_images(
         )
 
         return family_process_images(identity)
+    if name == "rustc":
+        from tools.proof_queue_pkg.toolchain_capture import validate_rust_link_selection
+
+        validate_rust_link_selection(identity)
     raw_images = identity.get("process_images")
     if name == "python" and raw_images is None:
         raw_path = identity.get("executable")
@@ -212,9 +251,9 @@ def toolchain_images(
     for raw_path, digest, label in required:
         if not isinstance(raw_path, str) or not isinstance(digest, str):
             raise ValueError(f"{name} toolchain has no {label} image identity")
-        normalized = os.path.normcase(os.path.abspath(raw_path))
+        normalized = _image_path_key(Path(raw_path))
         if not any(
-            os.path.normcase(os.path.abspath(str(image["path"]))) == normalized
+            _image_path_key(Path(str(image["path"]))) == normalized
             and image["sha256"] == digest
             for image in images
         ):
@@ -222,6 +261,39 @@ def toolchain_images(
                 f"{name} toolchain {label} image is outside its process closure"
             )
     return images
+
+
+def environment_images(identities: Mapping[str, object]) -> list[dict[str, object]]:
+    """Project captured executable environment closure for both custody consumers."""
+    images: list[dict[str, object]] = []
+    for name, raw in identities.items():
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"environment executable {name} has no identity")
+        executable, captured = raw.get("executable"), raw.get("process_images")
+        if (
+            not isinstance(executable, Mapping)
+            or not isinstance(captured, list)
+            or not captured
+        ):
+            raise ValueError(
+                f"environment executable {name} has no process-image closure"
+            )
+        current = canonical_images(captured)
+        if any(row["role"] != f"env:{name}" for row in current):
+            raise ValueError(f"environment executable {name} has a foreign image role")
+        for field in ("path", "resolved_path"):
+            raw_path = executable.get(field)
+            if not isinstance(raw_path, str) or not any(
+                _image_path_key(Path(str(row["path"])))
+                == _image_path_key(Path(raw_path))
+                and row["sha256"] == executable.get("sha256")
+                for row in current
+            ):
+                raise ValueError(
+                    f"environment executable {name} {field} is outside its process closure"
+                )
+        images.extend(current)
+    return canonical_images(images)
 
 
 def platform_auxiliary_images(descendants: object) -> list[dict[str, object]]:

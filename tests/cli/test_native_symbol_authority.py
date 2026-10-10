@@ -1880,7 +1880,7 @@ def test_external_symbol_admission_uses_content_policy_without_input_sidecars(
         facts = selected.facts[artifact.resolve()]
     assert facts.defined == {"provider"}
     assert (facts.members is not None) is archive
-    assert calls == [120 if archive else 5]
+    assert calls == [120 if archive else 60]
     assert not native_symbol_inspection._native_object_symbol_facts_sidecar_path(
         artifact
     ).exists()

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from itertools import product
 
 from .errors import OpKindTableError
+from .registration import frontend_kinds_for_wire_kind
 
 
 PRIMITIVE_FRONTEND_TYPES = {
@@ -131,10 +132,11 @@ def primitive_effect_cases(data: dict) -> tuple[PrimitiveEffectCase, ...]:
 def frontend_operator_map(data: dict) -> dict[str, str]:
     governed = {name for case in primitive_effect_cases(data) for name in case.opcodes}
     mapping = {
-        spelling.upper(): row["mapper_opcode"]
+        kind: row["mapper_opcode"]
         for row in data.get("kind", [])
         if row.get("mapper_opcode") in governed
         for spelling in (row["canonical"], *row.get("aliases", []))
+        for kind in frontend_kinds_for_wire_kind(data, spelling)
     }
     for row in data.get("frontend_effect_kind", []):
         name = row.get("effects_like_opcode")

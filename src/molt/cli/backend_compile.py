@@ -370,6 +370,7 @@ def _prepare_backend_setup(
             resolved_modules=resolved_modules,
         )
     return _PreparedBackendSetup(
+        backend="llvm" if "llvm" in backend_selection.features else target,
         runtime_state=runtime_state,
         backend_bin=backend_bin,
         cache_setup=cache_setup,

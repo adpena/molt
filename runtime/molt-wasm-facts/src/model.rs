@@ -190,6 +190,7 @@ pub struct CallableTableLayout {
     pub fixed_prefix_base: u32,
     pub fixed_prefix_len: u32,
     pub finalized_app_base: u32,
+    /// Artifact-local app entries; zero for a published shared runtime.
     pub app_entry_count: u32,
 }
 

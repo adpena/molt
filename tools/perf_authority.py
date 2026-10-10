@@ -484,7 +484,7 @@ def canonical_scoreboard_shape_problems(
         if profile in {"release-fast", "release-output", "dev-fast"}:
             for problem in profile_binding_problems(
                 cell.get("build_observation"),
-                build_target=str(cell.get("target")),
+                backend=str(cell.get("backend")),
                 profile=str(profile),
             ):
                 problems.append(f"{label} {_cell_label(cell)}: {problem}")

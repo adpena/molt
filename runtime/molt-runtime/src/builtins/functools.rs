@@ -15,7 +15,7 @@ use crate::builtins::types::{
 use crate::{
     PyToken, TYPE_ID_DICT, TYPE_ID_TUPLE, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
     builtin_classes, call_callable2, class_dict_bits, dec_ref_bits, dict_find_entry_kv_in_place,
-    dict_get_in_place, dict_order, dict_set_in_place, dict_update_apply, dict_update_set_in_place,
+    dict_get_in_place, dict_set_in_place, dict_update_apply, dict_update_set_in_place,
     exception_pending, inc_ref_bits, init_atomic_bits, intern_static_name, is_truthy,
     issubclass_runtime, molt_is_callable, molt_repr_from_obj, molt_set_attr_name, obj_from_bits,
     object_class_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64, type_of_bits,
@@ -632,40 +632,11 @@ pub extern "C" fn molt_functools_partial_call(
             } else {
                 MoltObject::none().bits()
             };
-        let builder_bits = crate::molt_callargs_new(pos.len() as u64, 0);
-        if builder_bits == 0 {
-            dec_ref_bits(_py, merged_kwargs_bits);
-            return MoltObject::none().bits();
-        }
-        for &arg_bits in pos.iter() {
-            unsafe {
-                let _ = crate::molt_callargs_push_pos(builder_bits, arg_bits);
-            }
-        }
-        if merged_kwargs_bits != 0 && !obj_from_bits(merged_kwargs_bits).is_none() {
-            if let Some(dict_ptr) = obj_from_bits(merged_kwargs_bits).as_ptr() {
-                unsafe {
-                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                        let order = dict_order(dict_ptr);
-                        let mut idx = 0;
-                        while idx + 1 < order.len() {
-                            let _ = crate::molt_callargs_push_kw(
-                                builder_bits,
-                                order[idx],
-                                order[idx + 1],
-                            );
-                            if exception_pending(_py) {
-                                dec_ref_bits(_py, merged_kwargs_bits);
-                                return MoltObject::none().bits();
-                            }
-                            idx += 2;
-                        }
-                    }
-                }
-            }
-            dec_ref_bits(_py, merged_kwargs_bits);
-        }
-        crate::molt_call_bind(func_bits, builder_bits)
+        let result = unsafe {
+            crate::call::bind::call_bind_capi(_py, func_bits, None, &pos, merged_kwargs_bits)
+        };
+        dec_ref_bits(_py, merged_kwargs_bits);
+        result
     })
 }
 
@@ -1450,7 +1421,14 @@ fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool
         if let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
             unsafe {
                 if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    let order = dict_order(dict_ptr);
+                    let Some(order) = crate::object::ops_dict::dict_snapshot(
+                        _py,
+                        dict_ptr,
+                        crate::object::ops_dict::DictSnapshotKind::Entries,
+                    ) else {
+                        release_owned_lru_key_parts(_py, &parts);
+                        return MoltObject::none().bits();
+                    };
                     let mut idx = 0;
                     while idx + 1 < order.len() {
                         let pair_ptr = alloc_tuple(_py, &[order[idx], order[idx + 1]]);
@@ -1478,7 +1456,14 @@ fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool
         {
             unsafe {
                 if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    let order = dict_order(dict_ptr);
+                    let Some(order) = crate::object::ops_dict::dict_snapshot(
+                        _py,
+                        dict_ptr,
+                        crate::object::ops_dict::DictSnapshotKind::Entries,
+                    ) else {
+                        release_owned_lru_key_parts(_py, &parts);
+                        return MoltObject::none().bits();
+                    };
                     let mut idx = 0;
                     while idx + 1 < order.len() {
                         let val_bits = order[idx + 1];
@@ -1526,37 +1511,16 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
         if maxsize == Some(0) {
             let misses = unsafe { lru_misses(self_ptr) } + 1;
             unsafe { lru_set_misses(self_ptr, misses) };
-            let builder_bits = crate::molt_callargs_new(0, 0);
-            if builder_bits == 0 {
-                return MoltObject::none().bits();
-            }
-            let mut call_pos: Vec<u64> = Vec::new();
+            let mut call_pos = Vec::new();
             extend_positional_from_call_arg(args_bits, &mut call_pos);
-            for val_bits in call_pos {
-                unsafe {
-                    let _ = crate::molt_callargs_push_pos(builder_bits, val_bits);
-                }
-            }
-            if kwargs_bits != 0
-                && !obj_from_bits(kwargs_bits).is_none()
-                && let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr()
-            {
-                unsafe {
-                    if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                        let order = dict_order(dict_ptr);
-                        let mut idx = 0;
-                        while idx + 1 < order.len() {
-                            let _ = crate::molt_callargs_push_kw(
-                                builder_bits,
-                                order[idx],
-                                order[idx + 1],
-                            );
-                            idx += 2;
-                        }
-                    }
-                }
-            }
-            return crate::molt_call_bind(func_bits, builder_bits);
+            let mapping = if kwargs_bits == 0 {
+                MoltObject::none().bits()
+            } else {
+                kwargs_bits
+            };
+            return unsafe {
+                crate::call::bind::call_bind_capi(_py, func_bits, None, &call_pos, mapping)
+            };
         }
         let key_bits = make_lru_key(_py, args_bits, kwargs_bits, typed);
         if obj_from_bits(key_bits).is_none() {
@@ -1590,35 +1554,16 @@ pub extern "C" fn molt_functools_lru_call(self_bits: u64, args_bits: u64, kwargs
         }
         let misses = unsafe { lru_misses(self_ptr) } + 1;
         unsafe { lru_set_misses(self_ptr, misses) };
-        let builder_bits = crate::molt_callargs_new(0, 0);
-        if builder_bits == 0 {
-            dec_ref_bits(_py, key_bits);
-            return MoltObject::none().bits();
-        }
-        let mut call_pos: Vec<u64> = Vec::new();
+        let mut call_pos = Vec::new();
         extend_positional_from_call_arg(args_bits, &mut call_pos);
-        for val_bits in call_pos {
-            unsafe {
-                let _ = crate::molt_callargs_push_pos(builder_bits, val_bits);
-            }
-        }
-        if kwargs_bits != 0
-            && !obj_from_bits(kwargs_bits).is_none()
-            && let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr()
-        {
-            unsafe {
-                if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                    let order = dict_order(dict_ptr);
-                    let mut idx = 0;
-                    while idx + 1 < order.len() {
-                        let _ =
-                            crate::molt_callargs_push_kw(builder_bits, order[idx], order[idx + 1]);
-                        idx += 2;
-                    }
-                }
-            }
-        }
-        let result_bits = crate::molt_call_bind(func_bits, builder_bits);
+        let mapping = if kwargs_bits == 0 {
+            MoltObject::none().bits()
+        } else {
+            kwargs_bits
+        };
+        let result_bits =
+            unsafe { crate::call::bind::call_bind_capi(_py, func_bits, None, &call_pos, mapping) };
+
         if exception_pending(_py) {
             dec_ref_bits(_py, key_bits);
             return MoltObject::none().bits();
@@ -1665,7 +1610,7 @@ pub extern "C" fn molt_functools_lru_cache_info(self_bits: u64) -> u64 {
         let currsize = if let Some(cache_ptr) = obj_from_bits(cache_bits).as_ptr() {
             unsafe {
                 if object_type_id(cache_ptr) == TYPE_ID_DICT {
-                    dict_order(cache_ptr).len() / 2
+                    crate::dict_len(cache_ptr)
                 } else {
                     0
                 }
@@ -3033,6 +2978,103 @@ mod tests {
                 marker, args, pair, sequence, failure, failure2, values[0], values[1],
             ] {
                 dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "stdlib_itertools")]
+    fn groupby_borrowed_grouper_identity_is_not_shared_dictionary_ownership() {
+        use crate::object::weakref::WeakBorrow;
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            for keep_grouper in [true, false] {
+                let value = iterator_owned_list(py, &[7]);
+                let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &[value, value])).bits();
+                let parent = crate::molt_itertools_groupby(sequence, MoltObject::none().bits());
+                let pair = crate::molt_itertools_groupby_next(parent);
+                assert!(!crate::exception_pending(py));
+                let pair_ptr = obj_from_bits(pair).as_ptr().unwrap();
+                assert_eq!(
+                    unsafe { crate::object::seq_access::item(pair_ptr, 0) },
+                    Some(value)
+                );
+                let grouper = unsafe { crate::object::seq_access::item(pair_ptr, 1) }.unwrap();
+                let pointer = obj_from_bits(parent).as_ptr().unwrap();
+                let parent_watch = WeakBorrow::new(py, parent).unwrap();
+                let grouper_watch = WeakBorrow::new(py, grouper).unwrap();
+                let value_watch = WeakBorrow::new(py, value).unwrap();
+                unsafe {
+                    // Five owned values, one state word, and one borrowed
+                    // identity precede backing owned by the common lifecycle.
+                    let dictionary = crate::object::instance_dict_bits_ptr(pointer);
+                    assert!(!dictionary.is_null());
+                    assert!(
+                        dictionary as usize >= pointer as usize + 7 * std::mem::size_of::<u64>()
+                    );
+                    assert_eq!(*dictionary, 0);
+                    let class = obj_from_bits(crate::object::object_class_bits(pointer))
+                        .as_ptr()
+                        .unwrap();
+                    assert!(
+                        crate::object::layout::class_cached_layout_size(class).unwrap()
+                            >= 8 * std::mem::size_of::<u64>()
+                    );
+                    let mut edges = Vec::new();
+                    crate::object::heap_lifecycle::visit_owned_values(py, pointer, &mut |bits| {
+                        edges.push(bits)
+                    });
+                    assert!(
+                        !edges.contains(&grouper),
+                        "active grouper is a borrowed identity"
+                    );
+                }
+                if keep_grouper {
+                    inc_ref_bits(py, grouper);
+                }
+                dec_ref_bits(py, pair);
+                if keep_grouper {
+                    dec_ref_bits(py, parent);
+                } else {
+                    assert!(grouper_watch.upgrade_owned().is_none());
+                }
+                dec_ref_bits(py, sequence);
+                dec_ref_bits(py, value);
+                unsafe { crate::object::gc::collect_cycles(py) };
+                for watch in [&parent_watch, &value_watch] {
+                    let retained = watch
+                        .upgrade_owned()
+                        .expect("remaining external owner retains the group");
+                    dec_ref_bits(py, retained);
+                }
+                if keep_grouper {
+                    let retained = grouper_watch
+                        .upgrade_owned()
+                        .expect("caller still owns the grouper");
+                    dec_ref_bits(py, retained);
+                    for _ in 0..2 {
+                        let item = crate::molt_itertools_groupby_iter_next(grouper);
+                        assert!(!crate::exception_pending(py));
+                        assert_eq!(item, value);
+                        iterator_owned_assert_list(item, &[7]);
+                        dec_ref_bits(py, item);
+                    }
+                    iterator_owned_drain(py, grouper, 0, true);
+                    dec_ref_bits(py, grouper);
+                } else {
+                    // Parent traversal must not retain or dereference the
+                    // former grouper's stale identity after its owner dies.
+                    unsafe {
+                        assert_eq!(*crate::object::instance_dict_bits_ptr(pointer), 0);
+                    }
+                    iterator_owned_drain(py, parent, 0, true);
+                    dec_ref_bits(py, parent);
+                }
+                unsafe { crate::object::gc::collect_cycles(py) };
+                assert!(parent_watch.upgrade_owned().is_none());
+                assert!(grouper_watch.upgrade_owned().is_none());
+                assert!(value_watch.upgrade_owned().is_none());
+                assert!(!crate::exception_pending(py));
             }
         });
     }

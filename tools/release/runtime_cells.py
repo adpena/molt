@@ -3,7 +3,7 @@
 
 Release-time production is the only distribution lane that runs runtime Cargo
 plans. Coverage is derived from the existing authorities: guest profiles
-(``BuildProfile``), runtime stdlib tiers, the source-extension runtime feature,
+(the shipped release-lane inventory), runtime stdlib tiers, the source-extension runtime feature,
 and the WASM freestanding/SIMD policy. There is no second matrix. The exact
 release commit is materialized with the canonical Git snapshot authority and
 verified unchanged after the builds; the source-checkout builders then publish
@@ -30,7 +30,9 @@ import os
 from pathlib import Path
 import shutil
 import sys
-from typing import Any, Mapping, Sequence, get_args
+from typing import Any, Mapping, Sequence
+
+from molt.release_lanes import capture_release_lanes
 
 ROOT = Path(__file__).resolve().parents[2]
 INVENTORY_NAME = "runtime-inventory.json"
@@ -38,10 +40,6 @@ INVENTORY_NAME = "runtime-inventory.json"
 # policy. Production and coverage verification refuse them rather than
 # publishing a cell the policy does not name.
 POLICY_OVERRIDE_ENV = (
-    "MOLT_DEV_CARGO_PROFILE",
-    "MOLT_RELEASE_CARGO_PROFILE",
-    "MOLT_WASM_CARGO_PROFILE",
-    "MOLT_RUNTIME_BUILD_PROFILE",
     "MOLT_RUNTIME_TK_NATIVE",
     "MOLT_RUNTIME_GPU_METAL",
     "MOLT_RUNTIME_GPU_WEBGPU",
@@ -57,7 +55,7 @@ POLICY_OVERRIDE_ENV = (
 @dataclass(frozen=True)
 class RuntimeCellRequest:
     kind: str
-    guest_profile: str
+    runtime_profile: str
     stdlib_profile: str
     extra_runtime_features: tuple[str, ...] = ()
     freestanding: bool = False
@@ -72,37 +70,42 @@ def require_release_policy_environment(env: Mapping[str, str] = os.environ) -> N
         )
 
 
-def declared_runtime_cells() -> tuple[RuntimeCellRequest, ...]:
-    """Project the supported guest surface onto runtime cells.
-
-    Every program an installed compiler accepts selects one of these cells:
-    guest profile x concrete stdlib tier x (native: plain or source-extension
-    loader; WASM: hosted SIMD or freestanding scalar).
-    """
+def declared_runtime_cells(source_root: Path = ROOT) -> tuple[RuntimeCellRequest, ...]:
+    """Deduplicate logical backends into their existing physical runtime keys."""
     from molt.cli.config_resolution import RUNTIME_STDLIB_PROFILE_TIERS
-    from molt.cli.models import BuildProfile
     from molt.cli.runtime_features import SOURCE_EXTENSION_RUNTIME_FEATURES
     from molt.compiler_distribution import NATIVE_RUNTIME_CELL, WASM_RUNTIME_CELL
 
-    requests: list[RuntimeCellRequest] = []
-    for profile in get_args(BuildProfile):
+    inventory = capture_release_lanes(source_root)
+    requests: dict[str, RuntimeCellRequest] = {}
+    for lane in inventory.lanes:
         for tier in RUNTIME_STDLIB_PROFILE_TIERS:
-            for extra in ((), SOURCE_EXTENSION_RUNTIME_FEATURES):
-                requests.append(
-                    RuntimeCellRequest(NATIVE_RUNTIME_CELL, profile, tier, extra)
-                )
-            for freestanding in (False, True):
-                requests.append(
+            if lane.target == "native":
+                variants = (
                     RuntimeCellRequest(
-                        WASM_RUNTIME_CELL, profile, tier, freestanding=freestanding
+                        NATIVE_RUNTIME_CELL, lane.runtime_profile, tier, extra
                     )
+                    for extra in ((), SOURCE_EXTENSION_RUNTIME_FEATURES)
                 )
-    return tuple(requests)
+            else:
+                variants = (
+                    RuntimeCellRequest(
+                        WASM_RUNTIME_CELL,
+                        lane.runtime_profile,
+                        tier,
+                        freestanding=freestanding,
+                    )
+                    for freestanding in (False, True)
+                )
+            for request in variants:
+                key = _selector(request.kind, runtime_cell_key(request))
+                requests.setdefault(key, request)
+    inventory.verify()
+    return tuple(requests[key] for key in sorted(requests))
 
 
 def runtime_cell_key(request: RuntimeCellRequest) -> dict[str, Any]:
     """The installed selector's own key projection for one derived request."""
-    from molt.cli.cargo_profiles import _resolve_cargo_profile_name
     from molt.cli.installed_runtime import (
         native_runtime_cell_key,
         wasm_runtime_cell_key,
@@ -111,9 +114,7 @@ def runtime_cell_key(request: RuntimeCellRequest) -> dict[str, Any]:
     from molt.compiler_distribution import NATIVE_RUNTIME_CELL
 
     require_release_policy_environment()
-    cargo_profile, error = _resolve_cargo_profile_name(request.guest_profile)  # type: ignore[arg-type]
-    if error is not None:
-        raise ValueError(error)
+    cargo_profile = request.runtime_profile
     if request.kind == NATIVE_RUNTIME_CELL:
         return native_runtime_cell_key(
             target_triple=None,
@@ -122,7 +123,7 @@ def runtime_cell_key(request: RuntimeCellRequest) -> dict[str, Any]:
             extra_runtime_features=request.extra_runtime_features,
         )
     return wasm_runtime_cell_key(
-        cargo_profile=cargo_profile,
+        runtime_profile=cargo_profile,
         stdlib_profile=request.stdlib_profile,
         simd_enabled=runtime_wasm_simd_policy(freestanding=request.freestanding),
         freestanding=request.freestanding,
@@ -133,10 +134,10 @@ def _selector(kind: str, key: Mapping[str, Any]) -> str:
     return json.dumps([kind, dict(key)], sort_keys=True)
 
 
-def declared_cell_keys() -> list[str]:
+def declared_cell_keys(source_root: Path = ROOT) -> list[str]:
     return sorted(
         _selector(request.kind, runtime_cell_key(request))
-        for request in declared_runtime_cells()
+        for request in declared_runtime_cells(source_root)
     )
 
 
@@ -196,7 +197,6 @@ def _publish_cell(
 def _produce_native(
     request: RuntimeCellRequest, source_root: Path, output: Path, timeout: float | None
 ) -> dict[str, Any]:
-    from molt.cli.cargo_profiles import _resolve_cargo_profile_name
     from molt.cli.models import _RuntimeArtifactState
     from molt.cli.native_link_custody import native_link_custody_archive_path
     from molt.cli.native_link_manifest import (
@@ -212,7 +212,7 @@ def _produce_native(
         NATIVE_RUNTIME_CELL,
     )
 
-    cargo_profile, _error = _resolve_cargo_profile_name(request.guest_profile)  # type: ignore[arg-type]
+    cargo_profile = request.runtime_profile
     runtime_lib = _runtime_lib_path(
         source_root, cargo_profile, None, stdlib_profile=request.stdlib_profile
     )
@@ -281,14 +281,13 @@ def _produce_native(
 def _produce_wasm(
     request: RuntimeCellRequest, source_root: Path, output: Path, timeout: float | None
 ) -> dict[str, Any]:
-    from molt.cli.cargo_profiles import _resolve_cargo_profile_name
     from molt.cli.runtime_build import _initialize_runtime_artifact_state
     from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
     from molt.cli.runtime_wasm_build_spec import runtime_wasm_distribution_surface
     from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
     from molt.compiler_distribution import WASM_RUNTIME_CELL
 
-    cargo_profile, _error = _resolve_cargo_profile_name(request.guest_profile)  # type: ignore[arg-type]
+    cargo_profile = request.runtime_profile
     state = _initialize_runtime_artifact_state(
         is_rust_transpile=False,
         is_wasm=True,
@@ -352,6 +351,10 @@ def _isolated_build_environment(work: Path) -> Iterator[None]:
         "MOLT_BUILD_STATE_DIR": str(work / "build-state"),
         "MOLT_HOME": str(work / "home"),
         "MOLT_CACHE": str(work / "cache"),
+        "MOLT_DEV_CARGO_PROFILE": "",
+        "MOLT_RELEASE_CARGO_PROFILE": "",
+        "MOLT_WASM_CARGO_PROFILE": "",
+        "MOLT_RUNTIME_BUILD_PROFILE": "",
     }
     previous = {name: os.environ.get(name) for name in updates}
     os.environ.update(updates)
@@ -451,13 +454,18 @@ def _populate_runtime_cells(
         )
         records = [entry.as_record() for entry in snapshot.files]
         with _isolated_build_environment(work):
+            requests = declared_runtime_cells(source_root)
+            expected_keys = sorted(
+                _selector(request.kind, runtime_cell_key(request))
+                for request in requests
+            )
             cells = [
                 (
                     _produce_native
                     if request.kind == NATIVE_RUNTIME_CELL
                     else _produce_wasm
                 )(request, source_root, output, cargo_timeout)
-                for request in declared_runtime_cells()
+                for request in requests
             ]
         # Every staged cell passes the installed receipt admission, and each
         # identity's recorded runtime sources must be this snapshot's. The
@@ -487,7 +495,7 @@ def _populate_runtime_cells(
         platform=platform,
         arch=arch,
     )
-    if inventory_cell_keys(inventory) != declared_cell_keys():
+    if inventory_cell_keys(inventory) != expected_keys:
         raise ValueError(
             "produced runtime cells differ from the derived release policy"
         )

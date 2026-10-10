@@ -754,6 +754,7 @@ def test_temporary_artifact_posix_closure_reconciles_only_terminal_liveness(
         stderr="",
         orphaned_process_groups=(101,),
         termination_reports=reports,
+        child_stderr="",
     )
     incident = memory_guard._incident_payload(result)
     assert incident is not None
@@ -1596,6 +1597,149 @@ def test_codex_app_and_cli_are_host_control_plane_on_all_platform_shapes() -> No
     ]
 
     assert all(memory_guard.is_host_control_plane_process(sample) for sample in samples)
+
+
+@pytest.mark.parametrize("typed_argv", [False, True])
+@pytest.mark.parametrize(
+    ("argv", "protected"),
+    [
+        (
+            ("/home/operator/.codex/worktrees/molt/.venv/bin/python", "-c", "pass"),
+            False,
+        ),
+        (
+            ("/home/operator/.claude/worktrees/molt/.venv/bin/python", "worker.py"),
+            False,
+        ),
+        ((r"C:\Users\operator\.codex\worktrees\molt\.venv\Scripts\python.exe",), False),
+        ((r"C:\Users\operator\.claude\worktrees\molt\target\molt-backend.exe",), False),
+        (
+            (
+                "/usr/bin/python",
+                "worker.py",
+                "/home/operator/.codex/worktrees/input.py",
+            ),
+            False,
+        ),
+        (
+            (
+                "/usr/bin/python",
+                "worker.py",
+                "/home/operator/.claude/worktrees/input.py",
+            ),
+            False,
+        ),
+        ((r"C:\Users\operator\.codex\tmp\python.exe", "worker.py"), False),
+        (("/home/operator/.codex/plugins-other/python", "worker.py"), False),
+        (("/home/operator/.claude/plugins-other/python", "worker.py"), False),
+        (("/home/operator/.codex/plugins/cache/host/node", "server.js"), True),
+        (("/home/operator/.claude/plugins/cache/host/python", "server.py"), True),
+        (("/home/operator/.codex/runtimes/node/bin/node", "helper.js"), True),
+        (("/home/operator/.claude/runtimes/node/bin/node", "helper.js"), True),
+        ((r"C:\Users\operator\.codex\vendor_imports\node.exe", "helper.js"), True),
+        (("/bin/zsh", "/home/operator/.codex/shell_snapshots/host.sh"), True),
+        (("/bin/zsh", "/home/operator/.claude/shell-snapshots/host.sh"), True),
+        # A genuine host executable inside a checkout remains protected.
+        (("/home/operator/.codex/worktrees/tool/codex", "app-server"), True),
+        (("/home/operator/.claude/worktrees/tool/node_repl", "--stdio"), True),
+    ],
+)
+def test_agent_home_is_not_a_host_identity(
+    typed_argv: bool, argv: tuple[str, ...], protected: bool
+) -> None:
+    sample = memory_guard.ProcessSample(
+        200,
+        1,
+        1,
+        " ".join(argv),
+        started_at_ns=2000,
+        argv=argv if typed_argv else None,
+    )
+    assert memory_guard.is_host_control_plane_process(sample) is protected
+
+
+@pytest.mark.parametrize("agent_home", [".codex", ".claude"])
+def test_checkout_classification_preserves_instance_and_host_protections(
+    agent_home: str,
+) -> None:
+    sample = memory_guard.ProcessSample
+    interpreter = f"/home/operator/{agent_home}/worktrees/molt/.venv/bin/python"
+    samples = {
+        50: sample(50, 1, 1, "codex app-server", pgid=50, started_at_ns=50),
+        100: sample(
+            100,
+            50,
+            1,
+            f"{interpreter} tools/memory_guard.py",
+            pgid=100,
+            started_at_ns=100,
+        ),
+        200: sample(200, 100, 1, f"{interpreter} -c pass", pgid=200, started_at_ns=200),
+        201: sample(201, 50, 1, f"{interpreter} -c pass", pgid=201, started_at_ns=201),
+        202: sample(202, 777, 1, f"{interpreter} -c pass", pgid=202, started_at_ns=202),
+        300: sample(
+            300,
+            100,
+            1,
+            f"/home/operator/{agent_home}/plugins/cache/host/python server.py",
+            pgid=300,
+            started_at_ns=300,
+        ),
+        301: sample(
+            301,
+            100,
+            1,
+            f"/home/operator/{agent_home}/worktrees/tool/codex app-server",
+            pgid=301,
+            started_at_ns=301,
+        ),
+    }
+    protected = process_model.protected_process_group_ids(
+        samples, self_pid=100, self_pgid=100, owned_pids={200, 300, 301}
+    )
+    assert protected == {50, 100, 201, 202, 300, 301}
+    assert process_model.filter_protected_watched_pids(
+        samples, {200, 201, 202, 300, 301}, protected_pgids=protected, current_pid=100
+    ) == {200}
+
+    # Mere placement under a checkout cannot exempt an unknown generation from
+    # host ancestry protection, even when the caller supplies its numeric PID.
+    unbound = {**samples, 200: dataclasses.replace(samples[200], started_at_ns=None)}
+    assert 200 in process_model.protected_process_group_ids(
+        unbound, self_pid=100, self_pgid=100, owned_pids={200, 300, 301}
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/home/operator/.codex/plugins/cache/host/node server.js",
+        "/home/operator/.claude/plugins/cache/host/python server.py",
+        "/home/operator/.codex/runtimes/node/bin/node helper.js",
+        "/home/operator/.claude/worktrees/tool/codex app-server",
+    ],
+)
+def test_retained_host_helper_identity_never_reaches_signal_boundary(
+    monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    sample = memory_guard.ProcessSample(
+        300, 999, 1, command, pgid=300, started_at_ns=300
+    )
+    sent: list[tuple[int, int]] = []
+
+    def forbidden_send(pid: int, signum: int):
+        sent.append((pid, signum))
+        raise AssertionError("host helper reached signal boundary")
+
+    monkeypatch.setattr(process_custody, "_send_pid_signal_action", forbidden_send)
+    action = process_custody._send_pid_signal_if_identity_action(
+        sample.pid,
+        memory_guard.process_identity(sample),
+        signal.SIGTERM,
+        sampler=lambda: {sample.pid: sample},
+    )
+    assert action.result == "skipped_host_control_plane"
+    assert sent == []
 
 
 def test_host_command_cache_reuses_text_but_not_process_or_lineage_verdicts() -> None:
@@ -4260,6 +4404,7 @@ def test_escalation_reconciles_only_proven_terminal_exit(
             stderr="",
             orphaned_process_groups=cleanup.process_groups,
             termination_reports=cleanup.termination_reports,
+            child_stderr="",
         )
         incident = memory_guard._incident_payload(result)
         assert incident is not None
@@ -5622,7 +5767,15 @@ def test_guard_report_context_rejects_missing_or_unknown_fields_before_write(
         else:
             memory_guard._write_summary_json(
                 str(path),
-                result=memory_guard.GuardResult(0, None, None, None, "", ""),
+                result=memory_guard.GuardResult(
+                    0,
+                    None,
+                    None,
+                    None,
+                    "",
+                    "",
+                    child_stderr="",
+                ),
                 **context,
             )
     assert not path.exists()
@@ -5659,6 +5812,7 @@ def test_summary_json_keeps_rss_incident_primary_when_guard_signal_is_secondary(
             stderr="",
             elapsed_s=0.1,
             guard_signal=signal.SIGTERM,
+            child_stderr="",
         ),
     )
 
@@ -5706,6 +5860,7 @@ def test_summary_json_reports_incomplete_sampling_without_fabricating_incident(
             stderr="",
             elapsed_s=1.0,
             sampling_telemetry=telemetry,
+            child_stderr="",
         ),
     )
 
@@ -5758,6 +5913,7 @@ def test_summary_json_keeps_timeout_primary_when_guard_signal_is_secondary(
             timed_out=True,
             elapsed_s=5.0,
             guard_signal=signal.SIGTERM,
+            child_stderr="",
         ),
     )
 
@@ -5788,6 +5944,7 @@ def test_main_writes_running_summary_before_launch_result(
             stdout="",
             stderr="",
             elapsed_s=0.1,
+            child_stderr="",
         )
 
     monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
@@ -5861,6 +6018,7 @@ def test_main_reports_signal_status_without_guard_violation(
             stdout="",
             stderr="",
             elapsed_s=0.3,
+            child_stderr="",
         )
 
     monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
@@ -5919,6 +6077,7 @@ def test_main_reports_guard_signal_name_from_guard_signal_not_returncode(
             stderr="",
             elapsed_s=0.3,
             guard_signal=signal.SIGTERM,
+            child_stderr="",
         )
 
     monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
@@ -5984,6 +6143,7 @@ def test_main_reports_cargo_incremental_quarantine_summary(
             stderr="",
             elapsed_s=0.3,
             cargo_incremental_quarantine=receipt,
+            child_stderr="",
         )
 
     monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
@@ -6066,6 +6226,7 @@ def test_main_reports_incident_repro_context(
                 max_process_rss_kb=2 * 1024 * 1024,
                 max_total_rss_kb=3 * 1024 * 1024,
             ),
+            child_stderr="",
         )
 
     monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
@@ -6877,6 +7038,7 @@ def test_internal_worker_loads_command_and_strips_internal_env(monkeypatch) -> N
             peak_total=None,
             stdout="",
             stderr="",
+            child_stderr="",
         )
 
     monkeypatch.setenv(memory_guard.INTERNAL_WORKER_ENV, "1")
@@ -7142,6 +7304,7 @@ def test_main_reports_orphan_cleanup_with_operator_signal(
             elapsed_s=0.4,
             orphaned_process_groups=(44,),
             termination_reports=(report,),
+            child_stderr="",
         )
 
     monkeypatch.setattr(memory_guard, "run_guarded", fake_run_guarded)
@@ -7212,6 +7375,7 @@ def test_incident_reports_incomplete_orphan_cleanup_without_false_success() -> N
         # dominate the incident classification and quarantine authority.
         orphaned_process_groups=(777,),
         termination_reports=(report,),
+        child_stderr="",
     )
 
     incident = memory_guard._incident_payload(result)
@@ -7308,7 +7472,10 @@ def test_primary_incidents_preserve_incomplete_cleanup_truth(
         "termination_reports": (report,),
     }
     kwargs.update(result_overrides)
-    result = memory_guard.GuardResult(**kwargs)  # type: ignore[arg-type]
+    result = memory_guard.GuardResult(
+        **kwargs,
+        child_stderr=kwargs["stderr"],
+    )  # type: ignore[arg-type]
 
     incident = memory_guard._incident_payload(result)
 
@@ -7370,6 +7537,7 @@ def test_owned_child_handle_success_reconciles_only_direct_child_liveness(
         stderr="",
         timed_out=True,
         termination_reports=(primary, handle),
+        child_stderr="",
     )
 
     incident = memory_guard._incident_payload(result)
@@ -7448,6 +7616,7 @@ def test_completed_group_outcome_preserves_protected_root_group_skip() -> None:
         stderr="",
         orphaned_process_groups=(100,),
         termination_reports=(report,),
+        child_stderr="",
     )
 
     incident = memory_guard._incident_payload(result)
@@ -7487,6 +7656,7 @@ def test_incident_cleanup_preserves_exact_windows_job_authority(
         windows_job_cleanup=_windows_job_cleanup(
             active_processes=0 if job_completed else 1
         ),
+        child_stderr="",
     )
     incident = memory_guard._incident_payload(result)
     assert incident is not None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import pytest
 
 import importlib.util
@@ -8,7 +9,7 @@ from tests.process_guard_common import install_module_os_view, install_module_vi
 import sys
 
 from molt import backend_daemon_custody as custody
-from molt.dx import session_artifact_component
+from molt.cli.backend_daemon_paths import _backend_daemon_paths
 import subprocess
 import os
 
@@ -57,12 +58,57 @@ def _write_session_identity(
     *,
     session_id: str = "alpha-session",
 ) -> Path:
-    session_label = session_artifact_component(session_id)
-    identity_path = (
-        daemon_root / f"molt-backend.dev-fast.{session_label}.deadbeef.identity.json"
+    # Name the sidecar with the launcher's own path authority, so the scan
+    # below is tested against the names real daemons are written under.
+    _socket, _log, identity_path = _backend_daemon_paths(
+        project_root_str=str(identity.project_root),
+        cargo_profile=identity.cargo_profile,
+        config_digest="deadbeef",
+        explicit_socket="",
+        socket_dir_override=str(identity.socket_path.parent),
+        build_state_root_str=str(daemon_root.parent),
+        tempdir_str=str(daemon_root.parent),
+        session_id=session_id,
     )
+    assert identity_path.parent == daemon_root
     custody.write_backend_daemon_identity(identity_path, identity)
     return identity_path
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        # Agent lanes named `agent-<task>-<pid>` that differ only after
+        # character 32 once used one daemon label.
+        (
+            "agent-unit-agent-440e87baa421421f9c0d6f2e-67518",
+            "agent-unit-agent-440e87baa421421f9c0d6f2e-67519",
+        ),
+        # The launcher kept `.` and `:` and the scan replaced them, so the
+        # scan never found the lane's own daemon.
+        ("lane.alpha:7", "lane.alpha:8"),
+    ],
+)
+def test_session_daemon_scan_finds_only_its_own_session(
+    tmp_path: Path, first: str, second: str
+) -> None:
+    daemon_root = tmp_path / "target" / ".molt_state" / "backend_daemon"
+    daemon_root.mkdir(parents=True)
+    paths = {}
+    for pid, session_id in ((4321, first), (4322, second)):
+        identity = dataclasses.replace(
+            _identity(tmp_path, pid=pid, socket_path=tmp_path / f"{pid}.sock"),
+            started_at_ns=1_700_000_000_000_000_000 + pid,
+        )
+        paths[session_id] = _write_session_identity(
+            daemon_root, identity, session_id=session_id
+        )
+
+    for session_id, path in paths.items():
+        records = custody.iter_backend_daemon_identity_records(
+            daemon_root, session_id=session_id
+        )
+        assert [record.path for record in records] == [path]
 
 
 def test_molt_diff_backend_daemon_scan_failure_fails_closed(monkeypatch) -> None:

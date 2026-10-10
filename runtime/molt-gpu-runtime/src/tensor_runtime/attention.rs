@@ -1350,9 +1350,13 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     ];
                     let mut owned_buffers: Vec<wgpu::Buffer> = Vec::new();
                     for data in buffer_payloads {
-                        let (_, gpu_buf) = device.alloc_buffer(data.len().max(1));
+                        let (_, gpu_buf) = device
+                            .alloc_buffer(data.len().max(1))
+                            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
                         if !data.is_empty() {
-                            device.copy_to_buffer(&gpu_buf, data);
+                            device
+                                .copy_to_buffer(&gpu_buf, data)
+                                .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
                         }
                         owned_buffers.push(gpu_buf);
                     }
@@ -1655,15 +1659,27 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                             .alloc_buffer(data.len())
                             .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
                         if !data.is_empty() {
-                            device.copy_to_buffer(&metal_buf, data);
+                            device
+                                .copy_to_buffer(&metal_buf, data)
+                                .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
                         }
                         owned_buffers.push(metal_buf);
                     }
                     let refs: Vec<&MetalBuffer> = owned_buffers.iter().collect();
                     device
-                        .dispatch(&pipeline, out_elems, &refs)
+                        .dispatch(
+                            &pipeline,
+                            out_elems,
+                            pipeline
+                                .pipeline
+                                .maxTotalThreadsPerThreadgroup()
+                                .min(out_elems.max(1)),
+                            &refs,
+                        )
                         .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-                    out_gpu = device.copy_from_buffer(&owned_buffers[6], out_elems * 4);
+                    out_gpu = device
+                        .copy_from_buffer(&owned_buffers[6], out_elems * 4)
+                        .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
 
                     let data_ptr = alloc_bytearray(_py, out_gpu.as_slice());
                     if data_ptr.is_null() {

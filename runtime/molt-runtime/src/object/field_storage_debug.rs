@@ -167,10 +167,10 @@ unsafe fn observe_replacement(
 ) {
     unsafe {
         let key = {
-            let order = crate::builtins::containers::dict_order_ptr(dictionary)
+            let order = crate::builtins::containers::dict_entries_ptr(dictionary)
                 .as_ref()
                 .expect("live dictionary replacement requires backing");
-            order[value_index - 1]
+            order[value_index].key
         };
         observe_dictionary(
             py,
@@ -212,7 +212,7 @@ unsafe fn observe_dictionary(
             .as_ptr()
             .filter(|&dict| object_type_id(dict) == TYPE_ID_DICT);
         let order =
-            dict.and_then(|dict| crate::builtins::containers::dict_order_ptr(dict).as_ref());
+            dict.and_then(|dict| crate::builtins::containers::dict_entries_ptr(dict).as_ref());
         // A direct clear/swap has no name operand. With a filter it is relevant
         // only when the old dictionary physically owns a matching key. Instance
         // publication also logs empty replacements, correlated by object address.
@@ -221,10 +221,9 @@ unsafe fn observe_dictionary(
             && selected.is_some()
             && !order.is_some_and(|order| {
                 order
-                    .as_chunks::<2>()
-                    .0
                     .iter()
-                    .any(|pair| string_bytes_view(pair[0]) == selected)
+                    .filter(|row| row.hash.is_some())
+                    .any(|row| string_bytes_view(row.key) == selected)
             })
         {
             return;
@@ -240,17 +239,21 @@ unsafe fn observe_dictionary(
             "[field_dictionary] event={event} object=0x{:x} object_rc={object_rc:?} dictionary=0x{dictionary:x} dict_rc={dict_rc:?} name={:?} name_bits={name:x?} name_state={name_state:x?} value={value:x?} entries={} pending={}",
             object as usize,
             selected.map(String::from_utf8_lossy),
-            order.map_or(0, |order| order.len() / 2),
+            dict.map_or(0, |dict| crate::dict_len(dict)),
             exception_pending(py),
         );
-        let Some(dict) = dict else {
+        let Some(_) = dict else {
             return;
         };
         let Some(order) = order else {
             return;
         };
-        let hashes = crate::builtins::containers::dict_hashes_ptr(dict).as_ref();
-        for (index, pair) in order.as_chunks::<2>().0.iter().enumerate() {
+        for (index, row) in order
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.hash.is_some())
+        {
+            let pair = [row.key, row.value];
             let Some(bytes) = string_bytes_view(pair[0]) else {
                 continue;
             };
@@ -263,7 +266,7 @@ unsafe fn observe_dictionary(
                 String::from_utf8_lossy(bytes),
                 pair[0],
                 pair[1],
-                hashes.and_then(|hashes| hashes.get(index)),
+                row.hash.map(crate::StoredHash::get),
                 crate::object::object_state(key),
             );
         }

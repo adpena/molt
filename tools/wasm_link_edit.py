@@ -38,7 +38,6 @@ from molt._wasm_runtime_exports import (
     _CPYTHON_ABI_LINK_IMPORT_CLASS,
     wasm_split_runtime_export_name_for_import,
 )
-from molt.cli.external_link_providers import wasm_external_link_provider_symbols
 from molt.wasm_linking_symbols import (
     FLAG_BINDING_GLOBAL,
     FLAG_EXPLICIT_NAME,
@@ -55,56 +54,6 @@ from wasm_link_operations import (
     build_sections as _build_sections,
     parse_sections as _parse_sections,
 )
-
-
-def _add_symtab_alias(
-    data: bytes,
-    alias_name: str,
-    alias_index: int,
-    alias_flags: int,
-    *,
-    preserve_export: bool = False,
-    facts_provider: WasmFactsProvider,
-) -> bytes | None:
-    if any(
-        symbol.kind == "function" and symbol.name == alias_name
-        for symbol in facts_provider(data).linking_symbols.symbols
-    ):
-        return None
-    sections = _parse_sections(data)
-    modified = False
-    for idx, (section_id, payload) in enumerate(sections):
-        if section_id != 0:
-            continue
-        name, custom_payload = _parse_custom_section(payload)
-        if name != "linking":
-            continue
-        version, subsections = _parse_linking_payload(custom_payload)
-        new_subsections: list[tuple[int, bytes]] = []
-        for sub_id, sub_payload in subsections:
-            if sub_id != SYMTAB_SUBSECTION_ID:
-                new_subsections.append((sub_id, sub_payload))
-                continue
-            count, offset = _read_varuint(sub_payload, 0)
-            entries = sub_payload[offset:]
-            alias_entry = bytearray()
-            alias_entry.append(SYMBOL_KIND_FUNCTION)
-            entry_flags = alias_flags
-            if not preserve_export:
-                entry_flags &= ~FLAG_EXPORTED
-            alias_entry.extend(_write_varuint(entry_flags | FLAG_EXPLICIT_NAME))
-            alias_entry.extend(_write_varuint(alias_index))
-            alias_entry.extend(_write_string(alias_name))
-            new_payload = _write_varuint(count + 1) + entries + alias_entry
-            new_subsections.append((sub_id, new_payload))
-            modified = True
-        if modified:
-            updated = _build_linking_payload(version, new_subsections)
-            sections[idx] = (section_id, _build_custom_section(name, updated))
-            break
-    if not modified:
-        return None
-    return _build_sections(sections)
 
 
 def _collect_output_export_symbol_map(
@@ -886,7 +835,11 @@ def _rewrite_memory_min(data: bytes, required_min: int) -> bytes | None:
 
 
 def _runtime_import_rewrite_target(
-    name: str, runtime_exports: set[str], *, split_runtime: bool = False
+    name: str,
+    runtime_exports: set[str],
+    *,
+    split_runtime: bool = False,
+    provider_symbols: frozenset[str] = frozenset(),
 ) -> tuple[str | None, bool]:
     primitive_class = WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES.get(name)
     if primitive_class == _CPYTHON_ABI_LINK_IMPORT_CLASS:
@@ -896,10 +849,7 @@ def _runtime_import_rewrite_target(
         if export_name is None:
             return None, False
         return export_name, export_name not in runtime_exports
-    if (
-        name in WASM_EXTERNAL_NATIVE_LINK_IMPORTS
-        or name in wasm_external_link_provider_symbols()
-    ):
+    if name in WASM_EXTERNAL_NATIVE_LINK_IMPORTS or name in provider_symbols:
         return None, False
     export_name = wasm_runtime_export_name(name)
     if export_name is None:
@@ -935,6 +885,7 @@ def _rewrite_linking_data_runtime_imports(
     *,
     runtime_exports: set[str],
     split_runtime: bool,
+    provider_symbols: frozenset[str] = frozenset(),
 ) -> tuple[bytes | None, list[str]]:
     """Rewrite undefined CPython ABI *data* symbols in the linking symtab.
 
@@ -990,6 +941,7 @@ def _rewrite_linking_data_runtime_imports(
                             symbol_name,
                             runtime_exports,
                             split_runtime=split_runtime,
+                            provider_symbols=provider_symbols,
                         )
                         if rewrite_name is not None:
                             target_name = rewrite_name
@@ -1035,6 +987,7 @@ def _rewrite_runtime_imports_in_module(
     target_module: str,
     runtime_exports: set[str],
     split_runtime: bool = False,
+    provider_symbols: frozenset[str] = frozenset(),
 ) -> tuple[bytes | None, list[str]]:
     sections = _parse_sections(data)
     force_exports: list[str] = []
@@ -1063,7 +1016,10 @@ def _rewrite_runtime_imports_in_module(
             new_name = name
             if module == source_module and _runtime_import_kind_can_rewrite(kind, name):
                 target_name, force_export = _runtime_import_rewrite_target(
-                    name, runtime_exports, split_runtime=split_runtime
+                    name,
+                    runtime_exports,
+                    split_runtime=split_runtime,
+                    provider_symbols=provider_symbols,
                 )
                 if target_name is not None:
                     new_module = target_module
@@ -1084,6 +1040,7 @@ def _rewrite_runtime_imports_in_module(
         import_rewritten,
         runtime_exports=runtime_exports,
         split_runtime=split_runtime,
+        provider_symbols=provider_symbols,
     )
     force_exports.extend(symbol_force_exports)
     if symbol_rewritten is not None:
@@ -1099,6 +1056,7 @@ def _rewrite_native_runtime_imports(
     temp_dir: OwnedTemporaryDirectory,
     *,
     split_runtime: bool = False,
+    provider_symbols: frozenset[str] = frozenset(),
 ) -> tuple[tuple[Path, ...], list[str]]:
     """Rewrite native-object Molt ABI imports from ``env`` to ``molt_runtime``.
 
@@ -1131,6 +1089,7 @@ def _rewrite_native_runtime_imports(
                 target_module="molt_runtime",
                 runtime_exports=runtime_exports,
                 split_runtime=split_runtime,
+                provider_symbols=provider_symbols,
             )
         except ValueError as exc:
             raise ValueError(
@@ -1154,6 +1113,7 @@ def _rewrite_runtime_import_module_namespace(
     runtime_exports: set[str],
     temp_dir: OwnedTemporaryDirectory,
     filename: str,
+    provider_symbols: frozenset[str] = frozenset(),
 ) -> tuple[Path, list[str]] | None:
     data = module_path.read_bytes()
     try:
@@ -1162,6 +1122,7 @@ def _rewrite_runtime_import_module_namespace(
             source_module=source_module,
             target_module=target_module,
             runtime_exports=runtime_exports,
+            provider_symbols=provider_symbols,
         )
     except ValueError as exc:
         print(f"Failed to parse wasm imports: {exc}", file=sys.stderr)

@@ -178,18 +178,8 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             let closure_size =
                 layout.required_closure_size(payload_len, false, GENERATOR_CONTROL_BYTES);
             let size = builder.ins().iconst(types::I64, closure_size);
-            let mut poll_sig = module.make_signature();
-            poll_sig.params.push(AbiParam::new(types::I64));
-            poll_sig.returns.push(AbiParam::new(types::I64));
-            let poll_func_id = module
-                .declare_function(poll_func_name, Linkage::Import, &poll_sig)
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "call_async target `{poll_func_name}` must have ABI (i64) -> i64: {error}"
-                    )
-                });
-            let poll_func_ref = module.declare_func_in_func(poll_func_id, builder.func);
-            let poll_addr = builder.ins().func_addr(types::I64, poll_func_ref);
+            let poll_addr =
+                SimpleBackend::task_poll_identity(module, builder, poll_func_name, Linkage::Import);
 
             let task_callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,

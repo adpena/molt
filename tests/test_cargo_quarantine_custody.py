@@ -231,7 +231,17 @@ def test_waiting_unobserved_cargo_preserves_all_incremental_state(tmp_path):
     assert receipt.ownership_status == "deferred" and receipt.moved_paths == ()
 
 
-def test_completed_cache_retention_requires_complete_interruption_inventory(tmp_path):
+@pytest.mark.parametrize(
+    ("guard_closure", "expected_scope"),
+    [
+        pytest.param({}, "global", id="missing-guard-closure"),
+        pytest.param({"descendants_closed": False}, "global", id="unclosed-guard-tree"),
+        pytest.param({"descendants_closed": True}, "partition", id="closed-guard-tree"),
+    ],
+)
+def test_completed_cache_retention_requires_complete_interruption_inventory(
+    tmp_path, guard_closure, expected_scope
+):
     from tools import proof_plan
 
     target = tmp_path / "target"
@@ -248,6 +258,7 @@ def test_completed_cache_retention_requires_complete_interruption_inventory(tmp_
     assert receipt.ownership_status == "not_required"
     assert receipt.errors == () and receipt.moved_paths == ()
     metrics = {
+        **guard_closure,
         "timed_out": True,
         "termination_reports": [{"remaining_pids": [], "remaining_pgids": []}],
         "cargo_incremental_quarantine": cargo._cargo_incremental_quarantine_payload(
@@ -258,7 +269,7 @@ def test_completed_cache_retention_requires_complete_interruption_inventory(tmp_
         proof_plan._guarded_failure_scope(
             metrics, metrics_valid=True, returncode=124, cancelled=False
         )[0]
-        == "partition"
+        == expected_scope
     )
 
 
@@ -1381,6 +1392,7 @@ def test_cli_cargo_deferral_guidance_preserves_evidence(tmp_path):
         timed_out=True,
         elapsed_s=1.0,
         cargo_incremental_quarantine=receipt,
+        child_stderr="",
     )
     reporting.emit_terminal_report(
         result,
@@ -2047,3 +2059,83 @@ def test_diagnostic_normalizes_builtin_name_str_subclass_without_callbacks():
         cargo._exception_diagnostic(Error("primitive detail"))
         == "NamedError: primitive detail"
     )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("-C", "incremental=cache dir=a"),
+        ("-Cincremental=cache dir=a",),
+        ("--codegen", "incremental=cache dir=a"),
+        ("--codegen=incremental=cache dir=a",),
+    ],
+)
+def test_compiler_inventory_uses_exact_codegen_operands(arguments):
+    from tools.memory_guard_core.cargo_quarantine import cargo_compiler_invocation
+
+    observed = cargo_compiler_invocation(
+        ("rustc", *arguments, "-C", "link-arg=@link.rsp")
+    )
+    assert (
+        observed.is_compiler
+        and observed.arguments_complete
+        and observed.implementation_known
+    )
+    assert observed.incremental_dir == "cache dir=a"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("--codegen",),
+        ("-C",),
+        ("--codegen=",),
+        ("-C=incremental=cache",),
+        ("--codegen", ""),
+        ("--codegen=incremental=",),
+        ("@rust.rsp",),
+    ],
+)
+def test_malformed_compiler_inventory_is_incomplete_without_throwing(arguments):
+    from tools.memory_guard_core.cargo_quarantine import cargo_compiler_invocation
+
+    for executable in ("rustc", "renamed-compiler"):
+        observed = cargo_compiler_invocation((executable, *arguments))
+        assert observed.is_compiler and not observed.arguments_complete
+        assert observed.implementation_known is (executable == "rustc")
+
+
+@pytest.mark.parametrize(
+    "switch", ["--sysroot", "-L", "-o", "--out-dir", "--remap-path-prefix"]
+)
+def test_compiler_inventory_does_not_observe_incremental_from_opaque_operand(switch):
+    from tools.memory_guard_core.cargo_quarantine import cargo_compiler_invocation
+
+    observed = cargo_compiler_invocation(
+        ("rustc", switch, "--codegen=incremental=foreign")
+    )
+    assert observed.is_compiler and observed.arguments_complete
+    assert observed.incremental_dir is None
+
+
+@pytest.mark.parametrize("prefix", [("--",), ("-o",), ()])
+def test_compiler_inventory_never_claims_raw_response_arguments_complete(prefix):
+    from tools.memory_guard_core.cargo_quarantine import cargo_compiler_invocation
+
+    observed = cargo_compiler_invocation(("rustc", *prefix, "@unparsed.rsp"))
+    assert observed.is_compiler and not observed.arguments_complete
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [("-gCincremental=cache_under_score",), ("-vC", "incremental=cache_under_score")],
+)
+def test_compiler_inventory_preserves_clustered_incremental_selection(arguments):
+    from tools.memory_guard_core.cargo_quarantine import cargo_compiler_invocation
+
+    observed = cargo_compiler_invocation(("rustc", *arguments))
+    assert (
+        observed.arguments_complete and observed.incremental_dir == "cache_under_score"
+    )
+    opaque = cargo_compiler_invocation(("rustc", "-gL", "-Cincremental=not_selected"))
+    assert opaque.arguments_complete and opaque.incremental_dir is None

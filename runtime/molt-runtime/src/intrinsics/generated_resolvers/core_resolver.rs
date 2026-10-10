@@ -163,9 +163,9 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_get_awaitable",
             crate::molt_get_awaitable as *const (),
         )),
-        "molt_task_register_token_owned" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_task_register_token_owned",
-            crate::molt_task_register_token_owned as *const (),
+        "molt_task_register_execution" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_task_register_execution",
+            crate::molt_task_register_execution as *const (),
         )),
         "molt_zipapp_runtime_ready" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_zipapp_runtime_ready",

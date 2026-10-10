@@ -481,7 +481,7 @@ shape = "fixed"
 drop = "code"
 metrics = "none"
 acyclic_capability = "code_metadata"
-acyclic_slots = { filename = "str", name = "str", linetable = "bytes_or_none", varnames = "str_tuple", names = "str_tuple", arg_names = "str_tuple", posonly = "int", kwonly = "str_tuple", vararg = "str_or_none", varkw = "str_or_none", freevars = "str_tuple", cellvars = "str_tuple" }
+acyclic_slots = { filename = "str", name = "str", linetable = "bytes_or_none", varnames = "str_tuple", names = "str_tuple", arg_names = "str_tuple", posonly = "int", kwonly = "str_tuple", vararg = "str_or_none", varkw = "str_or_none", freevars = "str_tuple", cellvars = "str_tuple", gpu_descriptor = "str_or_none" }
 
 [[kind]]
 name = "ELLIPSIS"
@@ -1050,4 +1050,50 @@ resource_slot0 = "none"
 name = "ITERTOOLS_ZIP_LONGEST"
 id = 116
 family = "itertools"
+resource_slot0 = "none"
+
+[[kind]]
+name = "CONTEXT_BITMAP_NODE"
+id = 260
+layout = "inline"
+edges = "dynamic"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "none"
+metrics = "none"
+
+[[kind]]
+name = "CONTEXT_COLLISION_NODE"
+id = 261
+layout = "inline"
+edges = "dynamic"
+cycle = "always"
+weakref = "deny"
+shape = "fixed"
+drop = "none"
+metrics = "none"
+
+[[object_shape]]
+name = "CONTEXT"
+id = 76
+family = "contextvars"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "CONTEXT_VAR"
+id = 77
+family = "contextvars"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "CONTEXT_TOKEN"
+id = 78
+family = "contextvars"
+resource_slot0 = "none"
+
+[[object_shape]]
+name = "CONTEXT_ITERATOR"
+id = 79
+family = "contextvars"
 resource_slot0 = "none"

@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime_import_abi::{MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_REGISTER_TOKEN_OWNED};
+use crate::runtime_import_abi::{MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_REGISTER_EXECUTION};
 use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
 use std::collections::BTreeMap;
 
@@ -1955,10 +1955,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap()
                     .try_as_basic_value()
                     .unwrap_basic();
-                let register = self.ensure_runtime_import(MOLT_TASK_REGISTER_TOKEN_OWNED);
+                let register = self.ensure_runtime_import(MOLT_TASK_REGISTER_EXECUTION);
                 self.backend
                     .builder
-                    .build_call(register, &[task_bits.into(), token.into()], "")
+                    .build_call(
+                        register,
+                        &[task_bits.into(), token.into(), self.none_word().into()],
+                        "",
+                    )
                     .unwrap();
             }
             TaskCompletion::WrapAsyncGen => {

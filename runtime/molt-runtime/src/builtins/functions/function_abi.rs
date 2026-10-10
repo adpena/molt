@@ -49,6 +49,20 @@ pub(crate) fn canonicalize_runtime_callable_key(fn_ptr: u64) -> u64 {
     fn_ptr
 }
 
+/// Runtime poll entries accept object words; compiled poll entries accept raw
+/// payload addresses. The manifest owns a dense, disjoint interval for each
+/// target's runtime poll identities. This check is on the hot dispatch path.
+#[inline]
+pub(crate) fn runtime_poll_uses_object_argument(poll_fn: u64) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    let base = crate::wasm_table_base();
+    #[cfg(not(target_arch = "wasm32"))]
+    let base = wasm_callables::RUNTIME_POLL_CALLABLE_KEY_BASE;
+    poll_fn
+        .checked_sub(base)
+        .is_some_and(|slot| (1..=wasm_callables::WASM_POLL_SLOT_MAX_OFFSET).contains(&slot))
+}
+
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn reserved_wasm_runtime_callable_info(
     fn_ptr: u64,
@@ -1717,12 +1731,31 @@ pub(crate) fn bound_method_new(
             return raise_exception::<_>(_py, "TypeError", "bound method expects callable object");
         }
     }
+    allocate_bound_method(_py, func_bits, self_bits, native_binding)
+}
+
+/// Explicit binding preserves an already-bound function and does not apply
+/// descriptor admission. Python MethodType and C PyMethod_New validate their
+/// distinct public policies before reaching this one allocation authority.
+pub(crate) fn explicit_bound_method_new(_py: &PyToken<'_>, func_bits: u64, self_bits: u64) -> u64 {
+    allocate_bound_method(_py, func_bits, self_bits, false)
+}
+
+fn allocate_bound_method(
+    _py: &PyToken<'_>,
+    func_bits: u64,
+    self_bits: u64,
+    native_binding: bool,
+) -> u64 {
     let ptr = alloc_bound_method_obj(_py, func_bits, self_bits);
     if ptr.is_null() {
         MoltObject::none().bits()
     } else {
         let method_bits = {
-            let func_class_bits = unsafe { object_class_bits(func_ptr) };
+            let func_class_bits = obj_from_bits(func_bits)
+                .as_ptr()
+                .map(|ptr| unsafe { object_class_bits(ptr) })
+                .unwrap_or(0);
             if native_binding
                 && let Some(kind) =
                     crate::builtins::functions::native_callable::NativeCallableKind::from_class(
@@ -1735,7 +1768,11 @@ pub(crate) fn bound_method_new(
                 crate::builtins::types::method_class(_py)
             }
         };
-        if method_bits != 0 {
+        if method_bits == 0 || exception_pending(_py) {
+            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
+            return MoltObject::none().bits();
+        }
+        {
             unsafe {
                 let old_bits = object_class_bits(ptr);
                 if old_bits != method_bits

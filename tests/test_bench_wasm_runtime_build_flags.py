@@ -17,22 +17,6 @@ from tests.runtime_profile_fixtures import (
 )
 
 
-def _fake_runtime_build(cmd: list[str], env: dict[str, str]) -> None:
-    target_root = Path(env["CARGO_TARGET_DIR"])
-    src = target_root / "wasm32-wasip1" / "release" / "molt_runtime.wasm"
-    src.parent.mkdir(parents=True, exist_ok=True)
-    src.write_bytes(b"\x00asm\x01\x00\x00\x00")
-
-
-def _runtime_link_response(cmd: list[str]) -> tuple[Path, str]:
-    separator = cmd.index("--")
-    assert cmd[separator + 1] == "-C"
-    link_arg = cmd[separator + 2]
-    assert link_arg.startswith("link-arg=@")
-    response_path = Path(link_arg.removeprefix("link-arg=@"))
-    return response_path, response_path.read_text(encoding="utf-8")
-
-
 @pytest.mark.parametrize("outcome", ["timeout", "lock", "compile", "manifest", "pass"])
 def test_wasm_benchmark_preserves_one_admitted_build_attempt(
     tmp_path, monkeypatch, outcome
@@ -108,154 +92,87 @@ def test_prepare_wasm_binary_does_not_retry_failed_build(
     assert bench_wasm._LAST_BUILD_FAILURE_DETAIL == "build_timeout timeout_s=90.0"
 
 
-def test_build_runtime_wasm_uses_wasm_release_profile_and_aggressive_features(
-    monkeypatch,
-    tmp_path: Path,
+@pytest.mark.parametrize("reloc", (False, True))
+@pytest.mark.parametrize(
+    "profile,gpu", (("micro", False), ("micro", True), ("full", False))
+)
+@pytest.mark.parametrize(
+    "outcome", ("pass", "timeout", "failure", "malformed", "missing")
+)
+def test_runtime_build_consumes_one_canonical_generation_result(
+    monkeypatch, tmp_path: Path, reloc: bool, profile: str, gpu: bool, outcome: str
 ) -> None:
+    from molt import llvm_toolchain
+    from molt.cli import wasm_link_inputs
+
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "apply_provisioned_wasm_toolchain",
+        lambda *a, **k: pytest.fail("benchmark repeated SDK selection"),
+    )
+    monkeypatch.setattr(
+        wasm_link_inputs,
+        "resolve_wasi_c_abi_plan",
+        lambda *a, **k: pytest.fail("benchmark repeated member capture"),
+    )
     target_root = tmp_path / "target"
     monkeypatch.setattr(bench_wasm, "_cargo_target_root", lambda: target_root)
-    monkeypatch.setattr(bench_wasm, "_repo_root", lambda: tmp_path)
-    monkeypatch.delenv("MOLT_WASM_RUNTIME_TARGET_FEATURES", raising=False)
-    monkeypatch.delenv("MOLT_WASM_RUNTIME_TARGET_FEATURE_MODE", raising=False)
-    monkeypatch.delenv("MOLT_WASM_RUNTIME_TARGET_FEATURES_EXTRA", raising=False)
-    monkeypatch.delenv("MOLT_WASM_RUNTIME_TARGET_CPU", raising=False)
+    monkeypatch.setenv("MOLT_STDLIB_PROFILE", profile)
+    monkeypatch.setenv("MOLT_WASM_RUNTIME_GPU_PRIMITIVES", "1" if gpu else "0")
+    output = tmp_path / "requested.wasm"
+    output.write_bytes(b"preserve old output")
+    kind = "reloc" if reloc else "shared"
+    selected = tmp_path / "selected-generation" / (kind + ".wasm")
+    generation = selected.parent / "generation.json"
+    calls = []
 
-    captured: list[tuple[list[str], dict[str, str]]] = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        selected.parent.mkdir()
+        generation.write_text("fixture compiler-owned receipt", encoding="utf-8")
+        if outcome != "missing":
+            selected.write_bytes(b"\0asm\x01\0\0\0")
+        stdout = (
+            "not json"
+            if outcome == "malformed"
+            else json.dumps(
+                {
+                    "status": "ok",
+                    "artifacts": {kind: str(selected), "generation": str(generation)},
+                }
+            )
+        )
+        return bench_wasm._RunResult(
+            returncode=1 if outcome == "failure" else 0,
+            timed_out=outcome == "timeout",
+            stdout=stdout,
+        )
 
-    def _fake_run_cmd(  # type: ignore[no-untyped-def]
-        cmd: list[str],
-        *,
-        env: dict[str, str],
-        capture: bool,
-        tty: bool,
-        log,
-        timeout_s: float | None = None,
-        limits=None,
-    ):
-        del capture, tty, log, timeout_s, limits
-        captured.append((list(cmd), dict(env)))
-        _fake_runtime_build(cmd, env)
-        return bench_wasm._RunResult(returncode=0)
-
-    monkeypatch.setattr(bench_wasm, "_run_cmd", _fake_run_cmd)
-    output = tmp_path / "runtime.wasm"
+    monkeypatch.setattr(bench_wasm, "_run_cmd", run)
     assert bench_wasm.build_runtime_wasm(
-        reloc=False,
-        output=output,
-        tty=False,
-        log=None,
+        reloc=reloc, output=output, tty=False, log=None
+    ) is (outcome == "pass")
+    assert len(calls) == 1
+    command, kwargs = calls[0]
+    assert command[:4] == [
+        bench_wasm.sys.executable,
+        "-m",
+        "molt.cli",
+        "internal-runtime-wasm-build",
+    ]
+    assert command[command.index("--kind") + 1] == kind
+    assert command[command.index("--stdlib-profile") + 1] == profile
+    assert "--json" in command and "--cargo-timeout" in command
+    assert "--features" not in command and "--" not in command
+    assert ("--runtime-feature" in command) is gpu
+    if gpu:
+        assert command[command.index("--runtime-feature") + 1] == "molt_gpu_primitives"
+    assert kwargs["env"]["MOLT_WASM_RUNTIME_GPU_PRIMITIVES"] == ("1" if gpu else "0")
+    assert kwargs["capture"] is True
+    assert kwargs["timeout_s"] > 0
+    assert output.read_bytes() == (
+        b"\0asm\x01\0\0\0" if outcome == "pass" else b"preserve old output"
     )
-    assert output.exists()
-    assert output.read_bytes().startswith(b"\x00asm")
-    cmd, env = captured[0]
-    assert cmd[:3] == ["cargo", "rustc", "--release"]
-    assert "--no-default-features" in cmd
-    features = set(cmd[cmd.index("--features") + 1].split(","))
-    assert "stdlib_micro" in features
-    assert "molt_gpu_primitives" not in features
-    assert "stdlib_full" not in features
-    assert "sqlite" not in features
-    # Link-only flags stay out of global RUSTFLAGS so Cargo build scripts do
-    # not inherit the thousands of exports on Windows.
-    rustflags = env.get("RUSTFLAGS", "")
-    assert len(rustflags) < 1024
-    assert "--import-memory" not in rustflags
-    assert "--export-if-defined=molt_frozenset_add" not in rustflags
-    assert "--export-dynamic" not in rustflags
-    response_path, response_text = _runtime_link_response(cmd)
-    assert response_path.is_absolute()
-    assert "--import-memory\n" in response_text
-    assert "--export-if-defined=molt_frozenset_add\n" in response_text
-    assert "--export-dynamic" not in response_text
-
-
-def test_build_runtime_wasm_gpu_primitives_are_explicit_opt_in(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    target_root = tmp_path / "target"
-    monkeypatch.setattr(bench_wasm, "_cargo_target_root", lambda: target_root)
-    monkeypatch.setattr(bench_wasm, "_repo_root", lambda: tmp_path)
-    monkeypatch.setenv("MOLT_WASM_RUNTIME_GPU_PRIMITIVES", "1")
-
-    captured: list[tuple[list[str], dict[str, str]]] = []
-
-    def _fake_run_cmd(  # type: ignore[no-untyped-def]
-        cmd: list[str],
-        *,
-        env: dict[str, str],
-        capture: bool,
-        tty: bool,
-        log,
-        timeout_s: float | None = None,
-        limits=None,
-    ):
-        del capture, tty, log, timeout_s, limits
-        captured.append((list(cmd), dict(env)))
-        _fake_runtime_build(cmd, env)
-        return bench_wasm._RunResult(returncode=0)
-
-    monkeypatch.setattr(bench_wasm, "_run_cmd", _fake_run_cmd)
-
-    assert bench_wasm.build_runtime_wasm(
-        reloc=False,
-        output=tmp_path / "runtime_gpu.wasm",
-        tty=False,
-        log=None,
-    )
-
-    cmd, _env = captured[0]
-    features = set(cmd[cmd.index("--features") + 1].split(","))
-    assert "molt_gpu_primitives" in features
-
-
-def test_build_runtime_wasm_uses_explicit_shared_link_flags(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    target_root = tmp_path / "target"
-    monkeypatch.setattr(bench_wasm, "_cargo_target_root", lambda: target_root)
-    monkeypatch.setattr(bench_wasm, "_repo_root", lambda: tmp_path)
-
-    captured: list[tuple[list[str], dict[str, str]]] = []
-
-    def _fake_run_cmd(  # type: ignore[no-untyped-def]
-        cmd: list[str],
-        *,
-        env: dict[str, str],
-        capture: bool,
-        tty: bool,
-        log,
-        timeout_s: float | None = None,
-        limits=None,
-    ):
-        del capture, tty, log, timeout_s, limits
-        captured.append((list(cmd), dict(env)))
-        _fake_runtime_build(cmd, env)
-        return bench_wasm._RunResult(returncode=0)
-
-    monkeypatch.setattr(bench_wasm, "_run_cmd", _fake_run_cmd)
-    output = tmp_path / "runtime_legacy.wasm"
-    assert bench_wasm.build_runtime_wasm(
-        reloc=False,
-        output=output,
-        tty=False,
-        log=None,
-    )
-    cmd, env = captured[0]
-    assert cmd[:3] == ["cargo", "rustc", "--release"]
-    assert "--no-default-features" in cmd
-    rustflags = env.get("RUSTFLAGS", "")
-    assert len(rustflags) < 1024
-    assert "--import-memory" not in rustflags
-    assert "--growable-table" not in rustflags
-    assert "--export-if-defined=molt_frozenset_add" not in rustflags
-    assert "--export-dynamic" not in rustflags
-    _, response_text = _runtime_link_response(cmd)
-    assert "--import-memory\n" in response_text
-    assert "--growable-table\n" in response_text
-    assert "--export-if-defined=molt_frozenset_add\n" in response_text
-    assert "--export-dynamic" not in response_text
 
 
 def test_wasm_link_response_is_content_addressed_stable_and_windows_safe(
@@ -293,9 +210,10 @@ def test_wasm_link_response_is_content_addressed_stable_and_windows_safe(
     assert first is not None
     assert second == first
     assert writes == [first]
-    digest = hashlib.sha256("\0".join(link_args).encode("utf-8")).hexdigest()
+    payload = "".join(f"{arg}\n" for arg in link_args).encode("utf-8")
+    digest = hashlib.sha256(payload).hexdigest()
     assert first.name == f"runtime_shared.{digest}.rsp"
-    assert first.read_bytes() == ("\n".join(link_args) + "\n").encode()
+    assert first.read_bytes() == payload
     assert " " in str(first)
     rustc_args = ["-C", f"link-arg=@{first}"]
     rendered = subprocess.list2cmdline(rustc_args)
@@ -315,52 +233,6 @@ def test_wasm_link_response_rejects_ambiguous_entries(
             label="unsafe",
             link_args=[argument],
         )
-
-
-def test_build_runtime_wasm_full_profile_uses_wasm_safe_full_feature_set(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    target_root = tmp_path / "target"
-    monkeypatch.setattr(bench_wasm, "_cargo_target_root", lambda: target_root)
-    monkeypatch.setattr(bench_wasm, "_repo_root", lambda: tmp_path)
-    monkeypatch.setenv("MOLT_STDLIB_PROFILE", "full")
-
-    captured: list[tuple[list[str], dict[str, str]]] = []
-
-    def _fake_run_cmd(  # type: ignore[no-untyped-def]
-        cmd: list[str],
-        *,
-        env: dict[str, str],
-        capture: bool,
-        tty: bool,
-        log,
-        timeout_s: float | None = None,
-        limits=None,
-    ):
-        del capture, tty, log, timeout_s, limits
-        captured.append((list(cmd), dict(env)))
-        _fake_runtime_build(cmd, env)
-        return bench_wasm._RunResult(returncode=0)
-
-    monkeypatch.setattr(bench_wasm, "_run_cmd", _fake_run_cmd)
-    assert bench_wasm.build_runtime_wasm(
-        reloc=False,
-        output=tmp_path / "runtime_full.wasm",
-        tty=False,
-        log=None,
-    )
-    cmd, _env = captured[0]
-    assert "--no-default-features" in cmd
-    features = set(cmd[cmd.index("--features") + 1].split(","))
-    assert {
-        "stdlib_crypto",
-        "stdlib_compression",
-        "stdlib_logging_ext",
-        "builtin_contextvars",
-    } <= features
-    assert "stdlib_full" not in features
-    assert "sqlite" not in features
 
 
 def test_failed_wasm_run_has_null_time_and_samples(monkeypatch, tmp_path: Path) -> None:

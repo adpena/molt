@@ -114,14 +114,16 @@ pub(crate) unsafe fn apply(
             Err(()) => return MergeOutcome::Error,
         } {
             let ptr = obj_from_bits(backing).as_ptr().unwrap();
-            let length = dict_order(ptr).len();
-            for index in (0..length).step_by(2) {
+            let length = dict_len(ptr);
+            let mut cursor = 0;
+            while let Some(row) = dict_next_entry(ptr, &mut cursor) {
                 // No source backing borrow survives Python hash/equality or a
                 // destination setter. Pin both objects before invoking it.
-                let (key, value, hash) = {
-                    let order = dict_order(ptr);
-                    (order[index], order[index + 1], dict_hashes(ptr)[index / 2])
-                };
+                let (key, value, hash) = (
+                    row.key,
+                    row.value,
+                    row.hash.expect("live dictionary row").get(),
+                );
                 inc_ref_bits(py, key);
                 inc_ref_bits(py, value);
                 let ok = accept_key(key, Some(hash)) && insert(key, value, Some(hash));
@@ -130,7 +132,7 @@ pub(crate) unsafe fn apply(
                 if !ok || exception_pending(py) {
                     return MergeOutcome::Error;
                 }
-                if dict_order(ptr).len() != length {
+                if dict_len(ptr) != length {
                     raise_exception::<()>(py, "RuntimeError", "dict mutated during update");
                     return MergeOutcome::Error;
                 }
@@ -259,14 +261,7 @@ pub(crate) unsafe fn merge_keywords(py: &PyToken<'_>, target: *mut u8, mapping: 
 
 /// This is a call boundary operation, never an operand-expansion operation.
 pub(crate) unsafe fn validate_keywords(py: &PyToken<'_>, dict: *mut u8) -> bool {
-    validate_keyword_names(
-        py,
-        unsafe { dict_order(dict) }
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|pair| pair[0]),
-    )
+    validate_keyword_names(py, unsafe { dict_live_entries(dict) }.map(|row| row.key))
 }
 
 /// Keyword names at a call boundary are strings (`str` storage, subclasses
@@ -309,7 +304,12 @@ mod tests {
                 );
                 crate::object::ops::dict_set_inline_int_in_place(_py, dict, one, 1, second);
                 assert!(!exception_pending(_py));
-                assert_eq!(dict_order(dict), &[truth, second]);
+                assert_eq!(
+                    dict_live_entries(dict)
+                        .flat_map(|row| [row.key, row.value])
+                        .collect::<Vec<_>>(),
+                    &[truth, second]
+                );
                 assert!(!keyword_available(_py, dict, one, None));
                 assert!(exception_pending(_py));
                 crate::molt_exception_clear();
@@ -334,7 +334,12 @@ mod tests {
                     MoltObject::from_ptr(source).bits()
                 ));
                 assert!(exception_pending(_py));
-                assert_eq!(dict_order(target), &[key, first]);
+                assert_eq!(
+                    dict_live_entries(target)
+                        .flat_map(|row| [row.key, row.value])
+                        .collect::<Vec<_>>(),
+                    &[key, first]
+                );
                 crate::molt_exception_clear();
                 dec_ref_bits(_py, MoltObject::from_ptr(source).bits());
                 dec_ref_bits(_py, MoltObject::from_ptr(target).bits());

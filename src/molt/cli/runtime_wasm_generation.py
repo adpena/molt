@@ -28,6 +28,7 @@ from molt.cli.runtime_identity_schema import (
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     open_stable_regular_file,
+    iter_stable_regular_file_chunks,
     stable_regular_file_handle_identity,
     verify_stable_regular_file_content,
     verify_stable_regular_file_identity,
@@ -366,7 +367,7 @@ def _stage_artifact(
         ) as opened,
         staged.open("xb") as staged_handle,
     ):
-        while chunk := opened.stream.read(1024 * 1024):
+        for chunk in iter_stable_regular_file_chunks(opened, chunk_bytes=1024 * 1024):
             hasher.update(chunk)
             staged_handle.write(chunk)
             size += len(chunk)

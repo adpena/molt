@@ -170,10 +170,12 @@ def test_prepared_precondition_reaches_shared_execution_body(
     arguments = ["extension", command, *_COMMON, "--prepared"]
     if command == "attest-set-candidate":
         arguments.extend(("--output", "C:/candidate"))
-    parsed = entrypoint_parser._build_entrypoint_parser().parse_args(arguments)
+    parser = entrypoint_parser._build_entrypoint_parser()
+    parsed = parser.parse_args(arguments)
     assert (
         entrypoint_dispatch._dispatch_entrypoint_command(
             parsed,
+            parser=parser,
             build_fn=lambda **_: 0,
             config_root=tmp_path,
             config={},

@@ -11,6 +11,7 @@ from typing import Literal
 
 from molt.cli.compiler_target import (
     compiler_target_triple,
+    source_extension_compiler_driver_mode,
     is_zig_compiler_command,
     validate_compiler_target,
     compiler_frontend_arguments,
@@ -272,6 +273,10 @@ def validate_source_extension_compiler_command(
     index = start
     while index < len(argv):
         option = frontend_argv[index]
+        if option.startswith("-std=") and ("++" in option) != (role == "cpp"):
+            raise ValueError(
+                f"source-extension {role} compiler has a standard for a different language"
+            )
         if option in {"-target", "--target", "-arch", "--sysroot", "-isysroot"}:
             _value, index = _option_value(frontend_argv, index, option, role=role)
             continue
@@ -300,6 +305,14 @@ def validate_source_extension_compiler_command(
             "custody-safe positive grammar"
         )
 
+    if dialect is SourceExtensionCompilerDialect.GNU and not is_zig_compiler_command(
+        argv
+    ):
+        expected_mode = "gcc" if role == "c" else "g++"
+        if source_extension_compiler_driver_mode(argv) != expected_mode:
+            raise ValueError(
+                f"source-extension {role} compiler requires {expected_mode} driver mode"
+            )
     return SourceExtensionCompilerCommand(argv, explicit_target, sysroot)
 
 

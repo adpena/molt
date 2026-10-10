@@ -10,14 +10,22 @@ from types import SimpleNamespace
 import pytest
 
 from molt.dx import CheckoutCustody
-from molt.path_custody import CustodyPathRole, PathCustodyError, canonical_host_path
+from molt.path_custody import PathCustodyError, canonical_host_path
 from tests.process_guard_common import run_guarded_test_process
 from tools import runtime_wasm_final_preflight as preflight
 
 
 @pytest.mark.parametrize("explicit_state", [False, True])
+@pytest.mark.parametrize(
+    ("build_profile", "explicit_profile", "requested"),
+    [
+        ("dev", None, "dev-fast"),
+        ("release", None, "release"),
+        ("release", "release-output", "release-output"),
+    ],
+)
 def test_planned_pair_uses_production_control_root(
-    tmp_path, monkeypatch, explicit_state
+    tmp_path, monkeypatch, explicit_state, build_profile, explicit_profile, requested
 ) -> None:
     from molt.build_state_layout import build_state_root
 
@@ -32,20 +40,28 @@ def test_planned_pair_uses_production_control_root(
         "MOLT_CACHE": str(custody / "cache"),
         "MOLT_WASM_RUNTIME_DIR": str(custody / "wasm"),
     }
+    monkeypatch.delenv("MOLT_DEV_CARGO_PROFILE", raising=False)
+    monkeypatch.delenv("MOLT_RELEASE_CARGO_PROFILE", raising=False)
+    if explicit_profile is not None:
+        build_env["MOLT_RELEASE_CARGO_PROFILE"] = explicit_profile
     if explicit_state:
         build_env["MOLT_BUILD_STATE_DIR"] = str(custody / "operator-state")
     manifest = SimpleNamespace(digest="toolchain", write=lambda _path: None)
     identity = SimpleNamespace(
         family_digest="f" * 64, digest="identity", toolchain_manifest=manifest
     )
-    monkeypatch.setattr(
-        preflight, "_resolve_cargo_profile_name", lambda _p: ("dev", None)
-    )
-    monkeypatch.setattr(
-        preflight,
-        "_compute_runtime_wasm_build_spec",
-        lambda *a, **k: SimpleNamespace(target_root=target),
-    )
+    requests = []
+
+    def compute_spec(*_args, **kwargs):
+        requests.append(kwargs["cargo_profile"])
+        from molt.cli.runtime_wasm_build_policy import _resolve_wasm_cargo_profile
+
+        return SimpleNamespace(
+            target_root=target,
+            cargo_profile=_resolve_wasm_cargo_profile(kwargs["cargo_profile"]),
+        )
+
+    monkeypatch.setattr(preflight, "_compute_runtime_wasm_build_spec", compute_spec)
     monkeypatch.setattr(
         preflight, "_resolve_runtime_wasm_cargo_specs", lambda _p, a, b, **k: (a, b)
     )
@@ -64,7 +80,7 @@ def test_planned_pair_uses_production_control_root(
         target_root=target,
         cache_root=custody / "cache",
         runtime_dir=custody / "wasm",
-        build_profile="dev",
+        build_profile=build_profile,
         stdlib_profile="full",
         build_env=build_env,
     )
@@ -77,6 +93,10 @@ def test_planned_pair_uses_production_control_root(
         state / "runtime_wasm_generations" / f"{'f' * 64}.expected.json"
     )
     assert state.is_relative_to(custody)
+    assert requests == [requested, requested]
+    assert pair["cargo_profile"] == (
+        "wasm-release" if requested == "release" else requested
+    )
     assert os.environ["MOLT_EXT_ROOT"] == str(tmp_path / "ambient-wrong-root")
     assert os.environ["MOLT_BUILD_STATE_DIR"] == str(tmp_path / "ambient-wrong-state")
     assert ("MOLT_BUILD_STATE_DIR" in pair["required_env"]) is explicit_state
@@ -412,14 +432,23 @@ def test_launch_custody_requires_exact_guard_pid_equality(tmp_path: Path) -> Non
         preflight._revalidate_launch_custody(context)
 
 
-def test_canonical_host_path_rejects_poison_and_filesystem_aliases(
+def test_canonical_host_path_rejects_filesystem_aliases(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(PathCustodyError, match="forbidden D"):
+    admitted = tmp_path / "OneDrive" / "target"
+    admitted.mkdir(parents=True)
+    assert (
         canonical_host_path(
-            r"D:\\Molt\\target",
-            CustodyPathRole.DURABLE_AUTHORITY,
+            admitted,
             authority="test target",
+            require_exists=True,
+        )
+        == admitted.resolve()
+    )
+    with pytest.raises(PathCustodyError, match="cannot contain"):
+        canonical_host_path(
+            admitted / ".." / "target",
+            authority="test traversal",
         )
 
     real = tmp_path / "real"
@@ -432,7 +461,6 @@ def test_canonical_host_path_rejects_poison_and_filesystem_aliases(
     with pytest.raises(PathCustodyError, match="canonical filesystem spelling"):
         canonical_host_path(
             alias,
-            CustodyPathRole.EXPLICIT_SCRATCH,
             authority="test alias",
             require_exists=True,
         )

@@ -228,6 +228,11 @@ def test_runtime_boxed_abi_projects_semantics_not_integer_carriers() -> None:
         ("molt_string_split_field_len_from_bounds", 4, "i64"),
         ("molt_print_newline", 0, "void"),
         ("molt_spawn", 1, "i64"),
+        ("molt_gpu_thread_id", 0, "i64"),
+        ("molt_gpu_block_id", 0, "i64"),
+        ("molt_gpu_block_dim", 0, "i64"),
+        ("molt_gpu_grid_dim", 0, "i64"),
+        ("molt_gpu_barrier", 0, "i64"),
     ):
         assert symbols[symbol] == {
             "runtime_name": symbol,
@@ -263,22 +268,114 @@ def test_runtime_boxed_abi_projects_semantics_not_integer_carriers() -> None:
     )
 
 
-def test_vector_reduction_boxed_abi_is_compiler_only_and_owned() -> None:
+def _contextvars_provider_arities() -> dict[str, int]:
+    # These are the provider argument counts, including the receiver and the
+    # tuple/dict transport for variadic native methods and constructors.
+    names_by_arity = {
+        0: ("copy_current",),
+        1: (
+            "types",
+            "var_hash",
+            "copy",
+            "len",
+            "keys",
+            "values",
+            "items",
+            "iter_self",
+            "iter_next",
+            "token_enter",
+            "var_repr",
+            "token_repr",
+            "missing_repr",
+        ),
+        2: ("var_set", "var_reset", "getitem", "contains", "eq", "ne", "property"),
+        3: (
+            "new",
+            "token_new",
+            "missing_new",
+            "keys_new",
+            "values_new",
+            "items_new",
+            "var_new",
+            "var_get",
+            "get",
+            "run",
+        ),
+        4: ("token_exit",),
+    }
+    return {
+        f"contextvars_{name}": arity
+        for arity, names in names_by_arity.items()
+        for name in names
+    }
+
+
+def test_contextvars_callable_family_has_one_boxed_return_authority() -> None:
+    data = _load_gen_wasm_abi().load_manifest()
+    expected = _contextvars_provider_arities()
+    entries = {
+        entry["name"]: entry
+        for entry in data["import"]
+        if entry["name"].startswith("contextvars_")
+    }
+    assert entries.keys() == expected.keys()
+    boxed = {
+        spec["runtime_name"]: spec for spec in manifest.runtime_boxed_call_specs(data)
+    }
+    callables = {
+        spec["runtime_name"]: spec for spec in manifest.runtime_callable_abi_specs(data)
+    }
+    contracts = manifest.runtime_import_return_specs(data)
+    for name, arity in expected.items():
+        entry = entries[name]
+        symbol = f"molt_{name}"
+        assert entry["runtime_name"] == symbol
+        assert entry["callable_arity"] == arity
+        assert entry["shared_runtime_callable"] is True
+        assert "return_contract" not in entry
+        assert data["static_type"][entry["type"]] == {
+            "params": ["i64"] * arity,
+            "results": ["i64"],
+        }
+        assert boxed[symbol] == {
+            "runtime_name": symbol,
+            "arity": arity,
+            "result": "i64",
+        }
+        assert callables[symbol] == {
+            "runtime_name": symbol,
+            "arity": arity,
+            "trampoline_abi": "unpack_args",
+        }
+        assert contracts[name] == "owned_object"
+
+
+def test_compiler_only_boxed_abi_keeps_owned_results_private() -> None:
     data = _load_gen_wasm_abi().load_manifest()
     entries = {entry["name"]: entry for entry in data["import"]}
     specs = {
         spec["runtime_name"]: spec for spec in manifest.runtime_boxed_call_specs(data)
     }
     contracts = manifest.runtime_import_return_specs(data)
-    for kind in ("vec_sum", "vec_prod", "vec_min", "vec_max"):
+    callables = {
+        spec["runtime_name"]: spec for spec in manifest.runtime_callable_abi_specs(data)
+    }
+    for kind, arity in (
+        ("vec_sum", 3),
+        ("vec_prod", 3),
+        ("vec_min", 3),
+        ("vec_max", 3),
+        ("gpu_kernel_descriptor_set", 2),
+    ):
         entry = entries[kind]
         assert entry["boxed_call"] is True
         assert "callable_arity" not in entry
         assert "return_contract" not in entry
         symbol = manifest.runtime_export_name(entry)
+        assert symbol not in callables
         assert specs[symbol] == {
             "runtime_name": symbol,
-            "arity": 3,
+            "arity": arity,
             "result": "i64",
         }
         assert contracts[kind] == "owned_object"
@@ -542,7 +639,18 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
         assert contracts[name] == "borrowed_object", name
     assert contracts["io_wait"] == "poll_result"
     assert contracts["future_poll"] == "poll_result"
-    assert contracts["gpu_thread_id"] == "owned_object"
+    for name in (
+        "gpu_thread_id",
+        "gpu_block_id",
+        "gpu_block_dim",
+        "gpu_grid_dim",
+        "gpu_barrier",
+    ):
+        entry = next(entry for entry in data["import"] if entry["name"] == name)
+        assert contracts[name] == "owned_object"
+        assert entry["runtime_name"] == f"molt_{name}"
+        assert entry["callable_arity"] == 0
+        assert "return_contract" not in entry
     for name in (
         "exception_pending",
         "async_work_poll_and_exception_pending",
@@ -1425,6 +1533,10 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "molt_coroutine_wrapper_iter": 1,
         "molt_coroutine_wrapper_next": 1,
         "molt_generator_throw_method": 2,
+        **{
+            f"molt_{name}": arity
+            for name, arity in _contextvars_provider_arities().items()
+        },
     }
     assert shared_callables[23] == {
         "index": 23,
@@ -1737,6 +1849,45 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "runtime_callable_returns_void" not in function_abi
     assert "VOID_INTRINSICS" not in call_function
     assert "runtime_callable_returns_void(fn_ptr)" not in call_function
+
+
+def test_native_poll_keys_follow_manifest_slots_in_runtime_and_compiler() -> None:
+    gen = _load_gen_wasm_abi()
+    data = copy.deepcopy(gen.load_manifest())
+    poll = next(entry for entry in data["import"] if "poll_table_slot" in entry)
+    added = copy.deepcopy(poll)
+    added["name"] = "test_added_poll"
+    added["poll_table_slot"] = 1 + max(
+        entry.get("poll_table_slot", 0) for entry in data["import"]
+    )
+    data["import"].append(added)
+    rendered = gen.render_runtime_callables_rs(data)
+    compiler = gen.render_runtime_callable_abi_rs(data)
+    keys = compiler.split("pub fn runtime_poll_native_key(symbol: &str)", 1)[1]
+    assert "const BASE: u64 = 0xFFFFFF0000000100;" in keys
+    assert "RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFFFF0000000000;" in rendered
+    assert "RUNTIME_CALLABLE_KEY_BASE + 0x100;" in rendered
+    expected = {
+        f"molt_{entry['name']}": entry["poll_table_slot"]
+        for entry in data["import"]
+        if "poll_table_slot" in entry
+    }
+    projected = dict(re.findall(r'"([^"]+)" => Some\(BASE \+ (\d+)\)', keys))
+    assert {name: int(slot) for name, slot in projected.items()} == expected
+    runtime_projected = dict(
+        re.findall(
+            r'"([^"]+)"\s*=>\s*(?:\{\s*)?Some\(RUNTIME_POLL_CALLABLE_KEY_BASE\s*\+\s*(\d+)\)',
+            rendered,
+        )
+    )
+    assert {name: int(slot) for name, slot in runtime_projected.items()} == expected
+    assert "_ => None" in keys
+    assert "ordinary_poll" not in keys
+    assert f"WASM_POLL_SLOT_MAX_OFFSET: u64 = {added['poll_table_slot']};" in rendered
+    data["import"].pop()
+    without = gen.render_runtime_callables_rs(data)
+    assert "crate::molt_test_added_poll as *const ()" not in without
+    assert "molt_test_added_poll" not in gen.render_runtime_callable_abi_rs(data)
 
 
 def test_python_builtin_module_metadata_matches_cpython() -> None:
@@ -3077,10 +3228,8 @@ def test_every_frontend_direct_runtime_call_has_a_wasm_import() -> None:
     """A literal ``CALL molt_*`` the frontend emits must exist in the WASM ABI.
 
     The WASM backend panics on a direct runtime call without a manifest import
-    ("direct runtime call missing WASM ABI manifest import"). GPU kernel launch
-    (``kernel[grid, threads](...)``) lowered to ``molt_gpu_kernel_launch``,
-    which had no import, so every WASM program that launched a kernel crashed
-    the backend.
+    ("direct runtime call missing WASM ABI manifest import"). Include literal
+    calls emitted through the common helper as well as directly constructed IR.
     """
     import ast
 
@@ -3093,6 +3242,16 @@ def test_every_frontend_direct_runtime_call_has_a_wasm_import() -> None:
     direct_calls: set[str] = set()
     for path in frontend.rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "_emit_runtime_call"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+                and node.args[0].value.startswith("molt_")
+            ):
+                direct_calls.add(node.args[0].value)
             if not (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
@@ -3112,5 +3271,5 @@ def test_every_frontend_direct_runtime_call_has_a_wasm_import() -> None:
                 and args.elts[0].value.startswith("molt_")
             ):
                 direct_calls.add(args.elts[0].value)
-    assert "molt_gpu_kernel_launch" in direct_calls
+    assert "molt_gpu_kernel_descriptor_set" in direct_calls
     assert sorted(direct_calls - runtime_exports) == []

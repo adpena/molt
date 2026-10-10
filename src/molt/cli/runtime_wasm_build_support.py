@@ -6,17 +6,16 @@ import contextlib
 import json
 import shlex
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     Any,
-    Mapping,
     Sequence,
 )
 
+from molt.rust_toolchain import rust_flag_spans
 from molt.cargo_execution_policy import source_build_disabled_reason
 from molt.cli import progress as _progress
-from molt.cli import wasm_link_inputs, wasm_toolchain
+from molt.cli import wasm_link_inputs
 from molt.cli.artifact_state import (
     _build_state_root,
     _runtime_fingerprint_path,
@@ -45,7 +44,6 @@ from molt.cli.runtime_artifact_selection import (
 from molt.cli.runtime_build_identity import resolve_wasm_cpython_abi_build_identity
 from molt.cli.runtime_identity_schema import runtime_build_fingerprint
 from molt.cli.runtime_cargo_plan import (
-    CargoExecutableCustody,
     RuntimeCargoPlan,
     resolve_runtime_cargo_plan,
 )
@@ -80,64 +78,10 @@ from molt.cli.wasm_link_args import (
     write_wasm_link_args_response_file as _write_wasm_link_args_response_file,
 )
 from molt.file_publication import durable_replace, staged_file_path
-from molt.llvm_toolchain import apply_provisioned_wasm_toolchain
 from molt.toolchain_identity import (
-    StableRegularFileIdentity,
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
-
-
-def _configure_wasm_toolchain_env(env: dict[str, str]) -> None:
-    """Select WASM C tools and the sysroot from the one toolchain authority.
-
-    The manifest-pinned WASI SDK provisioned for the compiler checkout supplies
-    cc/c++/ar/ranlib for both wasm32 targets through the projection CI uses;
-    explicit selectors win. Without a provisioned SDK nothing is guessed from
-    the host: the Cargo plan then fails with the provisioning command.
-    """
-    apply_provisioned_wasm_toolchain(_compiler_root(), env)
-    _configure_wasi_sysroot_env(env)
-
-
-def _configure_wasi_sysroot_env(env: dict[str, str]) -> None:
-    explicit_sysroot = env.get("WASI_SYSROOT") or env.get("MOLT_WASI_SYSROOT")
-    if explicit_sysroot:
-        normalized = wasm_link_inputs.normalize_wasi_sysroot(explicit_sysroot)
-        sysroot = str(normalized if normalized is not None else Path(explicit_sysroot))
-        env.setdefault("WASI_SYSROOT", sysroot)
-        env.setdefault("MOLT_WASI_SYSROOT", sysroot)
-        return
-    wasi_sysroot = wasm_link_inputs.resolve_wasi_sysroot(env=env)
-    if wasi_sysroot is not None:
-        sysroot = str(wasi_sysroot)
-        env["WASI_SYSROOT"] = sysroot
-        env["MOLT_WASI_SYSROOT"] = sysroot
-
-
-def _configure_wasm_long_double_env(env: dict[str, str]) -> None:
-    """Thread the resolved long-double link archives to molt-runtime's build.rs.
-
-    The deploy ``molt_runtime.wasm`` cdylib link is rustc-driven (so molt cannot
-    order a trailing ``-lc-printscan-long-double`` ahead of the self-contained
-    ``-lc``); build.rs instead links these archives as build-script
-    ``rustc-link-lib`` entries, which rustc emits in its LOCAL-native-libraries
-    group AHEAD of ``-lc`` â€” the real ``vfprintf``/``__floatscan`` override
-    wasi-libc's ``long_double_not_supported`` stub. This is the deploy-cdylib arm
-    of the SAME single authority the reloc / split-app ``wasm-ld`` paths apply;
-    env-threaded so build.rs consumes the Python resolver's path (incl. the
-    durable ``vendor/wasm-builtins`` fallback), not merely a session sysroot. The
-    ``artifact_poison_gate`` attests the effect on the built cdylib. (Harmless on
-    the sibling staticlib crate-type: ``rustc-link-lib`` is metadata there, and
-    the reloc link whole-archives its own printscan copy.)
-    """
-    policy = wasm_link_inputs.resolve_long_double_link_policy(required=False, env=env)
-    if policy.printscan is not None:
-        env["MOLT_WASM_LONGDOUBLE_ARCHIVE"] = str(
-            policy.printscan.resolve(strict=False)
-        )
-    if policy.builtins is not None:
-        env["MOLT_WASM_BUILTINS_ARCHIVE"] = str(policy.builtins.resolve(strict=False))
 
 
 def _wasm_runtime_artifact_path(target_root: Path, profile_dir: str) -> Path:
@@ -245,7 +189,6 @@ def _ensure_wasm_cpython_abi_staticlib(
             )
             env = _cargo_build_env()
             env["CARGO_TARGET_DIR"] = str(target_root)
-            _configure_wasm_toolchain_env(env)
             cmd = [
                 env.get("CARGO", "cargo"),
                 "rustc",
@@ -604,57 +547,50 @@ def _reported_cpython_abi_staticlib_from_cargo_stdout(
 def _wasm_runtime_codegen_flags(
     flags: tuple[str, ...], *, simd_enabled: bool, freestanding: bool
 ) -> tuple[str, ...]:
-    """Apply target policy to parsed Cargo arguments without shell re-tokenization."""
-    result = list(flags)
-    feature_index: int | None = None
-    prefix = ""
-    for index, argument in enumerate(result):
-        if argument.startswith("-Ctarget-feature="):
-            feature_index, prefix = index, "-Ctarget-feature="
-        elif (
-            argument.startswith("target-feature=")
-            and index
-            and result[index - 1] == "-C"
-        ):
-            feature_index, prefix = index, "target-feature="
-    if feature_index is None:
-        features = ["-reference-types"]
-        if simd_enabled:
-            features.append("+simd128")
-        result.extend(("-C", "target-feature=" + ",".join(features)))
-    else:
-        features = result[feature_index][len(prefix) :].split(",")
-        features = [
-            item
-            for item in features
-            if item not in {"+reference-types", "-reference-types"}
-        ]
-        result[feature_index] = prefix + ",".join((*features, "-reference-types"))
-    if freestanding and not any("getrandom_backend=" in item for item in result):
+    """Apply the requested target policy after all caller feature toggles.
+
+    Rust combines repeated target-feature options and the last toggle wins.
+    Preserve caller tokens, including unrelated features and their spelling;
+    the runtime coordinate owns only reference-types and SIMD128.
+    """
+    spans = tuple(rust_flag_spans(flags))
+    last_feature = next(
+        (
+            span.codegen
+            for span in reversed(spans)
+            if span.codegen is not None and span.codegen.startswith("target-feature=")
+        ),
+        None,
+    )
+    boundary = next(
+        (span.start for span in spans if flags[span.start] == "--"), len(flags)
+    )
+    result = list(flags[:boundary])
+    has_backend = any(
+        span.option == "--cfg"
+        and span.value is not None
+        and span.value.startswith("getrandom_backend=")
+        for span in spans
+    )
+    if freestanding and not has_backend:
         result.extend(("--cfg", 'getrandom_backend="unsupported"'))
-    return tuple(result)
+    policy = "target-feature=-reference-types," + (
+        "+simd128" if simd_enabled else "-simd128"
+    )
+    # SDK resource/mode normalization may follow this directive. Only a later
+    # target-feature directive can require applying the coordinate again.
+    if last_feature != policy:
+        result.extend(("-C", policy))
+    return (*result, *flags[boundary:])
 
 
 def wasm_runtime_simd_enabled(flags: Sequence[str]) -> bool:
-    """Read SIMD128 from resolved Cargo flags with rustc target-feature precedence.
-
-    The last ``simd128`` toggle of the last ``target-feature`` argument wins,
-    the same rule ``_wasm_runtime_codegen_flags`` relies on.
-    """
+    """Read the last explicit SIMD128 toggle in resolved Rust codegen options."""
     enabled = False
-    items = list(flags)
-    for index, argument in enumerate(items):
-        if argument.startswith("-Ctarget-feature="):
-            value = argument[len("-Ctarget-feature=") :]
-        elif (
-            argument.startswith("target-feature=")
-            and index
-            and items[index - 1] == "-C"
-        ):
-            value = argument[len("target-feature=") :]
-        else:
+    for span in rust_flag_spans(flags):
+        if span.codegen is None or not span.codegen.startswith("target-feature="):
             continue
-        for feature in value.split(","):
+        for feature in span.codegen.removeprefix("target-feature=").split(","):
             if feature in {"+simd128", "-simd128"}:
                 enabled = feature == "+simd128"
     return enabled
@@ -697,69 +633,6 @@ def _run_runtime_wasm_cargo_build(
     return build, reported_artifact
 
 
-@dataclass(frozen=True, slots=True)
-class RuntimeWasmLinkInputs:
-    wasi_sysroot: Path
-    linker: CargoExecutableCustody
-    libc: StableRegularFileIdentity
-    rust_builtins: StableRegularFileIdentity
-    long_double: StableRegularFileIdentity
-    clang_builtins: StableRegularFileIdentity
-
-    def verify(self) -> None:
-        self.linker.verify()
-        for label, identity in (
-            ("libc", self.libc),
-            ("rust_builtins", self.rust_builtins),
-            ("long_double", self.long_double),
-            ("clang_builtins", self.clang_builtins),
-        ):
-            verify_stable_regular_file_identity(identity, label=f"runtime WASM {label}")
-
-
-def resolve_runtime_wasm_link_inputs(
-    *,
-    env: Mapping[str, str],
-    target_libdir: Path,
-    project_root: Path,
-) -> RuntimeWasmLinkInputs:
-    sysroot = env.get("MOLT_WASI_SYSROOT") or env.get("WASI_SYSROOT")
-    linker = wasm_toolchain.resolve_wasm_linker(env=env, cwd=project_root)
-    policy = wasm_link_inputs.resolve_long_double_link_policy(required=True, env=env)
-    libc = wasm_link_inputs.wasm_wasi_libc_archive(target_libdir=target_libdir)
-    rust_builtins = wasm_link_inputs.wasm_compiler_builtins_archive(
-        target_libdir=target_libdir
-    )
-    _record_runtime_wasm_longdouble_archives(
-        "MISSING"
-        if policy.error or policy.printscan is None or policy.builtins is None
-        else "present"
-    )
-    if (
-        not sysroot
-        or policy.error
-        or policy.printscan is None
-        or policy.builtins is None
-        or libc is None
-        or rust_builtins is None
-    ):
-        raise ValueError(
-            policy.error or "runtime WASM toolchain identity is incomplete"
-        )
-
-    def capture(path: Path, label: str) -> StableRegularFileIdentity:
-        return stable_regular_file_identity(path, label=f"runtime WASM {label}")
-
-    return RuntimeWasmLinkInputs(
-        Path(sysroot),
-        CargoExecutableCustody.capture("runtime WASM linker", linker.path),
-        capture(libc, "libc"),
-        capture(rust_builtins, "rust builtins"),
-        capture(policy.printscan, "long double"),
-        capture(policy.builtins, "clang builtins"),
-    )
-
-
 class RuntimeWasmLinkError(ValueError):
     def __init__(
         self,
@@ -787,13 +660,14 @@ def _link_runtime_staticlib_to_reloc_wasm(
     json_output: bool,
     link_timeout: float | None,
     cargo_plan: RuntimeCargoPlan,
-    link_inputs: RuntimeWasmLinkInputs,
     export_link_args: str = "",
 ) -> bool:
-    cargo_plan.verify()
-    link_inputs.verify()
-    wasm_ld = str(link_inputs.linker.entrypoint)
-    libc_archive = link_inputs.libc.path
+    c_abi = cargo_plan.wasi_c_abi
+    if c_abi is None:
+        raise ValueError("runtime WASM relink requires its admitted SDK")
+    wasm_ld = str(c_abi.linker)
+    libc_archive = c_abi.path("libc")
+    _record_runtime_wasm_longdouble_archives("selected-sdk-members")
     staticlib_path = staticlib_path.resolve(strict=False)
     libc_archive = libc_archive.resolve(strict=False)
     output_path = output_path.resolve(strict=False)
@@ -802,7 +676,7 @@ def _link_runtime_staticlib_to_reloc_wasm(
     # All runtime families capture the complete mandatory archive closure.
     long_double_argv = wasm_link_inputs.long_double_whole_archive_link_argv(
         wasm_link_inputs.LongDoubleLinkPolicy(
-            link_inputs.long_double.path, link_inputs.clang_builtins.path, None, ()
+            c_abi.path("long_double"), c_abi.path("compiler_rt")
         ),
         whole_archive=[str(staticlib_path)],
         trailing=[str(libc_archive)],
@@ -847,8 +721,6 @@ def _link_runtime_staticlib_to_reloc_wasm(
             raise RuntimeWasmLinkError(
                 "Runtime relocatable wasm link failed", command=command, process=process
             )
-        cargo_plan.verify()
-        link_inputs.verify()
         verify_stable_regular_file_identity(
             staticlib_identity, label="runtime WASM staticlib link input"
         )

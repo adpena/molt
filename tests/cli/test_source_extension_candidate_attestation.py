@@ -127,9 +127,12 @@ def _finalize_candidate_bundle(
         _release_file_lock(handle)
 
 
-def _dispatch(args: argparse.Namespace, tmp_path: Path) -> int:
+def _dispatch(
+    parser: argparse.ArgumentParser, args: argparse.Namespace, tmp_path: Path
+) -> int:
     return entrypoint_dispatch._dispatch_entrypoint_command(
         args,
+        parser=parser,
         build_fn=lambda **_: 0,
         config_root=tmp_path,
         config={},
@@ -181,7 +184,7 @@ def test_candidate_cli_separates_build_from_promotion(
         "attest_source_extension_set_candidate",
         lambda **kwargs: calls.append(kwargs) or 0,
     )
-    assert _dispatch(attest, tmp_path) == 0
+    assert _dispatch(parser, attest, tmp_path) == 0
     assert calls[0]["output"] == "candidate"
     assert parser.parse_args(["extension", "produce-set", *common]).target == "wasm"
     publish = parser.parse_args(
@@ -195,7 +198,7 @@ def test_candidate_cli_separates_build_from_promotion(
         "publish_source_extension_set_candidate",
         lambda **kwargs: calls.append(kwargs) or 0,
     )
-    assert _dispatch(publish, tmp_path) == 0
+    assert _dispatch(parser, publish, tmp_path) == 0
     assert calls == [
         {
             "candidate": "candidate",

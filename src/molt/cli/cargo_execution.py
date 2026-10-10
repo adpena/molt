@@ -16,10 +16,11 @@ from molt.cargo_execution_policy import (
     _wrapper_is_sccache,
     cargo_compiler_wrappers,
     normalize_cargo_environment,
+    require_cargo_build_capacity,
+    sccache_client_environment,
     sccache_compiler_wrappers,
     without_sccache_compiler_wrappers,
 )
-from molt.disk_capacity import require_build_capacity
 from molt.exact_json import loads_exact
 from molt.dx import (
     DEFAULT_SCCACHE_CACHE_SIZE,
@@ -288,15 +289,16 @@ def _sccache_diag(msg: str) -> None:
     print(f"[molt sccache] {msg}", file=sys.stderr, flush=True)
 
 
-def _sccache_server_responsive(sccache: str) -> bool:
+def _sccache_server_responsive(sccache: str, env: Mapping[str, str]) -> bool:
     """Fast healthcheck: does the sccache server answer at all? Catches a dead
     server. A server that answers --show-stats but crashes mid-compile is caught
-    by the retry-degrade in `_run_cargo_with_sccache_retry`."""
+    by the retry-degrade in `_run_cargo_with_sccache_retry`. With no server
+    running the probe starts one, so it runs as the build's sccache clients do."""
     try:
         result = _run_completed_command(
             [sccache, "--show-stats"],
             cwd=Path.cwd(),
-            env=os.environ.copy(),
+            env=sccache_client_environment(env)[0],
             capture_output=True,
             memory_guard_prefix="MOLT_BUILD",
             timeout=15,
@@ -334,17 +336,21 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
             "set MOLT_USE_SCCACHE=1 to force. Using direct rustc."
         )
         return
-    if not _sccache_server_responsive(sccache):
+    cache_env = dict(env)
+    if not cache_env.get("SCCACHE_DIR"):
+        # The DX authority owns the artifact root. Deriving it here fell back to
+        # the checkout, which put the cache, and the server temp dir pinned
+        # beside it, inside the checkout.
+        cache_env["SCCACHE_DIR"] = development_artifact_env(
+            compiler_source_root(), env, create_dirs=False
+        )["SCCACHE_DIR"]
+    cache_env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
+    if not _sccache_server_responsive(sccache, cache_env):
         _sccache_diag(
             "server healthcheck failed; using direct rustc (set MOLT_USE_SCCACHE=0 to silence)."
         )
         return
-    root = compiler_source_root()
-    ext_root = Path(env.get("MOLT_EXT_ROOT", root)).expanduser()
-    if not ext_root.is_absolute():
-        ext_root = root / ext_root
-    env.setdefault("SCCACHE_DIR", str((ext_root / ".sccache").resolve()))
-    env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
+    env.update(cache_env)
     env["RUSTC_WRAPPER"] = sccache
     normalized, _applied = normalize_cargo_environment(env)
     env.update(normalized)
@@ -498,77 +504,6 @@ def _cargo_attempt(
 _TempfileCargoRunner = Callable[..., subprocess.CompletedProcess[bytes]]
 
 
-def _resolved_cargo_output_path(raw: str, *, cwd: Path, label: str) -> Path:
-    if not isinstance(raw, str) or not raw.strip():
-        raise ValueError(f"Cargo execution requires a non-empty {label}")
-    path = Path(raw)
-    if not path.is_absolute():
-        path = cwd / path
-    try:
-        return path.resolve(strict=False)
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise ValueError(f"cannot resolve Cargo {label} {raw!r}: {exc}") from exc
-
-
-def _command_target_dirs(cmd: Sequence[str]) -> tuple[str, ...]:
-    declarations: list[str] = []
-    index = 1
-    while index < len(cmd):
-        argument = cmd[index]
-        if argument == "--":
-            break
-        if argument == "--target-dir":
-            index += 1
-            if index >= len(cmd) or not cmd[index]:
-                raise ValueError("Cargo --target-dir requires a non-empty path")
-            declarations.append(cmd[index])
-        elif argument.startswith("--target-dir="):
-            value = argument.partition("=")[2]
-            if not value:
-                raise ValueError("Cargo --target-dir= requires a non-empty path")
-            declarations.append(value)
-        index += 1
-    return tuple(declarations)
-
-
-def _declared_cargo_output_paths(
-    cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str]
-) -> tuple[Path, ...]:
-    raw_target = env.get("CARGO_TARGET_DIR")
-    if raw_target is None:
-        raise ValueError(
-            "Cargo capacity admission requires an explicit CARGO_TARGET_DIR in "
-            "the resolved execution environment"
-        )
-    target = _resolved_cargo_output_path(
-        raw_target,
-        cwd=cwd,
-        label="CARGO_TARGET_DIR",
-    )
-    for command_target in _command_target_dirs(cmd):
-        resolved_command_target = _resolved_cargo_output_path(
-            command_target,
-            cwd=cwd,
-            label="--target-dir",
-        )
-        if resolved_command_target != target:
-            raise ValueError(
-                "Cargo --target-dir conflicts with the resolved "
-                f"CARGO_TARGET_DIR: {resolved_command_target} != {target}"
-            )
-
-    outputs = [target]
-    if "CARGO_BUILD_BUILD_DIR" in env:
-        outputs.append(
-            _resolved_cargo_output_path(
-                env["CARGO_BUILD_BUILD_DIR"],
-                cwd=cwd,
-                label="CARGO_BUILD_BUILD_DIR",
-            )
-        )
-    return tuple(outputs)
-
-
 def _run_cargo_attempt(
     cmd: list[str],
     *,
@@ -582,8 +517,12 @@ def _run_cargo_attempt(
     normalized_env = (
         dict(env) if resolved_environment else normalize_cargo_environment(env)[0]
     )
-    output_paths = _declared_cargo_output_paths(cmd, cwd=cwd, env=normalized_env)
-    require_build_capacity(output_paths, env=normalized_env)
+    if normalized_env.get("CARGO_TARGET_DIR") is None:
+        raise ValueError(
+            "Cargo capacity admission requires an explicit CARGO_TARGET_DIR in "
+            "the resolved execution environment"
+        )
+    require_cargo_build_capacity(cmd, cwd=cwd, env=normalized_env)
     if tempfile_runner is not None:
         return tempfile_runner(
             cmd,

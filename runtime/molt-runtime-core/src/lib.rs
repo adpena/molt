@@ -974,7 +974,7 @@ pub unsafe fn bridge_owned_u64_buffer(ptr: *const u64, len: usize) -> OwnedBridg
     OwnedBridgeU64Buffer { ptr, len }
 }
 
-/// A read-only sequence snapshot whose handles are pinned by the runtime.
+/// A read-only sequence or dictionary snapshot pinned by the runtime.
 ///
 /// Satellite crates use this guard instead of borrowing the runtime's backing
 /// `Vec<u64>` across an FFI boundary. The producing runtime increments every
@@ -1006,10 +1006,10 @@ impl Drop for OwnedBridgeHandleSnapshot {
     }
 }
 
-/// Wrap a runtime-owned sequence snapshot in a pinned read-only guard.
+/// Wrap a runtime-owned handle snapshot in a pinned read-only guard.
 ///
 /// # Safety
-/// `ptr`/`len` must come from a Molt sequence-snapshot bridge function. Every
+/// `ptr`/`len` must come from a Molt owned-handle snapshot bridge function. Every
 /// handle in the buffer must carry one reference owned by the snapshot.
 pub unsafe fn bridge_owned_handle_snapshot(
     ptr: *const u64,
@@ -1116,7 +1116,8 @@ pub type RuntimeExtensionStateDrop = unsafe extern "C" fn(*mut u8);
 
 /// `MOLTVTAB` encoded as a little-endian `u64`.
 pub const RUNTIME_VTABLE_ABI_MAGIC: u64 = 0x4241_5456_544c_4f4d;
-pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 3;
+// Version 4 makes dictionary snapshots own their returned handle references.
+pub const RUNTIME_VTABLE_ABI_VERSION: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1208,7 +1209,7 @@ pub struct RuntimeVtable {
     pub dict_set_in_place: unsafe extern "C" fn(*mut u8, u64, u64) -> i32,
     pub list_len: unsafe extern "C" fn(*mut u8) -> usize,
     pub seq_snapshot: unsafe extern "C" fn(*mut u8, *mut *const u64, *mut usize) -> i32,
-    pub dict_order_clone: unsafe extern "C" fn(*mut u8, *mut *const u64, *mut usize) -> i32,
+    pub dict_snapshot: unsafe extern "C" fn(*mut u8, *mut *const u64, *mut usize) -> i32,
 
     // --- Iteration ---
     pub molt_iter: unsafe extern "C" fn(u64) -> u64,

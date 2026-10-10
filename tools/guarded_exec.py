@@ -19,6 +19,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.llvm_toolchain import (  # noqa: E402
     LlvmToolchainConfigError,
     mlir_toolchain_environment,
@@ -128,11 +129,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=None)
     parser.add_argument("--timeout-env", default=None)
     parser.add_argument("--metrics-json", type=Path)
+    parser.add_argument("--cancel-file", type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = list(args.command)
     if command and command[0] == "--":
         command = command[1:]
+    if not command:
+        command = (
+            harness_memory_guard.memory_guard._load_internal_command(os.environ) or []
+        )
     if not command:
         parser.error("command is required after --")
 
@@ -144,6 +150,11 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         print(preflight_error, file=sys.stderr)
+        return 2
+    try:
+        admit_cargo_build(command, cwd=args.cwd, env=env)
+    except ValueError as exc:  # DiskCapacityError, or an inconsistent target
+        print(f"guarded_exec preflight: {exc}", file=sys.stderr)
         return 2
 
     context = harness_memory_guard.HarnessExecutionContext.from_env(
@@ -157,12 +168,21 @@ def main(argv: list[str] | None = None) -> int:
         explicit=args.timeout,
         default=_timeout_from_env(args.timeout_env, env),
     )
+    worker_env = dict(env)
+    env = harness_memory_guard.memory_guard._child_env_without_internal_keys(env)
     result = context.run(
         command,
         cwd=args.cwd,
         env=env,
         capture_output=False,
         timeout=timeout,
+        cancellation_requested=(
+            None if args.cancel_file is None else args.cancel_file.exists
+        ),
+        running_summary_json=(
+            None if args.metrics_json is None else str(args.metrics_json)
+        ),
+        running_summary_environ=worker_env,
     )
     if args.metrics_json is not None:
         peak = getattr(result, "peak", None)
@@ -170,6 +190,16 @@ def main(argv: list[str] | None = None) -> int:
         metrics = {
             "schema": "molt.guarded-command-metrics.v1",
             "returncode": int(result.returncode),
+            "launch_id": worker_env.get(
+                harness_memory_guard.memory_guard._cli_contract.INTERNAL_LAUNCH_ID_ENV
+            ),
+            "guard_pid": os.getpid(),
+            "command": list(result.args),
+            "child_process": harness_memory_guard.memory_guard.guarded_child_process_payload(
+                result.child_process
+            ),
+            "cancelled": result.cancelled,
+            "descendants_closed": result.descendants_closed,
             "child_returncode": getattr(result, "child_returncode", None),
             "infrastructure_failure": harness_memory_guard.memory_guard.infrastructure_failure_payload(
                 getattr(result, "infrastructure_failure", None)
@@ -178,7 +208,8 @@ def main(argv: list[str] | None = None) -> int:
             "timed_out": bool(getattr(result, "timed_out", False)),
             "exit_signal": (
                 None
-                if getattr(result, "timed_out", False)
+                if result.cancelled
+                or getattr(result, "timed_out", False)
                 or getattr(result, "violation", None) is not None
                 or getattr(result, "guard_signal", None) is not None
                 else harness_memory_guard.memory_guard.exit_signal_payload(

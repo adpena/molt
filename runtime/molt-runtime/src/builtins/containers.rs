@@ -1,35 +1,27 @@
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use crate::{
-    BIND_KIND_PACKED_BUILTIN, HashContext, MoltObject, PyToken, TYPE_ID_DICT,
-    TYPE_ID_DICT_ITEMS_VIEW, TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_FROZENSET, TYPE_ID_LIST_BOOL,
-    TYPE_ID_LIST_INT, TYPE_ID_SET, alloc_tuple, builtin_classes, builtin_func_bits,
-    builtin_func_bits_with_bind_kind, builtin_func_bits_with_defaults_tuple, dec_ref_bits,
-    dict_clear_method, dict_copy_method, dict_fromkeys_method, dict_get_method, dict_items_method,
-    dict_keys_method, dict_popitem_method, dict_setdefault_method, dict_update_method,
-    dict_values_method, exception_pending, molt_dict_pop_method, molt_frozenset_copy_method,
-    molt_frozenset_difference_multi, molt_frozenset_intersection_multi, molt_frozenset_isdisjoint,
-    molt_frozenset_issubset, molt_frozenset_issuperset, molt_frozenset_symmetric_difference,
-    molt_frozenset_union_multi, molt_list_add_method, molt_list_append, molt_list_clear,
-    molt_list_copy, molt_list_count, molt_list_extend, molt_list_imul_method,
-    molt_list_index_range, molt_list_insert, molt_list_mul_method, molt_list_pop, molt_list_remove,
-    molt_list_reverse, molt_list_sort, molt_reversed_builtin, molt_set_add, molt_set_clear,
-    molt_set_copy_method, molt_set_difference_multi, molt_set_difference_update_multi,
-    molt_set_discard, molt_set_intersection_multi, molt_set_intersection_update_multi,
-    molt_set_isdisjoint, molt_set_issubset, molt_set_issuperset, molt_set_new, molt_set_pop,
-    molt_set_remove, molt_set_symmetric_difference, molt_set_symmetric_difference_update,
-    molt_set_union_multi, molt_set_update_multi, molt_tuple_count, molt_tuple_index_range,
-    obj_from_bits, object_type_id, set_add_in_place,
+    BIND_KIND_PACKED_BUILTIN, MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_DICT_ITEMS_VIEW,
+    TYPE_ID_DICT_KEYS_VIEW, TYPE_ID_FROZENSET, TYPE_ID_LIST_BOOL, TYPE_ID_LIST_INT, TYPE_ID_SET,
+    builtin_classes, builtin_func_bits, builtin_func_bits_with_bind_kind,
+    builtin_func_bits_with_defaults_tuple, dict_clear_method, dict_copy_method,
+    dict_fromkeys_method, dict_get_method, dict_items_method, dict_keys_method,
+    dict_popitem_method, dict_setdefault_method, dict_update_method, dict_values_method,
+    molt_dict_pop_method, molt_frozenset_copy_method, molt_frozenset_difference_multi,
+    molt_frozenset_intersection_multi, molt_frozenset_isdisjoint, molt_frozenset_issubset,
+    molt_frozenset_issuperset, molt_frozenset_symmetric_difference, molt_frozenset_union_multi,
+    molt_list_add_method, molt_list_append, molt_list_clear, molt_list_copy, molt_list_count,
+    molt_list_extend, molt_list_imul_method, molt_list_index_range, molt_list_insert,
+    molt_list_mul_method, molt_list_pop, molt_list_remove, molt_list_reverse, molt_list_sort,
+    molt_reversed_builtin, molt_set_add, molt_set_clear, molt_set_copy_method,
+    molt_set_difference_multi, molt_set_difference_update_multi, molt_set_discard,
+    molt_set_intersection_multi, molt_set_intersection_update_multi, molt_set_isdisjoint,
+    molt_set_issubset, molt_set_issuperset, molt_set_pop, molt_set_remove,
+    molt_set_symmetric_difference, molt_set_symmetric_difference_update, molt_set_union_multi,
+    molt_set_update_multi, molt_tuple_count, molt_tuple_index_range, obj_from_bits, object_type_id,
 };
 
 pub(crate) fn is_set_like_type(type_id: u32) -> bool {
     type_id == TYPE_ID_SET || type_id == TYPE_ID_FROZENSET
-}
-
-pub(crate) fn is_set_inplace_rhs_type(type_id: u32) -> bool {
-    matches!(
-        type_id,
-        TYPE_ID_SET | TYPE_ID_FROZENSET | TYPE_ID_DICT_KEYS_VIEW | TYPE_ID_DICT_ITEMS_VIEW
-    )
 }
 
 pub(crate) fn is_set_view_type(type_id: u32) -> bool {
@@ -48,6 +40,21 @@ crate::builtins::methods::native_method_table!(dict_method_bits, publish_dict_me
         "__init__" => Some(crate::builtins::methods::builtin_variadic_func_bits(
             _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).dict, "__init__").with_text_signature("($self, /, *args, **kwargs)"),
             fn_addr!(crate::builtins::types::native_constructors::dict_init),
+        )),
+        "__or__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(_py).dict, "__or__"),
+            fn_addr!(crate::object::ops_arith::native_slots::dict_or_slot), 2,
+        )),
+        "__ror__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(_py).dict, "__ror__"),
+            fn_addr!(crate::object::ops_arith::native_slots::dict_ror_slot), 2,
+        )),
+        "__ior__" => Some(builtin_func_bits(
+            _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor,
+                builtin_classes(_py).dict, "__ior__"),
+            fn_addr!(crate::object::ops_arith::native_slots::dict_ior_slot), 2,
         )),
         "keys" => Some(builtin_func_bits(
             _py,
@@ -786,84 +793,127 @@ pub(crate) unsafe fn tuple_len(ptr: *mut u8) -> usize {
     unsafe { crate::object::seq_access::len(ptr) }
 }
 
-pub(crate) unsafe fn dict_order_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    unsafe { *(ptr as *mut *mut Vec<u64>) }
+/// A stored hash can never be the Python error sentinel (-1). Its complement
+/// leaves zero for a vacant row without a separate occupancy allocation.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StoredHash(std::num::NonZeroU64);
+
+impl StoredHash {
+    pub(crate) fn new(hash: u64) -> Option<Self> {
+        std::num::NonZeroU64::new(!hash).map(Self)
+    }
+    pub(crate) fn get(self) -> u64 {
+        !self.0.get()
+    }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct DictEntry {
+    pub(crate) key: u64,
+    pub(crate) value: u64,
+    pub(crate) hash: Option<StoredHash>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SetEntry {
+    pub(crate) key: u64,
+    pub(crate) hash: Option<StoredHash>,
+}
+
+/// The stable entries and index owners retain their accounting/lock identity.
+/// `live`, physical entries length, and occupied index count are distinct facts.
+#[repr(C)]
+pub(crate) struct HashStorage<Entry> {
+    pub(crate) entries: *mut Vec<Entry>,
+    pub(crate) table: *mut Vec<usize>,
+    pub(crate) live: usize,
+    pub(crate) fill: usize,
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<DictEntry>() == 24);
+    assert!(std::mem::size_of::<SetEntry>() == 16);
+    assert!(std::mem::size_of::<HashStorage<DictEntry>>() == 4 * std::mem::size_of::<usize>());
+    assert!(std::mem::size_of::<HashStorage<SetEntry>>() == 4 * std::mem::size_of::<usize>());
+};
+
+pub(crate) unsafe fn dict_storage(ptr: *mut u8) -> &'static mut HashStorage<DictEntry> {
+    unsafe { &mut *ptr.cast() }
+}
+pub(crate) unsafe fn set_storage(ptr: *mut u8) -> &'static mut HashStorage<SetEntry> {
+    unsafe { &mut *ptr.cast() }
+}
+pub(crate) unsafe fn dict_entries_ptr(ptr: *mut u8) -> *mut Vec<DictEntry> {
+    unsafe { dict_storage(ptr).entries }
+}
 pub(crate) unsafe fn dict_table_ptr(ptr: *mut u8) -> *mut Vec<usize> {
-    unsafe { *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) }
+    unsafe { dict_storage(ptr).table }
 }
-
-pub(crate) unsafe fn dict_hashes_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    unsafe {
-        *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
-            as *mut *mut Vec<u64>)
-    }
+pub(crate) unsafe fn dict_entries(ptr: *mut u8) -> &'static mut Vec<DictEntry> {
+    unsafe { &mut *dict_entries_ptr(ptr) }
 }
-
-pub(crate) unsafe fn dict_order(ptr: *mut u8) -> &'static mut Vec<u64> {
-    unsafe {
-        let vec_ptr = dict_order_ptr(ptr);
-        &mut *vec_ptr
-    }
-}
-
 pub(crate) unsafe fn dict_table(ptr: *mut u8) -> &'static mut Vec<usize> {
-    unsafe {
-        let vec_ptr = dict_table_ptr(ptr);
-        &mut *vec_ptr
-    }
+    unsafe { &mut *dict_table_ptr(ptr) }
 }
-
-pub(crate) unsafe fn dict_hashes(ptr: *mut u8) -> &'static mut Vec<u64> {
-    unsafe {
-        let vec_ptr = dict_hashes_ptr(ptr);
-        &mut *vec_ptr
-    }
-}
-
 pub(crate) unsafe fn dict_len(ptr: *mut u8) -> usize {
-    unsafe { dict_order(ptr).len() / 2 }
+    unsafe { dict_storage(ptr).live }
 }
-
-pub(crate) unsafe fn set_order_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    unsafe { *(ptr as *mut *mut Vec<u64>) }
+pub(crate) unsafe fn set_entries_ptr(ptr: *mut u8) -> *mut Vec<SetEntry> {
+    unsafe { set_storage(ptr).entries }
 }
-
 pub(crate) unsafe fn set_table_ptr(ptr: *mut u8) -> *mut Vec<usize> {
-    unsafe { *(ptr.add(std::mem::size_of::<*mut Vec<u64>>()) as *mut *mut Vec<usize>) }
+    unsafe { set_storage(ptr).table }
 }
-
-pub(crate) unsafe fn set_hashes_ptr(ptr: *mut u8) -> *mut Vec<u64> {
-    unsafe {
-        *(ptr.add(std::mem::size_of::<*mut Vec<u64>>() + std::mem::size_of::<*mut Vec<usize>>())
-            as *mut *mut Vec<u64>)
-    }
+pub(crate) unsafe fn set_entries(ptr: *mut u8) -> &'static mut Vec<SetEntry> {
+    unsafe { &mut *set_entries_ptr(ptr) }
 }
-
-pub(crate) unsafe fn set_order(ptr: *mut u8) -> &'static mut Vec<u64> {
-    unsafe {
-        let vec_ptr = set_order_ptr(ptr);
-        &mut *vec_ptr
-    }
-}
-
 pub(crate) unsafe fn set_table(ptr: *mut u8) -> &'static mut Vec<usize> {
-    unsafe {
-        let vec_ptr = set_table_ptr(ptr);
-        &mut *vec_ptr
-    }
+    unsafe { &mut *set_table_ptr(ptr) }
 }
-
-pub(crate) unsafe fn set_hashes(ptr: *mut u8) -> &'static mut Vec<u64> {
-    unsafe {
-        let vec_ptr = set_hashes_ptr(ptr);
-        &mut *vec_ptr
-    }
-}
-
 pub(crate) unsafe fn set_len(ptr: *mut u8) -> usize {
-    unsafe { set_order(ptr).len() }
+    unsafe { set_storage(ptr).live }
+}
+
+/// Borrowed physical rows, in dictionary insertion order; no borrow may cross
+/// an operation that can invoke Python or mutate the dictionary.
+pub(crate) unsafe fn dict_live_entries(
+    ptr: *mut u8,
+) -> impl DoubleEndedIterator<Item = &'static DictEntry> {
+    unsafe { dict_entries(ptr).iter().filter(|row| row.hash.is_some()) }
+}
+
+/// Sets walk their canonical probe table, including every operation whose
+/// callbacks can observe traversal order. The cursor is a table position.
+pub(crate) unsafe fn set_next_entry(ptr: *mut u8, cursor: &mut usize) -> Option<SetEntry> {
+    unsafe {
+        while *cursor < set_table(ptr).len() {
+            let index = set_table(ptr)[*cursor];
+            *cursor += 1;
+            if index != 0 && index != usize::MAX {
+                let row = *set_entries(ptr).get(index - 1)?;
+                if row.hash.is_some() {
+                    return Some(row);
+                }
+            }
+        }
+        None
+    }
+}
+
+pub(crate) unsafe fn dict_next_entry(ptr: *mut u8, cursor: &mut usize) -> Option<DictEntry> {
+    unsafe {
+        while *cursor < dict_entries(ptr).len() {
+            let row = dict_entries(ptr)[*cursor];
+            *cursor += 1;
+            if row.hash.is_some() {
+                return Some(row);
+            }
+        }
+        None
+    }
 }
 
 pub(crate) unsafe fn dict_view_dict_bits(ptr: *mut u8) -> u64 {
@@ -880,62 +930,5 @@ pub(crate) unsafe fn dict_view_len(ptr: *mut u8) -> usize {
             return dict_len(dict_ptr);
         }
         0
-    }
-}
-
-pub(crate) unsafe fn dict_view_entry(ptr: *mut u8, idx: usize) -> Option<(u64, u64)> {
-    unsafe {
-        let dict_bits = dict_view_dict_bits(ptr);
-        let dict_obj = obj_from_bits(dict_bits);
-        if let Some(dict_ptr) = dict_obj.as_ptr() {
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                return None;
-            }
-            let order = dict_order(dict_ptr);
-            let entry = idx * 2;
-            if entry + 1 >= order.len() {
-                return None;
-            }
-            return Some((order[entry], order[entry + 1]));
-        }
-        None
-    }
-}
-
-pub(crate) unsafe fn dict_view_as_set_bits(
-    _py: &PyToken<'_>,
-    view_ptr: *mut u8,
-    view_type: u32,
-) -> Option<u64> {
-    unsafe {
-        if !is_set_view_type(view_type) {
-            return None;
-        }
-        let len = dict_view_len(view_ptr);
-        let set_bits = molt_set_new(len as u64);
-        let set_ptr = obj_from_bits(set_bits).as_ptr()?;
-        for idx in 0..len {
-            if let Some((key_bits, val_bits)) = dict_view_entry(view_ptr, idx) {
-                let (entry_bits, needs_drop) = if view_type == TYPE_ID_DICT_ITEMS_VIEW {
-                    let tuple_ptr = alloc_tuple(_py, &[key_bits, val_bits]);
-                    if tuple_ptr.is_null() {
-                        dec_ref_bits(_py, set_bits);
-                        return None;
-                    }
-                    (MoltObject::from_ptr(tuple_ptr).bits(), true)
-                } else {
-                    (key_bits, false)
-                };
-                set_add_in_place(_py, set_ptr, entry_bits, HashContext::SetElement);
-                if needs_drop {
-                    dec_ref_bits(_py, entry_bits);
-                }
-                if exception_pending(_py) {
-                    dec_ref_bits(_py, set_bits);
-                    return None;
-                }
-            }
-        }
-        Some(set_bits)
     }
 }

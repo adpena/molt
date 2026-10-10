@@ -36,9 +36,9 @@ unsafe fn runtime_stringify(bits: u64, repr: bool) -> molt_cpython_abi::hooks::O
     match STRINGIFY_MODE.with(std::cell::Cell::get) {
         StringifyMode::Scalars => unsafe {
             if repr {
-                support::fake_strings::object_repr(bits)
+                support::fake_runtime::object_repr(bits)
             } else {
-                support::fake_strings::object_str(bits)
+                support::fake_runtime::object_str(bits)
             }
         },
         StringifyMode::ProtocolProbe => {
@@ -48,7 +48,7 @@ unsafe fn runtime_stringify(bits: u64, repr: bool) -> molt_cpython_abi::hooks::O
                 b"runtime str"
             };
             OwnedHandleResult::ok(unsafe {
-                support::fake_strings::alloc_str(text.as_ptr(), text.len())
+                support::fake_runtime::alloc_str(text.as_ptr(), text.len())
             })
         }
         StringifyMode::Failure => {
@@ -79,22 +79,12 @@ unsafe extern "C" {
 // Fake strings supply protocol transport fixtures, not a formatting oracle.
 // Runtime-backed tests prove the real Python rendering semantics.
 
-unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
-    use molt_cpython_abi::abi_types::MoltTypeTag;
-    if support::fake_strings::contains(bits) {
-        MoltTypeTag::Str as u8
-    } else {
-        MoltTypeTag::Other as u8
-    }
-}
-
-fn install() {
+fn install() -> support::AbiTestThreadStateTransaction {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.classify_heap = fake_classify_heap;
-    support::fake_strings::wire(&mut hooks);
+    support::fake_runtime::wire(&mut hooks);
     hooks.object_str = runtime_str;
     hooks.object_repr = runtime_repr;
-    support::prepare_abi_test_thread(hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 
 /// Read the UTF-8 bytes backing a Molt-native `str` result.
@@ -165,7 +155,7 @@ unsafe extern "C" fn recursive_repr(o: *mut PyObject) -> *mut PyObject {
 
 #[test]
 fn native_int_str_is_the_decimal_digits() {
-    install();
+    let _abi_test = install();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(42) };
     let s = unsafe { molt_cpython_abi::api::typeobj::PyObject_Str(py) };
     assert!(!s.is_null(), "str(42) must not be NULL");
@@ -174,7 +164,7 @@ fn native_int_str_is_the_decimal_digits() {
 
 #[test]
 fn native_int_repr_is_the_decimal_digits() {
-    install();
+    let _abi_test = install();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(-17) };
     let r = unsafe { molt_cpython_abi::api::typeobj::PyObject_Repr(py) };
     assert!(!r.is_null());
@@ -183,7 +173,7 @@ fn native_int_repr_is_the_decimal_digits() {
 
 #[test]
 fn native_float_bool_and_none_are_exact() {
-    install();
+    let _abi_test = install();
     let float = unsafe { molt_cpython_abi::api::numbers::PyFloat_FromDouble(3.5) };
     let true_obj = (&raw mut molt_cpython_abi::abi_types::Py_True).cast::<PyObject>();
     let false_obj = (&raw mut molt_cpython_abi::abi_types::Py_False).cast::<PyObject>();
@@ -203,7 +193,7 @@ fn native_float_bool_and_none_are_exact() {
 
 #[test]
 fn native_str_str_is_identity_passthrough() {
-    install();
+    let _abi_test = install();
     let s = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"hello".as_ptr()) };
     assert!(!s.is_null());
     // str(s) is s — same object (CPython PyUnicode_CheckExact fast path).
@@ -213,7 +203,7 @@ fn native_str_str_is_identity_passthrough() {
 
 #[test]
 fn native_str_repr_is_quoted() {
-    install();
+    let _abi_test = install();
     let s = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"hi".as_ptr()) };
     let r = unsafe { molt_cpython_abi::api::typeobj::PyObject_Repr(s) };
     assert!(!r.is_null());
@@ -222,26 +212,37 @@ fn native_str_repr_is_quoted() {
 
 #[test]
 fn managed_heap_stringification_uses_runtime_protocol_not_projected_type_slots() {
-    install();
+    let _abi_test = install();
     STRINGIFY_MODE.with(|mode| mode.set(StringifyMode::ProtocolProbe));
-    let heap = Box::into_raw(Box::new(0_u64));
-    let bits = molt_lang_obj_model::MoltObject::from_ptr(heap.cast()).bits();
-    unsafe {
-        let object = molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits);
-        assert!(!object.is_null());
-        let text = molt_cpython_abi::api::typeobj::PyObject_Str(object);
-        let repr = molt_cpython_abi::api::typeobj::PyObject_Repr(object);
-        assert_eq!(read_native_str(text), b"runtime str");
-        assert_eq!(read_native_str(repr), b"runtime repr");
-        for value in [text, repr, object] {
-            molt_cpython_abi::api::refcount::Py_DECREF(value);
+    struct ResetMode;
+    impl Drop for ResetMode {
+        fn drop(&mut self) {
+            STRINGIFY_MODE.with(|mode| mode.set(StringifyMode::Scalars));
         }
     }
+    let _reset = ResetMode;
+    let bits = support::fake_runtime::fresh_handle();
+    unsafe {
+        use molt_cpython_abi::api::{refcount::OwnedPyObject, typeobj};
+        let object = OwnedPyObject::from_owned(
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits),
+        );
+        assert!(!object.as_ptr().is_null());
+        let text = OwnedPyObject::from_owned(typeobj::PyObject_Str(object.as_ptr()));
+        let repr = OwnedPyObject::from_owned(typeobj::PyObject_Repr(object.as_ptr()));
+        assert_eq!(read_native_str(text.as_ptr()), b"runtime str");
+        assert_eq!(read_native_str(repr.as_ptr()), b"runtime repr");
+        assert!(support::fake_runtime::contains(bits));
+    }
+    assert!(
+        !support::fake_runtime::contains(bits),
+        "last C owner releases the fixture object"
+    );
 }
 
 #[test]
 fn managed_stringification_failure_does_not_fall_back_or_replace_the_error() {
-    install();
+    let _abi_test = install();
     STRINGIFY_MODE.with(|mode| mode.set(StringifyMode::Failure));
     unsafe {
         use molt_cpython_abi::api::{errors, numbers, refcount, typeobj};
@@ -266,7 +267,7 @@ fn managed_stringification_failure_does_not_fall_back_or_replace_the_error() {
 
 #[test]
 fn foreign_object_str_dispatches_tp_str() {
-    install();
+    let _abi_test = install();
     let ty = make_type(c"Widget".as_ptr(), Some(foreign_str), Some(foreign_repr));
     let inst = make_instance(ty);
     let s = unsafe { molt_cpython_abi::api::typeobj::PyObject_Str(inst) };
@@ -281,7 +282,7 @@ fn foreign_object_str_dispatches_tp_str() {
 
 #[test]
 fn foreign_object_repr_dispatches_tp_repr() {
-    install();
+    let _abi_test = install();
     let ty = make_type(c"Widget".as_ptr(), Some(foreign_str), Some(foreign_repr));
     let inst = make_instance(ty);
     let r = unsafe { molt_cpython_abi::api::typeobj::PyObject_Repr(inst) };
@@ -291,7 +292,7 @@ fn foreign_object_repr_dispatches_tp_repr() {
 
 #[test]
 fn foreign_str_falls_back_to_repr_when_tp_str_null() {
-    install();
+    let _abi_test = install();
     // tp_str == NULL: CPython PyObject_Str falls back to PyObject_Repr -> tp_repr.
     let ty = make_type(c"Widget".as_ptr(), None, Some(foreign_repr));
     let inst = make_instance(ty);
@@ -302,7 +303,7 @@ fn foreign_str_falls_back_to_repr_when_tp_str_null() {
 
 #[test]
 fn foreign_repr_default_is_type_name_and_address() {
-    install();
+    let _abi_test = install();
     // tp_repr == NULL: CPython default "<%s object at %p>".
     let ty = make_type(c"gadget".as_ptr(), None, None);
     let inst = make_instance(ty);
@@ -317,7 +318,7 @@ fn foreign_repr_default_is_type_name_and_address() {
 
 #[test]
 fn foreign_str_slot_returning_non_string_raises_typeerror() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let ty = make_type(c"Liar".as_ptr(), Some(foreign_str_returns_int), None);
     let inst = make_instance(ty);
@@ -336,7 +337,7 @@ fn foreign_str_slot_returning_non_string_raises_typeerror() {
 
 #[test]
 fn foreign_str_slot_exception_propagates_without_placeholder() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let ty = make_type(c"Raises".as_ptr(), Some(foreign_str_raises), None);
     let inst = make_instance(ty);
@@ -348,7 +349,7 @@ fn foreign_str_slot_exception_propagates_without_placeholder() {
 
 #[test]
 fn recursive_repr_raises_instead_of_overflowing_or_fabricating() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let ty = make_type(c"Recursive".as_ptr(), None, Some(recursive_repr));
     let inst = make_instance(ty);
@@ -360,7 +361,7 @@ fn recursive_repr_raises_instead_of_overflowing_or_fabricating() {
 
 #[test]
 fn null_object_str_is_angle_null() {
-    install();
+    let _abi_test = install();
     let s = unsafe { molt_cpython_abi::api::typeobj::PyObject_Str(ptr::null_mut()) };
     assert!(!s.is_null());
     assert_eq!(unsafe { read_native_str(s) }, b"<NULL>");
@@ -372,7 +373,7 @@ fn null_object_str_is_angle_null() {
 
 #[test]
 fn unicode_formatter_applies_integer_lengths_width_and_precision() {
-    install();
+    let _abi_test = install();
     let out = unsafe {
         molt_cpython_abi::api::errors::PyUnicode_FromFormat(
             c"%05d|%i|%-6u|%08.4x|%ld|%llo|%zu|%td|%jd|%X".as_ptr(),
@@ -397,7 +398,7 @@ fn unicode_formatter_applies_integer_lengths_width_and_precision() {
 
 #[test]
 fn unicode_formatter_handles_utf8_wide_unicode_and_v_fallbacks() {
-    install();
+    let _abi_test = install();
     let unicode = unsafe {
         molt_cpython_abi::api::strings::PyUnicode_FromStringAndSize(
             "éxy".as_ptr().cast(),
@@ -430,7 +431,7 @@ fn unicode_formatter_handles_utf8_wide_unicode_and_v_fallbacks() {
 
 #[test]
 fn unicode_formatter_replacement_decoder_matches_terminal_and_middle_errors() {
-    install();
+    let _abi_test = install();
     let incomplete = [0xe2_u8, 0x82, 0];
     let out = unsafe {
         molt_cpython_abi::api::errors::PyUnicode_FromFormat(
@@ -467,7 +468,7 @@ fn unicode_formatter_replacement_decoder_matches_terminal_and_middle_errors() {
 
 #[test]
 fn formatter_inline_storage_avoids_heap_and_counts_boundary_spill() {
-    install();
+    let _abi_test = install();
     let inline = std::ffi::CString::new("x".repeat(255)).unwrap();
     let mut allocations = usize::MAX;
     let out = unsafe {
@@ -529,7 +530,7 @@ fn formatter_inline_storage_avoids_heap_and_counts_boundary_spill() {
 
 #[test]
 fn unicode_formatter_supports_object_and_type_conversions() {
-    install();
+    let _abi_test = install();
     let ty = make_type(
         c"pkg.Widget".as_ptr(),
         Some(foreign_str),
@@ -579,7 +580,7 @@ fn unicode_formatter_supports_object_and_type_conversions() {
 
 #[test]
 fn negative_star_precision_is_zero_for_every_string_conversion() {
-    install();
+    let _abi_test = install();
     let unicode = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"abcd".as_ptr()) };
     assert!(!unicode.is_null());
     let wide: [libc::wchar_t; 5] = [b'w' as _, b'i' as _, b'd' as _, b'e' as _, 0];
@@ -632,7 +633,7 @@ fn negative_star_precision_is_zero_for_every_string_conversion() {
 #[cfg(all(windows, target_pointer_width = "64"))]
 #[test]
 fn pointer_format_preserves_windows_printf_width_and_case() {
-    install();
+    let _abi_test = install();
     let pointer = 0xabcdefusize as *mut std::ffi::c_void;
     let out =
         unsafe { molt_cpython_abi::api::errors::PyUnicode_FromFormat(c"%p".as_ptr(), pointer) };
@@ -642,7 +643,7 @@ fn pointer_format_preserves_windows_printf_width_and_case() {
 
 #[test]
 fn signed_integer_max_precision_overflow_fails_before_allocation() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let format = std::ffi::CString::new(format!("%.{}d", isize::MAX)).unwrap();
     let out =
@@ -661,7 +662,7 @@ fn signed_integer_max_precision_overflow_fails_before_allocation() {
 
 #[test]
 fn lone_surrogate_c_is_known_utf8_storage_limit_and_fails_closed() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let out =
         unsafe { molt_cpython_abi::api::errors::PyUnicode_FromFormat(c"%c".as_ptr(), 0xd800_i32) };
@@ -683,7 +684,7 @@ fn lone_surrogate_c_is_known_utf8_storage_limit_and_fails_closed() {
 
 #[test]
 fn pyerr_format_preserves_formatter_and_repr_errors() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let result = unsafe {

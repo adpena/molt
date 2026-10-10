@@ -13,65 +13,22 @@ use molt_cpython_abi::abi_types::{
     Py_False, Py_NotImplementedSentinel, Py_True, PyMemberDef, PyObject, PyTypeObject,
 };
 use molt_cpython_abi::hooks::RuntimeHooks;
-use molt_lang_obj_model::MoltObject;
-use std::collections::HashMap;
 use std::os::raw::c_int;
 use std::ptr;
 use std::sync::Mutex;
 
-// ── Minimal native-string backend (for name/message round-trips) ─────────────
-static STR_MAP: Mutex<Option<HashMap<u64, &'static [u8]>>> = Mutex::new(None);
-fn str_map() -> std::sync::MutexGuard<'static, Option<HashMap<u64, &'static [u8]>>> {
-    let mut g = STR_MAP.lock().unwrap();
-    if g.is_none() {
-        *g = Some(HashMap::new());
-    }
-    g
-}
-unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
-    let bytes: Vec<u8> = if data.is_null() || len == 0 {
-        Vec::from(&b"\0"[..])
-    } else {
-        unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
-    };
-    let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-    let handle = MoltObject::from_ptr(leaked.as_ptr() as *mut u8).bits();
-    let view: &'static [u8] = if len == 0 { &leaked[..0] } else { leaked };
-    str_map().as_mut().unwrap().insert(handle, view);
-    handle
-}
-unsafe extern "C" fn fake_str_data(bits: u64, out_len: *mut usize) -> *const u8 {
-    if let Some(&v) = str_map().as_ref().unwrap().get(&bits) {
-        unsafe { *out_len = v.len() };
-        return v.as_ptr();
-    }
-    unsafe { *out_len = 0 };
-    ptr::null()
-}
-unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
-    use molt_cpython_abi::abi_types::MoltTypeTag;
-    if str_map().as_ref().unwrap().contains_key(&bits) {
-        MoltTypeTag::Str as u8
-    } else {
-        MoltTypeTag::Other as u8
-    }
-}
-unsafe extern "C" fn noop_ref(_: u64) {}
-fn install() {
+// The shared fixture supplies real string/numeric payload and edge ownership.
+fn install() -> support::AbiTestThreadStateTransaction {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.alloc_str = fake_alloc_str;
-    hooks.str_data = fake_str_data;
-    hooks.classify_heap = fake_classify_heap;
-    hooks.inc_ref = noop_ref;
-    hooks.dec_ref = noop_ref;
-    support::prepare_runtime_class_abi_test_thread(hooks);
+    support::fake_runtime::wire(&mut hooks);
+    support::enter_runtime_class_abi_test(hooks)
 }
 unsafe fn read_str(py: *mut PyObject) -> Vec<u8> {
-    let bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-        .pyobj_to_handle(py)
-        .map(|identity| identity.as_handle())
-        .expect("bridge str");
-    str_map().as_ref().unwrap().get(&bits).unwrap().to_vec()
+    let mut length = 0;
+    let data =
+        unsafe { molt_cpython_abi::api::strings::PyUnicode_AsUTF8AndSize(py, &raw mut length) };
+    assert!(!data.is_null() && length >= 0);
+    unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length as usize) }.to_vec()
 }
 
 fn new_type() -> Box<PyTypeObject> {
@@ -93,7 +50,7 @@ fn make_instance(ty: *mut PyTypeObject) -> *mut PyObject {
 
 #[test]
 fn issubtype_base_chain_and_object_terminal() {
-    install();
+    let _abi_test = install();
     let object = &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type;
     let mut a = new_type();
     a.tp_base = object;
@@ -136,7 +93,7 @@ fn issubtype_base_chain_and_object_terminal() {
 
 #[test]
 fn type_check_accepts_metaclass_subclass_instances() {
-    install();
+    let _abi_test = install();
     let type_type = &raw mut molt_cpython_abi::abi_types::PyType_Type;
     // A metaclass M whose base is `type`.
     let mut meta = new_type();
@@ -169,7 +126,7 @@ fn type_check_accepts_metaclass_subclass_instances() {
 
 #[test]
 fn get_name_strips_dotted_module_prefix() {
-    install();
+    let _abi_test = install();
     let mut ty = new_type();
     ty.tp_name = c"numpy.dtypes.BoolDType".as_ptr();
     let ty = leak_type(ty);
@@ -187,7 +144,7 @@ fn get_name_strips_dotted_module_prefix() {
 
 #[test]
 fn hash_of_native_int_is_its_value() {
-    install();
+    let _abi_test = install();
     let py = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(1234) };
     assert_eq!(
         unsafe { molt_cpython_abi::api::typeobj::PyObject_Hash(py) },
@@ -197,7 +154,7 @@ fn hash_of_native_int_is_its_value() {
 
 #[test]
 fn hash_of_unhashable_foreign_raises_typeerror() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut ty = new_type();
     ty.tp_name = c"Unhashable".as_ptr();
@@ -228,7 +185,7 @@ unsafe extern "C" fn custom_alloc(_t: *mut PyTypeObject, _n: isize) -> *mut PyOb
 
 #[test]
 fn generic_new_dispatches_custom_tp_alloc() {
-    install();
+    let _abi_test = install();
     *ALLOC_CALLED.lock().unwrap() = false;
     let mut ty = new_type();
     ty.tp_alloc = Some(custom_alloc);
@@ -262,7 +219,7 @@ fn member(type_: c_int, offset: isize) -> PyMemberDef {
 
 #[test]
 fn set_one_writes_int_member() {
-    install();
+    let _abi_test = install();
     let mut storage: [u8; 32] = [0; 32];
     let mut m = member(T_INT, 0);
     let v = unsafe { molt_cpython_abi::api::numbers::PyLong_FromLong(999) };
@@ -279,7 +236,7 @@ fn set_one_writes_int_member() {
 
 #[test]
 fn set_one_bool_rejects_non_bool() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut storage: [u8; 8] = [0; 8];
     let mut m = member(T_BOOL, 0);
@@ -304,7 +261,7 @@ fn set_one_bool_rejects_non_bool() {
 
 #[test]
 fn set_one_char_requires_single_char_string() {
-    install();
+    let _abi_test = install();
     let mut storage: [u8; 8] = [0; 8];
     let mut m = member(T_CHAR, 0);
     let v = unsafe { molt_cpython_abi::api::strings::PyUnicode_FromString(c"Q".as_ptr()) };
@@ -317,7 +274,7 @@ fn set_one_char_requires_single_char_string() {
 
 #[test]
 fn set_one_delete_numeric_is_typeerror() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut storage: [u8; 8] = [0; 8];
     let mut m = member(T_INT, 0);
@@ -331,6 +288,792 @@ fn set_one_delete_numeric_is_typeerror() {
     assert_eq!(rc, -1, "deleting a numeric member is a TypeError");
     assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+// The oracle is the pinned CPython 3.12/3.13/3.14 structmember contract. Test
+// inputs use the public byte-array integer constructor; expected field bytes
+// come from target C widths, not from PyMember_GetOne or another setter.
+use molt_cpython_abi::abi_types as member_abi;
+use molt_cpython_abi::api::{errors, numbers, object, refcount, typeobj};
+use std::cell::{Cell, RefCell};
+use std::ffi::{c_char, c_long, c_ulong, c_void};
+
+const T_SHORT: c_int = 0;
+const T_LONG: c_int = 2;
+const T_FLOAT: c_int = 3;
+const T_DOUBLE: c_int = 4;
+const T_BYTE: c_int = 8;
+const T_UBYTE: c_int = 9;
+const T_USHORT: c_int = 10;
+const T_UINT: c_int = 11;
+const T_ULONG: c_int = 12;
+const T_LONGLONG: c_int = 17;
+const T_ULONGLONG: c_int = 18;
+const T_PYSSIZET: c_int = 19;
+const T_STRING: c_int = 5;
+const T_STRING_INPLACE: c_int = 13;
+const T_OBJECT: c_int = 6;
+const T_OBJECT_EX: c_int = 16;
+
+unsafe fn assert_member_error(exception: *mut PyObject, message: &str) {
+    assert_eq!(unsafe { errors::PyErr_ExceptionMatches(exception) }, 1);
+    assert_eq!(support::take_current_error_text().as_deref(), Some(message));
+    assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+}
+
+#[test]
+fn member_relative_offset_is_rejected_before_other_admission() {
+    let _abi_test = install_member_protocol();
+    unsafe {
+        for minor in [12, 13, 14] {
+            MEMBER_TARGET.with(|target| target.set(minor));
+            // All addresses are in bounds even for an implementation missing
+            // the guard. NONE and unknown types also prove type-independent admission.
+            for ty in [T_INT, T_STRING_INPLACE, 20, 999] {
+                for flags in [
+                    member_abi::Py_RELATIVE_OFFSET,
+                    member_abi::Py_RELATIVE_OFFSET | 1,
+                ] {
+                    let mut storage = [0u64; 4];
+                    let before = storage;
+                    let mut definition = member(ty, 8);
+                    definition.flags = flags;
+                    assert!(
+                        typeobj::PyMember_GetOne(storage.as_ptr().cast(), &raw mut definition,)
+                            .is_null()
+                    );
+                    assert_member_error(
+                        (&raw mut member_abi::PyExc_SystemError).cast(),
+                        "PyMember_GetOne used with Py_RELATIVE_OFFSET",
+                    );
+                    for value in [(&raw mut Py_True).cast::<PyObject>(), ptr::null_mut()] {
+                        assert_eq!(
+                            typeobj::PyMember_SetOne(
+                                storage.as_mut_ptr().cast(),
+                                &raw mut definition,
+                                value,
+                            ),
+                            -1
+                        );
+                        assert_member_error(
+                            (&raw mut member_abi::PyExc_SystemError).cast(),
+                            "PyMember_SetOne used with Py_RELATIVE_OFFSET",
+                        );
+                        assert_eq!(storage, before);
+                    }
+                }
+            }
+            // Clearing the error leaves ordinary member access usable.
+            let mut field: c_int = 41;
+            let mut definition = member(T_INT, 0);
+            assert_eq!(
+                typeobj::PyMember_SetOne(
+                    (&raw mut field).cast(),
+                    &raw mut definition,
+                    (&raw mut Py_True).cast()
+                ),
+                0
+            );
+            assert_eq!(field, 1);
+        }
+    }
+}
+
+#[test]
+fn member_inline_string_reads_storage_and_preserves_readonly_precedence() {
+    let _abi_test = install_member_protocol();
+    unsafe {
+        for minor in [12, 13, 14] {
+            MEMBER_TARGET.with(|target| target.set(minor));
+            for payload in [b"\0".as_slice(), b"h\xc3\xa9\0ignored".as_slice()] {
+                let mut storage = [0xa5u8; 24];
+                storage[1..1 + payload.len()].copy_from_slice(payload);
+                let before = storage;
+                let mut definition = member(T_STRING_INPLACE, 1);
+                let value = refcount::OwnedPyObject::from_owned(typeobj::PyMember_GetOne(
+                    storage.as_ptr().cast(),
+                    &raw mut definition,
+                ));
+                assert!(!value.as_ptr().is_null());
+                let end = payload.iter().position(|byte| *byte == 0).unwrap();
+                assert_eq!(read_str(value.as_ptr()), &payload[..end]);
+                assert_eq!(storage, before);
+                for flags in [0, 1] {
+                    definition.flags = flags;
+                    for replacement in [(&raw mut Py_True).cast::<PyObject>(), ptr::null_mut()] {
+                        assert_eq!(
+                            typeobj::PyMember_SetOne(
+                                storage.as_mut_ptr().cast(),
+                                &raw mut definition,
+                                replacement,
+                            ),
+                            -1
+                        );
+                        let (exception, message) = if flags != 0 {
+                            (
+                                (&raw mut member_abi::PyExc_AttributeError).cast(),
+                                "readonly attribute",
+                            )
+                        } else if replacement.is_null() {
+                            (
+                                (&raw mut member_abi::PyExc_TypeError).cast(),
+                                "can't delete numeric/char attribute",
+                            )
+                        } else {
+                            (
+                                (&raw mut member_abi::PyExc_TypeError).cast(),
+                                "readonly attribute",
+                            )
+                        };
+                        assert_member_error(exception, message);
+                        assert_eq!(storage, before);
+                    }
+                }
+            }
+            // STRING still dereferences a pointer; STRING_INPLACE reads the
+            // bytes at the field. Both use the canonical UTF-8 string constructor.
+            let indirect = c"indirect".as_ptr();
+            let mut definition = member(T_STRING, 0);
+            let result = refcount::OwnedPyObject::from_owned(typeobj::PyMember_GetOne(
+                (&raw const indirect).cast(),
+                &raw mut definition,
+            ));
+            assert!(!result.as_ptr().is_null());
+            assert_eq!(read_str(result.as_ptr()), b"indirect");
+            let invalid = [0xffu8, 0];
+            definition.type_ = T_STRING_INPLACE;
+            assert!(
+                typeobj::PyMember_GetOne(invalid.as_ptr().cast(), &raw mut definition).is_null()
+            );
+            assert_eq!(
+                errors::PyErr_ExceptionMatches(
+                    (&raw mut member_abi::PyExc_UnicodeDecodeError).cast()
+                ),
+                1
+            );
+            errors::PyErr_Clear();
+        }
+    }
+}
+
+#[test]
+fn member_missing_object_and_unknown_type_use_pinned_diagnostics() {
+    let _abi_test = install_member_protocol();
+    #[repr(C)]
+    struct Record {
+        base: PyObject,
+        value: *mut PyObject,
+    }
+    let name = std::ffi::CString::new(format!("pkg.{}", "Q".repeat(205))).unwrap();
+    let mut class = new_type();
+    class.ob_base.ob_base = PyObject {
+        ob_refcnt: 1,
+        ob_type: &raw mut member_abi::PyType_Type,
+    };
+    class.tp_base = &raw mut member_abi::PyBaseObject_Type;
+    class.tp_name = name.as_ptr();
+    let mut record = Record {
+        base: PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut *class,
+        },
+        value: ptr::null_mut(),
+    };
+    let mut definition = member(T_OBJECT_EX, std::mem::offset_of!(Record, value) as isize);
+    unsafe {
+        for minor in [12, 13, 14] {
+            MEMBER_TARGET.with(|target| target.set(minor));
+            assert!(
+                typeobj::PyMember_GetOne((&raw const record).cast(), &raw mut definition,)
+                    .is_null()
+            );
+            let type_name = if minor == 12 {
+                &name.to_bytes()[..200]
+            } else {
+                name.to_bytes()
+            };
+            assert_member_error(
+                (&raw mut member_abi::PyExc_AttributeError).cast(),
+                &format!(
+                    "'{}' object has no attribute 'field'",
+                    std::str::from_utf8(type_name).unwrap()
+                ),
+            );
+            assert_eq!(
+                typeobj::PyMember_SetOne(
+                    (&raw mut record).cast(),
+                    &raw mut definition,
+                    ptr::null_mut(),
+                ),
+                -1
+            );
+            assert_member_error((&raw mut member_abi::PyExc_AttributeError).cast(), "field");
+            definition.type_ = T_OBJECT;
+            let none = refcount::OwnedPyObject::from_owned(typeobj::PyMember_GetOne(
+                (&raw const record).cast(),
+                &raw mut definition,
+            ));
+            assert_eq!(none.as_ptr(), &raw mut member_abi::Py_None);
+            assert!(errors::PyErr_Occurred().is_null());
+            definition.type_ = 999;
+            assert!(
+                typeobj::PyMember_GetOne((&raw const record).cast(), &raw mut definition,)
+                    .is_null()
+            );
+            assert_member_error(
+                (&raw mut member_abi::PyExc_SystemError).cast(),
+                "bad memberdescr type",
+            );
+            assert_eq!(
+                typeobj::PyMember_SetOne(
+                    (&raw mut record).cast(),
+                    &raw mut definition,
+                    (&raw mut Py_True).cast(),
+                ),
+                -1
+            );
+            assert_member_error(
+                (&raw mut member_abi::PyExc_SystemError).cast(),
+                "bad memberdescr type for field",
+            );
+            assert!(record.value.is_null());
+            assert_eq!(class.ob_base.ob_base.ob_refcnt, 1);
+            definition.type_ = T_OBJECT_EX;
+        }
+    }
+}
+
+thread_local! {
+    static MEMBER_TARGET: Cell<i64> = const { Cell::new(12) };
+    static MEMBER_INDEX_CALLS: Cell<usize> = const { Cell::new(0) };
+    static MEMBER_RESULT: Cell<usize> = const { Cell::new(0) };
+    static MEMBER_ERROR: Cell<usize> = const { Cell::new(0) };
+    static MEMBER_TRANSFER_RESULT: Cell<bool> = const { Cell::new(false) };
+    static MEMBER_STORAGE: Cell<usize> = const { Cell::new(0) };
+    static MEMBER_WARNING_BYTES: RefCell<Vec<[u8; 24]>> = const { RefCell::new(Vec::new()) };
+    static MEMBER_FINALIZERS: Cell<usize> = const { Cell::new(0) };
+    static MEMBER_FINALIZER_BYTES: Cell<[u8; 24]> = const { Cell::new([0; 24]) };
+}
+
+unsafe extern "C" fn member_target_minor() -> i64 {
+    MEMBER_TARGET.with(Cell::get)
+}
+
+unsafe extern "C" fn member_index(_object: *mut PyObject) -> *mut PyObject {
+    MEMBER_INDEX_CALLS.with(|count| count.set(count.get() + 1));
+    let error = MEMBER_ERROR.with(Cell::get) as *mut PyObject;
+    if !error.is_null() {
+        unsafe { errors::PyErr_SetRaisedException(object::Py_NewRef(error)) };
+        return ptr::null_mut();
+    }
+    let result = MEMBER_RESULT.with(Cell::get) as *mut PyObject;
+    if MEMBER_TRANSFER_RESULT.with(Cell::get) {
+        result
+    } else {
+        unsafe { object::Py_NewRef(result) }
+    }
+}
+
+fn member_storage_snapshot() -> [u8; 24] {
+    let addr = MEMBER_STORAGE.with(Cell::get) as *const [u8; 24];
+    assert!(!addr.is_null());
+    unsafe { *addr }
+}
+
+fn observe_member_warning() {
+    MEMBER_WARNING_BYTES.with(|observations| {
+        observations.borrow_mut().push(member_storage_snapshot());
+    });
+}
+
+unsafe extern "C" fn member_result_finalizer(_object: *mut PyObject) {
+    MEMBER_FINALIZERS.with(|count| count.set(count.get() + 1));
+    MEMBER_FINALIZER_BYTES.with(|bytes| bytes.set(member_storage_snapshot()));
+    unsafe {
+        errors::PyErr_SetString(
+            (&raw mut member_abi::PyExc_LookupError).cast(),
+            c"member temporary finalizer".as_ptr(),
+        )
+    };
+}
+
+fn install_member_protocol() -> support::AbiTestThreadStateTransaction {
+    let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
+    support::fake_runtime::wire(&mut hooks);
+    hooks.target_python_minor = member_target_minor;
+    hooks.import_module = support::warnings::import_module;
+    let transaction = support::enter_runtime_class_abi_test(hooks);
+    MEMBER_TARGET.with(|value| value.set(12));
+    MEMBER_RESULT.with(|value| value.set(0));
+    MEMBER_ERROR.with(|value| value.set(0));
+    MEMBER_TRANSFER_RESULT.with(|value| value.set(false));
+    MEMBER_FINALIZERS.with(|value| value.set(0));
+    transaction
+}
+
+unsafe fn member_integer(value: i128) -> refcount::OwnedPyObject {
+    let bytes = value.to_le_bytes();
+    let result = unsafe { numbers::_PyLong_FromByteArray(bytes.as_ptr(), bytes.len(), 1, 1) };
+    assert!(!result.is_null());
+    unsafe { refcount::OwnedPyObject::from_owned(result) }
+}
+
+unsafe fn write_member(ty: c_int, value: *mut PyObject, offset: usize) -> (c_int, [u8; 24]) {
+    // Wide fields deliberately use offset 1. Other fields start aligned.
+    let mut storage = [u64::from_ne_bytes([0xa5; 8]); 3];
+    let mut descriptor = member(ty, offset as isize);
+    MEMBER_INDEX_CALLS.with(|value| value.set(0));
+    MEMBER_WARNING_BYTES.with(|value| value.borrow_mut().clear());
+    MEMBER_STORAGE.with(|value| value.set(storage.as_mut_ptr() as usize));
+    let result = unsafe {
+        typeobj::PyMember_SetOne(storage.as_mut_ptr().cast(), &raw mut descriptor, value)
+    };
+    let bytes = member_storage_snapshot();
+    MEMBER_STORAGE.with(|value| value.set(0));
+    (result, bytes)
+}
+
+fn expected_member_bytes(offset: usize, field: &[u8]) -> [u8; 24] {
+    let mut expected = [0xa5; 24];
+    expected[offset..offset + field.len()].copy_from_slice(field);
+    expected
+}
+
+fn integer_field_bytes(ty: c_int, value: i128) -> Vec<u8> {
+    match ty {
+        T_BYTE | T_UBYTE => vec![value as u8],
+        T_SHORT | T_USHORT => (value as u16).to_ne_bytes().to_vec(),
+        T_INT | T_UINT => (value as u32).to_ne_bytes().to_vec(),
+        T_LONG | T_ULONG => (value as c_ulong).to_ne_bytes().to_vec(),
+        T_PYSSIZET => (value as usize).to_ne_bytes().to_vec(),
+        T_LONGLONG | T_ULONGLONG => (value as u64).to_ne_bytes().to_vec(),
+        _ => panic!("noninteger fixture type"),
+    }
+}
+
+fn assert_member_warning(message: &str, expected: [u8; 24]) {
+    let warnings = support::warnings::emissions();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(warnings[0].message, message);
+    assert_eq!(
+        warnings[0].category,
+        (&raw mut member_abi::PyExc_RuntimeWarning) as usize
+    );
+    assert_eq!(warnings[0].stacklevel, 1);
+    MEMBER_WARNING_BYTES.with(|value| assert_eq!(*value.borrow(), vec![expected]));
+}
+
+#[test]
+fn member_narrow_boundaries_warn_after_write_including_warning_errors() {
+    let _abi_test = install_member_protocol();
+    support::warnings::with_provider(|| unsafe {
+        support::warnings::set_observer(Some(observe_member_warning));
+        for minor in [12, 13, 14] {
+            MEMBER_TARGET.with(|value| value.set(minor));
+            for (ty, minimum, maximum, message) in [
+                (
+                    T_BYTE,
+                    c_char::MIN as i128,
+                    c_char::MAX as i128,
+                    "Truncation of value to char",
+                ),
+                (
+                    T_UBYTE,
+                    0,
+                    u8::MAX as i128,
+                    "Truncation of value to unsigned char",
+                ),
+                (
+                    T_SHORT,
+                    i16::MIN as i128,
+                    i16::MAX as i128,
+                    "Truncation of value to short",
+                ),
+                (
+                    T_USHORT,
+                    0,
+                    u16::MAX as i128,
+                    "Truncation of value to unsigned short",
+                ),
+                (
+                    T_INT,
+                    c_int::MIN as i128,
+                    c_int::MAX as i128,
+                    "Truncation of value to int",
+                ),
+            ] {
+                for input in [minimum - 1, minimum, maximum, maximum + 1] {
+                    let integer = member_integer(input);
+                    for warning_error in [false, true] {
+                        support::warnings::clear();
+                        support::warnings::set_as_error(warning_error);
+                        let (result, bytes) = write_member(ty, integer.as_ptr(), 0);
+                        if input < c_long::MIN as i128 || input > c_long::MAX as i128 {
+                            assert_eq!(result, -1);
+                            assert_eq!(bytes, [0xa5; 24]);
+                            assert_eq!(
+                                errors::PyErr_ExceptionMatches(
+                                    (&raw mut member_abi::PyExc_OverflowError).cast()
+                                ),
+                                1
+                            );
+                            assert!(support::warnings::emissions().is_empty());
+                        } else {
+                            let expected =
+                                expected_member_bytes(0, &integer_field_bytes(ty, input));
+                            assert_eq!(bytes, expected);
+                            if input < minimum || input > maximum {
+                                assert_eq!(result, if warning_error { -1 } else { 0 });
+                                assert_member_warning(message, expected);
+                                if warning_error {
+                                    assert_eq!(
+                                        errors::PyErr_ExceptionMatches(
+                                            (&raw mut member_abi::PyExc_RuntimeWarning).cast()
+                                        ),
+                                        1
+                                    );
+                                    assert_eq!(
+                                        support::take_current_error_text().as_deref(),
+                                        Some(message)
+                                    );
+                                }
+                            } else {
+                                assert_eq!(result, 0);
+                                assert!(support::warnings::emissions().is_empty());
+                            }
+                        }
+                        if result == 0 {
+                            assert!(errors::PyErr_Occurred().is_null());
+                        }
+                        errors::PyErr_Clear();
+                    }
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn member_unsigned_index_once_full_width_and_c_long_negative_boundary() {
+    let _abi_test = install_member_protocol();
+    support::warnings::with_provider(|| unsafe {
+        support::warnings::set_observer(Some(observe_member_warning));
+        let mut slots: member_abi::PyNumberMethods = std::mem::zeroed();
+        slots.nb_index = member_index as *const () as *mut c_void;
+        let mut class = support::StaticType::new();
+        class.ob_base.ob_base.ob_type = &raw mut member_abi::PyType_Type;
+        class.tp_name = c"MemberIndex".as_ptr();
+        class.tp_as_number = (&raw mut slots).cast();
+        let mut input_object = PyObject {
+            ob_refcnt: 1,
+            ob_type: class.as_ptr(),
+        };
+        for minor in [12, 13, 14] {
+            MEMBER_TARGET.with(|value| value.set(minor));
+            for ty in [T_UINT, T_ULONG, T_ULONGLONG] {
+                let maximum = if ty == T_ULONGLONG {
+                    u64::MAX as i128
+                } else {
+                    c_ulong::MAX as i128
+                };
+                let offset = usize::from(ty == T_ULONGLONG);
+                for input in [
+                    -1,
+                    c_long::MIN as i128,
+                    c_long::MIN as i128 - 1,
+                    0,
+                    u32::MAX as i128,
+                    u32::MAX as i128 + 1,
+                    maximum,
+                    maximum + 1,
+                ] {
+                    let integer = member_integer(input);
+                    let refs = (*integer.as_ptr()).ob_refcnt;
+                    MEMBER_RESULT.with(|value| value.set(integer.as_ptr() as usize));
+                    for warning_error in [false, true] {
+                        support::warnings::clear();
+                        support::warnings::set_as_error(warning_error);
+                        let (result, bytes) = write_member(ty, &raw mut input_object, offset);
+                        assert_eq!(MEMBER_INDEX_CALLS.with(Cell::get), 1);
+                        assert_eq!((*integer.as_ptr()).ob_refcnt, refs);
+                        if input < c_long::MIN as i128 || input > maximum {
+                            assert_eq!(result, -1);
+                            assert_eq!(bytes, [0xa5; 24]);
+                            assert_eq!(
+                                errors::PyErr_ExceptionMatches(
+                                    (&raw mut member_abi::PyExc_OverflowError).cast()
+                                ),
+                                1
+                            );
+                            assert!(support::warnings::emissions().is_empty());
+                        } else {
+                            let expected =
+                                expected_member_bytes(offset, &integer_field_bytes(ty, input));
+                            assert_eq!(bytes, expected);
+                            let warning = if input < 0 {
+                                Some("Writing negative value into unsigned field")
+                            } else if ty == T_UINT && input > u32::MAX as i128 {
+                                Some("Truncation of value to unsigned int")
+                            } else {
+                                None
+                            };
+                            if let Some(message) = warning {
+                                assert_eq!(result, if warning_error { -1 } else { 0 });
+                                assert_member_warning(message, expected);
+                                if warning_error {
+                                    assert_eq!(
+                                        support::take_current_error_text().as_deref(),
+                                        Some(message)
+                                    );
+                                }
+                            } else {
+                                assert_eq!(result, 0);
+                                assert!(support::warnings::emissions().is_empty());
+                            }
+                        }
+                        if result == 0 {
+                            assert!(errors::PyErr_Occurred().is_null());
+                        }
+                        errors::PyErr_Clear();
+                    }
+                }
+            }
+        }
+        MEMBER_RESULT.with(|value| value.set(0));
+        assert_eq!(input_object.ob_refcnt, 1);
+    });
+}
+
+#[test]
+fn member_converter_errors_preserve_identity_and_versioned_write_order() {
+    let _abi_test = install_member_protocol();
+    support::warnings::with_provider(|| unsafe {
+        let mut slots: member_abi::PyNumberMethods = std::mem::zeroed();
+        slots.nb_index = member_index as *const () as *mut c_void;
+        slots.nb_float = member_index as *const () as *mut c_void;
+        let mut class = support::StaticType::new();
+        class.ob_base.ob_base.ob_type = &raw mut member_abi::PyType_Type;
+        class.tp_name = c"FailingMemberNumber".as_ptr();
+        class.tp_as_number = (&raw mut slots).cast();
+        let mut input = PyObject {
+            ob_refcnt: 1,
+            ob_type: class.as_ptr(),
+        };
+        errors::PyErr_SetString(
+            (&raw mut member_abi::PyExc_ValueError).cast(),
+            c"member callback failed exactly".as_ptr(),
+        );
+        let error = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert!(!error.as_ptr().is_null());
+        MEMBER_ERROR.with(|value| value.set(error.as_ptr() as usize));
+        let refs = (*error.as_ptr()).ob_refcnt;
+        for minor in [12, 13, 14] {
+            MEMBER_TARGET.with(|value| value.set(minor));
+            for ty in [
+                T_BYTE,
+                T_UBYTE,
+                T_SHORT,
+                T_USHORT,
+                T_INT,
+                T_UINT,
+                T_LONG,
+                T_ULONG,
+                T_LONGLONG,
+                T_ULONGLONG,
+                T_FLOAT,
+                T_DOUBLE,
+            ] {
+                let offset = usize::from(matches!(ty, T_LONGLONG | T_ULONGLONG | T_DOUBLE));
+                let (result, bytes) = write_member(ty, &raw mut input, offset);
+                assert_eq!(result, -1);
+                assert_eq!(MEMBER_INDEX_CALLS.with(Cell::get), 1);
+                let raised = errors::PyErr_GetRaisedException();
+                assert_eq!(raised, error.as_ptr());
+                refcount::Py_DECREF(raised);
+                assert_eq!((*error.as_ptr()).ob_refcnt, refs);
+                let expected = if minor == 12 && matches!(ty, T_LONG | T_LONGLONG | T_DOUBLE) {
+                    let field = if ty == T_DOUBLE {
+                        (-1.0_f64).to_ne_bytes().to_vec()
+                    } else {
+                        integer_field_bytes(ty, -1)
+                    };
+                    expected_member_bytes(offset, &field)
+                } else {
+                    [0xa5; 24]
+                };
+                assert_eq!(bytes, expected);
+                assert!(support::warnings::emissions().is_empty());
+            }
+            // Ssize_t is intentionally strict, unlike the signed index users.
+            let (result, bytes) = write_member(T_PYSSIZET, &raw mut input, 0);
+            assert_eq!(result, -1);
+            assert_eq!(MEMBER_INDEX_CALLS.with(Cell::get), 0);
+            assert_eq!(
+                errors::PyErr_ExceptionMatches((&raw mut member_abi::PyExc_TypeError).cast()),
+                1
+            );
+            assert_eq!(
+                bytes,
+                if minor == 12 {
+                    expected_member_bytes(0, &integer_field_bytes(T_PYSSIZET, -1))
+                } else {
+                    [0xa5; 24]
+                }
+            );
+            errors::PyErr_Clear();
+        }
+        MEMBER_ERROR.with(|value| value.set(0));
+        assert_eq!(input.ob_refcnt, 1);
+    });
+}
+
+#[test]
+fn member_wide_signed_boundaries_and_legitimate_minus_one() {
+    let _abi_test = install_member_protocol();
+    support::warnings::with_provider(|| unsafe {
+        for minor in [12, 13, 14] {
+            MEMBER_TARGET.with(|value| value.set(minor));
+            for (ty, minimum, maximum) in [
+                (T_LONG, c_long::MIN as i128, c_long::MAX as i128),
+                (T_PYSSIZET, isize::MIN as i128, isize::MAX as i128),
+                (T_LONGLONG, i64::MIN as i128, i64::MAX as i128),
+            ] {
+                for input in [minimum - 1, minimum, -1, maximum, maximum + 1] {
+                    let integer = member_integer(input);
+                    let offset = usize::from(ty == T_LONGLONG);
+                    let (result, bytes) = write_member(ty, integer.as_ptr(), offset);
+                    let overflow = input < minimum || input > maximum;
+                    assert_eq!(result, if overflow { -1 } else { 0 });
+                    let expected = if overflow && minor >= 13 {
+                        [0xa5; 24]
+                    } else {
+                        expected_member_bytes(
+                            offset,
+                            &integer_field_bytes(ty, if overflow { -1 } else { input }),
+                        )
+                    };
+                    assert_eq!(bytes, expected);
+                    if overflow {
+                        assert_eq!(
+                            errors::PyErr_ExceptionMatches(
+                                (&raw mut member_abi::PyExc_OverflowError).cast()
+                            ),
+                            1
+                        );
+                    } else {
+                        assert!(errors::PyErr_Occurred().is_null());
+                    }
+                    assert!(support::warnings::emissions().is_empty());
+                    errors::PyErr_Clear();
+                }
+            }
+            let real = refcount::OwnedPyObject::from_owned(numbers::PyFloat_FromDouble(-1.0));
+            for ty in [T_FLOAT, T_DOUBLE] {
+                let offset = usize::from(ty == T_DOUBLE);
+                let (result, bytes) = write_member(ty, real.as_ptr(), offset);
+                assert_eq!(result, 0);
+                let field = if ty == T_DOUBLE {
+                    (-1.0_f64).to_ne_bytes().to_vec()
+                } else {
+                    (-1.0_f32).to_ne_bytes().to_vec()
+                };
+                assert_eq!(bytes, expected_member_bytes(offset, &field));
+                assert!(errors::PyErr_Occurred().is_null());
+            }
+        }
+    });
+}
+
+#[test]
+fn member_index_subtype_warning_precedes_release_write_and_negative_warning() {
+    let _abi_test = install_member_protocol();
+    support::warnings::with_provider(|| unsafe {
+        support::warnings::set_observer(Some(observe_member_warning));
+        let mut slots: member_abi::PyNumberMethods = std::mem::zeroed();
+        slots.nb_index = member_index as *const () as *mut c_void;
+        let mut class = support::StaticType::new();
+        class.ob_base.ob_base.ob_type = &raw mut member_abi::PyType_Type;
+        class.tp_name = c"MemberIndex".as_ptr();
+        class.tp_as_number = (&raw mut slots).cast();
+        let mut input = PyObject {
+            ob_refcnt: 1,
+            ob_type: class.as_ptr(),
+        };
+        let mut subtype = support::StaticType::new();
+        subtype.ob_base.ob_base.ob_type = &raw mut member_abi::PyType_Type;
+        subtype.tp_base = &raw mut member_abi::PyLong_Type;
+        subtype.tp_name = c"MemberIndexResult".as_ptr();
+        subtype.tp_as_number = (&raw mut slots).cast();
+        subtype.tp_dealloc = Some(member_result_finalizer);
+        for minor in [12, 13, 14] {
+            MEMBER_TARGET.with(|value| value.set(minor));
+            for warning_error in [false, true] {
+                let mut result = member_abi::PyLongObject {
+                    ob_base: PyObject {
+                        ob_refcnt: 1,
+                        ob_type: subtype.as_ptr(),
+                    },
+                    long_value: member_abi::PyLongValue {
+                        lv_tag: 10,
+                        ob_digit: [1],
+                    },
+                };
+                MEMBER_RESULT.with(|value| value.set((&raw mut result) as usize));
+                MEMBER_TRANSFER_RESULT.with(|value| value.set(true));
+                MEMBER_FINALIZERS.with(|value| value.set(0));
+                support::warnings::clear();
+                support::warnings::set_as_error(warning_error);
+                let (status, bytes) = write_member(T_UINT, &raw mut input, 0);
+                assert_eq!(MEMBER_INDEX_CALLS.with(Cell::get), 1);
+                assert_eq!(MEMBER_FINALIZERS.with(Cell::get), 1);
+                assert_eq!(MEMBER_FINALIZER_BYTES.with(Cell::get), [0xa5; 24]);
+                let warnings = support::warnings::emissions();
+                assert_eq!(warnings.len(), if warning_error { 1 } else { 2 });
+                assert!(
+                    warnings[0]
+                        .message
+                        .starts_with("__index__ returned non-int (type MemberIndexResult)")
+                );
+                assert_eq!(
+                    warnings[0].category,
+                    (&raw mut member_abi::PyExc_DeprecationWarning) as usize
+                );
+                if warning_error {
+                    assert_eq!(status, -1);
+                    assert_eq!(bytes, [0xa5; 24]);
+                    assert_eq!(warnings.len(), 1);
+                    assert_eq!(
+                        support::take_current_error_text().as_deref(),
+                        Some(warnings[0].message.as_str())
+                    );
+                    MEMBER_WARNING_BYTES
+                        .with(|value| assert_eq!(*value.borrow(), vec![[0xa5; 24]]));
+                } else {
+                    let expected = expected_member_bytes(0, &u32::MAX.to_ne_bytes());
+                    assert_eq!(status, 0);
+                    assert_eq!(bytes, expected);
+                    assert_eq!(warnings.len(), 2);
+                    assert_eq!(
+                        warnings[1].message,
+                        "Writing negative value into unsigned field"
+                    );
+                    assert_eq!(
+                        warnings[1].category,
+                        (&raw mut member_abi::PyExc_RuntimeWarning) as usize
+                    );
+                    MEMBER_WARNING_BYTES
+                        .with(|value| assert_eq!(*value.borrow(), vec![[0xa5; 24], expected]));
+                    assert!(
+                        errors::PyErr_Occurred().is_null(),
+                        "temporary finalizer error must not escape"
+                    );
+                }
+            }
+        }
+        MEMBER_RESULT.with(|value| value.set(0));
+        MEMBER_TRANSFER_RESULT.with(|value| value.set(false));
+        assert_eq!(input.ob_refcnt, 1);
+    });
 }
 
 // ===========================================================================
@@ -365,7 +1108,7 @@ const PY_LT: c_int = 0;
 
 #[test]
 fn richcompare_reflected_subtype_priority() {
-    install();
+    let _abi_test = install();
     // Base with a slot that says False; Sub (subtype of Base) with a slot that
     // says True. Comparing base_inst == sub_inst must consult Sub's reflected
     // slot FIRST (subtype priority), yielding True.
@@ -391,7 +1134,7 @@ fn richcompare_reflected_subtype_priority() {
 
 #[test]
 fn richcompare_both_notimplemented_resolves_identity_and_ordering() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut ty = new_type();
     ty.tp_base = &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type;
@@ -420,7 +1163,7 @@ fn richcompare_both_notimplemented_resolves_identity_and_ordering() {
 
 #[test]
 fn richcompare_propagates_slot_error() {
-    install();
+    let _abi_test = install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut ty = new_type();
     ty.tp_base = &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type;
@@ -439,7 +1182,7 @@ fn richcompare_propagates_slot_error() {
 
 #[test]
 fn richcomparebool_identity_shortcut() {
-    install();
+    let _abi_test = install();
     let mut ty = new_type();
     ty.tp_base = &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type;
     // A slot that would say NotEqual, to prove the identity shortcut wins.
@@ -457,7 +1200,7 @@ fn richcomparebool_identity_shortcut() {
 fn heap_names_use_distinct_live_unicode_fields() {
     use molt_cpython_abi::abi_types::{Py_TPFLAGS_HEAPTYPE, PyHeapTypeObject};
     use molt_cpython_abi::api::{refcount, strings, typeobj};
-    install();
+    let _abi_test = install();
     let heap = unsafe {
         typeobj::PyType_GenericAlloc(&raw mut molt_cpython_abi::abi_types::PyType_Type, 0)
     }
@@ -485,8 +1228,10 @@ fn heap_names_use_distinct_live_unicode_fields() {
         let renamed = typeobj::PyType_GetName(tp);
         assert_eq!(read_str(renamed), raw_name);
         refcount::Py_DECREF(renamed);
-        refcount::Py_DECREF(heap.ht_name);
-        refcount::Py_DECREF(heap.ht_qualname);
-        molt_cpython_abi::api::memory::PyObject_GC_Del((heap as *mut PyHeapTypeObject).cast());
+        // Release the allocated heap type and all owned roots through its
+        // clear/deallocation slots, not raw storage.
+        let object = (heap as *mut PyHeapTypeObject).cast();
+        assert_eq!(typeobj::molt_type_clear(object), 0);
+        refcount::Py_DECREF(object);
     }
 }

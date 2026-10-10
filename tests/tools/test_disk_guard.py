@@ -30,6 +30,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import tools.disk_guard as dg  # noqa: E402
+from molt import dx  # noqa: E402
 
 _GB = 1024**3
 
@@ -203,6 +204,38 @@ def test_current_session_dir_never_reclaimed(tmp_path):
         env={"MOLT_SESSION_ID": "my-session"},
     )
     assert mine.exists()  # protected in-flight build of THIS process
+    assert not other.exists()
+    reasons = {Path(s["path"]): s["reason"] for s in result.skipped}
+    assert reasons.get(mine.resolve()) == "protected"
+
+
+@pytest.mark.usefixtures("developer_host_context")
+def test_long_current_session_target_is_protected_by_its_real_name(tmp_path):
+    now = 2_000_000.0
+    session = "agent-unit-agent-440e87baa421421f9c0d6f2e-67518"
+    sessions = tmp_path / "target" / "sessions"
+    # RunContext names the pinned session's target; the guard must protect
+    # that directory, not a path spelled from the raw session ID.
+    mine = Path(
+        dx.RunContext(tmp_path).canonical_env(
+            {"PATH": "/usr/bin", "MOLT_SESSION_ID": session}, create_dirs=False
+        )["CARGO_TARGET_DIR"]
+    )
+    assert mine.parent == sessions.resolve()
+    other = sessions / "codex-other"
+    sized = {
+        mine: _make_dir(mine, size_bytes=50 * _GB, age_s=100_000, now=now),
+        other: _make_dir(other, size_bytes=5 * _GB, age_s=100_000, now=now),
+    }
+    result = dg.ensure_free(
+        root=str(tmp_path),
+        config=_cfg(),
+        free_bytes_fn=_SimulatedVolume(start_free=1 * _GB, sized=sized),
+        now_fn=lambda: now,
+        env={"MOLT_SESSION_ID": session},
+    )
+
+    assert mine.exists()
     assert not other.exists()
     reasons = {Path(s["path"]): s["reason"] for s in result.skipped}
     assert reasons.get(mine.resolve()) == "protected"
@@ -696,3 +729,20 @@ def test_completed_lane_event_respects_live_guard_marker(tmp_path):
     assert result.reclaimed == []
     assert result.skipped == [{"path": str(target.resolve()), "reason": "lane-active"}]
     assert target.exists()
+
+
+@pytest.mark.parametrize("name", ["ordinary", "OneDrive - selected artifacts"])
+def test_root_selection_requires_explicit_custody(tmp_path, name):
+    selected = tmp_path / name
+    selected.mkdir()
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    assert (
+        dg.resolve_root(selected, env={dg.ENV_ROOT: str(unrelated)})
+        == selected.resolve()
+    )
+    assert dg.resolve_root(env={dg.ENV_ROOT: str(selected)}) == selected.resolve()
+    with pytest.raises(SystemExit, match="could not resolve the artifact root"):
+        dg.resolve_root(env={})
+    with pytest.raises(SystemExit):
+        dg.resolve_root(Path(tmp_path.anchor), env={})

@@ -19,9 +19,8 @@ class SourceExtensionCompilerDialect(StrEnum):
         return f"/clang:{argument}" if self is self.CLANG_CL else argument
 
 
-def source_extension_compiler_dialect(
-    command: Sequence[str],
-) -> SourceExtensionCompilerDialect:
+def source_extension_compiler_driver_mode(command: Sequence[str]) -> str:
+    """Preserve lexical C/C++ entrypoint semantics even for shared images."""
     if not command:
         raise ValueError("source-extension compiler command is empty")
     name = executable_entrypoint_name(Path(command[0]))
@@ -29,25 +28,30 @@ def source_extension_compiler_dialect(
         raise ValueError(
             "source-extension requires clang-cl for canonical Make depfiles"
         )
-    selected = (
-        SourceExtensionCompilerDialect.CLANG_CL
-        if name == "clang-cl"
-        else SourceExtensionCompilerDialect.GNU
-    )
+    selected = "cl" if name == "clang-cl" else "g++" if "++" in name else "gcc"
+    explicit: set[str] = set()
     for span in compiler_argument_spans(command[1:]):
-        argument = span.option
-        if span.context == "driver" and argument.startswith("--driver-mode="):
-            mode = argument.partition("=")[2]
+        if span.context == "driver" and span.option.startswith("--driver-mode="):
+            mode = span.option.partition("=")[2]
             if mode not in {"cl", "gcc", "g++"}:
                 raise ValueError(
                     f"unsupported source-extension compiler driver mode: {mode}"
                 )
-            selected = (
-                SourceExtensionCompilerDialect.CLANG_CL
-                if mode == "cl"
-                else SourceExtensionCompilerDialect.GNU
-            )
+            explicit.add(mode)
+            selected = mode
+    if len(explicit) > 1:
+        raise ValueError("source-extension compiler has conflicting driver modes")
     return selected
+
+
+def source_extension_compiler_dialect(
+    command: Sequence[str],
+) -> SourceExtensionCompilerDialect:
+    return (
+        SourceExtensionCompilerDialect.CLANG_CL
+        if source_extension_compiler_driver_mode(command) == "cl"
+        else SourceExtensionCompilerDialect.GNU
+    )
 
 
 def validate_source_extension_compiler_dialect(
@@ -261,6 +265,25 @@ def compiler_argument_spans(
         )
         index += width
     return tuple(spans)
+
+
+def common_compiler_arguments(command: Sequence[str]) -> tuple[str, ...]:
+    """Project admitted common C options for a derived C++ compiler command.
+
+    Driver language and language standards belong to their compiler role.
+    clang-cl's shared dialect remains common to both languages; target,
+    sysroot and all other admitted argument spans retain their exact spelling.
+    """
+    start = 2 if is_zig_compiler_command(command) else 1
+    return tuple(
+        argument
+        for span in compiler_argument_spans(command[start:])
+        if not (
+            span.option in {"--driver-mode=gcc", "--driver-mode=g++"}
+            or span.option.startswith("-std=")
+        )
+        for argument in span.raw
+    )
 
 
 def _zig_target_query(target_triple: str) -> str:

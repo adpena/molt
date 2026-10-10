@@ -11,15 +11,12 @@ from molt.cli.cargo_profiles import _CARGO_PROFILE_NAME_RE
 def _runtime_build_profile_override() -> str:
     """Opt-in iteration-loop override for the runtime-wasm cargo profile.
 
-    ``MOLT_RUNTIME_BUILD_PROFILE`` (e.g. ``dev-fast``) swaps the runtime-wasm
-    cargo profile so a correctness-iteration loop (the E1 witness numpy-import
-    debug loop) does not pay full ``release-output`` (fat-LTO, opt-``z``) codegen
-    on every invalidated rebuild â€” opt level does not change the deterministic
-    import outcome it is chasing.  DEFAULT UNCHANGED: when the knob is unset,
-    acceptance / final-green still builds the shipped ``release-output`` runtime,
-    which is the artifact parity is measured against (M05).  An invalid profile
-    name is ignored so a typo cannot silently redirect the build; cargo would
-    also reject a non-existent profile loudly.
+    ``MOLT_RUNTIME_BUILD_PROFILE`` (e.g. ``dev-fast``) explicitly selects the
+    runtime-WASM Cargo profile for an iteration loop. Without either WASM
+    override, the public release request resolves to ``wasm-release``; an
+    explicitly requested physical profile such as ``release-output`` remains
+    selected. Invalid iteration profile names are ignored; a valid but unknown
+    profile is rejected by Cargo.
     """
     raw = os.environ.get("MOLT_RUNTIME_BUILD_PROFILE", "").strip()
     if raw and _CARGO_PROFILE_NAME_RE.match(raw):

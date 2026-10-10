@@ -8,6 +8,77 @@ import pytest
 
 import tools.bench_wasm as bench_wasm
 from molt.node_runtime import NodeRuntime
+from molt.cli.wasm_host import molt_wasm_host_exe_name
+
+
+@pytest.mark.parametrize(
+    "outcome,relative",
+    [
+        ("prebuilt", False),
+        ("explicit", False),
+        ("missing-explicit", False),
+        ("built", False),
+        ("built", True),
+        ("missing-output", False),
+        ("build-failed", False),
+    ],
+)
+def test_wasmtime_runner_uses_one_selected_host_build(
+    monkeypatch, tmp_path: Path, outcome: str, relative: bool
+) -> None:
+    root = tmp_path / "source"
+    target = (root if relative else tmp_path) / "selected target"
+    selected = "selected target" if relative else str(target)
+    host = target / "release" / molt_wasm_host_exe_name()
+    decoy = root / "target" / "release" / molt_wasm_host_exe_name()
+    decoy.parent.mkdir(parents=True)
+    decoy.write_bytes(b"unselected host")
+    monkeypatch.setattr(bench_wasm, "REPO_ROOT", root)
+    monkeypatch.setenv("CARGO_TARGET_DIR", selected)
+    monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
+    if outcome in {"prebuilt", "explicit"}:
+        host.parent.mkdir(parents=True)
+        host.write_bytes(b"selected host")
+    if outcome in {"explicit", "missing-explicit"}:
+        monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host))
+    calls = []
+
+    def build(command, **kwargs):
+        calls.append((command, kwargs["env"]["CARGO_TARGET_DIR"], kwargs["cwd"]))
+        if outcome == "built":
+            host.parent.mkdir(parents=True)
+            host.write_bytes(b"newly built host")
+        return bench_wasm._RunResult(
+            returncode=1 if outcome == "build-failed" else 0,
+            stderr="deliberate build failure",
+        )
+
+    monkeypatch.setattr(bench_wasm, "_run_cmd", build)
+    if outcome in {"missing-explicit", "missing-output", "build-failed"}:
+        with pytest.raises(
+            RuntimeError,
+            match={
+                "missing-explicit": "MOLT_WASM_HOST_BIN",
+                "missing-output": "selected target after build",
+                "build-failed": "deliberate build failure",
+            }[outcome],
+        ):
+            bench_wasm._resolve_runner(
+                "wasmtime", tty=False, log=None, node_max_old_space_mb=None
+            )
+    else:
+        assert bench_wasm._resolve_runner(
+            "wasmtime", tty=False, log=None, node_max_old_space_mb=None
+        ) == [str(host)]
+    assert len(calls) == (
+        1 if outcome in {"built", "missing-output", "build-failed"} else 0
+    )
+    if calls:
+        assert calls[0] == (
+            ["cargo", "build", "--locked", "--release", "--package", "molt-wasm-host"],
+            selected,
+            root,
+        )
 
 
 def _module_descriptor(path: Path, manifest_path: Path) -> dict[str, object]:

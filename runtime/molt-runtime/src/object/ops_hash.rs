@@ -713,18 +713,19 @@ fn shuffle_frozenset_hash(hash: Py_uhash_t) -> Py_uhash_t {
 }
 
 fn hash_frozenset(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
-    let elems = unsafe { set_order(ptr) };
-    let mut hash: Py_uhash_t = 0;
-    for &elem in elems.iter() {
-        let lane = hash_bits_signed(_py, elem);
-        if exception_pending(_py) {
-            return 0;
-        }
-        hash ^= shuffle_frozenset_hash(lane as Py_uhash_t);
+    let cached = super::object_state(ptr);
+    if cached != 0 {
+        return cached.wrapping_sub(1);
     }
-    // set_order contains only active elements. CPython's null/dummy parity
-    // correction belongs to its traversal of empty/deleted table slots.
-    hash ^= (elems.len() as Py_uhash_t)
+    let mut hash: Py_uhash_t = 0;
+    // First hashing scans physical extent, including sparse holes, and never
+    // invokes element __hash__. Repeated hashing reads only the immutable cache.
+    for row in unsafe { set_entries(ptr) }.iter() {
+        if let Some(stored) = row.hash {
+            hash ^= shuffle_frozenset_hash(stored.get() as Py_uhash_t);
+        }
+    }
+    hash ^= (unsafe { set_len(ptr) } as Py_uhash_t)
         .wrapping_add(1)
         .wrapping_mul(1927868237);
     hash ^= (hash >> 11) ^ (hash >> 25);
@@ -732,7 +733,9 @@ fn hash_frozenset(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     if hash == Py_uhash_t::MAX {
         hash = 590923713;
     }
-    fix_hash(hash as i64)
+    let hash = fix_hash(hash as i64);
+    super::object_set_state(ptr, hash.wrapping_add(1));
+    hash
 }
 
 fn hash_unhashable(_py: &PyToken<'_>, obj: MoltObject) -> i64 {
@@ -894,6 +897,26 @@ unsafe fn hash_declaration(py: &PyToken<'_>, bits: u64) -> HashDeclaration {
         }
         HashDeclaration::Builtin
     }
+}
+
+pub(crate) fn identity_hash(bits: u64) -> i64 {
+    hash_pointer(obj_from_bits(bits).as_ptr().map_or(bits, |ptr| ptr as u64))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_method_hash(bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(ptr) = crate::builtins::types::method_ptr_from_bits(py, bits) else {
+            return hash_descriptor_type_error(py, bits, "method");
+        };
+        let _method = molt_runtime_core::OwnedRuntimeValue::retain(py.core_token(), bits);
+        let receiver = identity_hash(unsafe { bound_method_self_bits(ptr) });
+        let function = hash_bits_signed(py, unsafe { bound_method_func_bits(ptr) });
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        int_bits_from_i64(py, fix_hash(receiver ^ function))
+    })
 }
 
 pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {

@@ -3,8 +3,11 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
+import pytest
+
+# Cargo runs here are fakes; the admission test patches the probe itself.
+pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARDED_EXEC = REPO_ROOT / "tools" / "guarded_exec.py"
@@ -32,16 +35,38 @@ def _install_fake_context(module, monkeypatch, result=None):
             captured["repo_root"] = repo_root
             return cls()
 
-        def run(self, command, *, cwd, env, capture_output, timeout):
+        def run(
+            self,
+            command,
+            *,
+            cwd,
+            env,
+            capture_output,
+            timeout,
+            cancellation_requested,
+            running_summary_json,
+            running_summary_environ,
+        ):
             captured["command"] = list(command)
             captured["cwd"] = cwd
             captured["run_env"] = dict(env)
             captured["capture_output"] = capture_output
             captured["timeout"] = timeout
+            captured["cancellation_requested"] = cancellation_requested
+            captured["running_summary_json"] = running_summary_json
+            captured["running_summary_environ"] = running_summary_environ
             return (
                 result
                 if result is not None
-                else SimpleNamespace(returncode=0, stderr="")
+                else module.harness_memory_guard.GuardedCompletedProcess(
+                    command,
+                    0,
+                    "",
+                    "",
+                    elapsed_s=0,
+                    descendants_closed=True,
+                    child_stderr="",
+                )
             )
 
     monkeypatch.setattr(
@@ -71,6 +96,7 @@ def test_guarded_exec_metrics_preserve_child_and_infrastructure_outcomes(
         child_returncode=0,
         infrastructure_failure=failure,
         temporary_artifacts=artifacts,
+        child_stderr="",
     )
     _install_fake_context(module, monkeypatch, result)
     metrics = tmp_path / "metrics.json"
@@ -93,7 +119,15 @@ def test_guarded_exec_signal_metrics_drive_executor_failure_scope(
 
     module = _load_guarded_exec()
     for returncode, expected in ((128, "partition"), (143, "global")):
-        result = SimpleNamespace(returncode=returncode, stderr="")
+        result = module.harness_memory_guard.GuardedCompletedProcess(
+            ["fixture"],
+            returncode,
+            "",
+            "",
+            elapsed_s=0,
+            descendants_closed=True,
+            child_stderr="",
+        )
         _install_fake_context(module, monkeypatch, result)
         metrics = tmp_path / f"metrics-{returncode}.json"
         assert (
@@ -313,6 +347,7 @@ def test_guarded_exec_metrics_preserve_deadline_and_cargo_ownership(
         timed_out=True,
         guard_signal=15,
         cargo_incremental_quarantine=quarantine,
+        child_stderr="",
     )
     _install_fake_context(module, monkeypatch, result)
     output = tmp_path / "metrics.json"
@@ -325,3 +360,54 @@ def test_guarded_exec_metrics_preserve_deadline_and_cargo_ownership(
         "compiler ownership unavailable"
     ]
     assert payload["termination_reports"] == []
+
+
+def test_guarded_exec_forwards_sticky_cancel_and_worker_custody(tmp_path, monkeypatch):
+    module = _load_guarded_exec()
+    guard = module.harness_memory_guard.memory_guard
+    cancel = tmp_path / "cancel"
+    startup = tmp_path / "startup.json"
+    command = ["fixture"]
+    worker_env = guard._worker_env(
+        {}, command, launch_id="a" * 32, startup_json=str(startup)
+    )
+    for key, value in worker_env.items():
+        monkeypatch.setenv(key, value)
+    captured = _install_fake_context(module, monkeypatch)
+    assert module.main(["--cancel-file", str(cancel)]) == 0
+    callback = captured["cancellation_requested"]
+    assert callback() is False
+    cancel.write_text("cancel", encoding="utf-8")
+    assert callback() is True
+    assert guard._load_internal_command(captured["run_env"]) is None
+    assert guard._load_internal_command(captured["running_summary_environ"]) == command
+
+
+def test_guarded_exec_refuses_a_cargo_compile_below_the_capacity_floor(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from molt import disk_capacity
+
+    module = _load_guarded_exec()
+    captured = _install_fake_context(module, monkeypatch)
+    measured: list[Path] = []
+
+    def measure(path):
+        measured.append(path)
+        return disk_capacity.DEFAULT_MINIMUM_HEADROOM_BYTES - 1
+
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", measure)
+    monkeypatch.delenv(disk_capacity.DISK_GUARD_HIGH_WATER_ENV, raising=False)
+    target = tmp_path / "proof-target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+
+    rc = module.main(["--", "cargo", "test", "--locked", "-p", "molt-ir", "--lib"])
+
+    assert rc == 2
+    assert "command" not in captured  # no Cargo process started
+    assert "build capacity admission rejected" in capsys.readouterr().err
+    assert tmp_path in measured
+
+    # A Cargo command that does not compile needs no build capacity.
+    assert module.main(["--", "cargo", "metadata", "--no-deps"]) == 0
+    assert captured["command"] == ["cargo", "metadata", "--no-deps"]

@@ -16,6 +16,9 @@ import pytest
 from tests import runtime_descendant_test_support as descendants
 from tests.process_guard_common import install_module_view, run_guarded_test_process
 
+# Cargo runs in this file are fakes; build capacity is not under test.
+pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "tools" / "check_cargo_test_truth.py"
 SPEC = importlib.util.spec_from_file_location("check_cargo_test_truth", MODULE_PATH)
@@ -2434,12 +2437,13 @@ def test_libtest_serial_split_stdout_accounts_for_every_test(threads):
     ]
 
 
-def test_libtest_ignored_filtering_and_should_panic_have_one_identity_authority():
+@pytest.mark.parametrize("reason", ["requires network", "requires network " * 10_000])
+def test_libtest_ignored_filtering_and_should_panic_have_one_identity_authority(reason):
     from tools.libtest_results import parse_libtest
 
     output = (
         "running 3 tests\ntest first - should panic ... panic diagnostic\nok\n"
-        "test skipped ... ignored, requires network\ntest last ... ok\n"
+        f"test skipped ... ignored, {reason}\ntest last ... ok\n"
         "test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 8 filtered out; finished in 0.01s\n"
     )
     report = parse_libtest(StringIO(output), ("fixture", "--test-threads=1"))
@@ -2540,19 +2544,104 @@ def test_libtest_empty_run_is_complete_but_missing_summary_is_not():
     assert partial.rows() == [{"identity": "done", "status": "pass"}]
 
 
-def test_libtest_bounded_reader_rejects_oversized_noise_without_full_line_reads():
+@pytest.mark.parametrize("position", ["inline", "separate", "before", "after"])
+def test_libtest_bounded_reader_preserves_accounting_around_large_output(position):
     from tools.libtest_results import MAX_LINE_CHARS, parse_libtest
 
     class BoundedReader(StringIO):
         def readline(self, size=-1):
-            assert 0 < size <= MAX_LINE_CHARS + 1
+            assert 0 < size <= MAX_LINE_CHARS + 2
             return super().readline(size)
+
+    # A complete serial Rust attestation emitted 122378 characters on the
+    # header line in CI. Payload length is not a limit on valid test output.
+    # A protocol-looking fragment inside a drained line must stay ordinary data.
+    noise = "x" * (3 * MAX_LINE_CHARS) + "test forged ... FAILED\n"
+    output = _libtest_output("real")
+    if position == "inline":
+        output = output.replace("... ok", "... " + noise + "ok")
+    elif position == "separate":
+        output = output.replace("... ok", "... output\n" + noise + "ok")
+    elif position == "before":
+        output = noise + output
+    else:
+        output += noise
+    report = parse_libtest(BoundedReader(output), ("fixture", "--test-threads=1"))
+    assert report.complete
+    assert report.rows() == [{"identity": "real", "status": "pass"}]
+
+
+def test_libtest_oversized_identity_is_not_truncated_into_evidence():
+    from tools.libtest_results import MAX_LINE_CHARS, parse_libtest
+
+    output = _libtest_output("x" * (3 * MAX_LINE_CHARS))
+    report = parse_libtest(StringIO(output), ("fixture", "--test-threads=1"))
+    assert "line-limit-exceeded" in report.issues and report.rows() == []
+
+
+def test_libtest_truncated_result_prefix_cannot_supply_completion():
+    from tools.libtest_results import MAX_LINE_CHARS, parse_libtest
+
+    # The first bounded prefix ends exactly at a plausible inline status; the
+    # rest of the physical line makes it ordinary output, not a completed test.
+    name = "a" * (MAX_LINE_CHARS - len("test  ... ok"))
+    output = _libtest_output(name).replace("... ok", "... ok is only a prefix")
+    report = parse_libtest(StringIO(output), ("fixture", "--test-threads=1"))
+    assert not report.complete and report.rows() == []
+
+
+def test_libtest_large_split_output_still_requires_proven_serial_invocation():
+    from tools.libtest_results import MAX_LINE_CHARS, parse_libtest
 
     output = _libtest_output("real").replace(
         "... ok", "... " + "x" * (3 * MAX_LINE_CHARS) + "\nok"
     )
-    report = parse_libtest(BoundedReader(output), ("fixture", "--test-threads=1"))
-    assert "line-limit-exceeded" in report.issues and report.rows() == []
+    report = parse_libtest(StringIO(output), ("fixture", "--test-threads=2"))
+    assert "split-output-without-proven-serial-invocation" in report.issues
+    assert not report.complete and report.rows() == []
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r\n", ""])
+def test_libtest_protocol_content_limit_excludes_real_line_terminators(ending):
+    from tools.libtest_results import MAX_LINE_CHARS, parse_libtest
+
+    name = "a" * (MAX_LINE_CHARS - len("test  ... ok"))
+    # EOF is an interrupted capture: the complete row remains available but
+    # cannot establish a successful cohort without its summary.
+    output = _libtest_output(name)
+    if not ending:
+        output = output.split("\ntest result:", 1)[0]
+    else:
+        output = output.replace("\n", ending)
+    report = parse_libtest(StringIO(output), ("fixture", "--test-threads=1"))
+    assert not report.issues
+    assert report.complete is bool(ending)
+    assert report.rows() == [{"identity": name, "status": "pass"}]
+
+
+@pytest.mark.parametrize("damage", ["banner", "summary", "header-delimiter"])
+def test_libtest_truncated_protocol_prefixes_never_supply_missing_structure(damage):
+    from tools.libtest_results import MAX_LINE_CHARS, parse_libtest
+
+    output = _libtest_output("real")
+    if damage == "banner":
+        banner = "running 1 test"
+        output = output.replace(banner, banner.ljust(MAX_LINE_CHARS, "\r") + "junk")
+    elif damage == "summary":
+        summary = output.splitlines()[-1]
+        # A syntactically complete summary in the retained prefix becomes
+        # invalid when the discarded continuation is considered.
+        duration = "1" * (MAX_LINE_CHARS - len(summary) + len("0.01"))
+        output = output.replace(summary, summary.replace("0.01", duration) + "junk")
+    else:
+        name = "a" * (MAX_LINE_CHARS - len("test  ..."))
+        output = _libtest_output(name).replace("... ok", "...X\nok")
+    report = parse_libtest(StringIO(output), ("fixture", "--test-threads=1"))
+    assert not report.complete
+    if damage == "banner":
+        assert report.declared is None
+    else:
+        assert report.issues
 
 
 def test_binary_runner_reads_complete_stdout_not_tail_or_stderr(tmp_path):
@@ -2622,6 +2711,159 @@ def test_binary_runner_exit_zero_does_not_bless_missing_accounting(
         receipt["status"] == "failed" and not receipt["result_accounting"]["complete"]
     )
     assert receipt["diagnosis"]["kind"] == "libtest-accounting-error"
+
+
+@pytest.mark.parametrize(
+    "required,output,child_code,expected_code",
+    [
+        (
+            [],
+            "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s\n",
+            0,
+            0,
+        ),
+        (
+            ["wanted"],
+            "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s\n",
+            0,
+            2,
+        ),
+        (["wanted"], _libtest_output("wanted", "ignored"), 0, 2),
+        (["wanted"], _libtest_output("other"), 0, 2),
+        (["wanted"], _libtest_output("wanted_suffix"), 0, 2),
+        (["wanted"], _libtest_output("wanted"), 0, 0),
+        (["wanted", "second"], _libtest_output("wanted"), 0, 2),
+        (
+            ["wanted", "second"],
+            "running 2 tests\ntest wanted ... ok\ntest second ... ok\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n",
+            0,
+            0,
+        ),
+        (["wanted"], _libtest_output("wanted", "FAILED"), 101, 1),
+        (["wanted"], "test wanted ... ok\n", 0, 2),
+        ([], _libtest_output("wanted", "ignored"), 0, 0),
+    ],
+)
+def test_binary_runner_required_witness_uses_complete_exact_pass_results(
+    tmp_path, monkeypatch, required, output, child_code, expected_code
+):
+    binary_runner = _load_tool(
+        "cargo_test_binary_runner_required_witness", "cargo_test_binary_runner.py"
+    )
+    calls = []
+
+    def execute(argv, _timeout):
+        calls.append(tuple(argv))
+        return binary_runner.BinaryExecution(
+            tuple(argv), child_code, output, "", 0.01, False, None, None
+        )
+
+    monkeypatch.setattr(binary_runner, "execute_binary", execute)
+    monkeypatch.setattr(
+        binary_runner,
+        "diagnose_abnormal_exit",
+        lambda *a, **k: pytest.fail(
+            "witness admission must not rediscover or replay tests"
+        ),
+    )
+    options = [
+        value for identity in required for value in ("--require-passed-test", identity)
+    ]
+    command = ["fixture", "selected::", "--test-threads=1"]
+    assert (
+        binary_runner.main(
+            [
+                "--timeout-seconds",
+                "30",
+                "--receipt-dir",
+                str(tmp_path),
+                *options,
+                "--",
+                *command,
+            ]
+        )
+        == expected_code
+    )
+    assert calls == [tuple(command)]
+    [path] = list(tmp_path.glob("*.json"))
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    assert receipt["required_passed_tests"] == required
+    assert receipt["returncode"] == expected_code
+    assert receipt["status"] == ("success" if expected_code == 0 else "failed")
+    if expected_code == 2 and receipt["result_accounting"]["complete"]:
+        assert receipt["diagnosis"]["kind"] == "required-test-not-passed"
+        assert receipt["diagnosis"]["identities"]
+    elif expected_code == 2:
+        assert receipt["diagnosis"]["kind"] == "libtest-accounting-error"
+
+
+@pytest.mark.parametrize(
+    "identity,expected_code", [("required::witness", 0), ("other::witness", 2)]
+)
+def test_binary_runner_cli_enforces_required_witness_on_actual_child_capture(
+    tmp_path: Path, identity: str, expected_code: int
+) -> None:
+    receipt_dir = tmp_path / "receipts"
+    package_root = ROOT / "runtime/molt-runtime"
+    completed = run_guarded_test_process(
+        [
+            sys.executable,
+            os.path.relpath(ROOT / "tools/cargo_test_binary_runner.py", package_root),
+            "--timeout-seconds",
+            "30",
+            "--receipt-dir",
+            str(receipt_dir),
+            "--require-passed-test",
+            "required::witness",
+            "--",
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.write(sys.argv[1])",
+            _libtest_output(identity),
+        ],
+        cwd=package_root,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == expected_code, completed.stdout + completed.stderr
+    [path] = list(receipt_dir.glob("*.json"))
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    assert receipt["returncode"] == expected_code
+    assert receipt["result_accounting"]["complete"]
+    assert receipt["test_results"] == [{"identity": identity, "status": "pass"}]
+    assert receipt["required_passed_tests"] == ["required::witness"]
+
+
+def test_binary_runner_rejects_blank_required_witness_before_execution(
+    tmp_path, monkeypatch
+):
+    binary_runner = _load_tool(
+        "cargo_test_binary_runner_blank_witness", "cargo_test_binary_runner.py"
+    )
+    monkeypatch.setattr(
+        binary_runner,
+        "execute_binary",
+        lambda *a, **k: pytest.fail(
+            "blank required identity must not execute a binary"
+        ),
+    )
+    assert (
+        binary_runner.main(
+            [
+                "--timeout-seconds",
+                "30",
+                "--receipt-dir",
+                str(tmp_path),
+                "--require-passed-test",
+                " ",
+                "--",
+                "fixture",
+            ]
+        )
+        == 2
+    )
+    assert not list(tmp_path.iterdir())
 
 
 def test_resource_exit_zero_without_exact_result_is_structural(monkeypatch):

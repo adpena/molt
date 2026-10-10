@@ -10,11 +10,18 @@ from pathlib import Path
 import re
 import tomllib
 
+from .disk_capacity import (
+    DiskCapacityReceipt,
+    FreeSpaceMeasurement,
+    require_build_capacity,
+)
 from .source_root import compiler_source_root
 
 
 CI_CARGO_POLICY_SCHEMA = "molt.ci-resource-policy.v2"
 SCCACHE_INCREMENTAL_POLICY = "sccache-disables-incremental"
+SCCACHE_SERVER_TEMP_POLICY = "sccache-server-temp-dir"
+TEMPORARY_DIRECTORY_ENV_NAMES = ("TMPDIR", "TMP", "TEMP")
 DIRECT_RUSTC_INCREMENTAL_POLICY = "direct-rustc-enables-incremental"
 CARGO_WRAPPER_ENV_NAMES = (
     "RUSTC_WRAPPER",
@@ -69,6 +76,55 @@ def sccache_compiler_wrappers(
     )
 
 
+def sccache_server_temp_dir(environ: Mapping[str, str]) -> Path | None:
+    """Return the temporary directory of the sccache server for ``SCCACHE_DIR``.
+
+    The pinned sccache (0.18.0) has no temporary-directory setting. Its server
+    takes ``std::env::temp_dir()`` (``TMPDIR``; ``TMP``/``TEMP`` on Windows)
+    from whichever client process starts it, and it outlives that client. It
+    writes each rustc dep-info probe below that directory. A client whose
+    ``TMPDIR`` is one run's scratch therefore leaves a shared server whose
+    temporary directory disappears with the scratch, and every later compile
+    on the host fails with "Failed to create temp dir". All clients of one
+    cache use this one durable directory beside the cache instead, so the
+    server gets it whichever client starts it. It is not inside the cache:
+    sccache's disk cache counts and evicts every file under ``SCCACHE_DIR``.
+
+    Molt sets ``SCCACHE_DIR`` wherever it selects sccache; without it the
+    cache, and its server, are not Molt's to configure.
+    """
+
+    raw = environ.get("SCCACHE_DIR", "").strip()
+    if not raw:
+        return None
+    cache = Path(os.path.abspath(Path(raw).expanduser()))
+    if not cache.name:
+        raise ValueError(f"SCCACHE_DIR must name a directory below a root: {raw!r}")
+    return cache.with_name(f"{cache.name}-tmp")
+
+
+def sccache_client_environment(
+    environ: Mapping[str, str],
+) -> tuple[dict[str, str], bool]:
+    """Return ``environ`` with the sccache server temp dir in every temp variable.
+
+    Every process that may start the shared server (a Cargo child whose
+    compiler wrapper is sccache, a rustc probe through that wrapper, or an
+    sccache probe) runs with this environment, so the directory exists
+    whenever the environment names it. The second value says whether the
+    directory was pinned.
+    """
+
+    child = dict(environ)
+    temporary = sccache_server_temp_dir(child)
+    if temporary is None:
+        return child, False
+    temporary.mkdir(parents=True, exist_ok=True)
+    for name in TEMPORARY_DIRECTORY_ENV_NAMES:
+        child[name] = str(temporary)
+    return child, True
+
+
 def normalize_cargo_environment(
     environ: Mapping[str, str] | None,
     *,
@@ -80,12 +136,18 @@ def normalize_cargo_environment(
     ``build.*`` configuration environment variables.  Every subprocess boundary
     must inspect the complete family: checking only ``RUSTC_WRAPPER`` leaves
     probes and workspace wrappers able to inherit the invalid
-    sccache-plus-incremental combination.
+    sccache-plus-incremental combination, or a caller's scratch ``TMPDIR`` that
+    a server it starts would keep (see ``sccache_server_temp_dir``). This
+    function only computes the environment; ``cargo_subprocess_environment``
+    also creates the server temp dir at the launch boundary.
     """
 
     child = dict(os.environ) if environ is None else dict(environ)
     if sccache_compiler_wrappers(child):
         child["CARGO_INCREMENTAL"] = "0"
+        child, pinned = sccache_client_environment(child)
+        if pinned:
+            return child, (SCCACHE_INCREMENTAL_POLICY, SCCACHE_SERVER_TEMP_POLICY)
         return child, (SCCACHE_INCREMENTAL_POLICY,)
     if default_incremental is not None and "CARGO_INCREMENTAL" not in child:
         child["CARGO_INCREMENTAL"] = default_incremental
@@ -115,6 +177,171 @@ def is_cargo_command(command: Sequence[str]) -> bool:
     if _executable_name(str(command[0])) != "rustup":
         return False
     return any(_executable_name(str(part)) == "cargo" for part in command[1:])
+
+
+# Cargo subcommands that compile, so each one writes below a target directory.
+CARGO_COMPILING_SUBCOMMANDS = frozenset(
+    {
+        "b",
+        "bench",
+        "build",
+        "c",
+        "check",
+        "clippy",
+        "d",
+        "doc",
+        "fix",
+        "fuzz",
+        "install",
+        "llvm-cov",
+        "miri",
+        "nextest",
+        "r",
+        "run",
+        "rustc",
+        "rustdoc",
+        "t",
+        "test",
+    }
+)
+_CARGO_GLOBAL_OPTIONS_WITH_VALUE = frozenset({"-C", "-Z", "--color", "--config"})
+_CARGO_INFORMATION_FLAGS = frozenset({"-V", "--version", "-h", "--help"})
+
+
+def cargo_compiles(command: Sequence[str]) -> bool:
+    """Return whether a Cargo invocation compiles, and so needs admission."""
+
+    parts = [str(part) for part in command]
+    if not is_cargo_command(parts):
+        return False
+    index = 1 + next(
+        position
+        for position, part in enumerate(parts)
+        if _executable_name(part) == "cargo"
+    )
+    while index < len(parts):
+        part = parts[index]
+        if part in _CARGO_GLOBAL_OPTIONS_WITH_VALUE:
+            index += 2
+        elif part.startswith(("+", "-")):
+            index += 1
+        else:
+            options = parts[index + 1 :]
+            if "--" in options:
+                options = options[: options.index("--")]
+            return part in CARGO_COMPILING_SUBCOMMANDS and not (
+                _CARGO_INFORMATION_FLAGS.intersection(options)
+            )
+    return False
+
+
+def _cargo_output_path(raw: str, *, cwd: Path, label: str) -> Path:
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(f"Cargo execution requires a non-empty {label}")
+    path = Path(raw)
+    if not path.is_absolute():
+        path = cwd / path
+    try:
+        return path.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(f"cannot resolve Cargo {label} {raw!r}: {exc}") from exc
+
+
+def _command_target_dirs(command: Sequence[str]) -> tuple[str, ...]:
+    declarations: list[str] = []
+    index = 1
+    while index < len(command):
+        argument = command[index]
+        if argument == "--":
+            break
+        if argument == "--target-dir":
+            index += 1
+            if index >= len(command) or not command[index]:
+                raise ValueError("Cargo --target-dir requires a non-empty path")
+            declarations.append(command[index])
+        elif argument.startswith("--target-dir="):
+            value = argument.partition("=")[2]
+            if not value:
+                raise ValueError("Cargo --target-dir= requires a non-empty path")
+            declarations.append(value)
+        index += 1
+    return tuple(declarations)
+
+
+def cargo_output_paths(
+    command: Sequence[str], *, cwd: Path, env: Mapping[str, str]
+) -> tuple[Path, ...]:
+    """Return the directories one Cargo invocation writes build output below.
+
+    The target is ``--target-dir``, else ``CARGO_TARGET_DIR``; two declarations
+    that disagree are refused. Without either, Cargo writes below the workspace
+    that contains ``cwd``, on the same filesystem, so ``cwd`` stands for it.
+    ``CARGO_BUILD_BUILD_DIR`` adds its own root.
+    """
+
+    command = [str(part) for part in command]
+    declared = {
+        _cargo_output_path(value, cwd=cwd, label="--target-dir")
+        for value in _command_target_dirs(command)
+    }
+    raw_target = env.get("CARGO_TARGET_DIR")
+    if raw_target is not None:
+        declared.add(_cargo_output_path(raw_target, cwd=cwd, label="CARGO_TARGET_DIR"))
+    if len(declared) > 1:
+        raise ValueError(
+            "Cargo --target-dir conflicts with the resolved CARGO_TARGET_DIR: "
+            + " != ".join(str(path) for path in sorted(declared))
+        )
+    outputs = list(declared) or [_cargo_output_path(str(cwd), cwd=cwd, label="cwd")]
+    if "CARGO_BUILD_BUILD_DIR" in env:
+        outputs.append(
+            _cargo_output_path(
+                env["CARGO_BUILD_BUILD_DIR"], cwd=cwd, label="CARGO_BUILD_BUILD_DIR"
+            )
+        )
+    return tuple(outputs)
+
+
+def require_cargo_build_capacity(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    measure_free_bytes: FreeSpaceMeasurement | None = None,
+) -> DiskCapacityReceipt:
+    """Admit build capacity for every output root of one Cargo build.
+
+    Call it before Cargo starts, for every invocation that compiles (build,
+    check, clippy, test, run, rustc, doc, bench, miri, fuzz, llvm-cov). A
+    refusal raises ``DiskCapacityError`` and no Cargo process starts.
+    """
+
+    return require_build_capacity(
+        cargo_output_paths(command, cwd=cwd, env=env),
+        env=env,
+        measure_free_bytes=measure_free_bytes,
+    )
+
+
+def admit_cargo_build(
+    command: Sequence[str],
+    *,
+    cwd: str | Path | None,
+    env: Mapping[str, str] | None,
+) -> DiskCapacityReceipt | None:
+    """Admit build capacity just before a launcher starts ``command``.
+
+    Launchers call this for every command they start; it admits only Cargo
+    invocations that compile and returns ``None`` for any other command.
+    """
+
+    if not cargo_compiles(command):
+        return None
+    return require_cargo_build_capacity(
+        command,
+        cwd=Path.cwd() if cwd is None else Path(cwd),
+        env=os.environ if env is None else env,
+    )
 
 
 def cargo_subprocess_environment(

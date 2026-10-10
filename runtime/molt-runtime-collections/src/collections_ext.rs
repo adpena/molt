@@ -9,8 +9,8 @@
 // collections used cross-thread (e.g. deque in queue.Queue, concurrent.futures).
 // The GIL serializes all Python-level access, so the Mutex is always uncontended.
 //
-// dict_order_clone() is a flattened Vec<u64> of [key0, val0, key1, val1, ...] that
-// is the canonical ordered representation of a Molt dict object.
+// dict_snapshot() owns pinned [key0, val0, key1, val1, ...] handles
+// in insertion order, backed by the canonical resource-accounted snapshot ABI.
 
 use molt_obj_model::MoltObject;
 use molt_runtime_core::obj_from_bits;
@@ -19,8 +19,8 @@ use molt_runtime_core::prelude::*;
 use crate::bridge::{
     ExceptionSentinel, alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple,
     attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, call_callable0, compare_eq,
-    dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_like_bits_from_ptr, dict_order_clone,
-    dict_set_in_place, exception_pending, inc_ref_bits, index_i64_with_overflow, is_truthy,
+    dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_like_bits_from_ptr, dict_set_in_place,
+    dict_snapshot, exception_pending, inc_ref_bits, index_i64_with_overflow, is_truthy,
     object_type_id, raise_exception, raise_key_error_with_key, seq_snapshot, string_obj_to_owned,
     to_i64, type_name,
 };
@@ -536,7 +536,9 @@ pub extern "C" fn molt_ordereddict_update(handle_bits: u64, other_bits: u64) -> 
         } else if let Some(ptr) = other_obj.as_ptr() {
             let type_id = unsafe { object_type_id(ptr) };
             if type_id == TYPE_ID_DICT {
-                let pairs = unsafe { dict_order_clone(_py, ptr) };
+                let Some(pairs) = (unsafe { dict_snapshot(_py, ptr) }) else {
+                    return MoltObject::none().bits();
+                };
                 // pairs is flattened [k0, v0, k1, v1, ...]
                 let kv_pairs: Vec<(u64, u64)> = pairs
                     .as_chunks::<2>()
@@ -843,7 +845,9 @@ pub extern "C" fn molt_chainmap_len(handle_bits: u64) -> u64 {
             if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
                 continue;
             }
-            let order = unsafe { dict_order_clone(_py, dict_ptr) };
+            let Some(order) = (unsafe { dict_snapshot(_py, dict_ptr) }) else {
+                return MoltObject::none().bits();
+            };
             let mut i = 0;
             while i + 1 < order.len() {
                 seen.insert(order[i]);
@@ -878,7 +882,9 @@ pub extern "C" fn molt_chainmap_keys(handle_bits: u64) -> u64 {
             if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
                 continue;
             }
-            let order = unsafe { dict_order_clone(_py, dict_ptr) };
+            let Some(order) = (unsafe { dict_snapshot(_py, dict_ptr) }) else {
+                return MoltObject::none().bits();
+            };
             let mut i = 0;
             while i + 1 < order.len() {
                 let k = order[i];

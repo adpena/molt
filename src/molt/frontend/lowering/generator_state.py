@@ -380,9 +380,8 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.global_imported_module_provenance: dict[str, frozenset[str]] = {}
         self.global_imported_module_attr_mutations: set[tuple[str, str]] = set()
         self._reset_import_resolution_state(reset_module_attr_mutations=True)
+        self._gpu_body_origin_candidates: dict[int, dict[str, Any]] = {}
         self.local_intrinsic_wrappers: set[str] = set()
-        self.gpu_kernel_symbols_by_name: dict[str, str] = {}
-        self.current_gpu_kernel_context: bool = False
         # Track aliases for ``import typing as <alias>`` so that
         # ``@<alias>.overload`` is recognised as a typing overload stub.
         self._typing_import_aliases: set[str] = set()

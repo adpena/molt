@@ -16,9 +16,9 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from molt import llvm_toolchain
 from molt._wasm_runtime_exports import wasm_split_runtime_export_rename_map
 from molt.cli import wasm_link_inputs
+from molt.wasi_sysroot import normalize_wasi_sysroot
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli import runtime_wasm_pair_build as RUNTIME_WASM_PAIR
 from molt.cli import artifact_state as ARTIFACT_STATE
@@ -27,7 +27,7 @@ from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     bind_runtime_wasm_specs,
     runtime_cargo_plan,
-    runtime_wasm_link_inputs,
+    runtime_wasi_c_abi_plan,
     runtime_build_identity as make_runtime_build_identity,
 )
 
@@ -70,11 +70,22 @@ def _isolated_runtime_wasm_cache(
     default_paths._default_molt_cache_cached.cache_clear()
 
 
+@pytest.mark.parametrize(
+    "required_features", [frozenset(), frozenset({"molt_gpu_primitives"})]
+)
+@pytest.mark.parametrize(
+    ("build_profile", "requested"), [("dev", "dev-fast"), ("release", "release")]
+)
 def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    required_features: frozenset[str],
+    build_profile: str,
+    requested: str,
 ) -> None:
+    monkeypatch.delenv("MOLT_DEV_CARGO_PROFILE", raising=False)
+    monkeypatch.delenv("MOLT_RELEASE_CARGO_PROFILE", raising=False)
     runtime_root = tmp_path / "wasm-root"
     monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(runtime_root))
     calls: list[tuple[str, float | None, str | None, Path]] = []
@@ -94,8 +105,10 @@ def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
         stdlib_profile,
         resolved_modules,
         required_exports,
+        required_link_features,
     ) -> bool:
         del json_output, simd_enabled, freestanding, resolved_modules, required_exports
+        assert required_link_features == required_features
         assert runtime_state.runtime_wasm is not None
         assert runtime_state.runtime_reloc_wasm is not None
         runtime_state.runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
@@ -120,16 +133,17 @@ def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
             project_root=tmp_path,
             kind="shared",
             json_output=True,
-            build_profile="dev",
+            build_profile=build_profile,
             cargo_timeout=1200.0,
             simd_enabled=True,
             freestanding=False,
             stdlib_profile="micro",
+            required_link_features=required_features,
         )
         == 0
     )
 
-    assert calls == [("dev-fast", 1200.0, "micro", tmp_path)]
+    assert calls == [(requested, 1200.0, "micro", tmp_path)]
     payload = json.loads(capsys.readouterr().out)
     assert payload["artifacts"]["shared"] == str(selected_shared)
     assert payload["artifacts"]["generation"] == str(generation)
@@ -234,6 +248,8 @@ def test_internal_runtime_wasm_build_cli_routes_to_runtime_prebuild(
             "shared",
             "--cargo-timeout",
             "1200",
+            "--runtime-feature",
+            "molt_gpu_primitives",
             "--json",
         ]
     )
@@ -241,6 +257,7 @@ def test_internal_runtime_wasm_build_cli_routes_to_runtime_prebuild(
     assert (
         entrypoint_dispatch._dispatch_entrypoint_command(
             args,
+            parser=parser,
             build_fn=lambda **_: 0,
             config_root=tmp_path,
             config={},
@@ -255,10 +272,12 @@ def test_internal_runtime_wasm_build_cli_routes_to_runtime_prebuild(
         )
         == 0
     )
+    assert calls[0]["required_link_features"] == frozenset({"molt_gpu_primitives"})
     assert calls == [
         {
             "project_root": tmp_path,
             "kind": "shared",
+            "required_link_features": frozenset({"molt_gpu_primitives"}),
             "json_output": True,
             "build_profile": "dev",
             "cargo_timeout": 1200.0,
@@ -476,7 +495,6 @@ def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
     )
 
     output = Path("runtime") / "molt_runtime_reloc.wasm"
-    inputs = runtime_wasm_link_inputs(runtime_fixture_root)
     assert RUNTIME_WASM_BUILD_SUPPORT._link_runtime_staticlib_to_reloc_wasm(
         staticlib_path=staticlib,
         output_path=output,
@@ -487,8 +505,8 @@ def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
             fixture_root=runtime_fixture_root,
             env={},
             cargo_command=("cargo",),
+            requested_target="wasm32-wasip1",
         ),
-        link_inputs=inputs,
         export_link_args="-C link-arg=--export-if-defined=molt_required",
     )
 
@@ -519,10 +537,8 @@ def test_wasi_sysroot_python_resolver_accepts_distro_target_include_layout(
     (host_include / "errno.h").write_text("#define HOST_ERRNO 1\n", encoding="utf-8")
     (target_include / "errno.h").write_text("#define WASI_ERRNO 1\n", encoding="utf-8")
 
-    assert wasm_link_inputs.normalize_wasi_sysroot(root) == root.resolve(strict=False)
-    assert wasm_link_inputs.normalize_wasi_sysroot(target_include) == root.resolve(
-        strict=False
-    )
+    assert normalize_wasi_sysroot(root) == root.resolve(strict=False)
+    assert normalize_wasi_sysroot(target_include) == root.resolve(strict=False)
 
 
 def test_runtime_build_scripts_share_wasi_sysroot_authority() -> None:
@@ -535,33 +551,22 @@ def test_runtime_build_scripts_share_wasi_sysroot_authority() -> None:
     runtime_text = runtime_build.read_text(encoding="utf-8")
     abi_text = abi_build.read_text(encoding="utf-8")
 
-    assert "MOLT_WASI_SYSROOT" in shared_text
-    assert "WASI_SDK_PREFIX" in shared_text
-    assert "MOLT_TARGET_ROOT" in shared_text
-    assert "/usr/share/wasi-sysroot" in shared_text
-    assert "/usr/include/wasm32-wasi" in shared_text
-    assert "wasm32-wasi" in shared_text
-    assert "include_dir: Some" in shared_text
-    assert 'sysroot.lib_dir("wasm32-wasip1")' in runtime_text
-    assert shared_text.index("target_include_layout(&root") < shared_text.index(
-        'root.join("include").join("errno.h")'
-    )
-    python_wasm_link_inputs = (
-        repo_root / "src" / "molt" / "cli" / "wasm_link_inputs.py"
-    ).read_text(encoding="utf-8")
-    assert "/usr/include/wasm32-wasi" in python_wasm_link_inputs
-    assert "WASI_SDK_PREFIX" in python_wasm_link_inputs
-    assert "mod wasi_sysroot" in runtime_text
-    assert "mod wasi_sysroot" in abi_text
-    # The ABI provider owns both C translation units and keeps the sysroot a
-    # typed path through cc::Build. The runtime consumes its provider library.
-    assert 'build.flag("--sysroot").flag(&sysroot.root)' in abi_text
-    assert 'build.flag("--sysroot").flag(&provider.root)' in abi_text
-    assert "build.include(include_dir)" in abi_text
-    assert "fn resolve_wasi_sysroot" not in runtime_text
-    assert "fn resolve_wasi_sysroot" not in abi_text
-    assert "wasi-libc/share/wasi-sysroot" not in runtime_text
-    assert "wasi-libc/share/wasi-sysroot" not in abi_text
+    protocol = repo_root / "src/molt/wasi_c_abi_protocol.txt"
+    assert protocol.is_file()
+    assert 'include_str!("../../src/molt/wasi_c_abi_protocol.txt")' in shared_text
+    assert '"MOLT_WASI_C_ABI_PLAN"' in shared_text
+    assert "mod wasi_sysroot" in runtime_text and "mod wasi_sysroot" in abi_text
+    assert "WasiCAbiPlan::from_environment()" in runtime_text
+    assert "WasiCAbiPlan::from_environment()" in abi_text
+    assert "build.compiler(&provider.driver)" in abi_text
+    for retired in (
+        "/usr/share/wasi-sysroot",
+        "WASI_SDK_PREFIX",
+        "MOLT_TARGET_ROOT",
+        "vendor/wasm-builtins",
+    ):
+        assert retired not in shared_text
+    assert "std::fs::copy" not in runtime_text
 
 
 def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
@@ -610,7 +615,6 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
         raising=True,
     )
 
-    inputs = runtime_wasm_link_inputs(runtime_fixture_root)
     assert RUNTIME_WASM_BUILD_SUPPORT._link_runtime_staticlib_to_reloc_wasm(
         staticlib_path=staticlib,
         output_path=runtime_wasm,
@@ -621,13 +625,13 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
             fixture_root=runtime_fixture_root,
             env={},
             cargo_command=("cargo",),
+            requested_target="wasm32-wasip1",
         ),
-        link_inputs=inputs,
         export_link_args=export_link_args,
     )
 
     cmd = captured["cmd"]
-    assert cmd[:2] == [str(inputs.linker.entrypoint), "-r"]
+    assert cmd[:2] == [str(runtime_wasi_c_abi_plan(runtime_fixture_root).linker), "-r"]
     assert cmd[2].startswith("@")
     response_text = Path(cmd[2].removeprefix("@")).read_text(encoding="utf-8")
     assert "--export-if-defined=molt_reloc_required_export" in response_text
@@ -635,7 +639,9 @@ def test_link_runtime_staticlib_to_reloc_wasm_does_not_whole_archive_libc(
     assert cmd[3:5] == ["--whole-archive", str(staticlib)]
     assert "--no-whole-archive" in cmd
     no_whole_index = cmd.index("--no-whole-archive")
-    assert cmd[no_whole_index + 1] == str(inputs.libc.path)
+    assert cmd[no_whole_index + 1] == str(
+        runtime_wasi_c_abi_plan(runtime_fixture_root).path("libc")
+    )
     assert captured["kwargs"]["memory_guard_prefix"] == "MOLT_WASM_LINK"
 
 
@@ -651,29 +657,13 @@ def validation_specs(
     target = tmp_path / "target with spaces"
     state_root = tmp_path / "state with spaces"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
-    # Hermetic WASI sysroot: plans must not depend on the host's SDK install.
-    sysroot = runtime_fixture_root.path / "wasi-sysroot"
-    (sysroot / "include" / "wasm32-wasip1").mkdir(parents=True, exist_ok=True)
-    (sysroot / "include" / "wasm32-wasip1" / "errno.h").write_text(
-        "#define EDOM 18\n", encoding="utf-8"
-    )
-    monkeypatch.setenv("MOLT_WASI_SYSROOT", str(sysroot))
+    # runtime_cargo_plan owns the fixture's provisioned SDK generation.
+    monkeypatch.delenv("MOLT_WASI_SYSROOT", raising=False)
     monkeypatch.delenv("WASI_SYSROOT", raising=False)
-    # Hermetic: plan tests never select the host's provisioned WASI SDK.
-    monkeypatch.setattr(
-        llvm_toolchain, "selected_wasi_sdk_installation", lambda *_a, **_k: None
-    )
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SPEC,
         "resolve_runtime_cargo_plan",
         partial(runtime_cargo_plan, fixture_root=runtime_fixture_root),
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SPEC,
-        "resolve_runtime_wasm_link_inputs",
-        lambda **kwargs: runtime_wasm_link_inputs(
-            runtime_fixture_root, env=kwargs["env"]
-        ),
     )
     monkeypatch.setattr(WASM_LINK_ARGS, "_build_state_root", lambda _root: state_root)
     monkeypatch.setattr(
@@ -952,7 +942,6 @@ def test_full_profile_feature_receipt_matches_exact_combined_cargo_command(
         "stdlib_crypto",
         "stdlib_compression",
         "stdlib_logging_ext",
-        "builtin_contextvars",
         "stdlib_micro",
     } <= features
     assert not {"molt_gpu_primitives", "sqlite"} & features
@@ -992,7 +981,10 @@ def test_shared_allowlist_is_response_content_not_compile_rustflags(
 
 @pytest.mark.parametrize("explicit", [None, "0", "1"])
 def test_runtime_wasm_incremental_policy_survives_plan_resolution(
-    validation_specs, monkeypatch: pytest.MonkeyPatch, explicit: str | None
+    validation_specs,
+    runtime_fixture_root: RuntimeFixtureRoot,
+    monkeypatch: pytest.MonkeyPatch,
+    explicit: str | None,
 ) -> None:
     monkeypatch.delenv("RUSTC_WRAPPER", raising=False)
     monkeypatch.setenv("MOLT_USE_SCCACHE", "0")
@@ -1000,13 +992,14 @@ def test_runtime_wasm_incremental_policy_survives_plan_resolution(
         monkeypatch.delenv("CARGO_INCREMENTAL", raising=False)
     else:
         monkeypatch.setenv("CARGO_INCREMENTAL", explicit)
-    _root, _target, _state, shared, _reloc = validation_specs()
-    assert shared.cargo_plan.environment["CARGO_INCREMENTAL"] == (explicit or "0")
+    _root, _target, _state, shared, reloc = validation_specs()
     # cc-rs reads WASI_SYSROOT and Molt build scripts read MOLT_WASI_SYSROOT;
     # both must name the one resolved sysroot.
-    sysroot = str(Path(os.environ["MOLT_WASI_SYSROOT"]).resolve())
-    assert shared.cargo_plan.environment["MOLT_WASI_SYSROOT"] == sysroot
-    assert shared.cargo_plan.environment["WASI_SYSROOT"] == sysroot
+    sysroot = str(runtime_wasi_c_abi_plan(runtime_fixture_root).sysroot)
+    for spec in (shared, reloc):
+        assert spec.cargo_plan.environment["CARGO_INCREMENTAL"] == (explicit or "0")
+        assert spec.cargo_plan.environment["MOLT_WASI_SYSROOT"] == sysroot
+        assert spec.cargo_plan.environment["WASI_SYSROOT"] == sysroot
 
 
 def test_runtime_fingerprint_recomputes_when_rustflags_change() -> None:

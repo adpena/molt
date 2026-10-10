@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import hashlib
 import subprocess
 import time
 from pathlib import Path
@@ -23,8 +24,11 @@ from molt.browser_asset_closure import (
     canonical_text_bytes,
     canonical_wasm_loader_asset_bytes,
     wasm_loader_asset_closure,
+    wasm_loader_asset_payloads,
     wasm_loader_asset_scope_paths,
 )
+from molt import browser_asset_closure
+
 from tools import gen_browser_asset_graph as asset_graph_tool
 from tools.gen_browser_asset_graph import (
     AssetSource,
@@ -35,6 +39,229 @@ from tools.generator_io import stale_outputs
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _literal_asset_graph(tmp_path):
+    data = b"export const answer = 42;\n"
+    (tmp_path / "entry.js").write_bytes(data)
+    graph = {
+        "schema_version": 2,
+        "assets": {
+            "entry.js": {
+                "role": "node",
+                "references": [],
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+        },
+        "entry_groups": {"node-runner": {"role": "node", "assets": ["entry.js"]}},
+    }
+    (tmp_path / "browser_asset_graph.generated.json").write_text(
+        json.dumps(graph), encoding="utf-8"
+    )
+    return data
+
+
+def test_verified_loader_payload_is_the_buffer_that_was_hashed(tmp_path, monkeypatch):
+    data = _literal_asset_graph(tmp_path)
+    read_asset = browser_asset_closure.canonical_wasm_loader_asset_bytes
+    calls = []
+
+    def read_then_change(path):
+        raw = read_asset(path)
+        calls.append(path.name)
+        path.write_bytes(b"unadmitted second generation")
+        return raw
+
+    monkeypatch.setattr(
+        browser_asset_closure, "canonical_wasm_loader_asset_bytes", read_then_change
+    )
+    assert wasm_loader_asset_payloads(tmp_path, NODE_RUNNER_ENTRY_ASSETS) == {
+        "entry.js": data
+    }
+    assert calls == ["entry.js"]
+
+
+def test_asset_capture_enforces_size_before_reading(tmp_path, monkeypatch):
+    path = tmp_path / "oversized.js"
+    path.write_bytes(b"12345")
+    monkeypatch.setattr(browser_asset_closure, "_MAX_ASSET_BYTES", 4)
+    with pytest.raises(ValueError, match="size limit"):
+        canonical_wasm_loader_asset_bytes(path)
+
+
+def test_graph_payload_retention_has_one_total_limit(tmp_path, monkeypatch):
+    data = _literal_asset_graph(tmp_path)
+    monkeypatch.setattr(browser_asset_closure, "_MAX_CLOSURE_BYTES", len(data) - 1)
+    with pytest.raises(ValueError, match="payload byte limit"):
+        wasm_loader_asset_payloads(tmp_path, NODE_RUNNER_ENTRY_ASSETS)
+
+
+def test_browser_staging_does_not_reopen_verified_asset_bytes(tmp_path, monkeypatch):
+    from tools import wasm_run_matrix
+
+    source = tmp_path / "source"
+    source.mkdir()
+    expected = _literal_asset_graph(source)
+    graph_path = source / "browser_asset_graph.generated.json"
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    graph["assets"]["entry.js"]["role"] = "browser"
+    graph["entry_groups"] = {
+        "browser-host": {"role": "browser", "assets": ["entry.js"]}
+    }
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    monkeypatch.setattr(wasm_run_matrix, "WASM_DIR", source)
+    real_read = browser_asset_closure.canonical_wasm_loader_asset_bytes
+
+    def capture_then_overwrite(path):
+        raw = real_read(path)
+        path.write_bytes(b"unadmitted second-generation loader")
+        return raw
+
+    monkeypatch.setattr(
+        browser_asset_closure,
+        "canonical_wasm_loader_asset_bytes",
+        capture_then_overwrite,
+    )
+    output = tmp_path / "staged"
+    assert wasm_run_matrix._stage_browser_static_assets(output) == ("entry.js",)
+    assert (output / "entry.js").read_bytes() == expected
+
+
+def _disjoint_asset_graph(tmp_path):
+    payloads = {
+        "browser.js": b"export const browser = 1;\n",
+        "entry.js": b"import './shared.js';\n",
+        "shared.js": b"export const shared = 2;\n",
+    }
+    graph = {
+        "schema_version": 2,
+        "assets": {
+            name: {
+                "role": {
+                    "browser.js": "browser",
+                    "entry.js": "node",
+                    "shared.js": "shared",
+                }[name],
+                "references": ["shared.js"] if name == "entry.js" else [],
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+            for name, data in payloads.items()
+        },
+        "entry_groups": {
+            "node-runner": {"role": "node", "assets": ["entry.js"]},
+            "browser-host": {"role": "browser", "assets": ["browser.js"]},
+        },
+    }
+    for name, data in payloads.items():
+        (tmp_path / name).write_bytes(data)
+    (tmp_path / "browser_asset_graph.generated.json").write_text(
+        json.dumps(graph), encoding="utf-8"
+    )
+    return payloads, graph
+
+
+@pytest.mark.parametrize(
+    "reader", [wasm_loader_asset_closure, wasm_loader_asset_payloads]
+)
+@pytest.mark.parametrize(
+    "mutation", ["bytes", "missing", "role", "reference", "budget"]
+)
+def test_unselected_asset_still_participates_in_global_admission(
+    tmp_path, monkeypatch, reader, mutation
+):
+    payloads, graph = _disjoint_asset_graph(tmp_path)
+    if mutation == "bytes":
+        (tmp_path / "browser.js").write_bytes(b"unadmitted browser generation")
+    elif mutation == "missing":
+        (tmp_path / "browser.js").unlink()
+    elif mutation == "role":
+        graph["assets"]["browser.js"]["references"] = ["entry.js"]
+    elif mutation == "reference":
+        graph["assets"]["browser.js"]["references"] = ["absent.js"]
+    else:
+        monkeypatch.setattr(
+            browser_asset_closure,
+            "_MAX_CLOSURE_BYTES",
+            sum(map(len, payloads.values())) - 1,
+        )
+    (tmp_path / "browser_asset_graph.generated.json").write_text(
+        json.dumps(graph), encoding="utf-8"
+    )
+    expected_error = {
+        "bytes": "hash drift for browser",
+        "missing": "missing browser static asset",
+        "role": "role violation",
+        "reference": "undeclared asset absent",
+        "budget": "payload byte limit",
+    }[mutation]
+    error_type = FileNotFoundError if mutation == "missing" else ValueError
+    with pytest.raises(error_type, match=expected_error):
+        reader(tmp_path, NODE_RUNNER_ENTRY_ASSETS)
+
+
+def test_requested_transitive_payloads_are_captured_once_with_global_hash_validation(
+    tmp_path, monkeypatch
+):
+    expected, _ = _disjoint_asset_graph(tmp_path)
+    real_read = browser_asset_closure.canonical_wasm_loader_asset_bytes
+    calls = []
+
+    def capture_then_change(path):
+        data = real_read(path)
+        calls.append(path.name)
+        path.write_bytes(b"changed after the admitted capture")
+        return data
+
+    monkeypatch.setattr(
+        browser_asset_closure, "canonical_wasm_loader_asset_bytes", capture_then_change
+    )
+    result = wasm_loader_asset_payloads(tmp_path, NODE_RUNNER_ENTRY_ASSETS)
+    assert result == {name: expected[name] for name in ("entry.js", "shared.js")}
+    assert sorted(calls) == sorted(expected)
+
+
+@pytest.mark.parametrize(
+    "reader", [wasm_loader_asset_closure, wasm_loader_asset_payloads]
+)
+def test_only_requested_payloads_survive_between_asset_captures(
+    tmp_path, monkeypatch, reader
+):
+    import gc
+
+    expected, _ = _disjoint_asset_graph(tmp_path)
+    real_read = browser_asset_closure.canonical_wasm_loader_asset_bytes
+    retained = (
+        {"entry.js", "shared.js"} if reader is wasm_loader_asset_payloads else set()
+    )
+    live = set()
+    captured = []
+
+    class TrackedPayload(bytes):
+        def __del__(self):
+            live.discard(self.name)
+
+    def observe_capture(path):
+        gc.collect()
+        assert live <= retained, (
+            "an unrequested payload survived until the next capture"
+        )
+        data = TrackedPayload(real_read(path))
+        data.name = path.name
+        live.add(path.name)
+        captured.append(path.name)
+        return data
+
+    monkeypatch.setattr(
+        browser_asset_closure, "canonical_wasm_loader_asset_bytes", observe_capture
+    )
+    result = reader(tmp_path, NODE_RUNNER_ENTRY_ASSETS)
+    gc.collect()
+    assert live == retained
+    assert sorted(captured) == sorted(expected)
+    if reader is wasm_loader_asset_payloads:
+        assert result == {name: expected[name] for name in sorted(retained)}
+    else:
+        assert result == ("entry.js", "shared.js")
 
 
 def _scan(source: str, *, source_type: str = "module") -> list[dict[str, object]]:

@@ -19,7 +19,7 @@ use super::tcl::{
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
 use crate::bridge::{
-    clear_exception, dec_ref_bits, decode_value_list, dict_order, exception_pending,
+    clear_exception, dec_ref_bits, decode_value_list, dict_snapshot, exception_pending,
     format_obj_str, inc_ref_bits, int_from_obj, is_truthy, object_type_id, raise_exception_u64,
     string_obj_to_owned, to_f64, to_i64,
 };
@@ -39,15 +39,15 @@ use std::ptr;
 use std::sync::OnceLock;
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]
-pub(super) fn option_use_tk(py: &PyToken, options_bits: u64) -> bool {
+pub(super) fn option_use_tk(py: &PyToken, options_bits: u64) -> Option<bool> {
     let obj = obj_from_bits(options_bits);
     let Some(dict_ptr) = obj.as_ptr() else {
-        return true;
+        return Some(true);
     };
     if object_type_id(dict_ptr) != TYPE_ID_DICT {
-        return true;
+        return Some(true);
     }
-    let entries = dict_order(dict_ptr);
+    let entries = dict_snapshot(dict_ptr)?;
     for pair in entries.chunks(2) {
         if pair.len() != 2 {
             continue;
@@ -56,10 +56,11 @@ pub(super) fn option_use_tk(py: &PyToken, options_bits: u64) -> bool {
             continue;
         };
         if key == "useTk" {
-            return is_truthy(py, obj_from_bits(pair[1]));
+            let value = is_truthy(py, obj_from_bits(pair[1]));
+            return (!exception_pending(py)).then_some(value);
         }
     }
-    true
+    Some(true)
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-tcl"))]

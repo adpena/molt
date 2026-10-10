@@ -11,6 +11,9 @@ from typing import Any
 
 import pytest
 
+# Cargo runs in this file are fakes; build capacity is not under test.
+pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = REPO_ROOT / "tools" / "representation_report.py"

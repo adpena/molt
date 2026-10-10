@@ -49,6 +49,7 @@ from molt.llvm_toolchain import (  # noqa: E402
     LlvmToolchainConfigError,
     required_llvm_backend_pin,
 )
+from molt.release_lanes import lane_codegen_backend  # noqa: E402
 
 SAFE_RUN = TOOLS_ROOT / "safe_run.py"
 
@@ -137,27 +138,26 @@ RUN_BLOCKED_BACKENDS = {"wasm"}
 class BackendSpec:
     """A (target, backend) build lane.
 
-    ``molt_backend`` is the ``molt build --backend`` value that selects the
-    codegen (native Cranelift vs the inkwell/LLVM feature); ``build_args``
-    carries it to both the CLI and the batch build server. ``build_target`` is
-    the CLI ``--target`` (native vs wasm).
+    ``build_args`` carries the lane's ``--backend`` flag, which selects the
+    codegen (native Cranelift vs the inkwell/LLVM feature), to both the CLI and
+    the batch build server. ``build_target`` is the CLI ``--target`` (native vs
+    wasm).
     """
 
     target: str  # logical target name in the scoreboard ("native", "wasm")
     backend: str  # codegen backend ("native", "llvm", "wasm")
-    molt_backend: str | None  # --backend value, or None for the default
     build_target: str  # molt CLI --target
 
     def build_args(self) -> tuple[str, ...]:
         """The molt build flags that select this lane's codegen backend."""
-        return () if self.molt_backend is None else ("--backend", self.molt_backend)
+        return ("--backend", lane_codegen_backend(self.backend))
 
 
-NATIVE_CRANELIFT = BackendSpec("native", "native", None, "native")
+NATIVE_CRANELIFT = BackendSpec("native", "native", "native")
 
-NATIVE_LLVM = BackendSpec("native", "llvm", "llvm", "native")
+NATIVE_LLVM = BackendSpec("native", "llvm", "native")
 
-WASM = BackendSpec("wasm", "wasm", None, "wasm")
+WASM = BackendSpec("wasm", "wasm", "wasm")
 
 BACKENDS_BY_NAME = {
     "native": NATIVE_CRANELIFT,
@@ -165,7 +165,7 @@ BACKENDS_BY_NAME = {
     "wasm": WASM,
 }
 
-from perf_scoreboard_build_profiles import PROFILE_BUILD_FLAG as PROFILE_BUILD_FLAG  # noqa: E402
+from perf_scoreboard_build_profiles import profile_build_flags as profile_build_flags  # noqa: E402
 
 
 def _llvm_backend_pin():

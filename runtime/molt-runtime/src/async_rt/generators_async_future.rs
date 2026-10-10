@@ -993,6 +993,39 @@ mod sleep_payload_tests {
     static CONVERSION_ERROR: AtomicU64 = AtomicU64::new(0);
     static RETIRED_PREFIX: AtomicU64 = AtomicU64::new(0);
     static FINALIZER_CALLS: AtomicU64 = AtomicU64::new(0);
+    static OBSERVED_STATE: AtomicU64 = AtomicU64::new(0);
+    static OBSERVED_SLOTS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+    static REENTRY_RESULT: AtomicU64 = AtomicU64::new(0);
+
+    // RuntimeTestTransaction serializes these callbacks. Disarm their borrowed
+    // pointers before releasing the transaction, including on a Rust assertion.
+    struct CallbackScope;
+
+    impl CallbackScope {
+        fn new() -> Self {
+            let scope = Self;
+            scope.reset();
+            scope
+        }
+
+        fn reset(&self) {
+            OWNER.store(0, Ordering::Relaxed);
+            CONVERSION_ERROR.store(0, Ordering::Relaxed);
+            RETIRED_PREFIX.store(0, Ordering::Relaxed);
+            FINALIZER_CALLS.store(0, Ordering::Relaxed);
+            OBSERVED_STATE.store(0, Ordering::Relaxed);
+            for slot in &OBSERVED_SLOTS {
+                slot.store(0, Ordering::Relaxed);
+            }
+            REENTRY_RESULT.store(0, Ordering::Relaxed);
+        }
+    }
+
+    impl Drop for CallbackScope {
+        fn drop(&mut self) {
+            self.reset();
+        }
+    }
 
     extern "C" fn delay_float(_self: u64) -> u64 {
         let error = CONVERSION_ERROR.load(Ordering::Relaxed);
@@ -1004,24 +1037,25 @@ mod sleep_payload_tests {
 
     extern "C" fn delay_finalizer(_self: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
-            let owner = OWNER.load(Ordering::Relaxed);
+            // Consume the observation before any reentrant runtime call. The
+            // callback records facts; assertions belong on the Rust test side
+            // of the non-unwinding C ABI boundary.
+            let owner = OWNER.swap(0, Ordering::Relaxed);
             if owner != 0 {
                 let ptr = ptr_from_bits(owner);
                 unsafe {
-                    assert_eq!(crate::object::object_state(ptr), 1);
+                    OBSERVED_STATE
+                        .store(crate::object::object_state(ptr) as u64, Ordering::Relaxed);
                     let prefix = RETIRED_PREFIX.load(Ordering::Relaxed);
                     if prefix == 0 {
-                        assert_eq!(
-                            obj_from_bits(*ptr.cast::<u64>()).as_float(),
-                            Some(ASYNC_SLEEP_YIELD_SENTINEL)
-                        );
+                        OBSERVED_SLOTS[0].store(*ptr.cast::<u64>(), Ordering::Relaxed);
                         // Reenter the same poll before replacing the deadline.
                         let result = molt_async_sleep_poll(owner) as u64;
-                        assert_eq!(result, MoltObject::from_int(41).bits());
+                        REENTRY_RESULT.store(result, Ordering::Relaxed);
                         dec_ref_bits(py, result);
                     } else {
-                        for offset in 0..prefix as usize {
-                            assert!(obj_from_bits(*ptr.cast::<u64>().add(offset)).is_none());
+                        for (offset, observed) in OBSERVED_SLOTS.iter().enumerate() {
+                            observed.store(*ptr.cast::<u64>().add(offset), Ordering::Relaxed);
                         }
                     }
                     crate::object::payload_refs::store_borrowed(
@@ -1114,6 +1148,7 @@ mod sleep_payload_tests {
     fn payload_reference_sleep_conversion_preserves_exact_failure_and_unpublished_payload() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
+            let _callbacks = CallbackScope::new();
             let class = delay_class(py);
             let delay = delay_instance(py, class);
             let future = molt_async_sleep(delay, MoltObject::from_int(41).bits());
@@ -1147,19 +1182,22 @@ mod sleep_payload_tests {
         crate::with_gil_entry_nopanic!(py, {
             let class = delay_class(py);
             for retired_prefix in [0, 3] {
-                FINALIZER_CALLS.store(0, Ordering::Relaxed);
+                let _callbacks = CallbackScope::new();
                 RETIRED_PREFIX.store(retired_prefix, Ordering::Relaxed);
                 let delay = delay_instance(py, class);
                 let future = if retired_prefix == 0 {
                     molt_async_sleep(delay, MoltObject::from_int(41).bits())
                 } else {
                     let ready = molt_promise_new();
+                    assert!(!ptr_from_bits(ready).is_null());
                     unsafe { molt_promise_set_result(ready, MoltObject::from_int(41).bits()) };
+                    assert!(!exception_pending(py));
                     let wrapper = molt_future_new(
                         anext_default_poll_fn_addr(),
                         (3 * std::mem::size_of::<u64>()) as u64,
                     );
                     let ptr = ptr_from_bits(wrapper);
+                    assert!(!ptr.is_null());
                     unsafe {
                         crate::object::payload_refs::store_borrowed(py, ptr, 0, delay);
                         crate::object::payload_refs::store_borrowed(
@@ -1196,6 +1234,21 @@ mod sleep_payload_tests {
                     }
                 );
                 assert_eq!(FINALIZER_CALLS.load(Ordering::Relaxed), 1);
+                assert_eq!(OBSERVED_STATE.load(Ordering::Relaxed), 1);
+                if retired_prefix == 0 {
+                    assert_eq!(
+                        OBSERVED_SLOTS[0].load(Ordering::Relaxed),
+                        MoltObject::from_float(ASYNC_SLEEP_YIELD_SENTINEL).bits()
+                    );
+                    assert_eq!(
+                        REENTRY_RESULT.load(Ordering::Relaxed),
+                        MoltObject::from_int(41).bits()
+                    );
+                } else {
+                    for observed in &OBSERVED_SLOTS {
+                        assert_eq!(observed.load(Ordering::Relaxed), MoltObject::none().bits());
+                    }
+                }
                 assert_eq!(
                     unsafe { *ptr_from_bits(future).cast::<u64>() },
                     MoltObject::from_float(-2.0).bits()
@@ -1206,6 +1259,52 @@ mod sleep_payload_tests {
             }
             RETIRED_PREFIX.store(0, Ordering::Relaxed);
             dec_ref_bits(py, class);
+        });
+    }
+
+    #[test]
+    fn sleep_callback_observations_survive_bad_publication_and_disarm_after_unwind() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let class = delay_class(py);
+            let delay = delay_instance(py, class);
+            let future = molt_future_new(
+                anext_default_poll_fn_addr(),
+                (3 * std::mem::size_of::<u64>()) as u64,
+            );
+            let ptr = ptr_from_bits(future);
+            assert!(!ptr.is_null());
+            let unexpected = MoltObject::from_int(73).bits();
+            unsafe { crate::object::payload_refs::store_borrowed(py, ptr, 0, unexpected) };
+            let failure = crate::test_support::catch_expected_unwind(|| {
+                let _callbacks = CallbackScope::new();
+                RETIRED_PREFIX.store(3, Ordering::Relaxed);
+                OWNER.store(future, Ordering::Relaxed);
+                let result = delay_finalizer(delay);
+                dec_ref_bits(py, result);
+                assert_eq!(OBSERVED_STATE.load(Ordering::Relaxed), 0);
+                assert_eq!(OBSERVED_SLOTS[0].load(Ordering::Relaxed), unexpected);
+                assert_eq!(OWNER.load(Ordering::Relaxed), 0);
+                assert_eq!(FINALIZER_CALLS.load(Ordering::Relaxed), 1);
+                // Leave both borrowed callback inputs armed when Rust unwinds.
+                OWNER.store(future, Ordering::Relaxed);
+                CONVERSION_ERROR.store(delay, Ordering::Relaxed);
+                panic!("callback scope rollback control");
+            });
+            assert_eq!(
+                failure
+                    .expect_err("rollback control must unwind")
+                    .downcast_ref::<&str>(),
+                Some(&"callback scope rollback control")
+            );
+            assert_eq!(OWNER.load(Ordering::Relaxed), 0);
+            assert_eq!(CONVERSION_ERROR.load(Ordering::Relaxed), 0);
+            assert_eq!(RETIRED_PREFIX.load(Ordering::Relaxed), 0);
+            for bits in [future, delay, class] {
+                dec_ref_bits(py, bits);
+            }
+            assert_eq!(FINALIZER_CALLS.load(Ordering::Relaxed), 0);
+            assert!(!exception_pending(py));
         });
     }
 }

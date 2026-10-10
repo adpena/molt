@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from molt import source_root
+from molt import compiler_distribution, source_root
 from molt.cli import (
     build_inputs,
     compiler_metadata,
@@ -231,40 +231,79 @@ def test_relative_source_selection_is_resolved_per_call(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("error", [OSError("unreadable"), ValueError("drift")])
 def test_installed_source_admission_fails_closed_without_repair(
-    tmp_path, monkeypatch, capsys, error
+    installation, monkeypatch, capsys, error
 ):
-    source = _source_tree(tmp_path / "source")
-    before = {path.relative_to(source) for path in source.rglob("*")}
+    source = installation
+    before = {
+        path.relative_to(source): path.read_bytes() if path.is_file() else None
+        for path in source.rglob("*")
+    }
 
-    class Installed:
-        def verify_sources(self):
-            raise error
+    def verify_sources(self):
+        assert self.source_root == source
+        raise error
 
-    monkeypatch.setattr(project_roots, "installed_compiler", lambda root: Installed())
+    monkeypatch.setattr(
+        compiler_distribution.InstalledCompiler, "verify_sources", verify_sources
+    )
     assert project_roots._require_molt_root(source, True, "build") == 2
     failure = json.loads(capsys.readouterr().out)
     assert str(error) in failure["errors"][0]
-    assert {path.relative_to(source) for path in source.rglob("*")} == before
+    assert {
+        path.relative_to(source): path.read_bytes() if path.is_file() else None
+        for path in source.rglob("*")
+    } == before
 
 
-def test_installed_source_admission_checks_the_selected_payload(tmp_path, monkeypatch):
-    source = _source_tree(tmp_path / "source")
+def test_installed_source_admission_checks_the_selected_payload(
+    installation, monkeypatch
+):
+    source = installation
     calls = []
+    original_installed = compiler_distribution.installed_compiler
+    original_sources = compiler_distribution.InstalledCompiler.verify_sources
+    original_package = compiler_distribution.InstalledCompiler.verify_executing_package
+    original_binary = compiler_distribution.InstalledCompiler.verify_binary
 
-    class Installed:
-        def verify_sources(self):
-            calls.append("verified")
+    def verify_sources(self):
+        calls.append("verified")
+        return original_sources(self)
 
-        def verify_executing_package(self):
-            calls.append("package verified")
+    def verify_executing_package(self):
+        calls.append("package verified")
+        return original_package(self)
+
+    def verify_binary(self, features, cargo_profile):
+        calls.append(("binary verified", features, cargo_profile))
+        return original_binary(self, features, cargo_profile)
 
     def installed(root):
         calls.append(root)
-        return Installed()
+        return original_installed(root)
 
-    monkeypatch.setattr(project_roots, "installed_compiler", installed)
+    monkeypatch.setattr(compiler_distribution, "installed_compiler", installed)
+    monkeypatch.setattr(
+        compiler_distribution.InstalledCompiler, "verify_sources", verify_sources
+    )
+    monkeypatch.setattr(
+        compiler_distribution.InstalledCompiler,
+        "verify_executing_package",
+        verify_executing_package,
+    )
+    monkeypatch.setattr(
+        compiler_distribution.InstalledCompiler, "verify_binary", verify_binary
+    )
     assert project_roots._require_molt_root(source, True, "build") is None
-    assert calls == [source, "verified", "package verified"]
+    assert calls == [
+        source,
+        "verified",
+        "package verified",
+        (
+            "binary verified",
+            compiler_distribution.PRODUCTION_COMPILER_FEATURES,
+            "release",
+        ),
+    ]
 
 
 def test_source_markers_must_be_files(tmp_path):
@@ -354,11 +393,6 @@ def test_packaged_stdlib_and_policy_follow_live_source_identity(tmp_path, monkey
     [
         ("molt.tool_releases", "tool_releases_path", "config/tool_releases.toml"),
         ("molt.llvm_toolchain", "_repo_root", "."),
-        (
-            "molt.cli.wasm_link_inputs",
-            "wasm_builtins_vendor_dir",
-            "vendor/wasm-builtins",
-        ),
         ("molt.cli.external_native", "_molt_root_for_external_native_scan", "."),
         (
             "molt.scientific_stack_versions",

@@ -103,6 +103,7 @@ def test_run_cmd_uses_harness_memory_guard(
             "ok\n",
             "",
             elapsed_s=0.01,
+            child_stderr="",
         )
 
     monkeypatch.setattr(
@@ -162,6 +163,7 @@ def test_run_cmd_raises_guard_failure_instead_of_a_layer_status(
             "",
             "memory_guard: temporary artifact custody incomplete\n",
             elapsed_s=0.01,
+            child_stderr="",
             child_returncode=child_returncode,
             infrastructure_failure=GuardInfrastructureFailure(
                 phase="temporary_artifact_custody", details=("scratch busy",)
@@ -188,7 +190,7 @@ def test_run_cmd_reports_a_guard_timeout_as_its_timeout_result(
 
     def fake_guarded_completed_process(args, **_kwargs):
         return harness_layers.harness_memory_guard.GuardedCompletedProcess(
-            args, 124, "", "", elapsed_s=12.0, timed_out=True
+            args, 124, "", "", elapsed_s=12.0, child_stderr="", timed_out=True
         )
 
     monkeypatch.setattr(

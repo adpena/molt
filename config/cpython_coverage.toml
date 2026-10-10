@@ -52,3 +52,9 @@ surface = "private-_Py-symbols"
 introduced = "3.13"
 summary = "Private _Py APIs may change without notice and several were removed or restored during the 3.13 cycle."
 source = "https://docs.python.org/3.13/c-api/stable.html"
+
+[[divergence]]
+surface = "PyContext_AddWatcher/PyContext_ClearWatcher/Py_CONTEXT_SWITCHED"
+introduced = "3.14"
+summary = "Context watcher registration, notification and unraisable-error preservation are not implemented. The 3.14 Context C-API coordinate remains unsupported and release-held; other Context APIs do not demonstrate watcher support."
+source = "https://docs.python.org/3.14/c-api/contextvars.html"

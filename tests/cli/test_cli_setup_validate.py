@@ -559,7 +559,7 @@ def test_maybe_enable_sccache_installs_shared_dx_cache_defaults(
         CARGO_EXECUTION, "pinned_sccache", lambda _env: "/usr/bin/sccache"
     )
     monkeypatch.setattr(
-        CARGO_EXECUTION, "_sccache_server_responsive", lambda _sccache: True
+        CARGO_EXECUTION, "_sccache_server_responsive", lambda _sccache, _env: True
     )
 
     CARGO_EXECUTION._maybe_enable_sccache(env)

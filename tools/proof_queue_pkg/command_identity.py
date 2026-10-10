@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.llvm_toolchain import capture_wasi_sdk_selection
+
 import contextlib
 import hashlib
 import json
@@ -16,7 +18,7 @@ import sys
 from typing import Any, BinaryIO, Iterable, Mapping, Sequence, cast
 
 from molt import file_publication
-from molt.dx import _reject_onedrive
+from molt.toolchain_identity import executable_environment_value, find_executable
 from molt.exact_json import ExactJsonError, canonical_json_sha256, loads_exact
 from molt.rust_toolchain import cargo_config_arguments, cargo_configuration_paths
 from molt.python_environment_identity import (
@@ -36,6 +38,7 @@ from tools.toolchain_probe import resolve_single_file_path
 
 def _hash_file(path: Path) -> str:
     try:
+        path = process_image_capture.custody_path(path)
         with path.open("rb") as handle:
             return hashlib.file_digest(handle, "sha256").hexdigest()
     except OSError as exc:
@@ -80,13 +83,142 @@ def _directory_manifest_identity(
                 "sha256": digest,
             }
         )
-    manifest = json.dumps(files, sort_keys=True, separators=(",", ":"))
     return {
         "root": str(root),
         "file_count": len(files),
         "files": files,
-        "manifest_sha256": hashlib.sha256(manifest.encode()).hexdigest(),
+        "manifest_sha256": canonical_json_sha256(files),
     }
+
+
+def _validate_directory_manifest_identity(
+    value: object, *, selected_root: Path
+) -> None:
+    """Validate the existing directory projection at receipt receivers."""
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"root", "file_count", "files", "manifest_sha256"}
+        or value["root"] != str(selected_root.resolve(strict=False))
+        or not selected_root.is_absolute()
+        or not isinstance(value["files"], list)
+        or type(value["file_count"]) is not int
+        or value["file_count"] != len(value["files"])
+        or value["manifest_sha256"] != canonical_json_sha256(value["files"])
+    ):
+        raise ValueError("directory resource identity is malformed or substituted")
+    root = Path(value["root"])
+    members = []
+    for row in value["files"]:
+        if not isinstance(row, Mapping) or set(row) != {
+            "relative_path",
+            "lexical_path",
+            "resolved_path",
+            "symlinked",
+            "size",
+            "sha256",
+        }:
+            raise ValueError("directory resource member identity is malformed")
+        relative = row["relative_path"]
+        if (
+            not isinstance(relative, str)
+            or not relative
+            or "\\" in relative
+            or "\0" in relative
+            or any(part in {"", ".", ".."} for part in relative.split("/"))
+            or Path(relative).is_absolute()
+            or re.match(r"^[A-Za-z]:", relative)
+            or row["lexical_path"] != str(root / relative)
+            or not isinstance(row["resolved_path"], str)
+            or not Path(row["resolved_path"]).is_absolute()
+            or ".." in Path(row["resolved_path"]).parts
+            or str(Path(row["resolved_path"])) != row["resolved_path"]
+            or not Path(row["resolved_path"]).is_relative_to(root)
+            or type(row["size"]) is not int
+            or row["size"] < 0
+            or not isinstance(row["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is None
+            or type(row["symlinked"]) is not bool
+            or row["symlinked"]
+            != (
+                os.path.normcase(row["lexical_path"])
+                != os.path.normcase(row["resolved_path"])
+            )
+        ):
+            raise ValueError(
+                "directory resource member escapes or lacks content custody"
+            )
+        members.append(relative)
+    if members != sorted(set(members)):
+        raise ValueError("directory resource members are not canonical")
+
+
+def _revalidate_directory_manifest_identity(
+    value: Mapping[str, object], *, selected_root: Path, label: str
+) -> None:
+    _validate_directory_manifest_identity(value, selected_root=selected_root)
+    if _directory_manifest_identity(selected_root, label=label) != value:
+        raise ValueError(
+            f"{label} membership or content changed while live custody armed"
+        )
+
+
+def _validate_node_package_identity(
+    policy: proof_plan.ToolchainPolicy,
+    identity: Mapping[str, object],
+    *,
+    full_capture: bool = False,
+) -> Mapping[str, object] | None:
+    expected = policy.data.get("node_package")
+    value = identity.get("node_package")
+    if expected is None:
+        if value is not None:
+            raise ValueError("unexpected node package closure")
+        return None
+    if (
+        not isinstance(value, Mapping)
+        or set(value)
+        != {"name", "entry", "manifest", "resolver", "selection_files", "package"}
+        or value["name"] != expected
+        or not isinstance(value["package"], Mapping)
+        or not isinstance(value["package"].get("root"), str)
+    ):
+        raise ValueError("node package closure is incomplete")
+    root = Path(value["package"]["root"])
+    if not root.is_absolute() or str(root.resolve(strict=False)) != str(root):
+        raise ValueError("node package selection root is not canonical")
+    facts = value["selection_files"]
+    if (
+        not isinstance(facts, list)
+        or len(facts) != 2
+        or any(
+            not isinstance(row, Mapping)
+            or set(row) != {"path", "size_bytes", "sha256"}
+            or not isinstance(row["path"], str)
+            or not Path(row["path"]).is_relative_to(root)
+            or ".." in Path(row["path"]).parts
+            or type(row["size_bytes"]) is not int
+            or row["size_bytes"] < 0
+            or not isinstance(row["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", row["sha256"]) is None
+            for row in facts
+        )
+        or [row["path"] for row in facts] != [value["entry"], value["manifest"]]
+    ):
+        raise ValueError("node package finite selection custody is incomplete")
+    if set(value["package"]) == {"root"}:
+        if full_capture:
+            raise ValueError("node package requires an armed content inventory")
+        return value["package"]
+    _validate_directory_manifest_identity(value["package"], selected_root=root)
+    captured = {
+        row["resolved_path"]: (row["size"], row["sha256"])
+        for row in value["package"]["files"]
+    }
+    if any(
+        captured.get(row["path"]) != (row["size_bytes"], row["sha256"]) for row in facts
+    ):
+        raise ValueError("node package finite selection changed before armed capture")
+    return value["package"]
 
 
 def _owned_directory_manifest_identity(path: Path, *, label: str) -> dict[str, object]:
@@ -155,7 +287,7 @@ def _owned_directory_manifest_identity(path: Path, *, label: str) -> dict[str, o
 
 
 def _executable_identity(path: Path) -> dict[str, object]:
-    lexical = Path(os.path.abspath(path))
+    lexical = process_image_capture.custody_path(path)
     try:
         resolved = lexical.resolve(strict=True)
         size = lexical.stat().st_size
@@ -168,7 +300,8 @@ def _executable_identity(path: Path) -> dict[str, object]:
     identity: dict[str, object] = {
         "path": str(lexical),
         "resolved_path": str(resolved),
-        "symlinked": os.path.normcase(str(lexical)) != os.path.normcase(str(resolved)),
+        "symlinked": process_image_capture._image_path_key(lexical)
+        != process_image_capture._image_path_key(resolved),
         "size_bytes": size,
         "sha256": digest,
     }
@@ -196,6 +329,7 @@ def _run_captured(
     timeout: float = 30.0,
     text: bool = True,
 ) -> subprocess.CompletedProcess[Any]:
+    process_image_capture.require_custody_coordinate(Path(command[0]))
     return admission._COMMANDS.run(
         list(command),
         cwd=cwd,
@@ -217,23 +351,67 @@ def _resolve_outer_executable(token: str, *, cwd: Path, env: Mapping[str, str]) 
             )
         except LlvmToolchainConfigError as exc:
             raise ValueError(f"wasm-ld toolchain selection failed: {exc}") from exc
-    candidate = Path(token)
-    if candidate.is_absolute() or candidate.parent != Path("."):
-        path = candidate if candidate.is_absolute() else cwd / candidate
-        try:
-            lexical = Path(os.path.abspath(path))
-            if not lexical.is_file():
-                raise FileNotFoundError(lexical)
-            return lexical
-        except OSError as exc:
-            raise ValueError(f"proof executable {token!r} is unavailable") from exc
-    found = shutil.which(token, path=env.get("PATH"))
-    if found is None:
+    selected = find_executable(token, environment=env, cwd=cwd)
+    if selected is None:
+        if Path(token).is_absolute() or any(separator in token for separator in "/\\"):
+            raise ValueError(f"proof executable {token!r} is unavailable")
         raise ValueError(f"proof executable {token!r} is not on the execution PATH")
-    lexical = Path(os.path.abspath(found))
-    if not lexical.is_file():
-        raise ValueError(f"proof executable {token!r} is unavailable")
-    return lexical
+    process_image_capture.require_custody_coordinate(selected)
+    return selected
+
+
+def _bound_tool_payload(
+    envelope: Mapping[str, object], exact: Sequence[str], requested: str
+) -> str | None:
+    """Use the admitted role, before executable binding changes its basename."""
+    delegated = envelope.get("delegated")
+    owner = delegated if isinstance(delegated, Mapping) else envelope
+    submitted = owner.get("argv")
+    if (
+        isinstance(owner.get("python"), Mapping)
+        or not isinstance(submitted, list)
+        or not submitted
+        or admission._basename(str(submitted[0]))
+        not in admission._executable_registry_names(requested)
+    ):
+        return None
+    payload = admission._nested_command(exact) if delegated is not None else exact
+    if not payload:
+        raise ValueError(f"typed {requested} command has no exact payload")
+    return str(payload[0])
+
+
+def _cargo_executable_path(
+    envelope: Mapping[str, object],
+    exact: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    token: str | None = None,
+) -> Path:
+    """Select Cargo once, preserving a typed command's explicit executable.
+
+    Bare Cargo roles use CARGO before command-effective PATH. Once bound, the
+    actual payload path owns both capture and execution, including Rust probes.
+    Python families also capture their environment-selected Cargo dependency.
+    """
+    cargo_names = admission._executable_registry_names("cargo")
+    if token is None:
+        token = _bound_tool_payload(envelope, exact, "cargo")
+        if token is None:
+            # Python drivers can invoke literal cargo as well as an explicit
+            # CARGO hook. PATH owns the declared dependency; executable-env
+            # custody independently captures the hook and its physical image.
+            return _which_in_command_environment(
+                "cargo", envelope, exact, cwd=cwd, env=env
+            )
+    if token.casefold() in cargo_names:
+        selected = executable_environment_value(env, "CARGO")
+        if selected:
+            return _resolve_outer_executable(selected, cwd=cwd, env=env)
+        token = token or "cargo"
+        return _which_in_command_environment(token, envelope, exact, cwd=cwd, env=env)
+    return _resolve_outer_executable(token, cwd=cwd, env=env)
 
 
 def _exact_command(
@@ -257,7 +435,13 @@ def _exact_command(
         raw_prefix = python.get("prefix")
         assert isinstance(raw_prefix, list)
         argv = [*prefix, *argv[len(raw_prefix) :]]
-    argv[0] = str(_resolve_outer_executable(argv[0], cwd=cwd, env=env))
+    argv[0] = str(
+        _cargo_executable_path(envelope, argv, cwd=cwd, env=env, token=argv[0])
+        if not isinstance(python, Mapping)
+        and admission._basename(argv[0])
+        in admission._executable_registry_names("cargo")
+        else _resolve_outer_executable(argv[0], cwd=cwd, env=env)
+    )
     if isinstance(python, Mapping) and python.get("kind") == "uv-console-script":
         prefix = python.get("prefix")
         assert isinstance(prefix, list)
@@ -353,8 +537,15 @@ def _bind_delegated_command(
         delegated_index -= 1
     else:
         raise ValueError("unknown guarded_exec invocation mode")
-    delegated_path = _which_in_command_environment(
-        exact[delegated_index], envelope, exact, cwd=cwd, env=env
+    delegated_path = (
+        _cargo_executable_path(
+            envelope, exact, cwd=cwd, env=env, token=exact[delegated_index]
+        )
+        if admission._basename(str(delegated["argv"][0]))  # type: ignore[index]
+        in admission._executable_registry_names("cargo")
+        else _which_in_command_environment(
+            exact[delegated_index], envelope, exact, cwd=cwd, env=env
+        )
     )
     exact[delegated_index] = str(delegated_path)
     return _file_identity(guarded_exec_path), _executable_identity(delegated_path)
@@ -466,7 +657,6 @@ def _python_identity(
         "prefix",
     }:
         raise ValueError("proof Python selection identity shape is invalid")
-    _reject_python_location_onedrive(location)
     selected_external_roots = selection.get("external_roots")
     if not isinstance(selected_external_roots, list) or not all(
         isinstance(value, str) and value for value in selected_external_roots
@@ -507,8 +697,21 @@ def _python_identity(
     assert isinstance(base_executable_raw, str)
     if (
         prefix_raw != location.get("prefix")
-        or executable_raw != location.get("selected_executable")
-        or base_executable_raw != location.get("base_executable")
+        # The locator preserves the reported launcher coordinate in its hashed
+        # receipt. Selection uses the proof image owner's lexical coordinate;
+        # compare that same projection without resolving selected role aliases.
+        or executable_raw
+        != str(
+            process_image_capture.custody_path(
+                Path(str(location["selected_executable"]))
+            )
+        )
+        or base_executable_raw
+        != str(
+            process_image_capture.custody_path(
+                Path(str(location["base_executable"]))
+            ).resolve(strict=True)
+        )
         or selection.get("executable_sha256") != _hash_file(Path(executable_raw))
         or selection.get("base_executable_sha256")
         != _hash_file(Path(base_executable_raw))
@@ -571,15 +774,19 @@ def _python_process_images(
     base_images = [row for row in process_images if row["role"] == "base-interpreter"]
 
     def lexical(value: object) -> str:
-        return os.path.normcase(str(Path(os.path.abspath(str(value)))))
+        return process_image_capture._image_path_key(Path(str(value)))
 
     if len(selected_images) != 1 or lexical(selected_images[0]["path"]) != lexical(
         selected
     ):
         raise ValueError("proof Python selection is absent from launcher closure")
-    if len(base_images) != 1 or os.path.normcase(
-        str(Path(str(base_images[0]["path"])).resolve(strict=True))
-    ) != os.path.normcase(str(Path(base).resolve(strict=True))):
+    if len(base_images) != 1 or process_image_capture._image_path_key(
+        process_image_capture.custody_path(Path(str(base_images[0]["path"]))).resolve(
+            strict=True
+        )
+    ) != process_image_capture._image_path_key(
+        process_image_capture.custody_path(Path(base)).resolve(strict=True)
+    ):
         raise ValueError("proof Python base executable differs from launcher closure")
     external_rows = environment.get("external_roots")
     if not isinstance(external_rows, list) or not all(
@@ -610,32 +817,6 @@ def _python_process_images(
             "proof Python environment external roots differ from pre-arm location"
         )
     return process_image_capture.revalidate_images(process_images)
-
-
-def _reject_python_location_onedrive(
-    location: Mapping[str, object], *, source_root: Path | None = None
-) -> None:
-    roles: list[tuple[str, Path]] = [
-        ("environment prefix", Path(str(location["prefix"]))),
-        ("selected executable", Path(str(location["selected_executable"]))),
-        ("base executable", Path(str(location["base_executable"]))),
-    ]
-    roles.extend(
-        ("custody root", Path(value))
-        for value in cast(Sequence[str], location["roots"])
-    )
-    roles.extend(
-        ("external editable root", Path(str(value)))
-        for value in cast(Sequence[str], location["external_roots"])
-    )
-    roles.extend(
-        ("native dependency", Path(value))
-        for value in cast(Sequence[str], location["file_paths"])
-    )
-    if source_root is not None:
-        roles.append(("proof source root", source_root))
-    for role, path in roles:
-        _reject_onedrive(path, f"proof Python {role}")
 
 
 def _file_identity(path: Path) -> dict[str, object]:
@@ -799,10 +980,12 @@ def _tool_configuration_identities(
 _RUST_TOOL_NAMES = frozenset({"cargo", "cargo.exe", "rustc", "rustc.exe"})
 
 
-def _rust_target(exact: Sequence[str], env: Mapping[str, str]) -> str | None:
-    selected_command = admission._nested_command(exact) or [
-        str(value) for value in exact
-    ]
+def _rust_target(envelope: Mapping[str, object], env: Mapping[str, str]) -> str | None:
+    delegated = envelope.get("delegated")
+    owner = delegated if isinstance(delegated, Mapping) else envelope
+    selected_command = owner.get("argv")
+    if not isinstance(selected_command, list) or not selected_command:
+        raise ValueError("Rust target selection requires an admitted command envelope")
     selected: list[str] = []
     before_separator = True
     index = 1
@@ -837,6 +1020,12 @@ def _rust_target(exact: Sequence[str], env: Mapping[str, str]) -> str | None:
     return unique[0] if unique else None
 
 
+def _runtime_c_environment_name(name: str) -> bool:
+    from molt.cli.runtime_cargo_plan import runtime_c_environment_name
+
+    return runtime_c_environment_name(name)
+
+
 TOOL_IDENTITY_REUSE_SCHEMA = "molt.proof-tool-identity-reuse.v1"
 
 # Environment names whose values define compiled output or compiler/linker
@@ -844,6 +1033,7 @@ TOOL_IDENTITY_REUSE_SCHEMA = "molt.proof-tool-identity-reuse.v1"
 # probe reuse; operational output placement is transport, never an input.
 COMPILE_ENVIRONMENT_NAMES = frozenset(
     {
+        "CARGO",
         "RUSTC",
         "RUSTC_WRAPPER",
         "RUSTC_WORKSPACE_WRAPPER",
@@ -922,6 +1112,7 @@ _REUSABLE_IDENTITY_FIELDS = frozenset(
         "content_resolver",
         "process_images",
         "link_selection",
+        "wasi_sdk",
         "identity_sha256",
     }
 )
@@ -939,6 +1130,7 @@ def compile_environment_selection(
         if name not in OPERATIONAL_CARGO_NAMES
         and (
             name in COMPILE_ENVIRONMENT_NAMES
+            or _runtime_c_environment_name(name)
             or name in configured
             or name.startswith(COMPILE_ENVIRONMENT_PREFIXES)
         )
@@ -967,6 +1159,8 @@ def _tool_identity_reuse_key(
     cwd: Path,
     probe_cwd: Path,
     launcher: Path,
+    selected_content_path: Path | None,
+    path_dependency_images: Sequence[Mapping[str, object]],
     env: Mapping[str, str],
 ) -> dict[str, object]:
     python_authority = envelope.get("python")
@@ -984,12 +1178,17 @@ def _tool_identity_reuse_key(
             if isinstance(python_authority, Mapping)
             else None
         ),
+        "cargo_native_c_units": envelope.get("cargo_native_c_units", []),
         "toolchains": (
             [str(value) for value in toolchains]
             if isinstance(toolchains, list)
             else None
         ),
         "launcher": _executable_identity(launcher),
+        "selected_content_path": str(selected_content_path)
+        if selected_content_path is not None
+        else None,
+        "path_dependency_images": list(path_dependency_images),
         "environment": _probe_environment_selection(env),
     }
 
@@ -1030,13 +1229,33 @@ def _store_reuse_record(path: Path, payload: Mapping[str, object]) -> None:
             staging.unlink()
 
 
+def _validate_wasi_sdk_policy(
+    policy: proof_plan.ToolchainPolicy,
+    identity: Mapping[str, object],
+    *,
+    full_capture: bool = False,
+) -> None:
+    required = policy.data.get("wasi_sdk_tool") is not None
+    if ("wasi_sdk" in identity) != required or (
+        required and not isinstance(identity["wasi_sdk"], Mapping)
+    ):
+        raise ValueError(f"{policy.name} SDK closure differs from toolchain policy")
+    if required:
+        toolchain_capture.validate_wasi_sdk_closure(
+            identity,
+            selected_role=str(policy.data["wasi_sdk_tool"]),
+            full_capture=full_capture,
+        )
+
+
 def _reused_identity_is_current(
-    name: str,
+    policy: proof_plan.ToolchainPolicy,
     identity: Mapping[str, object],
     *,
     cwd: Path,
     env: Mapping[str, str],
     command_argv: Sequence[str],
+    native_c_units: Sequence[str] = (),
 ) -> bool:
     """Re-prove a stored identity from file bytes before it is reused.
 
@@ -1059,11 +1278,36 @@ def _reused_identity_is_current(
     if not isinstance(images, list) or not images:
         return False
     try:
-        process_image_capture.revalidate_images(images)
+        _validate_wasi_sdk_policy(policy, identity)
+        if policy.name == "rustc":
+            selection = toolchain_capture.validate_rust_link_selection(
+                identity, required_native_c=native_c_units, command_argv=command_argv
+            )
+            toolchain_capture.revalidate_rust_artifact_manifests(selection)
+            if any(row["resources"] is not None for row in selection["native_c"]):
+                return False  # Reuse stores selections; each armed operation captures contents.
+            current = toolchain_capture.select_cargo_native_c_units(
+                required=native_c_units,
+                target=selection["target"],
+                host=selection["compiler_host"],
+                cwd=cwd,
+                env=env,
+            )
+            if current != [row["selection"] for row in selection["native_c"]]:
+                return False
+            for row in selection["native_c"]:
+                if not toolchain_capture.native_compiler_selection_is_current(
+                    row["compiler"], env=env
+                ):
+                    return False
+        if policy.data.get("wasi_sdk_tool") is not None:
+            toolchain_capture.revalidate_wasi_sdk_selection(identity)
+        else:
+            process_image_capture.revalidate_images(images)
         configuration = _tool_configuration_identities(
-            name, cwd=cwd, env=env, command_argv=command_argv
+            policy.name, cwd=cwd, env=env, command_argv=command_argv
         )
-    except (OSError, ValueError):
+    except (OSError, ValueError, KeyError, TypeError):
         return False
     if configuration != identity.get("configuration_files"):
         return False
@@ -1119,18 +1363,63 @@ def _tool_identity(
         if relative_probe_cwd.is_absolute():
             raise ValueError(f"{name} toolchain probe cwd must be repository-relative")
         probe_cwd = (proof_plan.ROOT / relative_probe_cwd).resolve(strict=True)
-    python_authority = envelope.get("python")
-    if (
-        not isinstance(python_authority, Mapping)
-        and exact
-        and admission._basename(exact[0])
-        in admission._executable_registry_names(requested)
+    sdk_role = policy.data.get("wasi_sdk_tool")
+    if sdk_role is not None:
+        from molt.llvm_toolchain import resolve_wasi_sdk_tool
+
+        path = resolve_wasi_sdk_tool(proof_plan.ROOT, sdk_role, environ=dict(env))
+    elif name == "cargo":
+        path = _cargo_executable_path(envelope, exact, cwd=probe_cwd, env=env)
+    elif payload := _bound_tool_payload(envelope, exact, requested):
+        path = _resolve_outer_executable(payload, cwd=probe_cwd, env=env)
+    elif name == "rustc" and (
+        selected := executable_environment_value(env, "RUSTC")
+        or executable_environment_value(env, "CARGO_BUILD_RUSTC")
     ):
-        path = _resolve_outer_executable(exact[0], cwd=probe_cwd, env=env)
+        path = _resolve_outer_executable(selected, cwd=probe_cwd, env=env)
     else:
         path = _which_in_command_environment(
             requested, envelope, exact, cwd=probe_cwd, env=env
         )
+    path = process_image_capture.custody_path(path)
+    selected_content_path = None
+    if policy.data.get("fingerprint_domain") == "rustup":
+        from molt.rust_toolchain import resolve_rustup_proxy
+
+        # Rustup overrides can change while proxy bytes and environment stay
+        # fixed. Resolve before reuse; physical tools need no rustup lookup.
+        selected_content_path = resolve_rustup_proxy(
+            path, role=name, root=probe_cwd, env=env
+        ).resolve(strict=True)
+    path_dependency_images: list[dict[str, object]] = []
+    delegated = envelope.get("delegated")
+    owner = delegated if isinstance(delegated, Mapping) else envelope
+    if name == "rustc" and isinstance(owner.get("python"), Mapping):
+        # Registered Python build drivers query literal PATH rustc for host
+        # metadata even when Cargo uses an explicit compiler. Capture those
+        # executable bytes separately; the primary compiler still owns all
+        # version/sysroot/linker metadata and no second linker is implied.
+        dependency = _which_in_command_environment(
+            "rustc", envelope, exact, cwd=probe_cwd, env=env
+        )
+        if dependency != path:
+            dependency_content = resolve_rustup_proxy(
+                dependency, role="rustc", root=probe_cwd, env=env
+            ).resolve(strict=True)
+            path_dependency_images.append(
+                process_image_capture.capture_image(
+                    "rustc-path-metadata", dependency, preserve_path=True
+                )
+            )
+            if dependency_content != dependency:
+                path_dependency_images.append(
+                    process_image_capture.capture_image(
+                        "rustc-path-metadata", dependency_content
+                    )
+                )
+            path_dependency_images = process_image_capture.canonical_images(
+                path_dependency_images
+            )
     policy_sha256 = hashlib.sha256(
         json.dumps(policy.data, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -1147,6 +1436,8 @@ def _tool_identity(
             cwd=cwd,
             probe_cwd=probe_cwd,
             launcher=path,
+            selected_content_path=selected_content_path,
+            path_dependency_images=path_dependency_images,
             env=env,
         )
         key_sha256 = canonical_json_sha256(key)
@@ -1157,8 +1448,19 @@ def _tool_identity(
             stored_identity = cast(dict[str, object], record["identity"])
             if record["key"] != key:
                 reason = "key-collision"
+            elif (
+                stored_identity.get("path") != str(path)
+                or stored_identity.get("policy_sha256") != policy_sha256
+                or stored_identity.get("probe_cwd") != str(probe_cwd)
+            ):
+                reason = "selection-drift"
             elif _reused_identity_is_current(
-                name, stored_identity, cwd=cwd, env=env, command_argv=command_argv
+                policy,
+                stored_identity,
+                cwd=cwd,
+                env=env,
+                command_argv=command_argv,
+                native_c_units=envelope.get("cargo_native_c_units", []),
             ):
                 if reuse_telemetry is not None:
                     reuse_telemetry.append(
@@ -1191,11 +1493,18 @@ def _tool_identity(
         envelope,
         exact,
         path=path,
+        selected_content_path=selected_content_path,
         probe_cwd=probe_cwd,
         policy_sha256=policy_sha256,
         cwd=cwd,
         env=env,
     )
+    if path_dependency_images:
+        material["process_images"] = process_image_capture.canonical_images(
+            [*material["process_images"], *path_dependency_images]
+        )
+        material.pop("identity_sha256", None)
+        material["identity_sha256"] = canonical_json_sha256(material)
     if record_path is not None and set(material) <= _REUSABLE_IDENTITY_FIELDS:
         _store_reuse_record(
             record_path,
@@ -1211,6 +1520,7 @@ def _capture_tool_identity(
     exact: Sequence[str],
     *,
     path: Path,
+    selected_content_path: Path | None,
     probe_cwd: Path,
     policy_sha256: str,
     cwd: Path,
@@ -1223,16 +1533,18 @@ def _capture_tool_identity(
         raise ValueError(f"{name} toolchain policy has no typed version command")
     version_args = tuple(raw_version_args)
     completed = _run_captured(
-        _in_python_environment(envelope, exact, (str(path), *version_args)),
+        _in_python_environment(
+            envelope, exact, (str(selected_content_path or path), *version_args)
+        ),
         cwd=probe_cwd,
         env=env,
     )
     if completed.returncode != 0:
         raise ValueError(f"{name} version probe failed: {completed.stderr.strip()}")
-    content_path = path
+    content_path = selected_content_path or path
     content_command = policy.data.get("content_path_command")
     content_resolver_identity: dict[str, object] | None = None
-    if content_command is not None:
+    if selected_content_path is None and content_command is not None:
         if not isinstance(content_command, list) or not all(
             isinstance(value, str) and value for value in content_command
         ):
@@ -1260,12 +1572,25 @@ def _capture_tool_identity(
         except (OSError, ValueError) as exc:
             raise ValueError(f"{name} content-path probe is invalid: {exc}") from exc
         content_resolver_identity = _executable_identity(resolver)
-    process_images: list[dict[str, object]] = []
-    launcher_image = process_image_capture.capture_image(
-        f"{name}-launcher", path, preserve_path=True
-    )
-    process_images.append(launcher_image)
-    if os.path.normcase(str(content_path)) == os.path.normcase(str(path)):
+    sdk_closure = None
+    if policy.data.get("wasi_sdk_tool") is not None:
+        sdk_closure = capture_wasi_sdk_selection(root=proof_plan.ROOT, env=env)
+        process_images = toolchain_capture.capture_wasi_sdk_images(sdk_closure)
+        launcher_image = next(
+            (image for image in process_images if image["path"] == str(path)), None
+        )
+        if launcher_image is None:
+            raise ValueError(
+                "WASI compiler selection differs from captured SDK helpers"
+            )
+    else:
+        launcher_image = process_image_capture.capture_image(
+            f"{name}-launcher", path, preserve_path=True
+        )
+        process_images = [launcher_image]
+    if process_image_capture._image_path_key(
+        content_path
+    ) == process_image_capture._image_path_key(path):
         content_image = launcher_image
     else:
         content_image = process_image_capture.capture_image(name, content_path)
@@ -1291,17 +1616,17 @@ def _capture_tool_identity(
         requested_toolchains = envelope.get("toolchains")
         cargo_path = None
         if isinstance(requested_toolchains, list) and "cargo" in requested_toolchains:
-            cargo_path = _which_in_command_environment(
-                "cargo", envelope, exact, cwd=probe_cwd, env=env
-            )
+            cargo_path = _cargo_executable_path(envelope, exact, cwd=probe_cwd, env=env)
         linker_images, linker_telemetry = (
             toolchain_capture.capture_rust_link_process_images(
                 rustc=content_path,
                 rustc_version=str(material["version"]),
+                native_c_units=envelope.get("cargo_native_c_units", []),
+                admitted_command=envelope.get("submitted_argv", envelope["argv"]),
                 cargo=cargo_path,
                 cwd=probe_cwd,
                 env=env,
-                target=_rust_target(exact, env),
+                target=_rust_target(envelope, env),
                 command_argv=admission._nested_command(exact) or exact,
                 linker_process_helpers=(
                     policy.data.get("linker_process_helpers")
@@ -1317,6 +1642,8 @@ def _capture_tool_identity(
         )
         process_images.extend(linker_images)
         material["link_selection"] = linker_telemetry
+    if sdk_closure is not None:
+        material["wasi_sdk"] = sdk_closure
     material["process_images"] = process_images
     if name == "node":
         node_probe = (
@@ -1387,9 +1714,8 @@ def _capture_tool_identity(
             "entry": str(entry),
             "manifest": str(manifest_path),
             "resolver": _executable_identity(node_path),
-            "package": _directory_manifest_identity(
-                package_root, label=f"{name} node package"
-            ),
+            "selection_files": [_file_identity(entry), _file_identity(manifest_path)],
+            "package": {"root": str(package_root)},
         }
     material["identity_sha256"] = hashlib.sha256(
         json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
@@ -1401,6 +1727,8 @@ def _validate_toolchain_identity(
     plan: proof_plan.ProofPlan,
     name: str,
     identity: Mapping[str, object],
+    *,
+    full_capture: bool = False,
 ) -> None:
     policies = {policy.name: policy for policy in plan.toolchain_policies}
     try:
@@ -1410,7 +1738,7 @@ def _validate_toolchain_identity(
     if policy.identity_kind == "target-derived":
         from tools.proof_queue_pkg.target_derived_toolchains import validate_identity
 
-        validate_identity(policy, identity)
+        validate_identity(policy, identity, full_capture=full_capture)
         return
     if name == "python":
         environment = identity.get("environment")
@@ -1463,7 +1791,6 @@ def _validate_toolchain_identity(
             or str(source_root.resolve(strict=True)) != source_root_raw
         ):
             raise ValueError("python identity source root is invalid")
-        _reject_python_location_onedrive(location, source_root=source_root)
         expected_images = _python_process_images(
             environment, location, source_root=source_root
         )
@@ -1480,6 +1807,12 @@ def _validate_toolchain_identity(
             )
         process_image_capture.toolchain_images(name, identity)
         return
+    _validate_wasi_sdk_policy(policy, identity, full_capture=full_capture)
+    _validate_node_package_identity(policy, identity, full_capture=full_capture)
+    if name == "rustc":
+        toolchain_capture.validate_rust_link_selection(
+            identity, full_capture=full_capture
+        )
     version = identity.get("version")
     pattern = str(policy.data["version_pattern"])
     if not isinstance(version, str) or re.search(pattern, version) is None:
@@ -1592,6 +1925,7 @@ _ENVIRONMENT_PREFIXES = (
 )
 _ENVIRONMENT_BUILD_NAMES = frozenset(
     {
+        "CARGO",
         "AR",
         "BINDGEN_EXTRA_CLANG_ARGS",
         "CC",
@@ -1622,6 +1956,7 @@ _ENVIRONMENT_BUILD_NAMES = frozenset(
         "PKG_CONFIG",
         "RANLIB",
         "RC",
+        "CARGO",
         "RUSTC",
         "RUSTFLAGS",
         "STRIP",
@@ -1670,6 +2005,7 @@ _QUEUE_CUSTODY_ENV_NAMES = frozenset(
 )
 _EXECUTABLE_ENV_NAMES = frozenset(
     {
+        "CARGO",
         "AR",
         "CC",
         "CMAKE",
@@ -1688,6 +2024,7 @@ _EXECUTABLE_ENV_NAMES = frozenset(
         "PKG_CONFIG",
         "RANLIB",
         "RC",
+        "CARGO",
         "RUSTC",
         "RUSTC_WRAPPER",
         "RUSTDOC",
@@ -1709,7 +2046,8 @@ _EXECUTABLE_ENV_NAMES = frozenset(
     }
 )
 _EXECUTABLE_ENV_PATTERNS = (
-    re.compile(r"(?:AR|CC|CXX|RANLIB|RC|STRIP)_[A-Z0-9_-]+"),
+    re.compile(r"(?:AR|CC|CXX|RANLIB|RC|STRIP)_[A-Z0-9_.-]+"),
+    re.compile(r"(?:HOST|TARGET)_(?:AR|CC|CXX|RANLIB)"),
     re.compile(r"CARGO_TARGET_[A-Z0-9_]+_(?:LINKER|RUNNER)"),
     re.compile(r"CMAKE_(?:C|CXX)_COMPILER"),
 )

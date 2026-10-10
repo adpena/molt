@@ -5410,7 +5410,7 @@ def test_audit_separates_boxed_contracts_from_dedicated_machine_constants() -> N
 
     expected = {
         "molt_cancel_token_get_current": 0,
-        "molt_task_register_token_owned": 2,
+        "molt_task_register_execution": 3,
     }
     for symbol, param_count in expected.items():
         assert imports[symbol].arity == param_count
@@ -6200,15 +6200,7 @@ def test_frontend_repoll_publication_uses_shared_control_authority() -> None:
     data = gen.load_table()
     projected: dict[str, object] = {}
     exec(gen.render_py(data), projected)
-    assert (
-        projected["FRONTEND_REPOLL_KINDS"]
-        == {
-            row["kind"].upper()
-            for row in data["simpleir_control_kind"]
-            if row["repoll"]
-        }
-        == {"STATE_TRANSITION"}
-    )
+    assert projected["FRONTEND_REPOLL_KINDS"] == {"STATE_TRANSITION"}
 
 
 def test_target_runtime_profiles_are_complete_explicit_and_generated(
@@ -7776,3 +7768,135 @@ def test_preserved_iterator_requires_the_generated_iterable_protocol():
             SIMPLEIR_RUNTIME_KIND_REQUIREMENTS[kind]
             == namespace["SIMPLEIR_RUNTIME_KIND_REQUIREMENTS"][kind]
         )
+
+
+def test_explicit_frontend_lowerings_replace_manufactured_spellings():
+    namespace = {}
+    exec(_gen().render_py(_gen().load_table()), namespace)
+    # These names come from the lifecycle, async, closure, iteration and
+    # attribute producers. The wire spellings are not extra frontend aliases.
+    lowerings = {
+        "class_layout_version": "CLASS_VERSION",
+        "del_attr_generic_obj": "DELATTR_GENERIC_OBJ",
+        "del_attr_generic_ptr": "DELATTR_GENERIC_PTR",
+        "iter": "ITER_NEW",
+        "closure_load": "LOAD_CLOSURE",
+        "closure_store": "STORE_CLOSURE",
+        "ret": "ret",
+        "ret_void": "ret_void",
+    }
+    for wire, frontend in lowerings.items():
+        assert namespace["FRONTEND_LOWERING_KINDS_BY_WIRE"][wire] == (frontend,)
+        namespace["validate_frontend_kind"](frontend, "producer")
+        namespace["validate_serialized_kind"](wire)
+        with pytest.raises(ValueError, match="unregistered frontend op kind"):
+            namespace["validate_frontend_kind"](wire.upper(), "producer")
+        assert wire.upper() not in namespace["FRONTEND_EFFECT_CLASS"]
+        assert wire.upper() not in namespace["FRONTEND_ARBITRARY_HEAP_EFFECT"]
+    for kind, effect in {
+        "DELATTR_GENERIC_OBJ": "writes_heap",
+        "DELATTR_GENERIC_PTR": "writes_heap",
+        "LOAD_CLOSURE": "reads_heap",
+        "STORE_CLOSURE": "writes_heap",
+        "ret": "control",
+        "ret_void": "control",
+    }.items():
+        assert namespace["FRONTEND_EFFECT_CLASS"][kind] == effect
+    for kind in ("ret", "ret_void"):
+        assert kind in namespace["FRONTEND_EFFECT_CONTROL_KINDS"]
+        assert namespace["FRONTEND_ARBITRARY_HEAP_EFFECT"][kind] is False
+    for kind in ("RETURN", "RET", "RET_VOID"):
+        with pytest.raises(ValueError, match="unregistered frontend op kind"):
+            namespace["validate_frontend_kind"](kind, "producer")
+        with pytest.raises(ValueError, match="unregistered SimpleIR op kind"):
+            namespace["validate_serialized_kind"](kind)
+
+
+def test_frontend_lowering_projection_preserves_declared_alternatives():
+    from tools.op_kinds.frontend_validate import _frontend_effect_class_map
+    from tools.op_kinds.registration import registered_frontend_kinds
+    from tools.op_kinds.render_python import _frontend_arbitrary_heap_map
+
+    data = {
+        "kind": [{"canonical": "ordinary"}],
+        "simpleir_control_kind": [{"kind": "return_wire", "terminator": True}],
+        "frontend_lowering_kind": [
+            {"kind": "return_a", "wire_kind": "return_wire"},
+            {"kind": "RETURN_B", "wire_kind": "return_wire"},
+        ],
+    }
+    assert registered_frontend_kinds(data) == {"ORDINARY", "return_a", "RETURN_B"}
+    assert _frontend_effect_class_map(data) == {
+        "return_a": "control",
+        "RETURN_B": "control",
+    }
+    assert _frontend_arbitrary_heap_map(data) == {
+        "return_a": False,
+        "RETURN_B": False,
+    }
+    full_table = _gen().load_table()
+    full_table["frontend_lowering_kind"].append(
+        {"kind": "ALTERNATIVE_ITER", "wire_kind": "iter"}
+    )
+    namespace = {}
+    exec(_gen().render_py(full_table), namespace)
+    assert namespace["FRONTEND_LOWERING_KINDS_BY_WIRE"]["iter"] == (
+        "ITER_NEW",
+        "ALTERNATIVE_ITER",
+    )
+
+
+@pytest.mark.parametrize("run_midend", [False, True])
+@pytest.mark.parametrize("kind", ["ret", "ret_void"])
+def test_frontend_return_spelling_reaches_real_serializer(kind, run_midend):
+    from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
+
+    generator = SimpleTIRGenerator()
+    value = MoltValue("answer", "int")
+    ops = [MoltOp(kind="CONST", args=[37], result=value)] if kind == "ret" else []
+    ops.append(
+        MoltOp(
+            kind=kind,
+            args=[value] if kind == "ret" else [],
+            result=MoltValue("none"),
+        )
+    )
+    assert generator._op_effect_class(kind) == "control"
+    wire = generator.map_ops_to_json(ops, run_midend=run_midend)
+    if kind == "ret":
+        assert len(wire) == 2
+        assert wire[0]["kind"] == "const"
+        assert wire[0]["value"] == 37
+        assert wire[1] == {"kind": "ret", "args": [wire[0]["out"]]}
+    else:
+        assert wire == [{"kind": "ret_void"}]
+
+
+@pytest.mark.parametrize("kind", ["RETURN", "RET", "RET_VOID"])
+def test_real_serializer_rejects_retired_frontend_return_spellings(kind):
+    from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
+
+    value = MoltValue("answer", "int")
+    ops = [
+        MoltOp(kind="CONST", args=[37], result=value),
+        MoltOp(
+            kind=kind,
+            args=[] if kind == "RET_VOID" else [value],
+            result=MoltValue("none"),
+        ),
+    ]
+    with pytest.raises(ValueError, match="unregistered frontend op kind"):
+        SimpleTIRGenerator().map_ops_to_json(ops)
+
+
+def test_shared_frontend_wire_spelling_requires_declared_identity():
+    gen = _gen()
+    data = gen.load_table()
+    data["frontend_effect_kind"].append(
+        {"kind": "const", "effect": "pure", "reason": "invalid undeclared overlap"}
+    )
+    with pytest.raises(
+        gen.OpKindTableError,
+        match="frontend effect tokens leak into runtime wire vocabulary: const",
+    ):
+        gen._validate_frontend_tables(data, data["opcode"])

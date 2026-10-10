@@ -86,6 +86,7 @@ from molt.disk_capacity import (  # noqa: E402
     minimum_headroom_bytes,
 )
 from molt.custody_layout import custody_root  # noqa: E402
+from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
 from molt.file_deletion import delete_path  # noqa: E402
 from tools.memory_guard_core.active_custody import has_active_guard_marker  # noqa: E402
 
@@ -106,7 +107,6 @@ ENV_TTL = "MOLT_DISK_GUARD_TTL_HOURS"
 ENV_LANE_GLOBS = "MOLT_DISK_GUARD_LANE_GLOBS"
 ENV_ROOT = "MOLT_EXT_ROOT"
 
-WINDOWS_PRIMARY_ARTIFACT_ROOT = Path("C:/Molt")
 
 # Hard denylist: even if a classifier ever matched one of these under target/,
 # refuse to delete it. These are the SHARED build outputs every lane depends on
@@ -396,21 +396,19 @@ def resolve_root(
 ) -> Path:
     """Resolve the artifact root and REFUSE dangerous targets.
 
-    Never operates on a drive/filesystem root or a one-component path. On
-    Windows the canonical root is ``C:\\Molt``; an explicit ``--root`` or
-    ``MOLT_EXT_ROOT`` is honored as long as it is a real, multi-component dir.
+    Never operates on a drive/filesystem root or a one-component path. An
+    explicit ``--root`` or ``MOLT_EXT_ROOT`` is required on every host and
+    must identify a real, multi-component directory.
     """
     env = os.environ if env is None else env
     if raw:
         root = Path(raw)
     elif env.get(ENV_ROOT):
         root = Path(env[ENV_ROOT])
-    elif os.name == "nt" and WINDOWS_PRIMARY_ARTIFACT_ROOT.is_dir():
-        root = WINDOWS_PRIMARY_ARTIFACT_ROOT
     else:
         raise SystemExit(
             "disk_guard: could not resolve the artifact root; pass --root or set "
-            "MOLT_EXT_ROOT (e.g. C:\\Molt)."
+            "MOLT_EXT_ROOT to the intended artifact directory."
         )
     root = root.expanduser().resolve()
     if not root.is_dir():
@@ -1247,14 +1245,17 @@ def _protected_paths(
 ) -> list[Path]:
     """Paths that must never be reclaimed even if they match the allow-set.
 
-    Currently the current session's target dir (``target/sessions/<id>`` and any
-    registered dir under it), protecting an in-flight build of THIS process.
+    Currently the current session's target dir (``target/sessions/<component>``,
+    named by the DX session-component authority, and any registered dir under
+    it), protecting an in-flight build of THIS process.
     """
     scan_roots = (roots,) if isinstance(roots, Path) else tuple(roots)
     protected: list[Path] = []
     session = str(env.get("MOLT_SESSION_ID", "")).strip()
     if session:
-        protected.extend(root / "target" / "sessions" / session for root in scan_roots)
+        protected.extend(
+            cargo_target_dir_for_artifact_root(root, session) for root in scan_roots
+        )
     for name in (
         "CARGO_TARGET_DIR",
         "MOLT_DIFF_CARGO_TARGET_DIR",
@@ -1453,7 +1454,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--root", help="artifact root (default $MOLT_EXT_ROOT or C:\\Molt)")
+    ap.add_argument(
+        "--root", help="artifact root (required unless $MOLT_EXT_ROOT is set)"
+    )
     ap.add_argument(
         "--ensure-free",
         nargs="?",

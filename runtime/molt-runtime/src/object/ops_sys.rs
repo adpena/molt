@@ -4,7 +4,8 @@
 use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::builtins::exceptions::{ExceptionValue, with_saved_raised_exception};
 use crate::builtins::numbers::{
-    INT_BYTES_NEGATIVE_UNSIGNED, INT_BYTES_OK, bigint_from_bytes, bigint_to_bytes,
+    INT_BYTES_NEGATIVE_UNSIGNED, INT_BYTES_OK, bigint_from_bytes, index_integral_payload_bits,
+    integral_payload_to_bytes,
 };
 use crate::object::ops::{range_components_bigint, range_len_bigint};
 use crate::object::ops_string::{
@@ -1321,13 +1322,7 @@ pub extern "C" fn molt_hash_builtin(val: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_hash(val: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(val);
-        let hash = if let Some(ptr) = obj.as_ptr() {
-            hash_pointer(ptr as u64)
-        } else {
-            hash_pointer(val)
-        };
-        int_bits_from_i64(_py, hash)
+        int_bits_from_i64(_py, crate::object::ops_hash::identity_hash(val))
     })
 }
 
@@ -3158,48 +3153,7 @@ pub extern "C" fn molt_int_to_bytes(
     signed_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let length_type = class_name_for_error(type_of_bits(_py, length_bits));
-        let length_msg = format!(
-            "'{}' object cannot be interpreted as an integer",
-            length_type
-        );
-        let length = index_i64_from_obj(_py, length_bits, &length_msg);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if length < 0 {
-            return raise_exception::<_>(_py, "ValueError", "length argument must be non-negative");
-        }
-        let len = match usize::try_from(length) {
-            Ok(val) => val,
-            Err(_) => {
-                return raise_exception::<_>(_py, "OverflowError", "length too large");
-            }
-        };
-        let byteorder_obj = obj_from_bits(byteorder_bits);
-        let Some(byteorder) = string_obj_to_owned(byteorder_obj) else {
-            let type_name = class_name_for_error(type_of_bits(_py, byteorder_bits));
-            let msg = format!(
-                "to_bytes() argument 'byteorder' must be str, not {}",
-                type_name
-            );
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        };
-        let byteorder_norm = byteorder.to_ascii_lowercase();
-        let is_little = match byteorder_norm.as_str() {
-            "little" => true,
-            "big" => false,
-            _ => {
-                return raise_exception::<_>(
-                    _py,
-                    "ValueError",
-                    "byteorder must be either 'little' or 'big'",
-                );
-            }
-        };
-        let signed = is_truthy(_py, obj_from_bits(signed_bits));
-        let value_obj = obj_from_bits(int_bits);
-        let Some(value) = to_bigint(value_obj) else {
+        let Some(payload) = index_integral_payload_bits(int_bits) else {
             let type_name = class_name_for_error(type_of_bits(_py, int_bits));
             let msg = format!(
                 "descriptor 'to_bytes' requires a 'int' object but received '{}'",
@@ -3207,8 +3161,87 @@ pub extern "C" fn molt_int_to_bytes(
             );
             return raise_exception::<_>(_py, "TypeError", &msg);
         };
-        let mut bytes = vec![0; len];
-        let status = bigint_to_bytes(&value, &mut bytes, is_little, signed);
+        let length =
+            if let Some(length) = crate::builtins::numbers::index_i64_integral_bits(length_bits) {
+                length
+            } else {
+                let length_type = class_name_for_error(type_of_bits(_py, length_bits));
+                let length_msg = format!(
+                    "'{}' object cannot be interpreted as an integer",
+                    length_type
+                );
+                index_i64_from_obj(_py, length_bits, &length_msg)
+            };
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        // Match the argument converter's Py_ssize_t bound before later arguments.
+        if isize::try_from(length).is_err() {
+            return raise_exception::<_>(
+                _py,
+                "OverflowError",
+                "Python int too large to convert to C ssize_t",
+            );
+        }
+        let byteorder = unsafe {
+            crate::object::ops_format::with_string_bytes(obj_from_bits(byteorder_bits), |bytes| {
+                match bytes {
+                    b"little" => Some(true),
+                    b"big" => Some(false),
+                    _ => None,
+                }
+            })
+        };
+        // Type admission precedes signed truth; content validation follows it.
+        let byteorder = match byteorder {
+            Some(order) => order,
+            None => {
+                let type_name = class_name_for_error(type_of_bits(_py, byteorder_bits));
+                let msg = format!(
+                    "to_bytes() argument 'byteorder' must be str, not {}",
+                    type_name
+                );
+                return raise_exception::<_>(_py, "TypeError", &msg);
+            }
+        };
+        let signed = is_truthy(_py, obj_from_bits(signed_bits));
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(is_little) = byteorder else {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "byteorder must be either 'little' or 'big'",
+            );
+        };
+        if length < 0 {
+            return raise_exception::<_>(_py, "ValueError", "length argument must be non-negative");
+        }
+        let len = length as usize;
+        // The canonical builder owns checked layout, zero initialization and NUL.
+        // Empty results retain the established singleton identity.
+        let ptr = if len == 0 {
+            alloc_bytes(_py, &[])
+        } else {
+            alloc_inline_bytes_with_len(_py, len, InlineBytesKind::Bytes)
+        };
+        if ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let result = ExceptionValue::adopt(_py, MoltObject::from_ptr(ptr).bits());
+        let out = if len == 0 {
+            &mut [][..]
+        } else {
+            // No guest callback or publication occurs while this output is mutable.
+            unsafe {
+                std::slice::from_raw_parts_mut(
+                    crate::object::layout::InlineBytesStorage::data(ptr),
+                    len,
+                )
+            }
+        };
+        let status = integral_payload_to_bytes(payload, out, is_little, signed);
         if status == INT_BYTES_NEGATIVE_UNSIGNED {
             return raise_exception::<_>(
                 _py,
@@ -3219,12 +3252,7 @@ pub extern "C" fn molt_int_to_bytes(
         if status != INT_BYTES_OK {
             return raise_exception::<_>(_py, "OverflowError", "int too big to convert");
         }
-        let ptr = alloc_bytes(_py, &bytes);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
+        result.into_bits()
     })
 }
 

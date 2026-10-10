@@ -42,6 +42,12 @@ extern int PyState_AddModule(PyObject *module, PyModuleDef *def);
 extern PyObject *PyState_FindModule(PyModuleDef *def);
 extern int PyState_RemoveModule(PyModuleDef *def);
 
+PyAPI_DATA(PyTypeObject) PyMethod_Type;
+extern PyObject *PyMethod_New(PyObject *func, PyObject *self);
+extern int PyMethod_Check(PyObject *op);
+extern PyObject *PyMethod_GET_FUNCTION(PyObject *op);
+extern PyObject *PyMethod_GET_SELF(PyObject *op);
+
 extern PyObject *PyCFunction_New(PyMethodDef *ml, PyObject *self);
 extern PyObject *PyCFunction_NewEx(PyMethodDef *ml, PyObject *self, PyObject *module);
 extern PyObject *PyCMethod_New(PyMethodDef *ml, PyObject *self, PyObject *module, PyTypeObject *cls);

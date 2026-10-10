@@ -43,7 +43,11 @@ from molt.toolchain_identity import (
 from molt.llvm_toolchain import (
     LlvmToolchainConfigError,
     WasmLlvmNmVerification,
-    verify_wasm_llvm_nm,
+    WasiSdkInstallation,
+    managed_wasm_llvm_nm,
+    resolve_wasi_sdk_tool,
+    verify_selected_wasm_llvm_nm,
+    wasi_sdk_host_asset,
 )
 
 
@@ -299,7 +303,7 @@ def _cached_nm_reader_family(
 @dataclass(frozen=True, slots=True)
 class _NativeSymbolReaderCandidate:
     command: tuple[str, ...]
-    executable_identity: StableRegularFileIdentity | None = None
+    executable_identity: StableRegularFileIdentity | WasiSdkInstallation | None = None
     admission_error: str | None = None
     # ``None`` only together with ``admission_error``: an admitted reader always
     # has a known family, because the family selects its command line.
@@ -312,6 +316,8 @@ class _NativeSymbolReaderCandidate:
                 "sha256": (
                     None
                     if self.executable_identity is None
+                    else str(self.executable_identity.tool_fact("llvm-nm")["sha256"])
+                    if isinstance(self.executable_identity, WasiSdkInstallation)
                     else self.executable_identity.sha256
                 ),
                 "error": self.admission_error,
@@ -340,18 +346,23 @@ class _NativeSymbolReader:
 
 @functools.lru_cache(maxsize=8)
 def _cached_wasm_llvm_nm_verification(
-    source_root: Path,
-    environment_items: tuple[tuple[str, str], ...],
-) -> WasmLlvmNmVerification:
-    return verify_wasm_llvm_nm(source_root, environ=dict(environment_items))
+    selected_path: Path,
+    expected_version: str,
+) -> WasmLlvmNmVerification[StableRegularFileIdentity]:
+    return verify_selected_wasm_llvm_nm(
+        selected_path, expected_version=expected_version
+    )
 
 
 def _verified_wasm_llvm_nm(
     environment: dict[str, str],
-) -> WasmLlvmNmVerification:
-    environment_items = tuple(sorted(environment.items()))
+) -> WasmLlvmNmVerification[StableRegularFileIdentity | WasiSdkInstallation]:
     source_root = compiler_source_root()
-    verification = _cached_wasm_llvm_nm_verification(source_root, environment_items)
+    selected_path = resolve_wasi_sdk_tool(source_root, "llvm-nm", environ=environment)
+    if managed := managed_wasm_llvm_nm(source_root, selected_path, environ=environment):
+        return managed
+    expected_version = wasi_sdk_host_asset(source_root).llvm_version
+    verification = _cached_wasm_llvm_nm_verification(selected_path, expected_version)
     try:
         with stable_executable_probe(
             verification.path,
@@ -361,7 +372,9 @@ def _verified_wasm_llvm_nm(
             pass
     except (OSError, ValueError):
         _cached_wasm_llvm_nm_verification.cache_clear()
-        verification = _cached_wasm_llvm_nm_verification(source_root, environment_items)
+        verification = _cached_wasm_llvm_nm_verification(
+            selected_path, expected_version
+        )
     return verification
 
 
@@ -482,6 +495,11 @@ def _native_symbol_reader(
         (
             "wasm-llvm-nm",
             str(verification.path),
+            *(
+                ("managed-sdk:" + verification.executable_identity.tree_sha256,)
+                if isinstance(verification.executable_identity, WasiSdkInstallation)
+                else ()
+            ),
             verification.fact.version,
             verification.fact.sha256,
             configured,
@@ -496,7 +514,7 @@ def _require_unchanged_symbol_reader(
     reader: _NativeSymbolReader,
 ) -> None:
     for candidate in reader.candidates:
-        if candidate.executable_identity is None:
+        if not isinstance(candidate.executable_identity, StableRegularFileIdentity):
             continue
         try:
             with stable_executable_probe(
@@ -726,14 +744,19 @@ def _nm_result_reports_no_symbols(result: subprocess.CompletedProcess[str]) -> b
     )
 
 
+# A healthy read finishes in milliseconds, so these bounds cost nothing there;
+# they only stop a hung reader. Five seconds for one object failed builds on
+# loaded hosted Linux runners (HF-82).
+_NM_OBJECT_READ_TIMEOUT_S = 60.0
+_NM_ARCHIVE_READ_TIMEOUT_S = 120.0
+
+
 def _nm_read_timeout(default: float) -> float:
     """Resolve the ``nm``/``llvm-nm`` object-symbol read timeout.
 
-    ``llvm-nm -g <object>`` is a bounded, read-only, non-spawning leaf tool, but
-    on slow volumes (network/OneDrive-backed checkouts, antivirus-scanned exFAT
-    build roots) a single spawn + read can exceed a few seconds. Expose the
-    ceiling via ``MOLT_NM_TIMEOUT_SEC`` so an operator on a slow host can raise
-    it without patching; the tight default keeps healthy hosts fast.
+    ``llvm-nm -g <object>`` is a bounded, read-only, non-spawning leaf tool.
+    Spawn and read time grows on loaded hosts and slow volumes, so the bound
+    only stops a hung reader. ``MOLT_NM_TIMEOUT_SEC`` replaces it.
     """
     raw = os.environ.get("MOLT_NM_TIMEOUT_SEC")
     if raw:
@@ -807,11 +830,18 @@ def _read_native_global_symbol_facts(
             # past the read timeout and killed a healthy `llvm-nm` mid-output
             # (rc=124), stalling every source-recompiled extension seal at the
             # object-fact step. A plain subprocess timeout is the correct bound.
-            with stable_executable_probe(
-                Path(command[0]),
-                label="native symbol reader",
-                identity=candidate.executable_identity,
-            ) as (entrypoint, _identity):
+            custody = (
+                contextlib.nullcontext(
+                    (Path(command[0]), candidate.executable_identity)
+                )
+                if isinstance(candidate.executable_identity, WasiSdkInstallation)
+                else stable_executable_probe(
+                    Path(command[0]),
+                    label="native symbol reader",
+                    identity=candidate.executable_identity,
+                )
+            )
+            with custody as (entrypoint, _identity):
                 try:
                     result = _run_completed_command(
                         _native_nm_command(
@@ -1060,7 +1090,11 @@ def _native_symbol_facts_admission(
             if facts is None or not requirement.accepts(facts):
                 facts = _read_native_global_symbol_facts(
                     opened.path,
-                    timeout=120 if archive else 5,
+                    timeout=(
+                        _NM_ARCHIVE_READ_TIMEOUT_S
+                        if archive
+                        else _NM_OBJECT_READ_TIMEOUT_S
+                    ),
                     target_triple=target_triple,
                     _reader=reader,
                     archive_members=members,

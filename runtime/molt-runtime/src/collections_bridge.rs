@@ -329,18 +329,13 @@ pub extern "C" fn __molt_collections_seq_snapshot(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_collections_dict_order_clone(
+pub extern "C" fn __molt_collections_dict_snapshot(
     ptr: *mut u8,
     out_ptr: *mut *const u64,
     out_len: *mut usize,
 ) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let order = unsafe { dict_order(ptr) }.clone();
-        if order.is_empty() {
-            return 0;
-        }
-        let boxed = order.into_boxed_slice();
-        unsafe { crate::resource::bridge_buffer::export_u64_box(boxed, out_ptr, out_len) }
+        unsafe { crate::seq_snapshot_bridge::export_dict(_py, ptr, out_ptr, out_len) }
     })
 }
 

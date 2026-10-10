@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from contextlib import contextmanager
 import sys
+import hashlib
 from typing import Sequence
 
 from molt.cli import native_symbol_inspection
@@ -15,8 +16,14 @@ from molt.cli.native_symbol_inspection import (
     _NativeSymbolReader,
     _NativeSymbolReaderCandidate,
 )
-from molt.toolchain_identity import stable_regular_file_identity
-from molt.cli.static_archive_identity import StaticArchiveMemberIdentity
+from molt.toolchain_identity import (
+    StableRegularFileHandle,
+    stable_regular_file_identity,
+)
+from molt.cli.static_archive_identity import (
+    StaticArchiveMember,
+    StaticArchiveMemberIdentity,
+)
 
 from molt.cli.native_link_manifest import write_native_link_dependency_manifest
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
@@ -195,9 +202,28 @@ class NativeArchiveFixtureCatalog:
         _reader: _NativeSymbolReader | None = None,
         requirement: NativeSymbolRequirement | None = None,
         archive_members: tuple[StaticArchiveMemberIdentity, ...] | None = None,
+        _opened: StableRegularFileHandle | None = None,
     ) -> _NativeGlobalSymbolFacts:
         del timeout, nm_command, target_triple
-        descriptor = self._descriptors.get(path.read_bytes())
+        if _opened is None or _opened.stream.closed:
+            raise NativeSymbolInspectionError(
+                path, ["synthetic native reader requires a live owned descriptor"]
+            )
+        if _opened.path != path.expanduser().absolute():
+            raise NativeSymbolInspectionError(
+                path, ["synthetic native reader descriptor belongs to another path"]
+            )
+        position = _opened.stream.tell()
+        try:
+            _opened.stream.seek(0)
+            payload = _opened.stream.read()
+        finally:
+            _opened.stream.seek(position)
+        if len(payload) != _opened.stat.st_size:
+            raise NativeSymbolInspectionError(
+                path, ["synthetic native reader descriptor size changed"]
+            )
+        descriptor = self._descriptors.get(payload)
         if descriptor is None:
             raise NativeSymbolInspectionError(
                 path, ["unregistered synthetic native artifact bytes"]
@@ -205,6 +231,21 @@ class NativeArchiveFixtureCatalog:
         if archive_members is None:
             raise NativeSymbolInspectionError(
                 path, ["synthetic native archive was read without member identities"]
+            )
+        # This fixture emits exactly one ordinary ar member. Check the reader's
+        # input against those bytes, independently of the production ar parser.
+        size = int(payload[56:66])
+        expected_members = (
+            StaticArchiveMemberIdentity(
+                ordinal=0,
+                member=StaticArchiveMember("object.o", 68, size),
+                sha256=hashlib.sha256(payload[68 : 68 + size]).hexdigest(),
+            ),
+        )
+        if archive_members != expected_members:
+            raise NativeSymbolInspectionError(
+                path,
+                ["synthetic native reader member identities differ from owned bytes"],
             )
         object_facts = _NativeGlobalSymbolFacts(
             defined=frozenset(descriptor.defined),

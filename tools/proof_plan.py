@@ -22,6 +22,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 import tomllib
 from typing import Any, Collection, Iterable, Mapping
 
@@ -31,11 +32,16 @@ for import_root in (ROOT, SRC):
     if str(import_root) not in sys.path:
         sys.path.insert(0, str(import_root))
 
-from tools.command_execution import bind_repository_imports  # noqa: E402
+from tools.command_execution import (  # noqa: E402
+    CommandExecutor,
+    GUARD_CANCELLATION_OBSERVATION_SECONDS,
+    bind_repository_imports,
+)
 from tools.toolchain_probe import resolve_single_file_path  # noqa: E402
 from tools.git_identity import clean_checkout_status_arguments, require_git_object_id  # noqa: E402
 
 bind_repository_imports(__file__)
+_COMMANDS = CommandExecutor(prefix="MOLT_PROOF", repo_root=ROOT)
 
 from molt.cargo_execution_policy import (  # noqa: E402
     PROOF_COMMAND_TIMEOUT_ENV,
@@ -130,6 +136,21 @@ class ScheduledFamily:
 class MatrixCell:
     id: str
     data: dict[str, str]
+
+
+def cargo_native_c_units(data: Mapping[str, Any]) -> tuple[str, ...]:
+    """The command declaration alone grants native C build-unit custody."""
+    raw = data.get("cargo_native_c_units", [])
+    if (
+        not isinstance(raw, list)
+        or any(value not in ("target", "host") for value in raw)
+        or len(set(raw)) != len(raw)
+    ):
+        raise ValueError("cargo_native_c_units must contain unique target/host units")
+    tools = data.get("toolchains", [])
+    if raw and (not isinstance(tools, list) or not {"cargo", "rustc"}.issubset(tools)):
+        raise ValueError("native C build units require cargo and rustc toolchains")
+    return tuple(unit for unit in ("target", "host") if unit in raw)
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,9 +300,10 @@ class ProofPlan:
     def timeout_envelope(
         self, family_name: str, *, matrix_cell: str | None = None
     ) -> TimeoutEnvelope:
-        """Project the bounded DAG schedule when every partition hits its timeout.
+        """Project command deadlines, excluding setup and finalization work.
 
         A `github-matrix` job runs one cell, so its envelope is per cell.
+        Each job separately reserves its declared operational allowance.
         """
         commands = tuple(
             command
@@ -401,8 +423,8 @@ class ProofPlan:
     @classmethod
     def load(cls, path: Path = DEFAULT_MANIFEST) -> "ProofPlan":
         data = tomllib.loads(path.read_text(encoding="utf-8"))
-        if data.get("schema") != "molt.proof-plan.v4":
-            raise ValueError(f"{path}: expected schema molt.proof-plan.v4")
+        if data.get("schema") != "molt.proof-plan.v5":
+            raise ValueError(f"{path}: expected schema molt.proof-plan.v5")
         families = tuple(
             ProofFamily(str(entry.get("name", "")), dict(entry))
             for entry in data.get("ci_family", [])
@@ -485,10 +507,14 @@ class ProofPlan:
             extra = (
                 set(lane.data)
                 - set(REQUIRED_NAMED_LANE_FIELDS)
-                - {"id", "cargo_output_lifetime"}
+                - {"id", "cargo_output_lifetime", "cargo_native_c_units"}
             )
             if extra:
                 errors.append(f"{lane.id}: unknown named lane fields {sorted(extra)!r}")
+            try:
+                cargo_native_c_units(lane.data)
+            except ValueError as exc:
+                errors.append(f"{lane.id}: {exc}")
             argv = lane.argv
             # Named recipes currently own Python payloads, whose downstream
             # Cargo consumers are not statically closed by this declaration.
@@ -624,6 +650,15 @@ class ProofPlan:
                         f"{policy.name}: target-derived identity_provider must be one of "
                         f"{sorted(TARGET_DERIVED_IDENTITY_PROVIDERS)!r}"
                     )
+            sdk_role = policy.data.get("wasi_sdk_tool")
+            if sdk_role is not None and (
+                identity_kind != "executable"
+                or sdk_role not in {"clang", "clang++"}
+                or policy.data.get("executable") != sdk_role
+            ):
+                errors.append(
+                    f"{policy.name}: wasi_sdk_tool requires the matching selected SDK compiler executable"
+                )
             probe_cwd = policy.data.get("probe_cwd", ".")
             if not isinstance(probe_cwd, str) or not probe_cwd:
                 errors.append(f"{policy.name}: probe_cwd must be a non-empty string")
@@ -853,6 +888,19 @@ class ProofPlan:
         if len(names) != len(set(names)):
             errors.append("ci_family names must be unique")
         for family in (*self.families, *self.scheduled_families):
+            models_job = isinstance(family, ScheduledFamily) or family.data.get(
+                "executor"
+            ) in {"github-job", "github-matrix"}
+            reserve = family.data.get("job_reserve_seconds")
+            if models_job:
+                if type(reserve) is not int or reserve <= 0:
+                    errors.append(
+                        f"{family.name}: job_reserve_seconds must be a positive integer"
+                    )
+            elif "job_reserve_seconds" in family.data:
+                errors.append(
+                    f"{family.name}: job_reserve_seconds requires a modeled job"
+                )
             tiers = family.data.get("tiers")
             if not isinstance(tiers, list) or not set(tiers) <= set(PROOF_TIERS):
                 errors.append(
@@ -1221,6 +1269,10 @@ class ProofPlan:
                 or not all(isinstance(part, str) and part for part in argv)
             ):
                 errors.append(f"{command.id}: argv must be a non-empty string list")
+            try:
+                cargo_native_c_units(command.data)
+            except ValueError as exc:
+                errors.append(f"{command.id}: {exc}")
             toolchains = command.data.get("toolchains")
             if (
                 not isinstance(toolchains, list)
@@ -1484,12 +1536,16 @@ class ProofPlan:
                         errors.append(str(exc))
                         continue
                     job_budget = int(family.data["timeout_minutes"]) * 60
-                    if envelope.projected_makespan_seconds > job_budget:
+                    reserve = family.data.get("job_reserve_seconds")
+                    if type(reserve) is not int or reserve <= 0:
+                        continue  # The owning field validation reports this error.
+                    if envelope.projected_makespan_seconds + reserve > job_budget:
                         scope = "" if cell is None else f" in matrix cell {cell}"
                         errors.append(
                             f"{family.name}: projected resource-aware timeout "
                             f"envelope {envelope.projected_makespan_seconds}s"
-                            f"{scope} exceeds GitHub job budget {job_budget}s"
+                            f"{scope} plus job reserve {reserve}s exceeds "
+                            f"GitHub job budget {job_budget}s"
                         )
             for family in self.scheduled_families:
                 try:
@@ -1498,11 +1554,14 @@ class ProofPlan:
                     errors.append(str(exc))
                     continue
                 job_budget = int(family.data["timeout_minutes"]) * 60
-                if envelope.projected_makespan_seconds > job_budget:
+                reserve = family.data.get("job_reserve_seconds")
+                if type(reserve) is not int or reserve <= 0:
+                    continue  # The owning field validation reports this error.
+                if envelope.projected_makespan_seconds + reserve > job_budget:
                     errors.append(
                         f"{family.name}: projected resource-aware timeout envelope "
-                        f"{envelope.projected_makespan_seconds}s exceeds scheduled "
-                        f"job budget {job_budget}s"
+                        f"{envelope.projected_makespan_seconds}s plus job reserve "
+                        f"{reserve}s exceeds scheduled job budget {job_budget}s"
                     )
         for family in self.families:
             if family.data.get("executor") != "github-workflow":
@@ -1953,6 +2012,11 @@ def family_outputs(
                     "resource_class",
                 )
             },
+            **(
+                {"job_reserve_seconds": family.data["job_reserve_seconds"]}
+                if family.data["executor"] in {"github-job", "github-matrix"}
+                else {}
+            ),
             "command_ids": [
                 command.id for command in tiered if command.family == family.name
             ],
@@ -2091,6 +2155,24 @@ def host_matrix_cell(plan: ProofPlan, family_name: str) -> str:
     )
 
 
+def _toolchain_fingerprint_digest(identity: Mapping[str, str]) -> str:
+    material = "\0".join(
+        identity[name]
+        for name in (
+            "path",
+            "launcher_path",
+            "launcher_sha256",
+            "content_path",
+            "executable_sha256",
+            "version",
+            "probe_cwd",
+        )
+    )
+    if "wasi_sdk_sha256" in identity:
+        material += "\0" + identity["wasi_sdk_sha256"]
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
 def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
     if policy.identity_kind != "executable":
         raise ValueError(
@@ -2099,13 +2181,36 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         )
     executable = str(policy.data["executable"])
     requested = sys.executable if executable == "{python}" else executable
-    if requested == "wasm-ld":
+    sdk_role = policy.data.get("wasi_sdk_tool")
+    if requested == "wasm-ld" or sdk_role is not None:
         from molt.llvm_toolchain import LlvmToolchainConfigError, resolve_wasi_sdk_tool
 
         try:
-            path = str(resolve_wasi_sdk_tool(ROOT, "wasm-ld", environ=dict(os.environ)))
+            path = str(
+                resolve_wasi_sdk_tool(
+                    ROOT, sdk_role or "wasm-ld", environ=dict(os.environ)
+                )
+            )
         except LlvmToolchainConfigError as exc:
-            raise ValueError(f"wasm-ld toolchain selection failed: {exc}") from exc
+            raise ValueError(
+                f"{policy.name} toolchain selection failed: {exc}"
+            ) from exc
+    elif policy.name in {"rustc", "cargo"}:
+        from molt.rust_toolchain import cargo_selected_value
+
+        requested = (
+            cargo_selected_value(
+                {},
+                {},
+                os.environ,
+                ("build", "rustc"),
+                ("RUSTC", "CARGO_BUILD_RUSTC"),
+                requested,
+            )
+            if policy.name == "rustc"
+            else os.environ.get("CARGO", requested)
+        )
+        path = shutil.which(requested)
     else:
         path = shutil.which(requested)
     if path is None:
@@ -2121,10 +2226,32 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         except OSError as exc:
             return f"unavailable:{type(exc).__name__}"
 
-    launcher_sha256 = content_hash(launcher_path)
+    sdk_closure = None
+    if sdk_role is not None:
+        from molt.llvm_toolchain import capture_wasi_sdk_selection
+        from molt.wasi_sdk_identity import capture_wasi_sdk_tool_files
+
+        sdk_closure = capture_wasi_sdk_selection(root=ROOT, env=os.environ)
+        images = capture_wasi_sdk_tool_files(sdk_closure)
+        launcher = next(
+            (row for row in images if row["path"] == str(command_path)), None
+        )
+        if launcher is None:
+            raise ValueError(
+                "WASI compiler selection differs from captured SDK helpers"
+            )
+        launcher_sha256 = str(launcher["sha256"])
+    else:
+        launcher_sha256 = content_hash(launcher_path)
     content_path = launcher_path
     content_path_command = policy.data.get("content_path_command")
-    if isinstance(content_path_command, list):
+    if policy.name in {"rustc", "cargo"}:
+        from molt.rust_toolchain import resolve_rustup_proxy
+
+        content_path = resolve_rustup_proxy(
+            command_path, role=policy.name, root=probe_directory, env=os.environ
+        )
+    elif isinstance(content_path_command, list):
         try:
             resolved = subprocess.run(
                 content_path_command,
@@ -2145,9 +2272,14 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
             )
         except (IndexError, OSError, ValueError, subprocess.TimeoutExpired):
             content_path = Path("unavailable")
-    executable_sha256 = content_hash(content_path)
+    executable_sha256 = (
+        launcher_sha256 if content_path == launcher_path else content_hash(content_path)
+    )
     try:
-        version_argv = [path, *policy.data["version_args"]]
+        version_argv = [
+            str(content_path) if policy.name in {"rustc", "cargo"} else path,
+            *policy.data["version_args"],
+        ]
         completed = subprocess.run(
             version_argv,
             cwd=probe_directory,
@@ -2162,11 +2294,16 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         version = completed.stdout.strip()
     except (OSError, subprocess.TimeoutExpired) as exc:
         version = f"unavailable:{type(exc).__name__}"
-    material = (
-        f"{command_path}\0{launcher_path}\0{launcher_sha256}\0{content_path}\0"
-        f"{executable_sha256}\0{version}\0{probe_cwd}"
-    ).encode()
-    return {
+    sdk_digest = ""
+    if sdk_closure is not None:
+        sdk_digest = hashlib.sha256(
+            json.dumps(
+                sdk_closure,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+    identity = {
         "path": str(command_path),
         "launcher_path": str(launcher_path),
         "launcher_sha256": launcher_sha256,
@@ -2175,8 +2312,11 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
         "version_pattern": str(policy.data["version_pattern"]),
         "probe_cwd": probe_cwd,
         "executable_sha256": executable_sha256,
-        "identity_sha256": hashlib.sha256(material).hexdigest(),
     }
+    if sdk_closure is not None:
+        identity["wasi_sdk_sha256"] = sdk_digest
+    identity["identity_sha256"] = _toolchain_fingerprint_digest(identity)
+    return identity
 
 
 def toolchain_fingerprints(
@@ -2457,27 +2597,6 @@ def _command_environment(
     return normalize_cargo_environment(child_env)
 
 
-def _terminate_guarded_executor(process: subprocess.Popen[Any]) -> bool:
-    """Terminate one guarded-exec owner; its existing custody reaps descendants.
-
-    On POSIX, ``terminate`` delivers SIGTERM to guarded_exec, whose memory guard
-    records the interruption and terminates its tracked process tree. On Windows,
-    terminating guarded_exec closes its sole KILL_ON_JOB_CLOSE handle, so the OS
-    reaps the guarded subtree. Escalation remains scoped to that exact owner PID.
-    """
-
-    if process.poll() is not None:
-        return False
-    process.terminate()
-    try:
-        process.wait(timeout=5.0)
-        return False
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5.0)
-        return True
-
-
 def _admitted_linker_helpers(plan: ProofPlan) -> dict[str, frozenset[str]]:
     """Declared linker helper basename -> the linker basenames it may outlive.
 
@@ -2515,12 +2634,12 @@ def _guarded_failure_scope(
     admitted_linker_helpers: Mapping[str, Collection[str]] | None = None,
 ) -> tuple[str, str | None]:
     """Classify the existing guard's evidence, never infer safe timeout from 124."""
-    if cancelled:
-        return "global", "executor cancellation"
     if not metrics_valid:
         return "global", "guard outcome unavailable or inconsistent"
     if metrics.get("infrastructure_failure") is not None:
         return "global", "guard infrastructure or ownership failure"
+    if metrics.get("descendants_closed") is not True:
+        return "global", "guard descendant closure is uncertain"
     if metrics.get("memory_violation") is not None:
         return "global", "unsafe memory pressure"
     if metrics.get("guard_signal") is not None:
@@ -2563,6 +2682,12 @@ def _guarded_failure_scope(
         )
     ):
         return "global", "Cargo quarantine ownership or recovery is unresolved"
+    if cancelled:
+        from tools.memory_guard import GUARD_RETURN_CODE
+
+        if metrics.get("cancelled") is not True or returncode != GUARD_RETURN_CODE:
+            return "global", "executor cancellation lacks matching terminal outcome"
+        return "global", "executor cancellation"
     if returncode == 124 or metrics.get("timed_out") is True:
         closed = bool(reports) or (
             isinstance(cleanup, dict) and cleanup.get("completed") is True
@@ -2578,7 +2703,6 @@ def _guarded_failure_scope(
 def _run_command(
     plan: ProofPlan,
     command: ProofCommand,
-    metrics_path: Path,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     relative_cwd = str(command.data.get("cwd", "."))
@@ -2623,57 +2747,76 @@ def _run_command(
             "failure_reason": "evidence publication failed before launch",
             "environment_policies_applied": list(applied_environment_policies),
         }
-    wrapped = [
-        sys.executable,
-        str(ROOT / "tools" / "guarded_exec.py"),
-        "--prefix",
-        "MOLT_PROOF",
-        "--timeout",
-        str(timeout),
-        "--metrics-json",
-        str(metrics_path),
-    ]
-    if relative_cwd != ".":
-        wrapped.extend(("--cwd", relative_cwd))
-    wrapped.extend(("--", *command.argv))
-    process = subprocess.Popen(
-        wrapped,
-        cwd=ROOT,
-        env=child_env,
-    )
+    process = None
     cancelled = False
-    termination_escalated = False
-    while process.poll() is None:
-        if cancel_event is not None and cancel_event.wait(0.05):
-            if process.poll() is None:
-                cancelled = True
-                termination_escalated = _terminate_guarded_executor(process)
-            break
-    if process.poll() is None:
-        process.wait()
-    completed_returncode = int(process.returncode or 0)
+    custody_error: Exception | None = None
+    cancellation_started: float | None = None
+    cancellation_elapsed: float | None = None
     try:
-        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        process = _COMMANDS.start_guarded(
+            command.argv,
+            cwd=ROOT / relative_cwd,
+            env=child_env,
+            timeout=timeout,
+            harness=True,
+        )
+        while process.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                cancellation_started = time.monotonic()
+                process.cancel_and_wait()
+                cancellation_elapsed = time.monotonic() - cancellation_started
+                break
+            try:
+                # Poll only the owned launcher; terminal admission belongs to wait.
+                process.process.wait(timeout=0.05)
+            except subprocess.TimeoutExpired:
+                pass
+        if not process.terminal:
+            process.wait(timeout=0)
+    except Exception as exc:
+        launch_error = process is None
+        process = getattr(exc, "guard_command", process)
+        if process is None:
+            raise
+        exc.guard_command = process
+        if (
+            process.returncode is None
+            and cancellation_started is None
+            and not launch_error
+        ):
+            # Observer failure does not abandon a running command. Preserve the
+            # original error even if the owner's bounded observation also fails.
+            cancellation_started = time.monotonic()
+            try:
+                process.cancel_and_wait()
+            except Exception as cleanup_error:
+                exc.cleanup_error = cleanup_error
+                exc.add_note(f"guard cancellation unresolved: {cleanup_error}")
+        custody_error = exc
+        if cancellation_started is not None:
+            cancellation_elapsed = time.monotonic() - cancellation_started
+    completed_returncode = None if process is None else process.returncode
+    try:
+        metrics = json.loads(process.summary_path.read_text(encoding="utf-8"))
+        if not isinstance(metrics, dict):
+            metrics = {}
     except (OSError, json.JSONDecodeError):
         metrics = {}
-    finally:
-        metrics_path.unlink(missing_ok=True)
+    # Keep the canonical summary: an unresolved live owner may still replace it.
     metrics_valid = (
-        metrics.get("schema") == "molt.guarded-command-metrics.v1"
+        custody_error is None
+        and process is not None
+        and process.terminal
+        and metrics.get("schema") == "molt.guarded-command-metrics.v1"
         and metrics.get("returncode") == completed_returncode
         and isinstance(metrics.get("duration_seconds"), (int, float))
         and isinstance(metrics.get("peak_tree_rss_bytes"), int)
     )
-    returncode = (
-        130
-        if cancelled
-        else completed_returncode
-        if metrics_valid
-        else completed_returncode or 2
-    )
+    returncode = int(completed_returncode) if metrics_valid else 2
     status = (
         "cancelled"
-        if cancelled
+        if cancelled and metrics_valid and metrics.get("cancelled") is True
         else "timeout"
         if returncode == 124
         else "success"
@@ -2687,7 +2830,13 @@ def _run_command(
         cancelled=cancelled,
         admitted_linker_helpers=_admitted_linker_helpers(plan),
     )
-    if failure_scope == "global" and status == "success":
+    if failure_reason == "executor cancellation":
+        # Raw guard cancellation remains 137. Only its admitted terminal
+        # outcome becomes the executor's public cancellation code.
+        status, returncode = "cancelled", 130
+    elif failure_scope == "global" and (
+        cancelled or status in {"success", "cancelled"}
+    ):
         status, returncode = "failure", 2
     evidence_outputs: list[dict[str, Any]] = []
     evidence_error: str | None = None
@@ -2727,6 +2876,9 @@ def _run_command(
         "guard_outcome": {
             name: metrics.get(name)
             for name in (
+                "cancelled",
+                "descendants_closed",
+                "temporary_artifacts",
                 "timed_out",
                 "memory_violation",
                 "guard_signal",
@@ -2736,12 +2888,47 @@ def _run_command(
                 "cargo_incremental_quarantine",
             )
         },
-        "termination_escalated": termination_escalated,
+        "termination_escalated": False,
+        "guard_returncode": completed_returncode,
+        "guard_custody": {
+            "launch_id": process.launch_id,
+            "launch_pid": process.pid,
+            "guard_pid": process.guard_pid,
+            "startup_path": str(process.startup_path),
+            "summary_path": str(process.summary_path),
+            "cancellation_path": str(process.cancellation_path),
+            "evidence_path": str(process.evidence_path),
+            "terminal": process.terminal,
+            "cancellation_observation_seconds": cancellation_elapsed,
+            "cancellation_observation_budget_seconds": (
+                GUARD_CANCELLATION_OBSERVATION_SECONDS
+                if cancellation_started is not None
+                else None
+            ),
+            "observation_error": None
+            if custody_error is None
+            else {
+                "type": type(custody_error).__name__,
+                "message": str(custody_error),
+                "closure": "confirmed" if process.terminal else "unresolved",
+                "cleanup_error": (
+                    None
+                    if getattr(custody_error, "cleanup_error", None) is None
+                    else {
+                        "type": type(custody_error.cleanup_error).__name__,
+                        "message": str(custody_error.cleanup_error),
+                    }
+                ),
+            },
+        },
         "environment_policies_applied": list(applied_environment_policies),
         "evidence_outputs": evidence_outputs,
     }
     if evidence_error is not None:
         record["evidence_error"] = evidence_error
+    if custody_error is not None:
+        custody_error.proof_record = record
+        raise custody_error
     return record
 
 
@@ -3018,6 +3205,15 @@ def verify_receipts(
                         != policies[name].data["version_pattern"]
                         or identity.get("probe_cwd")
                         != policies[name].data.get("probe_cwd", ".")
+                        or (
+                            re.fullmatch(
+                                r"[0-9a-f]{64}",
+                                str(identity.get("wasi_sdk_sha256", "")),
+                            )
+                            is None
+                            if policies[name].data.get("wasi_sdk_tool") is not None
+                            else "wasi_sdk_sha256" in identity
+                        )
                     ):
                         errors.append(
                             f"{command_id}: invalid {name} toolchain identity"
@@ -3032,18 +3228,8 @@ def verify_receipts(
                         errors.append(
                             f"{command_id}: {name} version violates authority contract"
                         )
-                    elif (
-                        identity["identity_sha256"]
-                        != hashlib.sha256(
-                            (
-                                f"{identity['path']}\0{identity['launcher_path']}\0"
-                                f"{identity['launcher_sha256']}\0"
-                                f"{identity['content_path']}\0"
-                                f"{identity['executable_sha256']}\0"
-                                f"{identity['version']}\0"
-                                f"{identity['probe_cwd']}"
-                            ).encode()
-                        ).hexdigest()
+                    elif identity["identity_sha256"] != _toolchain_fingerprint_digest(
+                        identity
                     ):
                         errors.append(
                             f"{command_id}: {name} toolchain identity hash is invalid"

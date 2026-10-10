@@ -6,6 +6,29 @@ exact command and git snapshot, writes guarded logs, enforces proof DAG
 dependencies, and projects each noted or linked run into a deterministic marimo
 notebook for collaborative inspection.
 
+Queued Cargo executable selection is shared by dispatch and tool capture. An
+explicit executable path in a typed direct or delegated Cargo command takes
+precedence over `CARGO`; a bare Cargo role uses `CARGO` before the command's
+execution `PATH`. Once the command is bound, Cargo identity and Rust metadata/link
+probes use that exact payload executable. Python families that only declare Cargo
+as a dependency use PATH for that dependency and independently capture an explicit
+`CARGO` hook. Native supervision and Python child custody consume the same
+executable-environment image closure, including selected Rust proxy components. The bound typed Cargo
+payload also owns the child `CARGO` value; an inherited selector cannot redirect
+its build scripts. A missing selected executable fails during execution setup,
+before the proof child starts; the queue does not substitute a PATH proxy.
+
+Executable lookup uses captured environment values and the command working
+directory, including relative PATH entries and explicit `./tool` paths. Windows
+suffix candidates follow CPython `shutil.which` with executable access required.
+Python child audit custody preserves CPython's distinction between inherited,
+missing, and empty PATH. Generator dependencies resolve `rustfmt` through PATH;
+the Cargo-specific `RUSTFMT` hook remains a separate captured build-tool input.
+
+Rust tool identity resolves the selected physical component before reuse. A change
+to a rustup override invalidates reuse even when proxy bytes are unchanged. Explicit
+physical Rust tools do not require a rustup proxy.
+
 ## Registered source-extension producers
 
 `source-extension-produce` submits one registered package/version/module-set and
@@ -38,18 +61,24 @@ Both prepared build modes validate the active locked environment and the pinned
 source/submodules before destination mutation or publication locking. Git
 inspection disables optional index writes. Missing or stale prerequisites fail
 without repair under proof custody. One typed invocation owns CLI
-options, locked re-execution, and queue argv. Envelope v4 declares Python, Git,
+options, locked re-execution, and queue argv. Envelope v6 declares Python, Git,
 and the target-derived compiler family; ordinary Python proofs remain leaves.
 Persisted command envelopes, execution requests and supervisor policies/receipts
 use the exact-JSON codec end to end; duplicate keys and non-finite numbers are
 rejected before admission or evidence interpretation, not collapsed by a decoder.
-Provider v2 records lexical compiler entrypoints, content images, target commands,
-the WASI sysroot manifest and the selected compiler-builtins archive. Capture
+Provider v4 records lexical compiler entrypoints, content images, target commands,
+the managed WASI SDK generation and the selected SDK compiler-rt archive.
+Native and freestanding C/C++ roles also retain their required compiler-phase
+helpers through the shared [development tool capture authority](../spec/areas/tooling/0001-toolchains.md#native-c-processes-in-development-proofs). Capture
 uses the explicit selected environment; validation consumes recorded identities.
 The child consumes the captured archive through the queue-owned link-input
-contract instead of rediscovering it. The typed link-input contract lives in
-`molt.source_extension_link_inputs`; its CLI resolver alone selects tools and
-archives. Both enter source custody, while ordinary proof-cache imports do not
+contract instead of rediscovering it. The strict v2 link-input contract lives in
+`molt.source_extension_link_inputs`. The CLI selects the immutable SDK C-ABI plan
+for the resolved toolchain; captured `compiler_rt` path, digest and extent must
+match that same plan before configure, metadata or publication effects. WASI
+C/C++ commands use the selected SDK driver and sysroot defaults. Rust
+compiler_builtins belongs to Rust linkage and is not this C-runtime provider.
+The selected inputs enter source custody, while ordinary proof-cache imports do not
 load the CLI or frontend. Preconfigured compiler arguments share a
 positive grammar: unknown or external-input/helper selectors fail before probes.
 Response-file and un-inventoried launcher forms fail explicitly. Tool-family identity alone does not replace
@@ -59,9 +88,26 @@ The queue publishes `MOLT_PROOF_SOURCE_ROOT` only from its validated Git snapsho
 Users cannot override it. The Python bootstrap exposes that same checkout's
 `src` only to the typed Molt module payload, including under `-P`; unrelated
 module, script, directory/ZIP, command and stdin import behavior is unchanged.
-Source, sysroot, compiler-builtins and executable inputs enter live custody
+Source, sysroot, SDK compiler-rt and executable inputs enter live custody
 before execution. Native requests preserve host CC/CXX selection separately
 from their recorded effective target triple.
+
+WASI Cargo library links use the selected SDK's raw linker with Rust's
+self-contained C runtime disabled. C and C++ compilation retain their selected
+driver roles and driver argument grammar. Command and reactor startup objects
+belong only to their respective executable producers; runtime libraries do not
+receive a startup object. Proof-tool selection binds the SDK compiler and its
+resource generation separately from the native LLVM compiler. Selection,
+resource capture, identity checks and proof instrumentation run in development
+and compiler tooling, outside emitted guest execution.
+
+Cargo proofs bind the captured physical Rust compiler and Cargo executable
+before launch. Only commands declaring native C compilation acquire its
+compiler-phase and independently selected archiver capture; runtime-only WASI
+builds retain their managed SDK closure without native C probing.
+Native C resources and Quint packages retain finite selection facts and roots
+before watching starts. Their complete resource trees are captured once after
+the watchers are armed; persisted full receipts require those inventories.
 
 The executable is intentionally only a stable source-checkout entrypoint. The
 canonical implementation lives in `tools/proof_queue_pkg/`: `state` owns the
@@ -82,7 +128,11 @@ internal implementation symbols.
 Build-capacity admission is synchronous and read-only, owned by
 `src/molt/disk_capacity.py`. Queue admission, guarded Cargo setup, generation
 acquisition, and the actual native/WASM Cargo execution consumer use this same
-threshold and receipt schema. The default minimum is 25 GiB; an explicit
+threshold and receipt schema. Every other launcher of a compiling Cargo command
+(`tools/guarded_exec.py`, which runs proof-plan Cargo commands, the IR verifier
+and the tool launchers) calls `molt.cargo_execution_policy.admit_cargo_build`
+before Cargo starts; a test fails when a module spells a compiling Cargo argv
+without it. The default minimum is 25 GiB; an explicit
 `MOLT_DISK_GUARD_HIGH_WATER_GB` must be positive and finite. Unknown capacity,
 invalid policy, or insufficient space rejects before launch with the measured
 path/free/required bytes. Tests inject measurements; pytest and cleanup-disable
@@ -525,9 +575,12 @@ reads derive their paths from the effective command environment at use time,
 never import-time directory constants. Hosted CI custody projection can occur
 after guard modules import; the parent and child must still select the same root.
 The current-test snapshot names the active or last-observed node, not prior
-failures. Portability CI uses unbuffered verbose pytest output so completed
-node outcomes survive in the CI transcript even if timeout prevents the final
-summary. Full tracebacks may still require replay of the named failed nodes.
+failures. The pytest controller immediately formats and flushes completed
+failures into the existing output stream, preserving details if later termination
+prevents the final summary. Workers forward reports through xdist; they do not
+install another formatter. Native traceback and captured-output options remain
+effective, including `--tb=no` and `--show-capture=no`. The final pytest summary,
+exit status and guard closure remain independent acceptance requirements.
 Source and test-local `sitecustomize.py` files are adapters into that package,
 not repository-wide import-path authorities. Non-test startup must leave the
 checkout root absent unless the caller already selected it. Only a confirmed pytest, test-module, or
@@ -583,7 +636,10 @@ Success requires complete, consistent accounting as well as a successful guarded
 process. Split `--nocapture` results may be associated only when the invocation
 explicitly selects one test thread; ambiguous parallel output fails closed.
 Only stdout participates in parsing; separately captured stderr has no shared
-ordering. Raw streams remain available for diagnosis. Text accounting does not
+ordering. Bounded line prefixes retain test identities while the reader drains
+large payloads without storing them. A truncated success prefix cannot complete
+a test, and oversized identities remain an accounting error. Raw streams remain
+available for diagnosis. Text accounting does not
 authenticate test output against a test that deliberately impersonates libtest.
 Ignored tests are recorded but never count as execution coverage. Historical v1
 receipts remain immutable and require replay, not an acceptance fallback.
@@ -906,6 +962,23 @@ its runtime versions/configuration/global paths, Quint binds the resolved npm
 package tree, and environment-selected compiler/linker/wrapper executables are
 content-hashed. All toolchains are re-captured after the command; a missing,
 empty, changed, or extra closure cannot become evidence.
+
+Selected-image comparisons use `process_image_capture` and the shared lexical
+path owner in `molt.llvm_linker_roles`. Windows spelling equivalence follows
+actual directory entries; distinct hardlink or symlink names remain distinct
+even when their content and inode agree. Capture, unit membership, frozen-file
+storage, child selection and input watches use that same identity. Alias
+ancestors remain watched. A missing event coordinate is a mutation, not evidence
+that the input stayed unchanged.
+
+Proof custody refuses unsupported coordinates before hashing or launching a
+probe: lexical parent traversal, verbatim trailing-dot/space components,
+non-DOS/non-UNC or malformed verbatim namespaces, and ambiguous or unavailable
+entry spelling. Admitted Windows extended-prefix projections must retain the
+original entry. These are proof-custody capability limits; ordinary compiler
+selection preserves its selected path and traversal. Optional driver spelling
+normalization cannot turn a valid product path into a proof-admission failure.
+Native Windows execution and lookup cost require their own qualification.
 
 Cargo build-script header discovery is independent of Rust linker selection.
 The queue pins a selected Clang driver through `CLANG_PATH` and independently

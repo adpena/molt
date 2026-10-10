@@ -28,7 +28,6 @@ use crate::{
     ImageHashCache, KernelAccounting, ProcessEventKind, Receipt, ValidatedPolicy,
 };
 use std::ffi::{CStr, CString, OsStr, c_char, c_int, c_void};
-use std::fs::File;
 use std::mem::{size_of, zeroed};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -479,8 +478,9 @@ fn exec_image_identity(
 ) -> Result<FileIdentity, String> {
     let path = proc_pidpath(pid)?;
     let mapped = mapped_text_vnode(pid, &path)?;
-    let file = File::open(&path)
+    let opened = crate::evidence::OpenedRegularFile::open(&path)
         .map_err(|error| format!("cannot open executable {}: {error}", path.display()))?;
+    let file = opened.file();
     let metadata = file
         .metadata()
         .map_err(|error| format!("cannot stat executable {}: {error}", path.display()))?;
@@ -498,10 +498,13 @@ fn exec_image_identity(
             file.metadata().map(|metadata| macos_cache_key(&metadata))
         })
         .map_err(|error| format!("cannot hash executable: {error}"))?;
+    opened
+        .verify()
+        .map_err(|error| format!("executable changed: {error}"))?;
     Ok(policy.classify_path(&path, file_id, metadata.size(), sha256))
 }
 
-fn macos_cache_key(metadata: &std::fs::Metadata) -> ImageCacheKey {
+pub(super) fn macos_cache_key(metadata: &std::fs::Metadata) -> ImageCacheKey {
     ImageCacheKey::new(
         format!("{:x}:{:x}", metadata.dev(), metadata.ino()),
         format!(

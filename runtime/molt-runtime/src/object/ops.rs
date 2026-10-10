@@ -24,7 +24,7 @@ pub(crate) use crate::object::ops_format::{
 // Re-export hash functions for backward compatibility with crate::object::ops::* paths
 pub(crate) use crate::object::ops_hash::{
     HashContext, HashSecret, ensure_hashable, fatal_hash_seed, hash_bits, hash_bits_signed,
-    hash_int, hash_pointer, hash_slice_bits, hash_string_bytes,
+    hash_int, hash_slice_bits, hash_string_bytes,
 };
 
 // Re-export encoding functions for backward compatibility with crate::object::ops::* paths
@@ -76,25 +76,23 @@ pub(crate) use ascii_bytes::{
 pub(crate) use dict_set_tables::{
     DICT_STRING_BINDING_LIMIT, DetachedDictReferences, ExactStringLookup,
     checked_dict_table_capacity, dict_bind_string_entries, dict_clear_deferred,
-    dict_clear_in_place, dict_clear_in_place_shutdown, dict_clear_method, dict_commit_structure,
-    dict_copy_method, dict_del_deferred, dict_del_in_place, dict_exact_string_lookup,
+    dict_clear_in_place, dict_clear_in_place_shutdown, dict_clear_method, dict_copy_method,
+    dict_del_deferred, dict_del_in_place, dict_del_with_hash_deferred, dict_exact_string_lookup,
     dict_find_entry, dict_find_entry_kv_in_place, dict_find_entry_with_hash, dict_fromkeys_method,
     dict_get_in_place, dict_get_method, dict_get_str_bytes_borrowed, dict_get_with_hash_in_place,
     dict_increment_exact_statement, dict_items_method, dict_keys_method, dict_popitem_method,
-    dict_publish_staged, dict_rebuild, dict_set_deferred, dict_set_in_place,
+    dict_publish_staged, dict_remove_last, dict_set_deferred, dict_set_in_place,
     dict_set_inline_int_in_place, dict_set_with_hash_in_place, dict_setdefault_in_place,
-    dict_setdefault_method, dict_table_capacity, dict_update_method, dict_update_set_via_store,
-    dict_values_method, set_add_in_place, set_add_with_hash_in_place, set_clear_in_place,
-    set_copy_into_empty, set_del_in_place, set_del_with_hash_in_place, set_find_entry,
-    set_find_entry_in_place_with_hash, set_pin_entry, set_publish_staged, set_table_capacity,
+    dict_setdefault_method, dict_update_method, dict_update_set_via_store, dict_values_method,
+    set_add_in_place, set_add_with_hash_in_place, set_clear_in_place, set_copy_into_empty,
+    set_del_in_place, set_del_with_hash_in_place, set_find_entry,
+    set_find_entry_in_place_with_hash, set_pin_next, set_pop_owned, set_publish_staged,
 };
-pub(super) use dict_set_tables::{
-    concat_bytes_like, fill_repeated_bytes, set_rebuild, simd_bytes_eq,
-};
+pub(super) use dict_set_tables::{concat_bytes_like, fill_repeated_bytes, simd_bytes_eq};
 pub use dict_set_tables::{molt_string_split_sep_dict_inc, molt_string_split_ws_dict_inc};
 pub(super) use equality::{
-    BinaryDunderOutcome, call_binary_dunder, call_current_binary_dunder, call_inplace_dunder,
-    eq_bool_from_bits,
+    call_binary_dunder, call_inplace_dunder, call_numeric_dunder, call_numeric_dunder_sides,
+    call_sequence_dunder, eq_bool_from_bits,
 };
 pub use fast_compare::{molt_compare_int_fast, molt_string_eq_fast};
 pub use specialized_list::{

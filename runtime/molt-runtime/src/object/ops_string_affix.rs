@@ -837,7 +837,14 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
                     return MoltObject::none().bits();
                 }
                 let out_bits = MoltObject::from_ptr(out_ptr).bits();
-                let pairs = dict_order(x_ptr);
+                let Some(pairs) = crate::object::ops_dict::dict_snapshot(
+                    _py,
+                    x_ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                ) else {
+                    dec_ref_bits(_py, out_bits);
+                    return MoltObject::none().bits();
+                };
                 for pair in pairs.as_chunks::<2>().0 {
                     let key_bits = pair[0];
                     let value_bits = pair[1];

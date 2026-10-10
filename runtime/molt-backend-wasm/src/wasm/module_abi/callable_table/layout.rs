@@ -53,6 +53,7 @@ impl CallableTableRegionLayout {
         defined_user_func_count: u64,
         reserved_runtime_trampoline_count: u64,
         native_initializer_count: u64,
+        compiled_resolver_entries: bool,
     ) -> Result<Self, String> {
         let compact_builtin_count = checked_u32_count(
             "compact builtin callable-table count",
@@ -71,7 +72,8 @@ impl CallableTableRegionLayout {
         )?;
         let native_initializer_count =
             checked_u32_count("native initializer count", native_initializer_count)?;
-        let app_callable_resolver_table_len = if app_callable_resolver_name_count == 0 {
+        let resolver_required = app_callable_resolver_name_count != 0 || compiled_resolver_entries;
+        let app_callable_resolver_table_len = if !resolver_required {
             0
         } else {
             checked_add(
@@ -170,8 +172,7 @@ impl CallableTableRegionLayout {
             user_func_start,
             defined_user_func_count,
         )?;
-        let app_callable_resolver_func_index =
-            (app_callable_resolver_name_count != 0).then_some(user_func_end);
+        let app_callable_resolver_func_index = resolver_required.then_some(user_func_end);
         let builtin_trampoline_start = checked_add(
             "app callable resolver function end",
             user_func_end,
@@ -268,6 +269,9 @@ impl WasmBackend {
             user_functions: user_function_imports,
             native_callables: native_callable_imports,
         };
+        let compiled_body_symbols =
+            molt_tir::passes::collect_app_callable_requirements(&ir.functions)
+                .compiled_body_symbols;
         let runtime_callable_plan = WasmRuntimeCallableTablePlan::build(builtin_trampoline_specs);
         let compact_builtin_table_len = runtime_callable_plan.compact_builtin_table_len();
         let app_callable_resolver_names =
@@ -336,6 +340,7 @@ impl WasmBackend {
                 "native initializer count",
                 native_callable_imports.address_taken_initializers().count(),
             ),
+            !compiled_body_symbols.is_empty(),
         )
         .unwrap_or_else(|error| panic!("invalid wasm callable-table layout: {error}"));
         let table_ty = TableType {
@@ -728,6 +733,33 @@ impl WasmBackend {
             native_initializer_to_table_idx.insert(initializer.symbol.clone(), slot);
         }
 
+        if let Some(resolver) = app_callable_resolver.as_mut() {
+            for name in compiled_body_symbols {
+                let slot = *func_to_table_idx
+                    .get(&name)
+                    .unwrap_or_else(|| panic!("compiled body has no callable table slot: {name}"));
+                let function_index = *func_to_index
+                    .get(&name)
+                    .unwrap_or_else(|| panic!("compiled body has no executable: {name}"));
+                resolver.entries.push(super::WasmAppCallableResolverEntry {
+                    name,
+                    target: callable_target(
+                        self,
+                        import_symbols,
+                        table_base,
+                        fixed_shared_runtime_abi_base,
+                        split_runtime_shared_abi_slot_end,
+                        slot,
+                        function_index,
+                        WasmCallableTableRole::DirectCallable,
+                    ),
+                });
+            }
+            resolver
+                .entries
+                .sort_by(|left, right| left.name.cmp(&right.name));
+        }
+
         let table_entries = slots
             .finish()
             .into_iter()
@@ -964,13 +996,15 @@ mod tests {
             user_functions,
             2,
             0,
+            false,
         )
     }
 
     #[test]
     fn extern_user_functions_consume_table_slots_but_not_defined_function_indices() {
-        let layout = CallableTableRegionLayout::build(64, None, 100, 3, 4, 5, 5, 2, 7, 5, 2, 0)
-            .expect("five definitions plus two extern declarations");
+        let layout =
+            CallableTableRegionLayout::build(64, None, 100, 3, 4, 5, 5, 2, 7, 5, 2, 0, false)
+                .expect("five definitions plus two extern declarations");
 
         assert_eq!(layout.user_trampoline_table_start, 31);
         assert_eq!(layout.table_len, 38);
@@ -981,8 +1015,9 @@ mod tests {
 
     #[test]
     fn native_initializers_take_app_owned_table_slots_without_function_indices() {
-        let layout = CallableTableRegionLayout::build(512, Some(1), 100, 3, 4, 5, 5, 2, 7, 5, 2, 3)
-            .expect("split layout with three address-taken native initializers");
+        let layout =
+            CallableTableRegionLayout::build(512, Some(1), 100, 3, 4, 5, 5, 2, 7, 5, 2, 3, false)
+                .expect("split layout with three address-taken native initializers");
 
         // The fixed runtime prefix ends at the compact builtin region (slot 11).
         assert_eq!(layout.fixed_shared_runtime_abi_slot_end, 11);

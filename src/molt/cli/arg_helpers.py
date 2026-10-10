@@ -29,9 +29,15 @@ def _build_profile_choices() -> tuple[str, ...]:
     return _BUILD_PROFILE_CHOICES
 
 
-def completion(shell: str, json_output: bool = False, verbose: bool = False) -> int:
+def completion(
+    shell: str,
+    json_output: bool = False,
+    verbose: bool = False,
+    *,
+    parser: argparse.ArgumentParser,
+) -> int:
     try:
-        script = _completion_script(shell)
+        script = _completion_script(shell, parser=parser)
     except ValueError as exc:
         return _fail(str(exc), json_output, command="completion")
     if json_output:

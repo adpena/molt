@@ -171,6 +171,7 @@ def _canonical_scoreboard_doc(
             "build_ok": True,
             "build_observation": {
                 "selected_profiles": {
+                    "backend": backend,
                     "guest_profile": "release",
                     "compiler_profile": "release",
                     "runtime_profile": profile,

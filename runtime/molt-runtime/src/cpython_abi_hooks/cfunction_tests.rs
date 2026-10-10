@@ -3,6 +3,7 @@
 use super::*;
 use molt_cpython_abi::abi_types::{METH_O, METH_STATIC, METH_VARARGS};
 use molt_cpython_abi::api::{mapping, numbers as numeric, sequences, strings};
+use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use std::cell::RefCell;
 
 #[test]
@@ -338,7 +339,7 @@ fn runtime_builtin_callable_has_safe_semantic_vectorcall_storage() {
         // A genuine runtime builtin has no PyMethodDef/native C callback.
         let bits = crate::builtins::functions::lookup_builtin_name(&py, "len")
             .expect("canonical len builtin");
-        assert_eq!(hook_classify_heap(bits), MoltTypeTag::BuiltinCallable as u8);
+        assert_eq!(hook_classify_heap(bits), MoltTypeTag::RuntimeCallable as u8);
         let callable = molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits);
         assert!(!callable.is_null());
         assert_eq!((*callable).ob_type, &raw mut MoltManaged_Type);
@@ -396,7 +397,7 @@ fn runtime_builtin_callable_has_safe_semantic_vectorcall_storage() {
         assert!(!crate::exception_pending(&py));
         assert_eq!(
             hook_classify_heap(bound_bits),
-            MoltTypeTag::BuiltinCallable as u8
+            MoltTypeTag::RuntimeCallable as u8
         );
         let bound = molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bound_bits);
         assert!(!bound.is_null());
@@ -993,4 +994,1159 @@ fn cext_method_accepts_and_preserves_physical_extension_defining_class() {
             "both class custody edges must retire"
         );
     }
+}
+
+thread_local! {
+    static INGRESS_VECTOR_ENTRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static INGRESS_HASHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static INGRESS_EQUALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static INGRESS_MAPPING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+pub(super) fn record_vector_hook_entry() {
+    INGRESS_VECTOR_ENTRIES.set(INGRESS_VECTOR_ENTRIES.get() + 1);
+}
+unsafe extern "C" fn ingress_vector_override(
+    _callable: *mut PyObject,
+    _values: *mut *mut PyObject,
+    _nargsf: usize,
+    _names: *mut PyObject,
+) -> *mut PyObject {
+    unsafe { numeric::PyLong_FromLong(619) }
+}
+
+extern "C" fn ingress_bound_python_target(_receiver: u64, left: u64, right: u64) -> u64 {
+    ingress_python_target(left, right)
+}
+
+extern "C" fn ingress_keyword_hash(_key: u64) -> u64 {
+    INGRESS_HASHES.set(INGRESS_HASHES.get() + 1);
+    MoltObject::from_int(29).bits()
+}
+extern "C" fn ingress_keyword_equal(_left: u64, _right: u64) -> u64 {
+    INGRESS_EQUALS.set(INGRESS_EQUALS.get() + 1);
+    MoltObject::from_bool(false).bits()
+}
+extern "C" fn ingress_python_target(left: u64, right: u64) -> u64 {
+    MoltObject::from_int(
+        MoltObject::from_bits(left).as_int().unwrap()
+            + MoltObject::from_bits(right).as_int().unwrap(),
+    )
+    .bits()
+}
+unsafe extern "C" fn ingress_dictionary_target(
+    _self: *mut PyObject,
+    _args: *mut PyObject,
+    kwargs: *mut PyObject,
+) -> *mut PyObject {
+    INGRESS_MAPPING.set(kwargs as usize);
+    unsafe { numeric::PyLong_FromLongLong(197) }
+}
+
+#[test]
+fn capi_dictionary_transport_does_not_rehash_subclass_keys_but_vector_construction_does() {
+    use molt_cpython_abi::abi_types::{PyCFunction, PyMethodDef};
+    use molt_cpython_abi::api::{errors, object, refcount};
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    with_gil(|py| unsafe {
+        let hash = crate::builtins::functions::alloc_runtime_function_obj(
+            &py,
+            crate::provenance::abi::expose_function_address(ingress_keyword_hash as *const ()),
+            1,
+        );
+        let equal = crate::builtins::functions::alloc_runtime_function_obj(
+            &py,
+            crate::provenance::abi::expose_function_address(ingress_keyword_equal as *const ()),
+            2,
+        );
+        let hash_bits = MoltObject::from_ptr(hash).bits();
+        let equal_bits = MoltObject::from_ptr(equal).bits();
+        let hash_name = MoltObject::from_ptr(alloc_string(&py, b"__hash__")).bits();
+        let eq_name = MoltObject::from_ptr(alloc_string(&py, b"__eq__")).bits();
+        let namespace =
+            crate::alloc_dict_with_pairs(&py, &[hash_name, hash_bits, eq_name, equal_bits]);
+        assert!(!namespace.is_null());
+        let namespace_bits = MoltObject::from_ptr(namespace).bits();
+        let class_name = MoltObject::from_ptr(alloc_string(&py, b"IngressName")).bits();
+        let builtins = crate::builtin_classes(&py);
+        let class = crate::builtins::types::molt_type_new(
+            builtins.type_obj,
+            class_name,
+            builtins.str,
+            namespace_bits,
+            MoltObject::none().bits(),
+        );
+        assert!(!crate::exception_pending(&py));
+        let keys = [b"first".as_slice(), b"second".as_slice()].map(|text| {
+            let key = crate::object::builders::alloc_native_inline_bytes(
+                &py,
+                class,
+                crate::object::native_instance::NativePayload::String,
+                text,
+            );
+            assert!(!key.is_null());
+            MoltObject::from_ptr(key).bits()
+        });
+        let values = [
+            MoltObject::from_int(31).bits(),
+            MoltObject::from_int(47).bits(),
+        ];
+        let dict = crate::alloc_dict_with_pairs(&py, &[keys[0], values[0], keys[1], values[1]]);
+        assert!(!dict.is_null());
+        assert!(
+            INGRESS_HASHES.get() >= 2 && INGRESS_EQUALS.get() > 0,
+            "the independent setup must actually exercise colliding subclass callbacks"
+        );
+        let dict_bits = MoltObject::from_ptr(dict).bits();
+        let kwargs =
+            refcount::OwnedPyObject::from_owned(cext_new_pyobject_from_borrowed_bits(dict_bits));
+        let positional = refcount::OwnedPyObject::from_owned(sequences::PyTuple_New(0));
+        let names_bits = MoltObject::from_ptr(crate::alloc_tuple(&py, &keys)).bits();
+        let names = refcount::OwnedPyObject::from_owned(cext_owned_pyobject_from_bits(names_bits));
+        let c_values = values.map(|value| {
+            refcount::OwnedPyObject::from_owned(cext_new_pyobject_from_borrowed_bits(value))
+        });
+        let mut flat = c_values.each_ref().map(|value| value.as_ptr());
+        // A managed Python function consumes the vector directly. Its parameter
+        // names use these same valid string objects, making the pointer-match
+        // path independent of user equality during the binder's own lookup.
+        let python = crate::builtins::functions::alloc_runtime_function_obj(
+            &py,
+            crate::provenance::abi::expose_function_address(ingress_python_target as *const ()),
+            2,
+        );
+        assert!(!python.is_null());
+        let argument_names = MoltObject::from_ptr(crate::alloc_tuple(&py, &keys)).bits();
+        let metadata_name = MoltObject::from_ptr(alloc_string(&py, b"__molt_arg_names__")).bits();
+        assert!(crate::call::class_init::function_set_attr_bits(
+            &py,
+            python,
+            metadata_name,
+            argument_names
+        ));
+        dec_ref_bits(&py, argument_names);
+        dec_ref_bits(&py, metadata_name);
+        let python_callable = refcount::OwnedPyObject::from_owned(cext_owned_pyobject_from_bits(
+            MoltObject::from_ptr(python).bits(),
+        ));
+        let bound_python = crate::builtins::functions::alloc_runtime_function_obj(
+            &py,
+            crate::provenance::abi::expose_function_address(
+                ingress_bound_python_target as *const (),
+            ),
+            3,
+        );
+        assert!(!bound_python.is_null());
+        let self_name = MoltObject::from_ptr(alloc_string(&py, b"self")).bits();
+        let bound_names =
+            MoltObject::from_ptr(crate::alloc_tuple(&py, &[self_name, keys[0], keys[1]])).bits();
+        let metadata_name = MoltObject::from_ptr(alloc_string(&py, b"__molt_arg_names__")).bits();
+        assert!(crate::call::class_init::function_set_attr_bits(
+            &py,
+            bound_python,
+            metadata_name,
+            bound_names
+        ));
+        let bound_python_bits = MoltObject::from_ptr(bound_python).bits();
+        let bound_bits =
+            crate::molt_bound_method_new(bound_python_bits, MoltObject::from_int(7).bits());
+        assert!(!crate::exception_pending(&py));
+        let bound_callable =
+            refcount::OwnedPyObject::from_owned(cext_owned_pyobject_from_bits(bound_bits));
+        let physical_func = refcount::OwnedPyObject::from_owned(
+            cext_new_pyobject_from_borrowed_bits(bound_python_bits),
+        );
+        let physical_self = refcount::OwnedPyObject::from_owned(numeric::PyLong_FromLong(7));
+        let physical_method = refcount::OwnedPyObject::from_owned(object::PyMethod_New(
+            physical_func.as_ptr(),
+            physical_self.as_ptr(),
+        ));
+        assert!(!physical_method.as_ptr().is_null());
+        let call_name = MoltObject::from_ptr(alloc_string(&py, b"__call__")).bits();
+        let callable_namespace = MoltObject::from_ptr(crate::alloc_dict_with_pairs(
+            &py,
+            &[call_name, bound_python_bits],
+        ))
+        .bits();
+        let callable_name = MoltObject::from_ptr(alloc_string(&py, b"NonVectorCallable")).bits();
+        let callable_class = crate::builtins::types::molt_type_new(
+            builtins.type_obj,
+            callable_name,
+            builtins.object,
+            callable_namespace,
+            MoltObject::none().bits(),
+        );
+        assert!(!crate::exception_pending(&py));
+        let callable_instance = crate::call::class_init::alloc_instance_for_class(
+            &py,
+            MoltObject::from_bits(callable_class).as_ptr().unwrap(),
+        );
+        let custom_callable =
+            refcount::OwnedPyObject::from_owned(cext_owned_pyobject_from_bits(callable_instance));
+        let custom_type = refcount::OwnedPyObject::from_owned(
+            cext_new_pyobject_from_borrowed_bits(callable_class),
+        );
+        assert!(object::PyVectorcall_Function(custom_callable.as_ptr()).is_none());
+        assert!(object::PyVectorcall_Function(custom_type.as_ptr()).is_none());
+        INGRESS_HASHES.set(0);
+        INGRESS_EQUALS.set(0);
+        INGRESS_VECTOR_ENTRIES.set(0);
+        let custom_result = refcount::OwnedPyObject::from_owned(object::PyObject_Vectorcall(
+            custom_callable.as_ptr(),
+            flat.as_mut_ptr(),
+            0,
+            names.as_ptr(),
+        ));
+        assert!(!custom_result.as_ptr().is_null());
+        assert_eq!(numeric::PyLong_AsLongLong(custom_result.as_ptr()), 78);
+        assert!(
+            INGRESS_HASHES.get() >= 2 && INGRESS_EQUALS.get() > 0,
+            "a custom instance's actual nonvector route constructs kwargs"
+        );
+        assert_eq!(INGRESS_VECTOR_ENTRIES.get(), 0);
+        drop(custom_result);
+        drop(custom_callable);
+        drop(custom_type);
+        for bits in [call_name, callable_namespace, callable_name, callable_class] {
+            dec_ref_bits(&py, bits);
+        }
+        for bits in [self_name, bound_names, metadata_name, bound_python_bits] {
+            dec_ref_bits(&py, bits);
+        }
+        for (label, callable) in [
+            ("function", python_callable.as_ptr()),
+            ("bound method", bound_callable.as_ptr()),
+            ("C-API method", physical_method.as_ptr()),
+        ] {
+            assert_eq!(
+                object::PyCFunction_Check(callable),
+                0,
+                "{label} retains Python identity"
+            );
+            assert!(
+                object::PyVectorcall_Function(callable).is_some(),
+                "{label} owns actual vector storage"
+            );
+            // Public ingress alternatives all converge through the real slot.
+            // The dictionary API keeps its original mapping route; all vector
+            // alternatives must reach object_vectorcall without reconstructing.
+            for ingress in 0..5 {
+                INGRESS_HASHES.set(0);
+                INGRESS_EQUALS.set(0);
+                INGRESS_VECTOR_ENTRIES.set(0);
+                let result = refcount::OwnedPyObject::from_owned(match ingress {
+                    0 => object::PyObject_Call(callable, positional.as_ptr(), kwargs.as_ptr()),
+                    1 => {
+                        object::PyObject_Vectorcall(callable, flat.as_mut_ptr(), 0, names.as_ptr())
+                    }
+                    2 => {
+                        object::_PyObject_Vectorcall(callable, flat.as_mut_ptr(), 0, names.as_ptr())
+                    }
+                    3 => object::PyObject_VectorcallDict(
+                        callable,
+                        ptr::null_mut(),
+                        0,
+                        kwargs.as_ptr(),
+                    ),
+                    _ => object::PyVectorcall_Call(callable, positional.as_ptr(), kwargs.as_ptr()),
+                });
+                assert!(!result.as_ptr().is_null(), "{label} ingress={ingress}");
+                assert_eq!(numeric::PyLong_AsLongLong(result.as_ptr()), 78);
+                assert_eq!(
+                    (INGRESS_HASHES.get(), INGRESS_EQUALS.get()),
+                    (0, 0),
+                    "Python {label} ingress={ingress}"
+                );
+                assert_eq!(
+                    INGRESS_VECTOR_ENTRIES.get(),
+                    usize::from(ingress != 0),
+                    "actual vector hook route: {label} ingress={ingress}"
+                );
+            }
+        }
+        // An actual mutable runtime carrier slot overrides the default adapter;
+        // public dispatch must not bypass it merely because ownership is managed.
+        let carrier = python_callable
+            .as_ptr()
+            .cast::<molt_cpython_abi::abi_types::PyCFunctionObject>();
+        let original = (*carrier).vectorcall;
+        (*carrier).vectorcall = Some(ingress_vector_override);
+        INGRESS_VECTOR_ENTRIES.set(0);
+        let overridden = object::PyObject_Vectorcall(
+            python_callable.as_ptr(),
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+        );
+        (*carrier).vectorcall = original;
+        assert!(!overridden.is_null());
+        assert_eq!(numeric::PyLong_AsLongLong(overridden), 619);
+        assert_eq!(INGRESS_VECTOR_ENTRIES.get(), 0);
+        refcount::Py_DECREF(overridden);
+        drop(physical_method);
+        drop(physical_self);
+        drop(physical_func);
+        drop(bound_callable);
+        // Exact wrapper construction rejects these keywords without rebuilding
+        // the supplied mapping. The old snapshot->dict lane invoked both user
+        // callbacks before the native initializer could reject the call.
+        let wrapper = refcount::OwnedPyObject::from_owned(cext_new_pyobject_from_borrowed_bits(
+            builtins.staticmethod,
+        ));
+        INGRESS_HASHES.set(0);
+        INGRESS_EQUALS.set(0);
+        let rejected =
+            object::PyObject_Call(wrapper.as_ptr(), positional.as_ptr(), kwargs.as_ptr());
+        assert!(rejected.is_null());
+        assert!(!errors::PyErr_Occurred().is_null());
+        assert_eq!((INGRESS_HASHES.get(), INGRESS_EQUALS.get()), (0, 0));
+        errors::PyErr_Clear();
+        drop(wrapper);
+        drop(python_callable);
+        for physical_cfunction in [false, true] {
+            for (flags, target) in [
+                (
+                    METH_VARARGS | METH_KEYWORDS,
+                    ingress_dictionary_target as *const (),
+                ),
+                (
+                    METH_FASTCALL | METH_KEYWORDS,
+                    fastcall_keywords as *const (),
+                ),
+            ] {
+                let mut def = PyMethodDef {
+                    ml_name: c"ingress_probe".as_ptr(),
+                    ml_meth: Some(std::mem::transmute::<*const (), PyCFunction>(target)),
+                    ml_flags: flags,
+                    ml_doc: ptr::null(),
+                };
+                let callable = refcount::OwnedPyObject::from_owned(if physical_cfunction {
+                    object::PyCFunction_NewEx(&raw mut def, ptr::null_mut(), ptr::null_mut())
+                } else {
+                    let bits = register(target, flags, MoltObject::none().bits());
+                    cext_owned_pyobject_from_bits(bits)
+                });
+                assert!(!callable.as_ptr().is_null());
+                INGRESS_HASHES.set(0);
+                INGRESS_EQUALS.set(0);
+                INGRESS_MAPPING.set(0);
+                let result = refcount::OwnedPyObject::from_owned(object::PyObject_Call(
+                    callable.as_ptr(),
+                    positional.as_ptr(),
+                    kwargs.as_ptr(),
+                ));
+                assert!(!result.as_ptr().is_null());
+                assert!(errors::PyErr_Occurred().is_null());
+                assert_eq!(
+                    (INGRESS_HASHES.get(), INGRESS_EQUALS.get()),
+                    (0, 0),
+                    "dictionary ingress physical={physical_cfunction}, flags={flags}"
+                );
+                if flags & METH_VARARGS != 0 {
+                    assert_eq!(
+                        INGRESS_MAPPING.get(),
+                        kwargs.as_ptr() as usize,
+                        "the actual callback observes the original mapping identity"
+                    );
+                    let vector_result =
+                        refcount::OwnedPyObject::from_owned(object::PyObject_Vectorcall(
+                            callable.as_ptr(),
+                            flat.as_mut_ptr(),
+                            0,
+                            names.as_ptr(),
+                        ));
+                    assert!(!vector_result.as_ptr().is_null());
+                    assert!(
+                        INGRESS_HASHES.get() >= 2 && INGRESS_EQUALS.get() > 0,
+                        "vector ingress must construct its own dictionary"
+                    );
+                    assert_ne!(INGRESS_MAPPING.get(), kwargs.as_ptr() as usize);
+                } else {
+                    let result = refcount::OwnedPyObject::from_owned(object::PyObject_Vectorcall(
+                        callable.as_ptr(),
+                        flat.as_mut_ptr(),
+                        0,
+                        names.as_ptr(),
+                    ));
+                    assert!(!result.as_ptr().is_null());
+                    assert_eq!(
+                        (INGRESS_HASHES.get(), INGRESS_EQUALS.get()),
+                        (0, 0),
+                        "FASTCALL vector physical={physical_cfunction} must never construct a dictionary"
+                    );
+                }
+            }
+        }
+        drop(kwargs);
+        drop(names);
+        drop(c_values);
+        drop(positional);
+        for bits in keys.into_iter().chain([
+            dict_bits,
+            class,
+            class_name,
+            namespace_bits,
+            hash_name,
+            eq_name,
+            hash_bits,
+            equal_bits,
+        ]) {
+            dec_ref_bits(&py, bits);
+        }
+        assert!(!crate::exception_pending(&py));
+    });
+}
+
+#[test]
+fn vector_hook_validates_complete_spans_before_reading_and_accepts_empty_null_spans() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    unsafe {
+        let function = register(noargs as *const (), METH_NOARGS, MoltObject::none().bits());
+        let dangling = std::ptr::NonNull::<u64>::dangling().as_ptr();
+        let too_many = isize::MAX as usize / std::mem::size_of::<u64>() + 1;
+        for (values, positional, names, keywords) in [
+            (ptr::null(), 1, ptr::null(), 0),
+            (dangling.cast_const(), 0, ptr::null(), 1),
+            (dangling.cast_const(), usize::MAX, dangling.cast_const(), 1),
+            (dangling.cast_const(), too_many, ptr::null(), 0),
+        ] {
+            assert!(matches!(
+                hook_object_vectorcall(function, values, positional, names, keywords).decode(),
+                DecodedHandleResult::Error
+            ));
+            assert!(with_gil(|py| crate::exception_pending(&py)));
+            crate::molt_exception_clear();
+            molt_cpython_abi::api::errors::PyErr_Clear();
+        }
+        let result = hook_object_vectorcall(function, ptr::null(), 0, ptr::null(), 0);
+        let DecodedHandleResult::Ok(value) = result.decode() else {
+            panic!("empty vector must call the target");
+        };
+        assert_eq!(MoltObject::from_bits(value).as_int(), Some(197));
+        hook_dec_ref(value);
+        hook_dec_ref(function);
+    }
+}
+
+thread_local! {
+    static CONSTRUCTOR_MAPPING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static CONSTRUCTOR_PHASES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+unsafe extern "C" fn ingress_constructor_new(
+    _self: *mut PyObject,
+    args: *mut PyObject,
+    kwargs: *mut PyObject,
+) -> *mut PyObject {
+    unsafe {
+        assert_eq!(kwargs as usize, CONSTRUCTOR_MAPPING.get());
+        CONSTRUCTOR_PHASES.set(CONSTRUCTOR_PHASES.get() + 1);
+        let value = numeric::PyLong_FromLongLong(83);
+        assert_eq!(
+            mapping::PyDict_SetItemString(kwargs, c"from_new".as_ptr(), value),
+            0
+        );
+        molt_cpython_abi::api::refcount::Py_DECREF(value);
+        let class = sequences::PyTuple_GetItem(args, 0);
+        let class = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_value_for_pyobj(class)
+            .unwrap();
+        with_gil(|py| {
+            let result = crate::call::class_init::alloc_instance_for_class(
+                &py,
+                MoltObject::from_bits(class).as_ptr().unwrap(),
+            );
+            dec_ref_bits(&py, class);
+            cext_owned_pyobject_from_bits(result)
+        })
+    }
+}
+unsafe extern "C" fn ingress_constructor_init(
+    _self: *mut PyObject,
+    _args: *mut PyObject,
+    kwargs: *mut PyObject,
+) -> *mut PyObject {
+    unsafe {
+        assert_eq!(kwargs as usize, CONSTRUCTOR_MAPPING.get());
+        assert_eq!(CONSTRUCTOR_PHASES.get(), 1);
+        let value = mapping::PyDict_GetItemString(kwargs, c"from_new".as_ptr());
+        assert!(!value.is_null());
+        assert_eq!(numeric::PyLong_AsLongLong(value), 83);
+        CONSTRUCTOR_PHASES.set(2);
+        cext_new_pyobject_from_borrowed_bits(MoltObject::none().bits())
+    }
+}
+
+#[test]
+fn constructor_phases_preserve_original_mapping_and_observe_new_mutation() {
+    use molt_cpython_abi::api::{object, refcount};
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    with_gil(|py| unsafe {
+        let new = register(
+            ingress_constructor_new as *const (),
+            METH_VARARGS | METH_KEYWORDS,
+            MoltObject::none().bits(),
+        );
+        let init = register(
+            ingress_constructor_init as *const (),
+            METH_VARARGS | METH_KEYWORDS,
+            MoltObject::none().bits(),
+        );
+        let new_name = MoltObject::from_ptr(alloc_string(&py, b"__new__")).bits();
+        let init_name = MoltObject::from_ptr(alloc_string(&py, b"__init__")).bits();
+        let namespace = MoltObject::from_ptr(crate::alloc_dict_with_pairs(
+            &py,
+            &[new_name, new, init_name, init],
+        ))
+        .bits();
+        let name = MoltObject::from_ptr(alloc_string(&py, b"MappingConstructor")).bits();
+        let builtins = crate::builtin_classes(&py);
+        let class = crate::builtins::types::molt_type_new(
+            builtins.type_obj,
+            name,
+            builtins.object,
+            namespace,
+            MoltObject::none().bits(),
+        );
+        // The real metaclass, rather than a helper-only target, owns type_call.
+        assert!(!crate::exception_pending(&py));
+        let callable =
+            refcount::OwnedPyObject::from_owned(cext_new_pyobject_from_borrowed_bits(class));
+        let args = refcount::OwnedPyObject::from_owned(sequences::PyTuple_New(0));
+        let kwargs = refcount::OwnedPyObject::from_owned(mapping::PyDict_New());
+        CONSTRUCTOR_MAPPING.set(kwargs.as_ptr() as usize);
+        CONSTRUCTOR_PHASES.set(0);
+        let result = refcount::OwnedPyObject::from_owned(object::PyObject_Call(
+            callable.as_ptr(),
+            args.as_ptr(),
+            kwargs.as_ptr(),
+        ));
+        assert!(!result.as_ptr().is_null());
+        assert_eq!(CONSTRUCTOR_PHASES.get(), 2);
+        drop(result);
+        drop(callable);
+        drop(args);
+        drop(kwargs);
+        for bits in [class, name, namespace, new_name, init_name, new, init] {
+            dec_ref_bits(&py, bits);
+        }
+        assert!(!crate::exception_pending(&py));
+    });
+}
+
+thread_local! {
+    static PUBLICATION_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+unsafe fn publication_write_list(list: *mut PyObject) -> *mut PyObject {
+    unsafe {
+        assert!(!list.is_null());
+        let physical = list.cast::<molt_cpython_abi::abi_types::PyListObject>();
+        assert!(!(*physical).ob_item.is_null());
+        // Match direct Cython list storage: owned replacement pointer, no API
+        // setter or subsequent C inquiry that could accidentally publish it.
+        let replacement = numeric::PyLong_FromLong(907);
+        assert!(!replacement.is_null());
+        *(*physical).ob_item = replacement;
+        if PUBLICATION_FAIL.get() {
+            molt_cpython_abi::api::errors::PyErr_SetString(
+                (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast(),
+                c"publication callback failure".as_ptr(),
+            );
+            ptr::null_mut()
+        } else {
+            cext_new_pyobject_from_borrowed_bits(MoltObject::none().bits())
+        }
+    }
+}
+unsafe extern "C" fn publication_positional(
+    _self: *mut PyObject,
+    list: *mut PyObject,
+) -> *mut PyObject {
+    unsafe { publication_write_list(list) }
+}
+unsafe extern "C" fn publication_self(
+    list: *mut PyObject,
+    _ignored: *mut PyObject,
+) -> *mut PyObject {
+    unsafe { publication_write_list(list) }
+}
+unsafe extern "C" fn publication_vector(
+    _self: *mut PyObject,
+    values: *mut *mut PyObject,
+    count: Py_ssize_t,
+    _names: *mut PyObject,
+) -> *mut PyObject {
+    assert_eq!(count, 0);
+    unsafe { publication_write_list(*values) }
+}
+unsafe extern "C" fn publication_mapping(
+    _self: *mut PyObject,
+    _args: *mut PyObject,
+    kwargs: *mut PyObject,
+) -> *mut PyObject {
+    unsafe {
+        let list = mapping::PyDict_GetItemString(kwargs, c"payload".as_ptr());
+        assert!(!list.is_null());
+        // Completion must own the pre-call direct operand even after removal.
+        mapping::PyDict_Clear(kwargs);
+        publication_write_list(list)
+    }
+}
+
+#[test]
+fn runtime_cext_completion_publishes_direct_operands_on_success_and_error() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    with_gil(|py| unsafe {
+        for fail in [false, true] {
+            for channel in 0..4 {
+                let list = crate::alloc_list(&py, &[MoltObject::from_int(101).bits()]);
+                assert!(!list.is_null());
+                let list_bits = MoltObject::from_ptr(list).bits();
+                let name = MoltObject::from_ptr(alloc_string(&py, b"payload")).bits();
+                let (target, flags) = match channel {
+                    0 => (publication_positional as *const (), METH_O),
+                    1 => (publication_self as *const (), METH_NOARGS),
+                    2 => (
+                        publication_vector as *const (),
+                        METH_FASTCALL | METH_KEYWORDS,
+                    ),
+                    _ => (
+                        publication_mapping as *const (),
+                        METH_VARARGS | METH_KEYWORDS,
+                    ),
+                };
+                let function = hook_register_c_function(
+                    crate::provenance::abi::expose_function_address(target),
+                    flags,
+                    if channel == 1 {
+                        list_bits
+                    } else {
+                        MoltObject::none().bits()
+                    },
+                    channel != 1,
+                    MoltObject::none().bits(),
+                    b"publication_probe".as_ptr(),
+                    b"publication_probe".len(),
+                );
+                assert_ne!(function, 0);
+                PUBLICATION_FAIL.set(fail);
+                let result = if channel >= 2 {
+                    let dict = crate::alloc_dict_with_pairs(&py, &[name, list_bits]);
+                    let dict_bits = MoltObject::from_ptr(dict).bits();
+                    let result =
+                        crate::call::bind::call_bind_capi(&py, function, None, &[], dict_bits);
+                    if channel == 3 {
+                        assert_eq!(crate::dict_len(dict), 0);
+                    }
+                    dec_ref_bits(&py, dict_bits);
+                    result
+                } else {
+                    let positional = [list_bits];
+                    crate::call::bind::call_bind_capi_vector(
+                        &py,
+                        function,
+                        if channel == 0 { &positional } else { &[] },
+                        &[],
+                        &[],
+                    )
+                };
+                // This reads the tracked runtime Vec directly. It deliberately
+                // never rereads the C view or calls bridge observation first.
+                let actual = crate::object::seq_access::pin_item(&py, list, 0).unwrap();
+                assert_eq!(
+                    MoltObject::from_bits(actual.bits()).as_int(),
+                    Some(907),
+                    "channel={channel}, fail={fail}"
+                );
+                assert_eq!(crate::exception_pending(&py), fail);
+                if fail {
+                    let error = crate::exception_last_bits_noinc(&py).unwrap();
+                    let ptr = MoltObject::from_bits(error).as_ptr().unwrap();
+                    assert_eq!(
+                        crate::format_exception_message(&py, ptr),
+                        "publication callback failure"
+                    );
+                    crate::molt_exception_clear();
+                }
+                if result != 0 {
+                    dec_ref_bits(&py, result);
+                }
+                drop(actual);
+                for bits in [function, name, list_bits] {
+                    dec_ref_bits(&py, bits);
+                }
+                assert!(!crate::exception_pending(&py));
+            }
+        }
+    });
+}
+
+extern "C" fn method_nested_target(first: u64, second: u64, third: u64) -> u64 {
+    let value = |bits| MoltObject::from_bits(bits).as_int().unwrap();
+    MoltObject::from_int(value(first) * 100 + value(second) * 10 + value(third)).bits()
+}
+
+#[test]
+fn capi_method_constructor_reuses_runtime_owner_and_preserves_explicit_binding() {
+    use molt_cpython_abi::api::{errors, object, refcount, typeobj};
+    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    with_gil(|py| unsafe {
+        let target = crate::builtins::functions::alloc_runtime_function_obj(
+            &py,
+            crate::provenance::abi::expose_function_address(method_nested_target as *const ()),
+            3,
+        );
+        assert!(!target.is_null());
+        let function = refcount::OwnedPyObject::from_owned(cext_owned_pyobject_from_bits(
+            MoltObject::from_ptr(target).bits(),
+        ));
+        let first = refcount::OwnedPyObject::from_owned(numeric::PyLong_FromLong(1));
+        let second = refcount::OwnedPyObject::from_owned(numeric::PyLong_FromLong(2));
+        let third = refcount::OwnedPyObject::from_owned(numeric::PyLong_FromLong(3));
+        let inner = refcount::OwnedPyObject::from_owned(object::PyMethod_New(
+            function.as_ptr(),
+            first.as_ptr(),
+        ));
+        assert!(!inner.as_ptr().is_null());
+        let outer = refcount::OwnedPyObject::from_owned(object::PyMethod_New(
+            inner.as_ptr(),
+            second.as_ptr(),
+        ));
+        assert!(!outer.as_ptr().is_null());
+        assert!(
+            GLOBAL_BRIDGE
+                .managed_handle_for_pyobj(outer.as_ptr())
+                .is_some()
+        );
+        assert_eq!(object::PyMethod_Check(outer.as_ptr()), 1);
+        assert_eq!(object::PyCFunction_Check(outer.as_ptr()), 0);
+        assert_eq!(
+            object::PyMethod_GET_FUNCTION(outer.as_ptr()),
+            inner.as_ptr()
+        );
+        assert_eq!(object::PyMethod_GET_SELF(outer.as_ptr()), second.as_ptr());
+        let class = refcount::OwnedPyObject::from_owned(typeobj::PyObject_Type(outer.as_ptr()));
+        assert_eq!(
+            class.as_ptr(),
+            (&raw mut molt_cpython_abi::abi_types::PyMethod_Type).cast()
+        );
+        for (name, expected) in [
+            (c"__func__", inner.as_ptr()),
+            (c"__self__", second.as_ptr()),
+        ] {
+            let value = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                outer.as_ptr(),
+                name.as_ptr(),
+            ));
+            assert_eq!(value.as_ptr(), expected);
+        }
+        let shadow = crate::attr_name_bits_from_bytes(&py, b"__hash__").unwrap();
+        assert!(crate::call::class_init::function_set_attr_bits(
+            &py,
+            target,
+            shadow,
+            MoltObject::from_int(991).bits()
+        ));
+        dec_ref_bits(&py, shadow);
+        let function_hash = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+            function.as_ptr(),
+            c"__hash__".as_ptr(),
+        ));
+        assert_eq!(numeric::PyLong_AsLong(function_hash.as_ptr()), 991);
+        let method_hash = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+            outer.as_ptr(),
+            c"__hash__".as_ptr(),
+        ));
+        assert_eq!(
+            typeobj::PyCallable_Check(method_hash.as_ptr()),
+            1,
+            "method descriptor precedes function shadow"
+        );
+        let hash =
+            refcount::OwnedPyObject::from_owned(object::PyObject_CallNoArgs(method_hash.as_ptr()));
+        assert!(!hash.as_ptr().is_null());
+        assert_eq!(
+            numeric::PyLong_AsLongLong(hash.as_ptr()),
+            typeobj::PyObject_Hash(outer.as_ptr()) as i64
+        );
+        let method_eq = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+            outer.as_ptr(),
+            c"__eq__".as_ptr(),
+        ));
+        let equal = refcount::OwnedPyObject::from_owned(object::PyObject_CallOneArg(
+            method_eq.as_ptr(),
+            outer.as_ptr(),
+        ));
+        assert_eq!(
+            equal.as_ptr(),
+            (&raw mut molt_cpython_abi::abi_types::Py_True).cast()
+        );
+        let method_class = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+            outer.as_ptr(),
+            c"__class__".as_ptr(),
+        ));
+        assert_eq!(method_class.as_ptr(), class.as_ptr());
+        let mut arguments = [third.as_ptr()];
+        let result = refcount::OwnedPyObject::from_owned(object::PyObject_Vectorcall(
+            outer.as_ptr(),
+            arguments.as_mut_ptr(),
+            1,
+            ptr::null_mut(),
+        ));
+        assert!(!result.as_ptr().is_null());
+        assert_eq!(
+            numeric::PyLong_AsLong(result.as_ptr()),
+            123,
+            "both explicit receivers survive nested binding"
+        );
+
+        // C constructor permits Python None and a noncallable function; only
+        // invocation rejects it. Both immutable getters remain available.
+        let none = &raw mut molt_cpython_abi::abi_types::Py_None;
+        let noncallable =
+            refcount::OwnedPyObject::from_owned(object::PyMethod_New(third.as_ptr(), none));
+        assert!(!noncallable.as_ptr().is_null());
+        assert_eq!(
+            object::PyMethod_GET_FUNCTION(noncallable.as_ptr()),
+            third.as_ptr()
+        );
+        assert_eq!(object::PyMethod_GET_SELF(noncallable.as_ptr()), none);
+        for (name, expected) in [(c"__func__", third.as_ptr()), (c"__self__", none)] {
+            let value = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                noncallable.as_ptr(),
+                name.as_ptr(),
+            ));
+            assert_eq!(value.as_ptr(), expected);
+        }
+        let real = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+            noncallable.as_ptr(),
+            c"real".as_ptr(),
+        ));
+        assert!(
+            !real.as_ptr().is_null(),
+            "noncallable inline func uses ordinary scalar lookup"
+        );
+        assert_eq!(numeric::PyLong_AsLong(real.as_ptr()), 3);
+        assert!(object::PyMethod_New(function.as_ptr(), ptr::null_mut()).is_null());
+        assert!(!errors::PyErr_Occurred().is_null());
+        errors::PyErr_Clear();
+        let function_bits = GLOBAL_BRIDGE
+            .managed_handle_for_pyobj(function.as_ptr())
+            .unwrap();
+        let cls = crate::builtins::types::method_class(&py);
+        for (func, receiver) in [
+            (function_bits, MoltObject::none().bits()),
+            (
+                MoltObject::from_int(3).bits(),
+                MoltObject::from_int(2).bits(),
+            ),
+        ] {
+            let rejected = crate::builtins::types::molt_types_method_new(cls, func, receiver);
+            assert!(crate::exception_pending(&py));
+            dec_ref_bits(&py, rejected);
+            crate::clear_exception(&py);
+        }
+        let inner_bits = GLOBAL_BRIDGE
+            .managed_handle_for_pyobj(inner.as_ptr())
+            .unwrap();
+        let explicit = crate::builtins::types::molt_types_method_new(
+            cls,
+            inner_bits,
+            MoltObject::from_int(2).bits(),
+        );
+        assert!(!crate::exception_pending(&py));
+        assert_eq!(
+            crate::bound_method_func_bits(MoltObject::from_bits(explicit).as_ptr().unwrap()),
+            inner_bits
+        );
+        dec_ref_bits(&py, explicit);
+        assert!(errors::PyErr_Occurred().is_null());
+    });
+}
+
+#[test]
+fn capi_numeric_readonly_members_use_runtime_descriptors() {
+    use molt_cpython_abi::abi_types::{PyComplex_Type, PyFloat_Type, PyLong_Type};
+    use molt_cpython_abi::api::{errors, object, refcount};
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    unsafe {
+        for (value, owner, fields) in [
+            (
+                numeric::PyLong_FromLong(37),
+                (&raw mut PyLong_Type).cast(),
+                &[
+                    (c"real", 37.0f64),
+                    (c"imag", 0.0),
+                    (c"numerator", 37.0),
+                    (c"denominator", 1.0),
+                ][..],
+            ),
+            (
+                numeric::PyFloat_FromDouble(-0.0),
+                (&raw mut PyFloat_Type).cast(),
+                &[(c"real", -0.0f64), (c"imag", 0.0)][..],
+            ),
+            (
+                numeric::PyComplex_FromDoubles(3.0, -0.0),
+                (&raw mut PyComplex_Type).cast(),
+                &[(c"real", 3.0f64), (c"imag", -0.0)][..],
+            ),
+        ] {
+            let value = refcount::OwnedPyObject::from_owned(value);
+            assert!(!value.as_ptr().is_null());
+            for &(field, expected) in fields {
+                let result = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                    value.as_ptr(),
+                    field.as_ptr(),
+                ));
+                assert!(!result.as_ptr().is_null(), "numeric C member read");
+                assert_eq!(
+                    numeric::PyFloat_AsDouble(result.as_ptr()).to_bits(),
+                    expected.to_bits()
+                );
+                let descriptor = refcount::OwnedPyObject::from_owned(
+                    object::PyObject_GetAttrString(owner, field.as_ptr()),
+                );
+                assert!(
+                    !descriptor.as_ptr().is_null(),
+                    "class exposes actual descriptor"
+                );
+                let get = refcount::OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                    descriptor.as_ptr(),
+                    c"__get__".as_ptr(),
+                ));
+                assert!(!get.as_ptr().is_null());
+                let direct = refcount::OwnedPyObject::from_owned(object::PyObject_CallOneArg(
+                    get.as_ptr(),
+                    value.as_ptr(),
+                ));
+                assert!(!direct.as_ptr().is_null());
+                assert_eq!(
+                    numeric::PyFloat_AsDouble(direct.as_ptr()).to_bits(),
+                    expected.to_bits()
+                );
+                assert_eq!(
+                    object::PyObject_SetAttrString(value.as_ptr(), field.as_ptr(), result.as_ptr()),
+                    -1
+                );
+                assert!(!errors::PyErr_Occurred().is_null());
+                errors::PyErr_Clear();
+            }
+        }
+        assert!(errors::PyErr_Occurred().is_null());
+    }
+}
+
+#[test]
+fn capi_numeric_origins_survive_method_container_and_attribute_owners() {
+    use molt_cpython_abi::api::{errors, object, refcount, typeobj};
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    unsafe {
+        for floating in [false, true] {
+            let new = || {
+                if floating {
+                    numeric::PyFloat_FromDouble(1.25)
+                } else {
+                    numeric::PyLong_FromLong(1000)
+                }
+            };
+            let first = new();
+            let second = new();
+            assert!(!first.is_null() && !second.is_null());
+            assert_ne!(first, second);
+            let first_bits = molt_cpython_abi::bridge::molt_capi_pyobj_to_handle(first);
+            let second_bits = molt_cpython_abi::bridge::molt_capi_pyobj_to_handle(second);
+            assert!(MoltObject::from_bits(first_bits).is_ptr());
+            assert_ne!(
+                first_bits, second_bits,
+                "equal C origins have different runtime identities"
+            );
+            let function = numeric::PyLong_FromLong(7); // C PyMethod_New permits a noncallable function.
+            let one = object::PyMethod_New(function, first);
+            let same = object::PyMethod_New(function, first);
+            let other = object::PyMethod_New(function, second);
+            assert!(!one.is_null() && !same.is_null() && !other.is_null());
+            assert_eq!(typeobj::PyObject_RichCompareBool(one, same, 2), 1);
+            assert_eq!(typeobj::PyObject_RichCompareBool(one, other, 2), 0);
+            let original_hash = typeobj::PyObject_Hash(one);
+            assert_eq!(typeobj::PyObject_Hash(same), original_hash);
+            let tuple = sequences::PyTuple_New(1);
+            refcount::Py_INCREF(first);
+            assert_eq!(sequences::PyTuple_SetItem(tuple, 0, first), 0);
+            refcount::Py_DECREF(first);
+            refcount::Py_DECREF(second);
+            // Only actual method/tuple owners retain these original C origins.
+            assert_eq!(object::PyMethod_GET_SELF(one), first);
+            let self_attr = object::PyObject_GetAttrString(one, c"__self__".as_ptr());
+            assert_eq!(self_attr, first);
+            let real_attr = object::PyObject_GetAttrString(self_attr, c"real".as_ptr());
+            assert_eq!(
+                real_attr, first,
+                "exact numeric real descriptor retains its receiver identity"
+            );
+            assert_eq!(sequences::PyTuple_GetItem(tuple, 0), first);
+            assert_eq!(typeobj::PyObject_Hash(one), original_hash);
+            refcount::Py_DECREF(real_attr);
+            refcount::Py_DECREF(self_attr);
+            for value in [tuple, one, same, other, function] {
+                refcount::Py_DECREF(value);
+            }
+            assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(first).is_none());
+            assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(second).is_none());
+            assert!(errors::PyErr_Occurred().is_null());
+        }
+    }
+}
+
+#[test]
+fn capi_direct_list_commit_retains_self_and_mutual_cycles_without_recursive_observation() {
+    use molt_cpython_abi::abi_types::PyListObject;
+    use molt_cpython_abi::api::{errors, object, refcount};
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    with_gil(|py| unsafe {
+        for mutual in [false, true] {
+            let first = sequences::PyList_New(1);
+            let second = if mutual {
+                sequences::PyList_New(1)
+            } else {
+                first
+            };
+            assert!(!first.is_null() && !second.is_null());
+            refcount::Py_INCREF(second); // direct ob_item owns one stolen C reference
+            *(*first.cast::<PyListObject>()).ob_item = second;
+            if mutual {
+                refcount::Py_INCREF(first);
+                *(*second.cast::<PyListObject>()).ob_item = first;
+            }
+            let first_bits = molt_cpython_abi::bridge::molt_capi_pyobj_to_handle(first);
+            assert_ne!(first_bits, 0);
+            let second_bits = molt_cpython_abi::bridge::molt_capi_pyobj_to_handle(second);
+            assert_ne!(second_bits, 0);
+            {
+                let item = crate::object::seq_access::pin_item(
+                    &py,
+                    MoltObject::from_bits(first_bits).as_ptr().unwrap(),
+                    0,
+                )
+                .unwrap();
+                assert_eq!(item.bits(), second_bits);
+                let item = crate::object::seq_access::pin_item(
+                    &py,
+                    MoltObject::from_bits(second_bits).as_ptr().unwrap(),
+                    0,
+                )
+                .unwrap();
+                assert_eq!(item.bits(), first_bits);
+            }
+            let none = &raw mut molt_cpython_abi::abi_types::Py_None;
+            assert_eq!(
+                sequences::PyList_SetItem(first, 0, object::Py_NewRef(none)),
+                0
+            );
+            if mutual {
+                assert_eq!(
+                    sequences::PyList_SetItem(second, 0, object::Py_NewRef(none)),
+                    0
+                );
+            }
+            refcount::Py_DECREF(first);
+            if mutual {
+                refcount::Py_DECREF(second);
+            }
+            assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(first).is_none());
+            assert!(GLOBAL_BRIDGE.managed_handle_for_pyobj(second).is_none());
+            assert!(errors::PyErr_Occurred().is_null());
+        }
+    });
+}
+
+#[test]
+fn owned_hook_result_error_retires_transferred_owner_and_preserves_error() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    with_gil(|py| {
+        use crate::builtins::exceptions::ExceptionValue;
+        let child_ptr = crate::alloc_list(&py, &[]);
+        assert!(!child_ptr.is_null());
+        let child_bits = MoltObject::from_ptr(child_ptr).bits();
+        let child = ExceptionValue::adopt(&py, child_bits);
+        let count = || unsafe { (*crate::header_from_obj_ptr(child_ptr)).ref_count_snapshot() };
+        assert_eq!(count(), 1);
+        let result_ptr = crate::alloc_list(&py, &[child_bits]);
+        assert!(!result_ptr.is_null());
+        assert_eq!(count(), 2);
+        let not_implemented = crate::not_implemented_bits(&py);
+        let not_implemented_ptr = MoltObject::from_bits(not_implemented).as_ptr().unwrap();
+        let immortal_count =
+            unsafe { (*crate::header_from_obj_ptr(not_implemented_ptr)).ref_count_snapshot() };
+        crate::raise_exception::<()>(&py, "ValueError", "incoming owned result error");
+        let original = crate::exception_last_bits_noinc(&py).unwrap();
+        assert!(matches!(
+            owned_result_from_pending(MoltObject::from_ptr(result_ptr).bits()).decode(),
+            molt_cpython_abi::hooks::DecodedHandleResult::Error
+        ));
+        assert_eq!(
+            count(),
+            1,
+            "failed result releases its sole container owner and child edge"
+        );
+        assert_eq!(crate::exception_last_bits_noinc(&py), Some(original));
+        for immediate in [
+            MoltObject::none().bits(),
+            MoltObject::from_float(0.0).bits(),
+        ] {
+            assert!(matches!(
+                owned_result_from_pending(immediate).decode(),
+                molt_cpython_abi::hooks::DecodedHandleResult::Error
+            ));
+            assert_eq!(count(), 1);
+            assert_eq!(crate::exception_last_bits_noinc(&py), Some(original));
+        }
+        assert!(matches!(
+            owned_result_from_pending(not_implemented).decode(),
+            molt_cpython_abi::hooks::DecodedHandleResult::Error
+        ));
+        assert_eq!(
+            unsafe { (*crate::header_from_obj_ptr(not_implemented_ptr)).ref_count_snapshot() },
+            immortal_count
+        );
+        assert_eq!(crate::not_implemented_bits(&py), not_implemented);
+        assert_eq!(crate::exception_last_bits_noinc(&py), Some(original));
+        crate::clear_exception(&py);
+        let success_ptr = crate::alloc_list(&py, &[child_bits]);
+        assert!(!success_ptr.is_null());
+        let success_bits = MoltObject::from_ptr(success_ptr).bits();
+        assert_eq!(count(), 2);
+        let returned = match owned_result_from_pending(success_bits).decode() {
+            molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) => {
+                ExceptionValue::adopt(&py, bits)
+            }
+            _ => panic!("successful result must transfer its existing owner"),
+        };
+        assert_eq!(returned.bits(), success_bits);
+        assert_eq!(
+            count(),
+            2,
+            "success is not retained or retired by the status wrapper"
+        );
+        drop(returned);
+        assert_eq!(count(), 1);
+        assert!(
+            matches!(
+                owned_result_from_pending(0).decode(),
+                molt_cpython_abi::hooks::DecodedHandleResult::Ok(0)
+            ),
+            "zero is a valid inline float result"
+        );
+        drop(child);
+        assert!(!crate::exception_pending(&py));
+    });
 }

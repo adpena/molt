@@ -24,7 +24,6 @@ import inspect
 from dataclasses import replace
 import hashlib
 import os
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,6 +39,110 @@ for _p in (str(_REPO_ROOT), str(_REPO_ROOT / "tests"), str(_REPO_ROOT / "src")):
 import molt_diff  # noqa: E402
 from tools.compat import backends as compat_backends  # noqa: E402
 from tools.compat import diff_output_layout  # noqa: E402
+
+
+@pytest.mark.parametrize("runner", ["native", "adapter"])
+def test_guarded_capture_preserves_observable_bytes(runner, tmp_path, monkeypatch):
+    stdout = b"result\r\n\x00\xffno final newline"
+    stderr = b"\r\nExperimentalWarning: guest\r\n(node:7) guest\n\xfftail"
+    command = [
+        sys.executable,
+        "-c",
+        f"import os; os.write(1, {stdout!r}); os.write(2, {stderr!r})",
+    ]
+    monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "diff"))
+    monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "scratch"))
+    environment = dict(os.environ)
+    if runner == "native":
+        result = molt_diff._run_subprocess(command, env=environment, timeout=30)
+    else:
+        result = compat_backends._guarded_run(
+            command,
+            prefix="MOLT_COMPAT_WASM_RUN",
+            env=environment,
+            timeout_default=30,
+        )
+    assert result.returncode == 0
+    assert result.infrastructure_failure is None
+    assert result.stdout.encode("utf-8", errors="surrogateescape") == stdout
+    assert result.child_stderr.encode("utf-8", errors="surrogateescape") == stderr
+
+
+def test_wasm_adapter_preserves_complete_runner_output(tmp_path, monkeypatch):
+    # This isolates the adapter's output boundary; it does not fake a compiled
+    # WASM execution claim. The real guarded capture is exercised above.
+    context = compat_backends.BackendExecutionContext(
+        target_python=TargetPythonVersion(3, 12, 0),
+        build_profile="dev",
+        capabilities="",
+        environment={},
+    )
+    stderr = "\r\nExperimentalWarning: guest\n(node:7) guest\n\nno final newline"
+    observed = compat_backends.BackendResult("output\r\n", stderr, 0)
+
+    def guarded(command, **kwargs):
+        if kwargs["prefix"] == "MOLT_COMPAT_WASM_BUILD":
+            (tmp_path / "output_linked.wasm").touch()
+            (tmp_path / "manifest.json").write_text("{}", encoding="utf-8")
+            return compat_backends.BackendResult("", "", 0)
+        assert kwargs["prefix"] == "MOLT_COMPAT_WASM_RUN"
+        return observed
+
+    monkeypatch.setattr(compat_backends, "_guarded_run", guarded)
+    actual = compat_backends.WasmAdapter()._build_and_run_owned(
+        "case.py", context=context, out_dir=tmp_path
+    )
+    assert actual is observed
+    assert actual.stderr == stderr
+
+
+def test_cross_backend_comparison_uses_child_stream_not_guard_diagnostics():
+    reference = compat_backends.BackendResult(
+        "output", "first guard diagnostic", 0, child_stderr="guest\r\n"
+    )
+    candidate = compat_backends.BackendResult(
+        "output", "second guard diagnostic", 0, child_stderr="guest\r\n"
+    )
+    outcomes = {"native": reference, "wasm": candidate}
+    assert (
+        molt_diff._cross_backend_divergence(
+            outcomes, stdout_mode="exact", stderr_mode="exact"
+        )
+        is None
+    )
+    outcomes["wasm"] = replace(candidate, child_stderr="guest\n")
+    assert "stderr mismatch" in molt_diff._cross_backend_divergence(
+        outcomes, stdout_mode="exact", stderr_mode="exact"
+    )
+
+
+def test_backend_receipt_hashes_exact_child_bytes():
+    stdout, stderr = b"\xff\r\n", b"\x00\xfe\r\n"
+    context = compat_backends.BackendExecutionContext(
+        target_python=TargetPythonVersion(3, 12, 0),
+        build_profile="dev",
+        capabilities="",
+        environment={},
+    )
+    result = compat_backends.BackendResult(
+        stdout.decode("utf-8", errors="surrogateescape"),
+        "guard diagnostics are not guest output",
+        0,
+        child_stderr=stderr.decode("utf-8", errors="surrogateescape"),
+    )
+    record = {}
+    molt_diff._record_backend_result(
+        record,
+        file_path="case.py",
+        backend="native",
+        raw_status="pass",
+        expect_molt_fail=False,
+        outcome=result,
+        context=context,
+    )
+    row = record["backend_rows"][0]
+    assert row["stdout_sha256"] == hashlib.sha256(stdout).hexdigest()
+    assert row["stderr_sha256"] == hashlib.sha256(stderr).hexdigest()
 
 
 def test_adapter_scratch_is_fresh_and_retired(tmp_path, monkeypatch):
@@ -710,30 +813,37 @@ def test_uncalibrated_when_no_backend_available(fake_test_file, monkeypatch) -> 
 
 
 @pytest.mark.parametrize("prefix", _COMPAT_GUARD_PHASES)
-@pytest.mark.parametrize("expired_exception", (False, True))
-def test_timeout_preserves_diagnostic_and_is_never_oom(
-    prefix, expired_exception, monkeypatch
-) -> None:
+def test_timeout_preserves_diagnostic_and_is_never_oom(prefix, monkeypatch) -> None:
     from tools import harness_memory_guard
 
     def finish(command, **kwargs):
-        if expired_exception:
-            raise subprocess.TimeoutExpired(
-                command, kwargs["timeout"], output=b"partial", stderr=b"killed"
-            )
-        return SimpleNamespace(
-            stdout="partial", stderr="killed", returncode=137, timed_out=True
+        assert kwargs["text"] is False
+        return harness_memory_guard.GuardedCompletedProcess(
+            command,
+            124,
+            b"partial\r\n\xff",
+            b"killed\r\n\xff\nmemory_guard: timeout after 60.0s",
+            child_stderr=b"killed\r\n\xff",
+            elapsed_s=60.1,
+            timed_out=True,
+            child_returncode=-9,
+            guard_signal=9,
         )
 
     monkeypatch.setattr(harness_memory_guard, "guarded_completed_process", finish)
     result = compat_backends._guarded_run(
         ["noop"], prefix=prefix, env={}, timeout_default=60.0
     )
-    assert result.stdout == "partial"
+    assert result.stdout.encode("utf-8", errors="surrogateescape") == b"partial\r\n\xff"
+    assert (
+        result.child_stderr.encode("utf-8", errors="surrogateescape")
+        == b"killed\r\n\xff"
+    )
     assert "killed" in result.stderr
     assert "timeout after 60.0s" in result.stderr
     assert result.returncode == 124 and result.timed_out
-    assert replace(result, diagnostic_stderr="MemoryError").resource_failure is None
+    assert result.child_returncode == -9 and result.guard_signal == 9
+    assert replace(result, child_stderr="MemoryError").resource_failure is None
 
 
 @pytest.mark.parametrize("backend", ("wasm", "llvm", "luau"))
@@ -824,10 +934,10 @@ def test_native_adapter_preserves_timeout():
 
 
 def test_native_build_timeout_keeps_partial_compiler_diagnostics():
-    result = compat_backends.BackendResult.from_timeout(
-        subprocess.TimeoutExpired(
-            ["compiler"], 3, output=b"phase detail", stderr=b"error detail"
-        ),
+    result = compat_backends.BackendResult.from_deadline(
+        timeout=3,
+        stdout=b"phase detail",
+        stderr=b"error detail",
         build_failed=True,
     )
     assert result.stdout is None and result.build_failed and result.timed_out
@@ -1176,7 +1286,7 @@ def test_guard_resource_facts_survive_adapter_and_build_conversion(
     ]:
         assert converted.rss_limit_exceeded is measured
         assert converted.child_returncode == result.child_returncode
-        assert converted.diagnostic_stderr == "runtime crashed\n"
+        assert converted.child_stderr == "runtime crashed\n"
         assert converted.resource_failure == (
             "rss_limit_exceeded" if measured else None
         )
@@ -1305,7 +1415,7 @@ def test_suite_rss_transport_matches_captured_process_instance(
     )
     proc = harness_memory_guard.GuardedCompletedProcess(
         ["fixture"],
-        rc,
+        124 if case == "timeout" else rc,
         "partial",
         "child stderr",
         elapsed_s=0.1,
@@ -1314,6 +1424,7 @@ def test_suite_rss_transport_matches_captured_process_instance(
         owned_process_identities=owned,
         infrastructure_failure=failure,
         timed_out=case == "timeout",
+        child_stderr="child stderr",
     )
 
     def launch(*args, **kwargs):
@@ -1328,10 +1439,6 @@ def test_suite_rss_transport_matches_captured_process_instance(
             "from_env",
             lambda *a, **k: SimpleNamespace(run=launch),
         )
-        if case == "timeout":
-            with pytest.raises(subprocess.TimeoutExpired):
-                molt_diff._run_subprocess(["fixture"], env=env, timeout=5)
-            return
         result = molt_diff._run_subprocess(["fixture"], env=env, timeout=5)
     else:
         monkeypatch.setattr(harness_memory_guard, "guarded_completed_process", launch)
@@ -1342,8 +1449,9 @@ def test_suite_rss_transport_matches_captured_process_instance(
     assert result.rss_limit_exceeded is (expected or case == "infrastructure")
     assert result.resource_failure == ("rss_limit_exceeded" if expected else None)
     assert result.child_returncode == rc
+    assert result.timed_out is (case == "timeout")
     assert result.stdout == "partial"
-    assert result.diagnostic_stderr == "child stderr"
+    assert result.child_stderr == "child stderr"
     assert result.infrastructure_failure is failure
     assert ("observed suite RSS" in result.stderr) is (
         expected or case == "infrastructure"

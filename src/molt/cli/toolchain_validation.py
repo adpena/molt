@@ -4,11 +4,13 @@ import datetime as dt
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
+from molt.cargo_execution_policy import admit_cargo_build
 from molt.source_root import compiler_source_root
 from molt.cli.atomic_io import _write_json_sidecar
 from molt.cli.backend_diagnostics import _FALSY_ENV_VALUES
@@ -50,6 +52,19 @@ _VALIDATE_SUITE_CHOICES = (
     "bench",
     "custody-proof",
 )
+
+
+def _admitted_cargo_refusal(
+    command: Sequence[str], *, cwd: Path, env: Mapping[str, str] | None
+) -> subprocess.CompletedProcess[str] | None:
+    """Return a failed step when build capacity refuses a compiling Cargo step."""
+    try:
+        admit_cargo_build(command, cwd=cwd, env=env)
+    except ValueError as exc:  # DiskCapacityError, or an inconsistent target
+        return subprocess.CompletedProcess(
+            [str(part) for part in command], 2, "", f"Cargo not started: {exc}\n"
+        )
+    return None
 
 
 def _planned_update_steps(
@@ -277,13 +292,15 @@ def update_repo(
     for step in steps:
         if verbose and not json_output:
             print(f"[molt update] {step.name}: {shlex.join(step.cmd)}", file=sys.stderr)
-        proc = _run_completed_command(
-            step.cmd,
-            cwd=step.cwd,
-            capture_output=True,
-            env=None,
-            memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
-        )
+        proc = _admitted_cargo_refusal(step.cmd, cwd=step.cwd, env=None)
+        if proc is None:
+            proc = _run_completed_command(
+                step.cmd,
+                cwd=step.cwd,
+                capture_output=True,
+                env=None,
+                memory_guard_prefix=_CLI_MEMORY_GUARD_PREFIX,
+            )
         entry: dict[str, Any] = {
             "name": step.name,
             "category": step.category,
@@ -434,8 +451,8 @@ def _planned_validate_steps(
                 "tests/test_memory_guard_wiring.py",
                 "tests/tools/test_memory_guard_windows_sampling.py",
                 "tests/tools/test_process_sentinel.py",
-                "tests/cli/test_cli_smoke.py::test_cli_hash_seed_windows_handoff_waits_for_restarted_process",
-                "tests/cli/test_cli_smoke.py::test_cli_hash_seed_reexec_argv_uses_active_python_executable",
+                "tests/cli/test_cli_smoke.py::test_cli_entry_preserves_host_seed_without_restarting",
+                "tests/cli/test_installed_compiler.py::test_bootstrap_uses_locked_uv_environment_and_reuses_it",
             ],
             root,
             "command",
@@ -924,13 +941,15 @@ def validate(
             )
         guard_prefix = _validate_guard_prefix(step)
         start = time.perf_counter()
-        proc = _run_completed_command(
-            [str(part) for part in step.cmd],
-            cwd=step.cwd,
-            env=env,
-            capture_output=True,
-            memory_guard_prefix=guard_prefix,
-        )
+        proc = _admitted_cargo_refusal(step.cmd, cwd=step.cwd, env=env)
+        if proc is None:
+            proc = _run_completed_command(
+                [str(part) for part in step.cmd],
+                cwd=step.cwd,
+                env=env,
+                capture_output=True,
+                memory_guard_prefix=guard_prefix,
+            )
         duration_s = round(time.perf_counter() - start, 6)
         entry: dict[str, Any] = {
             "name": step.name,

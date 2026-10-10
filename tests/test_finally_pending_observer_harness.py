@@ -25,6 +25,32 @@ def _version(short: str) -> TargetPythonVersion:
     return TargetPythonVersion(major, minor, 0)
 
 
+def test_extension_discovery_preserves_admitted_build_and_proof_roots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    custody = tmp_path / "custody"
+    extension_root = tmp_path / "isolated-extension"
+    selected = {
+        "MOLT_EXT_ROOT": str(custody),
+        "MOLT_SESSION_ID": "explicit-ci-session",
+        "CARGO_TARGET_DIR": str(custody / "target"),
+        "MOLT_BUILD_STATE_DIR": str(custody / "build-state"),
+        "MOLT_WASM_RUNTIME_DIR": str(custody / "wasm"),
+        "MOLT_GUARD_PROFILE_LOG": str(custody / "commands.jsonl"),
+    }
+    for key, value in selected.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("MOLT_SESSION_ID_GENERATED", raising=False)
+
+    observed = parity._test_env(extension_root)
+
+    assert {key: observed[key] for key in selected} == selected
+    assert observed["MOLT_MODULE_ROOTS"] == str(extension_root)
+    assert observed["MOLT_EXTERNAL_STATIC_PACKAGES"] == "pending_call_probe"
+    assert observed["MOLT_HERMETIC_MODULE_ROOTS"] == "1"
+    assert observed["MOLT_EXT_ROOT"] != observed["MOLT_MODULE_ROOTS"]
+
+
 def test_oracle_isolates_native_compiler_inputs_without_losing_guard_custody(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

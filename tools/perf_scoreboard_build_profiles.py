@@ -1,66 +1,45 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Mapping
+
+from molt.release_lanes import ReleaseLane, capture_release_lanes
 
 if TYPE_CHECKING:
     from perf_scoreboard_model import BackendSpec
 
-PROFILE_BUILD_FLAG = {
-    "release-fast": "release",
-    "release-output": "release",
-    "dev-fast": "dev",
-    "release-size": "release",
-    "wasm-release": "release",
-}
+_ROOT = Path(__file__).resolve().parents[1]
 
 
-@dataclass(frozen=True)
-class ProfileSelection:
-    coordinate_profile: str
-    cli_build_profile: str
-    guest_cargo_profile: str
-    host_cargo_profile: str
-
-    def environment(self) -> dict[str, str]:
-        # Pin each producer explicitly. The host compiler is independent from
-        # the measured guest; development overrides cannot change either.
-        return {
-            "MOLT_BACKEND_PROFILE": "release",
-            "MOLT_RELEASE_BACKEND_CARGO_PROFILE": self.host_cargo_profile,
-            "MOLT_DEV_BACKEND_CARGO_PROFILE": "dev-fast",
-            "MOLT_RELEASE_CARGO_PROFILE": self.guest_cargo_profile,
-            "MOLT_DEV_CARGO_PROFILE": self.guest_cargo_profile,
-            "MOLT_WASM_CARGO_PROFILE": self.guest_cargo_profile,
-            "MOLT_RUNTIME_BUILD_PROFILE": "",
-            "MOLT_RUNTIME_WASM_INCREMENTAL": "0",
-        }
+def profile_build_flags() -> dict[str, str]:
+    """CLI choices are a projection, never another profile declaration."""
+    flags: dict[str, str] = {}
+    for lane in capture_release_lanes(_ROOT).lanes:
+        previous = flags.setdefault(lane.runtime_profile, lane.guest_profile)
+        if previous != lane.guest_profile:
+            raise ValueError("release lanes disagree on the guest profile selector")
+    return flags
 
 
-def profile_selection(spec: BackendSpec, profile: str) -> ProfileSelection:
-    return profile_selection_for_target(spec.build_target, profile)
+def profile_selection(spec: BackendSpec, profile: str) -> ReleaseLane:
+    lane = profile_selection_for_backend(spec.backend, profile)
+    if lane.target != spec.build_target:
+        raise ValueError("backend specification differs from the release lane target")
+    return lane
 
 
-def profile_selection_for_target(build_target: str, profile: str) -> ProfileSelection:
-    if profile not in PROFILE_BUILD_FLAG:
-        raise ValueError(f"unknown performance profile: {profile!r}")
-    if profile == "wasm-release" and build_target != "wasm":
-        raise ValueError("wasm-release is a WASM artifact coordinate")
-    # Preserve both declared WASM release-output and wasm-release coordinates.
-    # The CLI maps only generic Cargo release to wasm-release; an explicit
-    # artifact profile must never be renamed to a different measured lane.
-    return ProfileSelection(profile, PROFILE_BUILD_FLAG[profile], profile, "release")
+def profile_selection_for_backend(backend: str, profile: str) -> ReleaseLane:
+    return capture_release_lanes(_ROOT).select(backend=backend, runtime_profile=profile)
 
 
 def profile_binding_problems(
-    observation: object, *, build_target: str, profile: str
+    observation: object, *, backend: str, profile: str
 ) -> list[str]:
-    """Require selected profile facts; labels and legacy paths are not binding.
-
-    This checks publication observations, not loaded-daemon attestation. The
-    compiled_with_verified field retains its separate, stronger meaning.
-    """
-    expected = profile_selection_for_target(build_target, profile)
+    """Require every selected lane fact; this is not loaded-byte attestation."""
+    try:
+        expected = profile_selection_for_backend(backend, profile)
+    except ValueError as exc:
+        return [str(exc)]
     facts = (
         observation.get("selected_profiles")
         if isinstance(observation, Mapping)
@@ -68,15 +47,9 @@ def profile_binding_problems(
     )
     if not isinstance(facts, Mapping):
         return ["missing selected-profile observation; historical/unbound result"]
-    coordinates = {
-        "guest_profile": expected.cli_build_profile,
-        "compiler_profile": expected.host_cargo_profile,
-        "runtime_profile": expected.guest_cargo_profile,
-        "target": build_target,
-    }
     return [
         f"selected {key}: expected {value!r}, observed {facts.get(key)!r}"
-        for key, value in coordinates.items()
+        for key, value in expected.as_record().items()
         if facts.get(key) != value
     ]
 

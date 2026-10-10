@@ -1,8 +1,8 @@
 //! The C method calling-convention authority shared by ABI objects and runtime closures.
 //!
-//! Inputs are a borrowed vectorcall span: positional values followed by keyword
-//! values, with a tuple of keyword names. Only tuple-based conventions allocate
-//! argument containers. Callers own the input views and validate/translate the
+//! Inputs preserve their public carrier: an existing tuple/dictionary, or a
+//! borrowed vectorcall span. Only vector ingress to tuple-based conventions
+//! allocates argument containers. Callers own the input views and validate/translate the
 //! returned C result at their execution boundary.
 
 use crate::abi_types::{
@@ -28,6 +28,17 @@ pub struct VectorcallArguments<'a> {
     pub values: &'a [*mut PyObject],
     pub positional_count: usize,
     pub kwnames: *mut PyObject,
+}
+
+/// A dictionary call and a vectorcall have different observable contracts.
+/// Mapping ingress is used only by tuple-based C conventions and preserves the
+/// caller's containers; vector ingress constructs them only when required.
+pub enum CFunctionArguments<'a> {
+    Mapping {
+        positional: *mut PyObject,
+        keywords: *mut PyObject,
+    },
+    Vector(VectorcallArguments<'a>),
 }
 
 impl CFunctionConvention {
@@ -56,21 +67,67 @@ impl CFunctionConvention {
         !matches!(self, Self::NoArgs | Self::OneObject)
     }
 
+    pub fn uses_tuple_arguments(self) -> bool {
+        matches!(self, Self::VarArgs | Self::VarArgsKeywords)
+    }
+
     /// Invoke a validated C method target without duplicating convention policy.
     ///
     /// # Safety
     /// The target must have the signature selected by `self`. All objects in
-    /// `args`, `self_obj`, `defining_class`, and `kwnames` must remain alive for
-    /// this call, including reentry. `args` contains all positional and keyword
-    /// values; `kwnames` is NULL or a tuple of unique string names.
+    /// the chosen carrier, `self_obj`, and `defining_class` must remain alive
+    /// through reentry. Vector values contain positional then keyword values;
+    /// names are NULL or a tuple of unique strings. Mapping input contains a
+    /// positional tuple and NULL or the caller's actual keyword dictionary.
     pub unsafe fn invoke(
         self,
         meth_target: *const (),
         self_obj: *mut PyObject,
         defining_class: *mut PyTypeObject,
-        arguments: VectorcallArguments<'_>,
+        arguments: CFunctionArguments<'_>,
         name: impl Fn() -> String,
     ) -> *mut PyObject {
+        if meth_target.is_null() || (self == Self::Method) == defining_class.is_null() {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            return ptr::null_mut();
+        }
+        let arguments = match arguments {
+            CFunctionArguments::Mapping {
+                positional,
+                keywords,
+            } => {
+                if !self.uses_tuple_arguments() {
+                    unsafe { crate::api::errors::PyErr_BadInternalCall() };
+                    return ptr::null_mut();
+                }
+                if unsafe { crate::api::sequences::PyTuple_Size(positional) } < 0 {
+                    return ptr::null_mut();
+                }
+                let count = if keywords.is_null() {
+                    0
+                } else {
+                    unsafe { crate::api::mapping::PyDict_Size(keywords) }
+                };
+                if count < 0 {
+                    return ptr::null_mut();
+                }
+                if count != 0 && self == Self::VarArgs {
+                    return unsafe {
+                        type_error(format!("{}() takes no keyword arguments", name()))
+                    };
+                }
+                return unsafe {
+                    if self == Self::VarArgs {
+                        let call: PyCFunction = std::mem::transmute(meth_target);
+                        call(self_obj, positional)
+                    } else {
+                        let call: PyCFunctionWithKeywords = std::mem::transmute(meth_target);
+                        call(self_obj, positional, keywords)
+                    }
+                };
+            }
+            CFunctionArguments::Vector(arguments) => arguments,
+        };
         let VectorcallArguments {
             values: args,
             positional_count,
@@ -80,10 +137,6 @@ impl CFunctionConvention {
         else {
             return ptr::null_mut();
         };
-        if meth_target.is_null() || (self == Self::Method) == defining_class.is_null() {
-            unsafe { crate::api::errors::PyErr_BadInternalCall() };
-            return ptr::null_mut();
-        }
         if keyword_count != 0
             && !matches!(
                 self,

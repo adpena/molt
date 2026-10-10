@@ -102,11 +102,14 @@ pub(crate) unsafe fn write(
         if field != Field::Module {
             return raise_exception::<_>(py, "AttributeError", "readonly attribute");
         }
-        let value = value.unwrap_or(MoltObject::none().bits());
         if object_type_id(object) == TYPE_ID_BOUND_METHOD {
-            crate::object::layout::bound_method_set_module_bits(py, object, value);
+            crate::object::layout::bound_method_set_module_bits(
+                py,
+                object,
+                value.unwrap_or(MoltObject::none().bits()),
+            );
         } else if let Some(ok) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .set_cfunction_module(MoltObject::from_ptr(object).bits(), Some(value))
+            .set_cfunction_module(MoltObject::from_ptr(object).bits(), value)
         {
             if !ok {
                 crate::cpython_abi_hooks::propagate_native_failure(
@@ -115,6 +118,7 @@ pub(crate) unsafe fn write(
                 );
             }
         } else {
+            let value = value.unwrap_or(MoltObject::none().bits());
             if !crate::call::class_init::function_set_attr_name(py, object, b"__module__", value) {
                 return MoltObject::none().bits();
             }

@@ -195,6 +195,19 @@ Source-extension admission must match that declared version; successful scalar
 layout checks do not establish CPython 3.13/3.14 binary compatibility, package
 support, or execution on an unverified target.
 
+Both header transports leave `Py_GIL_DISABLED` undefined. CPython tests this
+selector by presence, so even a caller definition of `0` selects a different
+object layout and is rejected before declaring shared object structs. The native
+Molt `free-threaded` Cargo feature selects atomic reference-count storage; it
+does not select a CPython free-threaded C ABI or remove the runtime's global GIL.
+True no-GIL execution and CPython `cp313t`/`cp314t` binary compatibility remain
+unsupported and require their own complete admission and execution proofs.
+The declared CPython 3.12 release ABI also excludes `Py_TRACE_REFS`: its presence
+prepends two object-list pointers in that version, so both transports reject
+caller definitions, including `0`. CPython 3.13/3.14 tracing uses a different
+representation; this refusal is grounded in the selected 3.12 ABI. `Py_DEBUG`
+and `Py_REF_DEBUG` are distinct selectors and are not treated as layout aliases.
+
 ---
 
 ## 3. Explicit Exclusions
@@ -1128,6 +1141,26 @@ ordered start before stop and stopped at the first exception. Negative list boun
 normalize after both callbacks; positive bounds remain live across element equality.
 C sequence count/index and native containment fallback retain owned iterator/items.
 
+## Dictionary cursors and call transport
+
+`RuntimeHooks::dict_next` accepts a physical dictionary cursor and skips deleted
+slots. Complete traversal is O(physical extent). `PyDict_Next` publishes the
+position and borrowed outputs together after row lookup and bridge conversion
+succeed; exhaustion preserves all caller outputs. The old ordinal hook has no
+compatibility path. First exposure of a C projection may allocate. Hook layout
+admission uses `RUNTIME_HOOKS_ABI_VERSION` in `runtime/molt-cpython-abi/src/hooks.rs`.
+
+Call transport preserves the caller's keyword carrier until the callee requires
+conversion. Mapping calls preserve the original mapping for tuple-based C
+callees; forwarding keywords must not invoke hashing or equality. The vector
+hook borrows validated argument and keyword-name spans only for the synchronous
+call. Frame binding acquires the references it retains. Required mapping/vector
+conversions share the existing call-argument and bridge ownership authorities;
+temporary foreign wrappers remain alive through dispatch. Source CALL and
+CALL_FUNCTION_EX retain their target-version-specific release policies, separate
+from C-API call cleanup. Qualification status belongs to V1-27 in the
+[V1 findings ledger](../../../../agent/V1_HANDOFF_FINDINGS.md).
+
 ## Canonical slice storage
 
 Python slice construction and linked `PySlice_New` create the same runtime
@@ -1185,3 +1218,81 @@ clearing obey that same typed boundary. Task capture traversal and detachment
 remain responsible for those words exactly once; ordinary class allocations,
 native subtype tails, and dedicated dictionary-bearing kinds retain their
 existing owners. No type name or mutable poll address selects class storage.
+
+### Numeric C origins and hook capability presence
+
+A fresh noncached C numeric owns its physical allocation. Primitive integer,
+float, and complex construction, physical extraction, type/membership checks,
+and C reference operations do not create a runtime numeric identity. The first
+semantic value crossing transfers that exact allocation into the existing
+managed bridge owner; distinct C origins remain distinct even when values are
+equal. An existing runtime heap numeric keeps its original handle and canonical
+C view. Runtime inline results keep the existing inline-key publication policy.
+Parsed arbitrary-width numeric construction continues to use the runtime
+arithmetic producer; it does not introduce a second parser in the C bridge.
+
+Integer byte emission borrows the admitted integer payload and writes directly
+into its caller's buffer. Signed overflow retains the low requested bytes;
+unsigned-negative refusal leaves the output untouched. Zero-width signed `-1`
+and zero follow CPython's empty representation. Physical C extraction remains
+independent of runtime adoption. Integer subtypes use their stored value without
+calling conversion overrides; integral floats are not integer byte receivers.
+The runtime's C-view projection stages bytes in its final digit allocation and
+repacks toward lower addresses without overlapping unread input. Python
+`int.to_bytes` fills its final immutable bytes storage under the existing owner,
+with allocation failure and overflow releasing that unpublished result once.
+These are allocation and lifetime contracts, not comparative timing claims.
+
+C integer readers use the same physical `PyLong` digits for runtime projections,
+C-created integers, bool and int subtypes. Width, sign, masking, floating-point
+rounding and byte extraction do not reacquire a runtime integer or invoke its
+numeric callbacks. Only APIs that accept a non-int index operand call
+`PyNumber_Index`; they consume its physical result before releasing it. The
+obsolete signed/unsigned scalar-read, mask and signed-byte-width hook fields are
+removed from the exact-version runtime hook contract, together with their providers.
+Unsigned extraction classifies negative values before width overflow, including
+negative values wider than 64 bits. Converter helpers retain CPython's ValueError
+for negatives and leave outputs untouched on failure. Short/int converters first
+admit the platform's unsigned-long width, then apply their narrower limit, with
+the exception and diagnostic belonging to the stage that actually rejected it.
+
+The `PyArg` numeric format family uses these same physical C readers. Checked
+byte/short/int formats first extract C long; bitfield formats mask at their real C
+width without an intermediate signed limit. `n` applies index admission before
+the platform ssize limit; existing physical integer subtypes need no exact-type
+copy. Float formats use the shared float protocol, with callback failures and
+output storage preserved. `k`/`K` require int through Python 3.13 and admit index
+objects from Python 3.14, selected by the runtime target-version authority.
+Parser-owned conversion diagnostics retain argument/item location and format
+suffixes; callback exceptions keep their original identity. Diagnostic strings
+are built only on failure. These rules follow the versioned
+[CPython argument parser](https://github.com/python/cpython/blob/v3.14.8/Python/getargs.c).
+
+Storage extraction and Python conversion have distinct admission rules.
+`int()` and `PyNumber_Long` preserve exact integer identity and dispatch subtype
+`__int__` before `__index__`; a numeric storage tag cannot bypass those methods.
+Their runtime path shares integer-result validation, subtype warnings and exact
+result ownership with index conversion. `operator.index` and explicit integer
+base descriptors read existing integer storage without invoking overrides. A
+sealed subtype's exact integer payload can be retained directly instead of
+cloned and reboxed. Python 3.12/3.13 retain deprecated `__trunc__` delegation,
+with warning failure preceding the callback; Python 3.14 removes that path.
+These rules follow [CPython's numeric protocols](https://github.com/python/cpython/blob/v3.14.8/Objects/abstract.c).
+String and generic-buffer acceptance remain separately qualified parser surfaces;
+numeric protocol tests do not certify their completeness.
+
+Adoption validates the source record and counts, reserves insertion storage,
+and acquires the runtime view mark before atomically publishing. Failure retains
+the original usable C allocation and releases only newly staged runtime owners.
+No failed adoption is interpreted as a foreign-object miss. Managed lists retain
+already admitted child identities without recursively observing those children's
+mutable projections, including self and mutual cycles.
+
+RuntimeHooks callback fields whose absence selects ownership or diagnostic
+behavior use `Option<callback>` as their sole capability authority. `None` invokes
+the existing failure behavior; `Some` invokes that producer once and preserves
+its failure. Function addresses are not capability identities. Required callbacks
+remain direct functions. This is part of the current hook ABI version named in
+`runtime/molt-cpython-abi/src/hooks.rs`; all runtime and fixture producers must
+publish the same schema. Native and WASM qualification must exercise actual
+consumer boundaries before making a supported-platform claim.

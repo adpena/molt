@@ -3,7 +3,8 @@
 
 The root runtime crate still carries feature-off fallback copies for several
 stdlib areas while satellite crates carry feature-on authorities. Those pairs
-are governed by `check_satellite_parity.py` and Cargo feature cfgs.
+are governed by Cargo feature cfgs and the per-cell owner checks in
+`tests/test_wasm_runtime_export_no_mangle.py`.
 
 Satellite crates, however, are linked together in `stdlib_full`. A symbol
 defined by two satellites is not a fallback pair; it is a link-time collision

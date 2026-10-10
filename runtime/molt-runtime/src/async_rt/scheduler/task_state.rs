@@ -112,9 +112,13 @@ pub(crate) fn task_visit_owned_edges(
     mut visit: impl FnMut(u64),
 ) {
     let slot = PtrSlot(task_ptr);
-    if unsafe { (*header_from_obj_ptr(task_ptr)).has_flag(HEADER_FLAG_SPAWN_RETAIN) } {
-        visit(MoltObject::from_ptr(task_ptr).bits());
+    if let crate::async_rt::cancellation::TaskContextBinding::Owned(bits) =
+        crate::async_rt::cancellation::task_context_binding(_py, task_ptr)
+    {
+        visit(bits);
     }
+    // SPAWN_RETAIN and queue/work-item references are external roots. Visiting
+    // either as an internal self-edge would erase scheduler reachability.
     if let Some(stack) = task_exception_stacks(_py).lock().unwrap().get(&slot) {
         for &bits in stack {
             visit(bits);

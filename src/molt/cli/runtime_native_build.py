@@ -571,7 +571,6 @@ def _native_runtime_cargo_command(
             "builtin_set",
             "builtin_complex",
             "builtin_memoryview",
-            "builtin_contextvars",
             "builtin_fcntl",
         ]
         cmd.extend(["--features", ",".join(wasm_features)])

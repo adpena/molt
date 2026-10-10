@@ -181,6 +181,7 @@ def test_native_object_publication_is_one_admitted_transaction(
         cache_hit_tier="module" if cache_hit else None,
     )
     backend_setup = _PreparedBackendSetup(
+        backend="native",
         runtime_state=runtime_state,
         backend_bin=tmp_path / "backend.exe",
         cache_setup=cache_setup,
