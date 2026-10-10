@@ -1685,7 +1685,9 @@ family = "platform_portability"
 cell = "windows-x86_64-py312-queue-portability"
 tiers = ["pr", "main"]
 resource_class = "python-tests"
-timeout_seconds = 120
+# A cold Cargo cache compiles the IR verifier first: 99.98 s and 113.68 s in
+# CI 38031471885; 360 s keeps the plan's 3x cold headroom (HF-139).
+timeout_seconds = 360
 cache_domain = "none"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "tools/verify_ir_suite.py", "--dir", "tests/differential/basic", "--glob", "arith.py", "--json-out", "proof-receipts/evidence/portability-ir-windows.json"]
