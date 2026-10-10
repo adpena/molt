@@ -825,6 +825,9 @@ def execute_guarded_request(request_path: Path) -> int:
                 "toolchain capture contains paths outside armed custody: "
                 + ", ".join(uncovered[:3])
             )
+        monitor.admit_uv_environment_locks(
+            [execution_custody.captured_uv_environment_locks(toolchains_full)]
+        )
         child_policy = execution_custody.child_policy(
             envelope,
             toolchains_full,
