@@ -302,10 +302,15 @@ def native_codegen_binding(runtime_lib: Path, build_identity: RuntimeBuildIdenti
     symbols = runtime_lib.with_name(runtime_lib.name + ".test-callables")
     if not symbols.exists():
         symbols.write_text("molt_test_intrinsic\n", encoding="utf-8")
+    # Like the production producer (native_symbol_inspection), the archive
+    # identity names the resolved generation; a symlinked fixture root (macOS
+    # /tmp or /var) otherwise fails NativeRuntimeCodegenBinding.verify().
     return NativeRuntimeCodegenBinding(
         runtime_lib=runtime_lib,
         build_identity=build_identity,
-        archive=stable_regular_file_identity(runtime_lib, label="test codegen archive"),
+        archive=stable_regular_file_identity(
+            runtime_lib.resolve(strict=True), label="test codegen archive"
+        ),
         callable_symbols=stable_regular_file_identity(
             symbols, label="test codegen symbols"
         ),
