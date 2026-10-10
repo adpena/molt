@@ -4,6 +4,7 @@
 //! compile it into both the ABI-boundary and runtime-backed harnesses so sample
 //! calibration and execution control cannot drift independently.
 
+#[cfg(windows)]
 use std::ffi::c_void;
 
 pub const SAMPLE_COUNT: usize = 9;

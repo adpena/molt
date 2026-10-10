@@ -216,7 +216,7 @@ impl<'a, 'py> ExceptionRenderContext for ManagedRender<'a, 'py> {
             return None;
         }
         let args = if capture_args {
-            Some(self.retain(unsafe { exception_materialized_args_bits(self.0, pointer)? }))
+            Some(self.retain(exception_materialized_args_bits(self.0, pointer)?))
         } else {
             None
         };
@@ -410,7 +410,7 @@ impl<'a, 'py> ExceptionRenderContext for ManagedRender<'a, 'py> {
             let Some(bytes) = bytes else {
                 let name = value.map_or_else(
                     || "object".to_owned(),
-                    |value| type_name(self.0, obj_from_bits(value)).to_owned(),
+                    |value| type_name(self.0, obj_from_bits(value)).into_owned(),
                 );
                 raise_exception::<()>(
                     self.0,
