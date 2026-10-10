@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence, Set as AbcSet
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -21,6 +21,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from tools import guarded_entrypoints, memory_guard  # noqa: E402
 from tools.memory_guard_core.process_model import (  # noqa: E402
+    ancestor_pids,
     birth_fenced_descendants,
     process_identity_has_creation_marker,
 )
@@ -377,7 +378,7 @@ def protected_process_group_ids(
     self_pid: int | None = None,
     self_pgid: int | None = None,
     owned_pids: set[int] | None = None,
-) -> set[int]:
+) -> AbcSet[int]:
     return memory_guard.protected_process_group_ids(
         samples,
         self_pid=self_pid,
@@ -496,27 +497,27 @@ def _explicitly_owned_molt_process_ids(
 
 def _windows_snapshot_helper_tree_ids(
     samples: Mapping[int, memory_guard.ProcessSample],
+    candidate_pids: Collection[int],
 ) -> set[int]:
-    helper_pids = {
-        sample.pid
-        for sample in samples.values()
-        if _command_contains(
-            _normalized_path_text(sample.command),
-            _normalized_path_text("--molt-windows-process-snapshot-json"),
+    """Candidates that are, or descend from, a Windows snapshot helper.
+
+    A candidate is blocked when its sampled parent chain reaches a process
+    whose command names the helper. Only the candidates and their ancestry are
+    read, so the check costs the chains it walks, not the host.
+    """
+
+    helper_token = _normalized_path_text("--molt-windows-process-snapshot-json")
+    # Protection includes uncertain descendants; it never admits cleanup custody.
+    return {
+        pid
+        for pid in candidate_pids
+        if pid in samples
+        and any(
+            (ancestor := samples.get(ancestor_pid)) is not None
+            and _command_contains(_normalized_path_text(ancestor.command), helper_token)
+            for ancestor_pid in ancestor_pids(samples, pid)
         )
     }
-    if not helper_pids:
-        return set()
-    # Protection includes uncertain descendants; it never admits cleanup custody.
-    blocked = set(helper_pids)
-    changed = True
-    while changed:
-        changed = False
-        for sample in samples.values():
-            if sample.pid not in blocked and sample.ppid in blocked:
-                blocked.add(sample.pid)
-                changed = True
-    return blocked
 
 
 def _candidate_process_group_ids(
@@ -640,7 +641,7 @@ def process_groups(
             known_process_identities=known_process_identities,
         )
     )
-    owned.difference_update(_windows_snapshot_helper_tree_ids(samples))
+    owned.difference_update(_windows_snapshot_helper_tree_ids(samples, owned))
     matched = _candidate_process_group_ids(samples, owned)
     groups = [
         ProcessGroup(
@@ -664,7 +665,15 @@ def skipped_protected_process_groups(
     self_pgid: int | None = None,
     observed_pgids: set[int] | None = None,
     known_process_identities: Mapping[int, memory_guard.ProcessIdentity] | None = None,
+    within_pids: Collection[int] | None = None,
 ) -> list[ProcessGroup]:
+    """Molt-matched process groups that protection kept out of the kill set.
+
+    ``within_pids`` bounds the match to one sentinel's candidate scope: a
+    current-tree sentinel can skip only the groups of its own tree, so it
+    reads argv for that tree and its ancestry alone. None matches the host.
+    """
+
     grouped = _group_samples_by_pgid(samples)
     explicitly_owned = _explicitly_owned_process_ids(
         samples,
@@ -678,7 +687,9 @@ def skipped_protected_process_groups(
         owned_pids=explicitly_owned,
     )
     owned = _owned_process_ids(
-        samples,
+        samples
+        if within_pids is None
+        else {pid: samples[pid] for pid in within_pids if pid in samples},
         root=root,
         self_pid=self_pid,
         known_process_identities=known_process_identities,

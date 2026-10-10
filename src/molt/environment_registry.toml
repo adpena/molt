@@ -6804,33 +6804,6 @@ owner = "tools/harness_memory_guard.py"
 summary = "Set by a suite-level repo sentinel for the commands it covers, so per-command orphan cleanup defers to that sentinel."
 
 [[family]]
-suffix = "_STALE_ORPHAN_CLEANUP"
-root_fallback = "MOLT_STALE_ORPHAN_CLEANUP"
-audience = "developer"
-kind = "bool"
-default = "1"
-owner = "tools/harness_memory_guard.py"
-summary = "Whether a guarded command first drains stale orphaned Molt process groups; set 0 only for a deliberate investigation."
-
-[[family]]
-suffix = "_STALE_ORPHAN_SEC"
-root_fallback = "MOLT_STALE_ORPHAN_SEC"
-audience = "developer"
-kind = "float"
-default = "3600"
-owner = "tools/harness_memory_guard.py"
-summary = "Age in seconds after which an orphaned Molt process group counts as stale for the preflight drain."
-
-[[family]]
-suffix = "_STALE_PYTEST_SEC"
-root_fallback = "MOLT_STALE_PYTEST_SEC"
-audience = "developer"
-kind = "float"
-default = "900"
-owner = "tools/harness_memory_guard.py"
-summary = "Age in seconds after which an orphaned pytest-style process group counts as stale for the preflight drain."
-
-[[family]]
 suffix = "_TIMEOUT_SEC"
 root_fallback = "MOLT_TEST_PROCESS_TIMEOUT_SEC"
 audience = "developer"

@@ -7,6 +7,7 @@ import pytest
 
 from molt import backend_daemon_custody as custody
 from tools import memory_guard
+from tools.memory_guard_core import process_custody
 
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
@@ -304,8 +305,9 @@ def test_backend_daemon_termination_escalates_with_sigterm_without_sigkill(
     identity = _identity(tmp_path)
     signals: list[int] = []
     monkeypatch.setattr(custody, "_pid_alive", lambda pid: True)
+    # The escalation reads the fallback from the custody module that signals.
     monkeypatch.setattr(
-        memory_guard,
+        process_custody,
         "fallback_kill_signal",
         lambda: signal.SIGTERM,
     )

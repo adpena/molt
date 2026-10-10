@@ -1049,19 +1049,23 @@ Provision and toolchain-location telemetry record each `tool_identity_reuse`
 decision (`hit`, or `miss` with `absent`, `key-collision` or
 `revalidation-drift`) so a receipt shows which probes were skipped.
 
-Memory-guard process sampling reads native process tables: Linux parses one
-`/proc/<pid>/stat` row for ancestry, start marker and resident set, and macOS
-enumerates through `proc_listallpids`/`proc_pidinfo` instead of a `ps`
-subprocess with a hard timeout. Another user's process carries zero resident
-kB on macOS because `PROC_PIDTASKINFO` is uid-restricted; the guard never
-sizes those, since global RSS sums only Molt-owned process groups. A process
-that exited and awaits its parent's `wait()` stays listed by
-`proc_listallpids` while every `proc_pidinfo` flavor answers ESRCH; the
-sampler then reads its `kern.proc.pid` row (the table `ps` reads, with the
-same birth clock as `pbi_start_tvsec`) and leaves `SZOMB` rows out, so a
-killed child is never reported as a live member of its tree. A pid with no
-kernel row was reaped between the two reads; any other row binds the exact
-birth the kernel kept.
+Memory-guard process sampling reads native process tables and costs one kernel
+row per host process plus argv only for the processes a decision visits. Linux
+parses one `/proc/<pid>/stat` row for ancestry, start marker and resident set.
+macOS reads every `kern.proc` row (the table `ps` reads) in one `KERN_PROC_ALL`
+sysctl, with parent, group, birth, status, name and effective uid, and sizes
+each readable process through `PROC_PIDTASKINFO`; there is no `ps` subprocess.
+A row binds its argv (`cmdline`, or `KERN_PROCARGS2`) the first time a caller
+reads its command, and the read proves the pid still names the sampled birth;
+otherwise the row keeps its sampled identity with an explicitly unknown argv.
+Host-protection decisions (`ProtectedProcessGroups`) decide only the process
+groups a caller asks about, so a guard deciding about its own tree reads argv
+for that tree and its ancestry, not for the host. An exited, unreaped
+(`SZOMB`) row is left out, so a killed child is never reported as a live
+member of its tree. XNU answers argv and task info only to a caller with the
+process's effective uid, or root; such a withheld row (a system daemon, another
+user's process, a setuid child) keeps its group and name and binds no ancestry,
+birth or resident set, since global RSS sums only Molt-owned process groups.
 
 Python custody additionally binds the venv launcher and `pyvenv.cfg`, base
 CPython executable and shared libraries, stdlib and native-extension byte

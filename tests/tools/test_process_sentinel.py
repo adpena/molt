@@ -586,14 +586,13 @@ def test_process_groups_exclude_mixed_custody_group_with_owned_child() -> None:
 
 
 def test_process_groups_explicit_custody_excludes_repo_scoped_shell() -> None:
-    # CANONICAL custody guarantee the harness preflight relies on: requiring
-    # EXPLICIT guard custody (an empty owned set, since a guard about to launch a
-    # command owns nothing yet) yields ZERO kill candidates even for a repo-scope
-    # heuristic match. A parent shell whose command line runs molt -- exactly what
-    # Codex spawns -- is NEVER signalled. Locks the fix for the recurring
-    # Codex-parent kill: harness_memory_guard `_prune_stale_repo_processes` passes
-    # owned_pids=frozenset() so the preflight can never terminate a process it
-    # cannot prove it owns.
+    # CANONICAL custody guarantee: requiring EXPLICIT guard custody (an empty
+    # owned set, since a guard about to launch a command owns nothing yet)
+    # yields ZERO kill candidates even for a repo-scope heuristic match. A
+    # parent shell whose command line runs molt -- exactly what Codex spawns --
+    # is NEVER signalled. This is why the per-command guard takes no stale
+    # preflight census at all: it could never terminate a process it cannot
+    # prove it owns.
     module = _load_process_sentinel()
     root = Path("/repo/molt")
     samples = {
@@ -2668,3 +2667,61 @@ def test_sentinel_keeps_explicit_roots_without_inventing_birth_edges() -> None:
         )
         == set()
     )
+
+
+def test_current_tree_decisions_read_argv_only_for_the_tree_and_its_ancestry() -> None:
+    """A tree-scoped scan binds argv for its tree and lineage, never the host.
+
+    Fifty unrelated host processes stay unread while the sentinel decides the
+    Molt group of its own tree, the protection of that group, and which tree
+    groups protection skipped.
+    """
+    module = _load_process_sentinel()
+    model = sys.modules["tools.memory_guard_core.process_model"]
+    root = Path("/repo/molt")
+    bound: list[int] = []
+
+    def native(pid: int, ppid: int, pgid: int, argv: tuple[str, ...]):
+        def bind():
+            bound.append(pid)
+            return " ".join(argv), argv, "full"
+
+        return model.native_process_sample(
+            pid=pid,
+            ppid=ppid,
+            rss_kb=1024,
+            pgid=pgid,
+            elapsed_sec=1,
+            started_at_ns=pid * 1_000,
+            bind_command=bind,
+        )
+
+    samples = {
+        1: module.memory_guard.ProcessSample(
+            pid=1, ppid=0, rss_kb=0, command="launchd", pgid=1, argv=()
+        ),
+        10: native(10, 1, 10, ("/bin/zsh", "-l")),
+        20: native(20, 10, 20, ("python3", "-m", "pytest")),
+        30: native(
+            30, 20, 30, ("/repo/molt/target/release-fast/molt-backend", "--daemon")
+        ),
+        31: native(31, 30, 30, ("/repo/molt/target/release-fast/molt-backend", "-w")),
+    }
+    host = {
+        pid: native(pid, 1, pid, ("unrelated", str(pid))) for pid in range(1000, 1050)
+    }
+    samples.update(host)
+    tree = {20, 30, 31}
+
+    groups = module.process_groups(
+        samples, root=root, self_pid=20, self_pgid=20, owned_pids=tree
+    )
+    skipped = module.skipped_protected_process_groups(
+        samples, root=root, self_pid=20, self_pgid=20, within_pids=tree
+    )
+
+    assert [group.pgid for group in groups] == [30]
+    assert groups[0].pids == [30, 31]
+    assert skipped == []
+    assert set(bound) <= {10, 20, 30, 31}
+    assert not set(bound) & set(host)

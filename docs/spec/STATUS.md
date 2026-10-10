@@ -1453,9 +1453,9 @@ regression coverage, not an installed release receipt or other-platform proof.
 	  detection follows the same split. Source-only scan records bind scan policy;
 	  each graph walk resolves live filesystem candidates and the stdlib allowlist.
 	  Completed graphs and derived imports are not persisted. Darwin memory-guard sizing now
-	  uses `vm_stat` free/inactive/speculative/purgeable pages as the live
-	  available-memory source instead of falling back to physical-RAM-only
-	  budgeting. Import graph
+	  uses the free/inactive/speculative/purgeable pages `vm_stat` prints, read
+	  from one `host_statistics64` call, as the live available-memory source
+	  instead of falling back to physical-RAM-only budgeting. Import graph
 	  materialization now has one immutable `ImportPlan`: entry planning owns the
 	  runtime-import support closure, while final materialization owns namespace
 		  stubs, generated importer modules, known-module sets, allowlist snapshots,
