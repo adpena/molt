@@ -1,5 +1,5 @@
 {
-  "baseline_total": 134,
+  "baseline_total": 133,
   "entries": [
     {
       "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::inner",
@@ -450,11 +450,6 @@
       "id": "runtime/molt-runtime/tests/debug_call_bind.rs::allow_dead_code::mod:cargo_test_artifacts",
       "owner": "runtime-authority-closure",
       "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, included into several crates; each uses a subset"
-    },
-    {
-      "id": "runtime/molt-runtime-collections/src/argparse.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
       "id": "runtime/molt-runtime-collections/src/collections_ext.rs::allow_dead_code::inner",

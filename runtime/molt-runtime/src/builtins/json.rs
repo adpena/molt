@@ -1230,59 +1230,6 @@ fn decode_json_text(_py: &PyToken<'_>, obj: MoltObject, data: &[u8]) -> Result<S
     }
 }
 
-/// Full JSON loads: parse a JSON string and return the MoltObject tree.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_loads(text_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(text_bits);
-
-        // Accept str
-        if let Some(text) = string_obj_to_owned(obj) {
-            return json_loads_str(_py, &text);
-        }
-
-        // Accept bytes / bytearray with RFC/CPython-style JSON encoding detection.
-        if let Some(ptr) = obj.as_ptr() {
-            let type_id = unsafe { object_type_id(ptr) };
-            if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-                let slice = unsafe {
-                    let len = bytes_len(ptr);
-                    let data_ptr = bytes_data(ptr);
-                    std::slice::from_raw_parts(data_ptr, len)
-                };
-                let text = match decode_json_text(_py, obj, slice) {
-                    Ok(text) => text,
-                    Err(bits) => return bits,
-                };
-                return json_loads_str(_py, &text);
-            }
-        }
-
-        let tn = type_name(_py, obj);
-        let msg = format!("the JSON object must be str, bytes or bytearray, not {tn}");
-        raise_exception::<u64>(_py, "TypeError", &msg)
-    })
-}
-
-fn json_loads_str(_py: &PyToken<'_>, text: &str) -> u64 {
-    let v: serde_json::Value = match serde_json::from_str(text) {
-        Ok(val) => val,
-        Err(e) => {
-            let msg = format!("{e}");
-            return raise_exception::<u64>(_py, "ValueError", &msg);
-        }
-    };
-    PARSE_ARENA.with(|arena| {
-        let mut arena = arena.borrow_mut();
-        let result = value_to_object(_py, v, &mut arena);
-        arena.reset();
-        match result {
-            Ok(val) => val.bits(),
-            Err(_) => raise_exception::<u64>(_py, "ValueError", "failed to convert JSON value"),
-        }
-    })
-}
-
 #[derive(Clone, Copy)]
 struct JsonLoadsOptions {
     parse_float: Option<u64>,

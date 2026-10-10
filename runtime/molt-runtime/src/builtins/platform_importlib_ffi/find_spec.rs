@@ -1,64 +1,12 @@
 use super::*;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_find_in_path(fullname_bits: u64, search_paths_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        importlib_find_in_path_payload(_py, fullname_bits, search_paths_bits, false)
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_find_in_path_package_context(
     fullname_bits: u64,
     search_paths_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         importlib_find_in_path_payload(_py, fullname_bits, search_paths_bits, true)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_find_spec(
-    fullname_bits: u64,
-    search_paths_bits: u64,
-    module_file_bits: u64,
-    meta_path_bits: u64,
-    path_hooks_bits: u64,
-    path_importer_cache_bits: u64,
-    package_context_bits: u64,
-    machinery_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let fullname = match string_arg_from_bits(_py, fullname_bits, "module name") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let search_paths =
-            match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
-                Ok(value) => value,
-                Err(bits) => return bits,
-            };
-        let module_file = match module_file_from_bits(_py, module_file_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let package_context = is_truthy(_py, obj_from_bits(package_context_bits));
-        match importlib_find_spec_with_runtime_state_bits(
-            _py,
-            ImportlibRuntimeSpecContext {
-                fullname: &fullname,
-                search_paths: &search_paths,
-                module_file,
-                meta_path_bits,
-                path_hooks_bits,
-                path_importer_cache_bits,
-                package_context,
-                machinery_bits,
-            },
-        ) {
-            Ok(bits) => bits,
-            Err(err) => err,
-        }
     })
 }
 

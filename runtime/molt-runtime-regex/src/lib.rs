@@ -1,7 +1,7 @@
 //! `molt-runtime-regex` — Regex intrinsics for the Molt runtime.
 //!
-//! Isolates the regex lookaround, verbose mode, fullmatch, named backref,
-//! and sub/subn intrinsics into a dedicated crate.
+//! Holds the `re` engine (compile, execute, match groups, sub/subn, split,
+//! escape and verbose-mode stripping) in a dedicated crate.
 //!
 //! This crate is an optional dependency of `molt-runtime`, gated behind the
 //! `stdlib_regex` feature flag.  When the feature is disabled the linker

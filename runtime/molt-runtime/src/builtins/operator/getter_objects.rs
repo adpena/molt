@@ -244,50 +244,6 @@ pub extern "C" fn molt_operator_methodcaller_init(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_itemgetter(items_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let items_obj = obj_from_bits(items_bits);
-        let Some(items_ptr) = items_obj.as_ptr() else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "itemgetter expected at least 1 argument",
-            );
-        };
-        unsafe {
-            if object_type_id(items_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "itemgetter expected at least 1 argument",
-                );
-            }
-            if crate::object::seq_access::len(items_ptr) == 0 {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "itemgetter expected at least 1 argument",
-                );
-            }
-        }
-        let class_bits = itemgetter_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
-        if obj_from_bits(inst_bits).is_none() {
-            return MoltObject::none().bits();
-        }
-        let inst_ptr = obj_from_bits(inst_bits).as_ptr().unwrap();
-        unsafe {
-            itemgetter_set_items_bits(inst_ptr, items_bits);
-        }
-        inc_ref_bits(_py, items_bits);
-        inst_bits
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_itemgetter_type() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         crate::state::cache::retain_cached_result(_py, itemgetter_class(_py))
@@ -295,110 +251,9 @@ pub extern "C" fn molt_operator_itemgetter_type() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_attrgetter(attrs_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let attrs_obj = obj_from_bits(attrs_bits);
-        let Some(attrs_ptr) = attrs_obj.as_ptr() else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "attrgetter expected at least 1 argument",
-            );
-        };
-        unsafe {
-            if object_type_id(attrs_ptr) != TYPE_ID_TUPLE {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "attrgetter expected at least 1 argument",
-                );
-            }
-            if crate::object::seq_access::len(attrs_ptr) == 0 {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "attrgetter expected at least 1 argument",
-                );
-            }
-            let attrs = crate::object::seq_access::pin_tuple(_py, attrs_ptr)
-                .expect("type-checked attrgetter tuple must remain live");
-            for &attr_bits in attrs.iter() {
-                let Some(attr_ptr) = obj_from_bits(attr_bits).as_ptr() else {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "attrgetter expects string attributes",
-                    );
-                };
-                if object_type_id(attr_ptr) != TYPE_ID_STRING {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "attrgetter expects string attributes",
-                    );
-                }
-            }
-        }
-        let class_bits = attrgetter_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
-        if obj_from_bits(inst_bits).is_none() {
-            return MoltObject::none().bits();
-        }
-        let inst_ptr = obj_from_bits(inst_bits).as_ptr().unwrap();
-        unsafe {
-            attrgetter_set_attrs_bits(inst_ptr, attrs_bits);
-        }
-        inc_ref_bits(_py, attrs_bits);
-        inst_bits
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_attrgetter_type() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         crate::state::cache::retain_cached_result(_py, attrgetter_class(_py))
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_operator_methodcaller(
-    name_bits: u64,
-    args_bits: u64,
-    kwargs_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let name_obj = obj_from_bits(name_bits);
-        let Some(name_ptr) = name_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "methodcaller() name must be str");
-        };
-        unsafe {
-            if object_type_id(name_ptr) != TYPE_ID_STRING {
-                return raise_exception::<_>(_py, "TypeError", "methodcaller() name must be str");
-            }
-        }
-        let class_bits = methodcaller_class(_py);
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return MoltObject::none().bits();
-        };
-        let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
-        if obj_from_bits(inst_bits).is_none() {
-            return MoltObject::none().bits();
-        }
-        let inst_ptr = obj_from_bits(inst_bits).as_ptr().unwrap();
-        unsafe {
-            methodcaller_set_name_bits(inst_ptr, name_bits);
-            methodcaller_set_args_bits(inst_ptr, args_bits);
-            methodcaller_set_kwargs_bits(inst_ptr, kwargs_bits);
-        }
-        inc_ref_bits(_py, name_bits);
-        inc_ref_bits(_py, args_bits);
-        if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
-            inc_ref_bits(_py, kwargs_bits);
-        }
-        inst_bits
     })
 }
 

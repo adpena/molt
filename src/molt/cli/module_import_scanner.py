@@ -67,9 +67,21 @@ from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
 # intentionally qualname-based: stdlib modules stay module-init scanned unless a
 # specific helper body is part of Molt's compiled runtime contract.
 STDLIB_STATIC_IMPORT_HELPER_QUALNAMES: Mapping[str, frozenset[str]] = {
+    # HelpFormatter imports shutil and textwrap to format usage and help, which
+    # every parse error prints; _copy_items imports copy for `append` defaults.
+    "argparse": frozenset(
+        {
+            "_copy_items",
+            "HelpFormatter.__init__",
+            "HelpFormatter._fill_text",
+            "HelpFormatter._split_lines",
+        }
+    ),
     "collections": frozenset({"UserDict.copy"}),
     # EmailMessage inherits MIMEPart.__init__, which supplies email.policy.default.
     "email.message": frozenset({"MIMEPart.__init__"}),
+    # assertLogs and assertNoLogs import unittest._log, which imports logging.
+    "unittest.case": frozenset({"TestCase.assertLogs", "TestCase.assertNoLogs"}),
 }
 STDLIB_STATIC_IMPORT_HELPER_MODULES = frozenset(STDLIB_STATIC_IMPORT_HELPER_QUALNAMES)
 

@@ -25,10 +25,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_traceback_extract_tb",
             crate::molt_traceback_extract_tb as *const (),
         )),
-        "molt_traceback_exception_components" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_traceback_exception_components",
-            crate::molt_traceback_exception_components as *const (),
-        )),
         "molt_traceback_exception_chain_payload" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_traceback_exception_chain_payload",
