@@ -1,7 +1,7 @@
 //! Path, glob, and OS filesystem operations.
 //!
 //! Split from io.rs to reduce file size. Contains all `molt_path_*`,
-//! `molt_glob*`, `molt_os_*`, and `molt_getcwd` extern functions.
+//! `molt_glob*` and `molt_os_*` extern functions.
 
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -170,66 +170,6 @@ pub extern "C" fn molt_path_symlink(
                 }
             }
         }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_listdir(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if !has_capability(_py, "fs.read") {
-            return raise_capability_denied(_py, "fs.read");
-        }
-        let path = match path_from_bits(_py, path_bits) {
-            Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
-        };
-        let mut entries: Vec<u64> = Vec::new();
-        let read_dir = match std::fs::read_dir(&path) {
-            Ok(dir) => dir,
-            Err(err) => {
-                let msg = err.to_string();
-                return match err.kind() {
-                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                    ErrorKind::PermissionDenied => {
-                        raise_exception::<_>(_py, "PermissionError", &msg)
-                    }
-                    ErrorKind::NotADirectory => {
-                        raise_exception::<_>(_py, "NotADirectoryError", &msg)
-                    }
-                    _ => raise_exception::<_>(_py, "OSError", &msg),
-                };
-            }
-        };
-        for entry in read_dir {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(err) => {
-                    let msg = err.to_string();
-                    return raise_exception::<_>(_py, "OSError", &msg);
-                }
-            };
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let name_ptr = alloc_string(_py, name.as_bytes());
-            if name_ptr.is_null() {
-                for bits in entries {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            entries.push(MoltObject::from_ptr(name_ptr).bits());
-        }
-        let list_ptr = alloc_list(_py, entries.as_slice());
-        if list_ptr.is_null() {
-            for bits in entries {
-                dec_ref_bits(_py, bits);
-            }
-            return MoltObject::none().bits();
-        }
-        for bits in entries {
-            dec_ref_bits(_py, bits);
-        }
-        MoltObject::from_ptr(list_ptr).bits()
     })
 }
 
@@ -1576,39 +1516,6 @@ pub extern "C" fn molt_path_chmod(path_bits: u64, mode_bits: u64) -> u64 {
                 "NotImplementedError",
                 "chmod is unsupported on this platform",
             )
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_getcwd() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if !has_capability(_py, "fs.read") {
-            return raise_capability_denied(_py, "fs.read");
-        }
-        match std::env::current_dir() {
-            Ok(path) => {
-                let text = path.to_string_lossy();
-                let ptr = alloc_string(_py, text.as_bytes());
-                if ptr.is_null() {
-                    MoltObject::none().bits()
-                } else {
-                    MoltObject::from_ptr(ptr).bits()
-                }
-            }
-            Err(err) => {
-                let msg = err.to_string();
-                match err.kind() {
-                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                    ErrorKind::PermissionDenied => {
-                        raise_exception::<_>(_py, "PermissionError", &msg)
-                    }
-                    ErrorKind::NotADirectory => {
-                        raise_exception::<_>(_py, "NotADirectoryError", &msg)
-                    }
-                    _ => raise_exception::<_>(_py, "OSError", &msg),
-                }
-            }
         }
     })
 }

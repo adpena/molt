@@ -15,12 +15,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_importlib_extension_loader_payload as *const (),
             ))
         }
-        "molt_importlib_sourceless_loader_payload" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_sourceless_loader_payload",
-                crate::molt_importlib_sourceless_loader_payload as *const (),
-            ))
-        }
         "molt_importlib_coerce_module_name" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_coerce_module_name",
             crate::molt_importlib_coerce_module_name as *const (),
@@ -69,18 +63,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_importlib_sourceless_loader_exec_module as *const (),
             ))
         }
-        "molt_importlib_module_spec_is_package" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_module_spec_is_package",
-                crate::molt_importlib_module_spec_is_package as *const (),
-            ))
-        }
-        "molt_importlib_path_is_archive_member" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_path_is_archive_member",
-                crate::molt_importlib_path_is_archive_member as *const (),
-            ))
-        }
         "molt_importlib_package_root_from_origin" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_importlib_package_root_from_origin",
@@ -117,12 +99,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_importlib_import_module",
             crate::molt_importlib_import_module as *const (),
         )),
-        "molt_importlib_known_absent_missing_name" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_known_absent_missing_name",
-                crate::molt_importlib_known_absent_missing_name as *const (),
-            ))
-        }
         "molt_importlib_import_optional" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_importlib_import_optional",
             crate::molt_importlib_import_optional as *const (),
@@ -159,10 +135,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_importlib_import_transaction",
             crate::molt_importlib_import_transaction as *const (),
         )),
-        "molt_importlib_find_in_path" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_find_in_path",
-            crate::molt_importlib_find_in_path as *const (),
-        )),
         "molt_importlib_find_in_path_package_context" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_importlib_find_in_path_package_context",
@@ -183,10 +155,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_importlib_compiled_loader_types as *const (),
             ))
         }
-        "molt_importlib_find_spec" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_find_spec",
-            crate::molt_importlib_find_spec as *const (),
-        )),
         "molt_importlib_find_spec_orchestrate" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_importlib_find_spec_orchestrate",
@@ -219,10 +187,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_importlib_bootstrap_payload",
             crate::molt_importlib_bootstrap_payload as *const (),
         )),
-        "molt_importlib_runtime_modules" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_runtime_modules",
-            crate::molt_importlib_runtime_modules as *const (),
-        )),
         "molt_importlib_ensure_default_meta_path" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_importlib_ensure_default_meta_path",
@@ -243,10 +207,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_importlib_spec_from_file_location as *const (),
             ))
         }
-        "molt_importlib_set_module_state" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_importlib_set_module_state",
-            crate::molt_importlib_set_module_state as *const (),
-        )),
         "molt_importlib_stabilize_module_state" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_importlib_stabilize_module_state",
