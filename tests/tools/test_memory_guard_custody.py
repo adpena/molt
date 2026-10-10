@@ -25,6 +25,7 @@ from tools.memory_guard_core import active_custody as custody
 from tools.memory_guard_core import process_model, windows_snapshot
 from tests.process_guard_common import (
     close_owned_test_process,
+    install_module_view,
     start_owned_test_process,
 )
 
@@ -1058,7 +1059,7 @@ def test_exit_sweep_leaves_pre_retirement_history_to_the_operator(
                 scanned.append(entry.name)
                 yield entry
 
-    monkeypatch.setattr(custody.os, "scandir", CountingScandir)
+    install_module_view(monkeypatch, "os", os, custody, scandir=CountingScandir)
     snapshot = _snapshot(_sample(os.getpid(), 1))
     assert custody.sweep_active_guard_markers(active, snapshot) is None
     # The gate stops reading at the limit plus one marker.
