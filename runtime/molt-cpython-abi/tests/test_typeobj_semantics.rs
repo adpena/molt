@@ -12,17 +12,11 @@ mod support;
 use molt_cpython_abi::abi_types::{
     Py_False, Py_NotImplementedSentinel, Py_True, PyMemberDef, PyObject, PyTypeObject,
 };
-use molt_cpython_abi::hooks::RuntimeHooks;
 use std::os::raw::c_int;
 use std::ptr;
 use std::sync::Mutex;
 
 // The shared fixture supplies real string/numeric payload and edge ownership.
-fn install() -> support::AbiTestThreadStateTransaction {
-    let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    support::fake_runtime::wire(&mut hooks);
-    support::enter_runtime_class_abi_test(hooks)
-}
 unsafe fn read_str(py: *mut PyObject) -> Vec<u8> {
     let mut length = 0;
     let data =
@@ -323,7 +317,7 @@ unsafe fn assert_member_error(exception: *mut PyObject, message: &str) {
 
 #[test]
 fn member_relative_offset_is_rejected_before_other_admission() {
-    let _abi_test = install_member_protocol();
+    let _abi_test = install();
     unsafe {
         for minor in [12, 13, 14] {
             MEMBER_TARGET.with(|target| target.set(minor));
@@ -381,7 +375,7 @@ fn member_relative_offset_is_rejected_before_other_admission() {
 
 #[test]
 fn member_inline_string_reads_storage_and_preserves_readonly_precedence() {
-    let _abi_test = install_member_protocol();
+    let _abi_test = install();
     unsafe {
         for minor in [12, 13, 14] {
             MEMBER_TARGET.with(|target| target.set(minor));
@@ -458,7 +452,7 @@ fn member_inline_string_reads_storage_and_preserves_readonly_precedence() {
 
 #[test]
 fn member_missing_object_and_unknown_type_use_pinned_diagnostics() {
-    let _abi_test = install_member_protocol();
+    let _abi_test = install();
     #[repr(C)]
     struct Record {
         base: PyObject,
@@ -597,9 +591,12 @@ unsafe extern "C" fn member_result_finalizer(_object: *mut PyObject) {
     };
 }
 
-fn install_member_protocol() -> support::AbiTestThreadStateTransaction {
+fn install() -> support::AbiTestThreadStateTransaction {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
+    // Structured UnicodeDecodeError owns the offending bytes as well as text.
+    hooks.alloc_bytes = support::fake_runtime::alloc_bytes;
+    hooks.bytes_data = support::fake_runtime::bytes_data;
     hooks.target_python_minor = member_target_minor;
     hooks.import_module = support::warnings::import_module;
     let transaction = support::enter_runtime_class_abi_test(hooks);
@@ -665,7 +662,7 @@ fn assert_member_warning(message: &str, expected: [u8; 24]) {
 
 #[test]
 fn member_narrow_boundaries_warn_after_write_including_warning_errors() {
-    let _abi_test = install_member_protocol();
+    let _abi_test = install();
     support::warnings::with_provider(|| unsafe {
         support::warnings::set_observer(Some(observe_member_warning));
         for minor in [12, 13, 14] {
@@ -755,7 +752,7 @@ fn member_narrow_boundaries_warn_after_write_including_warning_errors() {
 
 #[test]
 fn member_unsigned_index_once_full_width_and_c_long_negative_boundary() {
-    let _abi_test = install_member_protocol();
+    let _abi_test = install();
     support::warnings::with_provider(|| unsafe {
         support::warnings::set_observer(Some(observe_member_warning));
         let mut slots: member_abi::PyNumberMethods = std::mem::zeroed();
@@ -846,7 +843,7 @@ fn member_unsigned_index_once_full_width_and_c_long_negative_boundary() {
 
 #[test]
 fn member_converter_errors_preserve_identity_and_versioned_write_order() {
-    let _abi_test = install_member_protocol();
+    let _abi_test = install();
     support::warnings::with_provider(|| unsafe {
         let mut slots: member_abi::PyNumberMethods = std::mem::zeroed();
         slots.nb_index = member_index as *const () as *mut c_void;
@@ -929,7 +926,7 @@ fn member_converter_errors_preserve_identity_and_versioned_write_order() {
 
 #[test]
 fn member_wide_signed_boundaries_and_legitimate_minus_one() {
-    let _abi_test = install_member_protocol();
+    let _abi_test = install();
     support::warnings::with_provider(|| unsafe {
         for minor in [12, 13, 14] {
             MEMBER_TARGET.with(|value| value.set(minor));
@@ -986,7 +983,7 @@ fn member_wide_signed_boundaries_and_legitimate_minus_one() {
 
 #[test]
 fn member_index_subtype_warning_precedes_release_write_and_negative_warning() {
-    let _abi_test = install_member_protocol();
+    let _abi_test = install();
     support::warnings::with_provider(|| unsafe {
         support::warnings::set_observer(Some(observe_member_warning));
         let mut slots: member_abi::PyNumberMethods = std::mem::zeroed();
@@ -1222,11 +1219,15 @@ fn heap_names_use_distinct_live_unicode_fields() {
         refcount::Py_DECREF(name);
         refcount::Py_DECREF(qualified);
         refcount::Py_DECREF(heap.ht_name);
-        let raw_name = [0xed, 0xa0, 0x80];
         let surrogate = 0xd800_u16;
         heap.ht_name = strings::PyUnicode_FromKindAndData(2, (&raw const surrogate).cast(), 1);
         let renamed = typeobj::PyType_GetName(tp);
-        assert_eq!(read_str(renamed), raw_name);
+        assert_eq!(renamed, heap.ht_name);
+        assert_eq!(strings::PyUnicode_GetLength(renamed), 1);
+        assert_eq!(
+            strings::PyUnicode_ReadChar(renamed, 0),
+            u32::from(surrogate)
+        );
         refcount::Py_DECREF(renamed);
         // Release the allocated heap type and all owned roots through its
         // clear/deallocation slots, not raw storage.

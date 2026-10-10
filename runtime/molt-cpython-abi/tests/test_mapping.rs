@@ -5,30 +5,27 @@
 mod support;
 
 use std::ptr;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-use molt_lang_obj_model::MoltObject;
-
+// Every test in this binary uses one process-owned hook profile. Lists have
+// the shared ownership-bearing fixture storage; dictionaries fail closed.
 fn init() -> support::AbiTestThreadStateTransaction {
-    support::enter_abi_test(support::stub_runtime_hooks())
+    let mut hooks = support::stub_runtime_hooks();
+    support::fake_runtime::wire_sequences(&mut hooks);
+    hooks.alloc_dict = molt_cpython_abi::hooks::STUB_HOOKS.alloc_dict;
+    hooks.dict_op = molt_cpython_abi::hooks::STUB_HOOKS.dict_op;
+    support::enter_runtime_class_abi_test(hooks)
 }
 
-// A hook table whose `alloc_list` SUCCEEDS (so PyList_New returns a non-null
-// empty list) while `dict_op` stays stubbed (returns 0). This makes the fail-open
-// placeholder (`PyList_New(0)`) observably DIFFERENT from the real routing
-// (`PyDict_Items` -> dict_op -> fail closed NULL): the mutation-proof for the
-// Items burndown depends on that difference.
-static LIST_HANDLE: AtomicU64 = AtomicU64::new(0x6100_0000);
-
-unsafe extern "C" fn fake_alloc_list() -> u64 {
-    let address = LIST_HANDLE.fetch_add(0x10, Ordering::Relaxed) as usize;
-    MoltObject::from_ptr(ptr::with_exposed_provenance_mut(address)).bits()
-}
-
-fn init_with_working_list_alloc() -> support::AbiTestThreadStateTransaction {
-    let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.alloc_list = fake_alloc_list;
-    support::enter_abi_test(hooks)
+fn assert_empty_list_allocation_works() {
+    unsafe {
+        let list = molt_cpython_abi::api::sequences::PyList_New(0);
+        assert!(
+            !list.is_null(),
+            "the empty-list placeholder must be distinguishable"
+        );
+        assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
+        assert_eq!(molt_cpython_abi::api::sequences::PyList_Size(list), 0);
+        molt_cpython_abi::api::refcount::Py_DECREF(list);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -37,7 +34,7 @@ fn init_with_working_list_alloc() -> support::AbiTestThreadStateTransaction {
 
 #[test]
 fn test_dict_new_fails_closed_on_alloc_failure() {
-    // F4 teeth: with stub hooks, alloc_dict returns 0 (allocation failure).
+    // F4 teeth: with the selected hooks, alloc_dict returns 0 (allocation failure).
     // PyDict_New MUST fail closed with NULL + a set MemoryError, NOT a non-NULL
     // Py_None placeholder that defeats the caller's `if (dict == NULL)` guard.
     let _abi_test = init();
@@ -56,11 +53,9 @@ fn test_dict_new_fails_closed_on_alloc_failure() {
 
 #[test]
 fn test_dict_copy_keys_values_fail_closed_without_runtime() {
-    // F6 teeth: PyDict_Copy/Keys/Values route through the runtime dict
-    // authority. They must NOT ignore their argument and return an empty
-    // dict/list (silent data loss). Without runtime hooks the dict_op hook
-    // returns 0, so each must fail closed with NULL + an exception, never a
-    // fabricated empty result.
+    // NULL input must fail closed with NULL + an exception, never a
+    // fabricated empty dict/list. Valid-mapping dispatch is exercised by the
+    // dictionary protocol fixtures; this test owns the NULL-input boundary.
     let _abi_test = init();
     type DictOpFn = unsafe extern "C" fn(
         *mut molt_cpython_abi::abi_types::PyObject,
@@ -88,17 +83,17 @@ fn test_dict_copy_keys_values_fail_closed_without_runtime() {
 
 #[test]
 fn test_dict_items_fails_closed_without_runtime() {
-    // F6 teeth (fail-open burndown): PyDict_Items routes through the runtime dict
-    // authority (DictOp::Items). The dict_op hook returns 0 here, so it must fail
-    // closed with NULL + an exception, never a fabricated empty list.
+    // PyDict_Items(NULL) must fail closed with NULL + an exception, never a
+    // fabricated empty list. This proves NULL handling, not valid-dict dispatch.
     //
-    // The hook table gives alloc_list a WORKING allocator on purpose: it makes
+    // The hook table gives alloc_list_presized a WORKING allocator on purpose: it makes
     // this test distinguish the real routing from the old `PyList_New(0)`
     // placeholder. If PyDict_Items regressed to returning an empty list, that list
     // would now allocate to a NON-null value and this assertion would fail —
     // giving the burndown real mutation teeth (a fail-closed-under-stubs-only test
     // cannot tell the two apart, since PyList_New(0) itself fails closed there).
-    let _abi_test = init_with_working_list_alloc();
+    let _abi_test = init();
+    assert_empty_list_allocation_works();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let result = unsafe { molt_cpython_abi::api::mapping::PyDict_Items(ptr::null_mut()) };
     assert!(
@@ -115,11 +110,12 @@ fn test_dict_items_fails_closed_without_runtime() {
 #[test]
 fn test_mapping_items_fails_closed_without_runtime() {
     // PyMapping_Items delegated to an empty-list placeholder before the burndown
-    // (silent data loss). It now routes through PyDict_Items -> runtime authority
-    // and must fail closed with NULL + an exception. alloc_list works here so a
+    // (silent data loss). NULL input must fail closed with an exception.
+    // The real list fixture works here, so a
     // regression to the PyList_New(0) placeholder would return non-null and be
     // caught (mutation teeth) — see test_dict_items_fails_closed_without_runtime.
-    let _abi_test = init_with_working_list_alloc();
+    let _abi_test = init();
+    assert_empty_list_allocation_works();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let result =
         unsafe { molt_cpython_abi::api::abstract_mapping::PyMapping_Items(ptr::null_mut()) };
@@ -370,11 +366,11 @@ fn test_dict_check_on_int_returns_zero() {
 // PyDict_Copy
 // ---------------------------------------------------------------------------
 
-// PyDict_Copy / PyDict_Keys / PyDict_Values fail-closed behavior without a
-// registered runtime is proved by `test_dict_copy_keys_values_fail_closed_without_runtime`
+// PyDict_Copy / PyDict_Keys / PyDict_Values fail-closed behavior without dictionary
+// capabilities is proved by `test_dict_copy_keys_values_fail_closed_without_runtime`
 // above. Their real (non-empty) results require the runtime dict authority and
 // are exercised by the runtime-side / differential integration tests, not by
-// these stub-only unit tests.
+// these dictionary-failure fixture tests.
 //
 // PyDict_Next / PyDict_Merge real-iteration teeth (which need a fake dict model
 // whose `dict_next`/`dict_mutate` hooks conflict with this file's first-wins hook

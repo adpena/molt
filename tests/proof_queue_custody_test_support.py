@@ -50,7 +50,7 @@ from tools.proof_queue_pkg import (
 
 
 class _VerifiedSupervisorRefusal(Exception):
-    """The unavailable branch has proved its complete prelaunch contract."""
+    """The ineligible branch has proved its complete prelaunch contract."""
 
 
 def assert_supervisor_refusal(
@@ -67,14 +67,21 @@ def assert_supervisor_refusal(
         if envelope["process_closure"]["descendants"] == "forbidden"
         else "declared-tree"
     )
-    with pytest.raises(supervisor_custody.SupervisorCapabilityUnavailable) as refusal:
-        supervisor_custody.decode_supervisor_capability(capability, mode=mode)
+    with pytest.raises(supervisor_custody.SupervisorPrelaunchRefused) as refusal:
+        supervisor_custody.decode_supervisor_capability(
+            capability,
+            mode=mode,
+            context="prelaunch",
+            expected_platform={"win32": "windows", "darwin": "macos"}.get(
+                sys.platform, sys.platform
+            ),
+        )
     assert returncode == 2
     assert record["phase"] == "failed"
     assert record["command_started"] is False
-    assert record["error"] == f"SupervisorCapabilityUnavailable: {refusal.value}"
-    assert capability["available"] is False
-    assert isinstance(capability["reason"], str) and capability["reason"]
+    assert record["error"] == f"SupervisorPrelaunchRefused: {refusal.value}"
+    assert capability["admission"]["state"] == "ineligible"
+    assert capability["admission"]["reason"]
     if queue_terminal:
         context = record["receipt_context"]
         assert context["schema"] == state.UNATTESTED_RECEIPT_CONTEXT_SCHEMA
@@ -162,7 +169,7 @@ def proof_queue_execution_capability(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def capability_aware_proof_execution(test: Callable) -> Callable:
-    """Preserve the original body on available hosts; prove refusals otherwise."""
+    """Preserve the original body on eligible hosts; prove refusals otherwise."""
 
     @wraps(test)
     def run_test(*args: object, **kwargs: object) -> None:
@@ -264,6 +271,26 @@ def synthetic_receipt_custody(
             "complete": True,
             "state": "COMPLETE",
             "root_exit_code": 0,
+            # This is the explicitly faked native verifier boundary, not a
+            # process observation or an assertion that the synthetic log replays.
+            "capability": {
+                "schema": supervisor_custody.SUPERVISOR_CAPABILITY_SCHEMA,
+                "platform": {"win32": "windows", "darwin": "macos"}.get(
+                    sys.platform, sys.platform
+                ),
+                "mode": policy["mode"],
+                "backend": "synthetic-test-backend",
+                "admission": {
+                    "state": "admitted",
+                    "root_stable_process_id": "synthetic:test-root",
+                    "root_create_sequence": 1,
+                    "initial_image_sequence": 2,
+                },
+                "pre_entry_exec_authority": True,
+                "pre_entry_process_create_authority": True,
+                "recursive_descendant_authority": True,
+                "required_environment": required_environment,
+            },
             "nonce_sha256": hashlib.sha256(policy["nonce"].encode()).hexdigest(),
             "event_log": {
                 "schema": supervisor_custody.SUPERVISOR_EVENT_LOG_SCHEMA,
@@ -296,21 +323,7 @@ def synthetic_receipt_custody(
             policy_bytes,
             receipt_bytes,
         )
-        policy = json.loads(policy_bytes)
-        capability = {
-            "schema": supervisor_custody.SUPERVISOR_CAPABILITY_SCHEMA,
-            "platform": {"win32": "windows", "darwin": "macos"}.get(
-                sys.platform, sys.platform
-            ),
-            "mode": policy["mode"],
-            "backend": "synthetic-test-backend",
-            "available": True,
-            "pre_entry_exec_authority": True,
-            "pre_entry_process_create_authority": True,
-            "recursive_descendant_authority": True,
-            "reason": None,
-            "required_environment": required_environment,
-        }
+        capability = json.loads(receipt_bytes)["capability"]
         return subprocess.CompletedProcess(
             command,
             0 if unchanged else 1,
@@ -321,6 +334,8 @@ def synthetic_receipt_custody(
                     "receipt_bytes": len(receipt_bytes),
                     "policy_input_sha256": hashlib.sha256(policy_bytes).hexdigest(),
                     "policy_input_bytes": len(policy_bytes),
+                    "native_custody_valid": True,
+                    "journal_coverage_valid": True,
                 }
             ),
             "",
@@ -366,7 +381,7 @@ def publish_receipt_custody(
         command,
     )
     policy = {
-        "schema": "molt.proof-process-closure.v2",
+        "schema": supervisor_custody.SUPERVISOR_POLICY_SCHEMA,
         "nonce": nonce,
         "mode": "leaf" if descendants == "forbidden" else "declared-tree",
         "cwd": str(directory.resolve()),
@@ -380,7 +395,7 @@ def publish_receipt_custody(
     }
     policy_path = directory / "synthetic-supervisor-policy.json"
     receipt_path = directory / "synthetic-supervisor-receipt.json"
-    supervisor_custody._atomic_json(policy_path, policy)
+    supervisor_custody.publish_supervisor_policy(policy_path, policy)
     execute_supervisor(
         [
             str(binary),
@@ -572,6 +587,34 @@ def assert_execution_context_rejects_substitutions(
         execution_nonce="a" * 64,
         returncode=0,
     )
+    original_verifier = runner._COMMANDS.run
+    for substituted_field in ("receipt_sha256", "receipt_bytes"):
+        # Preserve the real/issued verifier invocation and valid capability;
+        # replace only the byte witness at that external response boundary.
+        def mismatched_verifier(command, **kwargs):
+            result = original_verifier(command, **kwargs)
+            assert result.returncode == 0, result.stderr
+            response = json.loads(result.stdout)
+            response[substituted_field] = (
+                "0" * 64
+                if substituted_field == "receipt_sha256"
+                else int(response["receipt_bytes"]) + 1
+            )
+            return subprocess.CompletedProcess(
+                result.args, result.returncode, json.dumps(response), result.stderr
+            )
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(runner, "_COMMANDS", SimpleNamespace(run=mismatched_verifier))
+            with pytest.raises(ValueError, match="verified different receipt bytes"):
+                runner._validated_execution_context(
+                    context,
+                    execution_path=execution_path,
+                    envelope=envelope,
+                    run_id="run-one",
+                    execution_nonce="a" * 64,
+                    returncode=0,
+                )
     supervisor_record = v3["supervisor"]
     original_required_environment = supervisor_record["required_environment"]
     supervisor_record["required_environment"] = {
@@ -623,6 +666,29 @@ def assert_execution_context_rejects_substitutions(
     original_receipt_bytes = receipt_path.read_bytes()
     original_policy_bytes = supervisor_policy_path.read_bytes()
     receipt = supervisor_record["receipt"]
+    original_admission = receipt["capability"]["admission"]
+    receipt["capability"]["admission"] = {"state": "eligible"}
+    with pytest.raises(ValueError, match="no complete native process supervisor"):
+        runner._validated_execution_context(
+            context,
+            execution_path=execution_path,
+            envelope=envelope,
+            run_id="run-one",
+            execution_nonce="a" * 64,
+            returncode=0,
+        )
+    receipt["capability"]["admission"] = original_admission
+    receipt["state"], receipt["complete"] = "INCOMPLETE", False
+    with pytest.raises(ValueError, match="no complete native process supervisor"):
+        runner._validated_execution_context(
+            context,
+            execution_path=execution_path,
+            envelope=envelope,
+            run_id="run-one",
+            execution_nonce="a" * 64,
+            returncode=0,
+        )
+    receipt["state"], receipt["complete"] = "COMPLETE", True
     original_exit = receipt["root_exit_code"]
     receipt["root_exit_code"] = 73
     supervisor_custody._atomic_json(receipt_path, receipt)
@@ -643,7 +709,9 @@ def assert_execution_context_rejects_substitutions(
     custody_cas.atomic_write_bytes(receipt_path, original_receipt_bytes)
     supervisor_record["receipt_file"] = command_identity._file_identity(receipt_path)
     supervisor_policy["environment"]["MOLT_TEST_VALUE"] = "substituted"
-    supervisor_custody._atomic_json(supervisor_policy_path, supervisor_policy)
+    supervisor_custody.publish_supervisor_policy(
+        supervisor_policy_path, supervisor_policy
+    )
     v3["supervisor"]["policy"] = command_identity._file_identity(supervisor_policy_path)
     with pytest.raises(ValueError, match="policy binding is invalid"):
         runner._validated_execution_context(

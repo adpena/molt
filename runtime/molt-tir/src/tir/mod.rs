@@ -12,7 +12,7 @@ pub use molt_ir::tir::{
     types, value_range, values, verify,
 };
 pub use molt_passes::tir::{
-    analysis, bolt, cache, call_facts, call_graph, drop_phase, exception_regions, fact_graph,
+    analysis, cache, call_facts, call_graph, drop_phase, exception_regions, fact_graph,
     lower_from_simple, lower_to_simple, module_phase, parallel, pass_delta, pass_manager, passes,
     simple_value_names, type_refine,
 };

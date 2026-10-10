@@ -441,3 +441,14 @@ INVARIANT B — molt_main / module-store TEMP RELEASE. 'A module-scope owned tem
 INVARIANT C — CYCLE COLLECTION (hard parity gap). Implement a CPython-semantics trial-deletion collector behind tp_traverse/tp_clear (currently inert), threshold-gated so the acyclic Perceus path is untaxed. Separate dimension; do not block A/B on it.
 
 INVARIANT D — make 'no leak' the DEFAULT gate. MOLT_ASSERT_NO_LEAK must mean actual destruction (council ruling) and the post-teardown exact-survivor gauge should run in CI on a corpus spanning ALL patterns below, so a bailed/missed drop fails a test instead of hiding behind the old 200K ceiling.
+
+### Pointer representation reconciliation (2026-10-10)
+
+The historical risk assessments above correctly identified lossy pointer
+reconstruction, but their proposed <=47-bit arena constraint is not the adopted
+contract. An AArch64 user stack can set bit 47 within an unsigned 48-bit address.
+The canonical representation preserves that bit, zero-extends the payload,
+rejects wider addresses before boxing in every profile, and validates target
+pointer width on decode. Runtime and generated-code ABI projections must migrate
+together. This does not establish support for addresses wider than 48 bits or
+replace collector lifetime/ownership verification.

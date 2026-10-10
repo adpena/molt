@@ -364,10 +364,13 @@ def _named_lane_spec(
 ) -> dict[str, object]:
     del repo_root
     lane = proof_plan.ProofPlan.load().named_lane(lane_id)
+    command = list(lane.argv)
+    if command[0] == "cargo":
+        command = policy._canonical_cargo_proof_command(command[1:])
     return {
         "logical_id": lane_id.replace(".", "-"),
         "reason": str(lane.data["description"]),
-        "command": list(lane.argv),
+        "command": command,
         "cargo_output_lifetime": command_admission.parse_cargo_output_lifetime(
             lane.data.get("cargo_output_lifetime", "retain")
         ),

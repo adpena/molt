@@ -289,15 +289,17 @@ def build_profiling_binary(
 
     build_env = _perfscore_build_env(spec, profile)
     build_env[MOLT_KEEP_SYMBOLS_ENV] = "1"  # the symbolication hatch
+    from perf_scoreboard_build_profiles import profile_selection
+
+    selection = profile_selection(spec, profile)
     extra_args = [
         "--python-version",
         target_python_version,
-        *spec.build_args(),
+        "--backend",
+        selection.codegen_backend,
         *bench_suites.molt_args_for_benchmark(script_path),
     ]
-    from perf_scoreboard_build_profiles import profile_selection
-
-    build_flag = profile_selection(spec, profile).guest_profile
+    build_flag = selection.guest_profile
     try:
         binary = bench.prepare_molt_binary(
             str(looped_path),

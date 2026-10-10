@@ -402,18 +402,14 @@ pub(crate) fn box_bool_value(
 }
 
 #[cfg(feature = "native-backend")]
-pub(crate) fn unbox_ptr_value(
-    builder: &mut FunctionBuilder,
-    val: Value,
-    nbc: &NanBoxConsts,
-) -> Value {
-    let mask = builder.ins().iconst(types::I64, nbc.pointer_mask);
-    let masked = builder.ins().band(val, mask);
-    let shift = builder.ins().iconst(types::I64, nbc.shift_16);
-    let shifted = builder.ins().ishl(masked, shift);
-    builder.ins().sshr(shifted, shift)
+pub(crate) fn unbox_ptr_value(builder: &mut FunctionBuilder, val: Value) -> Value {
+    builder
+        .ins()
+        .band_imm(val, molt_codegen_abi::POINTER_MASK as i64)
 }
 
+/// Rebox an already-admitted runtime self pointer. Allocation/first publication
+/// checks the unsigned 48-bit address; coroutine entries only recover that owner.
 #[cfg(feature = "native-backend")]
 pub(crate) fn box_ptr_value(
     builder: &mut FunctionBuilder,
