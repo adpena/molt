@@ -660,9 +660,13 @@ def test_uncaptured_environment_image_cannot_borrow_a_prepared_image_identity(
             }
         ],
     }
-    assert server._decide_child({"requested": str(captured)})["admitted"] is True
-    rejected = server._decide_child({"requested": str(copied)})
+    # The Node hook launches the broker's selection, so an absolute selection
+    # is the image on every host.
+    admitted = server._decide_child({"requested": str(captured)}, "node")
+    assert admitted["admitted"] is True
+    rejected = server._decide_child({"requested": str(copied)}, "node")
     assert rejected["admitted"] is False
     assert rejected["reason"] == "outside-declared-toolchain-closure"
     captured.write_bytes(b"changed-image")
-    assert server._decide_child({"requested": str(captured)})["admitted"] is False
+    changed = server._decide_child({"requested": str(captured)}, "node")
+    assert changed["admitted"] is False

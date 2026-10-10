@@ -21,9 +21,22 @@ before the proof child starts; the queue does not substitute a PATH proxy.
 Executable lookup uses captured environment values and the command working
 directory, including relative PATH entries and explicit `./tool` paths. Windows
 suffix candidates follow CPython `shutil.which` with executable access required.
-Python child audit custody preserves CPython's distinction between inherited,
-missing, and empty PATH. Generator dependencies resolve `rustfmt` through PATH;
-the Cargo-specific `RUSTFMT` hook remains a separate captured build-tool input.
+The queue then runs the selected absolute path, so the selection is the image.
+Generator dependencies resolve `rustfmt` through PATH; the Cargo-specific
+`RUSTFMT` hook remains a separate captured build-tool input.
+
+A child launch from inside a proof follows a different rule, because the hook
+admits or refuses a launch but does not choose its image. The broker predicts
+the image the launch runs. On POSIX, CPython searches the child's PATH from the
+child's cwd, and Python child custody keeps CPython's distinction between
+inherited, missing and empty PATH. On Windows, `CreateProcessW` resolves the
+image in the calling process: its image directory, its current directory, the
+system directories, then its own PATH, appending only `.exe`. The child's `env`
+and `cwd` take no part. `tools/proof_queue_pkg/windows_createprocess.py` owns
+that model. Where Microsoft's documentation contradicts itself or is silent, the
+broker admits an image only when every reading runs it, and refuses otherwise.
+The Node hook launches the broker's selection itself; on Windows that selection
+must name a file with an extension, or libuv would append `.com` or `.exe`.
 
 Rust tool identity resolves the selected physical component before reuse. A change
 to a rustup override invalidates reuse even when proxy bytes are unchanged. Explicit
@@ -976,8 +989,12 @@ probe: lexical parent traversal, verbatim trailing-dot/space components,
 non-DOS/non-UNC or malformed verbatim namespaces, and ambiguous or unavailable
 entry spelling. Admitted Windows extended-prefix projections must retain the
 original entry. These are proof-custody capability limits; ordinary compiler
-selection preserves its selected path and traversal. Optional driver spelling
-normalization cannot turn a valid product path into a proof-admission failure.
+selection preserves its selected path and traversal. Windows custody looks up
+real entries, so it cannot spell an absent file; POSIX custody is lexical. An
+owner that refuses an absent file takes it through
+`process_image_capture.custody_file` and gives the same typed refusal on every
+host. Optional driver spelling normalization cannot turn a valid product path
+into a proof-admission failure.
 Native Windows execution and lookup cost require their own qualification.
 
 Cargo build-script header discovery is independent of Rust linker selection.

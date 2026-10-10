@@ -232,6 +232,7 @@
     "tools/proof_queue_pkg/python_child_custody.py",
     "tools/proof_queue_pkg/python_custody_bootstrap.py",
     "tools/proof_queue_pkg/target_derived_toolchains.py",
+    "tools/proof_queue_pkg/windows_createprocess.py",
     "src/molt/source_extension_link_inputs.py",
     "src/molt/cli/source_extension_invocation.py",
     "src/molt/cli/source_extension_compiler_inputs.py",
@@ -339,7 +340,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "f17a7b71fe0de349f3aaa5a4b5436a315b85525f735e2df28826b41d740b7b17",
+  "authority_sha256": "e4ea305c5f4377c0fcae0cdb2c8ed662ccc56e5572a6f235c7f112458c370e15",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
