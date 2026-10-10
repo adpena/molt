@@ -351,7 +351,10 @@ def test_toolchain_capture_compact_receipt_allocation_benchmark(tmp_path: Path) 
     assert measured["compact_size"] < measured["legacy_size"] // 100
     assert measured["compact_size"] < 64 * 1024
     assert reference["compressed_bytes"] < reference["uncompressed_bytes"] // 10
-    assert measured["compact_peak"] < measured["legacy_peak"]
+    # Publishing streams its digest check, so the compact path peaks near one
+    # encoding of the capture: 0.35-0.38 of the legacy peak measured on
+    # 2026-10-09, against 0.89 when publication re-parsed the blob (HF-51).
+    assert measured["compact_peak"] < measured["legacy_peak"] // 2
     captured = toolchain_capture.load_capture(reference, cas_root=tmp_path / "cas")
     assert captured["toolchains"] == identity
     assert (
