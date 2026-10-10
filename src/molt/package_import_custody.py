@@ -75,6 +75,35 @@ def _is_namespace_package(module: ModuleType) -> bool:
     return loader is None or isinstance(loader, importlib.machinery.NamespaceLoader)
 
 
+def _validate_loaded_root(
+    package: str,
+    expected: Path,
+    *,
+    reanchor_namespaces: bool,
+) -> list[tuple[str, ModuleType | None, Path]]:
+    loaded_root = sys.modules.get(package)
+    if loaded_root is None:
+        if reanchor_namespaces and not (expected / "__init__.py").is_file():
+            return [(package, None, expected)]
+        return []
+    origins = _executable_origins(loaded_root)
+    if origins:
+        _require_selected_locations(
+            package,
+            expected,
+            origins + _search_locations(loaded_root),
+        )
+        return []
+    if not _is_namespace_package(loaded_root):
+        _custody_mismatch(package, expected, _search_locations(loaded_root))
+    if (expected / "__init__.py").is_file():
+        _custody_mismatch(package, expected, _search_locations(loaded_root))
+    if reanchor_namespaces:
+        return [(package, loaded_root, expected)]
+    _require_selected_locations(package, expected, _search_locations(loaded_root))
+    return []
+
+
 def _validate_loaded_package(
     package: str,
     expected_root: Path,
@@ -82,7 +111,11 @@ def _validate_loaded_package(
     reanchor_namespaces: bool,
 ) -> tuple[tuple[str, ModuleType | None, Path], ...]:
     expected = expected_root.resolve()
-    updates: list[tuple[str, ModuleType | None, Path]] = []
+    # The root selects the package, so a foreign root is the error to report,
+    # ahead of any descendant loaded through it.
+    updates = _validate_loaded_root(
+        package, expected, reanchor_namespaces=reanchor_namespaces
+    )
     for name, loaded in tuple(sys.modules.items()):
         if not name.startswith(f"{package}."):
             continue
@@ -111,28 +144,6 @@ def _validate_loaded_package(
             expected,
             origins + _search_locations(loaded),
         )
-
-    loaded_root = sys.modules.get(package)
-    if loaded_root is None:
-        if reanchor_namespaces and not (expected / "__init__.py").is_file():
-            updates.append((package, None, expected))
-        return tuple(updates)
-    origins = _executable_origins(loaded_root)
-    if origins:
-        _require_selected_locations(
-            package,
-            expected,
-            origins + _search_locations(loaded_root),
-        )
-        return tuple(updates)
-    if not _is_namespace_package(loaded_root):
-        _custody_mismatch(package, expected, _search_locations(loaded_root))
-    if (expected / "__init__.py").is_file():
-        _custody_mismatch(package, expected, _search_locations(loaded_root))
-    if reanchor_namespaces:
-        updates.append((package, loaded_root, expected))
-    else:
-        _require_selected_locations(package, expected, _search_locations(loaded_root))
     return tuple(updates)
 
 

@@ -1555,6 +1555,11 @@ def test_standalone_probe_refuses_foreign_package_before_custody_imports(
     if foreign_kind == "root":
         root.__file__ = str(foreign / "__init__.py")
         root.__path__ = [str(foreign)]
+        # A descendant loaded through the foreign root (CI's custody hook can
+        # import one mid-test) must not hide the root as the reported cause.
+        stray = ModuleType("molt.stray")
+        stray.__file__ = str(selected.parent.parent / "elsewhere" / "stray.py")
+        monkeypatch.setitem(sys.modules, "molt.stray", stray)
     elif foreign_kind == "descendant":
         poisoned = ModuleType("molt.foreign")
         poisoned.__file__ = str(foreign / "foreign.py")
