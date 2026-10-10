@@ -153,18 +153,7 @@ def _tk_cnfmerge(cnfs, _fallback=None):
             merged.update(cnf)
     return merged
 
-def _tk_normalize_option(name):
-    text = str(name)
-    if text.endswith("_"):
-        text = text[:-1]
-    text = text.replace("_", "-")
-    return text if text.startswith("-") else f"-{text}"
-
-def _tk_normalize_delay_ms(value):
-    return int(value)
-
 builtins._molt_intrinsics = {"molt_capabilities_has": lambda _name=None: True,
-    "molt_stdlib_probe": lambda: True,
     "molt_fnmatch": lambda name, pat: _host_fnmatch.fnmatch(name, pat),
     "molt_fnmatchcase": lambda name, pat: _host_fnmatch.fnmatchcase(name, pat),
     "molt_fnmatch_filter": lambda names, pat, _casefold=False: _host_fnmatch.filter(list(names), pat),
@@ -213,8 +202,6 @@ builtins._molt_intrinsics = {"molt_capabilities_has": lambda _name=None: True,
     "molt_tk_splitdict": _tk_splitdict,
     "molt_tk_flatten_args": _tk_flatten_args,
     "molt_tk_cnfmerge": _tk_cnfmerge,
-    "molt_tk_normalize_option": _tk_normalize_option,
-    "molt_tk_normalize_delay_ms": _tk_normalize_delay_ms,
     "molt_tk_hex_to_rgb": lambda _color=None: (0, 0, 0),
     "molt_tk_commondialog_show": lambda _app=None, _master=None, _command=None, _options=None: _runtime_unavailable("molt_tk_commondialog_show"),
     "molt_tk_messagebox_show": lambda _app=None, _master=None, _options=None: _runtime_unavailable("molt_tk_messagebox_show"),
@@ -863,31 +850,6 @@ def _tk_cnfmerge(cnfs, _fallback=None):
     return merged
 
 
-def _tk_normalize_option(name):
-    text = str(name)
-    if text.endswith("_"):
-        text = text[:-1]
-    text = text.replace("_", "-")
-    return text if text.startswith("-") else f"-{text}"
-
-
-def _tk_normalize_delay_ms(value):
-    return int(value)
-
-
-def _tk_convert_stringval(value):
-    text = str(value)
-    lowered = text.lower()
-    if lowered == "true":
-        return True
-    if lowered == "false":
-        return False
-    try:
-        return int(text)
-    except ValueError:
-        return text
-
-
 def _tk_hex_to_rgb(color):
     text = str(color).lstrip("#")
     if len(text) == 3:
@@ -898,7 +860,6 @@ def _tk_hex_to_rgb(color):
 
 
 builtins._molt_intrinsics = {
-    "molt_stdlib_probe": lambda: True,
     "molt_fnmatch": lambda name, pat: _host_fnmatch.fnmatch(name, pat),
     "molt_fnmatchcase": lambda name, pat: _host_fnmatch.fnmatchcase(name, pat),
     "molt_fnmatch_filter": lambda names, pat, _casefold=False: _host_fnmatch.filter(list(names), pat),
@@ -948,9 +909,6 @@ builtins._molt_intrinsics = {
     "molt_tk_splitdict": _tk_splitdict,
     "molt_tk_flatten_args": _tk_flatten_args,
     "molt_tk_cnfmerge": _tk_cnfmerge,
-    "molt_tk_normalize_option": _tk_normalize_option,
-    "molt_tk_normalize_delay_ms": _tk_normalize_delay_ms,
-    "molt_tk_convert_stringval": _tk_convert_stringval,
     "molt_tk_hex_to_rgb": _tk_hex_to_rgb,
     "molt_tk_commondialog_show": _tk_commondialog_show,
     "molt_tk_messagebox_show": _tk_messagebox_show,
@@ -2157,22 +2115,6 @@ def _tk_event_subst_parse(_widget_path, event_args):
     return tuple(event_args)
 
 
-def _tk_convert_stringval(value):
-    if isinstance(value, (int, float)) or not isinstance(value, str):
-        return value
-    text = value.strip()
-    if not text:
-        return value
-    try:
-        return int(text, 10)
-    except ValueError:
-        pass
-    try:
-        return float(text)
-    except ValueError:
-        return value
-
-
 def _tk_hex_to_rgb(color):
     text = str(color).lstrip("#")
     if len(text) != 6:
@@ -2225,20 +2167,7 @@ def _tk_cnfmerge(cnfs, _fallback=None):
     return merged
 
 
-def _tk_normalize_option(name):
-    text = str(name)
-    if text.endswith("_"):
-        text = text[:-1]
-    text = text.replace("_", "-")
-    return text if text.startswith("-") else f"-{text}"
-
-
-def _tk_normalize_delay_ms(value):
-    return int(value)
-
-
 builtins._molt_intrinsics = {
-    "molt_stdlib_probe": lambda: True,
     "molt_fnmatch": lambda name, pat: _host_fnmatch.fnmatch(name, pat),
     "molt_fnmatchcase": lambda name, pat: _host_fnmatch.fnmatchcase(name, pat),
     "molt_fnmatch_filter": lambda names, pat, _casefold=False: _host_fnmatch.filter(list(names), pat),
@@ -2288,9 +2217,6 @@ builtins._molt_intrinsics = {
     "molt_tk_splitdict": _tk_splitdict,
     "molt_tk_flatten_args": _tk_flatten_args,
     "molt_tk_cnfmerge": _tk_cnfmerge,
-    "molt_tk_normalize_option": _tk_normalize_option,
-    "molt_tk_normalize_delay_ms": _tk_normalize_delay_ms,
-    "molt_tk_convert_stringval": _tk_convert_stringval,
     "molt_tk_hex_to_rgb": _tk_hex_to_rgb,
     "molt_tk_commondialog_show": lambda _app=None, _master=None, _command=None, _options=None: "",
     "molt_tk_messagebox_show": lambda _app=None, _master=None, _options=None: "",

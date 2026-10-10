@@ -7,7 +7,7 @@
     "molt-backend-rust": 1,
     "molt-backend-wasm": 1,
     "molt-cext-discovery": 0,
-    "molt-codegen-abi": 30,
+    "molt-codegen-abi": 29,
     "molt-db": 3,
     "molt-embed": 0,
     "molt-gpu": 3,
@@ -15,7 +15,7 @@
     "molt-harness": 0,
     "molt-ir": 7,
     "molt-lang-cpython-abi": 2,
-    "molt-lang-obj-model": 25,
+    "molt-lang-obj-model": 24,
     "molt-launcher": 0,
     "molt-passes": 6,
     "molt-runtime": 1,
@@ -24,7 +24,7 @@
     "molt-runtime-collections": 2,
     "molt-runtime-compression": 2,
     "molt-runtime-constants": 2,
-    "molt-runtime-core": 23,
+    "molt-runtime-core": 22,
     "molt-runtime-crypto": 2,
     "molt-runtime-diagnostics": 2,
     "molt-runtime-http": 2,
@@ -44,7 +44,6 @@
     "molt-runtime-vfs": 2,
     "molt-runtime-xml": 2,
     "molt-runtime-zoneinfo": 2,
-    "molt-stdlib-difflib": 2,
     "molt-stdlib-graphlib": 2,
     "molt-stdlib-text": 2,
     "molt-tir": 5,
@@ -54,7 +53,7 @@
   },
   "metrics": {
     "crate_layer_backedges": 0.0,
-    "max_crate_blast_radius": 30.0,
+    "max_crate_blast_radius": 29.0,
     "undeclared_crates": 0.0
   }
 }

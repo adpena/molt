@@ -28,8 +28,6 @@ def _load_module(name, path_text):
 
 install_registry({{
     "molt_http_parse_header_pairs": lambda data: [("Host", "example.test")],
-    "molt_http_server_read_request": lambda handler: True,
-    "molt_http_server_compute_close_connection": lambda *args, **kwargs: False,
     "molt_http_server_handle_one_request": lambda handler: False,
     "molt_http_server_send_response": lambda handler, code, message=None: None,
     "molt_http_server_send_response_only": lambda handler, code, message=None: None,

@@ -67,54 +67,6 @@ pub extern "C" fn molt_importlib_metadata_entry_points_payload(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_metadata_entry_points_select_payload(
-    search_paths_bits: u64,
-    module_file_bits: u64,
-    group_bits: u64,
-    name_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision(
-            "importlib.metadata.entry_points_select_payload",
-            "fs.read",
-            AuditArgs::None,
-            allowed,
-        );
-        if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
-        }
-        let search_paths =
-            match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
-                Ok(value) => value,
-                Err(bits) => return bits,
-            };
-        let module_file = match module_file_from_bits(_py, module_file_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let group = match optional_string_arg_from_bits(_py, group_bits, "group") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let name = match optional_string_arg_from_bits(_py, name_bits, "name") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let payload = importlib_metadata_entry_points_select_payload(
-            &search_paths,
-            module_file,
-            group.as_deref(),
-            name.as_deref(),
-        );
-        match alloc_string_triplets_list_bits(_py, &payload) {
-            Some(bits) => bits,
-            None => raise_exception::<_>(_py, "MemoryError", "out of memory"),
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_metadata_entry_points_filter_payload(
     search_paths_bits: u64,
     module_file_bits: u64,

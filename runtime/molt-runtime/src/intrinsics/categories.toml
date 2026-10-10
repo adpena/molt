@@ -76,7 +76,7 @@ prefixes = [
     "print_obj", "print_newline",
     "profile_",
     "gen_locals", "get_awaitable", "iterator_throw", "task_new", "task_register_execution",
-    "stdlib_probe", "import_smoke", "types_bootstrap",
+    "types_bootstrap",
     "abc_bootstrap", "collections_abc_runtime", "builtin_class_lookup",
     "capabilities_",
 ]
@@ -206,9 +206,6 @@ feature = "stdlib_serial"
 [stdlib.uu]
 prefixes = ["uu_codec"]
 feature = "stdlib_serial"
-[stdlib.difflib]
-prefixes = ["difflib_"]
-feature = "stdlib_difflib"
 [stdlib.graphlib]
 prefixes = ["graphlib_"]
 feature = "stdlib_graphlib"
@@ -317,8 +314,6 @@ prefixes = [
     "logging_handler_",
     "logging_stream_handler_",
     "logging_logger_",
-    "logging_manager_",
-    "logging_root_logger",
     "logging_basic_config",
     "logging_shutdown",
     "logging_get_level_name",

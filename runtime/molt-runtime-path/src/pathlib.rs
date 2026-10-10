@@ -1650,9 +1650,3 @@ pub extern "C" fn molt_pathlib_samefile(path_bits: u64, other_bits: u64) -> u64 
         }
     })
 }
-
-/// Return the OS path separator
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_pathlib_sep() -> u64 {
-    molt_runtime_core::with_core_gil!(_py, str_bits(_py, std::path::MAIN_SEPARATOR_STR))
-}

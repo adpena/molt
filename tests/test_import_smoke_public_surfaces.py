@@ -16,7 +16,7 @@ from tests.stdlib_intrinsic_registry import install_registry
 
 
 # No intrinsic at all: none of these modules may require one.
-install_registry({{}}, with_anchors=False)
+install_registry({{}}, with_capabilities=False)
 
 
 def _load_module(name, path_text):

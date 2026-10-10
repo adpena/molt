@@ -389,6 +389,13 @@ rg -n "except .*:\\s*$|pass$" src/molt/stdlib/json/__init__.py
 python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 ```
 
+`stdlib intrinsics lint failed: required intrinsics nothing reads (delete each requirement; an intrinsic must be read to count)`
+```bash
+python3 tools/check_stdlib_intrinsics.py --json-out /tmp/audit.json
+# unread_intrinsic_bindings / discarded_intrinsic_requirements name each site.
+# Delete the requirement; never call an intrinsic only to make a module count.
+```
+
 `stdlib intrinsics lint failed: intrinsic-partial ratchet gate violated` (or `stub ratchet gate violated`)
 ```bash
 python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only

@@ -99,10 +99,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_path_abspath",
             crate::molt_path_abspath as *const (),
         )),
-        "molt_path_resolve" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_path_resolve",
-            crate::molt_path_resolve as *const (),
-        )),
         "molt_path_as_uri" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_path_as_uri",
             crate::molt_path_as_uri as *const (),
@@ -115,21 +111,9 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_path_expandvars",
             crate::molt_path_expandvars as *const (),
         )),
-        "molt_path_expandvars_env" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_path_expandvars_env",
-            crate::molt_path_expandvars_env as *const (),
-        )),
         "molt_path_makedirs" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_path_makedirs",
             crate::molt_path_makedirs as *const (),
-        )),
-        "molt_path_parts" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_path_parts",
-            crate::molt_path_parts as *const (),
-        )),
-        "molt_path_splitroot" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_path_splitroot",
-            crate::molt_path_splitroot as *const (),
         )),
         "molt_path_parents" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_path_parents",
@@ -394,10 +378,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_pathlib_samefile" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_pathlib_samefile",
             crate::molt_pathlib_samefile as *const (),
-        )),
-        "molt_pathlib_sep" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_sep",
-            crate::molt_pathlib_sep as *const (),
         )),
         _ => None,
     }

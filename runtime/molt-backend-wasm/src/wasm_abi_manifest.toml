@@ -1963,10 +1963,6 @@ type = 2
 poll_table_slot = 4
 
 [[import]]
-name = "promise_set_exception"
-type = 3
-
-[[import]]
 name = "promise_set_result"
 type = 3
 
@@ -3434,10 +3430,6 @@ type = 3
 [[import]]
 name = "importlib_metadata_entry_points_filter_payload"
 type = 12
-
-[[import]]
-name = "importlib_metadata_entry_points_select_payload"
-type = 7
 
 [[import]]
 name = "importlib_metadata_normalize_name"

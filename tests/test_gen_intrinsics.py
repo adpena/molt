@@ -393,22 +393,6 @@ def test_collections_and_argparse_categories_are_toml_owned() -> None:
     )
 
 
-def test_zipapp_runtime_probe_is_not_archive_leaf_owned() -> None:
-    module = _load_gen_intrinsics_module()
-    builtin_symbols, internal_prefixes, stdlib_modules = module._load_categories()
-
-    assert (
-        module._classify_symbol(
-            "molt_zipapp_runtime_ready",
-            builtin_symbols,
-            internal_prefixes,
-            stdlib_modules,
-        )
-        == "core"
-    )
-    assert ("molt_zipapp_", "archive") not in module._EXTRA_PREFIX_MODULES
-
-
 def test_collections_and_argparse_resolvers_are_leaf_owned() -> None:
     resolver_root = ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
     facade_argparse = (resolver_root / "argparse_resolver.rs").read_text(

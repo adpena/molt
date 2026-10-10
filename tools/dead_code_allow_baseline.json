@@ -1,5 +1,5 @@
 {
-  "baseline_total": 135,
+  "baseline_total": 134,
   "entries": [
     {
       "id": "runtime/build_support/unicode_tables.rs::allow_dead_code::inner",
@@ -648,11 +648,6 @@
     },
     {
       "id": "runtime/molt-runtime-zoneinfo/src/lib.rs::allow_dead_code::inner",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-stdlib-difflib/src/lib.rs::allow_dead_code::inner",
       "owner": "runtime-authority-closure",
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },

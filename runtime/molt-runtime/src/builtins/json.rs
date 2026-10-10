@@ -1138,35 +1138,6 @@ pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
 // JSON detect_encoding / loads / dumps
 // ---------------------------------------------------------------------------
 
-/// Detect the encoding of a JSON byte string by inspecting the BOM or the
-/// first few bytes. Returns a MoltObject string.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_detect_encoding(data_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(data_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "detect_encoding expects bytes");
-        };
-        let (data, len) = unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
-                let msg = format!("detect_encoding expects bytes, got {}", type_name(_py, obj));
-                return raise_exception::<u64>(_py, "TypeError", &msg);
-            }
-            let len = bytes_len(ptr);
-            let data_ptr = bytes_data(ptr);
-            (std::slice::from_raw_parts(data_ptr, len), len)
-        };
-
-        let encoding = detect_json_encoding(data, len);
-        let enc_ptr = alloc_string(_py, encoding.as_bytes());
-        if enc_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "failed to allocate string");
-        }
-        MoltObject::from_ptr(enc_ptr).bits()
-    })
-}
-
 fn detect_json_encoding(data: &[u8], len: usize) -> &'static str {
     // Check BOM first
     if len >= 4 {

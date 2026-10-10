@@ -128,7 +128,6 @@ def test_representative_symbols_map_to_link_affecting_features() -> None:
         "molt_base64_b64encode": "stdlib_serial",
         "molt_email_message_new": "stdlib_email",
         "molt_colorsys_rgb_to_hls": "stdlib_math",
-        "molt_difflib_sequence_matcher_new": "stdlib_difflib",
         "molt_xml_element_new": "stdlib_xml",
         "molt_ipaddress_ip_address": "stdlib_ipaddress",
     }
@@ -216,7 +215,7 @@ def test_refusal_groups_reached_symbols_by_feature_not_module() -> None:
 def test_core_intrinsic_reachability_is_unaffected() -> None:
     assert (
         _refusal_for_reached_symbols(
-            "molt_stdlib_probe", profile="micro", target_triple=None
+            "molt_capabilities_has", profile="micro", target_triple=None
         )
         is None
     )
@@ -276,7 +275,6 @@ _PREVIOUSLY_DRIFTED_FULL_FEATURES = frozenset(
         "stdlib_regex",
         "stdlib_itertools",
         "stdlib_path",
-        "stdlib_difflib",
         "stdlib_xml",
         "stdlib_ipaddress",
     }

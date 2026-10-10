@@ -167,18 +167,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_task_register_execution",
             crate::molt_task_register_execution as *const (),
         )),
-        "molt_zipapp_runtime_ready" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_zipapp_runtime_ready",
-            crate::molt_zipapp_runtime_ready as *const (),
-        )),
-        "molt_trace_runtime_ready" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_trace_runtime_ready",
-            crate::molt_trace_runtime_ready as *const (),
-        )),
-        "molt_import_smoke_runtime_ready" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_import_smoke_runtime_ready",
-            crate::molt_import_smoke_runtime_ready as *const (),
-        )),
         "molt_input_builtin" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_input_builtin",
             crate::molt_input_builtin as *const (),
@@ -548,10 +536,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_types_bootstrap" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_types_bootstrap",
             crate::molt_types_bootstrap as *const (),
-        )),
-        "molt_stdlib_probe" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_stdlib_probe",
-            crate::molt_stdlib_probe as *const (),
         )),
         "molt_require_intrinsic_runtime" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_require_intrinsic_runtime",

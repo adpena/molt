@@ -27,10 +27,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_enum_flag_invert",
             crate::molt_enum_flag_invert as *const (),
         )),
-        "molt_enum_flag_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_enum_flag_new",
-            crate::molt_enum_flag_new as *const (),
-        )),
         "molt_enum_flag_or" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_enum_flag_or",
             crate::molt_enum_flag_or as *const (),
@@ -46,10 +42,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_enum_unique_check" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_enum_unique_check",
             crate::molt_enum_unique_check as *const (),
-        )),
-        "molt_enum_verify_member" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_enum_verify_member",
-            crate::molt_enum_verify_member as *const (),
         )),
         "molt_enum_is_auto" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_enum_is_auto",

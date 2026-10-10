@@ -198,21 +198,9 @@ pub fn resolve_symbol_with(
             "molt_runtime_tk::intrinsics::molt_tk_cnfmerge",
             crate::intrinsics::molt_tk_cnfmerge as *const (),
         )),
-        "molt_tk_normalize_option" => Some(runtime_fn_addr(
-            "molt_runtime_tk::intrinsics::molt_tk_normalize_option",
-            crate::intrinsics::molt_tk_normalize_option as *const (),
-        )),
         "molt_tk_hex_to_rgb" => Some(runtime_fn_addr(
             "molt_runtime_tk::intrinsics::molt_tk_hex_to_rgb",
             crate::intrinsics::molt_tk_hex_to_rgb as *const (),
-        )),
-        "molt_tk_normalize_delay_ms" => Some(runtime_fn_addr(
-            "molt_runtime_tk::intrinsics::molt_tk_normalize_delay_ms",
-            crate::intrinsics::molt_tk_normalize_delay_ms as *const (),
-        )),
-        "molt_tk_convert_stringval" => Some(runtime_fn_addr(
-            "molt_runtime_tk::intrinsics::molt_tk_convert_stringval",
-            crate::intrinsics::molt_tk_convert_stringval as *const (),
         )),
         _ => None,
     }

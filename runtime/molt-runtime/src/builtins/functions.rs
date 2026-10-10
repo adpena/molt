@@ -547,18 +547,6 @@ pub extern "C" fn molt_logging_file_handler_emit(
     })
 }
 
-// ─── copy.replace intrinsic ─────────────────────────────────────────────────
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_copy_replace(obj_bits: u64, changes_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        // copy.replace creates a modified shallow copy.
-        // For Molt's supported types, apply changes dict on top of a shallow copy.
-        let _ = changes_bits; // changes are applied Python-side
-        crate::builtins::copy_mod::molt_copy_copy(obj_bits)
-    })
-}
-
 // ─── pprint format/isreadable/isrecursive with context ──────────────────────
 
 #[unsafe(no_mangle)]
@@ -1539,54 +1527,4 @@ pub extern "C" fn molt_compileall_compile_path(
         }
         MoltObject::from_bool(success).bits()
     })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_wsgiref_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipapp_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xmlrpc_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tomllib_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_trace_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_subprocess_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_symtable_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_import_smoke_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
 }
