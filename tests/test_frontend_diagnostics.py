@@ -217,6 +217,9 @@ def test_native_and_wasm_cli_share_the_frontend_diagnostic(
 
     source = tmp_path / "unsupported_nonlocal.py"
     source.write_text("nonlocal value\n", encoding="utf-8")
+    # The build's project is the working directory, which gets dist/; keep it
+    # out of the checkout.
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("MOLT_COMPAT_WARNINGS", "0")
     monkeypatch.setenv("PYTHONHASHSEED", "0")
     # Cache activation has separate stderr diagnostics; this fixture stops at
