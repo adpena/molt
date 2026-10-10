@@ -42,10 +42,11 @@ failures must be traced to their shared cause as well. Reconcile uncovered
 instances and missing qualification into the existing owning open requirement;
 retain the historical repair evidence without treating it as release acceptance.
 
-Current integration evidence (2026-10-10 UTC): draft PR119 is not merged into
-main. Candidate `5a6758e90` fails Docs Gates, both Python unit cells, native
-integration, Rust and Windows portability in completed CI `37974432198`. WASM
-also fails: the split runtime is 10.46 MB against the unchanged 5 MB limit
+Current integration evidence (2026-10-10 UTC): PR119 merged at `5a6758e90`
+on 2026-10-10. The successor `bb2b77bca` is committed but not on main; its clean
+Linux ABI qualification is recorded below. Historical CI `37974432198` for
+`5a6758e90` fails Docs Gates, both Python unit cells, native integration, Rust
+and Windows portability. WASM also fails: the split runtime is 10.46 MB against the unchanged 5 MB limit
 (39 sibling tests pass), and the finally/pending-observer build exceeds its
 600-second command budget with descendant closure and Cargo recovery unresolved.
 Static, LLVM, security, formal and the other portability jobs pass. The working successor repairs the development-side consumer failures:
@@ -106,14 +107,16 @@ allocation remains denied, preserves pending state until clear, and retains
 the successful recovery and reference-ownership oracles. Actual Rust replay is
 required; correcting these fixtures does not qualify the GC/lifecycle failures.
 
-Current execution order is ABI fixture qualification, complete runtime shutdown
-integration and execution, then guarded measurement and WASM size qualification.
+Current execution order is integration of the qualified ABI/supervisor unit,
+complete runtime shutdown integration and execution, then guarded measurement
+and WASM size qualification.
 The upstream reconciliation is committed at `512a00667`. ABI fixture repairs now
 use one immutable hook profile per binary, reject conflicting normalized tables
 before thread-state attachment, prove that the mapping fixture can actually
 allocate a list, and inspect surrogate names through the Unicode code-point API.
-Their complete Linux ABI family remains unqualified. The clone-child ordering
-failure exposed a preserved supervisor repair that had not reached the candidate.
+Their complete Linux/aarch64 dev-fast ABI family is qualified at `bb2b77bca`.
+The clone-child ordering failure exposed a preserved supervisor repair that had
+not reached the candidate.
 That successor and its current receipt consumers are now integrated: 99 Linux
 native checks pass with closed descendants and unchanged source/tool images;
 247 Python consumer checks pass with 30 platform skips. Delegation now uses the
@@ -131,9 +134,11 @@ intentional helper ignore, admitted complete native supervision, no native
 violations, closed descendants and unchanged source content. This exposed and
 repaired two incomplete fixture capabilities: sequence hooks now enter the
 existing class-binding transaction, and the member-string fixture supplies the
-shared byte owner needed to construct structured UnicodeDecodeError. The queue
-correctly withholds evidence for the uncommitted source; replay of the committed
-clean snapshot remains required before qualification. Earlier output-root and
+shared byte owner needed to construct structured UnicodeDecodeError. The initial dirty-source run was correctly withheld from release evidence.
+Replay of clean commit `bb2b77bca` passes the same 764 tests, with unchanged
+source, evidence-eligible custody and complete native supervision. This closes
+the Linux ABI fixture unit; Windows/macOS ABI execution, runtime lifecycle,
+standalone guest and performance qualification remain open. Earlier output-root and
 native-C declaration refusals are infrastructure results, not ABI failures.
 All of this qualification apparatus runs on the development side.
 The reviewed shutdown successor repairs admitted callback reentry during
