@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from molt.cli.extension_manifest import _default_molt_c_api_version
+from molt.dx import artifact_root, scratch_root
 from molt.source_root import compiler_source_root
 
 import hashlib
@@ -19,6 +20,9 @@ from tests.native_process_guard import run_native_test_process
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
+# Build outputs and caches live under the canonical artifact root, scratch
+# under its scratch root; neither lands in the checkout.
+ARTIFACT_ROOT = artifact_root(ROOT)
 NATIVE_BOOTSTRAP_SESSION_ID = "pytest-native-bootstrap"
 NATIVE_BUILD_TIMEOUT_SECS = 600
 
@@ -32,7 +36,9 @@ def test_native_runtime_resolved_intrinsics_return_boxed_none(tmp_path: Path) ->
         source,
         "intrinsic_boxed_none",
         session_id=NATIVE_BOOTSTRAP_SESSION_ID,
-        cache_dir=Path(os.environ.get("MOLT_CACHE", str(ROOT / ".molt_cache"))),
+        cache_dir=Path(
+            os.environ.get("MOLT_CACHE", str(ARTIFACT_ROOT / ".molt_cache"))
+        ),
         backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -40,7 +46,7 @@ def test_native_runtime_resolved_intrinsics_return_boxed_none(tmp_path: Path) ->
 
 
 def _native_bootstrap_target_dirs(env: dict[str, str]) -> tuple[Path, Path]:
-    default_target_dir = ROOT / "target"
+    default_target_dir = ARTIFACT_ROOT / "target"
     raw_target = env.get("CARGO_TARGET_DIR", "").strip()
     target_dir = Path(raw_target).expanduser() if raw_target else default_target_dir
     raw_diff_target = env.get("MOLT_DIFF_CARGO_TARGET_DIR", "").strip()
@@ -62,10 +68,10 @@ def test_native_bootstrap_target_dir_respects_explicit_env_override() -> None:
     assert diff_target_dir == Path("/tmp/molt-native-diff-target")
 
 
-def test_native_bootstrap_target_dir_defaults_to_repo_target() -> None:
+def test_native_bootstrap_target_dir_defaults_to_artifact_root_target() -> None:
     target_dir, diff_target_dir = _native_bootstrap_target_dirs({})
 
-    assert target_dir == ROOT / "target"
+    assert target_dir == artifact_root(ROOT) / "target"
     assert diff_target_dir == target_dir
 
 
@@ -77,7 +83,7 @@ def _build_and_run(
         source,
         name,
         session_id=NATIVE_BOOTSTRAP_SESSION_ID,
-        cache_dir=ROOT / ".molt_cache",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache",
         backend="cranelift",
     )
 
@@ -118,10 +124,10 @@ def _build_native_binary_with_env(
     env["CARGO_TARGET_DIR"] = str(target_dir)
     env["MOLT_DIFF_CARGO_TARGET_DIR"] = str(diff_target_dir)
     env["MOLT_CACHE"] = str(cache_dir)
-    env["MOLT_DIFF_ROOT"] = str(ROOT / "tmp" / "diff")
-    env["MOLT_DIFF_TMPDIR"] = str(ROOT / "tmp")
-    env["UV_CACHE_DIR"] = str(ROOT / ".uv-cache")
-    env["TMPDIR"] = str(ROOT / "tmp")
+    env["MOLT_DIFF_ROOT"] = str(scratch_root(ROOT) / "diff")
+    env["MOLT_DIFF_TMPDIR"] = str(scratch_root(ROOT))
+    env["UV_CACHE_DIR"] = str(ARTIFACT_ROOT / ".uv-cache")
+    env["TMPDIR"] = str(scratch_root(ROOT))
     env["MOLT_BACKEND_DAEMON"] = "0"
     if extra_env:
         env.update(extra_env)
@@ -244,7 +250,7 @@ def test_native_external_static_package_import_uses_staged_runtime_root_after_so
         "import nativepkg\nprint(nativepkg.VALUE)\n",
         "external_static_runtime_root",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-external-static-runtime-root",
-        cache_dir=ROOT / ".molt_cache-external-static-runtime-root",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-external-static-runtime-root",
         backend="cranelift",
         extra_env={"MOLT_EXTERNAL_STATIC_PACKAGES": "nativepkg"},
         extra_build_args=[
@@ -316,7 +322,7 @@ def _build_and_run_package_bootstrap(
         source,
         name,
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-package-{cache_suffix}",
-        cache_dir=ROOT / f".molt_cache-package-{cache_suffix}",
+        cache_dir=ARTIFACT_ROOT / f".molt_cache-package-{cache_suffix}",
         backend="cranelift",
         source_relpath="pkg/main.py",
         extra_files={
@@ -428,7 +434,7 @@ def test_native_weakref_dict_keys_do_not_compare_hash_mismatched_referents(
         ),
         "weakref_dict_hash_gate",
         session_id="pytest-native-bootstrap-weakref-hash-gate",
-        cache_dir=ROOT / ".molt_cache",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache",
         backend="cranelift",
         extra_env={"MOLT_STDLIB_PROFILE": "full"},
     )
@@ -548,7 +554,7 @@ def test_native_full_profile_importlib_machinery_sees_bootstrapped_sys_platform(
         ),
         "full_profile_importlib_machinery_sys_platform",
         session_id="pytest-native-bootstrap-full-importlib-machinery",
-        cache_dir=ROOT / ".molt_cache",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache",
         backend="cranelift",
         extra_build_args=["--stdlib-profile", "full"],
         run_timeout_secs=30,
@@ -567,7 +573,7 @@ def test_native_full_profile_import_threading_survives_split_frame_transport(
         "import threading\nprint(threading.__name__)\n",
         f"full_profile_import_threading_{cache_suffix}",
         session_id=f"pytest-native-bootstrap-full-threading-{cache_suffix}",
-        cache_dir=ROOT / f".molt_cache-threading-split-{cache_suffix}",
+        cache_dir=ARTIFACT_ROOT / f".molt_cache-threading-split-{cache_suffix}",
         backend="cranelift",
         extra_env={"MOLT_MAX_FUNCTION_OPS": split_limit},
         extra_build_args=["--stdlib-profile", "full"],
@@ -677,7 +683,7 @@ def test_native_types_bootstrap_payload_is_callable(tmp_path: Path) -> None:
         ),
         "types_bootstrap_payload_callable",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-types-bootstrap-payload",
-        cache_dir=ROOT / ".molt_cache-types-bootstrap-payload",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-types-bootstrap-payload",
         backend="cranelift",
         run_timeout_secs=20,
     )
@@ -712,7 +718,7 @@ def test_native_types_bootstrap_descriptor_types_match_runtime_carriers(
         ),
         "types_bootstrap_descriptor_types",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-types-bootstrap-descriptors",
-        cache_dir=ROOT / ".molt_cache-types-bootstrap-descriptors",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-types-bootstrap-descriptors",
         backend="cranelift",
         run_timeout_secs=20,
     )
@@ -736,7 +742,7 @@ def test_native_importlib_import_module_tkinter_after_find_spec_is_clean(
         ),
         "importlib_import_module_tkinter_after_find_spec",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-importlib-tkinter",
-        cache_dir=ROOT / ".molt_cache-importlib-tkinter",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-importlib-tkinter",
         backend="cranelift",
         extra_build_args=["--stdlib-profile", "full"],
         run_timeout_secs=20,
@@ -759,7 +765,7 @@ def test_native_builtin_import_tkinter_after_find_spec_is_clean(tmp_path: Path) 
         ),
         "builtin_import_tkinter_after_find_spec",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-builtin-tkinter",
-        cache_dir=ROOT / ".molt_cache-builtin-tkinter",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-builtin-tkinter",
         backend="cranelift",
         extra_build_args=["--stdlib-profile", "full"],
         run_timeout_secs=20,
@@ -783,7 +789,7 @@ def test_native_imported_module_dunder_getattr_handles_missing_attr(
         ),
         "module_dunder_getattr_missing_attr",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-module-dunder-getattr",
-        cache_dir=ROOT / ".molt_cache-module-dunder-getattr",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-module-dunder-getattr",
         backend="cranelift",
         extra_files={
             "probe_mod.py": (
@@ -814,7 +820,7 @@ def test_native_module_attr_dunder_getattr_preserves_raised_attribute_error(
         ),
         "module_attr_dunder_getattr_missing_attr",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-module-attr-dunder-getattr",
-        cache_dir=ROOT / ".molt_cache-module-attr-dunder-getattr",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-module-attr-dunder-getattr",
         backend="cranelift",
         extra_files={
             "probe_mod.py": (
@@ -842,7 +848,7 @@ def test_native_getattr_default_suppresses_module_dunder_attribute_error(
         ),
         "module_dunder_getattr_default",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-module-dunder-getattr-default",
-        cache_dir=ROOT / ".molt_cache-module-dunder-getattr-default",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-module-dunder-getattr-default",
         backend="cranelift",
         extra_files={
             "probe_mod.py": (
@@ -872,7 +878,7 @@ def test_native_local_function_raise_is_caught_by_try_except(tmp_path: Path) -> 
         ),
         "local_try_raise_caught",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-local-try-raise",
-        cache_dir=ROOT / ".molt_cache-local-try-raise",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-local-try-raise",
         backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -899,7 +905,7 @@ def test_native_module_try_except_assignment_survives_post_try_load(
         ),
         "module_try_except_assignment_post_load",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-module-try-except-assignment",
-        cache_dir=ROOT / ".molt_cache-module-try-except-assignment",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-module-try-except-assignment",
         backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -922,7 +928,7 @@ def test_native_plain_function_metadata_survives_try_scope(tmp_path: Path) -> No
         ),
         "plain_function_metadata_inside_try",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-plain-function-metadata-inside-try",
-        cache_dir=ROOT / ".molt_cache-plain-function-metadata-inside-try",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-plain-function-metadata-inside-try",
         backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -950,7 +956,7 @@ def test_native_plain_method_in_try_scope_is_callable(tmp_path: Path) -> None:
         ),
         "plain_method_inside_try_callable",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-plain-method-inside-try",
-        cache_dir=ROOT / ".molt_cache-plain-method-inside-try",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-plain-method-inside-try",
         backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -973,7 +979,7 @@ def test_native_direct_raise_is_caught_by_try_except(tmp_path: Path) -> None:
         ),
         "direct_try_raise_caught",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-direct-try-raise",
-        cache_dir=ROOT / ".molt_cache-direct-try-raise",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-direct-try-raise",
         backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -1023,7 +1029,7 @@ def test_native_try_multibase_class_statement_preserves_namespace(
         ),
         "try_multibase_class_statement_namespace",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-multibase-class-namespace",
-        cache_dir=ROOT / ".molt_cache-multibase-class-namespace",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-multibase-class-namespace",
         backend="cranelift",
         run_timeout_secs=20,
     )
@@ -1058,7 +1064,7 @@ def test_native_try_metaclass_preserves_namespace_dict(tmp_path: Path) -> None:
         ),
         "try_metaclass_preserves_namespace",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-try-metaclass-namespace",
-        cache_dir=ROOT / ".molt_cache-try-metaclass-namespace",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-try-metaclass-namespace",
         backend="cranelift",
         run_timeout_secs=20,
     )
@@ -1201,7 +1207,7 @@ def test_native_local_from_import_direct_call_executes(tmp_path: Path) -> None:
         "from helper import ping\nping()\n",
         "local_from_import_direct_call",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-from-import-local",
-        cache_dir=ROOT / ".molt_cache-import-local",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-import-local",
         backend="cranelift",
         extra_files={
             "helper.py": "def ping():\n    print('ok')\n",
@@ -1217,7 +1223,7 @@ def test_native_relative_from_import_direct_call_executes(tmp_path: Path) -> Non
         "from .helper import ping\nping()\n",
         "relative_from_import_direct_call",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-from-import-relative",
-        cache_dir=ROOT / ".molt_cache-import-relative",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-import-relative",
         backend="cranelift",
         source_relpath="pkg/main.py",
         extra_files={
@@ -1298,7 +1304,7 @@ def test_native_from_import_package_export_wins_over_same_named_child_module(
         ("from pkg import value\nprint(value)\n"),
         "package_export_wins_over_child",
         session_id="pytest-native-bootstrap-from-export-vs-child",
-        cache_dir=ROOT / ".molt_cache-package-from-export-vs-child",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-package-from-export-vs-child",
         backend="cranelift",
         source_relpath="main.py",
         extra_files={
@@ -1348,7 +1354,7 @@ def test_native_from_import_missing_child_reports_import_from_error(
         ),
         "package_from_import_missing_child",
         session_id="pytest-native-bootstrap-from-missing-child",
-        cache_dir=ROOT / ".molt_cache-package-from-missing-child",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-package-from-missing-child",
         backend="cranelift",
         source_relpath="main.py",
         extra_files={"pkg/__init__.py": "VALUE = 1\n"},
@@ -1374,7 +1380,7 @@ def test_native_from_import_child_dependency_error_propagates(
         ),
         "package_from_import_child_dependency_error",
         session_id="pytest-native-bootstrap-from-child-dependency-error",
-        cache_dir=ROOT / ".molt_cache-package-from-child-dependency-error",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-package-from-child-dependency-error",
         backend="cranelift",
         source_relpath="main.py",
         extra_files={
@@ -1587,7 +1593,7 @@ def test_native_importlib_dynamic_source_failure_does_not_commit_partial_module(
         ),
         "importlib_dynamic_source_fail_closed",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-importlib-dynamic-source-fail",
-        cache_dir=ROOT / ".molt_cache-importlib-dynamic-source-fail",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-importlib-dynamic-source-fail",
         backend="cranelift",
         extra_files={
             "runtime_site/dynamic_unsupported.py": (
@@ -1719,7 +1725,7 @@ def test_native_package_main_entrypoint_preserves_main_module_identity(
         ),
         "package_main_entrypoint_identity",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-package-main",
-        cache_dir=ROOT / ".molt_cache-package-main",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-package-main",
         backend="cranelift",
         source_relpath="pkg/__main__.py",
         extra_files={
@@ -1770,7 +1776,7 @@ def test_native_top_level_alias_imports_preserve_os_sys_identity(
         ),
         "top_level_alias_identity",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-top-level-alias",
-        cache_dir=ROOT / ".molt_cache-top-level-alias",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-top-level-alias",
         backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -1801,7 +1807,7 @@ def test_native_module_hasattr_missing_uses_seeded_module_name_metadata(
         ),
         "module_hasattr_seeded_name_metadata",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-module-hasattr",
-        cache_dir=ROOT / ".molt_cache-module-hasattr",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-module-hasattr",
         backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -1832,7 +1838,7 @@ def test_native_llvm_json_loads_with_kwonly_defaults_executes(tmp_path: Path) ->
         ),
         "llvm_json_loads_kwonly_defaults",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-llvm",
-        cache_dir=ROOT / ".molt_cache",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache",
         backend="llvm",
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -2091,7 +2097,7 @@ def test_native_functools_cached_property_descriptor_survives_class_lifetime(
         ),
         "functools_cached_property_descriptor_survives_class_lifetime",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-cached-property-class-lifetime",
-        cache_dir=ROOT / ".molt_cache-cached-property-class-lifetime",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-cached-property-class-lifetime",
         backend="cranelift",
         extra_build_args=["--rebuild", "--no-cache"],
     )
@@ -2172,7 +2178,7 @@ def test_native_ctypes_tinygrad_scalar_surface_uses_intrinsic_coercion(
         ),
         "ctypes_tinygrad_scalar_surface",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-ctypes-tinygrad-scalar",
-        cache_dir=ROOT / ".molt_cache-ctypes-tinygrad-scalar",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-ctypes-tinygrad-scalar",
         backend="cranelift",
         extra_build_args=[
             "--capabilities",
@@ -2252,7 +2258,7 @@ def test_native_ctypes_scalar_numeric_protocol_matches_cpython_shape(
         ),
         "ctypes_scalar_numeric_protocol",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-ctypes-scalar-numeric-protocol",
-        cache_dir=ROOT / ".molt_cache-ctypes-scalar-numeric-protocol",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-ctypes-scalar-numeric-protocol",
         backend="cranelift",
         extra_build_args=[
             "--capabilities",
@@ -3017,7 +3023,7 @@ def test_native_import_typing_optional_is_clean(tmp_path: Path) -> None:
         ),
         "import_typing_optional",
         session_id="pytest-native-bootstrap-typing",
-        cache_dir=ROOT / ".molt_cache-typing",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-typing",
         backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -3122,7 +3128,7 @@ def test_native_repo_package_imports_include_molt_parent_package(
         ("from molt.gpu.tensor import Tensor\nprint('ok')\n"),
         "import_molt_gpu_tensor",
         session_id="pytest-native-bootstrap-package-import",
-        cache_dir=ROOT / ".molt_cache-package-import",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-package-import",
         backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -3160,7 +3166,7 @@ def test_native_load_safetensors_multi_entry_is_clean(tmp_path: Path) -> None:
         ),
         "load_safetensors_multi_entry",
         session_id="pytest-native-bootstrap-safetensors",
-        cache_dir=ROOT / ".molt_cache-safetensors",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-safetensors",
         backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -3182,7 +3188,7 @@ def test_native_load_safetensors_mapping_get_returns_tensor_and_default(
         ),
         "load_safetensors_mapping_get",
         session_id="pytest-native-bootstrap-safetensors-get",
-        cache_dir=ROOT / ".molt_cache-safetensors-get",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-safetensors-get",
         backend="cranelift",
     )
     assert run.returncode == 0, run.stdout + run.stderr
@@ -3524,7 +3530,7 @@ def test_native_intrinsic_alias_preserves_namespace_compatible_signature(
         (
             "from _intrinsics import require_intrinsic as _ri\n"
             "_NS = globals()\n"
-            "fn = _ri('molt_bootstrap_descriptor_types', _NS)\n"
+            "fn = _ri('molt_gc_get_threshold', _NS)\n"
             "print(type(fn).__name__)\n"
             "print(type(fn()).__name__)\n"
         ),
@@ -3592,7 +3598,7 @@ def test_native_package_init_try_guard_uses_nameerror_lookup(tmp_path: Path) -> 
         ("import guardpkg\nprint(guardpkg.__NUMPY_SETUP__)\nprint(guardpkg.state)\n"),
         "package_init_try_guard_nameerror",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-package-init-guard",
-        cache_dir=ROOT / ".molt_cache-package-init-guard",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-package-init-guard",
         backend="cranelift",
         extra_files={
             "guardpkg/__init__.py": (
@@ -3873,7 +3879,7 @@ def test_native_itertools_repeat_is_runtime_type(tmp_path: Path) -> None:
         ),
         "itertools_repeat_runtime_type",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-itertools-repeat-type",
-        cache_dir=ROOT / ".molt_cache-itertools-repeat-type",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-itertools-repeat-type",
         backend="cranelift",
         extra_build_args=["--stdlib-profile", "full", "--rebuild", "--no-cache"],
     )
@@ -4105,7 +4111,7 @@ def test_native_import_bedrock_packages_cycle_and_dynamic_import(
         ),
         "import_bedrock_packages_cycle_dynamic",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-import-bedrock",
-        cache_dir=ROOT / ".molt_cache-import-bedrock",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-import-bedrock",
         backend="cranelift",
         extra_files={
             "pkg/__init__.py": "BASE = 5\n",
@@ -4141,7 +4147,7 @@ def test_native_import_bedrock_sys_modules_identity(tmp_path: Path) -> None:
         ("import pkg.sub\nimport sys\nprint(sys.modules['pkg.sub'] is pkg.sub)\n"),
         "import_bedrock_sys_modules_identity",
         session_id=f"{NATIVE_BOOTSTRAP_SESSION_ID}-import-bedrock-sys",
-        cache_dir=ROOT / ".molt_cache-import-bedrock",
+        cache_dir=ARTIFACT_ROOT / ".molt_cache-import-bedrock",
         backend="cranelift",
         extra_files={
             "pkg/__init__.py": "BASE = 5\n",

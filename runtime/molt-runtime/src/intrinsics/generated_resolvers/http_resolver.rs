@@ -208,18 +208,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_http_client_response_message as *const (),
         )),
         #[cfg(feature = "stdlib_http")]
-        "molt_http_server_read_request" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_http_server_read_request",
-            crate::molt_http_server_read_request as *const (),
-        )),
-        #[cfg(feature = "stdlib_http")]
-        "molt_http_server_compute_close_connection" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_http_server_compute_close_connection",
-                crate::molt_http_server_compute_close_connection as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_http")]
         "molt_http_server_handle_one_request" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_http_server_handle_one_request",
             crate::molt_http_server_handle_one_request as *const (),

@@ -74,10 +74,6 @@ pub fn resolve_symbol_with(
             "molt_runtime_serial::configparser::molt_configparser_set",
             crate::configparser::molt_configparser_set as *const (),
         )),
-        "molt_configparser_write" => Some(runtime_fn_addr(
-            "molt_runtime_serial::configparser::molt_configparser_write",
-            crate::configparser::molt_configparser_write as *const (),
-        )),
         "molt_configparser_defaults" => Some(runtime_fn_addr(
             "molt_runtime_serial::configparser::molt_configparser_defaults",
             crate::configparser::molt_configparser_defaults as *const (),

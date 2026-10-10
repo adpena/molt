@@ -80,7 +80,7 @@ def _hook_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     fake_bin = tmp_path / "fake bin"
     capture = tmp_path / "uv launch.txt"
     (worktree / "tools").mkdir(parents=True)
-    for tool in ("drift_harvest.py", "check_commit_attribution.py"):
+    for tool in ("drift_harvest.py", "check_commit_attribution.py", "generators.py"):
         (worktree / "tools" / tool).write_text(
             "raise AssertionError('fake uv must not execute the tool')\n",
             encoding="utf-8",
@@ -108,10 +108,22 @@ esac
   printf '%s\\n' "${PYTHONHOME-<unset>}"
   printf '%s\\n' "$PYTHONNOUSERSITE"
   for arg in "$@"; do printf '%s\\n' "$arg"; done
-} > "$FAKE_UV_CAPTURE"
+  printf '%s\\n' '---'
+} >> "$FAKE_UV_CAPTURE"
 """,
     )
     return worktree, main, fake_bin, capture
+
+
+def _uv_calls(capture: Path) -> list[list[str]]:
+    """Each fake uv launch: PYTHONPATH, PYTHONHOME, PYTHONNOUSERSITE, then argv."""
+    calls: list[list[str]] = [[]]
+    for line in capture.read_text(encoding="utf-8").splitlines():
+        if line == "---":
+            calls.append([])
+        else:
+            calls[-1].append(line)
+    return [call for call in calls if call]
 
 
 def _run_hook(
@@ -246,6 +258,7 @@ def test_hooks_bind_worktree_startup_before_uv_without_project_sync() -> None:
     # Each hook sources that launcher and starts no Python of its own.
     for hook, call in (
         (HOOK, 'molt_hook_uv_python pre-push "$gate" --gate --no-fetch'),
+        (HOOK, 'molt_hook_uv_python pre-push "$repo_root/tools/generators.py" check'),
         (
             COMMIT_MSG_HOOK,
             'molt_hook_uv_python commit-msg "$checker" --message-file "$1"',
@@ -280,7 +293,8 @@ def test_hook_executes_uv_with_selected_worktree_startup_authority(
     )
 
     assert completed.returncode == 0, completed.stderr
-    lines = capture.read_text(encoding="utf-8").splitlines()
+    gate_call, generators_call = _uv_calls(capture)
+    lines = gate_call
     expected_root = worktree.as_posix() if os.name == "nt" else str(worktree)
     assert lines[:3] == [
         f"{expected_root}/src{path_separator}{expected_root}",
@@ -308,6 +322,14 @@ def test_hook_executes_uv_with_selected_worktree_startup_authority(
         f"{expected_root}/tools/drift_harvest.py",
         "--gate",
         "--no-fetch",
+    ]
+    # Then the generated-projection check CI would otherwise fail the push on.
+    assert generators_call[:3] == lines[:3]
+    assert generators_call[3:9] == argv[:6]
+    assert generators_call[9:] == [
+        "python",
+        f"{expected_root}/tools/generators.py",
+        "check",
     ]
 
 
@@ -357,7 +379,8 @@ def test_commit_msg_hook_runs_the_attribution_checker_on_the_message(
     )
 
     assert completed.returncode == 0, completed.stderr
-    argv = capture.read_text(encoding="utf-8").splitlines()[3:]
+    (call,) = _uv_calls(capture)
+    argv = call[3:]
     expected_root = worktree.as_posix() if os.name == "nt" else str(worktree)
     assert argv[:5] == ["run", "--no-project", "--offline", "--no-config", "--python"]
     assert argv[6:] == [

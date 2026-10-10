@@ -765,8 +765,9 @@ Read these first instead of rediscovering project structure:
 - Before every risky command in recovery mode, leave a death capsule under the
   canonical evidence roots: command, cwd, guard pid, expected child pid when
   known, status, timestamp, and the evidence path. Prefer
-  `tools/memory_guard.py` active markers in `tmp/memory_guard/active/`,
-  incident summaries in `tmp/memory_guard/incidents/`, pytest outer-guard
+  `tools/memory_guard.py` active markers in the guard state root
+  (`<artifact root>/tmp/memory_guard/active/`), incident summaries in its
+  `incidents/` folder, pytest outer-guard
   summaries, and `logs/agents/codex_stall/*.json`.
 - If the agent, child command, or helper process disappears, the next agent must
   inspect `git status`, active guard markers, incident summaries, pytest

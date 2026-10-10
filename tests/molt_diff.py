@@ -44,8 +44,10 @@ from tools import (  # noqa: E402  (must follow the sys.path self-bootstrap abov
 from molt.dx import (  # noqa: E402
     CANONICAL_RUN_ENV_KEYS,
     DX_ENV_KEYS,
+    artifact_root as canonical_artifact_root,
     cargo_target_dir_for_artifact_root,
     development_artifact_env,
+    scratch_root,
 )
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt import file_locks  # noqa: E402
@@ -408,13 +410,17 @@ class DiffArtifactLayout:
             raw = environment.get(key, "").strip()
             return Path(raw).expanduser() if raw else None
 
-        artifact_root = configured_path("MOLT_EXT_ROOT") or repository
-        diff_root = configured_path("MOLT_DIFF_ROOT") or artifact_root / "tmp" / "diff"
+        artifact_root = canonical_artifact_root(repository, environment)
+        diff_root = diff_output_layout.diff_custody_root(
+            environment, repo_root=repository
+        )
         selected = diff_output_layout.selected_root(
             environment, repo_root=repository, custody_root=diff_root
         )
         if selected is None:
-            tmp_root = configured_path("MOLT_DIFF_TMPDIR") or artifact_root / "tmp"
+            tmp_root = configured_path("MOLT_DIFF_TMPDIR") or scratch_root(
+                repository, environment
+            )
             cargo_target_root = (
                 configured_path("MOLT_DIFF_CARGO_TARGET_DIR")
                 or configured_path("CARGO_TARGET_DIR")
@@ -3550,7 +3556,7 @@ def _run_isolated_retry(
             leases.append(
                 diff_output_layout.claim_new_guest_leaf(
                     state_dir,
-                    boundary=Path(environment["MOLT_EXT_ROOT"]),
+                    boundary=canonical_artifact_root(_repo_root(), environment),
                     environment=environment,
                     repo_root=_repo_root(),
                 )
@@ -4226,12 +4232,11 @@ def diff_test(
     """
     if os.environ.get(diff_output_layout.ROOT_ENV):
         if diff_output_layout.IDENTITY_ENV not in os.environ:
-            artifact = Path(os.environ.get("MOLT_EXT_ROOT") or _repo_root())
             diff_output_layout.admit(
                 os.environ,
                 repo_root=_repo_root(),
-                custody_root=Path(
-                    os.environ.get("MOLT_DIFF_ROOT") or artifact / "tmp" / "diff"
+                custody_root=diff_output_layout.diff_custody_root(
+                    os.environ, repo_root=_repo_root()
                 ),
             )
         else:
@@ -4595,12 +4600,11 @@ def run_diff(
     warm_cache: bool = False,
     retry_oom: bool = False,
 ) -> dict:
-    artifact = Path(os.environ.get("MOLT_EXT_ROOT") or _repo_root())
     diff_output_layout.admit(
         os.environ,
         repo_root=_repo_root(),
-        custody_root=Path(
-            os.environ.get("MOLT_DIFF_ROOT") or artifact / "tmp" / "diff"
+        custody_root=diff_output_layout.diff_custody_root(
+            os.environ, repo_root=_repo_root()
         ),
     )
     compiler_target_python = _resolve_molt_target_python(

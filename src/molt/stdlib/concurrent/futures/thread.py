@@ -9,9 +9,6 @@ import threading
 import types
 import weakref
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 from concurrent.futures import BrokenThreadPool, ThreadPoolExecutor
 
@@ -25,5 +22,3 @@ __all__ = [
     "types",
     "weakref",
 ]
-
-globals().pop("_require_intrinsic", None)

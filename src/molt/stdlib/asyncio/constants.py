@@ -2,9 +2,6 @@
 
 import enum
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 LOG_THRESHOLD_FOR_CONNLOST_WRITES = 5
 ACCEPT_RETRY_DELAY = 1
@@ -21,6 +18,3 @@ class _SendfileMode(enum.Enum):
     UNSUPPORTED = enum.auto()
     TRY_NATIVE = enum.auto()
     FALLBACK = enum.auto()
-
-
-globals().pop("_require_intrinsic", None)

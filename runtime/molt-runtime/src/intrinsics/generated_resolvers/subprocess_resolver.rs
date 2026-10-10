@@ -3,10 +3,6 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
-        "molt_subprocess_runtime_ready" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_subprocess_runtime_ready",
-            crate::molt_subprocess_runtime_ready as *const (),
-        )),
         "molt_process_spawn" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_process_spawn",
             crate::molt_process_spawn as *const (),

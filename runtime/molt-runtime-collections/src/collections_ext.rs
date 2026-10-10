@@ -2240,33 +2240,6 @@ pub extern "C" fn molt_defaultdict_factory(handle_bits: u64) -> u64 {
     })
 }
 
-/// Create new handle with the same factory_bits.  Returns new handle.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_defaultdict_copy(handle_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let Some(id) = dd_handle_from_bits(_py, handle_bits) else {
-            return MoltObject::none().bits();
-        };
-        let factory = collections_state()
-            .defaultdict_registry
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|s| s.factory_bits);
-        let Some(factory_bits) = factory else {
-            return raise_exception::<_>(_py, "RuntimeError", "invalid defaultdict handle");
-        };
-        let new_id = next_defaultdict_handle();
-        let factory_bits = retain_handle_value(_py, factory_bits);
-        collections_state()
-            .defaultdict_registry
-            .lock()
-            .unwrap()
-            .insert(new_id, DefaultDictState { factory_bits });
-        MoltObject::from_int(new_id).bits()
-    })
-}
-
 /// Release defaultdict handle.  Returns None.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_defaultdict_drop(handle_bits: u64) -> u64 {

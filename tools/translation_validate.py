@@ -64,20 +64,16 @@ if str(_SRC_DIR) not in sys.path:
 import molt.cli as molt_cli  # noqa: E402
 from molt import python_interpreter  # noqa: E402
 from molt.cli import build_inputs as cli_build_inputs  # noqa: E402
-from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
+from molt.dx import (  # noqa: E402
+    artifact_root,
+    cargo_target_dir_for_artifact_root,
+    scratch_dir,
+    scratch_root,
+)
 
 _DEFAULT_TIMEOUT = int(os.environ.get("MOLT_TV_TIMEOUT", "60"))
 _DEFAULT_BUILD_PROFILE = os.environ.get("MOLT_TV_BUILD_PROFILE", "dev")
 _DEFAULT_JOBS = int(os.environ.get("MOLT_TV_JOBS", "4"))
-
-
-def _artifact_root(env: Mapping[str, str] | None = None) -> Path:
-    """Return the canonical artifact root for translation validation."""
-    env_view = os.environ if env is None else env
-    explicit = env_view.get("MOLT_EXT_ROOT")
-    if explicit:
-        return Path(explicit).expanduser()
-    return _REPO_ROOT
 
 
 def _temp_root(env: Mapping[str, str] | None = None) -> Path:
@@ -86,7 +82,7 @@ def _temp_root(env: Mapping[str, str] | None = None) -> Path:
     explicit = env_view.get("MOLT_DIFF_TMPDIR") or env_view.get("TMPDIR")
     if explicit:
         return Path(explicit).expanduser()
-    return _artifact_root(env_view) / "tmp"
+    return scratch_root(_REPO_ROOT, env_view)
 
 
 def _cargo_target_root(env: Mapping[str, str] | None = None) -> Path:
@@ -96,7 +92,7 @@ def _cargo_target_root(env: Mapping[str, str] | None = None) -> Path:
     if explicit:
         return Path(explicit).expanduser()
     return cargo_target_dir_for_artifact_root(
-        _artifact_root(env_view),
+        artifact_root(_REPO_ROOT, env_view),
         env_view.get("MOLT_SESSION_ID") or f"translation-validate-{os.getpid()}",
     )
 
@@ -664,6 +660,7 @@ def _build_parser() -> argparse.ArgumentParser:
               MOLT_TV_JOBS           Parallel jobs (default: 4)
               MOLT_TV_PYTHON         Explicit target CPython command override
               MOLT_EXT_ROOT          Artifact root for build artifacts/cache/tmp
+              MOLT_SCRATCH_STORAGE   Scratch storage: disk, memory, or a RAM disk
               MOLT_DIFF_TMPDIR       Temp directory root
         """),
     )
@@ -739,7 +736,7 @@ def main(argv: list[str] | None = None) -> int:
     with harness_memory_guard.guarded_harness_scope(
         prefix="MOLT_CONFORMANCE",
         repo_root=_REPO_ROOT,
-        artifact_root=_artifact_root(guard_env) / "tmp" / "translation_validate",
+        artifact_root=scratch_dir(_REPO_ROOT, "translation_validate", guard_env),
         label="translation_validate",
         env=guard_env,
         limits=limits,

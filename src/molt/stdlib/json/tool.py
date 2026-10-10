@@ -5,10 +5,6 @@ import importlib.util as _importlib_util
 import json
 import sys
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj")
-
 
 def _load_module(name: str):
     if _importlib_util.find_spec(name) is None:
@@ -63,6 +59,3 @@ if sys.version_info >= (3, 14):
 
     def get_theme():
         return {}
-
-
-globals().pop("_require_intrinsic", None)

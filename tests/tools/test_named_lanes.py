@@ -20,6 +20,9 @@ PYTHON_LANE_IDS = (
     "pact.witness.acceptance.native",
     "pact.witness.acceptance.wasm",
     "pact.witness.oracle",
+    "r6.target-version-parity.py312",
+    "r6.target-version-parity.py313",
+    "r6.target-version-parity.py314",
 )
 LANE_IDS = ("runtime.abi-fixture-authorities", *PYTHON_LANE_IDS)
 
@@ -421,7 +424,7 @@ def test_tool_release_lanes_run_the_pinned_release_first_on_path(
 ) -> None:
     import os
 
-    from molt import tool_releases
+    from molt import dx, tool_releases
     from tools.proof_queue_pkg import guarded_execution as ge
 
     assert "wasm-tools" in ge.tool_release_toolchains(PLAN)
@@ -446,13 +449,15 @@ def test_tool_release_lanes_run_the_pinned_release_first_on_path(
             asset=next(iter(requested.assets.values())),
         )
 
-    class Custody:
-        pass
-
-    Custody.toolchain_root = toolchain_root
+    custody = dx.CheckoutCustody(
+        source_root=tmp_path,
+        custody_root=tmp_path,
+        toolchain_root=toolchain_root,
+        kind="durable",
+    )
     monkeypatch.setattr(tool_releases, "provision_tool", provision)
     monkeypatch.setattr(
-        "molt.dx.checkout_custody", lambda root, env=None, **_kwargs: Custody()
+        "molt.dx.checkout_custody", lambda root, env=None, **_kwargs: custody
     )
     ambient = os.pathsep.join([str(tmp_path / "cargo-bin"), str(tmp_path / "other")])
     env, prefixes = ge.prefer_tool_release_prefixes(
@@ -675,9 +680,13 @@ def test_uncaptured_environment_image_cannot_borrow_a_prepared_image_identity(
             }
         ],
     }
-    assert server._decide_child({"requested": str(captured)})["admitted"] is True
-    rejected = server._decide_child({"requested": str(copied)})
+    # The Node hook launches the broker's selection, so an absolute selection
+    # is the image on every host.
+    admitted = server._decide_child({"requested": str(captured)}, "node")
+    assert admitted["admitted"] is True
+    rejected = server._decide_child({"requested": str(copied)}, "node")
     assert rejected["admitted"] is False
     assert rejected["reason"] == "outside-declared-toolchain-closure"
     captured.write_bytes(b"changed-image")
-    assert server._decide_child({"requested": str(captured)})["admitted"] is False
+    changed = server._decide_child({"requested": str(captured)}, "node")
+    assert changed["admitted"] is False

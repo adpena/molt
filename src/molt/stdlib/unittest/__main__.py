@@ -1,17 +1,18 @@
-"""Intrinsic-first stdlib module stub for `unittest.__main__`."""
+"""Main entry point"""
 
-from __future__ import annotations
+import sys
+if sys.argv[0].endswith("__main__.py"):
+    import os.path
+    # We change sys.argv[0] to make help message more useful
+    # use executable without path, unquoted
+    # (it's just a hint anyway)
+    # (if you have spaces in your executable you get what you deserve!)
+    executable = os.path.basename(sys.executable)
+    sys.argv[0] = executable + " -m unittest"
+    del os
 
-from _intrinsics import require_intrinsic as _require_intrinsic
+__unittest = True
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
+from .main import main
 
-
-def __getattr__(attr: str):
-    raise RuntimeError(
-        'stdlib module "unittest.__main__" is not fully lowered yet; only an '
-        "intrinsic-first stub is available."
-    )
-
-
-globals().pop("_require_intrinsic", None)
+main(module=None)

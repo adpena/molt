@@ -393,15 +393,6 @@ fn email_message_default() -> MoltEmailMessage {
     }
 }
 
-fn email_header_get(headers: &[(String, String)], name: &str) -> Option<String> {
-    for (header_name, value) in headers.iter().rev() {
-        if header_name.eq_ignore_ascii_case(name) {
-            return Some(value.clone());
-        }
-    }
-    None
-}
-
 fn email_fold_header(name: &str, value: &str) -> String {
     let prefix = format!("{name}: ");
     if prefix.len() + value.len() <= 78 {
@@ -480,49 +471,6 @@ fn email_serialize_message(message: &MoltEmailMessage) -> String {
     }
     out.push_str(&format!("--{}--\n", boundary));
     out
-}
-
-fn email_parse_simple_message(raw: &str) -> MoltEmailMessage {
-    let mut message = email_message_default();
-    let normalized = raw.replace("\r\n", "\n");
-    let mut split = normalized.splitn(2, "\n\n");
-    let header_block = split.next().unwrap_or_default();
-    let body_block = split.next().unwrap_or_default();
-    let mut last_header: Option<usize> = None;
-    for line in header_block.lines() {
-        if line.starts_with(' ') || line.starts_with('\t') {
-            if let Some(idx) = last_header
-                && let Some((_, value)) = message.headers.get_mut(idx)
-            {
-                value.push(' ');
-                value.push_str(line.trim());
-            }
-            continue;
-        }
-        let Some(colon) = line.find(':') else {
-            continue;
-        };
-        let name = line[..colon].trim().to_string();
-        let value = line[colon + 1..].trim().to_string();
-        if name.eq_ignore_ascii_case("content-type") {
-            let base = value
-                .split(';')
-                .next()
-                .unwrap_or(value.as_str())
-                .trim()
-                .to_string();
-            message.content_type = if base.is_empty() {
-                "text/plain".to_string()
-            } else {
-                base
-            };
-            continue;
-        }
-        message.headers.push((name, value));
-        last_header = Some(message.headers.len().saturating_sub(1));
-    }
-    message.body = body_block.to_string();
-    message
 }
 
 fn email_month_number(token: &str) -> Option<i64> {
@@ -743,35 +691,6 @@ pub extern "C" fn molt_email_message_new() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_from_bytes(data_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let raw = if let Some(ptr) = obj_from_bits(data_bits).as_ptr() {
-            if let Some(bytes) = unsafe { bytes_like_slice(ptr) } {
-                String::from_utf8_lossy(bytes).into_owned()
-            } else if let Some(text) = string_obj_to_owned(obj_from_bits(data_bits)) {
-                text
-            } else {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "message_from_bytes argument must be bytes-like",
-                );
-            }
-        } else if let Some(text) = string_obj_to_owned(obj_from_bits(data_bits)) {
-            text
-        } else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "message_from_bytes argument must be bytes-like",
-            );
-        };
-        let id = email_message_register(email_parse_simple_message(&raw));
-        email_message_bits_from_id(_py, id)
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_email_message_set(
     message_bits: u64,
     name_bits: u64,
@@ -796,34 +715,6 @@ pub extern "C" fn molt_email_message_set(
         };
         message.headers.push((name, value));
         MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_get(message_bits: u64, name_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let id = match email_message_id_from_bits(_py, message_bits) {
-            Ok(id) => id,
-            Err(err) => return err,
-        };
-        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "header name must be str");
-        };
-        let registry = email_message_registry()
-            .lock()
-            .expect("email message registry lock poisoned");
-        let Some(message) = registry.get(&id) else {
-            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
-        };
-        if let Some(value) = email_header_get(&message.headers, &name) {
-            let value_ptr = alloc_string(_py, value.as_bytes());
-            if value_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            MoltObject::from_ptr(value_ptr).bits()
-        } else {
-            MoltObject::none().bits()
-        }
     })
 }
 
@@ -962,126 +853,6 @@ pub extern "C" fn molt_email_message_add_attachment(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_is_multipart(message_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let id = match email_message_id_from_bits(_py, message_bits) {
-            Ok(id) => id,
-            Err(err) => return err,
-        };
-        let registry = email_message_registry()
-            .lock()
-            .expect("email message registry lock poisoned");
-        let Some(message) = registry.get(&id) else {
-            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
-        };
-        MoltObject::from_bool(!message.parts.is_empty()).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_payload(message_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let id = match email_message_id_from_bits(_py, message_bits) {
-            Ok(id) => id,
-            Err(err) => return err,
-        };
-        let (body, parts) = {
-            let registry = email_message_registry()
-                .lock()
-                .expect("email message registry lock poisoned");
-            let Some(message) = registry.get(&id) else {
-                return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
-            };
-            (message.body.clone(), message.parts.clone())
-        };
-        if parts.is_empty() {
-            let body_ptr = alloc_string(_py, body.as_bytes());
-            if body_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            return MoltObject::from_ptr(body_ptr).bits();
-        }
-        let mut handles: Vec<u64> = Vec::with_capacity(parts.len());
-        for part in parts {
-            let handle = email_message_register(part);
-            handles.push(email_message_bits_from_id(_py, handle));
-        }
-        let list_ptr = alloc_list_with_capacity(_py, handles.as_slice(), handles.len());
-        if list_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(list_ptr).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_content(message_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let id = match email_message_id_from_bits(_py, message_bits) {
-            Ok(id) => id,
-            Err(err) => return err,
-        };
-        let registry = email_message_registry()
-            .lock()
-            .expect("email message registry lock poisoned");
-        let Some(message) = registry.get(&id) else {
-            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
-        };
-        let out_ptr = alloc_string(_py, message.body.as_bytes());
-        if out_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(out_ptr).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_content_type(message_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let id = match email_message_id_from_bits(_py, message_bits) {
-            Ok(id) => id,
-            Err(err) => return err,
-        };
-        let registry = email_message_registry()
-            .lock()
-            .expect("email message registry lock poisoned");
-        let Some(message) = registry.get(&id) else {
-            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
-        };
-        let out_ptr = alloc_string(_py, message.content_type.as_bytes());
-        if out_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(out_ptr).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_filename(message_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let id = match email_message_id_from_bits(_py, message_bits) {
-            Ok(id) => id,
-            Err(err) => return err,
-        };
-        let registry = email_message_registry()
-            .lock()
-            .expect("email message registry lock poisoned");
-        let Some(message) = registry.get(&id) else {
-            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
-        };
-        if let Some(filename) = &message.filename {
-            let out_ptr = alloc_string(_py, filename.as_bytes());
-            if out_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            MoltObject::from_ptr(out_ptr).bits()
-        } else {
-            MoltObject::none().bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_email_message_as_string(message_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         let id = match email_message_id_from_bits(_py, message_bits) {
@@ -1100,62 +871,6 @@ pub extern "C" fn molt_email_message_as_string(message_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         MoltObject::from_ptr(out_ptr).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_email_message_items(message_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let id = match email_message_id_from_bits(_py, message_bits) {
-            Ok(id) => id,
-            Err(err) => return err,
-        };
-        let registry = email_message_registry()
-            .lock()
-            .expect("email message registry lock poisoned");
-        let Some(message) = registry.get(&id) else {
-            return raise_exception::<_>(_py, "TypeError", "email message handle is invalid");
-        };
-        let mut pair_bits: Vec<u64> = Vec::with_capacity(message.headers.len());
-        for (name, value) in &message.headers {
-            let name_ptr = alloc_string(_py, name.as_bytes());
-            if name_ptr.is_null() {
-                for bits in pair_bits {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let value_ptr = alloc_string(_py, value.as_bytes());
-            if value_ptr.is_null() {
-                let name_bits = MoltObject::from_ptr(name_ptr).bits();
-                dec_ref_bits(_py, name_bits);
-                for bits in pair_bits {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let name_bits = MoltObject::from_ptr(name_ptr).bits();
-            let value_bits = MoltObject::from_ptr(value_ptr).bits();
-            let tuple_ptr = alloc_tuple(_py, &[name_bits, value_bits]);
-            dec_ref_bits(_py, name_bits);
-            dec_ref_bits(_py, value_bits);
-            if tuple_ptr.is_null() {
-                for bits in pair_bits {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            pair_bits.push(MoltObject::from_ptr(tuple_ptr).bits());
-        }
-        let list_ptr = alloc_list_with_capacity(_py, pair_bits.as_slice(), pair_bits.len());
-        for bits in pair_bits {
-            dec_ref_bits(_py, bits);
-        }
-        if list_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(list_ptr).bits()
-        }
     })
 }
 

@@ -32,7 +32,6 @@ _MOLT_DATACLASSES_CHECK_DEFAULT_ORDER = _require_intrinsic(
 )
 _MOLT_DATACLASSES_FIELD_FLAGS = _require_intrinsic("molt_dataclasses_field_flags")
 _MOLT_DATACLASSES_POST_INIT = _require_intrinsic("molt_dataclasses_post_init")
-_MOLT_DATACLASSES_FIELD_METADATA = _require_intrinsic("molt_dataclasses_field_metadata")
 _MOLT_DATACLASSES_SET_FIELD_METADATA = _require_intrinsic(
     "molt_dataclasses_set_field_metadata"
 )

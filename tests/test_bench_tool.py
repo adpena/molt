@@ -269,6 +269,7 @@ def test_canonical_bench_env_preserves_independent_explicit_artifact_env(
     conformance_defaults = bench_tool.build_molt_conformance_env(
         bench_tool.REPO_ROOT,
         "caller-session",
+        {},
     )
     for key, value in explicit.items():
         if key in conformance_defaults and key not in {

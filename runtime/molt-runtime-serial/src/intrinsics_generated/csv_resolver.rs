@@ -6,10 +6,6 @@ pub fn resolve_symbol_with(
     runtime_fn_addr: fn(&str, *const ()) -> u64,
 ) -> Option<u64> {
     match symbol {
-        "molt_csv_runtime_ready" => Some(runtime_fn_addr(
-            "molt_runtime_serial::csv::molt_csv_runtime_ready",
-            crate::csv::molt_csv_runtime_ready as *const (),
-        )),
         "molt_csv_dict_project" => Some(runtime_fn_addr(
             "molt_runtime_serial::csv::molt_csv_dict_project",
             crate::csv::molt_csv_dict_project as *const (),

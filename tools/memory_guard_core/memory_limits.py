@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
+from typing import Any, cast
 
 
 DEFAULT_MAX_RSS_GB = 12.0
@@ -146,33 +148,6 @@ def _darwin_physical_memory_bytes() -> int | None:
     return None
 
 
-def parse_darwin_vm_stat(text: str) -> tuple[int, dict[str, int]] | None:
-    """Return vm_stat's page size and its page counts by row name."""
-    page_size: int | None = None
-    pages: dict[str, int] = {}
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if line.startswith("Mach Virtual Memory Statistics:"):
-            marker = "page size of "
-            if marker in line:
-                suffix = line.split(marker, 1)[1]
-                digits = "".join(ch for ch in suffix if ch.isdigit())
-                if digits:
-                    page_size = int(digits)
-            continue
-        if ":" not in line:
-            continue
-        name, raw_value = line.split(":", 1)
-        digits = "".join(ch for ch in raw_value if ch.isdigit())
-        if digits:
-            pages[name.strip().strip('"')] = int(digits)
-    if page_size is None or page_size <= 0:
-        return None
-    return page_size, pages
-
-
 # The vm_stat rows the guard counts as available memory.
 DARWIN_AVAILABLE_PAGE_ROWS = (
     "Pages free",
@@ -180,37 +155,163 @@ DARWIN_AVAILABLE_PAGE_ROWS = (
     "Pages speculative",
     "Pages purgeable",
 )
+# <mach/host_info.h> HOST_VM_INFO64 and its count of natural_t words.
+_DARWIN_HOST_VM_INFO64 = 4
+_DARWIN_VM_STATISTICS64_SIZE = 152
 
 
-def _parse_darwin_vm_stat_available_bytes(text: str) -> int | None:
-    parsed = parse_darwin_vm_stat(text)
-    if parsed is None:
+@dataclass(frozen=True, slots=True)
+class _DarwinHostVm:
+    """One process-wide binding of the Mach host VM statistics call."""
+
+    ctypes: Any
+    host: int
+    statistics_type: type[Any]
+    host_statistics64: Callable[..., int]
+    page_size: int
+
+
+def _load_darwin_host_vm() -> _DarwinHostVm:
+    import ctypes
+
+    class VmStatistics64(ctypes.Structure):
+        # <mach/vm_statistics.h> struct vm_statistics64, natural alignment.
+        _fields_ = [
+            ("free_count", ctypes.c_uint32),
+            ("active_count", ctypes.c_uint32),
+            ("inactive_count", ctypes.c_uint32),
+            ("wire_count", ctypes.c_uint32),
+            ("zero_fill_count", ctypes.c_uint64),
+            ("reactivations", ctypes.c_uint64),
+            ("pageins", ctypes.c_uint64),
+            ("pageouts", ctypes.c_uint64),
+            ("faults", ctypes.c_uint64),
+            ("cow_faults", ctypes.c_uint64),
+            ("lookups", ctypes.c_uint64),
+            ("hits", ctypes.c_uint64),
+            ("purges", ctypes.c_uint64),
+            ("purgeable_count", ctypes.c_uint32),
+            ("speculative_count", ctypes.c_uint32),
+            ("decompressions", ctypes.c_uint64),
+            ("compressions", ctypes.c_uint64),
+            ("swapins", ctypes.c_uint64),
+            ("swapouts", ctypes.c_uint64),
+            ("compressor_page_count", ctypes.c_uint32),
+            ("throttled_count", ctypes.c_uint32),
+            ("external_page_count", ctypes.c_uint32),
+            ("internal_page_count", ctypes.c_uint32),
+            ("total_uncompressed_pages_in_compressor", ctypes.c_uint64),
+        ]
+
+    if ctypes.sizeof(VmStatistics64) != _DARWIN_VM_STATISTICS64_SIZE:
+        raise OSError(
+            f"vm_statistics64 layout is {ctypes.sizeof(VmStatistics64)} bytes, "
+            f"kernel ABI needs {_DARWIN_VM_STATISTICS64_SIZE}"
+        )
+    libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    mach_host_self = libsystem.mach_host_self
+    mach_host_self.argtypes = []
+    mach_host_self.restype = ctypes.c_uint32
+    host_page_size = libsystem.host_page_size
+    host_page_size.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_size_t)]
+    host_page_size.restype = ctypes.c_int
+    host_statistics64 = libsystem.host_statistics64
+    host_statistics64.argtypes = [
+        ctypes.c_uint32,
+        ctypes.c_int,
+        ctypes.POINTER(VmStatistics64),
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    host_statistics64.restype = ctypes.c_int
+    # One send right for the life of the process: every mach_host_self call
+    # adds a reference to the same port.
+    host = int(mach_host_self())
+    page_size = ctypes.c_size_t(0)
+    if host_page_size(host, ctypes.byref(page_size)) != 0 or page_size.value <= 0:
+        raise OSError("host_page_size failed")
+    return _DarwinHostVm(
+        ctypes=ctypes,
+        host=host,
+        statistics_type=VmStatistics64,
+        host_statistics64=host_statistics64,
+        page_size=int(page_size.value),
+    )
+
+
+_DARWIN_HOST_VM_UNSET = object()
+_darwin_host_vm_cache: _DarwinHostVm | None | object = _DARWIN_HOST_VM_UNSET
+_darwin_host_vm_lock = threading.Lock()
+
+
+def _darwin_host_vm() -> _DarwinHostVm | None:
+    """Return the one cached Mach binding, including cached unavailability."""
+
+    global _darwin_host_vm_cache
+    cached = _darwin_host_vm_cache
+    if cached is _DARWIN_HOST_VM_UNSET:
+        with _darwin_host_vm_lock:
+            cached = _darwin_host_vm_cache
+            if cached is _DARWIN_HOST_VM_UNSET:
+                try:
+                    cached = _load_darwin_host_vm()
+                except (AttributeError, OSError, TypeError, ValueError):
+                    cached = None
+                _darwin_host_vm_cache = cached
+    return None if cached is None else cast(_DarwinHostVm, cached)
+
+
+def darwin_vm_pages() -> tuple[int, dict[str, int]] | None:
+    """Return the kernel page size and vm_stat's page counts by row name.
+
+    One ``host_statistics64(HOST_VM_INFO64)`` call reads the counters vm_stat
+    prints, derived the way vm_stat derives them (its "Pages free" excludes
+    the speculative pages the kernel counts as free), without a subprocess.
+    """
+
+    binding = _darwin_host_vm()
+    if binding is None:
         return None
-    page_size, pages = parsed
+    ctypes = binding.ctypes
+    stats = binding.statistics_type()
+    count = ctypes.c_uint32(_DARWIN_VM_STATISTICS64_SIZE // 4)
+    if (
+        binding.host_statistics64(
+            binding.host,
+            _DARWIN_HOST_VM_INFO64,
+            ctypes.byref(stats),
+            ctypes.byref(count),
+        )
+        != 0
+    ):
+        return None
+    pages = {
+        "Pages free": max(0, int(stats.free_count) - int(stats.speculative_count)),
+        "Pages active": int(stats.active_count),
+        "Pages inactive": int(stats.inactive_count),
+        "Pages speculative": int(stats.speculative_count),
+        "Pages throttled": int(stats.throttled_count),
+        "Pages wired down": int(stats.wire_count),
+        "Pages purgeable": int(stats.purgeable_count),
+        "File-backed pages": int(stats.external_page_count),
+        "Anonymous pages": int(stats.internal_page_count),
+        "Pages stored in compressor": int(stats.total_uncompressed_pages_in_compressor),
+        "Pages occupied by compressor": int(stats.compressor_page_count),
+    }
+    return binding.page_size, pages
+
+
+def darwin_available_bytes(page_size: int, pages: Mapping[str, int]) -> int | None:
+    """The bytes the guard counts as available from vm_stat's page rows."""
+
     available_pages = sum(pages.get(name, 0) for name in DARWIN_AVAILABLE_PAGE_ROWS)
-    if available_pages <= 0:
+    if page_size <= 0 or available_pages <= 0:
         return None
     return available_pages * page_size
 
 
-def darwin_vm_stat_text() -> str | None:
-    try:
-        result = subprocess.run(
-            ["vm_stat"],
-            capture_output=True,
-            text=True,
-            timeout=1.0,
-            check=False,
-            encoding="utf-8",
-        )
-    except (OSError, subprocess.TimeoutExpired, TypeError):
-        return None
-    return result.stdout if result.returncode == 0 else None
-
-
 def _darwin_available_memory_bytes() -> int | None:
-    text = darwin_vm_stat_text()
-    return None if text is None else _parse_darwin_vm_stat_available_bytes(text)
+    parsed = darwin_vm_pages()
+    return None if parsed is None else darwin_available_bytes(*parsed)
 
 
 def physical_memory_bytes(

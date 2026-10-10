@@ -6,9 +6,6 @@ On non-Windows: module-level __getattr__ raises ImportError.
 
 import sys as _sys
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio.windows_utils provides PipeHandle/pipe/Popen wrappers; overlapped I/O semantics are simplified.
 
@@ -79,6 +76,3 @@ else:
         """Subclass of subprocess.Popen using PipeHandle on Windows."""
 
         pass
-
-
-globals().pop("_require_intrinsic", None)

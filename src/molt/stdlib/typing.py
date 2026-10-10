@@ -23,17 +23,6 @@ try:
 except RuntimeError:
     pass  # fallback to pure-Python identity above
 
-try:
-    _typing_get_origin = _require_intrinsic("molt_typing_get_origin")
-except RuntimeError:
-    _typing_get_origin = None
-
-try:
-    _typing_get_args = _require_intrinsic("molt_typing_get_args")
-except RuntimeError:
-    _typing_get_args = None
-
-_require_intrinsic("molt_stdlib_probe")
 _MOLT_GENERIC_ALIAS_NEW = _require_intrinsic("molt_generic_alias_new")
 _MOLT_TYPING_TYPE_PARAM = _require_intrinsic("molt_typing_type_param")
 _MOLT_RLOCK_NEW = _require_intrinsic("molt_rlock_new")

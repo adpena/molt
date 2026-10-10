@@ -54,8 +54,6 @@ install_registry({{
     "molt_heapq_heappop": _heappop,
     "molt_heapq_heapreplace": _heapreplace,
     "molt_heapq_heappushpop": _heappushpop,
-    "molt_heapq_heapify_max": lambda heap: heap.sort(reverse=True),
-    "molt_heapq_heappop_max": lambda heap: heap.pop(0),
     "molt_heapq_nsmallest": lambda n, iterable, key=None: sorted(iterable, key=key)[:n],
     "molt_heapq_nlargest": lambda n, iterable, key=None: sorted(iterable, key=key, reverse=True)[:n],
     "molt_heapq_merge": lambda iterables, key, reverse: sorted([item for iterable in iterables for item in iterable], key=key, reverse=reverse),

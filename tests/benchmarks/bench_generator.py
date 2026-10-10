@@ -23,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tests import process_guard_common  # noqa: E402
+from molt.dx import scratch_dir  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +32,7 @@ from tests import process_guard_common  # noqa: E402
 
 VERTIGO_ROOT = REPO_ROOT.parent / "vertigo"
 GENERATOR_PY = VERTIGO_ROOT / "site" / "world_engine" / "generator.py"
-DEFAULT_MOLT_BINARY = REPO_ROOT / "tmp" / "generator_molt"
+DEFAULT_MOLT_BINARY = scratch_dir(REPO_ROOT, "generator_molt")
 DEFAULT_RUN_TIMEOUT_SEC = 120.0
 
 
@@ -339,10 +340,9 @@ def main():
         print(f"ERROR: Molt binary not found at {molt_binary}", file=sys.stderr)
         print("Build it first with:", file=sys.stderr)
         print(
-            f"  cd {REPO_ROOT} && ARTIFACT_ROOT=${{MOLT_EXT_ROOT:-$PWD}} "
-            f"MOLT_EXT_ROOT=$ARTIFACT_ROOT CARGO_TARGET_DIR=$ARTIFACT_ROOT/target "
-            f"RUSTC_WRAPPER='' PYTHONPATH=src uv run python -m molt.cli build "
-            f"{generator} --output {molt_binary}",
+            f'  cd {REPO_ROOT} && eval "$(python3 tools/run_context_env.py '
+            f"--format posix)\" && RUSTC_WRAPPER='' PYTHONPATH=src "
+            f"uv run python -m molt.cli build {generator} --output {molt_binary}",
             file=sys.stderr,
         )
         sys.exit(1)

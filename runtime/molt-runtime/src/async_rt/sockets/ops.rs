@@ -312,26 +312,6 @@ pub unsafe extern "C" fn molt_socket_settimeout(sock_bits: u64, timeout_bits: u6
 /// # Safety
 /// Caller must pass valid socket handles and runtime-encoded arguments.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_socket_setblocking(sock_bits: u64, flag_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let socket_ptr = ptr_from_bits(sock_bits);
-        if socket_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let flag = obj_from_bits(flag_bits).as_bool().unwrap_or(false);
-        if flag {
-            socket_set_timeout(socket_ptr, None);
-        } else {
-            socket_set_timeout(socket_ptr, Some(Duration::ZERO));
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[cfg(molt_has_net_io)]
-/// # Safety
-/// Caller must pass valid socket handles and runtime-encoded arguments.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_socket_getblocking(sock_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let socket_ptr = ptr_from_bits(sock_bits);

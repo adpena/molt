@@ -10,8 +10,7 @@ from molt.stdlib_intrinsic_policy import (
     STATUS_INTRINSIC,
     STATUS_INTRINSIC_SUPPORT,
     STATUS_POLICY_GATE,
-    STATUS_PROBE_ONLY,
-    STATUS_PYTHON_ONLY,
+    STATUS_PYTHON_COMPILED,
     StdlibIntrinsicClassification,
     classify_stdlib_module_statuses,
     stdlib_module_import_evidence,
@@ -29,7 +28,7 @@ def test_intrinsic_relationships_do_not_turn_dynamic_metadata_into_static_edges(
     wrapper = tmp_path / "wrapper.py"
     owner.write_text(
         "from _intrinsics import require_intrinsic\n"
-        "READY = require_intrinsic('molt_import_smoke_runtime_ready')\n"
+        "READY = require_intrinsic('molt_capabilities_has')\n"
         "from pkg import _helper\n"
         "FILENAME = '_guessed.py'\n"
         "__package__ = unknown_package()\n"
@@ -70,15 +69,15 @@ def test_intrinsic_relationships_do_not_turn_dynamic_metadata_into_static_edges(
     }
     assert statuses["pkg.owner"] == STATUS_INTRINSIC
     assert statuses["pkg._helper"] == STATUS_INTRINSIC_SUPPORT
-    assert statuses["pkg._guessed"] == STATUS_PYTHON_ONLY
-    assert statuses["pkg.wrapper"] == STATUS_PYTHON_ONLY
+    assert statuses["pkg._guessed"] == STATUS_PYTHON_COMPILED
+    assert statuses["pkg.wrapper"] == STATUS_PYTHON_COMPILED
 
 
 def test_filename_literal_is_not_an_intrinsic_dependency(tmp_path: Path) -> None:
     owner, helper = tmp_path / "owner.py", tmp_path / "_helper.py"
     owner.write_text(
         "from _intrinsics import require_intrinsic\n"
-        "READY = require_intrinsic('molt_import_smoke_runtime_ready')\n"
+        "READY = require_intrinsic('molt_capabilities_has')\n"
         "DOCUMENTATION_EXAMPLE = '_helper.py'\n",
         encoding="utf-8",
     )
@@ -88,7 +87,7 @@ def test_filename_literal_is_not_an_intrinsic_dependency(tmp_path: Path) -> None
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
     assert classification.statuses["pkg.owner"] == STATUS_INTRINSIC
-    assert classification.statuses["pkg._helper"] == STATUS_PYTHON_ONLY
+    assert classification.statuses["pkg._helper"] == STATUS_PYTHON_COMPILED
     assert (
         "pkg._helper" not in classification.import_evidence["pkg.owner"].proven_modules
     )
@@ -155,7 +154,7 @@ def _classify_sources(
 
 _INTRINSIC_OWNER = (
     "from _intrinsics import require_intrinsic\n"
-    "Value = require_intrinsic('molt_import_smoke_runtime_ready')\n"
+    "Value = require_intrinsic('molt_capabilities_has')\n"
 )
 
 
@@ -180,10 +179,10 @@ def test_public_wrapper_uses_exact_top_level_native_provider(tmp_path: Path) -> 
         "class Value: pass\n",
         "raise ImportError('not supported')\n",
         "from _intrinsics import require_intrinsic\n"
-        "Value = require_intrinsic('molt_stdlib_probe')\n",
+        "_VALUE = require_intrinsic('molt_capabilities_has')\n",
         "import stream\nclass Value: pass\n",
     ],
-    ids=["missing", "python", "policy", "probe", "cycle"],
+    ids=["missing", "python", "policy", "unread", "cycle"],
 )
 def test_public_wrapper_requires_independently_backed_native_provider(
     tmp_path: Path, provider_source: str | None
@@ -193,7 +192,7 @@ def test_public_wrapper_requires_independently_backed_native_provider(
         sources["_stream"] = provider_source
     classification = _classify_sources(tmp_path, sources)
 
-    assert classification.statuses["stream"] == STATUS_PYTHON_ONLY
+    assert classification.statuses["stream"] == STATUS_PYTHON_COMPILED
 
 
 @pytest.mark.parametrize(
@@ -219,7 +218,7 @@ def test_private_provider_relationship_is_exact_and_directed(
         },
     )
 
-    assert classification.statuses[wrapper] == STATUS_PYTHON_ONLY
+    assert classification.statuses[wrapper] == STATUS_PYTHON_COMPILED
 
 
 def test_private_provider_requires_a_proved_import_edge(tmp_path: Path) -> None:
@@ -234,7 +233,7 @@ def test_private_provider_requires_a_proved_import_edge(tmp_path: Path) -> None:
         },
     )
 
-    assert classification.statuses["stream"] == STATUS_PYTHON_ONLY
+    assert classification.statuses["stream"] == STATUS_PYTHON_COMPILED
     assert "_stream" not in classification.import_evidence["stream"].proven_modules
     assert classification.unresolved_imports_payload()
 
@@ -251,7 +250,7 @@ def test_private_provider_cannot_bypass_pure_facade_all_owner_proof(
         },
     )
 
-    assert classification.statuses["stream"] == STATUS_PYTHON_ONLY
+    assert classification.statuses["stream"] == STATUS_PYTHON_COMPILED
     assert classification.import_evidence["stream"].facade.owners == {
         "_stream",
         "other",
@@ -341,9 +340,12 @@ def test_facade_uses_explicit_owner_not_fromlist_candidate(
 @pytest.mark.parametrize(
     ("child_source", "expected"),
     [
-        ("VALUE = 1\n", STATUS_PYTHON_ONLY),
-        ("raise ImportError('reserved')\n", STATUS_PYTHON_ONLY),
-        ("VALUE = require_intrinsic('molt_stdlib_probe')\n", STATUS_PYTHON_ONLY),
+        ("VALUE = 1\n", STATUS_PYTHON_COMPILED),
+        ("raise ImportError('reserved')\n", STATUS_PYTHON_COMPILED),
+        (
+            "_VALUE = require_intrinsic('molt_capabilities_has')\n",
+            STATUS_PYTHON_COMPILED,
+        ),
         (_INTRINSIC_OWNER, STATUS_INTRINSIC_SUPPORT),
     ],
 )
@@ -405,7 +407,7 @@ def test_real_child_without_python_status_cannot_establish_facade_support(
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
     assert "owner.Value" not in classification.statuses
-    assert classification.statuses["_facade"] == STATUS_PYTHON_ONLY
+    assert classification.statuses["_facade"] == STATUS_PYTHON_COMPILED
     facade = classification.import_evidence["_facade"].facade
     assert facade is not None and facade.owners == {"owner", "owner.Value"}
 
@@ -421,8 +423,8 @@ def test_real_child_facade_cycle_cannot_use_intrinsic_parent_as_anchor(
             "owner": _INTRINSIC_OWNER,
         },
     )
-    assert classification.statuses["_facade"] == STATUS_PYTHON_ONLY
-    assert classification.statuses["owner._child"] == STATUS_PYTHON_ONLY
+    assert classification.statuses["_facade"] == STATUS_PYTHON_COMPILED
+    assert classification.statuses["owner._child"] == STATUS_PYTHON_COMPILED
 
 
 def test_facade_chains_close_independent_of_graph_order(tmp_path: Path) -> None:
@@ -462,9 +464,12 @@ def test_facade_accepts_multiple_intrinsic_owners(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("source", "status"),
     [
-        ("Value = 1\n", STATUS_PYTHON_ONLY),
+        ("Value = 1\n", STATUS_PYTHON_COMPILED),
         ("raise ImportError('reserved')\n", STATUS_POLICY_GATE),
-        ("Value = require_intrinsic('molt_stdlib_probe')\n", STATUS_PROBE_ONLY),
+        (
+            "_unread = require_intrinsic('molt_capabilities_has')\n",
+            STATUS_PYTHON_COMPILED,
+        ),
         (None, None),
     ],
 )
@@ -483,7 +488,7 @@ def test_facade_mixed_owners_fail_closed_even_in_same_package(
     if source is not None:
         sources[f"{prefix}other"] = source
     classification = _classify_sources(tmp_path, sources)
-    assert classification.statuses[f"{prefix}_facade"] == STATUS_PYTHON_ONLY
+    assert classification.statuses[f"{prefix}_facade"] == STATUS_PYTHON_COMPILED
     assert classification.statuses.get(f"{prefix}other") == status
     assert classification.facades_payload()[0]["reason"] is None
 
@@ -508,8 +513,8 @@ def test_facade_cycle_cannot_seed_itself_or_use_reverse_support(
             f"{prefix}owner": _INTRINSIC_OWNER + f"import {prefix}_first\n",
         },
     )
-    assert classification.statuses[f"{prefix}_first"] == STATUS_PYTHON_ONLY
-    assert classification.statuses[f"{prefix}_second"] == STATUS_PYTHON_ONLY
+    assert classification.statuses[f"{prefix}_first"] == STATUS_PYTHON_COMPILED
+    assert classification.statuses[f"{prefix}_second"] == STATUS_PYTHON_COMPILED
     assert classification.statuses[f"{prefix}owner"] == STATUS_INTRINSIC
 
 
@@ -524,7 +529,7 @@ def test_intrinsic_fromlist_candidate_cannot_replace_missing_or_python_owner(
     if owner_source is not None:
         sources["owner"] = owner_source
     classification = _classify_sources(tmp_path, sources)
-    assert classification.statuses["_facade"] == STATUS_PYTHON_ONLY
+    assert classification.statuses["_facade"] == STATUS_PYTHON_COMPILED
 
 
 def test_facade_relative_owner_uses_shared_import_context(
@@ -577,7 +582,7 @@ def test_unresolved_facade_owner_does_not_fall_through_to_resolved_sibling(
             "pkg.owner": _INTRINSIC_OWNER,
         },
     )
-    assert classification.statuses["pkg._facade"] == STATUS_PYTHON_ONLY
+    assert classification.statuses["pkg._facade"] == STATUS_PYTHON_COMPILED
     facade = classification.import_evidence["pkg._facade"].facade
     assert facade is not None and not facade.resolved
     assert tuple(binding.owner_module for binding in facade.bindings) == owners
@@ -633,7 +638,7 @@ def test_executable_or_incomplete_facade_shapes_are_not_private_forwarding(
     classification = _classify_sources(
         tmp_path, {"_facade": source, "owner": _INTRINSIC_OWNER}
     )
-    assert classification.statuses["_facade"] == STATUS_PYTHON_ONLY
+    assert classification.statuses["_facade"] == STATUS_PYTHON_COMPILED
     assert classification.import_evidence["_facade"].facade is None
     assert classification.facades_payload() == []
 
@@ -672,7 +677,7 @@ def test_import_only_forwarding_cannot_hide_an_unproved_owner(tmp_path, other_so
     if other_source is not None:
         sources["other"] = other_source
     classification = _classify_sources(tmp_path, sources)
-    assert classification.statuses["public"] == STATUS_PYTHON_ONLY
+    assert classification.statuses["public"] == STATUS_PYTHON_COMPILED
     assert classification.import_evidence["public"].facade.owners == {"owner", "other"}
 
 
@@ -687,7 +692,7 @@ def test_star_facade_cannot_prove_a_later_relative_owner(tmp_path: Path) -> None
             "other.child": "Value = 1\n",
         },
     )
-    assert classification.statuses["pkg.facade"] == STATUS_PYTHON_ONLY
+    assert classification.statuses["pkg.facade"] == STATUS_PYTHON_COMPILED
     evidence = classification.import_evidence["pkg.facade"]
     assert "pkg.child" not in evidence.proven_modules
     assert evidence.unresolved_sites

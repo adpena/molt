@@ -21,9 +21,22 @@ before the proof child starts; the queue does not substitute a PATH proxy.
 Executable lookup uses captured environment values and the command working
 directory, including relative PATH entries and explicit `./tool` paths. Windows
 suffix candidates follow CPython `shutil.which` with executable access required.
-Python child audit custody preserves CPython's distinction between inherited,
-missing, and empty PATH. Generator dependencies resolve `rustfmt` through PATH;
-the Cargo-specific `RUSTFMT` hook remains a separate captured build-tool input.
+The queue then runs the selected absolute path, so the selection is the image.
+Generator dependencies resolve `rustfmt` through PATH; the Cargo-specific
+`RUSTFMT` hook remains a separate captured build-tool input.
+
+A child launch from inside a proof follows a different rule, because the hook
+admits or refuses a launch but does not choose its image. The broker predicts
+the image the launch runs. On POSIX, CPython searches the child's PATH from the
+child's cwd, and Python child custody keeps CPython's distinction between
+inherited, missing and empty PATH. On Windows, `CreateProcessW` resolves the
+image in the calling process: its image directory, its current directory, the
+system directories, then its own PATH, appending only `.exe`. The child's `env`
+and `cwd` take no part. `tools/proof_queue_pkg/windows_createprocess.py` owns
+that model. Where Microsoft's documentation contradicts itself or is silent, the
+broker admits an image only when every reading runs it, and refuses otherwise.
+The Node hook launches the broker's selection itself; on Windows that selection
+must name a file with an extension, or libuv would append `.com` or `.exe`.
 
 Rust tool identity resolves the selected physical component before reuse. A change
 to a rustup override invalidates reuse even when proxy bytes are unchanged. Explicit
@@ -992,8 +1005,12 @@ probe: lexical parent traversal, verbatim trailing-dot/space components,
 non-DOS/non-UNC or malformed verbatim namespaces, and ambiguous or unavailable
 entry spelling. Admitted Windows extended-prefix projections must retain the
 original entry. These are proof-custody capability limits; ordinary compiler
-selection preserves its selected path and traversal. Optional driver spelling
-normalization cannot turn a valid product path into a proof-admission failure.
+selection preserves its selected path and traversal. Windows custody looks up
+real entries, so it cannot spell an absent file; POSIX custody is lexical. An
+owner that refuses an absent file takes it through
+`process_image_capture.custody_file` and gives the same typed refusal on every
+host. Optional driver spelling normalization cannot turn a valid product path
+into a proof-admission failure.
 Native Windows execution and lookup cost require their own qualification.
 
 Cargo build-script header discovery is independent of Rust linker selection.
@@ -1048,19 +1065,23 @@ Provision and toolchain-location telemetry record each `tool_identity_reuse`
 decision (`hit`, or `miss` with `absent`, `key-collision` or
 `revalidation-drift`) so a receipt shows which probes were skipped.
 
-Memory-guard process sampling reads native process tables: Linux parses one
-`/proc/<pid>/stat` row for ancestry, start marker and resident set, and macOS
-enumerates through `proc_listallpids`/`proc_pidinfo` instead of a `ps`
-subprocess with a hard timeout. Another user's process carries zero resident
-kB on macOS because `PROC_PIDTASKINFO` is uid-restricted; the guard never
-sizes those, since global RSS sums only Molt-owned process groups. A process
-that exited and awaits its parent's `wait()` stays listed by
-`proc_listallpids` while every `proc_pidinfo` flavor answers ESRCH; the
-sampler then reads its `kern.proc.pid` row (the table `ps` reads, with the
-same birth clock as `pbi_start_tvsec`) and leaves `SZOMB` rows out, so a
-killed child is never reported as a live member of its tree. A pid with no
-kernel row was reaped between the two reads; any other row binds the exact
-birth the kernel kept.
+Memory-guard process sampling reads native process tables and costs one kernel
+row per host process plus argv only for the processes a decision visits. Linux
+parses one `/proc/<pid>/stat` row for ancestry, start marker and resident set.
+macOS reads every `kern.proc` row (the table `ps` reads) in one `KERN_PROC_ALL`
+sysctl, with parent, group, birth, status, name and effective uid, and sizes
+each readable process through `PROC_PIDTASKINFO`; there is no `ps` subprocess.
+A row binds its argv (`cmdline`, or `KERN_PROCARGS2`) the first time a caller
+reads its command, and the read proves the pid still names the sampled birth;
+otherwise the row keeps its sampled identity with an explicitly unknown argv.
+Host-protection decisions (`ProtectedProcessGroups`) decide only the process
+groups a caller asks about, so a guard deciding about its own tree reads argv
+for that tree and its ancestry, not for the host. An exited, unreaped
+(`SZOMB`) row is left out, so a killed child is never reported as a live
+member of its tree. XNU answers argv and task info only to a caller with the
+process's effective uid, or root; such a withheld row (a system daemon, another
+user's process, a setuid child) keeps its group and name and binds no ancestry,
+birth or resident set, since global RSS sums only Molt-owned process groups.
 
 Python custody additionally binds the venv launcher and `pyvenv.cfg`, base
 CPython executable and shared libraries, stdlib and native-extension byte

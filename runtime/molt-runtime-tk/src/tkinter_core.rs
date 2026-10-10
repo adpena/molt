@@ -23,13 +23,11 @@
 
 mod color;
 mod common;
-mod conversion;
 mod event;
 mod options;
 mod tcl_list;
 
 pub use color::molt_tk_hex_to_rgb;
-pub use conversion::{molt_tk_convert_stringval, molt_tk_normalize_delay_ms};
 pub use event::{molt_tk_event_build_from_args, molt_tk_event_int, molt_tk_event_state_decode};
-pub use options::{molt_tk_cnfmerge, molt_tk_flatten_args, molt_tk_normalize_option};
+pub use options::{molt_tk_cnfmerge, molt_tk_flatten_args};
 pub use tcl_list::molt_tk_splitdict;

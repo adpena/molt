@@ -11,7 +11,6 @@ pub(crate) const PURE_PROFILE_SKIP_PREFIXES: &[&str] = &[
     "file_",
     "stream_",
     "path_exists",
-    "path_listdir",
     "path_mkdir",
     "path_unlink",
     "path_rmdir",

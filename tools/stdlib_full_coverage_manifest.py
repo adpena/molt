@@ -1,14 +1,14 @@
 """Authoritative stdlib full-coverage attestation manifest.
 
-Any stdlib module/submodule absent from this tuple is classified as
-`intrinsic-partial` by `tools/check_stdlib_intrinsics.py`.
+Any intrinsic-reading stdlib module/submodule absent from this tuple is
+classified as `intrinsic-partial` by `tools/check_stdlib_intrinsics.py`.
 
 Update workflow:
 1. Add module/submodule names to `STDLIB_FULLY_COVERED_MODULES` only after full
    CPython 3.12+ API/PEP parity is landed for Molt-supported semantics.
 2. Add an explicit required-intrinsics tuple for every attested module in
-   `STDLIB_REQUIRED_INTRINSICS_BY_MODULE` (empty tuple is allowed only when the
-   module intentionally has no direct intrinsic loads).
+   `STDLIB_REQUIRED_INTRINSICS_BY_MODULE`: the intrinsics the module reads. A
+   `python-compiled` module reads none, so its tuple is empty.
 """
 
 from __future__ import annotations
@@ -113,19 +113,14 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_ordereddict_update",
         "molt_ordereddict_values",
     ),
-    "_collections_abc": (
-        "molt_abc_bootstrap",
-        "molt_collections_abc_runtime_types",
-    ),
-    "_csv": ("molt_csv_runtime_ready",),
+    "_collections_abc": ("molt_collections_abc_runtime_types",),
+    "_csv": (),
     "_json": (
         "molt_json_encode_basestring_ascii_obj",
         "molt_json_encode_basestring_obj",
-        "molt_json_parse_scalar_obj",
         "molt_json_scanstring_obj",
     ),
     "_opcode": (
-        "molt_import_smoke_runtime_ready",
         "molt_opcode_get_specialization_stats",
         "molt_opcode_stack_effect",
     ),
@@ -184,10 +179,7 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_operator_truth",
         "molt_operator_xor",
     ),
-    "_pickle": (
-        "molt_pickle_dumps_core",
-        "molt_pickle_loads_core",
-    ),
+    "_pickle": (),
     "_queue": (
         "molt_queue_drop",
         "molt_queue_empty",
@@ -233,10 +225,6 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_contextlib_async_exitstack_exit",
         "molt_contextlib_async_exitstack_push_callback",
         "molt_contextlib_async_exitstack_push_exit",
-        "molt_contextlib_asyncgen_cm_aenter",
-        "molt_contextlib_asyncgen_cm_aexit",
-        "molt_contextlib_asyncgen_cm_drop",
-        "molt_contextlib_asyncgen_cm_new",
         "molt_contextlib_chdir_enter",
         "molt_contextlib_chdir_exit",
         "molt_contextlib_closing",
@@ -245,7 +233,6 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_contextlib_exitstack_enter_context",
         "molt_contextlib_exitstack_exit",
         "molt_contextlib_exitstack_new",
-        "molt_contextlib_exitstack_pop",
         "molt_contextlib_exitstack_pop_all",
         "molt_contextlib_exitstack_push",
         "molt_contextlib_exitstack_push_callback",
@@ -255,17 +242,7 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_contextlib_redirect_exit",
         "molt_contextlib_suppress_match",
     ),
-    "difflib": (
-        "molt_difflib_ratio",
-        "molt_difflib_quick_ratio",
-        "molt_difflib_get_matching_blocks",
-        "molt_difflib_get_opcodes",
-        "molt_difflib_unified_diff",
-        "molt_difflib_context_diff",
-        "molt_difflib_ndiff",
-        "molt_difflib_get_close_matches",
-        "molt_difflib_is_junk",
-    ),
+    "difflib": (),
     "email.quoprimime": (
         "molt_email_quoprimime_body_check",
         "molt_email_quoprimime_body_encode",
@@ -434,11 +411,8 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_math_trunc",
         "molt_math_ulp",
     ),
-    "opcode": (
-        "molt_import_smoke_runtime_ready",
-        "molt_opcode_payload_312_json",
-    ),
-    "operator": ("molt_operator_truth",),
+    "opcode": ("molt_opcode_payload_312_json",),
+    "operator": (),
     "quopri": (
         "molt_quopri_decode",
         "molt_quopri_encode",
@@ -550,7 +524,6 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_socket_sendmsg",
         "molt_socket_sendmsg_afalg",
         "molt_socket_sendto",
-        "molt_socket_setblocking",
         "molt_socket_sethostname",
         "molt_socket_setsockopt",
         "molt_socket_settimeout",
@@ -591,11 +564,8 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
     # Module-local loads only: ref/type/count/refs are delegated to _weakref;
     # ReferenceType construction owns registration and callback-free interning.
     "weakref": (
-        "molt_weakref_callback",
         "molt_weakref_finalize_track",
         "molt_weakref_finalize_untrack",
-        "molt_weakref_get",
-        "molt_weakref_peek",
         "molt_weakcontainer_clear",
         "molt_weakcontainer_contains",
         "molt_weakcontainer_dead",

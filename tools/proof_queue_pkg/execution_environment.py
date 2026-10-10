@@ -794,8 +794,8 @@ def _locate_toolchain_watch_roots(
             or not isinstance(prefix_raw, str)
         ):
             raise ValueError("proof Python toolchain locator has no executable chain")
-        executable = process_image_capture.custody_path(Path(executable_raw))
-        if not executable.is_file():
+        executable = process_image_capture.custody_file(Path(executable_raw))
+        if executable is None:
             raise ValueError(
                 "proof Python toolchain locator has no selected executable"
             )

@@ -12,15 +12,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
-_MOLT_IMPORT_SMOKE_RUNTIME_READY()
-del _MOLT_IMPORT_SMOKE_RUNTIME_READY
 
 # Probe intrinsic — required by the molt stdlib enforcement policy so this
 # module is recognized as a thin runtime-backed module rather than pure Python.
-_MOLT_STDLIB_PROBE = _require_intrinsic("molt_stdlib_probe")
 
 
 __all__ = ["Template", "Interpolation", "convert"]
@@ -194,4 +188,3 @@ class Template:
 
 # Drop the helper alias so `_require_intrinsic` does not leak as a module
 # attribute (matches sibling stdlib modules).
-globals().pop("_require_intrinsic", None)

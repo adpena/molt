@@ -231,11 +231,14 @@ def test_harness_repo_sentinel_uses_canonical_artifact_root(
     )
     limits = harness_layers.harness_memory_limits()
 
-    with harness_layers.harness_repo_sentinel(tmp_path, limits=limits):
+    external = tmp_path / "external"
+    project = tmp_path / "project"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(external))
+    with harness_layers.harness_repo_sentinel(project, limits=limits):
         calls.append({"event": "body"})
 
-    assert calls[0]["repo_root"] == tmp_path
-    assert calls[0]["artifact_root"] == tmp_path / "tmp" / "harness"
+    assert calls[0]["repo_root"] == project
+    assert calls[0]["artifact_root"] == external.resolve() / "tmp" / "harness"
     assert calls[0]["label"] == "molt_harness"
     assert calls[0]["limits"] is limits
     assert [call["event"] for call in calls[1:]] == ["enter", "body", "exit"]

@@ -19,8 +19,6 @@ import warnings as _warnings
 import weakref as _weakref
 from typing import TYPE_CHECKING, Any, Callable, cast as _cast
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 import asyncio as _asyncio
 from asyncio import (
@@ -1862,5 +1860,3 @@ if _VERSION_INFO < (3, 14):
     __all__.extend(["AbstractEventLoopPolicy", "BaseDefaultEventLoopPolicy"])
 if _EXPOSE_CHILD_WATCHERS:
     __all__.extend(["get_child_watcher", "set_child_watcher"])
-
-globals().pop("_require_intrinsic", None)

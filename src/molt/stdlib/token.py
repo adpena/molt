@@ -6,10 +6,8 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 __all__ = ["tok_name", "ISTERMINAL", "ISNONTERMINAL", "ISEOF", "EXACT_TOKEN_TYPES"]
 
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
 _MOLT_TOKEN_PAYLOAD_312 = _require_intrinsic("molt_token_payload_312")
 
-_MOLT_IMPORT_SMOKE_RUNTIME_READY()
 
 _TOKEN_PAYLOAD_SCHEMA = "molt.token_payload.312.v1"
 _TOKEN_PAYLOAD_MINOR = "3.12"

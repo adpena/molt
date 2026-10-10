@@ -23,6 +23,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct script import from tool
     import harness_memory_guard  # type: ignore
 
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
+from molt.dx import scratch_dir  # noqa: E402
 
 SANITIZERS = {
     "asan": "address",
@@ -36,9 +37,7 @@ def _miri_tmp_root(env: Mapping[str, str] | None = None) -> Path:
     explicit = env_view.get("MOLT_DIFF_TMPDIR") or env_view.get("TMPDIR")
     if explicit:
         return Path(explicit).expanduser()
-    ext_root = env_view.get("MOLT_EXT_ROOT")
-    base = Path(ext_root).expanduser() if ext_root else ROOT
-    return base / "tmp" / "runtime_safety" / "miri"
+    return scratch_dir(ROOT, "runtime_safety/miri", env_view)
 
 
 def _run(

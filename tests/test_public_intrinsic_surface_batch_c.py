@@ -118,7 +118,6 @@ install_registry({{
     "molt_copy_memo_new": lambda: 1,
     "molt_copy_memo_drop": lambda handle: None,
     "molt_copy_error": lambda msg: None,
-    "molt_copy_replace": lambda obj, changes: obj,
     "molt_operator_truth": lambda value=True: bool(value),
 }})
 

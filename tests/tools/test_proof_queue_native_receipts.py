@@ -128,7 +128,6 @@ def test_native_execution_context_rehashes_nonce_custody_and_transcript_artifact
         return
     factory = partial(
         publish_receipt_custody,
-        synthetic_python_toolchain,
         supervisor_binary=binary,
         execute_supervisor=execute,
         required_environment=required_environment,

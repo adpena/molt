@@ -8,7 +8,6 @@ We keep this module present so package layouts match CPython 3.12+ expectations.
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 # Keep imports at the top for lint; this is still intrinsic-first (no host fallback).
 from typing import Any
@@ -16,7 +15,6 @@ from typing import Any
 import re as _re
 
 # Avoid probe-only classification: this shim must still be intrinsic-backed.
-_require_intrinsic("molt_re_literal_advance")
 
 error = _re.error
 
@@ -34,6 +32,3 @@ def parse(pattern: str, flags: int = 0) -> Any:
     if parser is None:
         raise RuntimeError("re parser unavailable in this build")
     return parser(pattern).parse()
-
-
-globals().pop("_require_intrinsic", None)

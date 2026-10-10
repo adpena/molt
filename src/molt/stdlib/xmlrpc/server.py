@@ -7,9 +7,6 @@ from typing import Any, Callable
 
 from wsgiref.simple_server import make_server
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_XMLRPC_RUNTIME_READY = _require_intrinsic("molt_xmlrpc_runtime_ready")
 
 # TODO(stdlib-compat, owner:runtime, milestone:TL3, priority:P2, status:planned): extend XML-RPC coverage to support full marshalling/fault handling and introspection APIs with Rust-backed parsing/serialization.
 
@@ -103,5 +100,3 @@ class SimpleXMLRPCServer:
 
 
 __all__ = ["SimpleXMLRPCServer"]
-
-globals().pop("_require_intrinsic", None)

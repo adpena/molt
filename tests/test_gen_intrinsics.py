@@ -342,11 +342,10 @@ def test_stringprep_resolver_is_leaf_owned() -> None:
     )
 
 
-def test_collections_and_argparse_categories_are_toml_owned() -> None:
+def test_collections_categories_are_toml_owned() -> None:
     module = _load_gen_intrinsics_module()
     builtin_symbols, internal_prefixes, stdlib_modules = module._load_categories()
 
-    assert stdlib_modules["argparse"] == ["molt_argparse_"]
     assert stdlib_modules["collections"] == [
         "molt_namedtuple_",
         "molt_ordereddict_",
@@ -355,7 +354,6 @@ def test_collections_and_argparse_categories_are_toml_owned() -> None:
         "molt_chainmap_",
     ]
     for prefix in (
-        "molt_argparse_",
         "molt_namedtuple_",
         "molt_ordereddict_",
         "molt_defaultdict_",
@@ -364,15 +362,6 @@ def test_collections_and_argparse_categories_are_toml_owned() -> None:
     ):
         assert all(prefix != extra[0] for extra in module._EXTRA_PREFIX_MODULES)
 
-    assert (
-        module._classify_symbol(
-            "molt_argparse_parser_new",
-            builtin_symbols,
-            internal_prefixes,
-            stdlib_modules,
-        )
-        == "argparse"
-    )
     assert (
         module._classify_symbol(
             "molt_deque_append",
@@ -393,65 +382,25 @@ def test_collections_and_argparse_categories_are_toml_owned() -> None:
     )
 
 
-def test_zipapp_runtime_probe_is_not_archive_leaf_owned() -> None:
-    module = _load_gen_intrinsics_module()
-    builtin_symbols, internal_prefixes, stdlib_modules = module._load_categories()
-
-    assert (
-        module._classify_symbol(
-            "molt_zipapp_runtime_ready",
-            builtin_symbols,
-            internal_prefixes,
-            stdlib_modules,
-        )
-        == "core"
-    )
-    assert ("molt_zipapp_", "archive") not in module._EXTRA_PREFIX_MODULES
-
-
-def test_collections_and_argparse_resolvers_are_leaf_owned() -> None:
+def test_collections_resolvers_are_leaf_owned() -> None:
     resolver_root = ROOT / "runtime/molt-runtime/src/intrinsics/generated_resolvers"
-    facade_argparse = (resolver_root / "argparse_resolver.rs").read_text(
-        encoding="utf-8"
-    )
     facade_collections = (resolver_root / "collections_resolver.rs").read_text(
         encoding="utf-8"
     )
     leaf_root = ROOT / "runtime/molt-runtime-collections/src/intrinsics_generated"
     leaf_index = (leaf_root / "mod.rs").read_text(encoding="utf-8")
-    leaf_argparse = (leaf_root / "argparse_resolver.rs").read_text(encoding="utf-8")
     leaf_collections = (leaf_root / "collections_resolver.rs").read_text(
         encoding="utf-8"
     )
-    generated = (ROOT / "runtime/molt-runtime/src/intrinsics/generated.rs").read_text(
-        encoding="utf-8"
-    )
-    manifest = (ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi").read_text(
-        encoding="utf-8"
-    )
-
-    assert "def molt_argparse_parse(" not in manifest
-    assert 'name: "molt_argparse_parse"' not in generated
-    assert "pub mod argparse_resolver;" in leaf_index
     assert "pub mod collections_resolver;" in leaf_index
 
-    assert (
-        "molt_runtime_collections::intrinsics_generated::argparse_resolver"
-        "::resolve_symbol_with" in facade_argparse
-    )
     assert (
         "molt_runtime_collections::intrinsics_generated::collections_resolver"
         "::resolve_symbol_with" in facade_collections
     )
-    assert "crate::molt_argparse_parser_new as *const ()" not in facade_argparse
     assert "crate::molt_deque_append as *const ()" not in facade_collections
-    assert "crate::builtins::functions::runtime_fn_addr" in facade_argparse
     assert "crate::builtins::functions::runtime_fn_addr" in facade_collections
 
-    assert "crate::argparse::molt_argparse_parser_new as *const ()" in leaf_argparse
-    assert (
-        "molt_runtime_collections::argparse::molt_argparse_parser_new" in leaf_argparse
-    )
     assert "crate::collections_ext::molt_deque_append as *const ()" in (
         leaf_collections
     )

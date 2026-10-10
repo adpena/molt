@@ -21,10 +21,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_json_scanstring_obj",
             crate::molt_json_scanstring_obj as *const (),
         )),
-        "molt_json_detect_encoding" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_json_detect_encoding",
-            crate::molt_json_detect_encoding as *const (),
-        )),
         "molt_json_dumps" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_json_dumps",
             crate::molt_json_dumps as *const (),
@@ -32,10 +28,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_json_dumps_ex" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_json_dumps_ex",
             crate::molt_json_dumps_ex as *const (),
-        )),
-        "molt_json_loads" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_json_loads",
-            crate::molt_json_loads as *const (),
         )),
         "molt_json_loads_ex" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_json_loads_ex",

@@ -28,8 +28,10 @@ from tools.memory_guard_core import (
 
 import tools.memory_guard as memory_guard
 from molt.backend_daemon_suite_custody import LEASE_ENV
-from molt.custody_layout import unconfigured_state_root
+import molt.dx as molt_dx
+from molt.custody_layout import out_of_tree_scratch_root
 from tests.process_guard_common import (
+    check_output_guarded_test_process,
     install_module_os_view,
     install_module_view,
     start_owned_test_process,
@@ -908,22 +910,39 @@ def test_new_guard_preserves_prior_custody_records(tmp_path: Path) -> None:
     assert {path: path.read_bytes() for path in prior} == prior
 
 
-def test_active_guard_markers_follow_external_artifact_custody(tmp_path: Path) -> None:
+def test_active_guard_markers_follow_external_artifact_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo_root = tmp_path / "repo"
     artifact_root = tmp_path / "artifacts"
+    # The synthetic repo is a plain clone, not explicit host scratch.
+    monkeypatch.setattr(
+        molt_dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
 
-    # Unconfigured guard state belongs to the checkout family, never the tree.
+    # A plain clone's guard state goes to its out-of-tree scratch.
     default_markers = active_guard_marker_dir(repo_root, {})
     assert default_markers == (
-        unconfigured_state_root(repo_root) / "tmp" / "memory_guard" / "active"
-    ).resolve(strict=False)
+        out_of_tree_scratch_root(repo_root) / "memory_guard" / "active"
+    )
     assert repo_root.resolve() not in default_markers.parents
     assert active_guard_marker_dir(
         repo_root, {"MOLT_EXT_ROOT": str(artifact_root)}
     ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(strict=False)
-    assert active_guard_marker_dir(
-        repo_root, {"MOLT_EXTERNAL_ARTIFACT_ROOTS": str(artifact_root)}
-    ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(strict=False)
+    # Candidate roots count only when the run asks for an external root.
+    assert (
+        active_guard_marker_dir(
+            repo_root, {"MOLT_EXTERNAL_ARTIFACT_ROOTS": str(artifact_root)}
+        )
+        == default_markers
+    )
+    # Memory scratch never moves the markers every observer reads.
+    ram = tmp_path / "ram"
+    ram.mkdir()
+    assert (
+        active_guard_marker_dir(repo_root, {"MOLT_SCRATCH_STORAGE": str(ram)})
+        == default_markers
+    )
     state_root = tmp_path / "proof-control" / "memory_guard"
     assert active_guard_marker_dir(
         repo_root,
@@ -1047,7 +1066,7 @@ def test_linux_proc_sampler_binds_lineage_identity_command_and_rss(
     assert samples[200].elapsed_sec is not None
 
 
-def test_linux_proc_sampler_discards_reuse_between_bound_reads(
+def test_linux_proc_sampler_binds_no_argv_for_a_pid_reused_before_its_read(
     tmp_path: Path,
 ) -> None:
     _write_linux_proc_sample(
@@ -1064,12 +1083,46 @@ def test_linux_proc_sampler_discards_reuse_between_bound_reads(
         )
     )
 
-    with pytest.raises(memory_guard.ProcessSnapshotError, match="no stable rows"):
-        memory_guard.sample_processes_linux_proc(
-            tmp_path,
-            stat_reader=lambda _pid, _root: next(observations),
-            uptime_sec=1000.0,
-        )
+    sample = memory_guard.sample_processes_linux_proc(
+        tmp_path,
+        stat_reader=lambda _pid, _root: next(observations),
+        uptime_sec=1000.0,
+    )[200]
+
+    # The snapshot keeps the instance it read; the later cmdline belongs to
+    # another birth, so it binds no argv.
+    assert (sample.ppid, sample.pgid, sample.started_at_ns) == (100, 200, 321_000)
+    assert sample.argv == ()
+    assert sample.command == "worker"
+
+
+def test_linux_proc_sampler_reads_cmdline_only_for_rows_a_caller_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = memory_guard._process_model
+    for pid in (200, 201, 202):
+        _write_linux_proc_sample(tmp_path, pid=pid, ppid=1, pgid=pid, start_ticks=pid)
+    reads: list[int] = []
+    real_argv = model._linux_proc_argv
+
+    def counted_argv(pid: int, proc_root: Path) -> tuple[str, ...] | None:
+        reads.append(pid)
+        return real_argv(pid, proc_root)
+
+    monkeypatch.setattr(model, "_linux_proc_argv", counted_argv)
+    samples = model.sample_processes_linux_proc(
+        tmp_path,
+        stat_reader=lambda pid, _root: (1, pid, pid * 10_000_000, "worker"),
+        uptime_sec=1000.0,
+    )
+
+    assert reads == []
+    assert sorted(samples) == [200, 201, 202]
+    assert samples[201].command == "python worker.py"
+    assert samples[201].argv == ("python", "worker.py")
+    assert samples[201].command == "python worker.py"
+    assert reads == [201]
 
 
 def test_linux_proc_sampler_preserves_typed_enumeration_failure(
@@ -1079,55 +1132,17 @@ def test_linux_proc_sampler_preserves_typed_enumeration_failure(
         memory_guard.sample_processes_linux_proc(tmp_path / "missing")
 
 
-def test_darwin_sampler_keeps_bound_launcher_arguments_for_host_protection(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    model = memory_guard._process_model
-    monkeypatch.setattr(model.sys, "platform", "darwin")
-    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {7: 2048})
-    metadata = (3, 7, 123_456_789, "node")
-    monkeypatch.setattr(model, "_darwin_proc_metadata", lambda _pid: metadata)
-    monkeypatch.setattr(
-        model,
-        "_darwin_proc_argv",
-        lambda _pid: (
-            "node",
-            "/opt/node_modules/@openai/codex/bin/codex.js",
-            "app-server",
-        ),
-    )
-
-    samples = model.sample_processes_posix()
-
-    assert samples[7].ppid == 3
-    assert samples[7].started_at_ns == 123_456_789
-    assert "@openai/codex" in samples[7].command
-    assert memory_guard.is_host_control_plane_process(samples[7])
-
-
-def test_darwin_sampler_revokes_identity_when_native_binding_changes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    model = memory_guard._process_model
-    monkeypatch.setattr(model.sys, "platform", "darwin")
-    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {7: 2048})
-    metadata = iter(
-        (
-            (3, 7, 123_456_789, "node"),
-            (4, 7, 123_456_790, "node"),
-        )
-    )
-    monkeypatch.setattr(model, "_darwin_proc_metadata", lambda _pid: next(metadata))
-    monkeypatch.setattr(model, "_darwin_proc_argv", lambda _pid: ("node", "codex.js"))
-
-    samples = model.sample_processes_posix()
-
-    assert samples[7].ppid == 0
-    assert samples[7].started_at_ns is None
+_DARWIN_VIEWER_UID = 501
 
 
 def _darwin_kernel_row(
-    status: int, *, ppid: int = 3, pgid: int = 7, started_at_ns: int = 123_000_000
+    status: int = 2,
+    *,
+    ppid: int = 3,
+    pgid: int = 7,
+    started_at_ns: int = 123_000_000,
+    command: str = "python3.12",
+    uid: int = _DARWIN_VIEWER_UID,
 ):
     model = memory_guard._process_model
     return model._DarwinKernelProcRow(
@@ -1135,121 +1150,215 @@ def _darwin_kernel_row(
         ppid=ppid,
         pgid=pgid,
         started_at_ns=started_at_ns,
-        command="python3.12",
+        command=command,
+        uid=uid,
     )
+
+
+def _install_darwin_host(
+    monkeypatch: pytest.MonkeyPatch,
+    table: Mapping[int, Any],
+    *,
+    argv: Callable[[int], tuple[str, ...] | None],
+    later_rows: Callable[[int], Any] | None = None,
+    resident_kb: Callable[[int], int] | None = None,
+    viewer_uid: int = _DARWIN_VIEWER_UID,
+) -> dict[str, list[int]]:
+    """Fake the Darwin kernel through the sampler's own module seams."""
+    model = memory_guard._process_model
+    reads: dict[str, list[int]] = {"argv": [], "kernel_row": [], "resident_kb": []}
+
+    def read_argv(pid: int) -> tuple[str, ...] | None:
+        reads["argv"].append(pid)
+        return argv(pid)
+
+    def read_kernel_row(pid: int) -> Any:
+        reads["kernel_row"].append(pid)
+        return (later_rows or table.get)(pid)
+
+    def read_resident_kb(pid: int) -> int:
+        reads["resident_kb"].append(pid)
+        return 2048 if resident_kb is None else resident_kb(pid)
+
+    monkeypatch.setattr(model, "_darwin_proc_table", lambda: dict(table))
+    monkeypatch.setattr(model, "_darwin_proc_argv", read_argv)
+    monkeypatch.setattr(model, "_darwin_proc_kernel_row", read_kernel_row)
+    monkeypatch.setattr(model, "_darwin_proc_resident_kb", read_resident_kb)
+    monkeypatch.setattr(model, "_darwin_viewer_uid", lambda: viewer_uid)
+    return reads
+
+
+def test_darwin_sampler_keeps_bound_launcher_arguments_for_host_protection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = memory_guard._process_model
+    _install_darwin_host(
+        monkeypatch,
+        {7: _darwin_kernel_row(started_at_ns=123_456_789, command="node")},
+        argv=lambda _pid: (
+            "node",
+            "/opt/node_modules/@openai/codex/bin/codex.js",
+            "app-server",
+        ),
+    )
+
+    samples = model._sample_processes_darwin()
+
+    assert samples[7].ppid == 3
+    assert samples[7].started_at_ns == 123_456_789
+    assert samples[7].rss_kb == 2048
+    assert "@openai/codex" in samples[7].command
+    assert memory_guard.is_host_control_plane_process(samples[7])
+
+
+def test_darwin_sampler_reads_argv_only_for_rows_a_caller_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = memory_guard._process_model
+    table = {
+        pid: _darwin_kernel_row(ppid=1, pgid=pid, started_at_ns=pid * 1_000)
+        for pid in (7, 8, 9)
+    }
+    reads = _install_darwin_host(
+        monkeypatch, table, argv=lambda pid: ("worker", str(pid))
+    )
+
+    samples = model._sample_processes_darwin()
+
+    assert reads["argv"] == []
+    assert reads["kernel_row"] == []
+    assert (samples[8].ppid, samples[8].pgid, samples[8].started_at_ns) == (
+        1,
+        8,
+        8_000,
+    )
+    assert samples[8].command == "worker 8"
+    assert samples[8].argv == ("worker", "8")
+    assert reads["argv"] == [8]
+    assert reads["kernel_row"] == [8]
+    assert dataclasses.replace(samples[8], rss_kb=1) == memory_guard.ProcessSample(
+        pid=8,
+        ppid=1,
+        rss_kb=1,
+        command="worker 8",
+        pgid=8,
+        elapsed_sec=samples[8].elapsed_sec,
+        started_at_ns=8_000,
+        argv=("worker", "8"),
+    )
+
+
+@pytest.mark.parametrize(
+    "later_row",
+    [
+        pytest.param(None, id="reaped"),
+        pytest.param("szomb", id="exited-unreaped"),
+        pytest.param("reused", id="pid-reused"),
+    ],
+)
+def test_darwin_sampler_binds_no_argv_once_the_sampled_birth_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+    later_row: str | None,
+) -> None:
+    model = memory_guard._process_model
+    sampled = _darwin_kernel_row(started_at_ns=123_456_789, command="node")
+    later = {
+        None: None,
+        "szomb": _darwin_kernel_row(model._DARWIN_SZOMB, started_at_ns=123_456_789),
+        "reused": _darwin_kernel_row(started_at_ns=123_456_790, command="node"),
+    }[later_row]
+    _install_darwin_host(
+        monkeypatch,
+        {7: sampled},
+        argv=lambda _pid: ("node", "/opt/node_modules/@openai/codex/bin/codex.js"),
+        later_rows=lambda _pid: later,
+    )
+
+    sample = model._sample_processes_darwin()[7]
+
+    # The table row is one atomic kernel copy of the sampled instance; argv
+    # read after that instance ended belongs to no one and binds nothing.
+    assert (sample.ppid, sample.pgid, sample.started_at_ns) == (3, 7, 123_456_789)
+    assert sample.argv == ()
+    assert sample.command == "node"
+    assert not memory_guard.is_host_control_plane_process(sample)
 
 
 def test_darwin_sampler_omits_exited_process_awaiting_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A SZOMB pid stays listed by proc_listallpids; it is no live member."""
+    """A SZOMB row stays in the kernel table; it is no live member."""
     model = memory_guard._process_model
-    monkeypatch.setattr(model.sys, "platform", "darwin")
-    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {7: 0, 8: 4096})
-    monkeypatch.setattr(
-        model,
-        "_darwin_proc_metadata",
-        lambda pid: None if pid == 7 else (1, 8, 123_456_789, "cargo"),
+    _install_darwin_host(
+        monkeypatch,
+        {
+            7: _darwin_kernel_row(model._DARWIN_SZOMB),
+            8: _darwin_kernel_row(pgid=8, started_at_ns=123_456_789),
+        },
+        argv=lambda _pid: ("cargo", "build"),
     )
-    monkeypatch.setattr(model, "_darwin_proc_argv", lambda _pid: ("cargo", "build"))
-    rows = {7: _darwin_kernel_row(model._DARWIN_SZOMB)}
-    monkeypatch.setattr(model, "_darwin_proc_kernel_row", lambda pid: rows.get(pid))
 
-    samples = model.sample_processes_posix()
+    samples = model._sample_processes_darwin()
 
     assert 7 not in samples
     assert samples[8].started_at_ns == 123_456_789
 
 
-def test_darwin_sampler_omits_pid_reaped_between_reads(
+@pytest.mark.parametrize("viewer_uid", [_DARWIN_VIEWER_UID, 0])
+def test_darwin_sampler_leaves_rows_withheld_from_the_viewer_unbound(
     monkeypatch: pytest.MonkeyPatch,
+    viewer_uid: int,
 ) -> None:
+    """launchd answers neither KERN_PROCARGS2 nor task info to another user."""
     model = memory_guard._process_model
-    monkeypatch.setattr(model.sys, "platform", "darwin")
-    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {7: 0})
-    monkeypatch.setattr(model, "_darwin_proc_metadata", lambda _pid: None)
-    monkeypatch.setattr(model, "_darwin_proc_kernel_row", lambda _pid: None)
-
-    assert model.sample_processes_posix() == {}
-
-
-def test_darwin_sampler_binds_leaving_process_from_kernel_row(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """libproc already answers ESRCH while the kernel row still says live."""
-    model = memory_guard._process_model
-    monkeypatch.setattr(model.sys, "platform", "darwin")
-    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {7: 512})
-    monkeypatch.setattr(model, "_darwin_proc_metadata", lambda _pid: None)
-    monkeypatch.setattr(
-        model, "_darwin_proc_kernel_row", lambda _pid: _darwin_kernel_row(2)
+    reads = _install_darwin_host(
+        monkeypatch,
+        {
+            1: _darwin_kernel_row(
+                ppid=0, pgid=1, started_at_ns=5_000, command="launchd", uid=0
+            )
+        },
+        argv=lambda _pid: ("/sbin/launchd",),
+        viewer_uid=viewer_uid,
     )
-    monkeypatch.setattr(model, "_darwin_proc_argv", lambda _pid: ("python3.12", "-c"))
 
-    sample = model.sample_processes_posix()[7]
+    sample = model._sample_processes_darwin()[1]
 
-    assert (sample.ppid, sample.pgid, sample.rss_kb) == (3, 7, 512)
-    assert sample.started_at_ns == 123_000_000
-    assert sample.argv == ("python3.12", "-c")
-    assert sample.command == "python3.12 -c"
-
-
-def test_darwin_sampler_leaves_libproc_withheld_daemon_unbound(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """launchd answers neither proc_pidinfo nor KERN_PROCARGS2 to a user."""
-    model = memory_guard._process_model
-    monkeypatch.setattr(model.sys, "platform", "darwin")
-    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {1: 0})
-    monkeypatch.setattr(model, "_darwin_proc_metadata", lambda _pid: None)
-    monkeypatch.setattr(
-        model,
-        "_darwin_proc_kernel_row",
-        lambda _pid: model._DarwinKernelProcRow(
-            status=2, ppid=0, pgid=1, started_at_ns=5_000, command="launchd"
-        ),
-    )
-    monkeypatch.setattr(model, "_darwin_proc_argv", lambda _pid: None)
-
-    sample = model.sample_processes_posix()[1]
-
+    if viewer_uid == 0:
+        # Root reads every process, so the row binds like any other.
+        assert sample.started_at_ns == 5_000
+        assert sample.argv == ("/sbin/launchd",)
+        assert reads["resident_kb"] == [1]
+        return
     assert (sample.ppid, sample.pgid, sample.rss_kb) == (0, 1, 0)
     assert sample.started_at_ns is None
     assert sample.argv == ()
     assert sample.command == "launchd"
-
-
-def test_darwin_sampler_omits_process_that_exits_mid_read(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    model = memory_guard._process_model
-    monkeypatch.setattr(model.sys, "platform", "darwin")
-    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {7: 2048})
-    metadata = iter(((3, 7, 123_456_789, "node"), None))
-    monkeypatch.setattr(model, "_darwin_proc_metadata", lambda _pid: next(metadata))
-    monkeypatch.setattr(model, "_darwin_proc_argv", lambda _pid: ("node", "codex.js"))
-    monkeypatch.setattr(
-        model,
-        "_darwin_proc_kernel_row",
-        lambda _pid: _darwin_kernel_row(model._DARWIN_SZOMB),
-    )
-
-    assert model.sample_processes_posix() == {}
+    assert reads == {"argv": [], "kernel_row": [], "resident_kb": []}
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin kernel process table")
-def test_actual_darwin_kernel_row_matches_libproc_identity() -> None:
+def test_actual_darwin_kernel_table_matches_this_process_and_ps() -> None:
     model = memory_guard._process_model
     authority = model._load_darwin_process_authority()
 
-    assert (
-        authority.ctypes.sizeof(authority.kinfo_proc_type)
-        == model._DARWIN_KINFO_PROC_SIZE
-    )
+    assert authority.kinfo.size == model._DARWIN_KINFO_PROC_SIZE
+    table = authority.kernel_table()
     row = authority.kernel_row(os.getpid())
     assert row is not None
+    assert table[os.getpid()] == row
     assert row.status != model._DARWIN_SZOMB
-    assert (row.ppid, row.pgid) == (os.getppid(), os.getpgrp())
+    assert (row.ppid, row.pgid, row.uid) == (os.getppid(), os.getpgrp(), os.geteuid())
+    # ps formats the same birth to the second through its own code path.
+    started = str(
+        check_output_guarded_test_process(
+            ["ps", "-o", "lstart=", "-p", str(os.getpid())],
+            env={**os.environ, "LC_ALL": "C"},
+            timeout=30.0,
+        )
+    ).strip()
+    ps_started_s = time.mktime(time.strptime(started, "%a %b %d %H:%M:%S %Y"))
+    assert abs(row.started_at_ns / 1_000_000_000 - ps_started_s) < 1.0
     assert row.started_at_ns == model._darwin_proc_started_at_ns(os.getpid())
 
 
@@ -2169,6 +2278,8 @@ def test_terminate_watched_processes_kills_only_root_group_and_tracked_pids(
             raise ProcessLookupError
 
     def fake_kill(pid, sig):
+        if sig == 0 and (pid, process_custody.signal.SIGKILL) in sent_pids:
+            raise ProcessLookupError  # A SIGKILLed process leaves the table.
         sent_pids.append((pid, sig))
 
     monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
@@ -2715,6 +2826,8 @@ def test_terminate_watched_processes_never_killpgs_shared_child_group(
             raise ProcessLookupError
 
     def fake_kill(pid, sig):
+        if sig == 0 and (pid, process_custody.signal.SIGKILL) in sent_pids:
+            raise ProcessLookupError  # A SIGKILLed process leaves the table.
         sent_pids.append((pid, sig))
 
     monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
@@ -2763,6 +2876,8 @@ def test_terminate_watched_processes_never_kills_learned_group_peer(
             raise ProcessLookupError
 
     def fake_kill(pid, sig):
+        if sig == 0 and (pid, process_custody.signal.SIGKILL) in sent_pids:
+            raise ProcessLookupError  # A SIGKILLed process leaves the table.
         sent_pids.append((pid, sig))
 
     monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
@@ -2808,6 +2923,8 @@ def test_terminate_watched_processes_never_killpgs_mixed_root_group(
             raise ProcessLookupError
 
     def fake_kill(pid, sig):
+        if sig == 0 and (pid, process_custody.signal.SIGKILL) in sent_pids:
+            raise ProcessLookupError  # A SIGKILLed process leaves the table.
         sent_pids.append((pid, sig))
 
     monkeypatch.setattr(process_custody.os, "killpg", fake_killpg)
@@ -3044,42 +3161,71 @@ def test_adaptive_budget_clamps_large_hosts_below_rss_conversion_cap() -> None:
     assert memory_guard.max_rss_kb_from_gb(budget.max_process_rss_gb) > 0
 
 
-def test_parse_darwin_vm_stat_available_bytes() -> None:
-    text = """
-Mach Virtual Memory Statistics: (page size of 16384 bytes)
-Pages free:                             10.
-Pages active:                           99.
-Pages inactive:                         20.
-Pages speculative:                       3.
-Pages purgeable:                         2.
-Pages wired down:                       88.
-Pages occupied by compressor:            7.
-"""
+def test_darwin_available_bytes_counts_free_inactive_speculative_purgeable() -> None:
+    pages = {
+        "Pages free": 10,
+        "Pages active": 99,
+        "Pages inactive": 20,
+        "Pages speculative": 3,
+        "Pages purgeable": 2,
+        "Pages wired down": 88,
+        "Pages occupied by compressor": 7,
+    }
 
-    available = memory_guard._parse_darwin_vm_stat_available_bytes(text)
+    assert memory_guard.darwin_available_bytes(16_384, pages) == (
+        (10 + 20 + 3 + 2) * 16_384
+    )
+    assert memory_guard.darwin_available_bytes(16_384, {"Pages active": 9}) is None
 
-    assert available == (10 + 20 + 3 + 2) * 16_384
 
+def test_available_memory_bytes_reads_darwin_vm_pages_without_a_subprocess(
+    monkeypatch,
+) -> None:
+    def forbidden_run(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("available memory must not spawn vm_stat")
 
-def test_available_memory_bytes_uses_darwin_vm_stat(monkeypatch) -> None:
-    class Result:
-        returncode = 0
-        stdout = (
-            "Mach Virtual Memory Statistics: (page size of 4096 bytes)\n"
-            "Pages free: 2.\n"
-            "Pages inactive: 3.\n"
-            "Pages speculative: 5.\n"
-            "Pages purgeable: 7.\n"
-        )
-
-    monkeypatch.setattr(memory_guard.sys, "platform", "darwin")
+    limits = memory_limits
+    install_module_view(monkeypatch, "sys", sys, limits, platform="darwin")
+    install_module_view(
+        monkeypatch, "subprocess", subprocess, limits, run=forbidden_run
+    )
     monkeypatch.setattr(
-        memory_guard.subprocess,
-        "run",
-        lambda *args, **kwargs: Result(),
+        limits,
+        "darwin_vm_pages",
+        lambda: (
+            4096,
+            {
+                "Pages free": 2,
+                "Pages inactive": 3,
+                "Pages speculative": 5,
+                "Pages purgeable": 7,
+                "Pages active": 11,
+            },
+        ),
     )
 
     assert memory_guard.available_memory_bytes(environ={}) == 17 * 4096
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin Mach VM statistics")
+def test_actual_darwin_vm_pages_match_vm_stat() -> None:
+    """vm_stat formats the same Mach counters through its own code path."""
+    text = str(
+        check_output_guarded_test_process(
+            ["vm_stat"], env={**os.environ, "LC_ALL": "C"}, timeout=30.0
+        )
+    )
+    page_size, pages = memory_guard.darwin_vm_pages()  # type: ignore[misc]
+    header = text.splitlines()[0]
+    assert f"page size of {page_size} bytes" in header
+    reported: dict[str, int] = {}
+    for line in text.splitlines()[1:]:
+        name, _, value = line.partition(":")
+        if value.strip().rstrip(".").isdigit():
+            reported[name.strip().strip('"')] = int(value.strip().rstrip("."))
+    for name, count in pages.items():
+        # The two reads are microseconds apart; a busy host moves a few pages.
+        assert abs(reported[name] - count) <= max(4096, reported[name] // 50), name
 
 
 def test_resolve_memory_limits_refreshes_dynamic_caps() -> None:
@@ -5584,6 +5730,179 @@ def _run_guarded_cargo_with_fake_orphan_cleanup(
     return result, calls, report
 
 
+def _wait_for_pid_file(path: Path, *, timeout_s: float = 10.0) -> int:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+        if text.strip():
+            return int(text)
+        time.sleep(0.01)
+    raise AssertionError(f"no pid published at {path}")
+
+
+def _is_test_grandchild(pid: int, marker: str) -> bool:
+    """True while ``pid`` runs the argv this test gave its grandchild."""
+    argv = memory_guard._process_model.process_command_argv(pid)
+    return argv is not None and marker in argv
+
+
+def _test_grandchild_gone(pid: int, marker: str, *, timeout_s: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not _is_test_grandchild(pid, marker):
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _kill_test_grandchild(pid: int, marker: str) -> None:
+    """Stop an escaped test grandchild only while it still runs our argv."""
+    born = memory_guard._process_model.process_started_at_ns(pid)
+    if born is not None and _is_test_grandchild(pid, marker):
+        memory_guard.terminate_verified_pid(
+            pid, memory_guard.ProcessIdentity(born), grace=1.0
+        )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX sampled orphan custody")
+def test_run_guarded_terminates_a_new_session_grandchild_left_after_exit(
+    tmp_path: Path,
+) -> None:
+    """The grandchild escapes the child's group and outlives the child.
+
+    Only the guard's tracked custody can find it after the child exits: it is
+    reparented, in its own session, and named by no group the guard created.
+    """
+    pid_file = tmp_path / "grandchild.pid"
+    marker = f"grandchild-of-{tmp_path.name}"
+    script = (
+        "import pathlib, subprocess, sys, time\n"
+        "grandchild = subprocess.Popen(\n"
+        f"    [sys.executable, '-c', 'import time; time.sleep(60)', {marker!r}],\n"
+        "    start_new_session=True,\n"
+        ")\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(grandchild.pid))\n"
+        "time.sleep(0.5)\n"
+    )
+    grandchild_pid: int | None = None
+    try:
+        result = memory_guard.run_guarded(
+            [sys.executable, "-c", script],
+            max_rss_kb=1_000_000,
+            poll_interval=0.05,
+            timeout=30.0,
+        )
+        grandchild_pid = _wait_for_pid_file(pid_file)
+
+        assert result.returncode == 0
+        assert grandchild_pid in result.orphaned_process_groups
+        assert result.descendants_closed is True
+        assert _test_grandchild_gone(grandchild_pid, marker)
+    finally:
+        if grandchild_pid is not None:
+            _kill_test_grandchild(grandchild_pid, marker)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX sampled process-tree RSS")
+def test_run_guarded_enforces_tree_rss_across_a_new_session_grandchild(
+    tmp_path: Path,
+) -> None:
+    """Neither process crosses the per-process limit; together they cross the
+    tree limit. The grandchild's RSS counts only if the sampler keeps it in
+    the tree after it leaves the child's session."""
+    pid_file = tmp_path / "grandchild.pid"
+    marker = f"grandchild-of-{tmp_path.name}"
+    allocate = (
+        "buf = bytearray(120 * 1024 * 1024); buf[::4096] = b'x' * len(buf[::4096])"
+    )
+    script = (
+        "import pathlib, subprocess, sys, time\n"
+        "grandchild = subprocess.Popen(\n"
+        f"    [sys.executable, '-c', {f'{allocate}; import time; time.sleep(60)'!r}, {marker!r}],\n"
+        "    start_new_session=True,\n"
+        ")\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(grandchild.pid))\n"
+        f"{allocate}\n"
+        "time.sleep(60)\n"
+    )
+    grandchild_pid: int | None = None
+    try:
+        result = memory_guard.run_guarded(
+            [sys.executable, "-c", script],
+            max_rss_kb=1024 * 1024,
+            max_total_rss_kb=180 * 1024,
+            poll_interval=0.05,
+            child_rlimit_kb=None,
+            timeout=30.0,
+        )
+        grandchild_pid = _wait_for_pid_file(pid_file)
+
+        assert result.returncode == memory_guard.GUARD_RETURN_CODE
+        assert result.violation is not None
+        assert result.violation.scope == "process_tree"
+        assert result.violation.rss_kb > 180 * 1024
+        assert _test_grandchild_gone(grandchild_pid, marker)
+    finally:
+        if grandchild_pid is not None:
+            _kill_test_grandchild(grandchild_pid, marker)
+
+
+@pytest.mark.parametrize("tracked_cleanup_signalled", [False, True])
+def test_run_guarded_reuses_its_post_exit_snapshot_until_a_signal(
+    monkeypatch: pytest.MonkeyPatch,
+    tracked_cleanup_signalled: bool,
+) -> None:
+    """One post-exit observation serves cleanup and closure; a signal retires it."""
+    spawned: list[int] = []
+    seen: dict[str, object] = {}
+    report = _guard_termination_report(reason="tracked_orphan_cleanup")
+
+    def child_only_sampler() -> Mapping[int, memory_guard.ProcessSample]:
+        return {
+            pid: sample
+            for pid, sample in memory_guard.sample_processes().items()
+            if pid in spawned
+        }
+
+    def tracked_cleanup(root_pid, **kwargs):
+        seen["tracked"] = kwargs["samples"]
+        return memory_guard.GuardOrphanCleanupResult(
+            termination_reports=(report,) if tracked_cleanup_signalled else ()
+        )
+
+    def repo_cleanup(**kwargs):
+        seen["repo"] = kwargs["samples"]
+        return memory_guard.GuardOrphanCleanupResult()
+
+    def closure(**kwargs):
+        seen["closure"] = kwargs["final_samples"]
+        return True, {"schema": "molt.guard-scratch-closure.v1", "closed": True}
+
+    monkeypatch.setattr(memory_guard, "cleanup_tracked_orphans", tracked_cleanup)
+    monkeypatch.setattr(
+        memory_guard, "cleanup_repo_scoped_orphans_since_baseline", repo_cleanup
+    )
+    monkeypatch.setattr(memory_guard, "_temporary_artifact_descendant_closure", closure)
+    monkeypatch.setattr(memory_guard._win_job, "create_kill_on_close_job", lambda: None)
+
+    result = memory_guard.run_guarded(
+        [sys.executable, "-c", "pass"],
+        max_rss_kb=1_000_000,
+        poll_interval=0.01,
+        sampler=child_only_sampler,
+        on_spawn=spawned.append,
+    )
+
+    assert result.returncode == 0
+    assert seen["tracked"] is not None
+    if tracked_cleanup_signalled:
+        assert seen["repo"] is None
+        assert seen["closure"] is None
+    else:
+        assert seen["repo"] is seen["tracked"]
+        assert seen["closure"] is seen["tracked"]
+
+
 def test_successful_cargo_orphan_cleanup_does_not_quarantine_incremental(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -8027,3 +8346,61 @@ def test_untracked_watch_cannot_admit_children_of_an_absent_root():
     sample = memory_guard.ProcessSample
     samples = {200: sample(200, 100, 1, "stale parent pid", started_at_ns=200)}
     assert memory_guard.watched_pids(samples, 100) == set()
+
+
+def test_sigkilled_target_gets_time_to_leave_under_zero_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero grace means "kill now", not "vanish within 20 ms" (HF-48).
+
+    The escaped descendant leaves the process table 0.2 s after SIGKILL, which
+    a loaded host can take. A probe window shorter than that sees it live and
+    the guard reports incomplete cleanup.
+    """
+    monkeypatch.setattr(
+        process_custody,
+        "os",
+        types.SimpleNamespace(name="posix", getpid=lambda: 999, getpgrp=lambda: 999),
+    )
+    custody_signal = types.SimpleNamespace(**vars(signal))
+    custody_signal.SIGKILL = 9
+    monkeypatch.setattr(process_custody, "signal", custody_signal)
+    root = process_custody.ProcessSample(
+        101, 999, 10, "python root.py", pgid=101, started_at_ns=11
+    )
+    child = process_custody.ProcessSample(
+        202, 101, 20, "python child.py", pgid=101, started_at_ns=22
+    )
+    tracker = process_custody.ProcessTreeTracker(101)
+    tracker.update({101: root, 202: child})
+    live = {202: dataclasses.replace(child, ppid=1, pgid=202)}
+    killed: list[int] = []
+    teardown_s = 0.2
+
+    def send(pid: int, signum: int):
+        if signum == custody_signal.SIGKILL:
+            killed.append(pid)
+        return process_custody._termination_action(
+            target_kind="process", target_id=pid, signum=signum, result="sent"
+        )
+
+    def probe(pid: int, *, grace: float) -> bool:
+        if not killed:
+            return False  # The TERM grace expires with the target alive.
+        if grace < teardown_s:
+            return False  # The window closed before the kernel finished.
+        live.clear()
+        return True
+
+    monkeypatch.setattr(process_custody, "_send_pid_signal_action", send)
+    monkeypatch.setattr(process_custody, "_pid_exited_or_unobservable", probe)
+    monkeypatch.setattr(process_custody, "_process_group_exited_or_unobservable", probe)
+
+    cleanup = process_custody.cleanup_tracked_orphans(
+        101, tracker=tracker, sampler=lambda: dict(live), grace=0.0, root_reaped=True
+    )
+
+    (report,) = cleanup.termination_reports
+    assert killed == [202]
+    assert report.actions[-1].result == "exited"
+    assert report.remaining_pids == ()

@@ -5,12 +5,13 @@ from pathlib import Path
 from molt.frontend import tv_hooks
 
 
-def test_temp_root_defaults_to_repo_tmp(monkeypatch) -> None:
+def test_temp_root_defaults_to_scratch_outside_the_checkout(monkeypatch) -> None:
     for key in ("MOLT_DIFF_TMPDIR", "TMPDIR", "MOLT_EXT_ROOT", "MOLT_TV_DIR"):
         monkeypatch.delenv(key, raising=False)
     tv_hooks.reset()
 
-    assert tv_hooks._temp_root({}) == Path(__file__).resolve().parents[1] / "tmp"
+    checkout = Path(__file__).resolve().parents[1]
+    assert not tv_hooks._temp_root({}).is_relative_to(checkout)
 
 
 def test_temp_root_prefers_explicit_overrides(tmp_path: Path) -> None:
@@ -29,7 +30,7 @@ def test_temp_root_prefers_explicit_overrides(tmp_path: Path) -> None:
     assert tv_hooks._temp_root(env) == ambient_tmp
 
     env.pop("TMPDIR")
-    assert tv_hooks._temp_root(env) == ext_root / "tmp"
+    assert tv_hooks._temp_root(env) == ext_root.resolve() / "tmp"
 
 
 def test_tv_dump_dir_explicit_override_wins(tmp_path: Path, monkeypatch) -> None:

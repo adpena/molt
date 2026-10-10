@@ -25,6 +25,7 @@ from molt.exact_json import loads_exact
 from molt.dx import (
     DEFAULT_SCCACHE_CACHE_SIZE,
     _memory_bounded_cargo_jobs,
+    control_state_dir,
     development_artifact_env,
     development_artifacts_requested,
     pinned_sccache,
@@ -684,20 +685,11 @@ def _run_cargo_with_sccache_retry(
 
 
 def _build_slot_dir() -> Path:
-    ext_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if ext_root:
-        return Path(ext_root).expanduser() / "tmp" / "molt-build-slots"
-    tmp_root = (
-        os.environ.get("TMPDIR", "").strip()
-        or os.environ.get("TMP", "").strip()
-        or os.environ.get("TEMP", "").strip()
-    )
-    if tmp_root:
-        return Path(tmp_root).expanduser() / "molt-build-slots"
+    # Every concurrent build must see the same slots: control state.
     root = compiler_source_root()
     if root is None:
         root = Path.cwd()
-    return root / "tmp" / "molt-build-slots"
+    return control_state_dir(root, "molt-build-slots")
 
 
 @contextlib.contextmanager
