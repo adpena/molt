@@ -53,8 +53,13 @@ The current runtime ownership candidate at `406d69789` compiles the full
 Linux/aarch64 default-feature release-output test image. Its first execution
 was stopped by proof custody when a process fixture launched the undeclared
 POSIX shell; it has no completed aggregate or semantic acceptance. The native
-journal retains the denial and incomplete cleanup observation. Complete the
-fixture descendant declaration family before rerunning that exact image.
+journal retains the denial and incomplete cleanup observation. The
+replacement uses real self-image OS fixtures through one existing exact-test
+entry, retiring all shell/cmd/cat/sleep fixture dependencies without adding
+executable admission policy. Pipe tests collect bounded whole streams and compare
+exact payloads through EOF; the process-group oracle requires actual grandchild
+SIGTERM status and native reaping. Independent source review found no blocker;
+compiled Linux, Windows stdin and macOS group/prelude execution remain required.
 
 Windows development-tool identity now derives the interpreter architecture
 from CPython sysconfig rather than querying host WMI. The focused runtime
