@@ -15,6 +15,7 @@ from molt.cli import runtime_native_generation as generations
 from molt.cli.cargo_execution import CargoExecutionResult
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli.native_link_manifest import native_link_dependency_manifest_path
+from molt.exact_json import canonical_json_sha256
 from tests.cli.native_link_test_support import write_test_static_archive
 from tests.runtime_build_identity_helper import (
     native_runtime_staticlib_identity,
@@ -147,7 +148,7 @@ def native_build(tmp_path, runtime_fixture_root, monkeypatch):
     current = SimpleNamespace(coordinate=None)
 
     @contextlib.contextmanager
-    def lock(*_args):
+    def lock(_root, _name, *, default_timeout_s: float = 300.0):
         events.append("lock")
         yield
 
@@ -440,3 +441,90 @@ def test_native_gpu_feature_change_rebuilds_the_selected_generation(
     assert ok and retained.runtime_lib == second.runtime_lib
     assert len(native_build.cargo_runs) == 2
     assert first.runtime_lib.read_bytes() == first_bytes
+
+
+def _transport(coordinate: Path, destination: Path) -> tuple[Path, dict[str, Path]]:
+    """Copy one selection and its members the way a transport would."""
+    admitted = read(coordinate)
+    assert admitted is not None
+    destination.mkdir(parents=True)
+    selection = destination / "selection.json"
+    selection.write_bytes(
+        generations.native_runtime_generation_path(coordinate).read_bytes()
+    )
+    members = {}
+    for role, identity in admitted.members:
+        copy = destination / role
+        copy.write_bytes(identity.path.read_bytes())
+        members[role] = copy
+    return selection, members
+
+
+def _import(coordinate: Path, selection: Path, members, *, seed: str = "one"):
+    return generations.import_native_runtime_generation(
+        coordinate,
+        selection=selection,
+        members=members,
+        cargo_profile="dev-fast",
+        target_triple=None,
+        build_identity=native_runtime_staticlib_identity(
+            cargo_profile="dev-fast", family_seed=seed
+        ),
+    )
+
+
+def test_imported_generation_reproduces_the_exported_selection(tmp_path):
+    exported = tmp_path / "producer" / "dev-fast" / "libmolt_runtime.full.a"
+    publish(exported)
+    selection, members = _transport(exported, tmp_path / "transport")
+    imported = tmp_path / "consumer" / "dev-fast" / "libmolt_runtime.full.a"
+
+    admitted = _import(imported, selection, members)
+
+    source = read(exported)
+    assert read(imported).records() == source.records()
+    assert admitted.runtime_lib.parent.parent.name == (
+        source.runtime_lib.parent.parent.name
+    )
+    assert admitted.runtime_lib.is_relative_to(imported.parent)
+
+
+def test_import_refuses_a_generation_built_from_other_inputs(tmp_path):
+    exported = tmp_path / "producer" / "dev-fast" / "libmolt_runtime.full.a"
+    publish(exported)
+    selection, members = _transport(exported, tmp_path / "transport")
+    imported = tmp_path / "consumer" / "dev-fast" / "libmolt_runtime.full.a"
+
+    with pytest.raises(ValueError, match="other inputs"):
+        _import(imported, selection, members, seed="two")
+    assert read(imported) is None
+    assert not generations.native_runtime_generation_path(imported).exists()
+
+
+def test_import_refuses_member_bytes_that_differ_from_the_selection(tmp_path):
+    exported = tmp_path / "producer" / "dev-fast" / "libmolt_runtime.full.a"
+    publish(exported)
+    selection, members = _transport(exported, tmp_path / "transport")
+    write_test_static_archive(members["runtime_archive"], payload=b"substituted")
+    imported = tmp_path / "consumer" / "dev-fast" / "libmolt_runtime.full.a"
+
+    with pytest.raises(ValueError):
+        _import(imported, selection, members)
+    assert read(imported) is None
+
+
+def test_import_refuses_an_unportable_member_name_under_a_valid_digest(tmp_path):
+    exported = tmp_path / "producer" / "dev-fast" / "libmolt_runtime.full.a"
+    publish(exported)
+    selection, members = _transport(exported, tmp_path / "transport")
+    payload = json.loads(selection.read_text(encoding="utf-8"))
+    payload["members"][1]["name"] = "../escaped.json"
+    material = {key: value for key, value in payload.items() if key != "generation"}
+    payload["generation"] = canonical_json_sha256(material)
+    selection.write_text(json.dumps(payload), encoding="utf-8")
+    imported = tmp_path / "consumer" / "dev-fast" / "libmolt_runtime.full.a"
+
+    with pytest.raises(ValueError, match="portable"):
+        _import(imported, selection, members)
+    assert not (imported.parent.parent / "escaped.json").exists()
+    assert read(imported) is None
