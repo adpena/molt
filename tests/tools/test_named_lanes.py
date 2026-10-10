@@ -20,6 +20,9 @@ LANE_IDS = (
     "pact.witness.acceptance.native",
     "pact.witness.acceptance.wasm",
     "pact.witness.oracle",
+    "r6.target-version-parity.py312",
+    "r6.target-version-parity.py313",
+    "r6.target-version-parity.py314",
 )
 
 
