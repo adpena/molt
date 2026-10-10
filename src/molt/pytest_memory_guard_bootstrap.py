@@ -5,17 +5,15 @@ import functools
 import json
 import os
 import shlex
-import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path, WindowsPath
 import sys
 import time
-import uuid
 
 
 from molt._host_exit import process_returncode_for_direct_os_exit
-from molt.dx import checkout_custody
+from molt.dx import control_state_dir
 from molt.source_root import compiler_source_root
 from molt.temporary_artifacts import guard_scratch, windows_temporary_directory_mode
 from molt.process_spawn import (
@@ -34,8 +32,6 @@ from molt.memory_guard_paths import (
 ROOT = Path(__file__).resolve().parents[2]
 # Test/guard inputs follow source selection; writable custody remains separate.
 SOURCE_ROOT = compiler_source_root()
-PYTEST_CACHE_DIR = ROOT / "tmp" / "pytest-cache"
-WINDOWS_PYTEST_CACHE_DIR_NAME = "pytest-cache"
 PYTEST_OUTER_GUARD_REEXEC_ENV = "MOLT_PYTEST_OUTER_GUARD_REEXEC"
 TEST_SCRIPT_OUTER_GUARD_REEXEC_ENV = "MOLT_TEST_SCRIPT_OUTER_GUARD_REEXEC"
 PYTEST_CURRENT_TEST_FILE_ENV = "MOLT_PYTEST_CURRENT_TEST_FILE"
@@ -316,21 +312,22 @@ def _pytest_args_have_cache_dir(args: Sequence[str]) -> bool:
     return False
 
 
-def install_windows_pytest_cache_dir_arg(args: list[str]) -> bool:
-    if not _is_windows_process_model():
-        return False
+def guarded_pytest_cache_dir() -> Path:
+    """Return pytest's cache directory: control state, never in the checkout."""
+    return control_state_dir(ROOT, "pytest-cache", os.environ)
+
+
+def install_pytest_cache_dir_arg(args: list[str]) -> bool:
     if _pytest_args_disable_cacheprovider(args) or _pytest_args_have_cache_dir(args):
         return False
-    args.extend(["-o", f"cache_dir={windows_pytest_cache_dir()}"])
+    args.extend(["-o", f"cache_dir={guarded_pytest_cache_dir()}"])
     return True
 
 
-def install_windows_pytest_cache_dir_config(
+def install_pytest_cache_dir_config(
     early_config: object,
     args: Sequence[str],
 ) -> bool:
-    if not _is_windows_process_model():
-        return False
     if _pytest_args_disable_cacheprovider(args) or _pytest_args_have_cache_dir(args):
         return False
     inicfg = getattr(early_config, "_inicfg", None)
@@ -339,7 +336,7 @@ def install_windows_pytest_cache_dir_config(
     from _pytest.config.findpaths import ConfigValue
 
     inicfg["cache_dir"] = ConfigValue(
-        str(windows_pytest_cache_dir()),
+        str(guarded_pytest_cache_dir()),
         origin="override",
         mode="ini",
     )
@@ -354,73 +351,9 @@ def _ensure_windows_readable_dir(path: Path) -> None:
     path.mkdir(mode=mode, parents=True, exist_ok=True)
 
 
-def _artifact_root_accepts_child_dirs(path: Path, *, create_dirs: bool) -> bool:
-    probe = path / f".molt-write-probe-{os.getpid()}-{uuid.uuid4().hex}"
-    try:
-        if create_dirs:
-            path.mkdir(mode=0o755, parents=True, exist_ok=True)
-        probe.mkdir(mode=0o755)
-        list(probe.iterdir())
-    except OSError:
-        return False
-    finally:
-        try:
-            shutil.rmtree(probe)
-        except OSError:
-            pass
-    return True
-
-
-def _configured_windows_pytest_artifact_roots() -> tuple[Path, ...]:
-    raw = os.environ.get("MOLT_EXTERNAL_ARTIFACT_ROOTS") or ""
-    roots: list[Path] = []
-    for candidate in raw.split(os.pathsep) if raw.strip() else ():
-        text = candidate.strip()
-        if text:
-            roots.append(Path(text).expanduser() / "tmp")
-    return tuple(roots)
-
-
-def _default_windows_pytest_artifact_roots() -> tuple[Path, ...]:
-    roots: list[Path] = list(_configured_windows_pytest_artifact_roots())
-    roots.append(
-        checkout_custody(ROOT, os.environ, require_exists=False).custody_root / "tmp"
-    )
-    seen: set[str] = set()
-    deduped: list[Path] = []
-    for root in roots:
-        key = os.path.normcase(str(root))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(root)
-    return tuple(deduped)
-
-
-def _windows_pytest_artifact_base() -> Path:
-    explicit = os.environ.get("MOLT_EXT_ROOT")
-    if explicit:
-        return Path(explicit).expanduser() / "tmp"
-    for root in _default_windows_pytest_artifact_roots():
-        if _artifact_root_accepts_child_dirs(root, create_dirs=True):
-            return root
-    if _is_windows_process_model():
-        raise RuntimeError(
-            "Molt pytest scratch is unavailable under the checkout-family "
-            "custody root; set MOLT_EXT_ROOT to an explicit scratch directory."
-        )
-    return ROOT / "tmp"
-
-
 def guarded_pytest_temp_root() -> Path:
     """Use the parent guard's short, terminal-owned scratch on every platform."""
     return guard_scratch(ROOT, os.environ)
-
-
-def windows_pytest_cache_dir() -> Path:
-    if not _is_windows_process_model():
-        return PYTEST_CACHE_DIR
-    return _windows_pytest_artifact_base() / WINDOWS_PYTEST_CACHE_DIR_NAME
 
 
 def _pytest_user_temp_root(temproot: Path) -> Path:
@@ -438,7 +371,7 @@ def install_pytest_custody_roots() -> bool:
     temproot = (
         Path(raw_temproot).expanduser() if raw_temproot else guarded_pytest_temp_root()
     )
-    cache_dir = windows_pytest_cache_dir()
+    cache_dir = guarded_pytest_cache_dir()
     if _is_windows_process_model():
         _ensure_windows_readable_dir(temproot)
         _ensure_windows_readable_dir(_pytest_user_temp_root(temproot))
@@ -1023,8 +956,8 @@ def pytest_load_initial_conftests(
     ensure_pytest_memory_guard(pytest_args=tuple(args))
     install_pytest_custody_roots()
     install_windows_pytest_tempdir_mode_patch()
-    install_windows_pytest_cache_dir_config(early_config, args)
-    install_windows_pytest_cache_dir_arg(args)
+    install_pytest_cache_dir_config(early_config, args)
+    install_pytest_cache_dir_arg(args)
 
 
 def pytest_configure(config: object) -> None:
