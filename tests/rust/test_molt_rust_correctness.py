@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from molt.dx import development_artifact_env
+from molt.dx import control_state_dir, development_artifact_env
 from tests.rust.process_guard import run_rust_test_process
 
 MOLT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -106,10 +106,10 @@ def _compile_and_run_rust(
                 ),
                 "MOLT_BUILD_STATE_DIR": os.environ.get(
                     "MOLT_BUILD_STATE_DIR",
-                    os.path.join(
-                        env["MOLT_EXT_ROOT"],
-                        "tmp",
-                        f"rust-tests-build-state-{os.getpid()}",
+                    str(
+                        control_state_dir(
+                            root, f"rust-tests-build-state-{os.getpid()}", env
+                        )
                     ),
                 ),
                 "RUSTC_WRAPPER": "",

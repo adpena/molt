@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from molt.dx import control_state_dir
 from tools import harness_memory_guard
 from tests import process_guard_common
 
@@ -57,7 +58,7 @@ def guarded_cli_test_popen(
 ) -> subprocess.Popen[str]:
     run_env = harness_memory_guard.canonical_harness_env(env, repo_root=ROOT)
     limits = harness_memory_guard.limits_from_env("MOLT_CLI_TEST", run_env)
-    summary_dir = ROOT / "tmp" / "cli-test-memory-guard"
+    summary_dir = control_state_dir(ROOT, "cli-test-memory-guard", run_env)
     summary_dir.mkdir(parents=True, exist_ok=True)
     summary_path = summary_dir / f"interactive-{os.getpid()}-{uuid.uuid4().hex}.json"
     guard_argv = [
