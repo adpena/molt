@@ -101,6 +101,27 @@ def no_ambient_guard_caps(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
+# The session's environment once its run context is in place (pytest_configure).
+_SESSION_ENVIRONMENT: dict[str, str] = {}
+
+
+def _run_context_env_keys() -> tuple[str, ...]:
+    """The ambient run context: hosted custody, request knobs, roots, session."""
+    from molt.dx import (
+        DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
+        GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
+        MOLT_ROOT_ENV_KEYS,
+    )
+
+    return (
+        GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
+        *MOLT_ROOT_ENV_KEYS,
+        *DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
+        "MOLT_SESSION_ID",
+        "MOLT_SESSION_ID_GENERATED",
+    )
+
+
 @pytest.fixture
 def developer_host_context(monkeypatch: pytest.MonkeyPatch) -> None:
     """Resolve paths as a developer host with no ambient run context does.
@@ -112,21 +133,25 @@ def developer_host_context(monkeypatch: pytest.MonkeyPatch) -> None:
     patches ``subprocess`` or asserts default roots would test that context
     instead. Tool caches (UV_*, TMPDIR, PYTHONPYCACHEPREFIX) stay, so child
     `uv run` calls keep their environment and write nothing into the checkout.
+    A child that runs repository tooling on the real checkout needs the
+    context back: see `checkout_run_context`.
     """
-    from molt.dx import (
-        DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
-        GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
-        MOLT_ROOT_ENV_KEYS,
-    )
-
-    for key in (
-        GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
-        *MOLT_ROOT_ENV_KEYS,
-        *DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
-        "MOLT_SESSION_ID",
-        "MOLT_SESSION_ID_GENERATED",
-    ):
+    for key in _run_context_env_keys():
         monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture
+def checkout_run_context() -> dict[str, str]:
+    """The session's run context, for a child that runs on the real checkout.
+
+    `developer_host_context` clears it. A child that runs repository tooling
+    on the real checkout (``tools/dev.py``, ``python -m molt.cli``) must get it
+    back: without it a hosted CI clone is its own artifact root, and the child
+    creates ``target/``, ``.molt_cache/``, ``.uv-cache/`` and a uv environment
+    inside the checkout.
+    """
+    keys = _run_context_env_keys()
+    return {key: value for key, value in _SESSION_ENVIRONMENT.items() if key in keys}
 
 
 @pytest.fixture
@@ -337,6 +362,8 @@ def pytest_configure() -> None:
     _ensure_src_on_path()
     _assert_pytest_memory_guard_active()
     _ensure_pytest_process_scope()
+    _SESSION_ENVIRONMENT.clear()
+    _SESSION_ENVIRONMENT.update(os.environ)
 
 
 def _is_xdist_run(session) -> bool:  # type: ignore[no-untyped-def]
