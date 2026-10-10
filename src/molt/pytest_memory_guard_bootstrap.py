@@ -13,7 +13,7 @@ import time
 
 
 from molt._host_exit import process_returncode_for_direct_os_exit
-from molt.dx import control_state_dir
+from molt.dx import checkout_component, control_state_dir
 from molt.source_root import compiler_source_root
 from molt.temporary_artifacts import guard_scratch, windows_temporary_directory_mode
 from molt.process_spawn import (
@@ -313,8 +313,14 @@ def _pytest_args_have_cache_dir(args: Sequence[str]) -> bool:
 
 
 def guarded_pytest_cache_dir() -> Path:
-    """Return pytest's cache directory: control state, never in the checkout."""
-    return control_state_dir(ROOT, "pytest-cache", os.environ)
+    """Return this checkout's pytest cache: control state, never in the tree.
+
+    Each worktree keeps its own cache, so concurrent runs in sibling
+    worktrees never overwrite each other's ``lastfailed``.
+    """
+    return control_state_dir(
+        ROOT, f"pytest-cache/{checkout_component(ROOT)}", os.environ
+    )
 
 
 def install_pytest_cache_dir_arg(args: list[str]) -> bool:

@@ -187,6 +187,17 @@ def uv_project_env_component(value: str) -> str:
     return component or "default"
 
 
+def checkout_component(source_root: Path) -> str:
+    """A short, stable path component that names one checkout.
+
+    Per-checkout state under a shared family root (a uv environment, a pytest
+    cache) keys on it, so sibling worktrees never share it.
+    """
+    source = source_root.expanduser().resolve()
+    digest = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[:12]
+    return f"{uv_project_env_component(source.name)[:24]}-{digest}"
+
+
 def stable_uv_project_env_dir(
     artifact_root: Path,
     *,
@@ -194,14 +205,9 @@ def stable_uv_project_env_dir(
     python: str,
     source_root: Path,
 ) -> Path:
-    source = source_root.expanduser().resolve()
-    source_digest = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[
-        :12
-    ]
-    source_name = uv_project_env_component(source.name)[:24]
     name = (
         f"{uv_project_env_component(purpose)}__py{uv_project_env_component(python)}"
-        f"__src-{source_name}-{source_digest}"
+        f"__src-{checkout_component(source_root)}"
     )
     return (artifact_root.expanduser().resolve() / "uv-project-envs" / name).resolve()
 

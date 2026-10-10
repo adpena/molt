@@ -11,6 +11,7 @@ import pytest
 
 from tools import check_memory_guard_wiring
 from tools import memory_guard
+from molt import dx
 from molt import pytest_memory_guard_bootstrap
 from molt import pytest_memory_guard_config_plugin
 from molt import memory_guard_paths
@@ -994,10 +995,14 @@ def test_pytest_cache_dir_arg_uses_the_artifact_root_control_state(
     args = ["tests/test_one.py", "-q"]
 
     assert pytest_memory_guard_bootstrap.install_pytest_cache_dir_arg(args)
-    assert args[-2:] == [
-        "-o",
-        f"cache_dir={tmp_path.resolve() / 'artifact-root' / 'tmp' / 'pytest-cache'}",
-    ]
+    cache = (
+        tmp_path.resolve()
+        / "artifact-root"
+        / "tmp"
+        / "pytest-cache"
+        / dx.checkout_component(pytest_memory_guard_bootstrap.ROOT)
+    )
+    assert args[-2:] == ["-o", f"cache_dir={cache}"]
     assert not pytest_memory_guard_bootstrap.install_pytest_cache_dir_arg(args)
 
 
@@ -1010,6 +1015,19 @@ def test_pytest_cache_dir_never_lands_in_the_checkout(monkeypatch) -> None:
 
     root = pytest_memory_guard_bootstrap.ROOT.resolve()
     assert root not in (cache, *cache.parents)
+
+
+def test_sibling_worktrees_keep_separate_pytest_caches(tmp_path) -> None:
+    family = tmp_path / "Molt"
+    first = family / "worktrees" / "one"
+    second = family / "worktrees" / "two"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+
+    caches = {dx.checkout_component(first), dx.checkout_component(second)}
+
+    assert len(caches) == 2
+    assert dx.checkout_component(first) == dx.checkout_component(first)
 
 
 def test_pytest_cache_dir_arg_preserves_explicit_cache_policy() -> None:
@@ -1036,7 +1054,7 @@ def test_pytest_cache_dir_config_uses_the_artifact_root_control_state(
         ["tests/test_one.py", "-q"],
     )
     value = Config._inicfg["cache_dir"]
-    assert value.value == str(
+    assert Path(value.value).parent == (
         tmp_path.resolve() / "artifact-root" / "tmp" / "pytest-cache"
     )
     assert value.origin == "override"
@@ -1088,7 +1106,13 @@ def test_windows_pytest_custody_roots_prepare_readable_defaults(
     assert temproot.is_dir()
     assert any(temproot.iterdir())
     assert (
-        tmp_path / "artifact-root" / "tmp" / "pytest-cache" / "v" / "cache"
+        tmp_path
+        / "artifact-root"
+        / "tmp"
+        / "pytest-cache"
+        / dx.checkout_component(pytest_memory_guard_bootstrap.ROOT)
+        / "v"
+        / "cache"
     ).is_dir()
 
 
@@ -1152,7 +1176,13 @@ def test_windows_pytest_custody_roots_preserve_explicit_temproot(
     assert explicit.is_dir()
     assert any(explicit.iterdir())
     assert (
-        tmp_path / "artifact-root" / "tmp" / "pytest-cache" / "v" / "cache"
+        tmp_path
+        / "artifact-root"
+        / "tmp"
+        / "pytest-cache"
+        / dx.checkout_component(pytest_memory_guard_bootstrap.ROOT)
+        / "v"
+        / "cache"
     ).is_dir()
 
 
