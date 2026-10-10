@@ -26,23 +26,18 @@ def _restore_process_environment() -> Iterator[None]:
     may still set variables directly; this keeps them from leaking into every
     later test on the same worker. Session-scoped fixtures run before this
     one, so their settings persist as intended.
+
+    Each test also starts with disk scratch: the operator's
+    ``MOLT_SCRATCH_STORAGE`` governs the guarded session, whose scratch the
+    memory guard allocated before pytest started. Tests assert projected
+    scratch paths; a test of memory storage sets the mode itself.
     """
     snapshot = dict(os.environ)
+    os.environ.pop("MOLT_SCRATCH_STORAGE", None)
     yield
     if os.environ != snapshot:
         os.environ.clear()
         os.environ.update(snapshot)
-
-
-@pytest.fixture(autouse=True)
-def _disk_scratch_projections(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Project scratch paths for disk storage in every test.
-
-    The operator's ``MOLT_SCRATCH_STORAGE`` governs the guarded session, whose
-    scratch the memory guard allocated before pytest started. Tests assert
-    projected scratch paths; a test of memory storage sets it explicitly.
-    """
-    monkeypatch.delenv("MOLT_SCRATCH_STORAGE", raising=False)
 
 
 # Process-global names the intrinsic loader (src/_intrinsics.py) reads.

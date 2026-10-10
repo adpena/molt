@@ -828,7 +828,7 @@ def main() -> int:
                 str(REPO_ROOT),
                 _default_home_str(),
                 sys.platform,
-                _configured_artifact_root_text(env, REPO_ROOT),
+                _configured_artifact_root_text(env),
             ).resolve()
         )
         reuse_outer_guard = _outer_memory_guard_reuse_enabled(env)
