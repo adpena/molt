@@ -5,10 +5,7 @@ import inspect
 import molt.cli as cli
 from molt.cli import build_pipeline
 
-_BUILD_PIPELINE_NAMES = (
-    "_run_build_pipeline",
-    "_session_target_dir",
-)
+_BUILD_PIPELINE_NAMES = ("_run_build_pipeline",)
 
 
 def test_cli_build_pipeline_authority_is_single_home() -> None:
