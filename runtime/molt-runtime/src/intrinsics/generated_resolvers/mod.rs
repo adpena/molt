@@ -33,7 +33,6 @@ mod dataclasses_resolver;
 mod datetime_resolver;
 mod dbm_resolver;
 mod decimal_resolver;
-mod difflib_resolver;
 mod email_resolver;
 mod enum_resolver;
 mod errno_resolver;
@@ -95,16 +94,13 @@ mod string_resolver;
 mod stringprep_resolver;
 mod struct_resolver;
 mod subprocess_resolver;
-mod symtable_resolver;
 mod sys_resolver;
 mod tempfile_resolver;
-mod textwrap_resolver;
 mod this_resolver;
 mod threading_resolver;
 mod time_resolver;
 mod tk_resolver;
 mod tokenize_resolver;
-mod tomllib_resolver;
 mod traceback_resolver;
 mod typing_resolver;
 mod unicodedata_resolver;
@@ -114,9 +110,7 @@ mod uuid_resolver;
 mod warnings_resolver;
 mod weakref_resolver;
 mod websocket_resolver;
-mod wsgiref_resolver;
 mod xml_etree_resolver;
-mod xmlrpc_resolver;
 mod zoneinfo_resolver;
 
 pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
@@ -220,9 +214,6 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         return Some(v);
     }
     if let Some(v) = decimal_resolver::resolve_symbol(symbol) {
-        return Some(v);
-    }
-    if let Some(v) = difflib_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
     if let Some(v) = email_resolver::resolve_symbol(symbol) {
@@ -408,16 +399,10 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
     if let Some(v) = subprocess_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
-    if let Some(v) = symtable_resolver::resolve_symbol(symbol) {
-        return Some(v);
-    }
     if let Some(v) = sys_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
     if let Some(v) = tempfile_resolver::resolve_symbol(symbol) {
-        return Some(v);
-    }
-    if let Some(v) = textwrap_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
     if let Some(v) = this_resolver::resolve_symbol(symbol) {
@@ -433,9 +418,6 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
         return Some(v);
     }
     if let Some(v) = tokenize_resolver::resolve_symbol(symbol) {
-        return Some(v);
-    }
-    if let Some(v) = tomllib_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
     if let Some(v) = traceback_resolver::resolve_symbol(symbol) {
@@ -465,13 +447,7 @@ pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
     if let Some(v) = websocket_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
-    if let Some(v) = wsgiref_resolver::resolve_symbol(symbol) {
-        return Some(v);
-    }
     if let Some(v) = xml_etree_resolver::resolve_symbol(symbol) {
-        return Some(v);
-    }
-    if let Some(v) = xmlrpc_resolver::resolve_symbol(symbol) {
         return Some(v);
     }
     if let Some(v) = zoneinfo_resolver::resolve_symbol(symbol) {

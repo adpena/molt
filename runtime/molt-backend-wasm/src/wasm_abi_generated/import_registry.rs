@@ -1545,11 +1545,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::PromiseSetException,
-        name: "promise_set_exception",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::PromiseSetResult,
         name: "promise_set_result",
         type_idx: 3,
@@ -3048,11 +3043,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::ImportlibMetadataEntryPointsFilterPayload,
         name: "importlib_metadata_entry_points_filter_payload",
         type_idx: 12,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportlibMetadataEntryPointsSelectPayload,
-        name: "importlib_metadata_entry_points_select_payload",
-        type_idx: 7,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibMetadataNormalizeName,
@@ -5815,36 +5805,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::TextwrapWrap,
-        name: "textwrap_wrap",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TextwrapWrapEx,
-        name: "textwrap_wrap_ex",
-        type_idx: 34,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TextwrapFill,
-        name: "textwrap_fill",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TextwrapFillEx,
-        name: "textwrap_fill_ex",
-        type_idx: 34,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TextwrapIndent,
-        name: "textwrap_indent",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TextwrapIndentEx,
-        name: "textwrap_indent_ex",
-        type_idx: 5,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::UrllibQuote,
         name: "urllib_quote",
         type_idx: 3,
@@ -6300,11 +6260,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::SocketserverSetResponse,
-        name: "socketserver_set_response",
-        type_idx: 5,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::SocketserverServeForever,
         name: "socketserver_serve_forever",
         type_idx: 3,
@@ -6317,16 +6272,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::SocketserverShutdown,
         name: "socketserver_shutdown",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::HttpServerReadRequest,
-        name: "http_server_read_request",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::HttpServerComputeCloseConnection,
-        name: "http_server_compute_close_connection",
         type_idx: 2,
     },
     RuntimeImportSpec {
@@ -6435,26 +6380,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ContextlibAsyncgenCmNew,
-        name: "contextlib_asyncgen_cm_new",
-        type_idx: 5,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ContextlibAsyncgenCmDrop,
-        name: "contextlib_asyncgen_cm_drop",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ContextlibAsyncgenCmAenter,
-        name: "contextlib_asyncgen_cm_aenter",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ContextlibAsyncgenCmAexit,
-        name: "contextlib_asyncgen_cm_aexit",
-        type_idx: 7,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibGeneratorEnter,
         name: "contextlib_generator_enter",
         type_idx: 2,
@@ -6510,11 +6435,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 7,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ContextlibExitstackPop,
-        name: "contextlib_exitstack_pop",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ContextlibExitstackPopAll,
         name: "contextlib_exitstack_pop_all",
         type_idx: 2,
@@ -6555,19 +6475,9 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 0,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::EmailMessageFromBytes,
-        name: "email_message_from_bytes",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::EmailMessageSet,
         name: "email_message_set",
         type_idx: 5,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::EmailMessageGet,
-        name: "email_message_get",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::EmailMessageSetContent,
@@ -6585,38 +6495,8 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 12,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::EmailMessageIsMultipart,
-        name: "email_message_is_multipart",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::EmailMessagePayload,
-        name: "email_message_payload",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::EmailMessageContent,
-        name: "email_message_content",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::EmailMessageContentType,
-        name: "email_message_content_type",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::EmailMessageFilename,
-        name: "email_message_filename",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::EmailMessageAsString,
         name: "email_message_as_string",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::EmailMessageItems,
-        name: "email_message_items",
         type_idx: 2,
     },
     RuntimeImportSpec {
@@ -6760,11 +6640,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 0,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::AsyncioTaskRegistryLive,
-        name: "asyncio_task_registry_live",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioTaskRegistryLiveSet,
         name: "asyncio_task_registry_live_set",
         type_idx: 2,
@@ -6803,11 +6678,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::AsyncioChildWatcherPop,
         name: "asyncio_child_watcher_pop",
         type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::AsyncioRequireSslTransportSupport,
-        name: "asyncio_require_ssl_transport_support",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::AsyncioSslTransportOrchestrate,
@@ -7052,16 +6922,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimeGetClockInfo,
         name: "time_get_clock_info",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::HeapqHeapifyMax,
-        name: "heapq_heapify_max",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::HeapqHeappopMax,
-        name: "heapq_heappop_max",
         type_idx: 2,
     },
     RuntimeImportSpec {
@@ -7885,11 +7745,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::PathResolve,
-        name: "path_resolve",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::PathAsUri,
         name: "path_as_uri",
         type_idx: 2,
@@ -7905,24 +7760,9 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::PathExpandvarsEnv,
-        name: "path_expandvars_env",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::PathMakedirs,
         name: "path_makedirs",
         type_idx: 5,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::PathParts,
-        name: "path_parts",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::PathSplitroot,
-        name: "path_splitroot",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::PathParents,
@@ -8730,81 +8570,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 0,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::LoggingRuntimeReady,
-        name: "logging_runtime_ready",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::WsgirefRuntimeReady,
-        name: "wsgiref_runtime_ready",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ZoneinfoRuntimeReady,
-        name: "zoneinfo_runtime_ready",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ZipappRuntimeReady,
-        name: "zipapp_runtime_ready",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ZlibRuntimeReady,
-        name: "zlib_runtime_ready",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::XmlrpcRuntimeReady,
-        name: "xmlrpc_runtime_ready",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::CsvRuntimeReady,
-        name: "csv_runtime_ready",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DatetimeRuntimeReady,
-        name: "datetime_runtime_ready",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TokenizeRuntimeReady,
-        name: "tokenize_runtime_ready",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TomllibRuntimeReady,
-        name: "tomllib_runtime_ready",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TraceRuntimeReady,
-        name: "trace_runtime_ready",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::UnicodedataRuntimeReady,
-        name: "unicodedata_runtime_ready",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::SubprocessRuntimeReady,
-        name: "subprocess_runtime_ready",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::SymtableRuntimeReady,
-        name: "symtable_runtime_ready",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ImportSmokeRuntimeReady,
-        name: "import_smoke_runtime_ready",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ProcessSpawnEx,
         name: "process_spawn_ex",
         type_idx: 28,
@@ -9543,11 +9308,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::DataclassesPostInit,
         name: "dataclasses_post_init",
         type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DataclassesFieldMetadata,
-        name: "dataclasses_field_metadata",
-        type_idx: 2,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DataclassesSetFieldMetadata,
@@ -10435,11 +10195,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::StdlibProbe,
-        name: "stdlib_probe",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ArgparseAddArgument,
         name: "argparse_add_argument",
         type_idx: 32,
@@ -11040,11 +10795,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 7,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::ConfigparserWrite,
-        name: "configparser_write",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::DbmDumbOpen,
         name: "dbm_dumb_open",
         type_idx: 5,
@@ -11258,11 +11008,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::DatetimeIsoweekday,
         name: "datetime_isoweekday",
         type_idx: 5,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DatetimeLocalUtcoffset,
-        name: "datetime_local_utcoffset",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeNowLocal,
@@ -11575,51 +11320,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::DifflibContextDiff,
-        name: "difflib_context_diff",
-        type_idx: 12,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DifflibGetCloseMatches,
-        name: "difflib_get_close_matches",
-        type_idx: 7,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DifflibGetMatchingBlocks,
-        name: "difflib_get_matching_blocks",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DifflibGetOpcodes,
-        name: "difflib_get_opcodes",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DifflibIsJunk,
-        name: "difflib_is_junk",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DifflibNdiff,
-        name: "difflib_ndiff",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DifflibQuickRatio,
-        name: "difflib_quick_ratio",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DifflibRatio,
-        name: "difflib_ratio",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DifflibUnifiedDiff,
-        name: "difflib_unified_diff",
-        type_idx: 12,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::EnumAutoValue,
         name: "enum_auto_value",
         type_idx: 2,
@@ -11645,11 +11345,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::EnumFlagNew,
-        name: "enum_flag_new",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::EnumFlagOr,
         name: "enum_flag_or",
         type_idx: 3,
@@ -11668,11 +11363,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::EnumUniqueCheck,
         name: "enum_unique_check",
         type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::EnumVerifyMember,
-        name: "enum_verify_member",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::FractionAbs,
@@ -12022,11 +11712,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::IpaddressV6Version,
         name: "ipaddress_v6_version",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::JsonDetectEncoding,
-        name: "json_detect_encoding",
         type_idx: 2,
     },
     RuntimeImportSpec {
@@ -13270,11 +12955,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::DefaultdictCopy,
-        name: "defaultdict_copy",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::DefaultdictDrop,
         name: "defaultdict_drop",
         type_idx: 2,
@@ -13585,16 +13265,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::EventLoopConnectReadPipe,
-        name: "event_loop_connect_read_pipe",
-        type_idx: 5,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::EventLoopConnectWritePipe,
-        name: "event_loop_connect_write_pipe",
-        type_idx: 5,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::PipeTransportNew,
         name: "pipe_transport_new",
         type_idx: 3,
@@ -13825,11 +13495,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::LoggingRecordGetAttr,
-        name: "logging_record_get_attr",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingRecordDrop,
         name: "logging_record_drop",
         type_idx: 2,
@@ -13920,11 +13585,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::LoggingLoggerLog,
-        name: "logging_logger_log",
-        type_idx: 7,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingLoggerIsEnabledFor,
         name: "logging_logger_is_enabled_for",
         type_idx: 3,
@@ -13938,16 +13598,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::LoggingLoggerDrop,
         name: "logging_logger_drop",
         type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::LoggingManagerGetLogger,
-        name: "logging_manager_get_logger",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::LoggingRootLogger,
-        name: "logging_root_logger",
-        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::LoggingBasicConfig,
@@ -14185,23 +13835,8 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::TkNormalizeOption,
-        name: "tk_normalize_option",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::TkHexToRgb,
         name: "tk_hex_to_rgb",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TkNormalizeDelayMs,
-        name: "tk_normalize_delay_ms",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TkConvertStringval,
-        name: "tk_convert_stringval",
         type_idx: 2,
     },
     RuntimeImportSpec {
@@ -14480,11 +14115,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::PathlibSep,
-        name: "pathlib_sep",
-        type_idx: 0,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::TempfileGettempdir,
         name: "tempfile_gettempdir",
         type_idx: 0,
@@ -14665,11 +14295,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::CopyReplace,
-        name: "copy_replace",
-        type_idx: 3,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::CsvNormalizeRow,
         name: "csv_normalize_row",
         type_idx: 2,
@@ -14698,11 +14323,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::DatetimeDateRepr,
         name: "datetime_date_repr",
         type_idx: 5,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::DatetimeDatetimeRepr,
-        name: "datetime_datetime_repr",
-        type_idx: 10,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::DatetimeFormatTime,
@@ -14828,16 +14448,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::ReSubCallable,
         name: "re_sub_callable",
         type_idx: 7,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TextwrapDedent,
-        name: "textwrap_dedent",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::TextwrapShorten,
-        name: "textwrap_shorten",
-        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::TimedeltaRepr,
@@ -15754,8 +15364,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_promise_new" => Some(WasmRuntimeImport::PromiseNew),
         "promise_poll" => Some(WasmRuntimeImport::PromisePoll),
         "molt_promise_poll" => Some(WasmRuntimeImport::PromisePoll),
-        "promise_set_exception" => Some(WasmRuntimeImport::PromiseSetException),
-        "molt_promise_set_exception" => Some(WasmRuntimeImport::PromiseSetException),
         "promise_set_result" => Some(WasmRuntimeImport::PromiseSetResult),
         "molt_promise_set_result" => Some(WasmRuntimeImport::PromiseSetResult),
         "block_on" => Some(WasmRuntimeImport::BlockOn),
@@ -16415,12 +16023,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         }
         "molt_importlib_metadata_entry_points_filter_payload" => {
             Some(WasmRuntimeImport::ImportlibMetadataEntryPointsFilterPayload)
-        }
-        "importlib_metadata_entry_points_select_payload" => {
-            Some(WasmRuntimeImport::ImportlibMetadataEntryPointsSelectPayload)
-        }
-        "molt_importlib_metadata_entry_points_select_payload" => {
-            Some(WasmRuntimeImport::ImportlibMetadataEntryPointsSelectPayload)
         }
         "importlib_metadata_normalize_name" => {
             Some(WasmRuntimeImport::ImportlibMetadataNormalizeName)
@@ -17780,18 +17382,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_stat_iswht" => Some(WasmRuntimeImport::StatIswht),
         "stat_filemode" => Some(WasmRuntimeImport::StatFilemode),
         "molt_stat_filemode" => Some(WasmRuntimeImport::StatFilemode),
-        "textwrap_wrap" => Some(WasmRuntimeImport::TextwrapWrap),
-        "molt_textwrap_wrap" => Some(WasmRuntimeImport::TextwrapWrap),
-        "textwrap_wrap_ex" => Some(WasmRuntimeImport::TextwrapWrapEx),
-        "molt_textwrap_wrap_ex" => Some(WasmRuntimeImport::TextwrapWrapEx),
-        "textwrap_fill" => Some(WasmRuntimeImport::TextwrapFill),
-        "molt_textwrap_fill" => Some(WasmRuntimeImport::TextwrapFill),
-        "textwrap_fill_ex" => Some(WasmRuntimeImport::TextwrapFillEx),
-        "molt_textwrap_fill_ex" => Some(WasmRuntimeImport::TextwrapFillEx),
-        "textwrap_indent" => Some(WasmRuntimeImport::TextwrapIndent),
-        "molt_textwrap_indent" => Some(WasmRuntimeImport::TextwrapIndent),
-        "textwrap_indent_ex" => Some(WasmRuntimeImport::TextwrapIndentEx),
-        "molt_textwrap_indent_ex" => Some(WasmRuntimeImport::TextwrapIndentEx),
         "urllib_quote" => Some(WasmRuntimeImport::UrllibQuote),
         "molt_urllib_quote" => Some(WasmRuntimeImport::UrllibQuote),
         "urllib_quote_plus" => Some(WasmRuntimeImport::UrllibQuotePlus),
@@ -18064,22 +17654,12 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_socketserver_dispatch_cancel" => Some(WasmRuntimeImport::SocketserverDispatchCancel),
         "socketserver_get_request_poll" => Some(WasmRuntimeImport::SocketserverGetRequestPoll),
         "molt_socketserver_get_request_poll" => Some(WasmRuntimeImport::SocketserverGetRequestPoll),
-        "socketserver_set_response" => Some(WasmRuntimeImport::SocketserverSetResponse),
-        "molt_socketserver_set_response" => Some(WasmRuntimeImport::SocketserverSetResponse),
         "socketserver_serve_forever" => Some(WasmRuntimeImport::SocketserverServeForever),
         "molt_socketserver_serve_forever" => Some(WasmRuntimeImport::SocketserverServeForever),
         "socketserver_handle_request" => Some(WasmRuntimeImport::SocketserverHandleRequest),
         "molt_socketserver_handle_request" => Some(WasmRuntimeImport::SocketserverHandleRequest),
         "socketserver_shutdown" => Some(WasmRuntimeImport::SocketserverShutdown),
         "molt_socketserver_shutdown" => Some(WasmRuntimeImport::SocketserverShutdown),
-        "http_server_read_request" => Some(WasmRuntimeImport::HttpServerReadRequest),
-        "molt_http_server_read_request" => Some(WasmRuntimeImport::HttpServerReadRequest),
-        "http_server_compute_close_connection" => {
-            Some(WasmRuntimeImport::HttpServerComputeCloseConnection)
-        }
-        "molt_http_server_compute_close_connection" => {
-            Some(WasmRuntimeImport::HttpServerComputeCloseConnection)
-        }
         "http_server_handle_one_request" => Some(WasmRuntimeImport::HttpServerHandleOneRequest),
         "molt_http_server_handle_one_request" => {
             Some(WasmRuntimeImport::HttpServerHandleOneRequest)
@@ -18138,14 +17718,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_contextlib_chdir_enter" => Some(WasmRuntimeImport::ContextlibChdirEnter),
         "contextlib_chdir_exit" => Some(WasmRuntimeImport::ContextlibChdirExit),
         "molt_contextlib_chdir_exit" => Some(WasmRuntimeImport::ContextlibChdirExit),
-        "contextlib_asyncgen_cm_new" => Some(WasmRuntimeImport::ContextlibAsyncgenCmNew),
-        "molt_contextlib_asyncgen_cm_new" => Some(WasmRuntimeImport::ContextlibAsyncgenCmNew),
-        "contextlib_asyncgen_cm_drop" => Some(WasmRuntimeImport::ContextlibAsyncgenCmDrop),
-        "molt_contextlib_asyncgen_cm_drop" => Some(WasmRuntimeImport::ContextlibAsyncgenCmDrop),
-        "contextlib_asyncgen_cm_aenter" => Some(WasmRuntimeImport::ContextlibAsyncgenCmAenter),
-        "molt_contextlib_asyncgen_cm_aenter" => Some(WasmRuntimeImport::ContextlibAsyncgenCmAenter),
-        "contextlib_asyncgen_cm_aexit" => Some(WasmRuntimeImport::ContextlibAsyncgenCmAexit),
-        "molt_contextlib_asyncgen_cm_aexit" => Some(WasmRuntimeImport::ContextlibAsyncgenCmAexit),
         "contextlib_generator_enter" => Some(WasmRuntimeImport::ContextlibGeneratorEnter),
         "molt_contextlib_generator_enter" => Some(WasmRuntimeImport::ContextlibGeneratorEnter),
         "contextlib_generator_exit" => Some(WasmRuntimeImport::ContextlibGeneratorExit),
@@ -18172,8 +17744,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_contextlib_exitstack_push_callback" => {
             Some(WasmRuntimeImport::ContextlibExitstackPushCallback)
         }
-        "contextlib_exitstack_pop" => Some(WasmRuntimeImport::ContextlibExitstackPop),
-        "molt_contextlib_exitstack_pop" => Some(WasmRuntimeImport::ContextlibExitstackPop),
         "contextlib_exitstack_pop_all" => Some(WasmRuntimeImport::ContextlibExitstackPopAll),
         "molt_contextlib_exitstack_pop_all" => Some(WasmRuntimeImport::ContextlibExitstackPopAll),
         "contextlib_exitstack_enter_context" => {
@@ -18208,32 +17778,16 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         }
         "email_message_new" => Some(WasmRuntimeImport::EmailMessageNew),
         "molt_email_message_new" => Some(WasmRuntimeImport::EmailMessageNew),
-        "email_message_from_bytes" => Some(WasmRuntimeImport::EmailMessageFromBytes),
-        "molt_email_message_from_bytes" => Some(WasmRuntimeImport::EmailMessageFromBytes),
         "email_message_set" => Some(WasmRuntimeImport::EmailMessageSet),
         "molt_email_message_set" => Some(WasmRuntimeImport::EmailMessageSet),
-        "email_message_get" => Some(WasmRuntimeImport::EmailMessageGet),
-        "molt_email_message_get" => Some(WasmRuntimeImport::EmailMessageGet),
         "email_message_set_content" => Some(WasmRuntimeImport::EmailMessageSetContent),
         "molt_email_message_set_content" => Some(WasmRuntimeImport::EmailMessageSetContent),
         "email_message_add_alternative" => Some(WasmRuntimeImport::EmailMessageAddAlternative),
         "molt_email_message_add_alternative" => Some(WasmRuntimeImport::EmailMessageAddAlternative),
         "email_message_add_attachment" => Some(WasmRuntimeImport::EmailMessageAddAttachment),
         "molt_email_message_add_attachment" => Some(WasmRuntimeImport::EmailMessageAddAttachment),
-        "email_message_is_multipart" => Some(WasmRuntimeImport::EmailMessageIsMultipart),
-        "molt_email_message_is_multipart" => Some(WasmRuntimeImport::EmailMessageIsMultipart),
-        "email_message_payload" => Some(WasmRuntimeImport::EmailMessagePayload),
-        "molt_email_message_payload" => Some(WasmRuntimeImport::EmailMessagePayload),
-        "email_message_content" => Some(WasmRuntimeImport::EmailMessageContent),
-        "molt_email_message_content" => Some(WasmRuntimeImport::EmailMessageContent),
-        "email_message_content_type" => Some(WasmRuntimeImport::EmailMessageContentType),
-        "molt_email_message_content_type" => Some(WasmRuntimeImport::EmailMessageContentType),
-        "email_message_filename" => Some(WasmRuntimeImport::EmailMessageFilename),
-        "molt_email_message_filename" => Some(WasmRuntimeImport::EmailMessageFilename),
         "email_message_as_string" => Some(WasmRuntimeImport::EmailMessageAsString),
         "molt_email_message_as_string" => Some(WasmRuntimeImport::EmailMessageAsString),
-        "email_message_items" => Some(WasmRuntimeImport::EmailMessageItems),
-        "molt_email_message_items" => Some(WasmRuntimeImport::EmailMessageItems),
         "email_message_drop" => Some(WasmRuntimeImport::EmailMessageDrop),
         "molt_email_message_drop" => Some(WasmRuntimeImport::EmailMessageDrop),
         "email_utils_make_msgid" => Some(WasmRuntimeImport::EmailUtilsMakeMsgid),
@@ -18310,8 +17864,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_asyncio_task_registry_move" => Some(WasmRuntimeImport::AsyncioTaskRegistryMove),
         "asyncio_task_registry_values" => Some(WasmRuntimeImport::AsyncioTaskRegistryValues),
         "molt_asyncio_task_registry_values" => Some(WasmRuntimeImport::AsyncioTaskRegistryValues),
-        "asyncio_task_registry_live" => Some(WasmRuntimeImport::AsyncioTaskRegistryLive),
-        "molt_asyncio_task_registry_live" => Some(WasmRuntimeImport::AsyncioTaskRegistryLive),
         "asyncio_task_registry_live_set" => Some(WasmRuntimeImport::AsyncioTaskRegistryLiveSet),
         "molt_asyncio_task_registry_live_set" => {
             Some(WasmRuntimeImport::AsyncioTaskRegistryLiveSet)
@@ -18340,12 +17892,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_asyncio_child_watcher_clear" => Some(WasmRuntimeImport::AsyncioChildWatcherClear),
         "asyncio_child_watcher_pop" => Some(WasmRuntimeImport::AsyncioChildWatcherPop),
         "molt_asyncio_child_watcher_pop" => Some(WasmRuntimeImport::AsyncioChildWatcherPop),
-        "asyncio_require_ssl_transport_support" => {
-            Some(WasmRuntimeImport::AsyncioRequireSslTransportSupport)
-        }
-        "molt_asyncio_require_ssl_transport_support" => {
-            Some(WasmRuntimeImport::AsyncioRequireSslTransportSupport)
-        }
         "asyncio_ssl_transport_orchestrate" => {
             Some(WasmRuntimeImport::AsyncioSslTransportOrchestrate)
         }
@@ -18484,10 +18030,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_time_timegm" => Some(WasmRuntimeImport::TimeTimegm),
         "time_get_clock_info" => Some(WasmRuntimeImport::TimeGetClockInfo),
         "molt_time_get_clock_info" => Some(WasmRuntimeImport::TimeGetClockInfo),
-        "heapq_heapify_max" => Some(WasmRuntimeImport::HeapqHeapifyMax),
-        "molt_heapq_heapify_max" => Some(WasmRuntimeImport::HeapqHeapifyMax),
-        "heapq_heappop_max" => Some(WasmRuntimeImport::HeapqHeappopMax),
-        "molt_heapq_heappop_max" => Some(WasmRuntimeImport::HeapqHeappopMax),
         "heapq_nsmallest" => Some(WasmRuntimeImport::HeapqNsmallest),
         "molt_heapq_nsmallest" => Some(WasmRuntimeImport::HeapqNsmallest),
         "heapq_nlargest" => Some(WasmRuntimeImport::HeapqNlargest),
@@ -18824,22 +18366,14 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_path_normpath" => Some(WasmRuntimeImport::PathNormpath),
         "path_abspath" => Some(WasmRuntimeImport::PathAbspath),
         "molt_path_abspath" => Some(WasmRuntimeImport::PathAbspath),
-        "path_resolve" => Some(WasmRuntimeImport::PathResolve),
-        "molt_path_resolve" => Some(WasmRuntimeImport::PathResolve),
         "path_as_uri" => Some(WasmRuntimeImport::PathAsUri),
         "molt_path_as_uri" => Some(WasmRuntimeImport::PathAsUri),
         "path_relpath" => Some(WasmRuntimeImport::PathRelpath),
         "molt_path_relpath" => Some(WasmRuntimeImport::PathRelpath),
         "path_expandvars" => Some(WasmRuntimeImport::PathExpandvars),
         "molt_path_expandvars" => Some(WasmRuntimeImport::PathExpandvars),
-        "path_expandvars_env" => Some(WasmRuntimeImport::PathExpandvarsEnv),
-        "molt_path_expandvars_env" => Some(WasmRuntimeImport::PathExpandvarsEnv),
         "path_makedirs" => Some(WasmRuntimeImport::PathMakedirs),
         "molt_path_makedirs" => Some(WasmRuntimeImport::PathMakedirs),
-        "path_parts" => Some(WasmRuntimeImport::PathParts),
-        "molt_path_parts" => Some(WasmRuntimeImport::PathParts),
-        "path_splitroot" => Some(WasmRuntimeImport::PathSplitroot),
-        "molt_path_splitroot" => Some(WasmRuntimeImport::PathSplitroot),
         "path_parents" => Some(WasmRuntimeImport::PathParents),
         "molt_path_parents" => Some(WasmRuntimeImport::PathParents),
         "path_compare" => Some(WasmRuntimeImport::PathCompare),
@@ -19172,36 +18706,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_logging_config_listen" => Some(WasmRuntimeImport::LoggingConfigListen),
         "logging_config_stop_listening" => Some(WasmRuntimeImport::LoggingConfigStopListening),
         "molt_logging_config_stop_listening" => Some(WasmRuntimeImport::LoggingConfigStopListening),
-        "logging_runtime_ready" => Some(WasmRuntimeImport::LoggingRuntimeReady),
-        "molt_logging_runtime_ready" => Some(WasmRuntimeImport::LoggingRuntimeReady),
-        "wsgiref_runtime_ready" => Some(WasmRuntimeImport::WsgirefRuntimeReady),
-        "molt_wsgiref_runtime_ready" => Some(WasmRuntimeImport::WsgirefRuntimeReady),
-        "zoneinfo_runtime_ready" => Some(WasmRuntimeImport::ZoneinfoRuntimeReady),
-        "molt_zoneinfo_runtime_ready" => Some(WasmRuntimeImport::ZoneinfoRuntimeReady),
-        "zipapp_runtime_ready" => Some(WasmRuntimeImport::ZipappRuntimeReady),
-        "molt_zipapp_runtime_ready" => Some(WasmRuntimeImport::ZipappRuntimeReady),
-        "zlib_runtime_ready" => Some(WasmRuntimeImport::ZlibRuntimeReady),
-        "molt_zlib_runtime_ready" => Some(WasmRuntimeImport::ZlibRuntimeReady),
-        "xmlrpc_runtime_ready" => Some(WasmRuntimeImport::XmlrpcRuntimeReady),
-        "molt_xmlrpc_runtime_ready" => Some(WasmRuntimeImport::XmlrpcRuntimeReady),
-        "csv_runtime_ready" => Some(WasmRuntimeImport::CsvRuntimeReady),
-        "molt_csv_runtime_ready" => Some(WasmRuntimeImport::CsvRuntimeReady),
-        "datetime_runtime_ready" => Some(WasmRuntimeImport::DatetimeRuntimeReady),
-        "molt_datetime_runtime_ready" => Some(WasmRuntimeImport::DatetimeRuntimeReady),
-        "tokenize_runtime_ready" => Some(WasmRuntimeImport::TokenizeRuntimeReady),
-        "molt_tokenize_runtime_ready" => Some(WasmRuntimeImport::TokenizeRuntimeReady),
-        "tomllib_runtime_ready" => Some(WasmRuntimeImport::TomllibRuntimeReady),
-        "molt_tomllib_runtime_ready" => Some(WasmRuntimeImport::TomllibRuntimeReady),
-        "trace_runtime_ready" => Some(WasmRuntimeImport::TraceRuntimeReady),
-        "molt_trace_runtime_ready" => Some(WasmRuntimeImport::TraceRuntimeReady),
-        "unicodedata_runtime_ready" => Some(WasmRuntimeImport::UnicodedataRuntimeReady),
-        "molt_unicodedata_runtime_ready" => Some(WasmRuntimeImport::UnicodedataRuntimeReady),
-        "subprocess_runtime_ready" => Some(WasmRuntimeImport::SubprocessRuntimeReady),
-        "molt_subprocess_runtime_ready" => Some(WasmRuntimeImport::SubprocessRuntimeReady),
-        "symtable_runtime_ready" => Some(WasmRuntimeImport::SymtableRuntimeReady),
-        "molt_symtable_runtime_ready" => Some(WasmRuntimeImport::SymtableRuntimeReady),
-        "import_smoke_runtime_ready" => Some(WasmRuntimeImport::ImportSmokeRuntimeReady),
-        "molt_import_smoke_runtime_ready" => Some(WasmRuntimeImport::ImportSmokeRuntimeReady),
         "process_spawn_ex" => Some(WasmRuntimeImport::ProcessSpawnEx),
         "molt_process_spawn_ex" => Some(WasmRuntimeImport::ProcessSpawnEx),
         "multiprocessing_codec_dumps" => Some(WasmRuntimeImport::MultiprocessingCodecDumps),
@@ -19552,8 +19056,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_dataclasses_replace" => Some(WasmRuntimeImport::DataclassesReplace),
         "dataclasses_post_init" => Some(WasmRuntimeImport::DataclassesPostInit),
         "molt_dataclasses_post_init" => Some(WasmRuntimeImport::DataclassesPostInit),
-        "dataclasses_field_metadata" => Some(WasmRuntimeImport::DataclassesFieldMetadata),
-        "molt_dataclasses_field_metadata" => Some(WasmRuntimeImport::DataclassesFieldMetadata),
         "dataclasses_set_field_metadata" => Some(WasmRuntimeImport::DataclassesSetFieldMetadata),
         "molt_dataclasses_set_field_metadata" => {
             Some(WasmRuntimeImport::DataclassesSetFieldMetadata)
@@ -19928,8 +19430,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_imghdr_test" => Some(WasmRuntimeImport::ImghdrTest),
         "imghdr_what" => Some(WasmRuntimeImport::ImghdrWhat),
         "molt_imghdr_what" => Some(WasmRuntimeImport::ImghdrWhat),
-        "stdlib_probe" => Some(WasmRuntimeImport::StdlibProbe),
-        "molt_stdlib_probe" => Some(WasmRuntimeImport::StdlibProbe),
         "argparse_add_argument" => Some(WasmRuntimeImport::ArgparseAddArgument),
         "molt_argparse_add_argument" => Some(WasmRuntimeImport::ArgparseAddArgument),
         "argparse_add_mutually_exclusive" => Some(WasmRuntimeImport::ArgparseAddMutuallyExclusive),
@@ -20202,8 +19702,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_configparser_sections" => Some(WasmRuntimeImport::ConfigparserSections),
         "configparser_set" => Some(WasmRuntimeImport::ConfigparserSet),
         "molt_configparser_set" => Some(WasmRuntimeImport::ConfigparserSet),
-        "configparser_write" => Some(WasmRuntimeImport::ConfigparserWrite),
-        "molt_configparser_write" => Some(WasmRuntimeImport::ConfigparserWrite),
         "dbm_dumb_open" => Some(WasmRuntimeImport::DbmDumbOpen),
         "molt_dbm_dumb_open" => Some(WasmRuntimeImport::DbmDumbOpen),
         "dbm_dumb_getitem" => Some(WasmRuntimeImport::DbmDumbGetitem),
@@ -20290,8 +19788,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_datetime_isocalendar" => Some(WasmRuntimeImport::DatetimeIsocalendar),
         "datetime_isoweekday" => Some(WasmRuntimeImport::DatetimeIsoweekday),
         "molt_datetime_isoweekday" => Some(WasmRuntimeImport::DatetimeIsoweekday),
-        "datetime_local_utcoffset" => Some(WasmRuntimeImport::DatetimeLocalUtcoffset),
-        "molt_datetime_local_utcoffset" => Some(WasmRuntimeImport::DatetimeLocalUtcoffset),
         "datetime_now_local" => Some(WasmRuntimeImport::DatetimeNowLocal),
         "molt_datetime_now_local" => Some(WasmRuntimeImport::DatetimeNowLocal),
         "datetime_now_utc" => Some(WasmRuntimeImport::DatetimeNowUtc),
@@ -20416,24 +19912,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_decimal_to_integral_exact" => Some(WasmRuntimeImport::DecimalToIntegralExact),
         "decimal_to_integral_value" => Some(WasmRuntimeImport::DecimalToIntegralValue),
         "molt_decimal_to_integral_value" => Some(WasmRuntimeImport::DecimalToIntegralValue),
-        "difflib_context_diff" => Some(WasmRuntimeImport::DifflibContextDiff),
-        "molt_difflib_context_diff" => Some(WasmRuntimeImport::DifflibContextDiff),
-        "difflib_get_close_matches" => Some(WasmRuntimeImport::DifflibGetCloseMatches),
-        "molt_difflib_get_close_matches" => Some(WasmRuntimeImport::DifflibGetCloseMatches),
-        "difflib_get_matching_blocks" => Some(WasmRuntimeImport::DifflibGetMatchingBlocks),
-        "molt_difflib_get_matching_blocks" => Some(WasmRuntimeImport::DifflibGetMatchingBlocks),
-        "difflib_get_opcodes" => Some(WasmRuntimeImport::DifflibGetOpcodes),
-        "molt_difflib_get_opcodes" => Some(WasmRuntimeImport::DifflibGetOpcodes),
-        "difflib_is_junk" => Some(WasmRuntimeImport::DifflibIsJunk),
-        "molt_difflib_is_junk" => Some(WasmRuntimeImport::DifflibIsJunk),
-        "difflib_ndiff" => Some(WasmRuntimeImport::DifflibNdiff),
-        "molt_difflib_ndiff" => Some(WasmRuntimeImport::DifflibNdiff),
-        "difflib_quick_ratio" => Some(WasmRuntimeImport::DifflibQuickRatio),
-        "molt_difflib_quick_ratio" => Some(WasmRuntimeImport::DifflibQuickRatio),
-        "difflib_ratio" => Some(WasmRuntimeImport::DifflibRatio),
-        "molt_difflib_ratio" => Some(WasmRuntimeImport::DifflibRatio),
-        "difflib_unified_diff" => Some(WasmRuntimeImport::DifflibUnifiedDiff),
-        "molt_difflib_unified_diff" => Some(WasmRuntimeImport::DifflibUnifiedDiff),
         "enum_auto_value" => Some(WasmRuntimeImport::EnumAutoValue),
         "molt_enum_auto_value" => Some(WasmRuntimeImport::EnumAutoValue),
         "enum_flag_and" => Some(WasmRuntimeImport::EnumFlagAnd),
@@ -20444,8 +19922,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_enum_flag_decompose" => Some(WasmRuntimeImport::EnumFlagDecompose),
         "enum_flag_invert" => Some(WasmRuntimeImport::EnumFlagInvert),
         "molt_enum_flag_invert" => Some(WasmRuntimeImport::EnumFlagInvert),
-        "enum_flag_new" => Some(WasmRuntimeImport::EnumFlagNew),
-        "molt_enum_flag_new" => Some(WasmRuntimeImport::EnumFlagNew),
         "enum_flag_or" => Some(WasmRuntimeImport::EnumFlagOr),
         "molt_enum_flag_or" => Some(WasmRuntimeImport::EnumFlagOr),
         "enum_flag_xor" => Some(WasmRuntimeImport::EnumFlagXor),
@@ -20454,8 +19930,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_enum_str_value" => Some(WasmRuntimeImport::EnumStrValue),
         "enum_unique_check" => Some(WasmRuntimeImport::EnumUniqueCheck),
         "molt_enum_unique_check" => Some(WasmRuntimeImport::EnumUniqueCheck),
-        "enum_verify_member" => Some(WasmRuntimeImport::EnumVerifyMember),
-        "molt_enum_verify_member" => Some(WasmRuntimeImport::EnumVerifyMember),
         "fraction_abs" => Some(WasmRuntimeImport::FractionAbs),
         "molt_fraction_abs" => Some(WasmRuntimeImport::FractionAbs),
         "fraction_add" => Some(WasmRuntimeImport::FractionAdd),
@@ -20600,8 +20074,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_ipaddress_v6_str" => Some(WasmRuntimeImport::IpaddressV6Str),
         "ipaddress_v6_version" => Some(WasmRuntimeImport::IpaddressV6Version),
         "molt_ipaddress_v6_version" => Some(WasmRuntimeImport::IpaddressV6Version),
-        "json_detect_encoding" => Some(WasmRuntimeImport::JsonDetectEncoding),
-        "molt_json_detect_encoding" => Some(WasmRuntimeImport::JsonDetectEncoding),
         "json_dumps" => Some(WasmRuntimeImport::JsonDumps),
         "molt_json_dumps" => Some(WasmRuntimeImport::JsonDumps),
         "json_dumps_ex" => Some(WasmRuntimeImport::JsonDumpsEx),
@@ -21120,8 +20592,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_zoneinfo_tzname" => Some(WasmRuntimeImport::ZoneinfoTzname),
         "zoneinfo_utcoffset" => Some(WasmRuntimeImport::ZoneinfoUtcoffset),
         "molt_zoneinfo_utcoffset" => Some(WasmRuntimeImport::ZoneinfoUtcoffset),
-        "defaultdict_copy" => Some(WasmRuntimeImport::DefaultdictCopy),
-        "molt_defaultdict_copy" => Some(WasmRuntimeImport::DefaultdictCopy),
         "defaultdict_drop" => Some(WasmRuntimeImport::DefaultdictDrop),
         "molt_defaultdict_drop" => Some(WasmRuntimeImport::DefaultdictDrop),
         "defaultdict_factory" => Some(WasmRuntimeImport::DefaultdictFactory),
@@ -21270,10 +20740,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_event_loop_notify_writer_ready" => {
             Some(WasmRuntimeImport::EventLoopNotifyWriterReady)
         }
-        "event_loop_connect_read_pipe" => Some(WasmRuntimeImport::EventLoopConnectReadPipe),
-        "molt_event_loop_connect_read_pipe" => Some(WasmRuntimeImport::EventLoopConnectReadPipe),
-        "event_loop_connect_write_pipe" => Some(WasmRuntimeImport::EventLoopConnectWritePipe),
-        "molt_event_loop_connect_write_pipe" => Some(WasmRuntimeImport::EventLoopConnectWritePipe),
         "pipe_transport_new" => Some(WasmRuntimeImport::PipeTransportNew),
         "molt_pipe_transport_new" => Some(WasmRuntimeImport::PipeTransportNew),
         "pipe_transport_get_fd" => Some(WasmRuntimeImport::PipeTransportGetFd),
@@ -21370,8 +20836,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_logging_record_new" => Some(WasmRuntimeImport::LoggingRecordNew),
         "logging_record_get_message" => Some(WasmRuntimeImport::LoggingRecordGetMessage),
         "molt_logging_record_get_message" => Some(WasmRuntimeImport::LoggingRecordGetMessage),
-        "logging_record_get_attr" => Some(WasmRuntimeImport::LoggingRecordGetAttr),
-        "molt_logging_record_get_attr" => Some(WasmRuntimeImport::LoggingRecordGetAttr),
         "logging_record_drop" => Some(WasmRuntimeImport::LoggingRecordDrop),
         "molt_logging_record_drop" => Some(WasmRuntimeImport::LoggingRecordDrop),
         "logging_formatter_new" => Some(WasmRuntimeImport::LoggingFormatterNew),
@@ -21408,8 +20872,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_logging_logger_add_handler" => Some(WasmRuntimeImport::LoggingLoggerAddHandler),
         "logging_logger_remove_handler" => Some(WasmRuntimeImport::LoggingLoggerRemoveHandler),
         "molt_logging_logger_remove_handler" => Some(WasmRuntimeImport::LoggingLoggerRemoveHandler),
-        "logging_logger_log" => Some(WasmRuntimeImport::LoggingLoggerLog),
-        "molt_logging_logger_log" => Some(WasmRuntimeImport::LoggingLoggerLog),
         "logging_logger_is_enabled_for" => Some(WasmRuntimeImport::LoggingLoggerIsEnabledFor),
         "molt_logging_logger_is_enabled_for" => Some(WasmRuntimeImport::LoggingLoggerIsEnabledFor),
         "logging_logger_get_effective_level" => {
@@ -21420,10 +20882,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         }
         "logging_logger_drop" => Some(WasmRuntimeImport::LoggingLoggerDrop),
         "molt_logging_logger_drop" => Some(WasmRuntimeImport::LoggingLoggerDrop),
-        "logging_manager_get_logger" => Some(WasmRuntimeImport::LoggingManagerGetLogger),
-        "molt_logging_manager_get_logger" => Some(WasmRuntimeImport::LoggingManagerGetLogger),
-        "logging_root_logger" => Some(WasmRuntimeImport::LoggingRootLogger),
-        "molt_logging_root_logger" => Some(WasmRuntimeImport::LoggingRootLogger),
         "logging_basic_config" => Some(WasmRuntimeImport::LoggingBasicConfig),
         "molt_logging_basic_config" => Some(WasmRuntimeImport::LoggingBasicConfig),
         "logging_shutdown" => Some(WasmRuntimeImport::LoggingShutdown),
@@ -21530,14 +20988,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_tk_flatten_args" => Some(WasmRuntimeImport::TkFlattenArgs),
         "tk_cnfmerge" => Some(WasmRuntimeImport::TkCnfmerge),
         "molt_tk_cnfmerge" => Some(WasmRuntimeImport::TkCnfmerge),
-        "tk_normalize_option" => Some(WasmRuntimeImport::TkNormalizeOption),
-        "molt_tk_normalize_option" => Some(WasmRuntimeImport::TkNormalizeOption),
         "tk_hex_to_rgb" => Some(WasmRuntimeImport::TkHexToRgb),
         "molt_tk_hex_to_rgb" => Some(WasmRuntimeImport::TkHexToRgb),
-        "tk_normalize_delay_ms" => Some(WasmRuntimeImport::TkNormalizeDelayMs),
-        "molt_tk_normalize_delay_ms" => Some(WasmRuntimeImport::TkNormalizeDelayMs),
-        "tk_convert_stringval" => Some(WasmRuntimeImport::TkConvertStringval),
-        "molt_tk_convert_stringval" => Some(WasmRuntimeImport::TkConvertStringval),
         "pathlib_join" => Some(WasmRuntimeImport::PathlibJoin),
         "molt_pathlib_join" => Some(WasmRuntimeImport::PathlibJoin),
         "pathlib_str" => Some(WasmRuntimeImport::PathlibStr),
@@ -21648,8 +21100,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_pathlib_group" => Some(WasmRuntimeImport::PathlibGroup),
         "pathlib_samefile" => Some(WasmRuntimeImport::PathlibSamefile),
         "molt_pathlib_samefile" => Some(WasmRuntimeImport::PathlibSamefile),
-        "pathlib_sep" => Some(WasmRuntimeImport::PathlibSep),
-        "molt_pathlib_sep" => Some(WasmRuntimeImport::PathlibSep),
         "tempfile_gettempdir" => Some(WasmRuntimeImport::TempfileGettempdir),
         "molt_tempfile_gettempdir" => Some(WasmRuntimeImport::TempfileGettempdir),
         "tempfile_gettempdirb" => Some(WasmRuntimeImport::TempfileGettempdirb),
@@ -21722,8 +21172,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_ast_iter_child_nodes" => Some(WasmRuntimeImport::AstIterChildNodes),
         "linecache_detect_encoding" => Some(WasmRuntimeImport::LinecacheDetectEncoding),
         "molt_linecache_detect_encoding" => Some(WasmRuntimeImport::LinecacheDetectEncoding),
-        "copy_replace" => Some(WasmRuntimeImport::CopyReplace),
-        "molt_copy_replace" => Some(WasmRuntimeImport::CopyReplace),
         "csv_normalize_row" => Some(WasmRuntimeImport::CsvNormalizeRow),
         "molt_csv_normalize_row" => Some(WasmRuntimeImport::CsvNormalizeRow),
         "dataclasses_eq" => Some(WasmRuntimeImport::DataclassesEq),
@@ -21736,8 +21184,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_datetime_as_int" => Some(WasmRuntimeImport::DatetimeAsInt),
         "datetime_date_repr" => Some(WasmRuntimeImport::DatetimeDateRepr),
         "molt_datetime_date_repr" => Some(WasmRuntimeImport::DatetimeDateRepr),
-        "datetime_datetime_repr" => Some(WasmRuntimeImport::DatetimeDatetimeRepr),
-        "molt_datetime_datetime_repr" => Some(WasmRuntimeImport::DatetimeDatetimeRepr),
         "datetime_format_time" => Some(WasmRuntimeImport::DatetimeFormatTime),
         "molt_datetime_format_time" => Some(WasmRuntimeImport::DatetimeFormatTime),
         "datetime_time_repr" => Some(WasmRuntimeImport::DatetimeTimeRepr),
@@ -21788,10 +21234,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_re_sub" => Some(WasmRuntimeImport::ReSub),
         "re_sub_callable" => Some(WasmRuntimeImport::ReSubCallable),
         "molt_re_sub_callable" => Some(WasmRuntimeImport::ReSubCallable),
-        "textwrap_dedent" => Some(WasmRuntimeImport::TextwrapDedent),
-        "molt_textwrap_dedent" => Some(WasmRuntimeImport::TextwrapDedent),
-        "textwrap_shorten" => Some(WasmRuntimeImport::TextwrapShorten),
-        "molt_textwrap_shorten" => Some(WasmRuntimeImport::TextwrapShorten),
         "timedelta_repr" => Some(WasmRuntimeImport::TimedeltaRepr),
         "molt_timedelta_repr" => Some(WasmRuntimeImport::TimedeltaRepr),
         "timedelta_str" => Some(WasmRuntimeImport::TimedeltaStr),

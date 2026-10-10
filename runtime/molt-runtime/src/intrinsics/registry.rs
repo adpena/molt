@@ -1706,7 +1706,7 @@ mod tests {
                             Some(true),
                         );
                     }
-                    let request = string_bits(py, "molt_stdlib_probe");
+                    let request = string_bits(py, "molt_capabilities_has");
                     let resolved =
                         unsafe { crate::call::function::call_function_obj1(py, function, request) };
                     assert!(!exception_pending(py));

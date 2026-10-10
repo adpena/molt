@@ -91,7 +91,6 @@ install_registry({{
     "molt_html_parser_feed": lambda handle, data: [("starttag", "p", []), ("data", data), ("endtag", "p")],
     "molt_html_parser_close": lambda handle: [("comment", "done")],
     "molt_html_parser_drop": lambda handle: None,
-    "molt_stdlib_probe": lambda: None,
     "molt_weakref_register": lambda ref, obj, callback: None,
     "molt_weakref_reference_type": lambda: type,
     "molt_weakref_get": lambda ref: None,

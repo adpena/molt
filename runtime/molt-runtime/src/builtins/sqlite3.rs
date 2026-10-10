@@ -1151,24 +1151,6 @@ pub extern "C" fn molt_sqlite3_rowcount(cursor_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_sqlite3_arraysize_get(cursor_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {
-            Some(v) => v,
-            None => return raise_exception::<u64>(_py, "TypeError", "invalid cursor handle"),
-        };
-        let val = sqlite_state(_py)
-            .cursors
-            .lock()
-            .unwrap()
-            .get(&cursor_id)
-            .map(|s| s.arraysize)
-            .unwrap_or(1);
-        MoltObject::from_int(val).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_sqlite3_arraysize_set(cursor_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let cursor_id = match to_i64(obj_from_bits(cursor_bits)) {

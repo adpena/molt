@@ -34,11 +34,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_socketserver_get_request_poll as *const (),
         )),
         #[cfg(feature = "stdlib_http")]
-        "molt_socketserver_set_response" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_socketserver_set_response",
-            crate::molt_socketserver_set_response as *const (),
-        )),
-        #[cfg(feature = "stdlib_http")]
         "molt_socketserver_serve_forever" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_socketserver_serve_forever",
             crate::molt_socketserver_serve_forever as *const (),

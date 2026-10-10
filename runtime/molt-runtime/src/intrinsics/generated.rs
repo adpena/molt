@@ -1263,42 +1263,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_textwrap_wrap",
-        symbol: "molt_textwrap_wrap",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_textwrap_wrap_ex",
-        symbol: "molt_textwrap_wrap_ex",
-        arity: 12,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_textwrap_fill",
-        symbol: "molt_textwrap_fill",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_textwrap_fill_ex",
-        symbol: "molt_textwrap_fill_ex",
-        arity: 12,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_textwrap_indent",
-        symbol: "molt_textwrap_indent",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_textwrap_indent_ex",
-        symbol: "molt_textwrap_indent_ex",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_urllib_quote",
         symbol: "molt_urllib_quote",
         arity: 2,
@@ -1845,12 +1809,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_socketserver_set_response",
-        symbol: "molt_socketserver_set_response",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_socketserver_serve_forever",
         symbol: "molt_socketserver_serve_forever",
         arity: 2,
@@ -1865,18 +1823,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_socketserver_shutdown",
         symbol: "molt_socketserver_shutdown",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_http_server_read_request",
-        symbol: "molt_http_server_read_request",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_http_server_compute_close_connection",
-        symbol: "molt_http_server_compute_close_connection",
         arity: 1,
         defaults: &[],
     },
@@ -2013,30 +1959,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_contextlib_asyncgen_cm_new",
-        symbol: "molt_contextlib_asyncgen_cm_new",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_asyncgen_cm_drop",
-        symbol: "molt_contextlib_asyncgen_cm_drop",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_asyncgen_cm_aenter",
-        symbol: "molt_contextlib_asyncgen_cm_aenter",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_contextlib_asyncgen_cm_aexit",
-        symbol: "molt_contextlib_asyncgen_cm_aexit",
-        arity: 4,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_contextlib_generator_enter",
         symbol: "molt_contextlib_generator_enter",
         arity: 1,
@@ -2103,12 +2025,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_contextlib_exitstack_pop",
-        symbol: "molt_contextlib_exitstack_pop",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_contextlib_exitstack_pop_all",
         symbol: "molt_contextlib_exitstack_pop_all",
         arity: 1,
@@ -2157,21 +2073,9 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_email_message_from_bytes",
-        symbol: "molt_email_message_from_bytes",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_email_message_set",
         symbol: "molt_email_message_set",
         arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_get",
-        symbol: "molt_email_message_get",
-        arity: 2,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -2193,44 +2097,8 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_email_message_is_multipart",
-        symbol: "molt_email_message_is_multipart",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_payload",
-        symbol: "molt_email_message_payload",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_content",
-        symbol: "molt_email_message_content",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_content_type",
-        symbol: "molt_email_message_content_type",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_filename",
-        symbol: "molt_email_message_filename",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_email_message_as_string",
         symbol: "molt_email_message_as_string",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_email_message_items",
-        symbol: "molt_email_message_items",
         arity: 1,
         defaults: &[],
     },
@@ -2475,12 +2343,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_asyncio_task_registry_live",
-        symbol: "molt_asyncio_task_registry_live",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_asyncio_task_registry_live_set",
         symbol: "molt_asyncio_task_registry_live_set",
         arity: 1,
@@ -2526,12 +2388,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_asyncio_child_watcher_pop",
         symbol: "molt_asyncio_child_watcher_pop",
         arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_asyncio_require_ssl_transport_support",
-        symbol: "molt_asyncio_require_ssl_transport_support",
-        arity: 0,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -2934,18 +2790,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_heapq_heappushpop",
         symbol: "molt_heapq_heappushpop",
         arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_heapq_heapify_max",
-        symbol: "molt_heapq_heapify_max",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_heapq_heappop_max",
-        symbol: "molt_heapq_heappop_max",
-        arity: 1,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -4143,12 +3987,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_path_resolve",
-        symbol: "molt_path_resolve",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_path_as_uri",
         symbol: "molt_path_as_uri",
         arity: 1,
@@ -4167,27 +4005,9 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_path_expandvars_env",
-        symbol: "molt_path_expandvars_env",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_path_makedirs",
         symbol: "molt_path_makedirs",
         arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_path_parts",
-        symbol: "molt_path_parts",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_path_splitroot",
-        symbol: "molt_path_splitroot",
-        arity: 1,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -4885,12 +4705,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_promise_set_result",
         symbol: "molt_promise_set_result",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_promise_set_exception",
-        symbol: "molt_promise_set_exception",
         arity: 2,
         defaults: &[],
     },
@@ -5639,96 +5453,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_logging_runtime_ready",
-        symbol: "molt_logging_runtime_ready",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_wsgiref_runtime_ready",
-        symbol: "molt_wsgiref_runtime_ready",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_zoneinfo_runtime_ready",
-        symbol: "molt_zoneinfo_runtime_ready",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_zipapp_runtime_ready",
-        symbol: "molt_zipapp_runtime_ready",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_zlib_runtime_ready",
-        symbol: "molt_zlib_runtime_ready",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_xmlrpc_runtime_ready",
-        symbol: "molt_xmlrpc_runtime_ready",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_csv_runtime_ready",
-        symbol: "molt_csv_runtime_ready",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_datetime_runtime_ready",
-        symbol: "molt_datetime_runtime_ready",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_tokenize_runtime_ready",
-        symbol: "molt_tokenize_runtime_ready",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_tomllib_runtime_ready",
-        symbol: "molt_tomllib_runtime_ready",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_trace_runtime_ready",
-        symbol: "molt_trace_runtime_ready",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_unicodedata_runtime_ready",
-        symbol: "molt_unicodedata_runtime_ready",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_subprocess_runtime_ready",
-        symbol: "molt_subprocess_runtime_ready",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_symtable_runtime_ready",
-        symbol: "molt_symtable_runtime_ready",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_import_smoke_runtime_ready",
-        symbol: "molt_import_smoke_runtime_ready",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_process_spawn",
         symbol: "molt_process_spawn",
         arity: 6,
@@ -6025,12 +5749,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_sqlite3_rowcount",
         symbol: "molt_sqlite3_rowcount",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_sqlite3_arraysize_get",
-        symbol: "molt_sqlite3_arraysize_get",
         arity: 1,
         defaults: &[],
     },
@@ -7115,12 +6833,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_importlib_metadata_entry_points_select_payload",
-        symbol: "molt_importlib_metadata_entry_points_select_payload",
-        arity: 4,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_importlib_metadata_entry_points_filter_payload",
         symbol: "molt_importlib_metadata_entry_points_filter_payload",
         arity: 5,
@@ -7844,12 +7556,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_dataclasses_post_init",
         symbol: "molt_dataclasses_post_init",
         arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_dataclasses_field_metadata",
-        symbol: "molt_dataclasses_field_metadata",
-        arity: 1,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -9089,12 +8795,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_stdlib_probe",
-        symbol: "molt_stdlib_probe",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_require_intrinsic_runtime",
         symbol: "molt_require_intrinsic_runtime",
         arity: 2,
@@ -9965,12 +9665,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_configparser_write",
-        symbol: "molt_configparser_write",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_dbm_dumb_open",
         symbol: "molt_dbm_dumb_open",
         arity: 3,
@@ -10226,12 +9920,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_datetime_isoweekday",
         symbol: "molt_datetime_isoweekday",
         arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_datetime_local_utcoffset",
-        symbol: "molt_datetime_local_utcoffset",
-        arity: 0,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -10607,60 +10295,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_difflib_context_diff",
-        symbol: "molt_difflib_context_diff",
-        arity: 5,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_difflib_get_close_matches",
-        symbol: "molt_difflib_get_close_matches",
-        arity: 4,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_difflib_get_matching_blocks",
-        symbol: "molt_difflib_get_matching_blocks",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_difflib_get_opcodes",
-        symbol: "molt_difflib_get_opcodes",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_difflib_is_junk",
-        symbol: "molt_difflib_is_junk",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_difflib_ndiff",
-        symbol: "molt_difflib_ndiff",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_difflib_quick_ratio",
-        symbol: "molt_difflib_quick_ratio",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_difflib_ratio",
-        symbol: "molt_difflib_ratio",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_difflib_unified_diff",
-        symbol: "molt_difflib_unified_diff",
-        arity: 5,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_enum_auto_value",
         symbol: "molt_enum_auto_value",
         arity: 1,
@@ -10691,12 +10325,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_enum_flag_new",
-        symbol: "molt_enum_flag_new",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_enum_flag_or",
         symbol: "molt_enum_flag_or",
         arity: 2,
@@ -10718,12 +10346,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_enum_unique_check",
         symbol: "molt_enum_unique_check",
         arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_enum_verify_member",
-        symbol: "molt_enum_verify_member",
-        arity: 2,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -11143,12 +10765,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_ipaddress_v6_version",
         symbol: "molt_ipaddress_v6_version",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_json_detect_encoding",
-        symbol: "molt_json_detect_encoding",
         arity: 1,
         defaults: &[],
     },
@@ -12983,12 +12599,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_defaultdict_copy",
-        symbol: "molt_defaultdict_copy",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_defaultdict_drop",
         symbol: "molt_defaultdict_drop",
         arity: 1,
@@ -13361,18 +12971,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_event_loop_connect_read_pipe",
-        symbol: "molt_event_loop_connect_read_pipe",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_event_loop_connect_write_pipe",
-        symbol: "molt_event_loop_connect_write_pipe",
-        arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_pipe_transport_new",
         symbol: "molt_pipe_transport_new",
         arity: 2,
@@ -13649,12 +13247,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_logging_record_get_attr",
-        symbol: "molt_logging_record_get_attr",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_logging_record_drop",
         symbol: "molt_logging_record_drop",
         arity: 1,
@@ -13763,12 +13355,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_logging_logger_log",
-        symbol: "molt_logging_logger_log",
-        arity: 4,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_logging_logger_is_enabled_for",
         symbol: "molt_logging_logger_is_enabled_for",
         arity: 2,
@@ -13784,18 +13370,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_logging_logger_drop",
         symbol: "molt_logging_logger_drop",
         arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_logging_manager_get_logger",
-        symbol: "molt_logging_manager_get_logger",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_logging_root_logger",
-        symbol: "molt_logging_root_logger",
-        arity: 0,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -14081,26 +13655,8 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_tk_normalize_option",
-        symbol: "molt_tk_normalize_option",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_tk_hex_to_rgb",
         symbol: "molt_tk_hex_to_rgb",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_tk_normalize_delay_ms",
-        symbol: "molt_tk_normalize_delay_ms",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_tk_convert_stringval",
-        symbol: "molt_tk_convert_stringval",
         arity: 1,
         defaults: &[],
     },
@@ -14435,12 +13991,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_pathlib_sep",
-        symbol: "molt_pathlib_sep",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_tempfile_gettempdir",
         symbol: "molt_tempfile_gettempdir",
         arity: 0,
@@ -14705,12 +14255,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_copy_replace",
-        symbol: "molt_copy_replace",
-        arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_csv_normalize_row",
         symbol: "molt_csv_normalize_row",
         arity: 1,
@@ -14744,12 +14288,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_datetime_date_repr",
         symbol: "molt_datetime_date_repr",
         arity: 3,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_datetime_datetime_repr",
-        symbol: "molt_datetime_datetime_repr",
-        arity: 7,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -14900,18 +14438,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         name: "molt_re_sub_callable",
         symbol: "molt_re_sub_callable",
         arity: 4,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_textwrap_dedent",
-        symbol: "molt_textwrap_dedent",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_textwrap_shorten",
-        symbol: "molt_textwrap_shorten",
-        arity: 3,
         defaults: &[],
     },
     IntrinsicSpec {

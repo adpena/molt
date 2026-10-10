@@ -61,8 +61,7 @@ pub(super) use metadata_spec::importlib_module_from_spec_impl;
 pub use metadata_spec::{
     molt_importlib_metadata_dist_paths, molt_importlib_metadata_distributions_payload,
     molt_importlib_metadata_entry_points_filter_payload,
-    molt_importlib_metadata_entry_points_payload,
-    molt_importlib_metadata_entry_points_select_payload, molt_importlib_metadata_normalize_name,
+    molt_importlib_metadata_entry_points_payload, molt_importlib_metadata_normalize_name,
     molt_importlib_metadata_packages_distributions_payload, molt_importlib_metadata_payload,
     molt_importlib_metadata_record_payload, molt_importlib_module_from_spec,
     molt_importlib_set_module_state, molt_importlib_spec_from_file_location,

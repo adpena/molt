@@ -51,7 +51,7 @@ from tests.stdlib_intrinsic_registry import install_registry
 
 def install_intrinsics(available):
     # A strict registry with no intrinsic at all: a stub must ask for none.
-    resolver = install_registry(available, with_anchors=False)
+    resolver = install_registry(available, with_capabilities=False)
     resolve = resolver.require_intrinsic
     calls = []
 

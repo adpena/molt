@@ -1,8 +1,7 @@
 //! Asyncio pipe transport authority.
 //!
-//! Owns fd-backed pipe transport state, registry, native/wasm pipe intrinsics,
-//! and connect_read_pipe/connect_write_pipe transport construction. Event-loop
-//! callback tables stay in the parent event_loop module behind narrow helpers.
+//! Owns fd-backed pipe transport state, its registry, and the native/wasm pipe
+//! intrinsics. Event-loop callback tables stay in the parent event_loop module.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -10,7 +9,6 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 
-use super::*;
 use crate::{MoltObject, raise_exception, runtime_state};
 #[cfg(windows)]
 #[inline]
@@ -436,97 +434,5 @@ pub extern "C" fn molt_pipe_transport_drop(handle_bits: u64) -> u64 {
         let mut map = pipe_transport_registry(_py).transports.lock().unwrap();
         map.remove(&handle);
         MoltObject::none().bits()
-    })
-}
-
-/// Connect a read pipe on the event loop.
-///
-/// `loop_handle`: event loop handle (u64 NaN-boxed int).
-/// `fd_bits`: NaN-boxed integer file descriptor.
-/// `callback_bits`: NaN-boxed callable (reader callback for data_received).
-///
-/// Creates a PipeTransport, registers the fd as a reader on the event loop,
-/// and returns the pipe transport handle.
-#[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
-pub extern "C" fn molt_event_loop_connect_read_pipe(
-    loop_handle: u64,
-    fd_bits: u64,
-    callback_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
-        if fd < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "invalid file descriptor");
-        }
-        // Create the pipe transport (read mode).
-        let pipe_handle = alloc_pipe_transport(_py, fd as i32, true);
-        // Register the fd as a reader on the event loop.
-        let Some(()) = register_pipe_reader_callback(_py, loop_handle, fd, callback_bits) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
-        };
-        MoltObject::from_int(pipe_handle).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-#[cfg(target_arch = "wasm32")]
-pub extern "C" fn molt_event_loop_connect_read_pipe(
-    _loop_handle: u64,
-    _fd_bits: u64,
-    _callback_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(
-            _py,
-            "RuntimeError",
-            "connect_read_pipe is not supported on WASM",
-        )
-    })
-}
-
-/// Connect a write pipe on the event loop.
-///
-/// `loop_handle`: event loop handle (u64 NaN-boxed int).
-/// `fd_bits`: NaN-boxed integer file descriptor.
-/// `callback_bits`: NaN-boxed callable (writer callback for write readiness).
-///
-/// Creates a PipeTransport, registers the fd as a writer on the event loop,
-/// and returns the pipe transport handle.
-#[unsafe(no_mangle)]
-#[cfg(not(target_arch = "wasm32"))]
-pub extern "C" fn molt_event_loop_connect_write_pipe(
-    loop_handle: u64,
-    fd_bits: u64,
-    callback_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let fd = crate::to_i64(crate::obj_from_bits(fd_bits)).unwrap_or(-1);
-        if fd < 0 {
-            return raise_exception::<u64>(_py, "ValueError", "invalid file descriptor");
-        }
-        // Create the pipe transport (write mode).
-        let pipe_handle = alloc_pipe_transport(_py, fd as i32, false);
-        // Register the fd as a writer on the event loop.
-        let Some(()) = register_pipe_writer_callback(_py, loop_handle, fd, callback_bits) else {
-            return raise_exception::<u64>(_py, "RuntimeError", "event loop not found");
-        };
-        MoltObject::from_int(pipe_handle).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-#[cfg(target_arch = "wasm32")]
-pub extern "C" fn molt_event_loop_connect_write_pipe(
-    _loop_handle: u64,
-    _fd_bits: u64,
-    _callback_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        raise_exception::<u64>(
-            _py,
-            "RuntimeError",
-            "connect_write_pipe is not supported on WASM",
-        )
     })
 }

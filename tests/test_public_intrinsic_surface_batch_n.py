@@ -28,7 +28,6 @@ install_registry({{
     "molt_email_headerregistry_value": lambda name, value: f"hdr:{{name}}={{value}}",
     "molt_email_address_addr_spec": lambda display_name, username, domain: f"{{username}}@{{domain}}",
     "molt_email_address_format": lambda display_name, username, domain: f"{{display_name}} <{{username}}@{{domain}}>",
-    "molt_email_message_from_bytes": lambda payload: {{"decoded": bytes(payload).decode("utf-8", "replace")}},
 }})
 
 

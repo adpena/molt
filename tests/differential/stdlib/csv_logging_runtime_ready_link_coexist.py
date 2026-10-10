@@ -1,9 +1,10 @@
 """Purpose: csv and logging must link into one full-stdlib binary together.
 
-Regression for a duplicate ``#[no_mangle]`` C symbol: ``molt_csv_runtime_ready``
-was defined both in the serial/csv runtime leaf (its canonical owner, referenced
-by the csv intrinsic resolver) and, by a stray copy-paste, in the http/logging
-runtime leaf (``molt-runtime-http/src/functions_logging.rs``). Both leaves link
+Regression for a duplicate ``#[no_mangle]`` C symbol: a csv readiness anchor
+(since deleted, spec 0016) was defined both in the serial/csv runtime leaf (its
+canonical owner, referenced by the csv intrinsic resolver) and, by a stray
+copy-paste, in the http/logging runtime leaf
+(``molt-runtime-http/src/functions_logging.rs``). Both leaves link
 into the full-stdlib runtime, so the duplicate definition raised a hard linker
 error (MSVC LNK2005 / "multiply defined symbols") and the native full-stdlib
 link failed for *every* program that pulled both leaves in.
@@ -18,7 +19,7 @@ import csv
 import io
 import logging
 
-# csv leaf: canonical owner of molt_csv_runtime_ready. Exercise the writer
+# csv leaf: the serial runtime leaf that owned the duplicate. Exercise the writer
 # (which round-trips quoting through the same leaf) and read the rendered text
 # back as a plain string; this keeps the regression focused on link coexistence
 # rather than depending on unrelated csv-reader iteration behavior.

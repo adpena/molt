@@ -245,13 +245,6 @@ layer = 3
 role = "stdlib satellite"
 
 [[crate]]
-name = "molt-stdlib-difflib"
-runtime_layer = "stdlib"
-stdlib_domain = "difflib"
-layer = 3
-role = "stdlib satellite"
-
-[[crate]]
 name = "molt-stdlib-graphlib"
 runtime_layer = "stdlib"
 stdlib_domain = "graphlib"

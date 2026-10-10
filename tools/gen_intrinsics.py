@@ -42,10 +42,6 @@ MATH_LEAF_RESOLVERS_DIR = ROOT / "runtime/molt-runtime-math/src/intrinsics_gener
 MATH_LEAF_RESOLVER_INDEX = MATH_LEAF_RESOLVERS_DIR / "mod.rs"
 XML_LEAF_RESOLVERS_DIR = ROOT / "runtime/molt-runtime-xml/src/intrinsics_generated"
 XML_LEAF_RESOLVER_INDEX = XML_LEAF_RESOLVERS_DIR / "mod.rs"
-DIFFLIB_LEAF_RESOLVERS_DIR = (
-    ROOT / "runtime/molt-stdlib-difflib/src/intrinsics_generated"
-)
-DIFFLIB_LEAF_RESOLVER_INDEX = DIFFLIB_LEAF_RESOLVERS_DIR / "mod.rs"
 GRAPHLIB_LEAF_RESOLVERS_DIR = (
     ROOT / "runtime/molt-stdlib-graphlib/src/intrinsics_generated"
 )
@@ -138,14 +134,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "crate_resolver_path": "molt_runtime_xml::intrinsics_generated::xml_sax_resolver",
         "symbol_path_prefix": "molt_runtime_xml::xml_sax",
         "function_path_prefix": "crate::xml_sax",
-    },
-    "difflib": {
-        "output": DIFFLIB_LEAF_RESOLVERS_DIR / "difflib_resolver.rs",
-        "module_index": DIFFLIB_LEAF_RESOLVER_INDEX,
-        "crate_path": "molt_stdlib_difflib",
-        "crate_resolver_path": "molt_stdlib_difflib::intrinsics_generated::difflib_resolver",
-        "symbol_path_prefix": "molt_stdlib_difflib::difflib",
-        "function_path_prefix": "crate::difflib",
     },
     "graphlib": {
         "output": GRAPHLIB_LEAF_RESOLVERS_DIR / "graphlib_resolver.rs",
@@ -685,7 +673,6 @@ _EXTRA_PREFIX_MODULES: list[tuple[str, str]] = [
     ("molt_codecs_", "codecs"),
     ("molt_encodings_", "codecs"),
     ("molt_pprint_", "pprint"),
-    ("molt_textwrap_", "textwrap"),
     ("molt_shutil_", "shutil"),
     ("molt_shlex_", "shlex"),
     ("molt_fnmatch", "fnmatch"),
@@ -712,10 +699,6 @@ _EXTRA_PREFIX_MODULES: list[tuple[str, str]] = [
     ("molt_fcntl_", "fcntl"),
     ("molt_punycode_", "punycode"),
     ("molt_this_", "this"),
-    ("molt_wsgiref_", "wsgiref"),
-    ("molt_xmlrpc_", "xmlrpc"),
-    ("molt_tomllib_", "tomllib"),
-    ("molt_symtable_", "symtable"),
     ("molt_protocol_", "asyncio"),
     ("molt_event_", "asyncio"),
     ("molt_future_", "asyncio"),

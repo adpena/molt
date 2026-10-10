@@ -128,7 +128,6 @@ def test_tuple_conversion_does_not_treat_annotations_as_exact(annotation: str) -
         "molt_future_cancel_clear",
         "molt_promise_new",
         "molt_promise_set_result",
-        "molt_promise_set_exception",
         "molt_task_register_execution",
         "molt_cancel_token_is_cancelled",
         "molt_cancel_token_set_current",

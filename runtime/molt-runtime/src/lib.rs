@@ -109,8 +109,6 @@ mod concurrency;
 mod const_data_cache;
 #[cfg(feature = "stdlib_crypto")]
 mod crypto_bridge;
-#[cfg(feature = "stdlib_difflib")]
-mod difflib_bridge;
 #[cfg(feature = "molt_gpu_primitives")]
 mod gpu_bridge;
 #[cfg(all(test, feature = "molt_gpu_primitives"))]
@@ -176,8 +174,6 @@ pub use molt_runtime_stringprep;
 pub use molt_runtime_xml;
 #[cfg(feature = "stdlib_zoneinfo")]
 pub use molt_runtime_zoneinfo;
-#[cfg(feature = "stdlib_difflib")]
-pub use molt_stdlib_difflib;
 #[cfg(feature = "stdlib_graphlib")]
 pub use molt_stdlib_graphlib;
 #[cfg(feature = "stdlib_text")]
@@ -520,8 +516,7 @@ pub(crate) use crate::async_rt::{
 };
 #[cfg(feature = "stdlib_asyncio")]
 pub(crate) use crate::async_rt::{
-    molt_asyncio_task_last_exception_clear, molt_asyncio_task_registry_live,
-    molt_asyncio_task_registry_live_set,
+    molt_asyncio_task_last_exception_clear, molt_asyncio_task_registry_live_set,
 };
 pub use crate::builtins::abc::*;
 pub use crate::builtins::array_mod::*;
@@ -613,7 +608,6 @@ pub use crate::builtins::functions_fnmatch::*;
 pub use crate::builtins::functions_logging::*;
 pub use crate::builtins::functions_pickle::*;
 pub use crate::builtins::functions_stat::*;
-pub use crate::builtins::functions_textwrap::*;
 pub use crate::builtins::functools::*;
 pub use crate::builtins::inspect::*;
 pub use crate::builtins::io::*;
@@ -893,8 +887,6 @@ pub use molt_runtime_xml::xml_etree::*;
 pub use molt_runtime_xml::xml_sax::*;
 #[cfg(feature = "stdlib_zoneinfo")]
 pub use molt_runtime_zoneinfo::zoneinfo::*;
-#[cfg(feature = "stdlib_difflib")]
-pub use molt_stdlib_difflib::difflib::*;
 #[cfg(feature = "stdlib_graphlib")]
 pub use molt_stdlib_graphlib::graphlib::*;
 #[cfg(feature = "stdlib_text")]

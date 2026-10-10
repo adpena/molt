@@ -500,13 +500,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_importlib_metadata_dist_paths as *const (),
         )),
         #[cfg(feature = "stdlib_importlib_extra")]
-        "molt_importlib_metadata_entry_points_select_payload" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_importlib_metadata_entry_points_select_payload",
-                crate::molt_importlib_metadata_entry_points_select_payload as *const (),
-            ))
-        }
-        #[cfg(feature = "stdlib_importlib_extra")]
         "molt_importlib_metadata_entry_points_filter_payload" => {
             Some(crate::builtins::functions::runtime_fn_addr(
                 "crate::molt_importlib_metadata_entry_points_filter_payload",
