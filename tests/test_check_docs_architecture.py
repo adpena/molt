@@ -523,3 +523,26 @@ def test_checker_accepts_distinct_ledger_ids_and_prose_mentions(
     module.ROOT = tmp_path
 
     assert not [error for error in module.check_repo() if "names" in error]
+
+
+def test_checker_rejects_an_open_row_its_fixed_row_closed(tmp_path: Path) -> None:
+    module = _load_module()
+    _seed_valid_repo(tmp_path)
+    _write_ledger(
+        tmp_path,
+        [
+            "| HF-91 | The intrinsics gate. | Open again after a merge. |",
+            "| HF-37 | Remaining Rust truth. | Open. |",
+            "| HF-F102 (was HF-91) | The intrinsics gate. | Fixed. |",
+            "| HF-F37 (was part of HF-37) | The macOS cell. | Fixed. |",
+        ],
+    )
+    module.ROOT = tmp_path
+
+    errors = [error for error in module.check_repo() if "fixed row says" in error]
+
+    assert errors == [
+        "docs/agent/V1_HANDOFF_FINDINGS.md: HF-91 is open, but a fixed row says it "
+        'was HF-91; remove the resurrected row, or write "(was part of HF-91)" '
+        "when the fix was partial"
+    ]
