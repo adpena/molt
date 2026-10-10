@@ -96,7 +96,6 @@ __all__ = [
     "FALSE",
 ]
 
-_require_intrinsic("molt_stdlib_probe")
 _pickle_dumps_core = _require_intrinsic("molt_pickle_dumps_core")
 _pickle_loads_core = _require_intrinsic("molt_pickle_loads_core")
 

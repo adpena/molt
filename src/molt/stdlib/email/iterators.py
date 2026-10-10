@@ -66,10 +66,3 @@ def _structure(msg, fp=None, level=0, include_default=False):
     if msg.is_multipart():
         for subpart in msg.get_payload():
             _structure(subpart, fp, level + 1, include_default)
-
-
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-
-globals().pop("_require_intrinsic", None)

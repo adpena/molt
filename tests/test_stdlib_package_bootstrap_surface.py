@@ -28,7 +28,7 @@ spec.loader.exec_module(module)
 checks = {{
     "probe_hidden": "molt_stdlib_probe" not in module.__dict__,
     "cap_hidden": "molt_capabilities_has" not in module.__dict__,
-    "cap_callable": callable(module._MOLT_STDLIB_CAP_HAS),
+    "anchor_unbound": "_MOLT_STDLIB_CAP_HAS" not in module.__dict__,
     "intrinsics_alias": module._intrinsics is _intrinsics_mod,
     "intrinsics_registered": sys.modules.get("_intrinsics") is _intrinsics_mod,
 }}
@@ -56,7 +56,7 @@ def _run_probe() -> dict[str, str]:
 
 def test_stdlib_package_bootstrap_surface() -> None:
     assert _run_probe() == {
-        "cap_callable": "True",
+        "anchor_unbound": "True",
         "cap_hidden": "True",
         "intrinsics_alias": "True",
         "intrinsics_registered": "True",

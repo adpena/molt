@@ -5,7 +5,6 @@ from __future__ import annotations
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 # --- runtime gate ---
-_MOLT_ZLIB_RUNTIME_READY = _require_intrinsic("molt_zlib_runtime_ready")
 
 # --- one-shot functions ---
 _MOLT_ZLIB_COMPRESS = _require_intrinsic("molt_zlib_compress")

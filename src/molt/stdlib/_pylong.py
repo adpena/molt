@@ -12,12 +12,6 @@ integers with a huge number of digits.  Saving a few microseconds with
 tricky or non-obvious code is not worth it.  For people looking for
 maximum performance, they should use something like gmpy2."""
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
-_MOLT_IMPORT_SMOKE_RUNTIME_READY()
-del _MOLT_IMPORT_SMOKE_RUNTIME_READY
-
 
 import decimal
 import _decimal as _required_decimal_backend
@@ -344,6 +338,3 @@ def int_divmod(a, b):
         return ~q, b + ~r
     else:
         return _divmod_pos(a, b)
-
-
-globals().pop("_require_intrinsic", None)

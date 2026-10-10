@@ -52,9 +52,6 @@ Any = _Any
 cast = _cast
 
 
-_MOLT_ABC_BOOTSTRAP = _require_intrinsic("molt_abc_bootstrap")
-
-
 GenericAlias = type(list[int])
 EllipsisType = type(...)
 

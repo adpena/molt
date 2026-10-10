@@ -9,11 +9,6 @@ import struct as _struct
 import types as _types
 import weakref as _weakref
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-
 
 class _MethodCarrier:
     __slots__ = ("_fn",)
@@ -634,5 +629,3 @@ ROWS_BY_MODULE: dict[str, list[tuple[str, str, bool]]] = {
         ("weakref", "module", False),
     ],
 }
-
-globals().pop("_require_intrinsic", None)

@@ -6,10 +6,6 @@ import io
 import sys
 from typing import Any
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_WSGIREF_RUNTIME_READY = _require_intrinsic("molt_wsgiref_runtime_ready")
-
 
 def setup_testing_defaults(environ: dict[str, Any]) -> None:
     environ.setdefault("SERVER_NAME", "127.0.0.1")
@@ -32,5 +28,3 @@ def setup_testing_defaults(environ: dict[str, Any]) -> None:
 
 
 __all__ = ["setup_testing_defaults"]
-
-globals().pop("_require_intrinsic", None)

@@ -2,10 +2,11 @@
 
 ``tools/gen_stdlib_stubs.py`` owns every stub. These tests hold the committed
 stubs to the generator byte for byte, then load every stub in one child
-interpreter and prove the contract a stub promises: the import requires the
-capability intrinsic, the module binds nothing, any attribute raises the
-canonical gap error, a package lets the import system load its submodules, and
-a platform-only module keeps CPython's import outcome off its platform.
+interpreter and prove the contract a stub promises: the import requires no
+intrinsic (a stub has its own audit status, so it needs no anchor), the module
+binds nothing, any attribute raises the canonical gap error, a package lets the
+import system load its submodules, and a platform-only module keeps CPython's
+import outcome off its platform.
 """
 
 from __future__ import annotations
@@ -49,8 +50,7 @@ from tests.stdlib_intrinsic_registry import install_registry
 
 
 def install_intrinsics(available):
-    # Exactly the given intrinsics: a stub must ask for the capability check
-    # and nothing else.
+    # A strict registry with no intrinsic at all: a stub must ask for none.
     resolver = install_registry(available, with_anchors=False)
     resolve = resolver.require_intrinsic
     calls = []
@@ -97,14 +97,12 @@ def load(name, path, platform, available, children):
     }
 
 
-capability = {"molt_capabilities_has": lambda name=None: True}
 report = {}
 for name, path, home, foreign, children in json.load(sys.stdin):
     report[name] = {
-        "with_intrinsic": load(name, path, home, capability, children),
-        "without_intrinsic": load(name, path, home, {}, children),
+        "home_platform": load(name, path, home, {}, children),
         "foreign_platform": (
-            None if foreign is None else load(name, path, foreign, capability, [])
+            None if foreign is None else load(name, path, foreign, {}, [])
         ),
     }
 print(json.dumps(report))
@@ -132,7 +130,7 @@ def test_committed_stubs_match_the_generator() -> None:
     assert [path.relative_to(ROOT).as_posix() for path in stale] == []
 
 
-def test_every_stub_imports_as_an_intrinsic_backed_gap() -> None:
+def test_every_stub_imports_as_a_gap_without_intrinsics() -> None:
     stubs = sorted(gen_stdlib_stubs.generated_outputs())
     assert stubs, "the generator owns no stub"
     submodules = _union_submodules()
@@ -168,9 +166,9 @@ def test_every_stub_imports_as_an_intrinsic_backed_gap() -> None:
             "only an intrinsic-first stub is available."
         )
         expected = {
-            "with_intrinsic": {
+            "home_platform": {
                 "namespace": sorted(namespace),
-                "calls": ["molt_capabilities_has"],
+                "calls": [],
                 "attribute": ["RuntimeError", gap, None],
                 "submodules": {
                     child: [
@@ -180,14 +178,6 @@ def test_every_stub_imports_as_an_intrinsic_backed_gap() -> None:
                     ]
                     for child in children
                 },
-            },
-            "without_intrinsic": {
-                "raised": [
-                    "RuntimeError",
-                    "intrinsic unavailable: molt_capabilities_has",
-                    None,
-                ],
-                "calls": ["molt_capabilities_has"],
             },
             "foreign_platform": (
                 None
@@ -278,3 +268,21 @@ def test_generator_refuses_a_stub_outside_the_union(stub_tree: Path) -> None:
     assert "src/molt/stdlib/gamma.py: CPython ships no `gamma`; delete the stub" in (
         str(excinfo.value)
     )
+
+
+def test_generator_owns_a_stub_whatever_its_literal_spelling(stub_tree: Path) -> None:
+    # Twelve hand-written stubs split the gap error across two literals, so a
+    # text search for it missed them; the shared structural test does not.
+    text = (
+        "def __getattr__(attr):\n"
+        "    raise RuntimeError(\n"
+        "        'stdlib module \"alpha\" is not fully lowered yet; only an '\n"
+        '        "intrinsic-first stub is available."\n'
+        "    )\n"
+    )
+    _write_tree(stub_tree, _UNION, {"alpha.py": text})
+
+    outputs = gen_stdlib_stubs.generated_outputs()
+
+    path = stub_tree / "src" / "molt" / "stdlib" / "alpha.py"
+    assert outputs[path] == gen_stdlib_stubs.stub_source("alpha", package=False)

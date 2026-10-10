@@ -5,9 +5,6 @@ from __future__ import annotations
 import hashlib as _hashlib
 import hmac as _hmac
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_require_intrinsic("molt_capabilities_has")
 
 HASH = _hashlib._Hash
 
@@ -99,6 +96,3 @@ __all__ = [
     "pbkdf2_hmac",
     "scrypt",
 ]
-
-
-globals().pop("_require_intrinsic", None)

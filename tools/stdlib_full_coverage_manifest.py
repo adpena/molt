@@ -114,14 +114,13 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_ordereddict_values",
     ),
     "_collections_abc": ("molt_collections_abc_runtime_types",),
-    "_csv": ("molt_csv_runtime_ready",),
+    "_csv": (),
     "_json": (
         "molt_json_encode_basestring_ascii_obj",
         "molt_json_encode_basestring_obj",
         "molt_json_scanstring_obj",
     ),
     "_opcode": (
-        "molt_import_smoke_runtime_ready",
         "molt_opcode_get_specialization_stats",
         "molt_opcode_stack_effect",
     ),
@@ -412,10 +411,7 @@ STDLIB_REQUIRED_INTRINSICS_BY_MODULE: dict[str, tuple[str, ...]] = {
         "molt_math_trunc",
         "molt_math_ulp",
     ),
-    "opcode": (
-        "molt_import_smoke_runtime_ready",
-        "molt_opcode_payload_312_json",
-    ),
+    "opcode": ("molt_opcode_payload_312_json",),
     "operator": (),
     "quopri": (
         "molt_quopri_decode",

@@ -8,10 +8,8 @@ from typing import Any, cast
 
 import logging as _logging
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 # TODO(stdlib-compat, owner:runtime, milestone:TL3, priority:P2, status:planned): extend queue-backed logging handler parity for advanced listener lifecycle and queue edge cases after baseline stdlib queue support stabilizes.
-_MOLT_LOGGING_RUNTIME_READY = _require_intrinsic("molt_logging_runtime_ready")
 
 __all__ = [
     "BaseRotatingHandler",
@@ -204,6 +202,3 @@ class QueueListener:
                 break
             self._handle(record)
         self._running = False
-
-
-globals().pop("_require_intrinsic", None)

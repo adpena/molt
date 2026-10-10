@@ -9,13 +9,9 @@ import sys as _sys
 import threading as _threading
 import types as _types
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 import multiprocessing._core as _core
 from multiprocessing._api_surface import apply_module_api_surface as _apply_api_surface
-
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 class ProcessError(Exception):
@@ -267,5 +263,3 @@ _apply_api_surface(
     },
     prune=True,
 )
-
-globals().pop("_require_intrinsic", None)

@@ -2,12 +2,6 @@
 Python implementation of the io module.
 """
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
-_MOLT_IMPORT_SMOKE_RUNTIME_READY()
-del _MOLT_IMPORT_SMOKE_RUNTIME_READY
-
 
 import os
 import abc
@@ -1889,5 +1883,3 @@ StringIO = _TEXT_IO_CLASSES.StringIO
 TextIOBase = _TEXT_IO_CLASSES.TextIOBase
 TextIOWrapper = _TEXT_IO_CLASSES.TextIOWrapper
 del _TEXT_IO_CLASSES, _load_text_io_classes
-
-globals().pop("_require_intrinsic", None)

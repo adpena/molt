@@ -7,9 +7,6 @@ from collections import deque as _deque
 import enum
 from typing import Any, Callable
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 from asyncio import (
     BrokenBarrierError,
@@ -344,5 +341,3 @@ __all__ = [
     "exceptions",
     "mixins",
 ]
-
-globals().pop("_require_intrinsic", None)

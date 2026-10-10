@@ -255,6 +255,18 @@ def _intrinsic_use_from_tree(tree: ast.Module) -> StdlibModuleIntrinsicUse:
     )
 
 
+def is_stdlib_stub_source(source: str | bytes) -> bool:
+    """Whether the source is a stub: a module ``__getattr__`` raising the gap error.
+
+    The audit and the stub generator share this one structural test.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    return _is_generated_stub_tree(tree)
+
+
 def _is_generated_stub_tree(tree: ast.Module) -> bool:
     """The generator's stub: a module ``__getattr__`` raising the gap error."""
     for node in tree.body:

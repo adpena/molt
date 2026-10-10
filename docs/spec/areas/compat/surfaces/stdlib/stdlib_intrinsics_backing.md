@@ -79,8 +79,8 @@ Top-level + submodule name coverage is enforced against the CPython
 - `STDLIB_REQUIRED_INTRINSICS_BY_MODULE`: required intrinsic contract for each
   attested module.
 - Gate rules enforced by `tools/check_stdlib_intrinsics.py`:
-  - every attested module must be `intrinsic-backed` or `python-compiled`
-  - every attested module must have a contract entry (empty for `python-compiled`)
+  - every attested module must be `intrinsic-backed`, `intrinsic-support` or `python-compiled`, without a progress marker
+  - every attested module must have a contract entry (empty for a pure facade or `python-compiled`)
   - every contract intrinsic must exist in the runtime manifest, and the module must read it
   - a non-attested module that reads intrinsics is `intrinsic-partial`
 

@@ -11,7 +11,6 @@ _molt_copy_deepcopy = _require_intrinsic("molt_copy_deepcopy")
 _molt_copy_memo_new = _require_intrinsic("molt_copy_memo_new")
 _molt_copy_memo_drop = _require_intrinsic("molt_copy_memo_drop")
 _molt_copy_error = _require_intrinsic("molt_copy_error")
-_molt_copy_replace = _require_intrinsic("molt_copy_replace")
 
 __all__ = ["copy", "deepcopy", "replace", "Error", "dispatch_table"]
 
