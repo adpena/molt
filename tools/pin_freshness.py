@@ -72,6 +72,7 @@ TIMEOUT_SECONDS = 60
 HOLDS = {
     "llvm": "HF-64",
     "python": "HF-65",
+    "uv": "HF-62",
 }
 
 FetchJson = Callable[[str], object]
