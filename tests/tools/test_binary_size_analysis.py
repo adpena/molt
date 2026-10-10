@@ -305,7 +305,9 @@ def test_captured_fixture_integrity_and_independent_format_headers():
     from molt.native_artifact_header import native_artifact_from_bytes
 
     payload = json.loads(
-        (Path(__file__).parent / "fixtures/native_size_facts.json").read_text()
+        (Path(__file__).parent / "fixtures/native_size_facts.json").read_text(
+            encoding="utf-8"
+        )
     )
     for case in payload["cases"]:
         raw = bytes(case["artifact_bytes"])
@@ -720,7 +722,7 @@ def test_actual_json_cli_stdout_feeds_existing_capsule_reader(
     assert parsed["format"] == "wasm" and parsed["total_bytes"] == 8
     assert label in result.stderr and label not in result.stdout
     saved = tmp_path / "analysis.json"
-    saved.write_text(result.stdout)
+    saved.write_text(result.stdout, encoding="utf-8")
     assert analysis_capsule.load_json(saved) == parsed
     assert analysis_capsule._summarize_binary(parsed, None)["size"]["total_bytes"] == 8
 
@@ -759,5 +761,5 @@ def test_native_json_cli_budget_uses_same_transport(
     parsed = json.loads(captured.out)
     assert parsed["total_bytes"] == 6 and label in captured.err
     saved = tmp_path / "native.json"
-    saved.write_text(captured.out)
+    saved.write_text(captured.out, encoding="utf-8")
     assert analysis_capsule.load_json(saved) == parsed

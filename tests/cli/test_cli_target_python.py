@@ -385,7 +385,7 @@ def test_compiler_host_capability_matches_package_admission(version, supported):
     )
 
     root = Path(__file__).resolve().parents[2]
-    metadata = tomllib.loads((root / "pyproject.toml").read_text())
+    metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     spec = metadata["project"]["requires-python"]
     assert SpecifierSet(spec).contains(".".join(map(str, version))) is supported
     assert frontend_python_supported(version, implementation="cpython") is supported

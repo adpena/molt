@@ -3825,7 +3825,7 @@ def test_artifact_guard_preserves_unused_tool_state_until_managed_selection(
         "relative": "relative-tools",
     }[kind]
     if kind == "file":
-        Path(state).write_text("not a directory")
+        Path(state).write_text("not a directory", encoding="utf-8")
     before = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
     from molt import tool_releases
 
@@ -3864,7 +3864,9 @@ def test_artifact_guard_binds_installed_default_before_cache_defaults(tmp_path):
 
     source = tmp_path / "bundle/source"
     source.mkdir(parents=True)
-    (source / "release-compiler-source.json").write_text("layout only")
+    (source / "release-compiler-source.json").write_text(
+        "layout only", encoding="utf-8"
+    )
     home_key = "USERPROFILE" if os.name == "nt" else "HOME"
     env = {home_key: str(tmp_path / "user")}
     expected = _default_molt_home(environ=env) / "target-root"
@@ -3883,7 +3885,7 @@ def test_platform_query_guard_does_not_select_unused_managed_tools(
     from molt import platform_toolchain
 
     invalid = tmp_path / "invalid-state"
-    invalid.write_text("file")
+    invalid.write_text("file", encoding="utf-8")
     observed = []
 
     def completed(command, **kwargs):
@@ -3904,4 +3906,4 @@ def test_platform_query_guard_does_not_select_unused_managed_tools(
     )
     assert observed[0][0] == ("selected-external-tool", "--version")
     assert len(observed) == 1
-    assert invalid.read_text() == "file"
+    assert invalid.read_text(encoding="utf-8") == "file"

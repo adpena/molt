@@ -1068,7 +1068,8 @@ def test_managed_optimizer_changed_executable_refuses_before_tree_or_version(
                 "asset": asdict(asset),
                 "tree": original.tree.as_record(),
             }
-        )
+        ),
+        encoding="utf-8",
     )
     before_receipt = receipt.read_bytes()
     monkeypatch.setenv("MOLT_TARGET_ROOT", str(selected))
@@ -1106,7 +1107,9 @@ def test_installed_binaryen_discovery_uses_shared_home_without_writes(
 
     source = tmp_path / "bundle" / "source"
     source.mkdir(parents=True)
-    (source / "release-compiler-source.json").write_text("layout only")
+    (source / "release-compiler-source.json").write_text(
+        "layout only", encoding="utf-8"
+    )
     home = tmp_path / "home"
     asset = identity.binaryen_host_asset(ROOT)
     installation = home / "target-root" / "toolchains" / asset.archive_root
@@ -1126,7 +1129,8 @@ def test_installed_binaryen_discovery_uses_shared_home_without_writes(
                     "sha256": asset.tree_sha256,
                 },
             }
-        )
+        ),
+        encoding="utf-8",
     )
     monkeypatch.delenv("MOLT_TARGET_ROOT", raising=False)
     monkeypatch.delenv("MOLT_WASM_OPT", raising=False)
@@ -1157,7 +1161,7 @@ def test_explicit_external_optimizer_ignores_unused_invalid_managed_root(
     import molt.wasm_optimizer_identity as identity
 
     invalid = tmp_path / "invalid-state"
-    invalid.write_text("not a directory")
+    invalid.write_text("not a directory", encoding="utf-8")
     executable = tmp_path / "external-wasm-opt"
     executable.write_bytes(b"independent selected image")
     monkeypatch.setenv("MOLT_TARGET_ROOT", str(invalid))

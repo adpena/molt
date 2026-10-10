@@ -133,7 +133,9 @@ def test_receipt_environment_matches_real_build_and_guest_children(
         assert row["source"] == source.name
         assert "environment" not in row
         for offset, phase in enumerate(("build", "runtime")):
-            observed = json.loads(witnesses[2 * index + offset][1].read_text())
+            observed = json.loads(
+                witnesses[2 * index + offset][1].read_text(encoding="utf-8")
+            )
             launch = row[phase]
             assert launch["environment"] == observed["environment"]
             assert launch["argv"] == observed["argv"]
@@ -202,7 +204,7 @@ def test_failed_build_receipt_does_not_claim_guest_execution(
     )
 
     assert determinism.main() == 2
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     assert payload["selected"] == payload["errors"] == 1
     assert payload["executed"] == payload["passed"] == payload["failed"] == 0
     assert len(commands) == 1
@@ -256,7 +258,7 @@ def test_wrong_build_json_shape_retains_launch_without_runtime(
     tmp_path: Path, monkeypatch, build_json: object
 ) -> None:
     source = tmp_path / "source.py"
-    source.write_text("print('ok')\n")
+    source.write_text("print('ok')\n", encoding="utf-8")
     calls = []
     real_guard = determinism.harness_memory_guard.guarded_completed_process
 
@@ -303,7 +305,7 @@ def test_later_runtime_failure_retains_launches_and_other_completed_cell(
     bad = tmp_path / "bad.py"
     good = tmp_path / "good.py"
     for path in (bad, good):
-        path.write_text("print('stable')\n")
+        path.write_text("print('stable')\n", encoding="utf-8")
     receipt = tmp_path / "receipt.json"
     real_guard = determinism.harness_memory_guard.guarded_completed_process
     real_temp = determinism.OwnedTemporaryDirectory
@@ -393,7 +395,7 @@ def test_later_runtime_failure_retains_launches_and_other_completed_cell(
     )
 
     assert determinism.main() == 2
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     assert (
         payload["selected"],
         payload["executed"],
