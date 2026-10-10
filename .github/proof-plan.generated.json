@@ -340,7 +340,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "423731eafb5228f7591e0e655d4a33fc3bf55ce80c5d0e2fca1ec10b171840fb",
+  "authority_sha256": "84351621ca91ee36727624ba2887755ad6d7e9f29b7a1ac7aadd262a7a72c1c4",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -4424,12 +4424,14 @@
         "tests/cli/test_cli_frontend_pipeline_authority.py",
         "tests/cli/test_cli_frontend_scc_scheduling.py",
         "tests/cli/test_cli_frontend_worker_authority.py",
+        "tests/cli/test_cli_import_collection.py",
         "tests/cli/test_cli_import_discovery_completeness.py",
         "tests/cli/test_cli_link_pipeline_authority.py",
         "tests/cli/test_cli_lowering_cache_tooling_scope.py",
         "tests/cli/test_cli_lowering_context_ast_idempotent.py",
         "tests/cli/test_cli_lowering_context_class_memo.py",
         "tests/cli/test_cli_lowering_context_encoder_fixed_point.py",
+        "tests/cli/test_cli_memory_guard_launches.py",
         "tests/cli/test_cli_mlir_backend_authority.py",
         "tests/cli/test_cli_module_cache_authority.py",
         "tests/cli/test_cli_module_dependencies_authority.py",
@@ -4517,7 +4519,9 @@
       "timeout_seconds": 900,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustc",
+        "cargo"
       ]
     },
     {
@@ -4567,12 +4571,14 @@
         "tests/cli/test_cli_frontend_pipeline_authority.py",
         "tests/cli/test_cli_frontend_scc_scheduling.py",
         "tests/cli/test_cli_frontend_worker_authority.py",
+        "tests/cli/test_cli_import_collection.py",
         "tests/cli/test_cli_import_discovery_completeness.py",
         "tests/cli/test_cli_link_pipeline_authority.py",
         "tests/cli/test_cli_lowering_cache_tooling_scope.py",
         "tests/cli/test_cli_lowering_context_ast_idempotent.py",
         "tests/cli/test_cli_lowering_context_class_memo.py",
         "tests/cli/test_cli_lowering_context_encoder_fixed_point.py",
+        "tests/cli/test_cli_memory_guard_launches.py",
         "tests/cli/test_cli_mlir_backend_authority.py",
         "tests/cli/test_cli_module_cache_authority.py",
         "tests/cli/test_cli_module_dependencies_authority.py",
@@ -4660,7 +4666,9 @@
       "timeout_seconds": 900,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustc",
+        "cargo"
       ]
     },
     {
@@ -5450,10 +5458,6 @@
         "tests/cli/test_installed_runtime.py",
         "tests/cli/test_installed_toolchain_rules.py",
         "tests/cli/test_cli_backend_output_pipeline_authority.py",
-        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair",
-        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest",
-        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_digest",
-        "tests/cli/test_cli_import_collection.py::test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen",
         "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift",
         "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"
       ],
@@ -5541,10 +5545,6 @@
         "tests/cli/test_installed_runtime.py",
         "tests/cli/test_installed_toolchain_rules.py",
         "tests/cli/test_cli_backend_output_pipeline_authority.py",
-        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair",
-        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest",
-        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_digest",
-        "tests/cli/test_cli_import_collection.py::test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen",
         "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift",
         "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"
       ],
