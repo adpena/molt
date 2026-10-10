@@ -141,6 +141,19 @@ the Linux ABI fixture unit; Windows/macOS ABI execution, runtime lifecycle,
 standalone guest and performance qualification remain open. Earlier output-root and
 native-C declaration refusals are infrastructure results, not ABI failures.
 All of this qualification apparatus runs on the development side.
+
+Private reconciliation against observed main `e5e02838a` preserves that qualified
+ABI/native-supervisor source, the single validated release-lane compiler selector,
+and upstream Cargo admission changes. Nine merge conflicts are resolved; the
+changed-source compilation sweep also catches and removes duplicate required
+fixture arguments in two automatically merged consumers. Independent review
+finds no further blocker within this merge. The reconciled consumer cohort passes
+410 checks and six focused ABI-lane controls with unchanged source/tool images
+and closed descendants; generated projections and inventory checks pass.
+This candidate remains private while the competing landing-owner question is
+resolved. These results establish the changed consumer integration, not main
+publication, a new runtime performance result, or release-wide acceptance.
+
 The reviewed shutdown successor repairs admitted callback reentry during
 Finalizing and remains unintegrated until its complete family can be exercised.
 Measurement and WASM work remain recorded obligations, with no additional
