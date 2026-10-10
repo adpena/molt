@@ -141,6 +141,7 @@ stdlib:
   unittest:
     tests:
       - tests/differential/stdlib/test_unittest_basic.py
+      - tests/differential/stdlib/unittest_import_closure.py
   __future__:
     tests:
       - tests/differential/stdlib/future_module.py
@@ -3018,6 +3019,7 @@ stdlib:
   unittest.async_case:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_unittest_async_case_a5f154b7.py
+      - tests/differential/stdlib/unittest_import_closure.py
   unittest.case:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_unittest_case_3adfebd2.py
