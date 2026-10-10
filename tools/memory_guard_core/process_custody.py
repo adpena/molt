@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence, Set as AbcSet
 import contextlib
 from dataclasses import dataclass
 import errno
@@ -480,7 +480,7 @@ def protected_process_group_ids(
     self_pid: int | None = None,
     self_pgid: int | None = None,
     owned_pids: set[int] | None = None,
-) -> set[int]:
+) -> _process_model.ProtectedProcessGroups:
     return _process_model.protected_process_group_ids(
         samples,
         self_pid=self_pid,
@@ -493,7 +493,7 @@ def _root_pid_is_kill_eligible(
     samples: Mapping[int, ProcessSample],
     root_pid: int,
     *,
-    protected_pgids: set[int],
+    protected_pgids: AbcSet[int],
     root_owned: bool,
 ) -> bool:
     return _process_model.root_pid_is_kill_eligible(
@@ -509,7 +509,7 @@ def _current_protected_process_group_ids(
     samples: Mapping[int, ProcessSample],
     *,
     owned_pids: set[int] | None = None,
-) -> set[int]:
+) -> _process_model.ProtectedProcessGroups:
     return protected_process_group_ids(
         samples,
         self_pid=os.getpid(),
@@ -1347,7 +1347,7 @@ def _process_group_is_fully_owned(
     pgid: int,
     *,
     owned_pids: set[int],
-    protected_pgids: set[int],
+    protected_pgids: AbcSet[int],
 ) -> bool:
     if pgid <= 0 or pgid in protected_pgids:
         return False
@@ -1402,7 +1402,7 @@ def terminate_watched_processes(
         root_pgid: int | None = None,
         root_sid: int | None = None,
         watched_pids: set[int] | None = None,
-        protected_pgids: set[int] | None = None,
+        protected_pgids: AbcSet[int] | None = None,
         escaped_pids: set[int] | None = None,
         remaining_pgids: set[int] | None = None,
         remaining_pids: set[int] | None = None,
@@ -1843,25 +1843,31 @@ def cleanup_tracked_orphans(
     *,
     tracker: ProcessTreeTracker,
     sampler: Callable[[], Mapping[int, ProcessSample]] | None = None,
+    samples: Mapping[int, ProcessSample] | None = None,
     remembered_samples: Mapping[int, ProcessSample] | None = None,
     remembered_watched: set[int] | None = None,
     grace: float = 0.25,
     root_reaped: bool = False,
 ) -> GuardOrphanCleanupResult:
-    """Terminate descendants still alive after the guarded root process exits."""
+    """Terminate descendants still alive after the guarded root process exits.
+
+    ``samples`` is an observation the caller took after the root's exit; None
+    samples afresh. Every signal still re-samples to prove its target.
+    """
 
     if root_pid <= 0:
         return GuardOrphanCleanupResult()
     if sampler is None:
         sampler = sample_processes
     sampler_failure: BaseException | None = None
-    try:
-        samples = sampler()
-    except (KeyboardInterrupt, Exception) as exc:
-        sampler_failure = exc
-        if remembered_watched is None:
-            raise
-        samples = {} if remembered_samples is None else remembered_samples
+    if samples is None:
+        try:
+            samples = sampler()
+        except (KeyboardInterrupt, Exception) as exc:
+            sampler_failure = exc
+            if remembered_watched is None:
+                raise
+            samples = {} if remembered_samples is None else remembered_samples
     observed = tracker.update(samples)
     if not observed and remembered_watched is not None:
         observed = set(remembered_watched)
@@ -2085,14 +2091,21 @@ def cleanup_repo_scoped_orphans_since_baseline(
     baseline_pgids: frozenset[int],
     tracker: ProcessTreeTracker,
     sampler: Callable[[], Mapping[int, ProcessSample]] = sample_processes,
+    samples: Mapping[int, ProcessSample] | None = None,
     grace: float = 0.25,
 ) -> GuardOrphanCleanupResult:
-    """Terminate newly orphaned groups proven to belong to this guard's tree."""
+    """Terminate newly orphaned groups proven to belong to this guard's tree.
+
+    ``samples`` is an observation the caller took after the root's exit and
+    after its last signal; None samples afresh. Each group is re-sampled
+    before it is signalled.
+    """
 
     if os.name != "posix":
         return GuardOrphanCleanupResult()
 
-    samples = sampler()
+    if samples is None:
+        samples = sampler()
     owned_pids = _filter_protected_watched_pids(samples, tracker.update(samples))
     if not owned_pids:
         return GuardOrphanCleanupResult()

@@ -335,13 +335,17 @@ def _temporary_artifact_descendant_closure(
     sampling_telemetry: GuardSamplingTelemetry | None,
     termination_reports: Sequence[GuardTerminationReport],
     probe_grace: float,
+    final_samples: Mapping[int, ProcessSample] | None = None,
 ) -> tuple[bool, dict[str, object]]:
     """Return non-actuating evidence that no guarded child can still use scratch.
 
     Windows Job accounting is exact.  The POSIX authority is intentionally
     named as sampled process-group custody: it combines the guard's complete
-    observation history with a final process-group liveness probe and a fresh
+    observation history with a final process-group liveness probe and a
     process-table observation after the existing cleanup boundary.
+    ``final_samples`` is the post-exit observation when cleanup signalled
+    nothing after it, so it already lies past that boundary; None samples
+    afresh.
     """
 
     if proc is None:
@@ -422,7 +426,8 @@ def _temporary_artifact_descendant_closure(
     evidence["root_pgid"] = root_pgid
     evidence["root_process_group_closed"] = group_closed
     try:
-        final_samples = sampler()
+        if final_samples is None:
+            final_samples = sampler()
         remaining_tracked = tuple(sorted(tracker.update(final_samples)))
         root_group_members = tuple(
             sorted(
@@ -1950,6 +1955,7 @@ def run_guarded(
         stdout: str | bytes = "" if text else b""
         stderr: str | bytes = "" if text else b""
         orphaned_process_groups: tuple[int, ...] = ()
+        post_exit_samples: Mapping[int, ProcessSample] | None = None
         try:
             if proc.returncode is None and not guard_interrupted:
                 try:
@@ -1984,13 +1990,20 @@ def run_guarded(
                 transfer_receipted_daemon_instances(sampler())
             if cleanup_orphans and not guard_interrupted:
                 try:
+                    # One observation after the root's exit serves every
+                    # cleanup decision, and the closure proof, until the
+                    # guard signals a process. A signal retires it.
+                    post_exit_samples = sampler()
                     tracked_orphans = cleanup_tracked_orphans(
                         proc.pid,
                         tracker=tracker,
                         sampler=sampler,
+                        samples=post_exit_samples,
                         grace=0.25,
                         root_reaped=proc.returncode is not None,
                     )
+                    if tracked_orphans.termination_reports:
+                        post_exit_samples = None
                     termination_reports.extend(
                         _validated_termination_reports(
                             tracked_orphans.termination_reports,
@@ -2003,8 +2016,11 @@ def run_guarded(
                             baseline_pgids=baseline_pgids,
                             tracker=tracker,
                             sampler=sampler,
+                            samples=post_exit_samples,
                             grace=0.25,
                         )
+                        if repo_orphans.termination_reports:
+                            post_exit_samples = None
                         termination_reports.extend(
                             _validated_termination_reports(
                                 repo_orphans.termination_reports,
@@ -2018,6 +2034,7 @@ def run_guarded(
                     # authorize PID/group cleanup, and it must not rewrite the
                     # healthy child's return code.  Record the custody gap and
                     # leave the Job Object/orphan reaper as the safety net.
+                    post_exit_samples = None
                     record_transient_sampling_failure(
                         exc,
                         attempt_already_counted=False,
@@ -2165,6 +2182,7 @@ def run_guarded(
                 sampling_telemetry=final_sampling_telemetry,
                 termination_reports=termination_reports,
                 probe_grace=termination_wait_s,
+                final_samples=post_exit_samples,
             )
         )
         if suite_custody_transfers:
