@@ -1617,7 +1617,7 @@ pub unsafe extern "C" fn PyObject_LengthHint(
     o: *mut PyObject,
     defaultvalue: Py_ssize_t,
 ) -> Py_ssize_t {
-    use crate::api::{errors, refcount::OwnedPyObject};
+    use crate::api::errors;
     if o.is_null() {
         unsafe { errors::PyErr_BadInternalCall() };
         return -1;

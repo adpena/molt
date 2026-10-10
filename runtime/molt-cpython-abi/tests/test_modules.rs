@@ -63,10 +63,11 @@ static FAKE_LAST_CALLED: AtomicU64 = AtomicU64::new(0);
 static SEMANTIC_CALL_SLOT_CALLS: AtomicU64 = AtomicU64::new(0);
 static CROSSING_TEST: AtomicBool = AtomicBool::new(false);
 static CROSSING_FAIL: AtomicBool = AtomicBool::new(false);
-static CROSSING_CLEANUP_ERROR: AtomicBool = AtomicBool::new(false);
 static CROSSING_SET_CALLS: AtomicU64 = AtomicU64::new(0);
 static CROSSING_DEALLOCS: AtomicU64 = AtomicU64::new(0);
 static CROSSING_ERROR_VALUE: AtomicUsize = AtomicUsize::new(0);
+static CROSSING_RETIRED_ERRORS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+static CROSSING_NATIVE_ERRORS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 static CROSSING_FOREIGN: LazyLock<Mutex<HashMap<u64, usize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 // Observations only; each dictionary is the sole owner of its entries.
@@ -344,9 +345,9 @@ unsafe extern "C" fn fake_module_set_attr(
                 );
             }
             if CROSSING_TEST.load(Ordering::Relaxed) {
-                let error = molt_cpython_abi::api::errors::take_current_error().unwrap();
-                CROSSING_ERROR_VALUE.store(error.value.addr(), Ordering::Relaxed);
-                molt_cpython_abi::api::errors::restore_current_error_exact(error);
+                let error = unsafe { molt_cpython_abi::api::errors::PyErr_GetRaisedException() };
+                CROSSING_ERROR_VALUE.store(error.addr(), Ordering::Relaxed);
+                unsafe { molt_cpython_abi::api::errors::PyErr_SetRaisedException(error) };
             }
             return -1;
         }
@@ -746,14 +747,11 @@ unsafe extern "C" fn semantic_call_slot(
 }
 fn observe_foreign_retirement(bits: u64) {
     assert!(CROSSING_FOREIGN.lock().unwrap().remove(&bits).is_some());
-    if CROSSING_CLEANUP_ERROR.load(Ordering::Relaxed) {
-        unsafe {
-            molt_cpython_abi::api::errors::PyErr_SetString(
-                (&raw mut PyExc_KeyError).cast(),
-                c"crossing cleanup error".as_ptr(),
-            );
-        }
-    }
+    // The wrapper's ordinary retirement sees the operation's selected error.
+    // A legal native release callback restores that same exception owner.
+    let error = unsafe { molt_cpython_abi::api::errors::PyErr_GetRaisedException() };
+    CROSSING_RETIRED_ERRORS.lock().unwrap().push(error.addr());
+    unsafe { molt_cpython_abi::api::errors::PyErr_SetRaisedException(error) };
 }
 unsafe extern "C" fn fake_foreign_new(c_ptr: usize) -> u64 {
     if CROSSING_TEST.load(Ordering::Relaxed) && CROSSING_FAIL.load(Ordering::Relaxed) {
@@ -1308,6 +1306,8 @@ impl CrossingFixture {
         CROSSING_SET_CALLS.store(0, Ordering::Relaxed);
         CROSSING_DEALLOCS.store(0, Ordering::Relaxed);
         CROSSING_ERROR_VALUE.store(0, Ordering::Relaxed);
+        CROSSING_RETIRED_ERRORS.lock().unwrap().clear();
+        CROSSING_NATIVE_ERRORS.lock().unwrap().clear();
         Self
     }
 
@@ -1334,7 +1334,6 @@ impl CrossingFixture {
 impl Drop for CrossingFixture {
     fn drop(&mut self) {
         CROSSING_FAIL.store(false, Ordering::Relaxed);
-        CROSSING_CLEANUP_ERROR.store(false, Ordering::Relaxed);
         self.remove_values();
         CROSSING_TEST.store(false, Ordering::Relaxed);
         unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
@@ -1343,7 +1342,12 @@ impl Drop for CrossingFixture {
 
 unsafe extern "C" fn crossing_dealloc(object: *mut PyObject) {
     CROSSING_DEALLOCS.fetch_add(1, Ordering::Relaxed);
-    unsafe { drop(Box::from_raw(object)) };
+    unsafe {
+        let error = molt_cpython_abi::api::errors::PyErr_GetRaisedException();
+        CROSSING_NATIVE_ERRORS.lock().unwrap().push(error.addr());
+        molt_cpython_abi::api::errors::PyErr_SetRaisedException(error);
+        drop(Box::from_raw(object));
+    }
 }
 
 fn crossing_object(typ: &mut PyTypeObject) -> *mut PyObject {
@@ -1400,10 +1404,9 @@ fn module_failed_insertion_preserves_caller_reference_and_exact_error() {
     let _fixture = CrossingFixture::new();
     let mut typ: PyTypeObject = unsafe { std::mem::zeroed() };
     let value = crossing_object(&mut typ);
-    CROSSING_CLEANUP_ERROR.store(true, Ordering::Relaxed);
     unsafe {
         let module = molt_cpython_abi::api::modules::PyModule_New(c"custody_failure".as_ptr());
-        for steal in [false, true] {
+        for (index, steal) in [false, true].into_iter().enumerate() {
             let result = if steal {
                 molt_cpython_abi::api::modules::PyModule_AddObject(
                     module,
@@ -1418,12 +1421,21 @@ fn module_failed_insertion_preserves_caller_reference_and_exact_error() {
                 )
             };
             assert_eq!(result, -1);
-            let error = molt_cpython_abi::api::errors::take_current_error().unwrap();
-            assert_eq!(error.exc_type, (&raw mut PyExc_ValueError).cast());
+            let error = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+                molt_cpython_abi::api::errors::PyErr_GetRaisedException(),
+            );
+            assert!(!error.as_ptr().is_null());
             assert_eq!(
-                error.value.addr(),
+                molt_cpython_abi::api::object::Py_TYPE(error.as_ptr()),
+                &raw mut PyExc_ValueError
+            );
+            assert_eq!(
+                error.as_ptr().addr(),
                 CROSSING_ERROR_VALUE.load(Ordering::Relaxed)
             );
+            let retired = CROSSING_RETIRED_ERRORS.lock().unwrap().clone();
+            assert_eq!(retired.len(), index + 1);
+            assert_eq!(retired.last(), Some(&error.as_ptr().addr()));
             drop(error);
             assert_eq!((*value).ob_refcnt, 1);
             assert!(CROSSING_FOREIGN.lock().unwrap().is_empty());
@@ -1453,6 +1465,40 @@ fn module_add_consumes_the_native_reference_even_when_insertion_fails() {
 }
 
 #[test]
+fn dictionary_clear_retires_native_values_under_exact_incoming_error() {
+    use molt_cpython_abi::api::{errors, mapping, refcount, strings};
+    let _guard = init();
+    let _fixture = CrossingFixture::new();
+    let mut typ: PyTypeObject = unsafe { std::mem::zeroed() };
+    unsafe {
+        let dict = refcount::OwnedPyObject::from_owned(mapping::PyDict_New());
+        let key = refcount::OwnedPyObject::from_owned(strings::PyUnicode_FromString(
+            c"retired_value".as_ptr(),
+        ));
+        let value = refcount::OwnedPyObject::from_owned(crossing_object(&mut typ));
+        assert!(!dict.as_ptr().is_null() && !key.as_ptr().is_null());
+        assert_eq!(
+            mapping::PyDict_SetItem(dict.as_ptr(), key.as_ptr(), value.as_ptr()),
+            0
+        );
+        drop(value);
+        errors::PyErr_SetString((&raw mut PyExc_ValueError).cast(), c"before clear".as_ptr());
+        let original = errors::PyErr_GetRaisedException();
+        assert!(!original.is_null());
+        errors::PyErr_SetRaisedException(original);
+        mapping::PyDict_Clear(dict.as_ptr());
+        let error = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert_eq!(error.as_ptr(), original);
+        assert_eq!(CROSSING_DEALLOCS.load(Ordering::Relaxed), 1);
+        let native_errors = CROSSING_NATIVE_ERRORS.lock().unwrap().clone();
+        let retired_errors = CROSSING_RETIRED_ERRORS.lock().unwrap().clone();
+        assert_eq!(native_errors, [original.addr()]);
+        assert_eq!(retired_errors, [original.addr()]);
+        assert_eq!(mapping::PyDict_Size(dict.as_ptr()), 0);
+    }
+}
+
+#[test]
 fn module_crossing_allocation_failure_never_inserts_none_or_steals() {
     let _guard = init();
     let _fixture = CrossingFixture::new();
@@ -1469,6 +1515,7 @@ fn module_crossing_allocation_failure_never_inserts_none_or_steals() {
         assert_eq!(error.exc_type, (&raw mut PyExc_MemoryError).cast());
         drop(error);
         assert_eq!(CROSSING_SET_CALLS.load(Ordering::Relaxed), 0);
+        assert!(CROSSING_RETIRED_ERRORS.lock().unwrap().is_empty());
         assert_eq!((*value).ob_refcnt, 1);
         assert!(CROSSING_FOREIGN.lock().unwrap().is_empty());
         molt_cpython_abi::api::refcount::Py_DECREF(value);
@@ -1482,17 +1529,24 @@ fn module_receiver_crossings_retire_locals_for_lookup_and_state_registration() {
     let _fixture = CrossingFixture::new();
     let mut typ: PyTypeObject = unsafe { std::mem::zeroed() };
     let module = crossing_object(&mut typ);
-    CROSSING_CLEANUP_ERROR.store(true, Ordering::Relaxed);
     unsafe {
         assert!(molt_cpython_abi::api::modules::PyModule_GetDict(module).is_null());
-        let error = molt_cpython_abi::api::errors::take_current_error().unwrap();
-        assert_eq!(error.exc_type, (&raw mut PyExc_SystemError).cast());
+        let error = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+            molt_cpython_abi::api::errors::PyErr_GetRaisedException(),
+        );
+        assert!(!error.as_ptr().is_null());
+        assert_eq!(
+            molt_cpython_abi::api::object::Py_TYPE(error.as_ptr()),
+            &raw mut PyExc_SystemError
+        );
+        let retired_errors = CROSSING_RETIRED_ERRORS.lock().unwrap().clone();
+        assert_eq!(retired_errors, [error.as_ptr().addr()]);
         drop(error);
         assert_eq!((*module).ob_refcnt, 1);
         assert!(molt_cpython_abi::api::modules::PyModule_GetState(module).is_null());
         assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
         assert_eq!((*module).ob_refcnt, 1);
-        CROSSING_CLEANUP_ERROR.store(false, Ordering::Relaxed);
+        assert_eq!(CROSSING_RETIRED_ERRORS.lock().unwrap().len(), 1);
         let mut def: PyModuleDef = std::mem::zeroed();
         assert_eq!(
             molt_cpython_abi::api::modules::PyState_AddModule(module, &raw mut def),
@@ -1516,6 +1570,9 @@ fn module_receiver_crossings_retire_locals_for_lookup_and_state_registration() {
         );
         assert_eq!((*module).ob_refcnt, 1);
         assert!(CROSSING_FOREIGN.lock().unwrap().is_empty());
+        let retired_errors = CROSSING_RETIRED_ERRORS.lock().unwrap().clone();
+        assert_eq!(retired_errors.len(), 2);
+        assert_eq!(retired_errors.last(), Some(&0));
         molt_cpython_abi::api::refcount::Py_DECREF(module);
     }
 }
@@ -2487,9 +2544,9 @@ unsafe extern "C" fn observe_module_publication(context: *mut c_void) -> i32 {
                 c"module publication rejected".as_ptr(),
             );
         }
-        let error = molt_cpython_abi::api::errors::take_current_error().unwrap();
-        observation.error_value = error.value.addr();
-        molt_cpython_abi::api::errors::restore_current_error_exact(error);
+        let error = unsafe { molt_cpython_abi::api::errors::PyErr_GetRaisedException() };
+        observation.error_value = error.addr();
+        unsafe { molt_cpython_abi::api::errors::PyErr_SetRaisedException(error) };
         -1
     } else {
         0
@@ -2541,7 +2598,6 @@ fn module_dictionary_publication_precedes_foreign_retirement_and_preserves_error
             fail: true,
             error_value: 0,
         };
-        CROSSING_CLEANUP_ERROR.store(true, Ordering::Relaxed);
         assert_eq!(
             (hooks.dict_mutate)(
                 dict,
@@ -2558,15 +2614,28 @@ fn module_dictionary_publication_precedes_foreign_retirement_and_preserves_error
         assert_eq!(observation.deallocs, 0);
         assert_eq!(CROSSING_DEALLOCS.load(Ordering::Relaxed), 1);
         assert_eq!(support::fake_runtime::ref_count(old), 0);
-        let error = molt_cpython_abi::api::errors::take_current_error().unwrap();
-        assert_eq!(error.exc_type, (&raw mut PyExc_ValueError).cast());
+        let error = molt_cpython_abi::api::refcount::OwnedPyObject::from_owned(
+            molt_cpython_abi::api::errors::PyErr_GetRaisedException(),
+        );
+        assert!(!error.as_ptr().is_null());
         assert_eq!(
-            error.value.addr(),
-            observation.error_value,
-            "retirement's KeyError must not replace the publication error"
+            molt_cpython_abi::api::object::Py_TYPE(error.as_ptr()),
+            &raw mut PyExc_ValueError
+        );
+        assert_eq!(error.as_ptr().addr(), observation.error_value);
+        let native_errors = CROSSING_NATIVE_ERRORS.lock().unwrap().clone();
+        let retired_errors = CROSSING_RETIRED_ERRORS.lock().unwrap().clone();
+        assert_eq!(
+            native_errors,
+            [observation.error_value],
+            "the displaced native value retires under the publication error"
+        );
+        assert_eq!(
+            retired_errors,
+            [observation.error_value],
+            "the terminal wrapper observes the same publication error"
         );
         drop(error);
-        CROSSING_CLEANUP_ERROR.store(false, Ordering::Relaxed);
         assert!(
             matches!((hooks.dict_get)(dict, original_key, DictHashSource::Compute, 0).decode(), DecodedHandleResult::Ok(value) if value == replacement)
         );

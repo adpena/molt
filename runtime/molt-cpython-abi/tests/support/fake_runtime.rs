@@ -565,14 +565,12 @@ pub unsafe extern "C" fn dict_mutate(
         }
     };
     let status = publish.map_or(0, |publish| unsafe { publish(context) });
-    molt_cpython_abi::api::errors::with_preserved_error(|| {
-        if let Some((key, value)) = displaced {
-            unsafe {
-                dec_ref(key);
-                dec_ref(value);
-            }
+    if let Some((key, value)) = displaced {
+        unsafe {
+            dec_ref(key);
+            dec_ref(value);
         }
-    });
+    }
     status
 }
 pub unsafe extern "C" fn dict_pop(dict: u64, key: u64) -> OwnedHandleResult {
@@ -597,7 +595,7 @@ pub unsafe extern "C" fn dict_pop(dict: u64, key: u64) -> OwnedHandleResult {
     };
     match removed {
         Some((key, value)) => {
-            molt_cpython_abi::api::errors::with_preserved_error(|| unsafe { dec_ref(key) });
+            unsafe { dec_ref(key) };
             OwnedHandleResult::ok(value)
         }
         None => OwnedHandleResult::missing(),
@@ -682,14 +680,12 @@ pub unsafe extern "C" fn dict_op(op: u32, dict: u64) -> u64 {
         };
         std::mem::take(entries)
     };
-    molt_cpython_abi::api::errors::with_preserved_error(|| {
-        for (key, value) in entries.into_iter().flatten() {
-            unsafe {
-                dec_ref(key);
-                dec_ref(value);
-            }
+    for (key, value) in entries.into_iter().flatten() {
+        unsafe {
+            dec_ref(key);
+            dec_ref(value);
         }
-    });
+    }
     MoltObject::none().bits()
 }
 pub unsafe extern "C" fn alloc_bytes(data: *const u8, len: usize) -> u64 {

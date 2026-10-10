@@ -1901,9 +1901,7 @@ impl ObjectBridge {
         };
         let release_entry = |entry: &mut BridgeEntry| {
             unsafe { ensure_result_error(c"C callable field publication failed") };
-            crate::api::errors::with_preserved_error(|| unsafe {
-                entry.view.release_owned_items();
-            });
+            crate::api::errors::with_preserved_error(|| entry.view.release_owned_items());
             unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
         };
         let edges = [

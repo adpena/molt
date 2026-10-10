@@ -512,6 +512,7 @@ thread_local! {
     static VALUE_REFS_BEFORE: Cell<Py_ssize_t> = const { Cell::new(0) };
     static CALLEE_ERROR_VALUE: Cell<*mut PyObject> = const { Cell::new(ptr::null_mut()) };
     static DESTRUCTOR_CALLS: Cell<usize> = const { Cell::new(0) };
+    static DESTRUCTOR_ERROR_VALUE: Cell<*mut PyObject> = const { Cell::new(ptr::null_mut()) };
 }
 
 unsafe extern "C" fn reentrant_keywords(
@@ -575,10 +576,12 @@ fn cfunction_keyword_snapshot_retains_values_across_dict_mutation_and_reentry() 
     }
 }
 
-unsafe extern "C" fn destructive_argument_drop(object: *mut PyObject) {
+unsafe extern "C" fn observe_argument_drop(object: *mut PyObject) {
     DESTRUCTOR_CALLS.set(DESTRUCTOR_CALLS.get() + 1);
     unsafe {
-        errors::PyErr_SetString((&raw mut PyExc_KeyError).cast(), c"cleanup error".as_ptr());
+        let pending = errors::PyErr_GetRaisedException();
+        DESTRUCTOR_ERROR_VALUE.set(pending);
+        errors::PyErr_SetRaisedException(pending);
         drop(Box::from_raw(object));
     }
 }
@@ -596,9 +599,9 @@ unsafe extern "C" fn fails_after_releasing_external_owner(
             c"original error".as_ptr(),
         );
     }
-    let pending = errors::take_current_error().unwrap();
-    CALLEE_ERROR_VALUE.set(pending.value);
-    errors::restore_current_error_exact(pending);
+    let pending = unsafe { errors::PyErr_GetRaisedException() };
+    CALLEE_ERROR_VALUE.set(pending);
+    unsafe { errors::PyErr_SetRaisedException(pending) };
     ptr::null_mut()
 }
 
@@ -608,12 +611,14 @@ fn cfunction_temporary_cleanup_preserves_exact_callee_exception_during_reentry()
     let _abi_test = setup();
     unsafe {
         let mut typ: PyTypeObject = std::mem::zeroed();
-        typ.tp_dealloc = Some(destructive_argument_drop);
+        typ.tp_dealloc = Some(observe_argument_drop);
         let argument = Box::into_raw(Box::new(PyObject {
             ob_refcnt: 1,
             ob_type: &raw mut typ,
         }));
         DESTRUCTOR_CALLS.set(0);
+        DESTRUCTOR_ERROR_VALUE.set(ptr::null_mut());
+        CALLEE_ERROR_VALUE.set(ptr::null_mut());
         let result = CFunctionConvention::VarArgs.invoke(
             fails_after_releasing_external_owner as *const (),
             ptr::null_mut(),
@@ -629,10 +634,18 @@ fn cfunction_temporary_cleanup_preserves_exact_callee_exception_during_reentry()
         );
         assert!(result.is_null());
         assert_eq!(DESTRUCTOR_CALLS.get(), 1);
-        let error =
-            errors::take_current_error().expect("callee error must survive argument destruction");
-        assert_eq!(error.exc_type, (&raw mut PyExc_ValueError).cast());
-        assert_eq!(error.value, CALLEE_ERROR_VALUE.get());
+        let error = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert!(
+            !error.as_ptr().is_null(),
+            "callee error survives argument destruction"
+        );
+        assert_eq!(object::Py_TYPE(error.as_ptr()), &raw mut PyExc_ValueError);
+        assert_eq!(error.as_ptr(), CALLEE_ERROR_VALUE.get());
+        assert_eq!(
+            DESTRUCTOR_ERROR_VALUE.get(),
+            error.as_ptr(),
+            "temporary tuple retirement exposes the exact callee exception"
+        );
         drop(error);
         assert!(errors::PyErr_Occurred().is_null());
     }

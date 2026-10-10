@@ -18,6 +18,8 @@ struct CallbackState {
     replacements: [*mut PyObject; 2],
     result: *mut PyObject,
     events: Vec<u8>,
+    callback_error: *mut PyObject,
+    retired_errors: Vec<*mut PyObject>,
 }
 
 thread_local! {
@@ -45,12 +47,11 @@ unsafe extern "C" fn release_probe(object: *mut PyObject) {
     let probe = unsafe { Box::from_raw(object.cast::<Probe>()) };
     CALLBACK.with(|state| state.borrow_mut().events.push(probe.id));
     if CALLBACK.with(|state| matches!(state.borrow().action, Action::Raise)) {
-        // The comparison's ValueError must survive either item's finalizer.
-        unsafe {
-            crate::api::errors::PyErr_SetNone(
-                (&raw mut crate::abi_types::PyExc_RuntimeError).cast(),
-            )
-        };
+        // Native tp_dealloc observes the active error and must leave the
+        // same exception selected (CPython Objects/object.c::_Py_Dealloc).
+        let pending = unsafe { crate::api::errors::PyErr_GetRaisedException() };
+        CALLBACK.with(|state| state.borrow_mut().retired_errors.push(pending));
+        unsafe { crate::api::errors::PyErr_SetRaisedException(pending) };
     }
 }
 
@@ -103,6 +104,9 @@ unsafe extern "C" fn compare_probe(
         unsafe {
             crate::api::errors::PyErr_SetNone((&raw mut crate::abi_types::PyExc_ValueError).cast())
         };
+        let pending = unsafe { crate::api::errors::PyErr_GetRaisedException() };
+        CALLBACK.with(|state| state.borrow_mut().callback_error = pending);
+        unsafe { crate::api::errors::PyErr_SetRaisedException(pending) };
         ptr::null_mut()
     } else {
         seq_richcmp_bool(false)
@@ -176,6 +180,8 @@ fn compare_mutating_lists(action: Action, operation: RichCompareOp) {
             replacements,
             result: result_pointer,
             events: Vec::new(),
+            callback_error: ptr::null_mut(),
+            retired_errors: Vec::new(),
         }
     });
     let result =
@@ -204,7 +210,21 @@ fn compare_mutating_lists(action: Action, operation: RichCompareOp) {
                 CALLBACK.with(|state| state.borrow().events.clone()),
                 [10, 1, 2]
             );
-            unsafe { crate::api::errors::PyErr_Clear() };
+            let error = unsafe {
+                crate::api::refcount::OwnedPyObject::from_owned(
+                    crate::api::errors::PyErr_GetRaisedException(),
+                )
+            };
+            assert!(!error.as_ptr().is_null());
+            assert_eq!(
+                error.as_ptr(),
+                CALLBACK.with(|state| state.borrow().callback_error)
+            );
+            assert_eq!(
+                CALLBACK.with(|state| state.borrow().retired_errors.clone()),
+                [error.as_ptr(), error.as_ptr()],
+                "both item pins retire under the exact comparison error"
+            );
         }
         Action::Observe => unreachable!(),
     }
