@@ -8014,6 +8014,41 @@ callable_arity = 1
 shared_runtime_callable = true
 
 [[import]]
+name = "asyncgen_awaitable_self"
+type = 2
+runtime_name = "molt_asyncgen_awaitable_self"
+callable_arity = 1
+shared_runtime_callable = true
+
+[[import]]
+name = "asyncgen_awaitable_next"
+type = 2
+runtime_name = "molt_asyncgen_awaitable_next"
+callable_arity = 1
+shared_runtime_callable = true
+
+[[import]]
+name = "asyncgen_awaitable_send"
+type = 3
+runtime_name = "molt_asyncgen_awaitable_send"
+callable_arity = 2
+shared_runtime_callable = true
+
+[[import]]
+name = "asyncgen_awaitable_throw"
+type = 3
+runtime_name = "molt_asyncgen_awaitable_throw"
+callable_arity = 2
+shared_runtime_callable = true
+
+[[import]]
+name = "asyncgen_awaitable_close"
+type = 2
+runtime_name = "molt_asyncgen_awaitable_close"
+callable_arity = 1
+shared_runtime_callable = true
+
+[[import]]
 name = "generator_throw_method"
 type = 3
 runtime_name = "molt_generator_throw_method"
