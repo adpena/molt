@@ -3740,7 +3740,8 @@ def test_actual_guard_paths_keep_raw_child_streams_separate(
 
     assert result.stdout == stdout
     assert result.child_stderr == child_stderr
-    assert result.descendants_closed is True
+    # The guard's own stderr names the closure condition that failed.
+    assert result.descendants_closed is True, result.stderr
     assert result.sampling_telemetry is not None
     assert result.sampling_interval_s > 0
     assert result.timed_out is (termination == "timeout")
