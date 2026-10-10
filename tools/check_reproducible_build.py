@@ -32,7 +32,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import tomllib
 from pathlib import Path
 
@@ -42,9 +41,69 @@ if str(ROOT) not in sys.path:
 
 from molt.cargo_execution_policy import default_nested_process_timeout_seconds  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
+from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
 from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
 
 CORPUS_MANIFEST = ROOT / "config" / "reproducibility_corpus.toml"
+
+
+def _launch_evidence(
+    command: list[str],
+    env: dict[str, str],
+    *,
+    cwd: str | Path,
+    outcome: harness_memory_guard.GuardedCompletedProcess
+    | subprocess.TimeoutExpired
+    | OSError,
+) -> dict[str, object]:
+    """Project public phase controls from the mapping passed to the real guard.
+
+    This records evidence only: it neither selects an environment nor launches
+    a process. An exception records only an attempted launch, not evidence of
+    child completion. Do not serialize arbitrary inherited variables or credentials.
+    """
+    if isinstance(outcome, subprocess.TimeoutExpired):
+        argv, status, returncode, child_returncode = outcome.cmd, "timeout", None, None
+    elif isinstance(outcome, OSError):
+        argv, status, returncode, child_returncode = command, "error", None, None
+    else:
+        argv = outcome.args
+        returncode, child_returncode = outcome.returncode, outcome.child_returncode
+        status = (
+            "timeout"
+            if outcome.timed_out
+            else "guard-error"
+            if (
+                outcome.infrastructure_failure is not None
+                or outcome.violation is not None
+                or outcome.guard_signal is not None
+                or outcome.orphaned_process_groups
+            )
+            else "completed"
+        )
+    return {
+        "argv": list(argv),
+        "cwd": str(cwd),
+        "status": status,
+        "returncode": returncode,
+        "child_returncode": child_returncode,
+        "environment": {
+            name: env.get(name)
+            for name in (
+                "PYTHONPATH",
+                "PYTHONHASHSEED",
+                "MOLT_DETERMINISTIC",
+                "MOLT_CACHE",
+                "MOLT_EXT_ROOT",
+                "MOLT_TARGET_ROOT",
+                "CARGO_TARGET_DIR",
+                "MOLT_BACKEND_DAEMON",
+                "MOLT_BACKEND_DAEMON_SOCKET_DIR",
+                "TMP",
+                "TEMP",
+            )
+        },
+    }
 
 
 def _write_proof_receipt(
@@ -62,7 +121,7 @@ def _write_proof_receipt(
     if path is None:
         return
     payload = {
-        "schema": "molt.reproducibility-proof.v2",
+        "schema": "molt.reproducibility-proof.v3",
         "status": (
             "success" if executed > 0 and failed == 0 and errors == 0 else "failure"
         ),
@@ -115,15 +174,19 @@ def find_first_diff(path1: str, path2: str) -> tuple[int, int, int] | None:
     return None
 
 
-def extract_artifact_path(build_json: dict, prefer_object: bool = False) -> str:
+def extract_artifact_path(build_json: object, prefer_object: bool = False) -> str:
     """Extract the artifact path from build JSON output.
 
     When *prefer_object* is True, prefer the ``.o`` file over the linked binary
     because the linker (especially on macOS) injects nondeterministic UUIDs.
     """
+    if not isinstance(build_json, dict):
+        raise ValueError("build JSON must be an object")
     data = build_json
     # Unwrap "data" envelope (molt.cli build --json wraps output in data)
-    if "data" in build_json and isinstance(build_json["data"], dict):
+    if "data" in build_json:
+        if not isinstance(build_json["data"], dict):
+            raise ValueError("build data must be an object")
         data = build_json["data"]
 
     # Check status field — bail early if build failed
@@ -135,17 +198,26 @@ def extract_artifact_path(build_json: dict, prefer_object: bool = False) -> str:
     if prefer_object:
         artifacts = data.get("artifacts", {})
         if isinstance(artifacts, dict) and "object" in artifacts:
-            return artifacts["object"]
+            artifact = artifacts["object"]
+            if not isinstance(artifact, str) or not artifact:
+                raise ValueError("artifact path must be a non-empty string")
+            return artifact
 
     # Try standard keys
     for key in ("output", "artifact", "binary", "path", "output_path"):
         if key in data:
-            return data[key]
+            artifact = data[key]
+            if not isinstance(artifact, str) or not artifact:
+                raise ValueError("artifact path must be a non-empty string")
+            return artifact
     # Try nested under "build"
     if "build" in data and isinstance(data["build"], dict):
         for key in ("output", "artifact", "binary", "path"):
             if key in data["build"]:
-                return data["build"][key]
+                artifact = data["build"][key]
+                if not isinstance(artifact, str) or not artifact:
+                    raise ValueError("artifact path must be a non-empty string")
+                return artifact
     raise KeyError(
         f"Cannot find artifact path in build JSON. Available keys: {list(data.keys())}"
     )
@@ -157,14 +229,15 @@ def _build_once(
     profile: str,
     prefer_object: bool,
     build_timeout: float | None = None,
-) -> tuple[str | None, str]:
-    """Build a source file once, returning (artifact_path, error_msg).
+) -> tuple[str | None, str, dict[str, object]]:
+    """Build a source file once, returning artifact, error, and actual launch evidence.
 
     ``build_timeout`` defaults to the proof plan's nested build budget.
     """
     if build_timeout is None:
         build_timeout = default_nested_process_timeout_seconds("build")
     env = os.environ.copy()
+    cwd = Path.cwd()
     env.setdefault("PYTHONPATH", "src")
     env["PYTHONHASHSEED"] = "0"
     env["MOLT_DETERMINISTIC"] = "1"
@@ -191,14 +264,30 @@ def _build_once(
             capture_output=True,
             text=True,
             env=env,
+            cwd=cwd,
             timeout=build_timeout,
             limits=limits,
         )
-    except subprocess.TimeoutExpired:
-        return None, f"build timed out after {build_timeout:g} s"
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        launch = _launch_evidence(cmd, env, cwd=cwd, outcome=exc)
+        return (
+            None,
+            f"build timed out after {build_timeout:g} s"
+            if isinstance(exc, subprocess.TimeoutExpired)
+            else str(exc),
+            launch,
+        )
+
+    launch = _launch_evidence(cmd, env, cwd=cwd, outcome=result)
+    if launch["status"] != "completed":
+        return None, f"build {launch['status']}", launch
 
     if result.returncode != 0:
-        return None, f"build failed (exit {result.returncode}): {result.stderr[:500]}"
+        return (
+            None,
+            f"build failed (exit {result.returncode}): {result.stderr[:500]}",
+            launch,
+        )
 
     stdout = result.stdout.strip()
     json_str = None
@@ -208,23 +297,19 @@ def _build_once(
             json_str = line
             break
 
-    if json_str is None:
-        return None, f"no JSON in build output: {stdout[:300]}"
-
     try:
-        build_info = json.loads(json_str)
+        build_info = json.loads(stdout if json_str is None else json_str)
     except json.JSONDecodeError as e:
-        return None, f"invalid build JSON: {e}"
+        return None, f"invalid build JSON: {e}", launch
 
     try:
         artifact = extract_artifact_path(build_info, prefer_object=prefer_object)
-    except KeyError as e:
-        return None, str(e)
+        if not Path(artifact).exists():
+            return None, f"artifact not found: {artifact}", launch
+    except (KeyError, ValueError, OSError) as exc:
+        return None, f"build artifact error: {str(exc) or type(exc).__name__}", launch
 
-    if not Path(artifact).exists():
-        return None, f"artifact not found: {artifact}"
-
-    return artifact, ""
+    return artifact, "", launch
 
 
 def compare_artifacts(
@@ -276,57 +361,73 @@ def _build_repeated_and_compare(
     hashes: list[str] = []
     sizes: list[int] = []
     artifacts: list[str] = []
-    for run in range(runs):
-        with tempfile.TemporaryDirectory(prefix=f"repro_{run}_") as cache:
-            artifact, error = _build_once(
-                source, cache, profile, prefer_object, build_timeout
-            )
-            if artifact is None:
-                return False, {
-                    "source": source,
-                    "error": f"build {run + 1}: {error}",
-                }
-            digest = sha256_file(artifact)
-            size = Path(artifact).stat().st_size
-            hashes.append(digest)
-            sizes.append(size)
-            artifacts.append(artifact)
-            if verbose:
-                print(
-                    f"  Build {run + 1}: {artifact}\n"
-                    f"    SHA256: {digest}  ({size} bytes)"
-                )
-    return len(set(hashes)) == 1, {
+    observations: list[dict[str, object]] = []
+    details = {
         "source": source,
         "runs": runs,
+        "completed_runs": 0,
         "hashes": hashes,
         "sizes": sizes,
         "artifacts": artifacts,
-        "unique_hashes": len(set(hashes)),
-        "match": len(set(hashes)) == 1,
-        "command": [
-            sys.executable,
-            "-m",
-            "molt.cli",
-            "build",
-            "--profile",
-            profile,
-            "--deterministic",
-            "--json",
-            *(["--emit", "obj"] if prefer_object else []),
-            source,
-        ],
-        "environment": {
-            "PYTHONHASHSEED": "0",
-            "MOLT_DETERMINISTIC": "1",
-            "isolated_cache_per_run": True,
-        },
+        "match": False,
+        "observations": observations,
         "toolchain": {"python": sys.version},
     }
+    try:
+        # Admit this selected source once inside the cell's retained-result
+        # boundary. Outer scheduling must not repeat filesystem prechecks.
+        Path(source).stat()
+    except OSError as exc:
+        details.update(
+            error_phase="source",
+            error=f"source admission: {str(exc) or type(exc).__name__}",
+        )
+        return False, details
+    for run in range(runs):
+        observation = {"index": run + 1, "source": source, "build": None}
+        observations.append(observation)
+        phase = "prepare"
+        try:
+            with OwnedTemporaryDirectory(prefix=f"repro_{run}_") as cache:
+                phase = "build"
+                artifact, error, launch = _build_once(
+                    source, cache, profile, prefer_object, build_timeout
+                )
+                observation["build"] = launch
+                if artifact is None:
+                    details["error"] = f"build {run + 1}: {error}"
+                    phase = "cleanup"
+                    return False, details
+                phase = "artifact"
+                observation["artifact"] = artifact
+                digest = sha256_file(artifact)
+                observation["sha256"] = digest
+                size = Path(artifact).stat().st_size
+                observation["size"] = size
+                hashes.append(digest)
+                sizes.append(size)
+                artifacts.append(artifact)
+                if verbose:
+                    print(
+                        f"  Build {run + 1}: {artifact}\n"
+                        f"    SHA256: {digest}  ({size} bytes)"
+                    )
+                phase = "cleanup"
+            details["completed_runs"] += 1
+        except (OSError, ValueError) as exc:
+            diagnostic = str(exc) or type(exc).__name__
+            observation.update(error_phase=phase, error=diagnostic)
+            details["error"] = f"build {run + 1} {phase}: {diagnostic}"
+            return False, details
+    match = details["completed_runs"] == runs and len(set(hashes)) == 1
+    details.update(unique_hashes=len(set(hashes)), match=match)
+    return match, details
 
 
-def _compile_to_ir_json(source_text: str, run_index: int) -> str:
-    """Compile source to canonical IR JSON in a fresh Python process."""
+def _compile_to_ir_json(
+    source_text: str, run_index: int
+) -> tuple[str | None, str | None, dict[str, object] | None]:
+    """Compile source to canonical IR JSON and return the launch provenance."""
     script = (
         "import json, sys; "
         "sys.path.insert(0, {src!r}); "
@@ -335,48 +436,87 @@ def _compile_to_ir_json(source_text: str, run_index: int) -> str:
     ).format(src=str(ROOT / "src"))
     env = os.environ.copy()
     env["PYTHONHASHSEED"] = str(run_index)
-    with tempfile.TemporaryDirectory(prefix=f"repro_ir_{run_index}_") as cwd:
-        env["TMP"] = cwd
-        env["TEMP"] = cwd
-        result = harness_memory_guard.guarded_completed_process(
-            [sys.executable, "-c", script],
-            prefix="MOLT_TEST_SUITE",
-            input=source_text,
-            capture_output=True,
-            text=True,
-            env=env,
-            cwd=cwd,
-            timeout=60,
-            limits=harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env),
-        )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"IR compilation failed (rc={result.returncode}): {result.stderr[:1000]}"
-        )
-    return result.stdout
+    command = [sys.executable, "-c", script]
+    launch = None
+    error = None
+    output = None
+    try:
+        with OwnedTemporaryDirectory(prefix=f"repro_ir_{run_index}_") as cwd:
+            env["TMP"] = cwd
+            env["TEMP"] = cwd
+            try:
+                result = harness_memory_guard.guarded_completed_process(
+                    command,
+                    prefix="MOLT_TEST_SUITE",
+                    input=source_text,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    cwd=cwd,
+                    timeout=60,
+                    limits=harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env),
+                )
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                launch = _launch_evidence(command, env, cwd=cwd, outcome=exc)
+                error = str(exc) or type(exc).__name__
+            else:
+                launch = _launch_evidence(command, env, cwd=cwd, outcome=result)
+                if launch["status"] != "completed" or result.returncode != 0:
+                    error = f"IR compilation failed (rc={result.returncode}): {result.stderr[:1000]}"
+                else:
+                    output = result.stdout
+    except (OSError, ValueError) as exc:
+        # Directory preparation/cleanup is a cell failure, not a new launch.
+        diagnostic = str(exc) or type(exc).__name__
+        return None, f"IR temporary directory error: {diagnostic}", launch
+    return output, error, launch
 
 
 def check_ir_determinism(programs: list[Path], runs: int) -> list[dict]:
-    """Compare at least two isolated IR observations for every program."""
+    """Compare complete isolated IR observations, retaining failed attempts."""
     results: list[dict] = []
     for program in programs:
+        observations: list[dict[str, object]] = []
+        digests: list[str] = []
+        error = None
+        failed = False
         try:
-            observations = [
-                _compile_to_ir_json(program.read_text(encoding="utf-8"), run)
-                for run in range(runs)
-            ]
-        except (OSError, RuntimeError) as exc:
-            results.append(
-                {"source": str(program), "status": "error", "error": str(exc)}
-            )
-            continue
-        digests = [hashlib.sha256(item.encode()).hexdigest() for item in observations]
+            if runs < 2:
+                raise ValueError("runs must be at least 2")
+            source = program.read_text(encoding="utf-8")
+            for run in range(runs):
+                output, error, launch = _compile_to_ir_json(source, run)
+                observation: dict[str, object] = {"index": run + 1, "compiler": launch}
+                observations.append(observation)
+                if output is None:
+                    failed = True
+                    error = error or "IR observation did not complete"
+                    observation["error"] = error
+                    break
+                digest = hashlib.sha256(output.encode()).hexdigest()
+                observation["sha256"] = digest
+                digests.append(digest)
+        except (OSError, UnicodeError, ValueError) as exc:
+            failed = True
+            error = str(exc) or type(exc).__name__
+        complete = not failed and len(digests) == runs
         results.append(
             {
                 "source": str(program),
-                "status": "pass" if len(set(digests)) == 1 else "fail",
+                "status": "error"
+                if not complete
+                else "pass"
+                if len(set(digests)) == 1
+                else "fail",
                 "runs": runs,
+                "completed_runs": len(digests),
                 "sha256": digests,
+                "observations": observations,
+                **(
+                    {"error": error or "IR observations incomplete"}
+                    if not complete
+                    else {}
+                ),
             }
         )
     return results
@@ -472,12 +612,6 @@ def main() -> int:
         errors = 0
 
         for source in batch:
-            if not Path(source).exists():
-                print(f"  SKIP {source} (not found)")
-                errors += 1
-                results.append({"source": source, "error": "not found"})
-                continue
-
             print(f"  Testing {source} ...")
             match, details = _build_repeated_and_compare(
                 source,
@@ -503,9 +637,12 @@ def main() -> int:
                 failed += 1
 
         audits: list[dict] = []
-        existing_sources = [Path(source) for source in batch if Path(source).is_file()]
         if args.audit_ir:
-            audits.extend(check_ir_determinism(existing_sources, args.runs))
+            # Every requested IR cell owns its source read/error. Filtering here
+            # would both duplicate admission and erase selected-cell evidence.
+            audits.extend(
+                check_ir_determinism([Path(source) for source in batch], args.runs)
+            )
         for audit in audits:
             status = audit["status"]
             if status == "pass":
@@ -542,21 +679,6 @@ def main() -> int:
     # Mode: --build (single source, self-contained)
     if args.build:
         source = args.build
-        if not Path(source).exists():
-            print(f"ERROR: Source file not found: {source}", file=sys.stderr)
-            _write_proof_receipt(
-                args.json_out,
-                mode="build",
-                selected=1,
-                executed=0,
-                passed=0,
-                failed=0,
-                errors=1,
-                runs_per_source=args.runs,
-                results=[{"source": source, "error": "not found"}],
-            )
-            return 2
-
         print(f"Reproducible build test: {source}")
         match, details = _build_repeated_and_compare(
             source,
@@ -605,50 +727,22 @@ def main() -> int:
     if len(args.build_jsons) != 2:
         parser.error("Exactly 2 build JSON files required (or use --build/--batch)")
 
-    for label, path in [
-        ("Build 1", args.build_jsons[0]),
-        ("Build 2", args.build_jsons[1]),
-    ]:
-        if not Path(path).exists():
-            print(f"ERROR: {label} JSON file not found: {path}", file=sys.stderr)
-            _write_proof_receipt(
-                args.json_out,
-                mode="compare",
-                selected=1,
-                executed=0,
-                passed=0,
-                failed=0,
-                errors=1,
-                inputs=args.build_jsons,
-                error=f"{label} JSON file not found",
-            )
-            return 2
-
+    phase = "build-json"
     try:
         with open(args.build_jsons[0], encoding="utf-8") as f:
             build1 = json.load(f)
         with open(args.build_jsons[1], encoding="utf-8") as f:
             build2 = json.load(f)
-    except json.JSONDecodeError as e:
-        print(f"ERROR: Invalid JSON: {e}", file=sys.stderr)
-        _write_proof_receipt(
-            args.json_out,
-            mode="compare",
-            selected=1,
-            executed=0,
-            passed=0,
-            failed=0,
-            errors=1,
-            inputs=args.build_jsons,
-            error=f"invalid JSON: {e}",
-        )
-        return 2
-
-    try:
+        phase = "artifact-path"
         artifact1 = extract_artifact_path(build1, prefer_object=args.object)
         artifact2 = extract_artifact_path(build2, prefer_object=args.object)
-    except KeyError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        phase = "artifact-read"
+        match, details = compare_artifacts(artifact1, artifact2)
+    except (OSError, ValueError, KeyError) as exc:
+        # ValueError includes malformed JSON and Unicode decoding failures.
+        # There is no process launch in this receiver, including failure paths.
+        diagnostic = str(exc) or type(exc).__name__
+        print(f"ERROR: {phase}: {diagnostic}", file=sys.stderr)
         _write_proof_receipt(
             args.json_out,
             mode="compare",
@@ -658,40 +752,10 @@ def main() -> int:
             failed=0,
             errors=1,
             inputs=args.build_jsons,
-            error=str(e),
+            error_phase=phase,
+            error=f"{phase}: {diagnostic}",
         )
         return 2
-
-    if not Path(artifact1).exists():
-        print(f"ERROR: Artifact not found: {artifact1}", file=sys.stderr)
-        _write_proof_receipt(
-            args.json_out,
-            mode="compare",
-            selected=1,
-            executed=0,
-            passed=0,
-            failed=0,
-            errors=1,
-            inputs=args.build_jsons,
-            error=f"artifact not found: {artifact1}",
-        )
-        return 2
-    if not Path(artifact2).exists():
-        print(f"ERROR: Artifact not found: {artifact2}", file=sys.stderr)
-        _write_proof_receipt(
-            args.json_out,
-            mode="compare",
-            selected=1,
-            executed=0,
-            passed=0,
-            failed=0,
-            errors=1,
-            inputs=args.build_jsons,
-            error=f"artifact not found: {artifact2}",
-        )
-        return 2
-
-    match, details = compare_artifacts(artifact1, artifact2)
     _write_proof_receipt(
         args.json_out,
         mode="compare",
