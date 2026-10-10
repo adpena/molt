@@ -144,8 +144,13 @@ def test_run_check_default_limits_resolve_adaptively(monkeypatch) -> None:
     assert limits.child_rlimit_gb == 4.0
 
 
-def test_check_env_seeds_canonical_artifact_roots(monkeypatch) -> None:
+def test_check_env_seeds_canonical_artifact_roots(monkeypatch, tmp_path) -> None:
     module = _load_ci_gate()
+    # _check_env creates every root it seeds; a scratch checkout keeps those
+    # directories out of the real one.
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    monkeypatch.setattr(module, "ROOT", checkout)
     for key in (
         "MOLT_EXT_ROOT",
         "CARGO_TARGET_DIR",
@@ -192,6 +197,9 @@ def test_check_env_seeds_canonical_artifact_roots(monkeypatch) -> None:
 
 def test_check_env_preserves_explicit_artifact_roots(monkeypatch, tmp_path) -> None:
     module = _load_ci_gate()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    monkeypatch.setattr(module, "ROOT", checkout)
     target = tmp_path / "target-custom"
     diff_target = tmp_path / "target-diff-custom"
     cache = tmp_path / "cache-custom"
