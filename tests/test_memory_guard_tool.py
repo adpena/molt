@@ -5233,7 +5233,7 @@ def test_process_group_probe_observes_through_refusal_until_absence(
         raise ProcessLookupError
 
     monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: False)
-    monkeypatch.setattr(process_custody.os, "killpg", killpg, raising=False)
+    install_module_view(monkeypatch, "os", os, process_custody, killpg=killpg)
 
     assert process_custody.process_group_exited_or_unobservable(300, grace=2.0)
     assert 0.5 <= now[0] <= 2.0
@@ -5413,7 +5413,7 @@ def test_exit_census_reads_the_table_only_when_a_member_can_take_a_signal(
         reads.append(True)
         return table
 
-    monkeypatch.setattr(process_custody.os, "killpg", killpg, raising=False)
+    install_module_view(monkeypatch, "os", os, process_custody, killpg=killpg)
     census = process_custody.reserved_group_exit_census(100, sampler)
 
     assert probes == [(100, 0)]
@@ -6081,7 +6081,8 @@ def test_timeout_closure_survives_a_late_reap_of_the_killed_child(
         time.sleep(0.5)  # The reaper thread is starved for half a second.
         return real_wait4(pid, options)
 
-    monkeypatch.setattr(process_custody.os, "wait4", late_wait4)
+    # The view confines the late reap to the clock under test.
+    install_module_view(monkeypatch, "os", os, process_custody, wait4=late_wait4)
     result = memory_guard.run_guarded(
         [sys.executable, "-c", "import time; time.sleep(60)"],
         max_rss_kb=1_000_000,
