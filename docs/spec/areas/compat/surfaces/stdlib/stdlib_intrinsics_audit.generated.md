@@ -18,9 +18,9 @@
 ## Progress Summary (Generated)
 - Total audited modules: `949`
 - `intrinsic-backed`: `37`
-- `intrinsic-partial`: `240`
+- `intrinsic-partial`: `239`
 - `intrinsic-support`: `30`
-- `python-compiled`: `262`
+- `python-compiled`: `263`
 - `stub`: `380`
 - `policy-gate`: `0`
 
@@ -130,7 +130,6 @@
 - `_uuid`
 - `_weakref`
 - `abc`
-- `argparse`
 - `array`
 - `asyncio`
 - `asyncio.__main__`
@@ -414,6 +413,7 @@
 - `_threading_local`
 - `_tracemalloc`
 - `_warnings`
+- `argparse`
 - `asyncio.base_futures`
 - `asyncio.base_subprocess`
 - `asyncio.constants`

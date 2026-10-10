@@ -1480,6 +1480,7 @@ stdlib:
   argparse:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_argparse_e750ee7c.py
+      - tests/differential/stdlib/unittest_main_argv.py
   array:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_top_level_array_19edc121.py
@@ -3029,6 +3030,7 @@ stdlib:
   unittest.main:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_unittest_main_e038ff1b.py
+      - tests/differential/stdlib/unittest_main_argv.py
   unittest.mock:
     tests:
       - tests/differential/stdlib/cpython312plus_api_gap_submodule_unittest_mock_b8ea7264.py
