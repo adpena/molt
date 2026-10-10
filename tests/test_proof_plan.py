@@ -4900,6 +4900,19 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
         "nightly.verification-t3.translation",
         "wasm.test.import-from-codec-parity",
     }
+    from tools.proof_queue_pkg.policy import _canonical_cargo_proof_command
+
+    for row in plan.commands:
+        if row.id not in declared:
+            continue
+        envelope = command_admission.envelope_for_command(list(row.argv))
+        assert row.id in envelope["proof_plan_command_ids"]
+        assert envelope["cargo_native_c_units"] == ["target"]
+        if row.argv[0] == "cargo":
+            wrapped = _canonical_cargo_proof_command(list(row.argv[1:]))
+            delegated = command_admission.envelope_for_command(wrapped)
+            assert delegated["cargo_native_c_units"] == ["target"]
+            assert delegated["delegated"]["cargo_native_c_units"] == ["target"]
     for name in ("wasm.build.shared-runtime", "wasm.build.split-runtime-release"):
         row = next(row for row in plan.commands if row.id == name)
         assert proof_plan.cargo_native_c_units(row.data) == ()
