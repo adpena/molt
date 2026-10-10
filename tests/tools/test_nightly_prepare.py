@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from tools import nightly_prepare
 
 
@@ -29,40 +31,21 @@ def test_prepare_owns_runtime_cpython_plan_and_matrix_projection(
         fake_ensure,
     )
 
+    runs: list[tuple[list[str], dict[str, object]]] = []
+
     def fake_run(argv, **kwargs):
-        seen["build"] = (argv, kwargs)
-        output = Path(argv[argv.index("--output") + 1])
-        output.write_bytes(b"native-smoke")
+        runs.append((list(argv), kwargs))
+        if "pack" in argv:
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"bundle")
+            Path(argv[argv.index("--manifest-out") + 1]).write_text(
+                '{"identity":{"source_commit":"' + "a" * 40 + '"}}',
+                encoding="utf-8",
+            )
+        else:
+            Path(argv[argv.index("--output") + 1]).write_bytes(b"native-smoke")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(nightly_prepare, "COMMANDS", SimpleNamespace(run=fake_run))
-    identity = SimpleNamespace(source_commit="a" * 40)
-    runtime_build_identity = object()
-
-    def fake_capture(_root, target):
-        seen["bundle_target"] = target
-        return runtime_build_identity
-
-    monkeypatch.setattr(
-        nightly_prepare.nightly_runtime_bundle,
-        "capture_bundle_runtime_identity",
-        fake_capture,
-    )
-    monkeypatch.setattr(
-        nightly_prepare.nightly_runtime_bundle,
-        "collect_bundle_identity",
-        lambda _root, **_kwargs: identity,
-    )
-
-    def fake_pack(**kwargs):
-        assert kwargs["runtime_build_identity"] is runtime_build_identity
-        kwargs["output"].write_bytes(b"bundle")
-        kwargs["manifest_output"].write_text("{}", encoding="utf-8")
-        return {"schema_version": 1}
-
-    monkeypatch.setattr(
-        nightly_prepare.nightly_runtime_bundle, "pack_bundle", fake_pack
-    )
     plan = {
         "cpython_commit": "b" * 40,
         "plan_sha256": "c" * 64,
@@ -86,10 +69,15 @@ def test_prepare_owns_runtime_cpython_plan_and_matrix_projection(
         github_output=github_output,
     )
 
-    build_argv, build_kwargs = seen["build"]
-    # The bundle reads the target the smoke build wrote, never a default.
+    (build_argv, build_kwargs), (pack_argv, pack_kwargs) = runs
+    # The bundle exports under the smoke build's own environment, so it reads
+    # the runtime generation and backend that build admitted.
     assert build_kwargs["env"] is build_env
-    assert seen["bundle_target"] == target_root
+    assert pack_kwargs["env"] is build_env
+    # The pack runs through the same launcher as the build, so the runtime
+    # identity it captures sees the same interpreter and environment.
+    assert pack_argv[:3] == build_argv[:3] == ["uv", "run", "python"]
+    assert pack_argv[3:5] == ["tools/nightly_runtime_bundle.py", "pack"]
     assert build_argv[build_argv.index("--stdlib-profile") + 1] == "full"
     assert build_argv[build_argv.index("--build-profile") + 1] == "dev"
     assert summary["source_commit"] == "a" * 40
@@ -129,3 +117,36 @@ def test_main_bundles_from_the_dx_resolved_target(tmp_path: Path, monkeypatch) -
         == 0
     )
     assert seen["build_env"]["CARGO_TARGET_DIR"] == str(override.resolve())
+
+
+def test_prepare_reports_why_packing_failed(tmp_path: Path, monkeypatch) -> None:
+    source = SimpleNamespace(revision="b" * 40)
+    monkeypatch.setattr(
+        nightly_prepare.cpython_regrtest,
+        "load_cpython_sources",
+        lambda: {"3.12": source},
+    )
+    monkeypatch.setattr(
+        nightly_prepare.cpython_regrtest,
+        "ensure_cpython_checkout",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fake_run(argv, **kwargs):
+        if "pack" in argv:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="nightly-runtime-bundle: no backend compiler admitted\n",
+            )
+        Path(argv[argv.index("--output") + 1]).write_bytes(b"native-smoke")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(nightly_prepare, "COMMANDS", SimpleNamespace(run=fake_run))
+    with pytest.raises(RuntimeError, match="(?s)exit 1.*no backend compiler admitted"):
+        nightly_prepare.prepare(
+            output_root=tmp_path / "out",
+            cpython_dir=tmp_path / "cpython",
+            build_env={"CARGO_TARGET_DIR": str(tmp_path / "target")},
+            github_output=None,
+        )
