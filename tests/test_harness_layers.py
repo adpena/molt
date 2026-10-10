@@ -165,7 +165,6 @@ def test_run_cmd_raises_guard_failure_instead_of_a_layer_status(
             elapsed_s=0.01,
             child_stderr="",
             child_returncode=child_returncode,
-            child_stderr="",
             infrastructure_failure=GuardInfrastructureFailure(
                 phase="temporary_artifact_custody", details=("scratch busy",)
             ),
