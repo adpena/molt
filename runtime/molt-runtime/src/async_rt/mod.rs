@@ -75,7 +75,7 @@ pub(crate) use scheduler::{
 
 pub(crate) use scheduler::process_task_state;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use scheduler::{sleep_worker, thread_task_state};
+pub(crate) use scheduler::thread_task_state;
 
 #[allow(unused_imports)]
 pub(crate) use generators::*;

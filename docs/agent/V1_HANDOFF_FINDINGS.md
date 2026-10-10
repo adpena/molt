@@ -174,6 +174,21 @@ transport had been admitted as a Python leaf because the entrypoint had multiple
 registered variants; the complete registry family must refuse that loss of
 custody before launch. The failed dispatch is not a Rust compilation or runtime
 result, and its incomplete execution receipt is retained.
+The corrected full-runtime command reaches Cargo on Linux/aarch64 but is
+stopped by native custody when the pinned aws-lc build script launches an
+undeclared `pkgconf` executable. The 0.61 GiB observed process-tree peak is
+below its limit; this is a missing build-tool dependency, not an RSS failure.
+Package-config discovery must use the existing captured build-tool authority
+through selection, executable environment, native supervision and reuse before
+this shipping-runtime build can qualify. Explicit native `PKG_CONFIG` selection
+uses that existing authority and the next build has complete native custody,
+with no native violations. Compilation exposes two missed scheduler consumers:
+an obsolete timer-worker re-export and the old handle-container constructor in
+the deterministic scheduler fixture. Both are corrected. The runtime gate also
+wrote its receipts into watched source; it now uses the queue-owned external
+scratch authority when queued, while the two existing CI artifact consumers
+retain the ordinary evidence path. All 63 gate checks pass, including independent actual output-path
+controls. No runtime test result is claimed until the corrected build executes.
 
 Historical integration evidence: PR119 merged at `5a6758e90` on 2026-10-10.
 The clean Linux ABI qualification at `bb2b77bca` is recorded below.

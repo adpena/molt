@@ -32,6 +32,7 @@ from tools import run_cargo_test_truth as truth  # noqa: E402
 from tools import runtime_descendant_receipts as descendants  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
+from molt.dx import PROOF_SCRATCH_ROOT_ENV, proof_scratch_root  # noqa: E402
 from tools.libtest_results import accounting_problem  # noqa: E402
 
 COMMANDS = CommandExecutor.for_file(__file__)
@@ -324,7 +325,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--receipt-root",
         type=Path,
-        default=ROOT / "proof-receipts/evidence/runtime-gate-runs",
+        default=(
+            proof_scratch_root(ROOT)
+            if os.environ.get(PROOF_SCRATCH_ROOT_ENV, "").strip()
+            else ROOT / "proof-receipts/evidence"
+        )
+        / "runtime-gate-runs",
     )
     args = parser.parse_args(argv)
     if args.parallel_threads < 2 or any(
