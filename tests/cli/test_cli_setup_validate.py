@@ -258,9 +258,10 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert luau_compile_step["cmd"][
         luau_compile_step["cmd"].index("--profile") + 1
     ] == ("release")
-    assert "tmp/validate/luau-smoke/hello.luau" in luau_compile_step["cmd"][-1].replace(
-        "\\", "/"
-    )
+    luau_output = Path(luau_compile_step["cmd"][-1])
+    assert luau_output.parts[-3:] == ("validate", "luau-smoke", "hello.luau")
+    # Validation output is scratch, never written into the checkout.
+    assert not luau_output.is_relative_to(ROOT.resolve())
     luau_runner_step = next(
         entry for entry in steps if entry["name"] == "luau-runner-available"
     )
@@ -484,6 +485,7 @@ def test_cli_guard_preserves_operator_limits_for_sanitized_env(
 def test_cli_cargo_build_helper_uses_default_memory_guard(
     monkeypatch: pytest.MonkeyPatch,
     admitted_build_capacity: None,
+    tmp_path: Path,
 ) -> None:
     from molt import cli
 
@@ -521,7 +523,7 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
         env={
             "PATH": "/usr/bin",
             "RUSTC_WRAPPER": "/usr/bin/sccache",
-            "CARGO_TARGET_DIR": str(ROOT / "tmp" / "test-cargo-target"),
+            "CARGO_TARGET_DIR": str(tmp_path / "test-cargo-target"),
         },
         timeout=1.0,
         json_output=True,
@@ -534,13 +536,13 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
     assert run_calls[0]["env"] == {
         "PATH": "/usr/bin",
         "RUSTC_WRAPPER": "/usr/bin/sccache",
-        "CARGO_TARGET_DIR": str(ROOT / "tmp" / "test-cargo-target"),
+        "CARGO_TARGET_DIR": str(tmp_path / "test-cargo-target"),
         "CARGO_INCREMENTAL": "0",
         "MOLT_BUILD_MAX_PROCESS_RSS_GB": "0.25",
     }
     assert run_calls[1]["env"] == {
         "PATH": "/usr/bin",
-        "CARGO_TARGET_DIR": str(ROOT / "tmp" / "test-cargo-target"),
+        "CARGO_TARGET_DIR": str(tmp_path / "test-cargo-target"),
         "MOLT_BUILD_MAX_PROCESS_RSS_GB": "0.25",
     }
 

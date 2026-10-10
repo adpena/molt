@@ -40,6 +40,7 @@ from molt.cli.source_extension_link_requirements import (  # noqa: E402
 )
 from molt.cli import wasm_toolchain  # noqa: E402
 from molt.wasm_optimization import WASM_OPT_LEVELS  # noqa: E402
+from molt.dx import configured_artifact_root  # noqa: E402
 import wasm_link_command as _link_command  # noqa: E402
 import wasm_link_native_inputs as _native_inputs  # noqa: E402
 from wasm_link_fact_provider import make_rust_wasm_facts_provider  # noqa: E402
@@ -54,16 +55,14 @@ def _default_runtime_path() -> Path:
     env_root = os.environ.get("MOLT_WASM_RUNTIME_DIR")
     if env_root:
         return Path(env_root).expanduser() / "molt_runtime.wasm"
-    ext_root = os.environ.get("MOLT_EXT_ROOT")
-    external_root = Path(ext_root).expanduser() if ext_root else None
+    external_root = configured_artifact_root(os.environ, relative_to=Path.cwd())
     if external_root is not None and external_root.is_dir():
         return external_root / "wasm" / "molt_runtime.wasm"
     return Path("wasm/molt_runtime.wasm")
 
 
 def _default_dist_artifact_path(name: str) -> Path:
-    ext_root = os.environ.get("MOLT_EXT_ROOT")
-    external_root = Path(ext_root).expanduser() if ext_root else None
+    external_root = configured_artifact_root(os.environ, relative_to=Path.cwd())
     if external_root is not None and external_root.is_dir():
         return external_root / "dist" / name
     return Path("dist") / name

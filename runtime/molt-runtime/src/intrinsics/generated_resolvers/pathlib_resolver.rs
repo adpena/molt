@@ -27,10 +27,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_path_symlink",
             crate::molt_path_symlink as *const (),
         )),
-        "molt_path_listdir" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_path_listdir",
-            crate::molt_path_listdir as *const (),
-        )),
         "molt_path_mkdir" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_path_mkdir",
             crate::molt_path_mkdir as *const (),
@@ -99,10 +95,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_path_abspath",
             crate::molt_path_abspath as *const (),
         )),
-        "molt_path_resolve" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_path_resolve",
-            crate::molt_path_resolve as *const (),
-        )),
         "molt_path_as_uri" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_path_as_uri",
             crate::molt_path_as_uri as *const (),
@@ -115,21 +107,9 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_path_expandvars",
             crate::molt_path_expandvars as *const (),
         )),
-        "molt_path_expandvars_env" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_path_expandvars_env",
-            crate::molt_path_expandvars_env as *const (),
-        )),
         "molt_path_makedirs" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_path_makedirs",
             crate::molt_path_makedirs as *const (),
-        )),
-        "molt_path_parts" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_path_parts",
-            crate::molt_path_parts as *const (),
-        )),
-        "molt_path_splitroot" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_path_splitroot",
-            crate::molt_path_splitroot as *const (),
         )),
         "molt_path_parents" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_path_parents",
@@ -175,10 +155,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_path_glob",
             crate::molt_path_glob as *const (),
         )),
-        "molt_pathlib_join" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_join",
-            crate::molt_pathlib_join as *const (),
-        )),
         "molt_pathlib_str" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_pathlib_str",
             crate::molt_pathlib_str as *const (),
@@ -190,70 +166,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_pathlib_splitroot" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_pathlib_splitroot",
             crate::molt_pathlib_splitroot as *const (),
-        )),
-        "molt_pathlib_drive" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_drive",
-            crate::molt_pathlib_drive as *const (),
-        )),
-        "molt_pathlib_root" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_root",
-            crate::molt_pathlib_root as *const (),
-        )),
-        "molt_pathlib_anchor" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_anchor",
-            crate::molt_pathlib_anchor as *const (),
-        )),
-        "molt_pathlib_name" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_name",
-            crate::molt_pathlib_name as *const (),
-        )),
-        "molt_pathlib_suffix" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_suffix",
-            crate::molt_pathlib_suffix as *const (),
-        )),
-        "molt_pathlib_suffixes" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_suffixes",
-            crate::molt_pathlib_suffixes as *const (),
-        )),
-        "molt_pathlib_stem" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_stem",
-            crate::molt_pathlib_stem as *const (),
-        )),
-        "molt_pathlib_parent" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_parent",
-            crate::molt_pathlib_parent as *const (),
-        )),
-        "molt_pathlib_parents" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_parents",
-            crate::molt_pathlib_parents as *const (),
-        )),
-        "molt_pathlib_is_absolute" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_is_absolute",
-            crate::molt_pathlib_is_absolute as *const (),
-        )),
-        "molt_pathlib_is_relative_to" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_is_relative_to",
-            crate::molt_pathlib_is_relative_to as *const (),
-        )),
-        "molt_pathlib_relative_to" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_relative_to",
-            crate::molt_pathlib_relative_to as *const (),
-        )),
-        "molt_pathlib_with_name" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_with_name",
-            crate::molt_pathlib_with_name as *const (),
-        )),
-        "molt_pathlib_with_stem" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_with_stem",
-            crate::molt_pathlib_with_stem as *const (),
-        )),
-        "molt_pathlib_with_suffix" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_with_suffix",
-            crate::molt_pathlib_with_suffix as *const (),
-        )),
-        "molt_pathlib_match" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_match",
-            crate::molt_pathlib_match as *const (),
         )),
         "molt_pathlib_hash" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_pathlib_hash",
@@ -287,81 +199,25 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_pathlib_expanduser",
             crate::molt_pathlib_expanduser as *const (),
         )),
-        "molt_pathlib_exists" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_exists",
-            crate::molt_pathlib_exists as *const (),
-        )),
-        "molt_pathlib_is_file" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_is_file",
-            crate::molt_pathlib_is_file as *const (),
-        )),
-        "molt_pathlib_is_dir" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_is_dir",
-            crate::molt_pathlib_is_dir as *const (),
-        )),
-        "molt_pathlib_is_symlink" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_is_symlink",
-            crate::molt_pathlib_is_symlink as *const (),
-        )),
         "molt_pathlib_is_mount" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_pathlib_is_mount",
             crate::molt_pathlib_is_mount as *const (),
-        )),
-        "molt_pathlib_stat" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_stat",
-            crate::molt_pathlib_stat as *const (),
-        )),
-        "molt_pathlib_lstat" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_lstat",
-            crate::molt_pathlib_lstat as *const (),
         )),
         "molt_pathlib_iterdir" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_pathlib_iterdir",
             crate::molt_pathlib_iterdir as *const (),
         )),
-        "molt_pathlib_glob" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_glob",
-            crate::molt_pathlib_glob as *const (),
-        )),
         "molt_pathlib_rglob" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_pathlib_rglob",
             crate::molt_pathlib_rglob as *const (),
-        )),
-        "molt_pathlib_mkdir" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_mkdir",
-            crate::molt_pathlib_mkdir as *const (),
-        )),
-        "molt_pathlib_rmdir" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_rmdir",
-            crate::molt_pathlib_rmdir as *const (),
-        )),
-        "molt_pathlib_unlink" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_unlink",
-            crate::molt_pathlib_unlink as *const (),
-        )),
-        "molt_pathlib_rename" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_rename",
-            crate::molt_pathlib_rename as *const (),
-        )),
-        "molt_pathlib_replace" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_replace",
-            crate::molt_pathlib_replace as *const (),
         )),
         "molt_pathlib_touch" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_pathlib_touch",
             crate::molt_pathlib_touch as *const (),
         )),
-        "molt_pathlib_symlink_to" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_symlink_to",
-            crate::molt_pathlib_symlink_to as *const (),
-        )),
         "molt_pathlib_hardlink_to" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_pathlib_hardlink_to",
             crate::molt_pathlib_hardlink_to as *const (),
-        )),
-        "molt_pathlib_readlink" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_readlink",
-            crate::molt_pathlib_readlink as *const (),
         )),
         "molt_pathlib_read_text" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_pathlib_read_text",
@@ -379,10 +235,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_pathlib_write_bytes",
             crate::molt_pathlib_write_bytes as *const (),
         )),
-        "molt_pathlib_chmod" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_chmod",
-            crate::molt_pathlib_chmod as *const (),
-        )),
         "molt_pathlib_owner" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_pathlib_owner",
             crate::molt_pathlib_owner as *const (),
@@ -394,10 +246,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_pathlib_samefile" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_pathlib_samefile",
             crate::molt_pathlib_samefile as *const (),
-        )),
-        "molt_pathlib_sep" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pathlib_sep",
-            crate::molt_pathlib_sep as *const (),
         )),
         _ => None,
     }

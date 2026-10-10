@@ -10,9 +10,7 @@ import sys as _sys
 import types as _types
 from typing import Any
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 _VERSION_INFO = getattr(_sys, "version_info", (3, 12, 0, "final", 0))
 _EXPOSE_QUEUE_SHUTDOWN = _VERSION_INFO >= (3, 13)
 
@@ -247,5 +245,3 @@ __all__ = [
 ]
 if _EXPOSE_QUEUE_SHUTDOWN:
     __all__.append("QueueShutDown")
-
-globals().pop("_require_intrinsic", None)

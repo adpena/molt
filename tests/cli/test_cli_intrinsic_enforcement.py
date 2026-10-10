@@ -8,7 +8,6 @@ import os
 import pytest
 
 from molt import stdlib_intrinsic_policy
-from molt.cli import module_stdlib_policy as cli_module_stdlib_policy
 from molt.cli import module_graph_cache
 from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
@@ -69,7 +68,7 @@ def test_intrinsic_source_cache_reuses_analysis_but_resolves_facade_children_liv
     # incorrectly keep accepting the facade through its intrinsic owner alone.
     graph["owner.Value"] = tmp_path / "Value.so"
     changed = classify()
-    assert changed.statuses["_facade"] == stdlib_intrinsic_policy.STATUS_PYTHON_ONLY
+    assert changed.statuses["_facade"] == stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
     assert changed.import_evidence["_facade"].facade.owners == frozenset(
         {"owner", "owner.Value"}
     )
@@ -87,7 +86,9 @@ def test_intrinsic_source_cache_checks_bytes_with_restored_mtime(
     path.write_text("value = 12345678\n ", encoding="utf-8")
     assert path.stat().st_size == stat.st_size
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-    assert provider("owner", path).status == stdlib_intrinsic_policy.STATUS_PYTHON_ONLY
+    assert (
+        provider("owner", path).status == stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
+    )
 
 
 def test_intrinsic_source_cache_keeps_unresolved_relative_obligations(
@@ -145,7 +146,19 @@ def test_intrinsic_source_cache_separates_module_target_and_compiler(
     assert observations[-1] == target.tag
 
 
-@pytest.mark.parametrize("corruption", ["status", "modules", "unresolved", "facade"])
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "status",
+        "modules",
+        "private_imports",
+        "used",
+        "unread",
+        "discarded",
+        "unresolved",
+        "facade",
+    ],
+)
 def test_intrinsic_source_cache_recomputes_malformed_payload(
     tmp_path, intrinsic_source_cache, corruption
 ):
@@ -179,7 +192,9 @@ def test_intrinsic_source_cache_binds_publication_to_captured_bytes(
     monkeypatch.setattr(
         stdlib_intrinsic_policy, "stdlib_module_intrinsic_facts", produce
     )
-    assert provider("owner", path).status == stdlib_intrinsic_policy.STATUS_PYTHON_ONLY
+    assert (
+        provider("owner", path).status == stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
+    )
 
 
 @pytest.mark.parametrize(
@@ -272,24 +287,32 @@ def test_runtime_seeded_builtins_keeps_real_intrinsic_policy_evidence(
             UnresolvedStaticImportError,
             match=rf"requires a Python {re.escape(version)}\+ frontend",
         ):
-            cli_module_stdlib_policy._enforce_intrinsic_stdlib(
-                {"builtins": path}, root, json_output=False, target_python=target
+            stdlib_intrinsic_policy.classify_stdlib_module_statuses(
+                {"builtins": path}, target_python=target
             )
         return
-    assert (
-        cli_module_stdlib_policy._enforce_intrinsic_stdlib(
-            {"builtins": path},
-            root,
-            json_output=False,
-            target_python=target,
-        )
-        is None
+    classification = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
+        {"builtins": path}, target_python=target
     )
+    assert classification.statuses == {
+        "builtins": stdlib_intrinsic_policy.STATUS_INTRINSIC
+    }
+    assert classification.used_intrinsics[
+        "builtins"
+    ] == stdlib_intrinsic_policy.module_required_intrinsic_names(path)
 
 
-def test_builtin_spelling_does_not_exempt_python_only_source(tmp_path: Path) -> None:
+def _status(path: Path) -> str:
+    return stdlib_intrinsic_policy.stdlib_module_intrinsic_facts(
+        path.stem, path, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    ).status
+
+
+def test_builtin_spelling_does_not_exempt_compiled_python_source(
+    tmp_path: Path,
+) -> None:
     path = _write_module(tmp_path, "builtins.py", "VALUE = 1\n")
-    assert stdlib_intrinsic_policy.stdlib_module_intrinsic_status(path) == "python-only"
+    assert _status(path) == "python-compiled"
 
 
 def _write_module(tmp_path: Path, name: str, source: str) -> Path:
@@ -304,42 +327,62 @@ def test_marker_literal_does_not_count_as_intrinsic_usage(tmp_path: Path) -> Non
         "marker_only.py",
         '_MOLT_INTRINSIC_MARKER = "molt_capabilities_has"\n',
     )
-    assert (
-        cli_module_stdlib_policy._stdlib_module_intrinsic_status(module)
-        == "python-only"
-    )
+    assert _status(module) == "python-compiled"
 
 
-def test_require_intrinsic_call_is_intrinsic_backed(tmp_path: Path) -> None:
+def test_read_intrinsic_is_intrinsic_backed(tmp_path: Path) -> None:
     module = _write_module(
         tmp_path,
         "intrinsic_backed.py",
         (
             "from _intrinsics import require_intrinsic as _require_intrinsic\n"
-            '_require_intrinsic("molt_capabilities_has", globals())\n'
+            '_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")\n'
+            "def has(name):\n"
+            "    return _MOLT_CAPABILITIES_HAS(name)\n"
         ),
     )
-    assert (
-        cli_module_stdlib_policy._stdlib_module_intrinsic_status(module)
-        == "intrinsic-backed"
-    )
+    assert _status(module) == "intrinsic-backed"
 
 
-def test_probe_only_module_status(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        '_require_intrinsic("molt_capabilities_has", globals())\n',
+        '_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")\n',
+        'def ensure():\n    _require_intrinsic("molt_capabilities_has")\n',
+    ],
+    ids=["discarded", "unread-binding", "discarded-in-function"],
+)
+def test_unread_requirement_is_not_intrinsic_backing(
+    tmp_path: Path, requirement: str
+) -> None:
     module = _write_module(
         tmp_path,
-        "probe_only.py",
-        (
-            "from _intrinsics import require_intrinsic as _require_intrinsic\n"
-            '_require_intrinsic("molt_stdlib_probe", globals())\n'
-        ),
+        "anchored.py",
+        "from _intrinsics import require_intrinsic as _require_intrinsic\n"
+        + requirement,
     )
-    assert (
-        cli_module_stdlib_policy._stdlib_module_intrinsic_status(module) == "probe-only"
+    facts = stdlib_intrinsic_policy.stdlib_module_intrinsic_facts(
+        "anchored", module, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
+    assert facts.status == "python-compiled"
+    assert facts.intrinsic_use.used == frozenset()
+    unread = [binding.intrinsic for binding in facts.intrinsic_use.unread_bindings]
+    unread += [name for name, _line in facts.intrinsic_use.discarded]
+    assert unread == ["molt_capabilities_has"]
 
 
-def test_fail_closed_import_policy_gate_is_not_python_only(tmp_path: Path) -> None:
+def test_generated_stub_has_its_own_status(tmp_path: Path) -> None:
+    marker = stdlib_intrinsic_policy.STDLIB_STUB_MARKER
+    module = _write_module(
+        tmp_path,
+        "missing.py",
+        f"def __getattr__(attr):\n    raise RuntimeError('stdlib module \"missing\" {marker}')\n",
+    )
+    assert _status(module) == "stub"
+
+
+def test_fail_closed_import_policy_gate_is_not_compiled_python(tmp_path: Path) -> None:
     module = _write_module(
         tmp_path,
         "policy_gate.py",
@@ -348,10 +391,7 @@ def test_fail_closed_import_policy_gate_is_not_python_only(tmp_path: Path) -> No
             "raise ImportError('not supported; use the explicit adapter')\n"
         ),
     )
-    assert (
-        cli_module_stdlib_policy._stdlib_module_intrinsic_status(module)
-        == "policy-gate"
-    )
+    assert _status(module) == "policy-gate"
 
 
 def test_policy_gate_classifier_rejects_executable_python_body(tmp_path: Path) -> None:
@@ -360,13 +400,12 @@ def test_policy_gate_classifier_rejects_executable_python_body(tmp_path: Path) -
         "not_policy_gate.py",
         ('"""not a pure gate"""\nVALUE = 1\nraise ImportError(\'not supported\')\n'),
     )
-    assert (
-        cli_module_stdlib_policy._stdlib_module_intrinsic_status(module)
-        == "python-only"
-    )
+    assert _status(module) == "python-compiled"
 
 
-def test_syntax_error_with_intrinsic_marker_is_python_only(tmp_path: Path) -> None:
+def test_syntax_error_with_intrinsic_marker_is_an_analysis_failure(
+    tmp_path: Path,
+) -> None:
     module = _write_module(
         tmp_path,
         "invalid.py",
@@ -376,13 +415,11 @@ def test_syntax_error_with_intrinsic_marker_is_python_only(tmp_path: Path) -> No
             "    return 1\n"
         ),
     )
-    assert (
-        cli_module_stdlib_policy._stdlib_module_intrinsic_status(module)
-        == "python-only"
-    )
+    with pytest.raises(UnresolvedStaticImportError, match="cannot parse source"):
+        _status(module)
 
 
-def test_same_package_wrapper_importing_intrinsic_root_is_not_python_only(
+def test_same_package_wrapper_reads_the_package_intrinsic_binding(
     tmp_path: Path,
 ) -> None:
     stdlib_root = tmp_path / "stdlib"
@@ -400,18 +437,30 @@ def test_same_package_wrapper_importing_intrinsic_root_is_not_python_only(
         encoding="utf-8",
     )
 
-    assert (
-        cli_module_stdlib_policy._enforce_intrinsic_stdlib(
-            {"pkg": root, "pkg.widgets": wrapper},
-            stdlib_root,
-            json_output=False,
-            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
-        )
-        is None
+    classification = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
+        {"pkg": root, "pkg.widgets": wrapper},
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
+    # The package never loads its binding; the sibling's import is the read.
+    assert classification.statuses == {
+        "pkg": stdlib_intrinsic_policy.STATUS_INTRINSIC,
+        "pkg.widgets": stdlib_intrinsic_policy.STATUS_INTRINSIC,
+    }
+    assert classification.used_intrinsics["pkg"] == {
+        "molt_tk_widget_bind_callback_register"
+    }
+    assert dict(classification.unused_bindings) == {}
+    # Without the importing sibling, nothing reads the binding.
+    alone = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
+        {"pkg": root}, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    )
+    assert alone.statuses["pkg"] == stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
+    assert [binding.name for binding in alone.unused_bindings["pkg"]] == [
+        "_WIDGET_BIND"
+    ]
 
 
-def test_private_support_module_loaded_by_intrinsic_owner_is_not_python_only(
+def test_private_support_module_loaded_by_intrinsic_owner_is_support(
     tmp_path: Path,
 ) -> None:
     stdlib_root = tmp_path / "stdlib"
@@ -420,7 +469,9 @@ def test_private_support_module_loaded_by_intrinsic_owner_is_not_python_only(
     support = stdlib_root / "_pyio_text.py"
     owner.write_text(
         "from _intrinsics import require_intrinsic as _require_intrinsic\n"
-        '_READY = _require_intrinsic("molt_import_smoke_runtime_ready")\n'
+        '_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")\n'
+        "def _has(name):\n"
+        "    return _MOLT_CAPABILITIES_HAS(name)\n"
         "def _load_text_io_classes():\n"
         "    import _pyio_text as text_module\n"
         "    return text_module\n",
@@ -431,15 +482,14 @@ def test_private_support_module_loaded_by_intrinsic_owner_is_not_python_only(
         encoding="utf-8",
     )
 
-    assert (
-        cli_module_stdlib_policy._enforce_intrinsic_stdlib(
-            {"_pyio": owner, "_pyio_text": support},
-            stdlib_root,
-            json_output=False,
-            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
-        )
-        is None
+    classification = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
+        {"_pyio": owner, "_pyio_text": support},
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
     )
+    assert classification.statuses == {
+        "_pyio": stdlib_intrinsic_policy.STATUS_INTRINSIC,
+        "_pyio_text": stdlib_intrinsic_policy.STATUS_INTRINSIC_SUPPORT,
+    }
 
 
 def test_real_weakref_facade_uses_shared_intrinsic_classification() -> None:
@@ -459,15 +509,6 @@ def test_real_weakref_facade_uses_shared_intrinsic_classification() -> None:
         graph["_weakrefset"]
     )
     assert classification.facades_payload()[0]["owners"] == ["weakref"]
-    assert (
-        cli_module_stdlib_policy._enforce_intrinsic_stdlib(
-            graph,
-            root,
-            json_output=False,
-            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
-        )
-        is None
-    )
 
 
 def test_real_io_wrapper_projects_its_native_provider_without_marker_loads() -> None:
@@ -485,19 +526,16 @@ def test_real_io_wrapper_projects_its_native_provider_without_marker_loads() -> 
     without_provider = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
         {"io": graph["io"]}, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
-    assert without_provider.statuses["io"] == stdlib_intrinsic_policy.STATUS_PYTHON_ONLY
-    assert not stdlib_intrinsic_policy.module_required_intrinsic_names(graph["io"])
     assert (
-        cli_module_stdlib_policy._enforce_intrinsic_stdlib(
-            graph, root, json_output=False, target_python=_DEFAULT_TARGET_PYTHON_VERSION
-        )
-        is None
+        without_provider.statuses["io"]
+        == stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
     )
+    assert not stdlib_intrinsic_policy.module_required_intrinsic_names(graph["io"])
 
 
 @pytest.mark.parametrize("owner_source", [None, "class WeakSet: pass\n"])
-def test_facade_with_missing_or_python_owner_still_fails_cli_enforcement(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], owner_source: str | None
+def test_facade_with_missing_or_python_owner_is_not_intrinsic_support(
+    tmp_path: Path, owner_source: str | None
 ) -> None:
     facade = _write_module(
         tmp_path, "_facade.py", "from owner import WeakSet\n__all__ = ['WeakSet']\n"
@@ -505,16 +543,14 @@ def test_facade_with_missing_or_python_owner_still_fails_cli_enforcement(
     graph = {"_facade": facade}
     if owner_source is not None:
         graph["owner"] = _write_module(tmp_path, "owner.py", owner_source)
-    assert (
-        cli_module_stdlib_policy._enforce_intrinsic_stdlib(
-            graph,
-            tmp_path,
-            json_output=False,
-            target_python=_DEFAULT_TARGET_PYTHON_VERSION,
-        )
-        == 2
+    classification = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
+        graph, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
-    assert "_facade" in capsys.readouterr().err
+    assert (
+        classification.statuses["_facade"]
+        == stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
+    )
+    assert classification.facades_payload()[0]["reason"] is None
 
 
 @pytest.mark.parametrize(
@@ -538,7 +574,7 @@ def test_intrinsic_status_never_consumes_unsealed_relative_candidates(tmp_path, 
     assert evidence.unresolved_sites
     assert (
         classification.statuses["pkg.wrapper"]
-        == stdlib_intrinsic_policy.STATUS_PYTHON_ONLY
+        == stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
     )
 
 
@@ -564,7 +600,7 @@ def test_relative_facade_requires_metadata_proof_for_every_owner(tmp_path):
     assert evidence.facade.bindings[1].owner_module is None
     assert (
         classification.statuses["pkg.facade"]
-        == stdlib_intrinsic_policy.STATUS_PYTHON_ONLY
+        == stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
     )
 
 
@@ -605,11 +641,11 @@ def test_python_stream_protocol_does_not_manufacture_an_intrinsic_provider(tmp_p
     )
     assert (
         classification.statuses["pkg.reporting"]
-        == stdlib_intrinsic_policy.STATUS_PYTHON_ONLY
+        == stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
     )
 
 
-@pytest.mark.parametrize("provider", ["real", "missing", "python-only"])
+@pytest.mark.parametrize("provider", ["real", "missing", "python-compiled"])
 def test_real_tk_widgets_require_their_semantic_callable_provider(tmp_path, provider):
     root = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
     graph = {
@@ -620,7 +656,7 @@ def test_real_tk_widgets_require_their_semantic_callable_provider(tmp_path, prov
     }
     if provider == "real":
         graph["tkinter._support"] = root / "tkinter" / "_support.py"
-    elif provider == "python-only":
+    elif provider == "python-compiled":
         graph["tkinter._support"] = _write_module(
             tmp_path, "_support.py", "def _require_tk_callable(name): return None\n"
         )
@@ -635,7 +671,7 @@ def test_real_tk_widgets_require_their_semantic_callable_provider(tmp_path, prov
     assert classification.statuses["tkinter.widgets"] == (
         stdlib_intrinsic_policy.STATUS_INTRINSIC
         if provider == "real"
-        else stdlib_intrinsic_policy.STATUS_PYTHON_ONLY
+        else stdlib_intrinsic_policy.STATUS_PYTHON_COMPILED
     )
 
 

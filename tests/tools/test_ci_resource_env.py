@@ -347,24 +347,20 @@ def test_github_env_sizes_pytest_auto_workers_from_the_plan(
 
 def test_darwin_breakdown_names_every_page_class_and_the_counted_ones() -> None:
     module = _load_ci_resource_env()
-    text = "\n".join(
-        [
-            "Mach Virtual Memory Statistics: (page size of 16384 bytes)",
-            "Pages free:                               65536.",
-            "Pages active:                            131072.",
-            "Pages inactive:                           65536.",
-            "Pages speculative:                        32768.",
-            "Pages wired down:                         16384.",
-            "Pages purgeable:                           8192.",
-            "File-backed pages:                       98304.",
-            "Anonymous pages:                         131072.",
-            "Pages occupied by compressor:              4096.",
-        ]
-    )
+    pages = {
+        "Pages free": 65536,
+        "Pages active": 131072,
+        "Pages inactive": 65536,
+        "Pages speculative": 32768,
+        "Pages wired down": 16384,
+        "Pages purgeable": 8192,
+        "File-backed pages": 98304,
+        "Anonymous pages": 131072,
+        "Pages occupied by compressor": 4096,
+    }
 
-    assert module.darwin_memory_breakdown(text) == (
+    assert module.darwin_memory_breakdown(16384, pages) == (
         "macOS memory pages (GiB): free=1.00 inactive=1.00 speculative=0.50 "
         "purgeable=0.12 active=2.00 wired=0.25 file-backed=1.50 anonymous=2.00 "
         "compressor=0.06; available counts free+inactive+speculative+purgeable"
     )
-    assert module.darwin_memory_breakdown("no page size here") is None

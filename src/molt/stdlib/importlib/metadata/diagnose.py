@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 import sys
 
 from . import Distribution
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 def inspect(path: str) -> None:
@@ -27,5 +24,3 @@ def run() -> None:
 
 if __name__ == "__main__":
     run()
-
-globals().pop("_require_intrinsic", None)

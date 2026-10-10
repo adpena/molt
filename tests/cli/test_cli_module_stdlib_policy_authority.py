@@ -11,49 +11,35 @@ from molt.cli import module_stdlib_policy
 _MODULE_STDLIB_POLICY_NAMES = (
     "_CORE_STDLIB_MODULES_FULL",
     "_CORE_STDLIB_MODULES_MICRO",
-    "_INTRINSIC_CALL_NAMES",
-    "_STDLIB_POLICY_GATE_STATUS",
-    "_STDLIB_PROBE_INTRINSIC",
     "_build_stdlib_like_module_flags",
-    "_classify_stdlib_module_statuses",
     "_core_stdlib_module_names_for_profile",
-    "_enforce_intrinsic_stdlib",
     "_ensure_core_stdlib_modules",
-    "_is_fail_closed_import_policy_gate",
     "_looks_like_stdlib_module_name",
     "_stdlib_allowlist",
     "_stdlib_allowlist_cached",
-    "_stdlib_module_static_imports",
-    "_stdlib_module_intrinsic_status",
 )
 
 _MODULE_STDLIB_POLICY_DEFINITIONS = (
     "_CORE_STDLIB_MODULES_FULL = (",
     "_CORE_STDLIB_MODULES_MICRO = (",
-    "_INTRINSIC_CALL_NAMES = {",
-    "_STDLIB_POLICY_GATE_STATUS =",
-    "_STDLIB_PROBE_INTRINSIC =",
     "def _build_stdlib_like_module_flags(",
     "def _core_stdlib_module_names_for_profile(",
-    "def _enforce_intrinsic_stdlib(",
     "def _ensure_core_stdlib_modules(",
-    "def _is_fail_closed_import_policy_gate(",
     "def _looks_like_stdlib_module_name(",
     "def _stdlib_allowlist(",
     "def _stdlib_allowlist_cached(",
-    "def _stdlib_module_static_imports(",
-    "def _stdlib_module_intrinsic_status(",
 )
 
 _SHARED_STDLIB_INTRINSIC_POLICY_DEFINITIONS = (
     "INTRINSIC_CALL_NAMES = frozenset(",
     "STATUS_INTRINSIC_SUPPORT =",
-    "STDLIB_PROBE_INTRINSIC =",
+    "STATUS_PYTHON_COMPILED =",
+    "STATUS_STUB =",
     "def classify_stdlib_module_statuses(",
     "def intrinsic_names_from_source(",
     "def is_fail_closed_import_policy_gate(",
     "def module_required_intrinsic_names(",
-    "def stdlib_module_intrinsic_status(",
+    "def stdlib_module_intrinsic_facts(",
     "def stdlib_module_static_imports(",
     "def stdlib_module_import_evidence(",
 )
@@ -62,6 +48,9 @@ _LEGACY_LOCAL_STDLIB_INTRINSIC_POLICY_DEFINITIONS = (
     "\n_INTRINSIC_CALL_NAMES = {",
     '_STDLIB_POLICY_GATE_STATUS = "policy-gate"',
     '_STDLIB_PROBE_INTRINSIC = "molt_stdlib_probe"',
+    # Builds admit compiled pure-Python stdlib modules (spec 0016), so the
+    # build-time python-only rejection must not return.
+    "def _enforce_intrinsic_stdlib(",
     "def _enforce_profile_feature_availability(",
     "def _is_fail_closed_import_policy_gate(",
     "def _module_relative_import_base(",

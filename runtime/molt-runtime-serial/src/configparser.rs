@@ -999,30 +999,6 @@ pub extern "C" fn molt_configparser_items(handle_bits: u64, section_bits: u64) -
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_configparser_write(handle_bits: u64, filename_bits: u64) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let Some(id) = to_i64(obj_from_bits(handle_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "invalid configparser handle");
-        };
-        let Some(filename) = string_obj_to_owned(obj_from_bits(filename_bits)) else {
-            return raise_exception::<u64>(_py, "TypeError", "filename must be str");
-        };
-        let content = config_registry()
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|state| state.write());
-        let Some(content) = content else {
-            return raise_exception::<u64>(_py, "ValueError", "configparser handle not found");
-        };
-        if let Err(e) = std::fs::write(&filename, content.as_bytes()) {
-            return raise_exception::<u64>(_py, "OSError", &e.to_string());
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_configparser_drop(handle_bits: u64) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
         if let Some(id) = to_i64(obj_from_bits(handle_bits)) {

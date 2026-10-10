@@ -12,7 +12,14 @@ import pytest
 
 from molt.cli import wasm_toolchain
 from molt.cli.wasm_host import resolve_molt_wasm_host_binary
-from molt.dx import development_artifact_env, generated_session_id
+from molt.dx import (
+    ARTIFACT_ROOT_ENV,
+    artifact_root,
+    configured_artifact_root,
+    development_artifact_env,
+    generated_session_id,
+    scratch_root,
+)
 from molt.node_runtime import NodeRuntimeError, resolve_node_runtime
 from molt.wasm_artifact import wasm_runtime_manifest_path
 from tests import process_guard_common
@@ -28,19 +35,15 @@ def _wasm_test_lane() -> str:
     return "local"
 
 
-def _artifact_root(root: Path) -> Path:
-    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return root
-
-
 def _linked_test_artifact_root(root: Path, out_dir: Path) -> Path:
-    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    # Default linked-wasm test runs should isolate runtime/cache state per
-    # test case instead of sharing the repo-level wasm artifact root.
+    configured = configured_artifact_root(os.environ, relative_to=root)
+    if configured is not None:
+        return configured
+    selected = artifact_root(root)
+    if not _same_location(selected, root):
+        return selected
+    # A checkout that is its own artifact root keeps linked-WASM runtime and
+    # cache state beside the test outputs instead of the checkout's wasm root.
     return out_dir.parent
 
 
@@ -55,13 +58,13 @@ def _same_location(lhs: Path, rhs: Path) -> bool:
 
 
 def _select_out_dir(default: Path, root: Path) -> Path:
-    artifact_root = _artifact_root(root)
+    selected = artifact_root(root)
     use_external = os.environ.get("MOLT_WASM_TEST_USE_EXTERNAL", "").strip().lower()
     allow_external = use_external not in {"0", "false", "no", "off"}
-    if allow_external and not _same_location(artifact_root, root):
-        if default.is_relative_to(artifact_root):
+    if allow_external and not _same_location(selected, root):
+        if default.is_relative_to(selected):
             return default
-        base = artifact_root / "tmp"
+        base = scratch_root(root)
         try:
             base.mkdir(parents=True, exist_ok=True)
             return Path(tempfile.mkdtemp(prefix="molt_wasm_", dir=base))
@@ -207,27 +210,24 @@ def build_wasm_linked(
     extra_args: list[str] | None = None,
 ) -> Path:
     out_dir = _select_out_dir(out_dir, root)
-    artifact_root = _linked_test_artifact_root(root, out_dir)
-    use_external = os.environ.get("MOLT_WASM_TEST_USE_EXTERNAL", "").strip().lower()
-    allow_external = use_external not in {"0", "false", "no", "off"}
+    test_artifact_root = _linked_test_artifact_root(root, out_dir)
     env = wasm_test_build_env(
         root,
         linked=True,
         session_id=f"test-wasm-{_wasm_test_lane()}-{src.stem}-{out_dir.name}",
     )
-    env["CARGO_TARGET_DIR"] = str(_wasm_test_target_dir(root, out_dir, artifact_root))
+    env["CARGO_TARGET_DIR"] = str(
+        _wasm_test_target_dir(root, out_dir, test_artifact_root)
+    )
     env.setdefault("MOLT_MIDEND_MAX_ROUNDS", "2")
     env.setdefault("MOLT_CSE_MAX_ITERS", "6")
-    if allow_external and artifact_root != root:
-        tmp_root = artifact_root / "tmp"
-    else:
-        tmp_root = artifact_root / "tmp"
+    env[ARTIFACT_ROOT_ENV] = str(test_artifact_root)
+    tmp_root = scratch_root(root, env)
     tmp_root.mkdir(parents=True, exist_ok=True)
     env["TMPDIR"] = str(tmp_root)
-    env["MOLT_HOME"] = str(artifact_root)
-    env["MOLT_CACHE"] = str(artifact_root / ".molt_cache")
-    env["MOLT_WASM_RUNTIME_DIR"] = str(artifact_root / "wasm")
-    env["MOLT_EXT_ROOT"] = str(artifact_root)
+    env["MOLT_HOME"] = str(test_artifact_root)
+    env["MOLT_CACHE"] = str(test_artifact_root / ".molt_cache")
+    env["MOLT_WASM_RUNTIME_DIR"] = str(test_artifact_root / "wasm")
     args = [
         sys.executable,
         "-m",

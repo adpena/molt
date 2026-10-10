@@ -11,7 +11,6 @@ import warnings as _warnings
 # binding alone does not make an imported regex module feature-free. The shared
 # required_features authority accounts for these references and registry roots.
 # This module-body probe is core/ungated and carries no regex link dependency.
-_require_intrinsic("molt_stdlib_probe")
 
 __all__ = [
     "NOFLAG",

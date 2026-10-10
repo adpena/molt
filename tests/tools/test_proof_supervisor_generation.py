@@ -18,6 +18,7 @@ from molt.toolchain_identity import (
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
+from tests.executable_test_support import custody_spelling
 from tools.proof_queue_pkg import (
     cargo_output_layout,
     command_identity,
@@ -495,7 +496,8 @@ def test_build_inputs_bind_dispatch_and_probes_to_selected_cargo(tmp_path, monke
     )
     inputs, identities = generation._build_inputs(environment, profile="debug")
     assert inputs["command"][0] == str(cargo)
-    assert inputs["toolchains"]["cargo"]["path"] == str(cargo)
+    # Toolchain identity records the custody spelling; argv keeps the selection.
+    assert inputs["toolchains"]["cargo"]["path"] == custody_spelling(cargo)
     assert version_commands == [
         [str(cargo), "--version"],
         [str(rustc), "--version", "--verbose"],

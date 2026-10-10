@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-
 
 class MultibyteIncrementalEncoder:
     codec = None
@@ -68,7 +64,3 @@ class MultibyteStreamWriter:
             return self.stream.write(data)
         out, _ = self.codec.encode(data, self.errors)
         return self.stream.write(out)
-
-
-del _MOLT_CAPABILITIES_HAS
-globals().pop("_require_intrinsic", None)

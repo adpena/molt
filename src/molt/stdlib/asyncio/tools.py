@@ -8,9 +8,6 @@ On Python < 3.14 this module has no public API.
 
 import sys as _sys
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 # TODO(stdlib-compat, owner:stdlib, milestone:SL3, priority:P1, status:partial): asyncio.tools re-exports graph introspection functions from asyncio; full parity pending deeper runtime integration.
 
@@ -27,6 +24,3 @@ else:
         raise AttributeError(
             "module 'asyncio.tools' has no attribute %r (requires Python 3.14+)" % attr
         )
-
-
-globals().pop("_require_intrinsic", None)

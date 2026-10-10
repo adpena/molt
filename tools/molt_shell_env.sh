@@ -115,6 +115,19 @@ molt_init_shell_context() {
   export MOLT_SHELL_ROOT MOLT_PYTHON MOLT_HOST_ROOT
 }
 
+# Print the host path of one purpose's run scratch (molt.dx.scratch_dir):
+# never inside the checkout, and on the selected scratch storage.
+molt_scratch_dir() {
+  local root purpose python host_root
+  root="$1"
+  purpose="$2"
+  python="${MOLT_PYTHON:-$(molt_select_python "$root")}"
+  host_root="$(molt_host_path_for_python "$root" "$python")"
+  PYTHONPATH="$host_root/src${PYTHONPATH:+:$PYTHONPATH}" \
+    "$python" -c 'import sys; from pathlib import Path; from molt.dx import scratch_dir; print(scratch_dir(Path(sys.argv[1]), sys.argv[2]))' \
+    "$host_root" "$purpose"
+}
+
 molt_run_context_env() {
   local root python host_root
   root="$1"

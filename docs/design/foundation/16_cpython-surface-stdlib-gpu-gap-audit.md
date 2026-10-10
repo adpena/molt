@@ -135,7 +135,7 @@
 - Basic types: int, float, str, bytes, bytearray, list, dict, set, frozenset, tuple, range, slice
 - Type constructors: bool, complex (pending), type, object
 - Exceptions: all 3.12+ exception hierarchy
-- Descriptors: classmethod, staticmethod, property (intrinsic-backed bootstrap via molt_bootstrap_descriptor_types)
+- Descriptors: classmethod, staticmethod, property (intrinsic-backed bootstrap via molt_bootstrap_descriptor_types, deleted unread under HF-110 on 2026-10-09; the constructors are `molt_classmethod_new`, `molt_staticmethod_new` and `molt_property_new`)
 - Iterator/generator protocol: iter, next, reversed, enumerate, zip, map, filter (pending full parity)
 - Reflection: len, isinstance, issubclass, callable, hasattr, getattr, setattr, dir, vars, id, hash (partial)
 - Formatting: format, repr (missing: complex repr; format spec edge cases)
@@ -195,7 +195,7 @@
 **Usage density:** 2,453 `_require_intrinsic` / `_require_callable_intrinsic` calls across stdlib (grep count)
 
 **Native Rust intrinsics (high leverage):**
-- **Object model:** molt_globals_builtin, molt_locals_builtin, molt_module_import, molt_bootstrap_descriptor_types
+- **Object model:** molt_globals_builtin, molt_locals_builtin, molt_module_import, molt_bootstrap_descriptor_types (deleted unread under HF-110, 2026-10-09)
 - **Path/FS:** molt_os_listdir, molt_os_walk (eager list), molt_os_stat, molt_os_lstat, molt_os_fstat, molt_os_rename, molt_os_replace, molt_os_getcwd, molt_path_mkdir, molt_path_makedirs
 - **Math/numerics:** molt_math_sumprod, math floor/ceil/trunc intrinsics
 - **Pickle:** molt_pickle_dumps_core, molt_pickle_loads_core (protocols 0-5, memo, reducers, state_setter, PickleBuffer NEXT_BUFFER/READONLY_BUFFER)

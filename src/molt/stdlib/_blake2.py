@@ -5,9 +5,6 @@ from __future__ import annotations
 import hashlib as _hashlib
 from typing import Any
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_require_intrinsic("molt_capabilities_has")
 
 _Hash = _hashlib._Hash
 
@@ -96,6 +93,3 @@ class blake2s(_Hash):
         super().__init__(
             "blake2s", data, _hashlib._validate_options("blake2s", options, "blake2s")
         )
-
-
-globals().pop("_require_intrinsic", None)

@@ -6,7 +6,6 @@ import socket as _socket_mod
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_SOCKET_CONSTANTS = _require_intrinsic("molt_socket_constants")
 _MOLT_OS_CLOSE = _require_intrinsic("molt_os_close")
 _MOLT_OS_DUP = _require_intrinsic("molt_os_dup")
 _MOLT_SOCKET_GETPROTOBYNAME = _require_intrinsic("molt_socket_getprotobyname")
@@ -195,7 +194,6 @@ if not _MOLT_HAS_CMSG:
 
 
 for _name in (
-    "_MOLT_SOCKET_CONSTANTS",
     "_MOLT_OS_CLOSE",
     "_MOLT_OS_DUP",
     "_MOLT_SOCKET_GETPROTOBYNAME",

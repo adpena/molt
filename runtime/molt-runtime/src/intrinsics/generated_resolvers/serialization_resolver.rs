@@ -13,10 +13,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_cbor_parse_scalar_obj",
             crate::molt_cbor_parse_scalar_obj as *const (),
         )),
-        "molt_pickle_encode_protocol0" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_pickle_encode_protocol0",
-            crate::molt_pickle_encode_protocol0 as *const (),
-        )),
         "molt_pickle_dumps_protocol01" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_pickle_dumps_protocol01",
             crate::molt_pickle_dumps_protocol01 as *const (),

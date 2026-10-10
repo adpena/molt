@@ -224,7 +224,6 @@ pub(super) fn urllib_response_from_parts(
         reason,
         headers,
         header_joined,
-        headers_dict_cache: None,
         headers_list_cache: None,
     }
 }
@@ -236,20 +235,6 @@ pub(super) fn urllib_response_joined_header<'a>(
     resp.header_joined
         .get(&http_message_header_key(name))
         .map(String::as_str)
-}
-
-pub(super) fn urllib_response_headers_dict_bits(
-    _py: &molt_runtime_core::CoreGilToken,
-    resp: &mut MoltUrllibResponse,
-) -> Result<u64, u64> {
-    if let Some(bits) = resp.headers_dict_cache {
-        inc_ref_bits(_py, bits);
-        return Ok(bits);
-    }
-    let bits = urllib_http_headers_to_dict(_py, &resp.headers)?;
-    resp.headers_dict_cache = Some(bits);
-    inc_ref_bits(_py, bits);
-    Ok(bits)
 }
 
 pub(super) fn urllib_response_headers_list_bits(
@@ -314,13 +299,9 @@ pub(super) fn urllib_response_with<T>(
 pub(super) fn urllib_response_drop(_py: &molt_runtime_core::CoreGilToken, handle: i64) {
     if let Ok(mut guard) = urllib_response_registry().lock()
         && let Some(mut response) = guard.remove(&(handle as u64))
+        && let Some(bits) = response.headers_list_cache.take()
     {
-        if let Some(bits) = response.headers_dict_cache.take() {
-            dec_ref_bits(_py, bits);
-        }
-        if let Some(bits) = response.headers_list_cache.take() {
-            dec_ref_bits(_py, bits);
-        }
+        dec_ref_bits(_py, bits);
     }
 }
 

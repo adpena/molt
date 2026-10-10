@@ -5,7 +5,7 @@ publish = false
 edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0"
-description = "Regex intrinsics for the Molt runtime (lookahead, lookbehind, verbose strip, fullmatch, etc.)"
+description = "Regex intrinsics for the Molt runtime (compile, execute, match groups, sub, split, verbose strip)."
 
 [dependencies]
 # Core runtime types used by the regex implementations

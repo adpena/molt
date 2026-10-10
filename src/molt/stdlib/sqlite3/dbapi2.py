@@ -15,18 +15,6 @@ from __future__ import annotations
 import datetime
 import time
 
-# Keep the module inside the intrinsic-backed stdlib gate.  All the
-# real intrinsics are required by `_sqlite3`; this probe keeps the
-# stdlib enforcement check happy.
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
-_MOLT_IMPORT_SMOKE_RUNTIME_READY()
-del _MOLT_IMPORT_SMOKE_RUNTIME_READY
-
-_require_intrinsic("molt_stdlib_probe")
-del _require_intrinsic
-
 from _sqlite3 import *  # noqa: E402,F401,F403
 from _sqlite3 import (
     _deprecated_version,

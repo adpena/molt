@@ -78,6 +78,11 @@ percentages. Required conformance and release matrix gates still apply.
   and blanket skips that hide supported cells. Simulated coordinates test policy
   selection, not execution on that OS/architecture/interpreter. Unexecuted cells
   remain unverified; explicit exclusions need a contract reason.
+  A fake executable takes the host's executable name (`native_executable_name`
+  in `tests/executable_test_support.py`): Windows never runs an extensionless
+  file. A test that asserts a proof-custody path states the expected spelling
+  with `custody_spelling` from the same module, not with `str(path)`,
+  `os.path.abspath` or the product's own lookup.
 - **Never write into the checkout.** A test puts files, generator outputs and
   scratch state in `tmp_path` or a fixture checkout; a gate that scans the
   repository takes `--root` so its teeth test can plant a violation there. The

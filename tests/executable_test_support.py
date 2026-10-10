@@ -21,6 +21,22 @@ def native_executable_name(stem: str) -> str:
     return f"{stem}.exe" if os.name == "nt" else stem
 
 
+def custody_spelling(path: Path) -> str:
+    """State proof custody's canonical spelling of an entry the test created.
+
+    Windows custody spells the drive or UNC anchor in lowercase and keeps every
+    other component as its directory entry spells it. A test creates each of
+    those components itself, so only the anchor changes. POSIX custody is the
+    absolute lexical path. Assert custody records against this statement, not
+    against the product's own lookup.
+    """
+    absolute = os.fspath(path.absolute())
+    if os.name != "nt":
+        return absolute
+    anchor, rest = os.path.splitdrive(absolute)
+    return anchor.lower() + rest
+
+
 def build_native_executable(path: Path, rust_source: str) -> Path:
     """Compile a tiny native executable from Rust source with the pinned rustc.
 

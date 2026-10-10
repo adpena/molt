@@ -13,7 +13,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "src" / "molt" / "stdlib" / "importlib" / "machinery.py"
 
 _MACHINERY_INTRINSICS = [
-    "molt_stdlib_probe",
     "molt_importlib_read_file",
     "molt_importlib_pathfinder_find_spec",
     "molt_importlib_filefinder_find_spec",

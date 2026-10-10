@@ -5,11 +5,6 @@ from __future__ import annotations
 from collections import deque
 import re
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-
-_require_intrinsic("molt_capabilities_has")
-_MOLT_EMAIL_MESSAGE_FROM_BYTES = _require_intrinsic("molt_email_message_from_bytes")
 
 NLCRE = re.compile(r"\r\n|\r|\n")
 NLCRE_bol = re.compile(r"^(?:\r\n|\r|\n)")
@@ -62,6 +57,3 @@ class BytesFeedParser(FeedParser):
         if isinstance(data, (bytes, bytearray)):
             data = data.decode("utf-8", "replace")
         super().feed(data)
-
-
-globals().pop("_require_intrinsic", None)

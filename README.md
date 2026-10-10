@@ -29,7 +29,8 @@ defines test selection, source-change checks, and the exact cross-target pass la
 
 - **Standalone output**: compiled binaries do not rely on a host Python installation.
 - **Rust-first runtime**: hot semantics and stdlib behavior are pushed down into
-  runtime primitives and intrinsics instead of Python fallbacks.
+  runtime primitives and intrinsics; the rest of the stdlib compiles from its
+  Python source like your code, never through a host interpreter.
 - **Evidence-backed compatibility**: differential tests compare supported
   behavior with CPython; support is scoped to the tested configuration.
 - **Co-equal targets**: native and WASM correctness, determinism, performance,

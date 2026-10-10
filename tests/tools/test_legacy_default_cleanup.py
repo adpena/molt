@@ -37,45 +37,39 @@ def test_browser_html_defaults_point_to_dist_outputs() -> None:
     )
 
 
-def test_test_report_defaults_use_repo_local_reports_root(
+def test_test_report_reads_reports_under_the_artifact_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    from molt import dx
+
     mod = _load_tool_module(REPO_ROOT / "tools" / "test_report.py")
 
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
-    assert mod._reports_root() == REPO_ROOT / "tmp" / "molt_testing" / "test_reports"
+    assert mod._reports_root() == dx.artifact_root(REPO_ROOT) / "test_reports"
 
     ext_root = tmp_path / "external"
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
-    assert mod._reports_root() == ext_root / "test_reports"
+    assert mod._reports_root() == ext_root.resolve() / "test_reports"
 
     override = tmp_path / "custom" / "reports"
     assert mod._reports_root(str(override)) == override
 
 
-def test_mutation_defaults_use_repo_local_temp_and_target_roots(
+def test_mutation_defaults_use_the_artifact_root_and_its_scratch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     mod = _load_tool_module(REPO_ROOT / "tools" / "mutation_test.py")
 
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
-    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
-    monkeypatch.setenv("MOLT_SESSION_ID", "mutation-proof")
-
-    assert mod._temp_root() == REPO_ROOT / "tmp" / "mutation_tmp"
-    assert mod._default_cargo_target_dir() == (
-        REPO_ROOT / "target" / "sessions" / "mutation-proof"
-    )
-
     ext_root = tmp_path / "external"
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
     monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.setenv("MOLT_SESSION_ID", "mutation-proof")
 
-    assert mod._temp_root() == ext_root / "mutation_tmp"
+    assert mod._temp_root() == ext_root.resolve() / "tmp" / "mutation_tmp"
     assert mod._default_cargo_target_dir() == (
-        ext_root / "target" / "sessions" / "mutation-proof"
+        ext_root.resolve() / "target" / "sessions" / "mutation-proof"
     )
 
 

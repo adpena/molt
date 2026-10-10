@@ -14,7 +14,7 @@ Index mode executes the captured staged generator with its staged manifest, poli
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 336 |
+| Hashed executable authority inputs | 1 | 338 |
 | Local path rules | 35 | 43 |
 | Unique local commands | 73 | 98 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -111,7 +111,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `zsh` | `executable` | — | `^zsh [0-9]+\.[0-9]+` | `.` | `Ubuntu hosted shell package` | 1 |
 | `source-extension` | `target-derived` | `source-extension` | `^molt-source-extension-toolchain-v4$` | — | — | — |
 | `uv` | `executable` | — | `^uv 0\.12\.23\b` | `.` | `0.12.23` | 1 |
-| `node` | `executable` | — | `^v26\.10\.0$` | `.` | `26.10.0` | 3 |
+| `node` | `executable` | — | `^v26\.11\.1$` | `.` | `26.11.1` | 3 |
 | `rustc` | `executable` | — | `^rustc 1\.99\.0\b` | `.` | `1.99.0` | 3 |
 | `lune` | `executable` | — | `^lune 0\.10\.5$` | `.` | `0.10.5` | 2 |
 | `cargo` | `executable` | — | `^cargo 1\.99\.0\b` | `.` | `1.99.0` | 3 |
@@ -119,7 +119,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `rustfmt` | `executable` | — | `^rustfmt 1\.10\.0-stable\b` | `.` | `1.10.0` | 3 |
 | `clang` | `executable` | — | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `hosted-clang-cl` | `executable` | — | `^clang version [0-9]+\.[0-9]+\.[0-9]+\b` | `.` | `windows-2022 image C11 compiler` | 1 |
-| `ninja` | `executable` | — | `^1\.13\.0(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$` | `.` | `1.13.0` | 2 |
+| `ninja` | `executable` | — | `^1\.13\.2(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$` | `.` | `1.13.2` | 2 |
 | `wasi-clang` | `executable` | — | `clang version 23\.1\.0\b` | `.` | `23.1.0` | 1 |
 | `llvm-config` | `executable` | — | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
 | `mlir-opt` | `executable` | — | `version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
@@ -326,7 +326,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `table-drift` | 12 | 2 | no |
 | `findings-registry` | 4 | 1 | no |
 | `memory-graph` | 5 | 2 | no |
-| `ci-wiring` | 56 | 2 | no |
+| `ci-wiring` | 57 | 2 | no |
 | `apparatus-hooks` | 11 | 3 | no |
 | `apparatus-learning-protection` | 12 | 3 | no |
 | `apparatus-a11` | 10 | 5 | no |

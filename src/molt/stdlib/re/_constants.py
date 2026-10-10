@@ -6,12 +6,10 @@ Unsupported internal details are intentionally not emulated.
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 import re as _re
 
 # Avoid probe-only classification: this shim must still be intrinsic-backed.
-_require_intrinsic("molt_re_literal_advance")
 
 ASCII = _re.ASCII
 DOTALL = _re.DOTALL
@@ -45,5 +43,3 @@ __all__ = [
     "U",
     "X",
 ]
-
-globals().pop("_require_intrinsic", None)

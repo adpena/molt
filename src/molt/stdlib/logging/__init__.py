@@ -26,7 +26,6 @@ _LOGGING_PERCENT_STYLE_FORMAT = cast(
 # LogRecord intrinsics
 _RECORD_NEW = _require_intrinsic("molt_logging_record_new")
 _RECORD_GET_MESSAGE = _require_intrinsic("molt_logging_record_get_message")
-_RECORD_GET_ATTR = _require_intrinsic("molt_logging_record_get_attr")
 _RECORD_DROP = _require_intrinsic("molt_logging_record_drop")
 
 # Formatter intrinsics
@@ -53,7 +52,6 @@ _LOGGER_NEW = _require_intrinsic("molt_logging_logger_new")
 _LOGGER_SET_LEVEL = _require_intrinsic("molt_logging_logger_set_level")
 _LOGGER_ADD_HANDLER = _require_intrinsic("molt_logging_logger_add_handler")
 _LOGGER_REMOVE_HANDLER = _require_intrinsic("molt_logging_logger_remove_handler")
-_LOGGER_LOG = _require_intrinsic("molt_logging_logger_log")
 _LOGGER_IS_ENABLED_FOR = _require_intrinsic("molt_logging_logger_is_enabled_for")
 _LOGGER_GET_EFFECTIVE_LEVEL = _require_intrinsic(
     "molt_logging_logger_get_effective_level"
@@ -61,8 +59,6 @@ _LOGGER_GET_EFFECTIVE_LEVEL = _require_intrinsic(
 _LOGGER_DROP = _require_intrinsic("molt_logging_logger_drop")
 
 # Manager / root intrinsics
-_MANAGER_GET_LOGGER = _require_intrinsic("molt_logging_manager_get_logger")
-_ROOT_LOGGER = _require_intrinsic("molt_logging_root_logger")
 
 # Config / shutdown intrinsics
 _BASIC_CONFIG = _require_intrinsic("molt_logging_basic_config")
@@ -80,7 +76,6 @@ _FILTER_CHECK = _require_intrinsic("molt_logging_filter_check")
 _FILE_HANDLER_EMIT = _require_intrinsic("molt_logging_file_handler_emit")
 
 # Logging runtime readiness check
-_LOGGING_RUNTIME_READY = _require_intrinsic("molt_logging_runtime_ready")
 
 # Capability gate
 _CAP_REQUIRE = _require_intrinsic("molt_capabilities_require")

@@ -38,16 +38,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
-
-
-def _artifact_root() -> Path:
-    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if configured:
-        root = Path(configured).expanduser().resolve()
-        if root.is_dir():
-            return root
-        raise SystemExit(f"MOLT_EXT_ROOT is not a directory: {root}")
-    return _repo_root()
+from molt.dx import scratch_root  # noqa: E402
 
 
 def _tmp_root() -> Path:
@@ -57,7 +48,7 @@ def _tmp_root() -> Path:
             path = Path(raw).expanduser().resolve()
             path.mkdir(parents=True, exist_ok=True)
             return path
-    root = _artifact_root() / "tmp"
+    root = scratch_root(_repo_root())
     root.mkdir(parents=True, exist_ok=True)
     return root
 

@@ -28,20 +28,6 @@ fn flag_bits_from_obj(obj_bits: u64) -> Option<i64> {
 
 // ─── Public intrinsics: Flag / IntFlag ───────────────────────────────────────
 
-/// Create a Flag member: returns the integer bitmask value as a NaN-boxed int.
-/// `name_bits` is the str name (ignored at this layer; the Python wrapper uses
-/// it for repr).  `value_bits` must be an int bitmask.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_flag_new(name_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let _ = name_bits; // name used only by Python wrapper for member setup
-        let Some(val) = flag_bits_from_obj(value_bits) else {
-            return raise_exception::<_>(_py, "TypeError", "Flag value must be an integer");
-        };
-        MoltObject::from_int(val).bits()
-    })
-}
-
 /// Flag.__or__: a | b → combined bitmask.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_enum_flag_or(a_bits: u64, b_bits: u64) -> u64 {
@@ -166,116 +152,6 @@ pub extern "C" fn molt_enum_auto_value(count_bits: u64) -> u64 {
 // ─────────────────────────────────────────────────────────────────────────────
 // @unique / duplicate-value checking
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Check that a list of (name_bits, value_bits) member pairs has no duplicate
-/// values.  Returns True if all values are unique, False otherwise.
-///
-/// `members_bits` must be a list of 2-tuples [(name, value), ...].
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_unique_check(members_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(members_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "members must be a list");
-        };
-        let type_id = unsafe { object_type_id(ptr) };
-        if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-            return raise_exception::<_>(_py, "TypeError", "members must be a list");
-        }
-        let Some(elems) = (unsafe {
-            crate::object::seq_access::snapshot(_py, ptr, "enum member snapshot allocation failed")
-        }) else {
-            return MoltObject::none().bits();
-        };
-        let mut seen_values: std::collections::HashSet<u64> = std::collections::HashSet::new();
-        for &elem_bits in elems.iter() {
-            let elem_obj = obj_from_bits(elem_bits);
-            let Some(eptr) = elem_obj.as_ptr() else {
-                continue;
-            };
-            let etype = unsafe { object_type_id(eptr) };
-            if etype != TYPE_ID_TUPLE && etype != TYPE_ID_LIST {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "each member must be a (name, value) tuple",
-                );
-            }
-            let pair = if etype == TYPE_ID_TUPLE {
-                unsafe { crate::object::seq_access::tuple_pair(eptr) }
-            } else {
-                unsafe {
-                    crate::object::seq_access::with_borrowed(eptr, |pair| {
-                        (pair.len() >= 2).then(|| (pair[0], pair[1]))
-                    })
-                }
-            };
-            let Some((_, val_bits)) = pair else {
-                return raise_exception::<_>(_py, "ValueError", "each member must have 2 elements");
-            };
-            if !seen_values.insert(val_bits) {
-                return MoltObject::from_bool(false).bits();
-            }
-        }
-        MoltObject::from_bool(true).bits()
-    })
-}
-
-/// Check whether `value_bits` is a valid member value in `members_bits`
-/// (a list of (name, value) 2-tuples).  Returns True if found.
-///
-/// Used by `Enum._missing_` and `@verify` to validate membership.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_enum_verify_member(members_bits: u64, value_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(members_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "members must be a list");
-        };
-        let type_id = unsafe { object_type_id(ptr) };
-        if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-            return raise_exception::<_>(_py, "TypeError", "members must be a list");
-        }
-        let Some(elems) = (unsafe {
-            crate::object::seq_access::snapshot(_py, ptr, "sequence snapshot allocation failed")
-        }) else {
-            return MoltObject::none().bits();
-        };
-        for &elem_bits in elems.iter() {
-            let elem_obj = obj_from_bits(elem_bits);
-            let Some(eptr) = elem_obj.as_ptr() else {
-                continue;
-            };
-            let etype = unsafe { object_type_id(eptr) };
-            if etype != TYPE_ID_TUPLE && etype != TYPE_ID_LIST {
-                continue;
-            }
-            let Some(member_value) = (unsafe { crate::object::seq_access::pin_item(_py, eptr, 1) })
-            else {
-                continue;
-            };
-            let member_value_bits = member_value.bits();
-            if member_value_bits == value_bits {
-                return MoltObject::from_bool(true).bits();
-            }
-            match crate::object::ops_compare::compare_object_eq_bool(
-                _py,
-                obj_from_bits(member_value_bits),
-                obj_from_bits(value_bits),
-            ) {
-                crate::object::ops_compare::CompareBoolOutcome::True => {
-                    return MoltObject::from_bool(true).bits();
-                }
-                crate::object::ops_compare::CompareBoolOutcome::Error => {
-                    return MoltObject::none().bits();
-                }
-                crate::object::ops_compare::CompareBoolOutcome::False
-                | crate::object::ops_compare::CompareBoolOutcome::NotComparable => {}
-            }
-        }
-        MoltObject::from_bool(false).bits()
-    })
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // StrEnum helper

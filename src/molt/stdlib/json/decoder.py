@@ -2,13 +2,11 @@
 
 import re
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 import json.scanner as scanner  # noqa: F401
 from _json import scanstring as c_scanstring
 from json import JSONDecodeError  # noqa: F401
 from json import JSONDecoder  # noqa: F401
 
-_MOLT_JSON_PARSE_SCALAR = _require_intrinsic("molt_json_parse_scalar_obj")
 
 BACKSLASH = {
     '"': '"',
@@ -241,6 +239,3 @@ def JSONArray(s_and_end, scan_once, _w=WHITESPACE.match, _ws=WHITESPACE_STR):
             pass
 
     return values, end
-
-
-globals().pop("_require_intrinsic", None)

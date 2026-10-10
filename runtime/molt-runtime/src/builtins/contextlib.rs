@@ -114,43 +114,6 @@ struct ExitStackHandle {
     callbacks: Vec<ExitStackCallback>,
 }
 
-struct AsyncGeneratorContextManagerHandle {
-    func_bits: u64,
-    args_bits: u64,
-    kwargs_bits: u64,
-    agen_bits: u64,
-}
-
-impl AsyncGeneratorContextManagerHandle {
-    fn new(func_bits: u64, args_bits: u64, kwargs_bits: u64) -> Self {
-        Self {
-            func_bits,
-            args_bits,
-            kwargs_bits,
-            agen_bits: MoltObject::none().bits(),
-        }
-    }
-
-    fn release_refs(&mut self, _py: &PyToken<'_>) {
-        if !obj_from_bits(self.func_bits).is_none() {
-            dec_ref_bits(_py, self.func_bits);
-        }
-        if !obj_from_bits(self.args_bits).is_none() {
-            dec_ref_bits(_py, self.args_bits);
-        }
-        if !obj_from_bits(self.kwargs_bits).is_none() {
-            dec_ref_bits(_py, self.kwargs_bits);
-        }
-        if !obj_from_bits(self.agen_bits).is_none() {
-            dec_ref_bits(_py, self.agen_bits);
-        }
-        self.func_bits = MoltObject::none().bits();
-        self.args_bits = MoltObject::none().bits();
-        self.kwargs_bits = MoltObject::none().bits();
-        self.agen_bits = MoltObject::none().bits();
-    }
-}
-
 fn ptr_live(ptr: *mut u8) -> bool {
     if ptr.is_null() {
         return false;
@@ -243,22 +206,6 @@ fn exitstack_from_bits_mut<'a>(
         ));
     }
     Ok(unsafe { &mut *(ptr as *mut ExitStackHandle) })
-}
-
-#[allow(clippy::mut_from_ref)]
-fn asyncgen_cm_from_bits_mut<'a>(
-    _py: &'a PyToken<'_>,
-    handle_bits: u64,
-) -> Result<&'a mut AsyncGeneratorContextManagerHandle, u64> {
-    let ptr = ptr_from_bits(handle_bits);
-    if !ptr_live(ptr) {
-        return Err(raise_exception::<u64>(
-            _py,
-            "TypeError",
-            "invalid async contextmanager handle",
-        ));
-    }
-    Ok(unsafe { &mut *(ptr as *mut AsyncGeneratorContextManagerHandle) })
 }
 
 fn take_pending_exception(_py: &PyToken<'_>) -> u64 {
@@ -942,86 +889,6 @@ pub extern "C" fn molt_contextlib_chdir_exit(path_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_contextlib_asyncgen_cm_new(
-    func_bits: u64,
-    args_bits: u64,
-    kwargs_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if !obj_from_bits(func_bits).is_none() {
-            inc_ref_bits(_py, func_bits);
-        }
-        if !obj_from_bits(args_bits).is_none() {
-            inc_ref_bits(_py, args_bits);
-        }
-        if !obj_from_bits(kwargs_bits).is_none() {
-            inc_ref_bits(_py, kwargs_bits);
-        }
-        let ptr = Box::into_raw(Box::new(AsyncGeneratorContextManagerHandle::new(
-            func_bits,
-            args_bits,
-            kwargs_bits,
-        ))) as *mut u8;
-        opaque_handle_bits(ptr)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextlib_asyncgen_cm_drop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let ptr = ptr_from_bits(handle_bits);
-        if !ptr_live(ptr) {
-            return MoltObject::none().bits();
-        }
-        release_ptr(ptr);
-        let mut handle = unsafe { Box::from_raw(ptr as *mut AsyncGeneratorContextManagerHandle) };
-        handle.release_refs(_py);
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextlib_asyncgen_cm_aenter(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let handle = match asyncgen_cm_from_bits_mut(_py, handle_bits) {
-            Ok(handle) => handle,
-            Err(bits) => return bits,
-        };
-        if obj_from_bits(handle.agen_bits).is_none() {
-            let agen_bits =
-                call_with_star_kwargs(_py, handle.func_bits, handle.args_bits, handle.kwargs_bits);
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            if !obj_from_bits(handle.agen_bits).is_none() {
-                dec_ref_bits(_py, handle.agen_bits);
-            }
-            handle.agen_bits = agen_bits;
-        }
-        contextlib_asyncgen_enter_impl(_py, handle.agen_bits)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextlib_asyncgen_cm_aexit(
-    handle_bits: u64,
-    exc_type_bits: u64,
-    exc_bits: u64,
-    tb_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let handle = match asyncgen_cm_from_bits_mut(_py, handle_bits) {
-            Ok(handle) => handle,
-            Err(bits) => return bits,
-        };
-        if obj_from_bits(handle.agen_bits).is_none() {
-            return MoltObject::from_bool(false).bits();
-        }
-        contextlib_asyncgen_exit_impl(_py, handle.agen_bits, exc_type_bits, exc_bits, tb_bits)
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_contextlib_generator_enter(gen_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let out = call_next_method(_py, gen_bits);
@@ -1450,28 +1317,6 @@ pub extern "C" fn molt_contextlib_exitstack_enter_context(handle_bits: u64, cm_b
             dec_ref_bits(_py, push_res);
         }
         entered_bits
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_contextlib_exitstack_pop(handle_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let handle = match exitstack_from_bits_mut(_py, handle_bits) {
-            Ok(handle) => handle,
-            Err(bits) => return bits,
-        };
-        let Some(mut callback) = handle.callbacks.pop() else {
-            return MoltObject::none().bits();
-        };
-        if callback.kind != ExitStackCallbackKind::Exit {
-            callback.release_refs(_py);
-            return raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "callback is not a synchronous __exit__",
-            );
-        }
-        callback.callback_bits
     })
 }
 

@@ -9,12 +9,7 @@ from types import ModuleType as _ModuleType
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_STDLIB_PROBE = _require_intrinsic("molt_stdlib_probe")
 _MOLT_HTTP_PARSE_HEADER_PAIRS = _require_intrinsic("molt_http_parse_header_pairs")
-_MOLT_HTTP_SERVER_READ_REQUEST = _require_intrinsic("molt_http_server_read_request")
-_MOLT_HTTP_SERVER_COMPUTE_CLOSE_CONNECTION = _require_intrinsic(
-    "molt_http_server_compute_close_connection"
-)
 _MOLT_HTTP_SERVER_HANDLE_ONE_REQUEST = _require_intrinsic(
     "molt_http_server_handle_one_request"
 )

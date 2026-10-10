@@ -7,10 +7,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_shlex_quote",
             crate::molt_shlex_quote as *const (),
         )),
-        "molt_shlex_split" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_shlex_split",
-            crate::molt_shlex_split as *const (),
-        )),
         "molt_shlex_split_ex" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_shlex_split_ex",
             crate::molt_shlex_split_ex as *const (),

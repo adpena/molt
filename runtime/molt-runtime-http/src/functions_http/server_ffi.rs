@@ -148,39 +148,6 @@ pub extern "C" fn molt_socketserver_get_request_poll(server_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_socketserver_set_response(
-    server_bits: u64,
-    request_id_bits: u64,
-    response_bits: u64,
-) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        let request_id = match socketserver_extract_request_id(_py, request_id_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let response = match socketserver_extract_bytes(_py, response_bits, "response payload") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let mut runtime = socketserver_runtime()
-            .lock()
-            .expect("socketserver runtime poisoned");
-        let Some(owner) = runtime.request_server.get(&request_id).copied() else {
-            return MoltObject::none().bits();
-        };
-        if owner != server_bits {
-            return raise_exception::<_>(_py, "RuntimeError", "request id owner mismatch");
-        }
-        let Some(pending) = runtime.pending_requests.get_mut(&request_id) else {
-            runtime.request_server.remove(&request_id);
-            return MoltObject::none().bits();
-        };
-        pending.response = Some(response);
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_socketserver_serve_forever(
     server_bits: u64,
     poll_interval_bits: u64,
@@ -651,26 +618,6 @@ pub(super) fn http_server_compute_close_connection_impl(
             Err(bits) => return Err(bits),
         };
     Ok(request_version != HTTP_SERVER_HTTP11)
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_read_request(handler_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        match http_server_read_request_impl(_py, handler_bits) {
-            Ok(state) => MoltObject::from_int(state).bits(),
-            Err(bits) => bits,
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_http_server_compute_close_connection(handler_bits: u64) -> u64 {
-    molt_runtime_core::with_core_gil!(_py, {
-        match http_server_compute_close_connection_impl(_py, handler_bits) {
-            Ok(close) => MoltObject::from_bool(close).bits(),
-            Err(bits) => bits,
-        }
-    })
 }
 
 #[unsafe(no_mangle)]

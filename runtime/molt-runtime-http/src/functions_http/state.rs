@@ -11,7 +11,6 @@ pub(super) struct MoltUrllibResponse {
     pub(super) reason: String,
     pub(super) headers: Vec<(String, String)>,
     pub(super) header_joined: HashMap<String, String>,
-    pub(super) headers_dict_cache: Option<u64>,
     pub(super) headers_list_cache: Option<u64>,
 }
 
