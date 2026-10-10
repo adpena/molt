@@ -10,7 +10,7 @@
   "max_kitchen_sink_structural_score": 979.0,
   "max_undecomposed_file_lines": 0.0,
   "native_scalar_plan_authority_violations": 0.0,
-  "process_wide_test_patches": 236.0,
+  "process_wide_test_patches": 223.0,
   "python_stub_surfaces_total": 486.0,
   "repr_name_scalar_authority_violations": 0.0,
   "rust_backend_lowering_gaps_total": 0.0,
