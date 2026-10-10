@@ -558,32 +558,6 @@ def _build_parser() -> argparse.ArgumentParser:
         pact_handler="_cmd_pact_witness_oracle",
     )
 
-    r6_parity_p = sub.add_parser(
-        "r6-target-version-parity",
-        help="run the queued R6 target-version stdlib parity shard",
-    )
-    r6_parity_p.add_argument(
-        "--python-version",
-        default="3.12",
-        help="target CPython minor to validate (default: 3.12)",
-    )
-    r6_parity_p.add_argument(
-        "--fixture",
-        action="append",
-        help=(
-            "limit the named R6 lane to one checked-in fixture; accepts full path, "
-            "basename, or stem; repeat for a shard"
-        ),
-    )
-    _add_named_lane_args(
-        r6_parity_p,
-        note_help="append submission context to the R6 parity run",
-    )
-    r6_parity_p.set_defaults(
-        func=_dispatch_pact_command,
-        pact_handler="_cmd_r6_target_version_parity",
-    )
-
     native_run_p = sub.add_parser(
         "native-molt-run",
         help="queue a native `molt run` entrypoint probe",

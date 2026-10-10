@@ -248,12 +248,12 @@ pact-witness = [
 source-build-numpy = [
     "Cython==3.2.8",
     "meson-python==0.20.0",
-    "ninja==1.13.0",
+    "ninja==1.13.2",
 ]
 source-build-scipy = [
     "Cython==3.2.8",
     "meson-python==0.20.0",
-    "ninja==1.13.0",
+    "ninja==1.13.2",
     "numpy==2.5.1",
     "pkgconf==3.0.1.post0",
     "pybind11==3.0.4",
