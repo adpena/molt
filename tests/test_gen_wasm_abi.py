@@ -1532,6 +1532,11 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "molt_awaitable_await": 1,
         "molt_coroutine_wrapper_iter": 1,
         "molt_coroutine_wrapper_next": 1,
+        "molt_asyncgen_awaitable_self": 1,
+        "molt_asyncgen_awaitable_next": 1,
+        "molt_asyncgen_awaitable_send": 2,
+        "molt_asyncgen_awaitable_throw": 2,
+        "molt_asyncgen_awaitable_close": 1,
         "molt_generator_throw_method": 2,
         **{
             f"molt_{name}": arity

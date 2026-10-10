@@ -103,6 +103,8 @@ native_method_families! {
     coroutine => super::specialized::coroutine_method_bits, super::specialized::publish_coroutine_methods;
     coroutine_wrapper => super::specialized::coroutine_wrapper_method_bits, super::specialized::publish_coroutine_wrapper_methods;
     async_generator => super::specialized::asyncgen_method_bits, super::specialized::publish_asyncgen_methods;
+    async_generator_asend => super::specialized::asyncgen_asend_method_bits, super::specialized::publish_asyncgen_asend_methods;
+    async_generator_athrow => super::specialized::asyncgen_athrow_method_bits, super::specialized::publish_asyncgen_athrow_methods;
 }
 
 fn io_class(py: &PyToken<'_>, class: u64) -> bool {

@@ -138,18 +138,44 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             let classes = builtin_classes(py);
             assert_ne!(classes.coroutine, classes.coroutine_wrapper);
-            assert!(classes.anchors().contains(&classes.coroutine_wrapper));
-            assert!(
-                !crate::builtins::classes::public_builtin_classes(py)
-                    .any(|(_, class)| class == classes.coroutine_wrapper)
+            assert_ne!(
+                classes.async_generator_asend,
+                classes.async_generator_athrow
             );
-            for explicit_object_new in [false, true] {
-                let constructed = if explicit_object_new {
-                    molt_object_new_bound(classes.coroutine_wrapper)
-                } else {
-                    unsafe { call_callable0(py, classes.coroutine_wrapper) }
-                };
-                dec_ref_bits(py, constructed);
+            // Poll adapters are internal, never constructed or subclassed.
+            for adapter in [
+                classes.coroutine_wrapper,
+                classes.async_generator_asend,
+                classes.async_generator_athrow,
+            ] {
+                assert!(classes.is_poll_adapter_class(adapter));
+                assert!(classes.anchors().contains(&adapter));
+                assert!(
+                    !crate::builtins::classes::public_builtin_classes(py)
+                        .any(|(_, class)| class == adapter)
+                );
+                for explicit_object_new in [false, true] {
+                    let constructed = if explicit_object_new {
+                        molt_object_new_bound(adapter)
+                    } else {
+                        unsafe { call_callable0(py, adapter) }
+                    };
+                    dec_ref_bits(py, constructed);
+                    assert!(exception_pending(py));
+                    let exception = molt_exception_last();
+                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        py,
+                        exception,
+                        "TypeError",
+                    ));
+                    crate::clear_exception(py);
+                    dec_ref_bits(py, exception);
+                }
+                let child_name = attr_name_bits_from_bytes(py, b"ForgedAdapter").unwrap();
+                let child = molt_class_new(child_name);
+                dec_ref_bits(py, child_name);
+                let inherited = molt_class_set_base(child, adapter);
+                dec_ref_bits(py, inherited);
                 assert!(exception_pending(py));
                 let exception = molt_exception_last();
                 assert!(crate::builtins::exceptions::exception_matches_builtin_name(
@@ -159,22 +185,8 @@ mod tests {
                 ));
                 crate::clear_exception(py);
                 dec_ref_bits(py, exception);
+                dec_ref_bits(py, child);
             }
-            let child_name = attr_name_bits_from_bytes(py, b"ForgedWrapper").unwrap();
-            let child = molt_class_new(child_name);
-            dec_ref_bits(py, child_name);
-            let inherited = molt_class_set_base(child, classes.coroutine_wrapper);
-            dec_ref_bits(py, inherited);
-            assert!(exception_pending(py));
-            let exception = molt_exception_last();
-            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
-                py,
-                exception,
-                "TypeError",
-            ));
-            crate::clear_exception(py);
-            dec_ref_bits(py, exception);
-            dec_ref_bits(py, child);
             for (class, required, absent) in [
                 (
                     classes.coroutine,
@@ -190,6 +202,30 @@ mod tests {
                     classes.generator,
                     &["__iter__", "__next__", "send", "throw", "close"][..],
                     &["__await__"][..],
+                ),
+                (
+                    classes.async_generator_asend,
+                    &[
+                        "__await__",
+                        "__iter__",
+                        "__next__",
+                        "send",
+                        "throw",
+                        "close",
+                    ][..],
+                    &["asend", "__anext__"][..],
+                ),
+                (
+                    classes.async_generator_athrow,
+                    &[
+                        "__await__",
+                        "__iter__",
+                        "__next__",
+                        "send",
+                        "throw",
+                        "close",
+                    ][..],
+                    &["athrow", "aclose"][..],
                 ),
             ] {
                 let directory = molt_dir_builtin(class);

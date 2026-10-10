@@ -8,7 +8,8 @@ use super::throw_protocol::{
     call_throw_method, normalize_throw_argument, parse_throw_call, raise_throw_argument,
 };
 use crate::async_rt::generators::{
-    is_iterable_coroutine_bits, is_native_coroutine_bits, is_native_poll_future_bits,
+    is_asyncgen_awaitable_bits, is_direct_await_future_bits, is_iterable_coroutine_bits,
+    is_native_coroutine_bits, is_native_poll_future_bits,
 };
 use crate::object::iterable::{SpecialIterationKind, SpecialIterationStep, special_iteration_step};
 use crate::*;
@@ -233,7 +234,7 @@ fn iterator_poll_adapter(py: &PyToken<'_>, iterator: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_get_awaitable(bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        if is_native_coroutine_bits(bits) || is_native_poll_future_bits(bits) {
+        if is_native_coroutine_bits(bits) || is_direct_await_future_bits(bits) {
             inc_ref_bits(py, bits);
             return bits;
         }
@@ -262,7 +263,7 @@ pub extern "C" fn molt_get_awaitable(bits: u64) -> u64 {
             dec_ref_bits(py, iterator);
             return raise_exception::<_>(py, "TypeError", "__await__() returned a coroutine");
         }
-        if is_coroutine_wrapper_bits(iterator) || is_native_poll_future_bits(iterator) {
+        if is_coroutine_wrapper_bits(iterator) || is_direct_await_future_bits(iterator) {
             return iterator;
         }
         let valid = unsafe { crate::builtins::attr::is_iterator_bits(py, iterator) };
@@ -447,11 +448,19 @@ fn coroutine_resume(py: &PyToken<'_>, receiver: u64, request: ResumeRequest) -> 
     } else {
         PythonResumeScope::enter(py, resume_target(ptr), request, true)
     };
+    resume_native_future(py, coro, scope)
+}
+
+/// One Python send/throw step of a native poll future. The scope carries the
+/// request to the innermost suspended await; the future's own poll owns every
+/// state transition. A suspension returns the yielded value and a completion
+/// raises StopIteration.
+fn resume_native_future(py: &PyToken<'_>, future: u64, scope: PythonResumeScope<'_, '_>) -> u64 {
     // A Python callback can manually resume another coroutine without awaiting
     // it. Only nested polls inside that coroutine establish delegation edges.
     let (result, failure) = {
         let _caller = crate::CurrentTaskScope::enter(py, std::ptr::null_mut());
-        let result = crate::molt_future_poll(coro);
+        let result = crate::molt_future_poll(future);
         let failure = if exception_pending(py) {
             let exception = crate::molt_exception_last();
             crate::clear_exception(py);
@@ -477,6 +486,132 @@ fn coroutine_resume(py: &PyToken<'_>, receiver: u64, request: ResumeRequest) -> 
     let raised = unsafe { crate::async_rt::generators::raise_stop_iteration_from_value(py, value) };
     dec_ref_bits(py, value);
     raised
+}
+
+fn asyncgen_awaitable_receiver(py: &PyToken<'_>, bits: u64) -> Option<*mut u8> {
+    if is_asyncgen_awaitable_bits(bits) {
+        return Some(ptr_from_bits(bits));
+    }
+    let message = format!(
+        "expected an async generator awaitable, got {}",
+        type_name(py, obj_from_bits(bits))
+    );
+    raise_exception::<()>(py, "TypeError", &message);
+    None
+}
+
+/// `async_generator_asend.send`/`throw` and the athrow twins. The first step
+/// belongs to the awaitable's own state machine; later requests reach the
+/// innermost await, exactly as for a coroutine.
+fn asyncgen_awaitable_resume(py: &PyToken<'_>, receiver: u64, request: ResumeRequest) -> u64 {
+    let Some(ptr) = asyncgen_awaitable_receiver(py, receiver) else {
+        return MoltObject::none().bits();
+    };
+    if coroutine_is_done(ptr) {
+        let message = crate::async_rt::generators::asyncgen_awaitable_reuse_message(py, ptr);
+        return raise_exception::<_>(py, "RuntimeError", message);
+    }
+    let request = if crate::object::object_state(ptr) == 0 {
+        match request {
+            ResumeRequest::Send(value) if !obj_from_bits(value).is_none() => {
+                if !unsafe {
+                    crate::async_rt::generators::asyncgen_awaitable_prime_send(py, ptr, value)
+                } {
+                    return MoltObject::none().bits();
+                }
+                ResumeRequest::Send(MoltObject::none().bits())
+            }
+            ResumeRequest::Throw(arguments) => {
+                unsafe {
+                    crate::async_rt::generators::asyncgen_awaitable_prime_throw(py, ptr, arguments)
+                };
+                ResumeRequest::Send(MoltObject::none().bits())
+            }
+            request => request,
+        }
+    } else {
+        request
+    };
+    let scope = PythonResumeScope::enter(py, resume_target(ptr), request, true);
+    resume_native_future(py, receiver, scope)
+}
+
+/// `__await__` and `__iter__` of the async-generator operation awaitables.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_asyncgen_awaitable_self(receiver: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if asyncgen_awaitable_receiver(py, receiver).is_none() {
+            return MoltObject::none().bits();
+        }
+        inc_ref_bits(py, receiver);
+        receiver
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_asyncgen_awaitable_send(receiver: u64, value: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        asyncgen_awaitable_resume(py, receiver, ResumeRequest::Send(value))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_asyncgen_awaitable_next(receiver: u64) -> u64 {
+    molt_asyncgen_awaitable_send(receiver, MoltObject::none().bits())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_asyncgen_awaitable_throw(args: u64, kwargs: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some((receiver, arguments)) = parse_throw_call(py, args, kwargs) else {
+            return MoltObject::none().bits();
+        };
+        let result = asyncgen_awaitable_resume(py, receiver, ResumeRequest::Throw(arguments));
+        dec_ref_bits(py, arguments);
+        result
+    })
+}
+
+/// Targets before minor version 13 close only the awaitable. Later targets
+/// throw GeneratorExit through it, so the generator runs its cleanup.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_asyncgen_awaitable_close(receiver: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(ptr) = asyncgen_awaitable_receiver(py, receiver) else {
+            return MoltObject::none().bits();
+        };
+        if coroutine_is_done(ptr) {
+            return MoltObject::none().bits();
+        }
+        if !crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
+            crate::task_mark_done(py, ptr);
+            return MoltObject::none().bits();
+        }
+        let exit_ptr = crate::alloc_exception(py, "GeneratorExit", "");
+        if exit_ptr.is_null() {
+            return MoltObject::none().bits();
+        }
+        let exit = MoltObject::from_ptr(exit_ptr).bits();
+        let result = asyncgen_awaitable_resume(py, receiver, ResumeRequest::Throw(exit));
+        dec_ref_bits(py, exit);
+        if !exception_pending(py) {
+            dec_ref_bits(py, result);
+            return raise_exception::<_>(py, "RuntimeError", "coroutine ignored GeneratorExit");
+        }
+        let exception = crate::molt_exception_last();
+        let finished = ["StopIteration", "StopAsyncIteration", "GeneratorExit"]
+            .into_iter()
+            .any(|name| {
+                crate::builtins::exceptions::exception_matches_builtin_name(py, exception, name)
+            });
+        dec_ref_bits(py, exception);
+        if finished {
+            crate::clear_exception(py);
+            dec_ref_bits(py, result);
+            return MoltObject::none().bits();
+        }
+        result
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1448,6 +1583,113 @@ mod tests {
             dec_ref_bits(py, wrapper);
             assert_eq!(refcount(coroutine), before);
             dec_ref_bits(py, coroutine);
+        });
+    }
+
+    fn take_pending_exception(py: &PyToken<'_>, name: &str) -> (u64, String) {
+        assert!(exception_pending(py));
+        let exception = crate::molt_exception_last();
+        assert!(
+            crate::builtins::exceptions::exception_matches_builtin_name(py, exception, name),
+            "expected {name}"
+        );
+        let message =
+            crate::builtins::exceptions::format_exception_message(py, ptr_from_bits(exception));
+        crate::clear_exception(py);
+        (exception, message)
+    }
+
+    #[test]
+    fn asyncgen_awaitables_are_classed_direct_await_futures() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let classes = crate::builtin_classes(py);
+            let generator = crate::molt_task_new(
+                crate::provenance::abi::expose_function_address(immediate_poll as *const ()),
+                crate::GEN_CONTROL_SIZE as u64,
+                crate::TASK_KIND_GENERATOR,
+            );
+            let asyncgen = crate::molt_asyncgen_new(generator);
+            let thrown =
+                MoltObject::from_ptr(crate::alloc_exception(py, "ValueError", "athrow")).bits();
+            let anext = crate::molt_asyncgen_anext(asyncgen);
+            let asend = crate::molt_asyncgen_asend(asyncgen, MoltObject::none().bits());
+            let athrow = crate::molt_asyncgen_athrow(asyncgen, thrown);
+            let aclose = crate::molt_asyncgen_aclose(asyncgen);
+            assert!(!exception_pending(py));
+            for (awaitable, class) in [
+                (anext, classes.async_generator_asend),
+                (asend, classes.async_generator_asend),
+                (athrow, classes.async_generator_athrow),
+                (aclose, classes.async_generator_athrow),
+            ] {
+                // The class names the value; the poll function keeps it a
+                // native await target without a Python __await__ call.
+                assert_eq!(crate::type_of_bits(py, awaitable), class);
+                assert!(is_asyncgen_awaitable_bits(awaitable));
+                assert!(!is_native_poll_future_bits(awaitable));
+                assert_eq!(
+                    crate::molt_is_native_awaitable(awaitable),
+                    MoltObject::from_bool(true).bits()
+                );
+                for acquired in [
+                    molt_get_awaitable(awaitable),
+                    molt_asyncgen_awaitable_self(awaitable),
+                ] {
+                    assert_eq!(acquired, awaitable);
+                    dec_ref_bits(py, acquired);
+                }
+                assert!(!exception_pending(py));
+            }
+            // The first step completes with the generator's value.
+            let ignored = molt_asyncgen_awaitable_next(anext);
+            dec_ref_bits(py, ignored);
+            let (stop, _) = take_pending_exception(py, "StopIteration");
+            let value = crate::builtins::exceptions::exception_typed_field_get(
+                py,
+                ptr_from_bits(stop),
+                molt_obj_model::ExceptionTypedField::StopIterationValue,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(crate::to_i64(obj_from_bits(value)), Some(42));
+            dec_ref_bits(py, value);
+            dec_ref_bits(py, stop);
+            // A finished awaitable refuses reuse by send and by await alike,
+            // and close is a no-op.
+            for by_await in [false, true] {
+                let reuse = if by_await {
+                    crate::molt_future_poll(anext) as u64
+                } else {
+                    molt_asyncgen_awaitable_send(anext, MoltObject::none().bits())
+                };
+                dec_ref_bits(py, reuse);
+                let (reused, message) = take_pending_exception(py, "RuntimeError");
+                assert_eq!(message, "cannot reuse already awaited __anext__()/asend()");
+                dec_ref_bits(py, reused);
+            }
+            let closed = molt_asyncgen_awaitable_close(anext);
+            assert_eq!(closed, MoltObject::none().bits());
+            assert!(!exception_pending(py));
+            // A non-None first send to athrow is refused and leaves it unstarted.
+            let refused = molt_asyncgen_awaitable_send(athrow, MoltObject::from_int(5).bits());
+            dec_ref_bits(py, refused);
+            let (error, message) = take_pending_exception(py, "RuntimeError");
+            assert_eq!(
+                message,
+                "can't send non-None value to a just-started coroutine"
+            );
+            dec_ref_bits(py, error);
+            assert!(!coroutine_is_done(ptr_from_bits(athrow)));
+            // Other receivers are refused.
+            let refused = molt_asyncgen_awaitable_self(generator);
+            dec_ref_bits(py, refused);
+            let (error, _) = take_pending_exception(py, "TypeError");
+            dec_ref_bits(py, error);
+            for value in [aclose, athrow, asend, anext, thrown, asyncgen, generator] {
+                dec_ref_bits(py, value);
+            }
+            assert!(!exception_pending(py));
         });
     }
 }

@@ -111,6 +111,8 @@ pub(crate) struct BuiltinClasses {
     pub(crate) coroutine_wrapper: u64,
     pub(crate) generator: u64,
     pub(crate) async_generator: u64,
+    pub(crate) async_generator_asend: u64,
+    pub(crate) async_generator_athrow: u64,
     pub(crate) iterator: u64,
     pub(crate) callable_iterator: u64,
     pub(crate) bytes_iterator: u64,
@@ -168,7 +170,15 @@ impl BuiltinClasses {
             || class_bits == self.method_wrapper
     }
 
-    pub(crate) fn anchors(&self) -> [u64; 84] {
+    /// Native awaitable adapters own a poll payload that no class allocation
+    /// can supply, so their classes are not constructible from Python.
+    pub(crate) fn is_poll_adapter_class(&self, class_bits: u64) -> bool {
+        class_bits == self.coroutine_wrapper
+            || class_bits == self.async_generator_asend
+            || class_bits == self.async_generator_athrow
+    }
+
+    pub(crate) fn anchors(&self) -> [u64; 86] {
         [
             self.object,
             self.type_obj,
@@ -214,6 +224,8 @@ impl BuiltinClasses {
             self.coroutine_wrapper,
             self.generator,
             self.async_generator,
+            self.async_generator_asend,
+            self.async_generator_athrow,
             self.iterator,
             self.callable_iterator,
             self.bytes_iterator,
@@ -507,6 +519,8 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let coroutine_wrapper = make_builtin_class(_py, "coroutine_wrapper");
     let generator = make_builtin_class(_py, "generator");
     let async_generator = make_builtin_class(_py, "async_generator");
+    let async_generator_asend = make_builtin_class(_py, "async_generator_asend");
+    let async_generator_athrow = make_builtin_class(_py, "async_generator_athrow");
     let iterator = make_builtin_class(_py, "iterator");
     let callable_iterator = make_builtin_class(_py, "callable_iterator");
     let bytes_iterator = make_builtin_class(_py, "bytes_iterator");
@@ -593,6 +607,8 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         coroutine_wrapper,
         generator,
         async_generator,
+        async_generator_asend,
+        async_generator_athrow,
         iterator,
         callable_iterator,
         bytes_iterator,
@@ -951,6 +967,8 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let _ = molt_class_set_base(coroutine_wrapper, object);
     let _ = molt_class_set_base(generator, object);
     let _ = molt_class_set_base(async_generator, object);
+    let _ = molt_class_set_base(async_generator_asend, object);
+    let _ = molt_class_set_base(async_generator_athrow, object);
     let _ = molt_class_set_base(iterator, object);
     let _ = molt_class_set_base(callable_iterator, object);
     let _ = molt_class_set_base(bytes_iterator, object);
@@ -1061,6 +1079,8 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         coroutine_wrapper,
         generator,
         async_generator,
+        async_generator_asend,
+        async_generator_athrow,
         iterator,
         callable_iterator,
         enumerate,
@@ -1265,6 +1285,8 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         coroutine_wrapper,
         generator,
         async_generator,
+        async_generator_asend,
+        async_generator_athrow,
         iterator,
         callable_iterator,
         bytes_iterator,
