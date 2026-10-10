@@ -568,9 +568,9 @@ setup_evidence = [".github/workflows/ci.yml::The Windows image supplies clang-cl
 name = "ninja"
 executable = "ninja"
 version_args = ["--version"]
-version_pattern = '^1\.13\.0(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$'
-setup_value = "1.13.0"
-setup_evidence = ['pyproject.toml::"ninja==1.13.0"', 'uv.lock::version = "1.13.0"']
+version_pattern = '^1\.13\.2(?:\.git(?:\.kitware\.jobserver-pipe-1)?)?$'
+setup_value = "1.13.2"
+setup_evidence = ['pyproject.toml::"ninja==1.13.2"', 'uv.lock::version = "1.13.2"']
 
 [[toolchain_policy]]
 name = "wasi-clang"
@@ -2031,7 +2031,9 @@ family = "repository_policy"
 cell = "linux-x86_64-py312-repository-policy"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "repository-policy"
-timeout_seconds = 600
+# Measured 552 s and more than 600 s on a 4-CPU runner shared with the tooling
+# and supply-chain families; most of it is per-spawn guard census cost (HF-131).
+timeout_seconds = 900
 cache_domain = "pytest"
 dependencies = ["repository.generator-manifest", "repository.generators", "repository.structural-debt", "repository.canonicalization", "repository.call-fact-coverage"]
 argv = ["uv", "run", "python3", "-m", "pytest", "-q", "-n", "auto", "tests/test_update_status_blocks.py", "tests/test_bench_report.py", "tests/test_check_docs_architecture.py", "tests/test_dependabot_config.py", "tests/tools/test_check_test_ownership.py", "tests/test_compatibility_contract_docs.py", "tests/test_ecosystem_compat.py", "tests/test_check_suite_honesty.py", "tests/test_gen_op_kinds.py", "tests/test_gen_heap_kinds.py", "tests/test_gen_python_effects.py", "tests/tools/test_gen_python_numeric_errors.py", "tests/test_gen_wasm_abi.py", "tests/test_gen_intrinsics.py", "tests/test_generator_manifest.py", "tests/test_molt_dev.py", "tests/test_resource_pressure.py", "tests/test_structural_audit.py", "tests/test_call_fact_coverage.py", "tests/test_llvm_runtime_abi_audit.py", "tests/tools/test_ci_resource_env.py", "tests/tools/test_gen_cpython_coverage.py", "tests/tools/test_gen_cpython_type_slots.py", "tests/tools/test_perf_authority.py", "tests/tools/test_perf_profile_selection.py", "tests/tools/test_perf_scoreboard.py", "tests/tools/test_perf_schema.py", "tests/tools/test_check_perf_gate_wiring.py", "tests/tools/test_analysis_capsule.py", "tests/tools/test_runtime_bridge_test_stubs.py", "tests/tools/test_runtime_app_bootstrap_authority.py", "tests/tools/test_cargo_test_truth.py", "tests/tools/test_import_symbol_gate.py", "tests/tools/test_phase_exit_manifest.py", "tests/tools/test_legacy_inventory.py", "tests/tools/test_public_contract_gate.py", "tests/tools/test_gen_luau_support_matrix.py", "tests/tools/test_runtime_descendant_receipts.py", "tests/tools/test_runtime_test_gate.py", "tests/test_environment_registry.py", "tests/tools/test_check_environment_registry.py", "tests/tools/test_setup_project_inputs.py", "tests/tools/test_rust_toolchain_contract.py", "tests/test_gen_cpython_abi_layout.py", "tests/tools/test_perf_release_integrity.py"]
