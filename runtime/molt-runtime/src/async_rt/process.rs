@@ -1604,26 +1604,251 @@ mod process_completion_state_tests {
     }
 }
 
+// Real OS fixtures use this Cargo-owned image, not ambient shell utilities.
+// The existing pipe-completion test is also the exact child entry; its normal
+// invocation still runs the full semantic test and adds no gate inventory row.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod native_process_fixture {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+
+    const OWNER: &str = "async_rt::process::process_worker_lifetime_tests::normal_pipe_completion_preserves_bytes_and_reaps_all_handles";
+    const MODE: &str = "MOLT_NATIVE_PROCESS_FIXTURE_MODE";
+    pub(super) const PID_FILE: &str = "MOLT_NATIVE_PROCESS_FIXTURE_PID_FILE";
+    const FRAME: &[u8] = b"MOLT_NATIVE_PROCESS_FIXTURE_V1\n";
+    const PRELUDE: &[u8] = b"\nrunning 1 test\n";
+    const MAX_OUTPUT: usize = 64 * 1024;
+
+    pub(super) fn command(mode: &str) -> Command {
+        let mut command = Command::new(std::env::current_exe().expect("current fixture image"));
+        command
+            .args([
+                "--exact",
+                OWNER,
+                "--nocapture",
+                "--test-threads=1",
+                "--format=terse",
+                "--color=never",
+            ])
+            // Replace any inherited child mode and remove the group parent's
+            // handshake path before constructing an inert grandchild.
+            .env(MODE, mode)
+            .env_remove(PID_FILE)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+    }
+
+    #[cfg(unix)]
+    struct OwnedChild(std::process::Child);
+
+    #[cfg(unix)]
+    impl Drop for OwnedChild {
+        fn drop(&mut self) {
+            // On fixture failure retain the actual native handle through kill
+            // and wait, rather than leaking a sleeper into a later test.
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[cfg(unix)]
+    static GROUP_TERMINATED: AtomicBool = AtomicBool::new(false);
+
+    #[cfg(unix)]
+    extern "C" fn retain_group_parent_until_reaped(_: libc::c_int) {
+        GROUP_TERMINATED.store(true, AtomicOrdering::Relaxed);
+    }
+
+    pub(super) fn run_child_if_selected() {
+        let Some(mode) = std::env::var_os(MODE) else {
+            return;
+        };
+        // No runtime entry, test-state lock or process dispatcher is involved
+        // in the fixture child. Unknown inherited selections fail closed.
+        match mode.to_str().expect("fixture mode is UTF-8") {
+            "exit" => {}
+            "pipes" => {
+                let mut stdout = std::io::stdout().lock();
+                stdout.write_all(FRAME).unwrap();
+                stdout.write_all(b"molt-stdout").unwrap();
+                stdout.flush().unwrap();
+                let mut stderr = std::io::stderr().lock();
+                stderr.write_all(FRAME).unwrap();
+                stderr.write_all(b"molt-stderr").unwrap();
+                stderr.flush().unwrap();
+            }
+            "stdin-copy" => {
+                let mut stdout = std::io::stdout().lock();
+                stdout.write_all(FRAME).unwrap();
+                let mut stdin = std::io::stdin().lock();
+                let mut bytes = [0; 4096];
+                loop {
+                    let count = stdin.read(&mut bytes).unwrap();
+                    if count == 0 {
+                        break;
+                    }
+                    stdout.write_all(&bytes[..count]).unwrap();
+                }
+                stdout.flush().unwrap();
+            }
+            "sleep" | "group-sleep" => {
+                if mode == "group-sleep" {
+                    let path = std::env::var_os(PID_FILE).expect("grandchild readiness path");
+                    // This publication occurs after exec has reset caught
+                    // signal handlers. The owner must not signal the group
+                    // while this child could still inherit its parent's handler.
+                    std::fs::write(path, std::process::id().to_string()).unwrap();
+                }
+                thread::sleep(Duration::from_secs(30));
+                std::process::exit(42); // A natural exit cannot prove a kill.
+            }
+            #[cfg(unix)]
+            "group" => {
+                use std::os::unix::process::ExitStatusExt;
+                // The parent must reap the killed grandchild before exiting.
+                // A caught handler resets to SIG_DFL on exec, so the real
+                // grandchild remains subject to the owned group's SIGTERM.
+                assert_ne!(
+                    unsafe {
+                        libc::signal(
+                            libc::SIGTERM,
+                            retain_group_parent_until_reaped as libc::sighandler_t,
+                        )
+                    },
+                    libc::SIG_ERR
+                );
+                let path = std::env::var_os(PID_FILE).expect("group PID handshake path");
+                let mut child = OwnedChild(
+                    command("group-sleep")
+                        .env(PID_FILE, path)
+                        .spawn()
+                        .expect("spawn group descendant"),
+                );
+                let mut term_deadline = None;
+                let status = loop {
+                    if let Some(status) = child.0.try_wait().expect("reap actual group descendant")
+                    {
+                        break status;
+                    }
+                    if GROUP_TERMINATED.load(AtomicOrdering::Relaxed) {
+                        let deadline = *term_deadline
+                            .get_or_insert_with(|| Instant::now() + Duration::from_secs(2));
+                        assert!(
+                            Instant::now() < deadline,
+                            "group signal did not terminate its descendant"
+                        );
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                };
+                assert_eq!(
+                    status.signal(),
+                    Some(libc::SIGTERM),
+                    "descendant was not terminated with its group"
+                );
+            }
+            _ => panic!("unknown native process fixture mode"),
+        }
+        // Flushes above retain exact payload bytes; suppress libtest's success
+        // epilogue so no harness output can be mistaken for fixture payload.
+        std::process::exit(0);
+    }
+
+    pub(super) fn collect_to_eof(bits: u64) -> Vec<u8> {
+        let stream = unsafe { &*(ptr_from_bits(bits) as *mut MoltStream) };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut bytes = Vec::new();
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "fixture pipe did not reach EOF");
+            match stream
+                .receiver
+                .recv_timeout(remaining.min(Duration::from_millis(10)))
+            {
+                Ok(chunk) => {
+                    super::super::channels::stream_release_queued_bytes(stream, chunk.len());
+                    bytes.extend_from_slice(&chunk);
+                    assert!(bytes.len() <= MAX_OUTPUT, "unbounded fixture output");
+                }
+                Err(_) if stream.closed.load(AtomicOrdering::Acquire) => {
+                    // EOF is published after the last enqueue. Recheck the
+                    // queue after observing that publication, even if the
+                    // preceding timed receive raced with the final enqueue.
+                    for chunk in stream.receiver.try_iter() {
+                        super::super::channels::stream_release_queued_bytes(stream, chunk.len());
+                        bytes.extend_from_slice(&chunk);
+                        assert!(bytes.len() <= MAX_OUTPUT, "unbounded fixture output");
+                    }
+                    return bytes;
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
+    pub(super) fn assert_live_pipe_bytes(bits: u64, expected: &[u8]) {
+        // These two fixtures intentionally retain a writer after the child
+        // exits, so EOF would contradict their premise. Still consume any
+        // partition of the known write rather than assuming one read chunk.
+        let stream = unsafe { &*(ptr_from_bits(bits) as *mut MoltStream) };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut actual = Vec::new();
+        while actual.len() < expected.len() {
+            let chunk = stream
+                .receiver
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("retained pipe did not produce its exact bytes");
+            super::super::channels::stream_release_queued_bytes(stream, chunk.len());
+            actual.extend_from_slice(&chunk);
+        }
+        assert_eq!(actual, expected);
+    }
+
+    pub(super) fn assert_payload(bytes: &[u8], stdout: bool, expected: &[u8]) {
+        // The selected terse, colorless, one-test libtest prelude is exact and
+        // bounded. Neither searching for a marker nor a partial receive can
+        // turn dropped, duplicated or trailing bytes into success.
+        let mut complete = Vec::new();
+        if stdout {
+            complete.extend_from_slice(PRELUDE);
+        }
+        complete.extend_from_slice(FRAME);
+        complete.extend_from_slice(expected);
+        assert_eq!(bytes, complete);
+    }
+
+    pub(super) struct CleanupOnFailure<'a>(pub(super) &'a ProcessRegistry);
+
+    impl Drop for CleanupOnFailure<'_> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                // Preserve the failed assertion while giving every real child
+                // and worker its existing registry-owned kill/join cleanup.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.0
+                        .drain_with_deadlines(Duration::from_secs(5), Duration::from_secs(2));
+                }));
+            }
+        }
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod process_wait_state_tests {
     use super::*;
     use std::sync::mpsc;
 
     fn inert_child() -> std::process::Child {
-        #[cfg(windows)]
-        {
-            std::process::Command::new("cmd")
-                .args(["/C", "exit", "0"])
-                .spawn()
-                .expect("spawn inert Windows child")
-        }
-        #[cfg(not(windows))]
-        {
-            std::process::Command::new("sh")
-                .args(["-c", "exit 0"])
-                .spawn()
-                .expect("spawn inert Unix child")
-        }
+        let mut child = native_process_fixture::command("exit")
+            .spawn()
+            .expect("spawn inert child");
+        // These completion-state tests publish their own terminal predicate;
+        // they have no process waiter worker, so retain/reap the native child
+        // here rather than letting Child::drop leave a zombie behind.
+        assert!(child.wait().expect("reap inert child").success());
+        child
     }
 
     fn process_state() -> Arc<ProcessState> {
@@ -1721,9 +1946,9 @@ mod process_registry_tests {
         let stdio = configure_native_stdio(
             &py,
             cmd,
-            stdio::PROCESS_STDIO_INHERIT,
-            stdio::PROCESS_STDIO_INHERIT,
-            stdio::PROCESS_STDIO_INHERIT,
+            stdio::PROCESS_STDIO_DEVNULL,
+            stdio::PROCESS_STDIO_DEVNULL,
+            stdio::PROCESS_STDIO_DEVNULL,
         )
         .unwrap();
         registry
@@ -1771,8 +1996,8 @@ mod process_registry_tests {
     fn handle_drop_kills_child_even_while_wait_worker_holds_state() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         let registry = ProcessRegistry::new();
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg("sleep 30");
+        let _cleanup = native_process_fixture::CleanupOnFailure(&registry);
+        let mut cmd = native_process_fixture::command("sleep");
         let state = registered_child(&mut cmd, &registry);
         let pid = state.pid as i32;
         drop(MoltProcessHandle {
@@ -1788,20 +2013,27 @@ mod process_registry_tests {
     fn registry_teardown_kills_owned_process_group_descendants() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         let registry = ProcessRegistry::new();
+        let _cleanup = native_process_fixture::CleanupOnFailure(&registry);
         let pid_path = unique_temp_path("process-group");
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c")
-            .arg("sleep 30 & echo $! > \"$MOLT_TEST_PID_FILE\"; wait")
-            .env("MOLT_TEST_PID_FILE", &pid_path);
+        let mut cmd = native_process_fixture::command("group");
+        cmd.env(native_process_fixture::PID_FILE, &pid_path);
         let state = registered_child(&mut cmd, &registry);
-        let shell_pid = state.pid as i32;
-        let sleep_pid = wait_for_pid_file(&pid_path);
-        registry.drain_for_teardown();
+        let parent_pid = state.pid as i32;
+        let descendant_pid = wait_for_pid_file(&pid_path);
+        // The fixture parent retains its native handle until its real child
+        // is reaped. Give the independent two-second child observation bound
+        // room before the registry's emergency SIGKILL deadline under ptrace.
+        registry.drain_with_deadlines(Duration::from_secs(5), Duration::from_secs(2));
         let _ = fs::remove_file(pid_path);
         assert_eq!(registry.live_count(), 0);
         assert!(!state.is_pending());
-        assert_process_exits(shell_pid);
-        assert_process_exits(sleep_pid);
+        assert_eq!(
+            state.exit_code(),
+            0,
+            "fixture parent must reap the group-killed descendant"
+        );
+        assert_process_exits(parent_pid);
+        assert_process_exits(descendant_pid);
     }
 }
 
@@ -1812,18 +2044,7 @@ mod process_worker_lifetime_tests {
     use std::sync::mpsc;
 
     fn inert_command() -> std::process::Command {
-        #[cfg(windows)]
-        {
-            let mut command = std::process::Command::new("cmd");
-            command.args(["/C", "exit", "0"]);
-            command
-        }
-        #[cfg(not(windows))]
-        {
-            let mut command = std::process::Command::new("sh");
-            command.args(["-c", "exit 0"]);
-            command
-        }
+        native_process_fixture::command("exit")
     }
 
     fn reader_state(
@@ -1882,16 +2103,10 @@ mod process_worker_lifetime_tests {
         let state = reader_state(&execution.token(), &registry, reader);
         let stream_bits = state.stdout_stream;
         let stream_ptr = ptr_from_bits(stream_bits);
-        let stream = unsafe { &*(stream_ptr as *mut MoltStream) };
         // Observe real pipe I/O before retaining the write endpoint across the
         // direct child's exit. This is not an is_finished/sleep timing oracle.
         inherited_writer.write_all(b"pipe-worker-is-live").unwrap();
-        let observed = stream
-            .receiver
-            .recv_timeout(Duration::from_secs(2))
-            .unwrap();
-        super::super::channels::stream_release_queued_bytes(stream, observed.len());
-        assert_eq!(observed, b"pipe-worker-is-live");
+        native_process_fixture::assert_live_pipe_bytes(stream_bits, b"pipe-worker-is-live");
         let state_weak = Arc::downgrade(&state);
         drop(execution);
         let gil = GilGuard::new();
@@ -2089,21 +2304,12 @@ mod process_worker_lifetime_tests {
 
     #[test]
     fn normal_pipe_completion_preserves_bytes_and_reaps_all_handles() {
+        native_process_fixture::run_child_if_selected();
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         let registry = ProcessRegistry::new();
+        let _cleanup = native_process_fixture::CleanupOnFailure(&registry);
         let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
-        #[cfg(windows)]
-        let mut command = {
-            let mut command = std::process::Command::new("cmd");
-            command.args(["/C", "echo molt-stdout & echo molt-stderr 1>&2"]);
-            command
-        };
-        #[cfg(not(windows))]
-        let mut command = {
-            let mut command = std::process::Command::new("sh");
-            command.args(["-c", "printf molt-stdout; printf molt-stderr >&2"]);
-            command
-        };
+        let mut command = native_process_fixture::command("pipes");
         let stdio = configure_native_stdio(
             &execution.token(),
             &mut command,
@@ -2115,31 +2321,10 @@ mod process_worker_lifetime_tests {
         let state = registry
             .spawn(&execution.token(), &mut command, stdio, false)
             .unwrap();
-        let output = |bits| {
-            let stream = unsafe { &*(ptr_from_bits(bits) as *mut MoltStream) };
-            let bytes = stream
-                .receiver
-                .recv_timeout(Duration::from_secs(2))
-                .unwrap();
-            super::super::channels::stream_release_queued_bytes(stream, bytes.len());
-            bytes
-        };
-        let stdout = output(state.stdout_stream);
-        let stderr = output(state.stderr_stream);
-        #[cfg(not(windows))]
-        assert_eq!(
-            (&stdout[..], &stderr[..]),
-            (&b"molt-stdout"[..], &b"molt-stderr"[..])
-        );
-        #[cfg(windows)]
-        {
-            let stdout = String::from_utf8(stdout).unwrap();
-            let stderr = String::from_utf8(stderr).unwrap();
-            assert_eq!(
-                (stdout.trim(), stderr.trim()),
-                ("molt-stdout", "molt-stderr")
-            );
-        }
+        let stdout = native_process_fixture::collect_to_eof(state.stdout_stream);
+        let stderr = native_process_fixture::collect_to_eof(state.stderr_stream);
+        native_process_fixture::assert_payload(&stdout, true, b"molt-stdout");
+        native_process_fixture::assert_payload(&stderr, false, b"molt-stderr");
         assert!(state.wait_for_exit(Duration::from_secs(2)));
         registry.drain_with_deadlines(Duration::ZERO, Duration::from_secs(2));
         assert_eq!(registry.live_count(), 0);
@@ -2148,14 +2333,13 @@ mod process_worker_lifetime_tests {
         drop(execution);
     }
 
-    #[cfg(unix)]
     #[test]
     fn ordinary_stdin_close_drains_bytes_queued_before_worker_start() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         let execution = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
         let registry = ProcessRegistry::new();
-        let mut command = std::process::Command::new("sh");
-        command.args(["-c", "cat"]);
+        let _cleanup = native_process_fixture::CleanupOnFailure(&registry);
+        let mut command = native_process_fixture::command("stdin-copy");
         let stdio = configure_native_stdio(
             &execution.token(),
             &mut command,
@@ -2176,17 +2360,8 @@ mod process_worker_lifetime_tests {
         let state = registry
             .spawn(&execution.token(), &mut command, stdio, false)
             .unwrap();
-        let output = unsafe { &*(ptr_from_bits(state.stdout_stream) as *mut MoltStream) };
-        let mut actual = Vec::new();
-        while actual.len() < expected.len() {
-            let bytes = output
-                .receiver
-                .recv_timeout(Duration::from_secs(2))
-                .unwrap();
-            super::super::channels::stream_release_queued_bytes(output, bytes.len());
-            actual.extend_from_slice(&bytes);
-        }
-        assert_eq!(actual, expected);
+        let actual = native_process_fixture::collect_to_eof(state.stdout_stream);
+        native_process_fixture::assert_payload(&actual, true, expected);
         assert!(state.wait_for_exit(Duration::from_secs(2)));
         assert_eq!(state.exit_code(), 0);
         registry.drain_with_deadlines(Duration::ZERO, Duration::from_secs(2));
@@ -2391,13 +2566,10 @@ mod process_worker_lifetime_tests {
         let (reader, mut writer) = os_pipe::pipe().unwrap();
         let state = reader_state(py, registry, reader);
         writer.write_all(b"retained-origin-pipe").unwrap();
-        let stream = unsafe { &*(ptr_from_bits(state.stdout_stream) as *mut MoltStream) };
-        let observed = stream
-            .receiver
-            .recv_timeout(Duration::from_secs(2))
-            .unwrap();
-        super::super::channels::stream_release_queued_bytes(stream, observed.len());
-        assert_eq!(observed, b"retained-origin-pipe");
+        native_process_fixture::assert_live_pipe_bytes(
+            state.stdout_stream,
+            b"retained-origin-pipe",
+        );
         assert!(state.wait_for_exit(Duration::from_secs(2)));
         ProcessServiceTimeoutFixture {
             origin,
