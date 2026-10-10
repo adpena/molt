@@ -1225,6 +1225,7 @@ pub const fn box_pending_bits() -> i64 {
 
 /// Box an admitted unsigned 48-bit user address. Reject wider addresses before
 /// truncation can alias another object; this invariant applies in every profile.
+#[inline(always)]
 pub const fn box_ptr_bits(addr: u64) -> i64 {
     assert!(
         addr <= POINTER_MASK,
