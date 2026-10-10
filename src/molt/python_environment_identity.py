@@ -2,15 +2,75 @@
 
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from types import ModuleType
 from typing import NoReturn
+
+
+def _load_package_import_custody(path: Path) -> ModuleType:
+    """Load one neutral authority; never import it through a foreign parent."""
+    name = "_molt_package_import_custody"
+    selected = path.resolve(strict=True)
+    if name in sys.modules:
+        loaded = sys.modules[name]
+        spec = getattr(loaded, "__spec__", None)
+        loader = getattr(spec, "loader", None)
+        if (
+            type(loaded) is not ModuleType
+            or getattr(loaded, "__name__", None) != name
+            or getattr(loaded, "__package__", None) != ""
+            or getattr(loaded, "__file__", None) != str(selected)
+            or getattr(spec, "name", None) != name
+            or getattr(spec, "origin", None) != str(selected)
+            or type(loader) is not importlib.machinery.SourceFileLoader
+            or loader.name != name
+            or loader.path != str(selected)
+            or getattr(loaded, "__loader__", None) is not loader
+        ):
+            raise ImportError(
+                f"package import custody already loaded from another authority; "
+                f"selected {selected}, loaded {getattr(loaded, '__file__', None)!r}"
+            )
+        return loaded
+    spec = importlib.util.spec_from_file_location(name, selected)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load selected package import custody: {selected}")
+    loaded = importlib.util.module_from_spec(spec)
+    sys.modules[name] = loaded
+    try:
+        spec.loader.exec_module(loaded)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return loaded
+
 
 _bootstrap_root: str | None = None
 if not __package__:
-    _bootstrap_root = str(Path(__file__).resolve().parents[1])
+    _selected_package = Path(__file__).resolve().parent
+    _admission_was_present = "_molt_package_import_custody" in sys.modules
+    try:
+        _package_import_custody = _load_package_import_custody(
+            _selected_package / "package_import_custody.py"
+        )
+        _package_import_custody.admit_loaded_package("molt", _selected_package)
+    except (ImportError, OSError, RuntimeError) as exc:
+        if not _admission_was_present:
+            sys.modules.pop("_molt_package_import_custody", None)
+        print(
+            f"Python capture package source admission failed: {exc}; "
+            "use an interpreter environment bound to the selected Molt package. "
+            "Isolated site startup ignores PYTHONPATH; source-root admission "
+            "does not replace an already loaded package.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from exc
+    _bootstrap_root = str(_selected_package.parent)
     sys.path.insert(0, _bootstrap_root)
 
 from molt.python_identity_common import (  # noqa: E402
@@ -159,6 +219,7 @@ def python_capture_authority_paths(
         "python_environment_custody",
         "python_external_custody",
         "python_private_names",
+        "package_import_custody",
         "python_runtime_identity",
         "python_file_node_custody",
         "python_native_dependency_custody",

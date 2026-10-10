@@ -246,6 +246,7 @@ authority_inputs = [
   "src/molt/cli/source_extension_invocation.py",
   "src/molt/cli/source_extension_compiler_inputs.py",
   "src/molt/cli/source_extension_link_inputs.py",
+  "src/molt/package_import_custody.py",
   "src/molt/python_environment_identity.py",
   "src/molt/python_environment_location.py",
   "src/molt/python_environment_custody.py",

@@ -1621,8 +1621,39 @@ def test_toolchain_identity_rejects_incomplete_python_closure() -> None:
 
 
 def test_toolchain_identity_rejects_real_but_out_of_policy_version(
-    guarded_execution_authorities: GuardedExecutionAuthorities,
+    custody_python: Path,
 ) -> None:
+    # The version oracle needs real capture/validation, not the separate
+    # editable development-environment fixture and its site startup packages.
+    command = [str(custody_python), "-c", "pass"]
+    envelope = command_admission.envelope_for_command(command)
+    _roots, selections, _telemetry, _selected_env = (
+        execution_environment._locate_toolchain_watch_roots(
+            envelope,
+            command,
+            cwd=state.ROOT,
+            env=os.environ,
+            supervisor_binary=custody_python,
+        )
+    )
+    captured = command_identity._python_identity(
+        envelope,
+        command,
+        cwd=state.ROOT,
+        env=os.environ,
+        source_root=state.ROOT,
+        selection=selections["python"],
+        hash_workers=proof_plan.ProofPlan.load().inventory_hash_workers,
+    )
+    assert captured is not None
+    admitted_plan = SimpleNamespace(
+        toolchain_policies=(
+            proof_plan.ToolchainPolicy(
+                name="python", data={"version_pattern": r"^Python 3\."}
+            ),
+        )
+    )
+    command_identity._validate_toolchain_identity(admitted_plan, "python", captured)
     plan = SimpleNamespace(
         toolchain_policies=(
             proof_plan.ToolchainPolicy(
@@ -1631,9 +1662,7 @@ def test_toolchain_identity_rejects_real_but_out_of_policy_version(
         )
     )
     with pytest.raises(ValueError, match="violates canonical policy"):
-        command_identity._validate_toolchain_identity(
-            plan, "python", guarded_execution_authorities.python_identity
-        )
+        command_identity._validate_toolchain_identity(plan, "python", captured)
 
 
 def test_environment_selected_executable_inputs_are_content_bound(

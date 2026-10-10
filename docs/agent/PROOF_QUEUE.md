@@ -97,6 +97,17 @@ positive grammar: unknown or external-input/helper selectors fail before probes.
 Response-file and un-inventoried launcher forms fail explicitly. Tool-family identity alone does not replace
 the producer's source/input/seal validation or prove an ecosystem matrix cell.
 
+Python custody probes admit the loaded Molt package before importing capture
+code. The interpreter must leave Molt unloaded or load it from the selected
+facade's package directory, including descendants and namespace search paths.
+Isolated site startup ignores `PYTHONPATH`; external source-root admission
+does not replace a loaded package. A foreign editable binding fails with a
+source-admission diagnostic; select the environment belonging to that checkout.
+Repository tools validate every loaded package before atomically reanchoring
+unexecuted namespaces. A failed bootstrap must preserve existing module and
+parent bindings; canonical aliases are published only after initialization.
+These compiler/development boundaries add no emitted-guest checks.
+
 The queue publishes `MOLT_PROOF_SOURCE_ROOT` only from its validated Git snapshot.
 Users cannot override it. The Python bootstrap exposes that same checkout's
 `src` only to the typed Molt module payload, including under `-P`; unrelated
