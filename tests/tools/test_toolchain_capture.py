@@ -13,6 +13,7 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
+from tests.executable_test_support import custody_spelling
 import pytest
 
 from tests.process_guard_common import run_isolated_python_probe
@@ -3212,12 +3213,13 @@ def test_native_cpp_capture_keeps_driver_helpers_language_and_build_role(
     }
     assert sum("-###" in call for call in calls) == 2 * len(drivers)
     assert native[0]["compilers"]["c++"]["language"] == "c++"
-    assert native[0]["compilers"]["c++"]["phases"][0]["helpers"][0]["path"] == str(
-        tools["cc1plus"]
-    )
+    # Captured helper and frozen-file paths are custody records (HF-154).
+    assert native[0]["compilers"]["c++"]["phases"][0]["helpers"][0][
+        "path"
+    ] == custody_spelling(tools["cc1plus"])
     frozen = {str(row.path) for row in toolchain_capture.frozen_files(identity)}
-    assert str(tools["cc1plus"]) in frozen
-    assert str(tools["selected-g++"]) in frozen
+    assert custody_spelling(tools["cc1plus"]) in frozen
+    assert custody_spelling(tools["selected-g++"]) in frozen
     assert (
         sum(
             row["role"].startswith("rust-build-native-archiver-")
