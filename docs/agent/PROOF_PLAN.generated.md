@@ -13,7 +13,7 @@ Index mode executes the captured staged generator with its staged manifest, poli
 | Metric | Before report 001 | Current |
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
-| CI selection families | 5 | 11 |
+| CI selection families | 5 | 12 |
 | Hashed executable authority inputs | 1 | 340 |
 | Local path rules | 35 | 43 |
 | Unique local commands | 73 | 98 |
@@ -46,7 +46,8 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2220 s | 120 s | 1260 s | `repository-policy` | none | `docs-gates` needs none | 1 |
 | `wasm` | pr, main | yes | `github-job` | 263 min | 15600 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 23 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
-| `python_unit` | pre-push, pr, main | yes | `github-matrix` | 46 min | 2700 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
+| `python_unit` | pre-push, pr, main | yes | `github-matrix` | 41 min | 2400 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
+| `python_unit_collection` | pr, main | yes | `github-matrix` | 16 min | 900 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit-collection` needs `classify-changes` | 11 |
 | `native_integration` | pr, main | yes | `github-job` | 53 min | 3000 s | 180 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 20 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 254 min | 15000 s | 240 s | 0 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
 | `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 120 s | 180 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 38 |
@@ -81,6 +82,8 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `linux-x86_64-py312-static` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `static` |
 | `linux-x86_64-py312-unit` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `test` |
 | `macos-arm64-py312-unit` | `macos-14` | `macos` | `aarch64` | `3.12` | `python-tooling` | `host` | `test` |
+| `linux-x86_64-py312-unit-collection` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `test` |
+| `macos-arm64-py312-unit-collection` | `macos-14` | `macos` | `aarch64` | `3.12` | `python-tooling` | `host` | `test` |
 | `linux-x86_64-py312-native-dev` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `native` | `x86_64-unknown-linux-gnu` | `dev` |
 | `linux-x86_64-rust-native-dev` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `dev` |
 | `linux-x86_64-rust-native-release-output` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `release-output` |
@@ -245,8 +248,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `python.unit.frontend-lowering.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.cli` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.cli.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
-| `python.unit.cli.import-collection` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
-| `python.unit.cli.import-collection.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
+| `python.unit.cli.import-collection` | `python_unit_collection` | `linux-x86_64-py312-unit-collection` | `explicit` | 900 s | `python-tests` | 0 |
+| `python.unit.cli.import-collection.macos` | `python_unit_collection` | `macos-arm64-py312-unit-collection` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.surface-contracts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.surface-contracts.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.runtime-artifacts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |

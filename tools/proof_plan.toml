@@ -765,6 +765,26 @@ target = "host"
 profile = "test"
 
 [[matrix_cell]]
+id = "linux-x86_64-py312-unit-collection"
+runner = "ubuntu-latest"
+os = "linux"
+arch = "x86_64"
+python = "3.12"
+backend = "python-tooling"
+target = "host"
+profile = "test"
+
+[[matrix_cell]]
+id = "macos-arm64-py312-unit-collection"
+runner = "macos-14"
+os = "macos"
+arch = "aarch64"
+python = "3.12"
+backend = "python-tooling"
+target = "host"
+profile = "test"
+
+[[matrix_cell]]
 id = "linux-x86_64-py312-native-dev"
 runner = "ubuntu-latest"
 os = "linux"
@@ -990,8 +1010,25 @@ admission_job = "python-unit"
 admission_needs = ["classify-changes"]
 tiers = ["pre-push", "pr", "main"]
 required = true
-timeout_minutes = 46
+timeout_minutes = 41
 # Observed setup/post-proof total 38s, rounded up to whole minutes.
+job_reserve_seconds = 60
+resource_class = "python-tests"
+dependencies = []
+
+[[ci_family]]
+name = "python_unit_collection"
+description = "The whole CLI import-collection suite on Linux and macOS, in its own job so its memory never shares a runner with other unit partitions."
+inputs = [".github/actions/setup-project/**", ".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "Cargo.toml", ".cargo/**", "runtime/**/Cargo.toml", "src/**", "tests/**", "tools/**"]
+executor = "github-matrix"
+workflow = ".github/workflows/ci.yml"
+job = "python-unit-collection"
+admission_workflow = ".github/workflows/ci.yml"
+admission_job = "python-unit-collection"
+admission_needs = ["classify-changes"]
+tiers = ["pr", "main"]
+required = true
+timeout_minutes = 16
 job_reserve_seconds = 60
 resource_class = "python-tests"
 dependencies = []
@@ -2589,11 +2626,13 @@ toolchains = ["python", "uv"]
 # The whole CLI import-collection file (804 tests, about 580 s on hosted Linux
 # at -n 2). Its build-pipeline tests read rustc and cargo identity from PATH;
 # the five that validate WASM with the pinned wasm-tools run in
-# wasm.host.runner-fixtures, which provisions that tool (HF-160).
+# wasm.host.runner-fixtures, which provisions that tool (HF-160). It has its
+# own job: beside another unit partition on the 7 GB macOS runner, the guard
+# stopped both for unsafe memory pressure (HF-68, run 38093166637).
 [[command]]
 id = "python.unit.cli.import-collection"
-family = "python_unit"
-cell = "linux-x86_64-py312-unit"
+family = "python_unit_collection"
+cell = "linux-x86_64-py312-unit-collection"
 tiers = ["pr", "main"]
 resource_class = "python-tests"
 timeout_seconds = 900
@@ -2604,8 +2643,8 @@ toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
 id = "python.unit.cli.import-collection.macos"
-family = "python_unit"
-cell = "macos-arm64-py312-unit"
+family = "python_unit_collection"
+cell = "macos-arm64-py312-unit-collection"
 tiers = ["pr", "main"]
 resource_class = "python-tests"
 timeout_seconds = 900

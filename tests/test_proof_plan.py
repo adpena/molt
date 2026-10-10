@@ -207,7 +207,7 @@ def _classes(*paths: str) -> dict[str, bool]:
 
 def test_manifest_is_complete_and_single_authority() -> None:
     assert PLAN.path.name == "proof_plan.toml"
-    assert len(PLAN.families) == 11
+    assert len(PLAN.families) == 12
     assert len(PLAN.scheduled_families) == 8
     assert len(PLAN.commands) >= 84
     assert len(PLAN.matrix_cells) >= 17
@@ -921,14 +921,13 @@ def test_matrix_family_budget_binds_each_cell() -> None:
     errors = replace(PLAN, commands=commands).validate()
     # Commands take the first free slot in declaration order. Harness (2401 s)
     # holds slot 1; custody (300), binding (300), frontend (600), CLI (900)
-    # and import collection (900) fill slot 2 until 3000 s; surface contracts
-    # (600) take slot 1 at 2401 s and end at 3001 s; runtime-artifacts (600)
-    # takes slot 2 at 3000 s and ends at 3600 s; the 120 s boundary partition
-    # takes slot 1 at 3001 s. The makespan is 3600 s. The Linux job is
-    # unchanged, so only the macOS cell exceeds its 46-minute budget.
+    # and surface contracts (600) fill slot 2 until 2700 s; runtime-artifacts
+    # (600) takes slot 1 at 2401 s and ends at 3001 s; the 120 s boundary
+    # partition takes slot 2 at 2700 s. The makespan is 3001 s. The Linux job
+    # is unchanged, so only the macOS cell exceeds its 41-minute budget.
     assert [error for error in errors if "timeout envelope" in error] == [
-        "python_unit: projected resource-aware timeout envelope 3600s in matrix "
-        "cell macos-arm64-py312-unit plus job reserve 60s exceeds GitHub job budget 2760s"
+        "python_unit: projected resource-aware timeout envelope 3001s in matrix "
+        "cell macos-arm64-py312-unit plus job reserve 60s exceeds GitHub job budget 2460s"
     ]
 
 
@@ -1742,6 +1741,7 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
         "nightly_verification_t3",
         "platform_portability",
         "python_unit",
+        "python_unit_collection",
         "repository_policy",
         "rust",
         "rust_security",
@@ -2136,6 +2136,7 @@ def test_push_uses_before_after_instead_of_unconditionally_selecting_all(
         "repository_policy",
         "python_static",
         "python_unit",
+        "python_unit_collection",
         "native_integration",
         "wasm",
     }

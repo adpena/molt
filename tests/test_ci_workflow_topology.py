@@ -893,6 +893,7 @@ def test_ci_proof_families_are_admitted_independently() -> None:
         "platform-portability",
         "python-static",
         "python-unit",
+        "python-unit-collection",
         "rust-build-unit-smoke",
         "security-hardening",
         "wasm-validation",
