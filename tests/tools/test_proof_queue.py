@@ -961,12 +961,8 @@ def test_guarded_exec_spellings_share_one_recursive_binding_authority(
 @pytest.mark.parametrize(
     "command",
     [
-        ["python", "-m", "other.guarded_exec", "--", "git", "--version"],
         ["python", "tools/guarded_exec.py", "git", "--version"],
-        ["python", "-c", "print('guarded_exec delegation')"],
-        ["python", "-B", "-c", "__import__('tools.guarded_exec')"],
-        ["python", "-m", "runpy", "tools/guarded_exec.py", "--", "git"],
-        ["python", "-B", "bootstrap.py", "script", "0", "tools/guarded_exec.py"],
+        ["python", "-mtools.guarded_exec", "--"],
     ],
 )
 def test_guarded_exec_rejects_ambiguous_or_unbounded_spelling(
@@ -979,15 +975,26 @@ def test_guarded_exec_rejects_ambiguous_or_unbounded_spelling(
 @pytest.mark.parametrize(
     "command",
     [
-        ["python", "-m", "pytest", "-q", "tests/tools/test_guarded_exec.py"],
+        ["python", "-m", "pytest", "tests/tools/test_guarded_exec.py"],
+        ["uv", "run", "pytest", "tests/tools/test_guarded_exec.py"],
+        ["python", "-m", "other.guarded_exec", "--", "git", "--version"],
+        ["python", "-c", "print('guarded_exec delegation')"],
+        ["python", "-B", "-c", "__import__('tools.guarded_exec')"],
+        ["python", "-m", "runpy", "tools/guarded_exec.py", "--", "git"],
+        ["python", "-B", "bootstrap.py", "script", "0", "tools/guarded_exec.py"],
         ["python", "-m", "tools.proof_queue_pkg.guarded_execution"],
+        ["python", "-W", "ignore:guarded_exec", "example.py", "tools/guarded_exec.py"],
+        ["python", "-X", "guarded_exec", "-", "tools.guarded_exec"],
+        ["node", "example.js", "tools/guarded_exec.py"],
     ],
 )
-def test_names_that_only_contain_guarded_exec_are_not_delegations(
-    command: list[str],
-) -> None:
-    command_admission.envelope_for_command(command)
-    assert command_admission._nested_command(command) is None
+def test_guarded_exec_spelling_in_payload_data_does_not_delegate(command) -> None:
+    envelope = command_admission.envelope_for_command(command)
+    assert envelope["guarded_exec"] is None
+    assert envelope["delegated"] is None
+    assert envelope["process_closure"]["descendants"] == (
+        "declared-toolchains" if command[0] == "node" else "forbidden"
+    )
 
 
 def test_uv_console_script_binds_to_exact_project_interpreter_prefix() -> None:
@@ -3637,6 +3644,10 @@ def test_python_leaf_blocks_cargo_and_node_children_before_launch(
     assert "child-custody-violation" in context["source_custody"]["ineligible_reasons"]
     assert context["source_custody"]["evidence_eligible"] is False
     assert context["process_supervisor"]["receipt"]["complete"] is True
+    assert (
+        context["process_supervisor"]["receipt"]["capability"]["admission"]["state"]
+        == "admitted"
+    )
 
 
 def test_python_bootstrap_parser_preserves_interpreter_options_and_payload() -> None:
@@ -3969,6 +3980,7 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
     )
     assert supervisor["receipt"]["state"] == "COMPLETE"
     assert supervisor["receipt"]["complete"] is True
+    assert supervisor["receipt"]["capability"]["admission"]["state"] == "admitted"
     assert supervisor["receipt"]["accounting"]["process_creates"] == 1
     capture = context["toolchain_capture"]
     assert capture["telemetry"]["capture"]["full_capture_count"] == 1
@@ -4110,6 +4122,7 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     supervisor_receipt = context["process_supervisor"]["receipt"]
     assert supervisor_receipt["state"] == "COMPLETE"
     assert supervisor_receipt["complete"] is True
+    assert supervisor_receipt["capability"]["admission"]["state"] == "admitted"
     assert supervisor_receipt["violations"] == []
     if sys.platform == "win32":
         [broker] = context["platform_process_custody"]["prelaunch"]
@@ -16690,7 +16703,22 @@ def test_cached_python_authority_never_redirects_supervisor_build_layout(
     assert supervisor_generation.provision is provision
 
 
-@pytest.mark.parametrize("mode", ["direct", "relative", "absolute", "module"])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "direct",
+        "relative",
+        "absolute",
+        "module",
+        "compact-module",
+        "options-script",
+        "options-module",
+        "warning-compact",
+        "xoption-compact",
+        "py-module",
+        "uv-module",
+    ],
+)
 @pytest.mark.parametrize("name", ["cargo", "cargo.exe"])
 @pytest.mark.parametrize("explicit", [False, True])
 def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
@@ -16736,7 +16764,27 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
             if mode == "absolute"
             else ["tools/guarded_exec.py"]
         )
-        command = [sys.executable, *target, "--", *payload]
+        if mode in {
+            "compact-module",
+            "options-module",
+            "warning-compact",
+            "xoption-compact",
+            "py-module",
+            "uv-module",
+        }:
+            target = ["-mtools.guarded_exec"]
+        prefix = [sys.executable]
+        if mode.startswith("options-"):
+            prefix += ["-I", "-P", "-X", "dev", "--check-hash-based-pycs", "always"]
+            if mode == "options-script":
+                prefix += ["--"]
+        elif mode in {"warning-compact", "xoption-compact"}:
+            prefix += ["-W" if mode == "warning-compact" else "-X", "-m"]
+        elif mode == "py-module":
+            prefix = ["py", "-3.12"]
+        elif mode == "uv-module":
+            prefix = ["uv", "run", "python", "-P"]
+        command = [*prefix, *target, "--", *payload]
     env = {"CARGO": str(selected), "PATH": str(proxy_dir)}
     assert (
         execution_environment.environment_override_policy_error(
@@ -16765,7 +16813,10 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
     assert configured["CARGO"]["executable"]["path"] == custody_spelling(
         Path(env["CARGO"])
     )
-    exact = command_identity._exact_command(envelope, cwd=state.ROOT, env=env)
+    if mode in {"py-module", "uv-module"}:
+        exact = list(command)
+    else:
+        exact = command_identity._exact_command(envelope, cwd=state.ROOT, env=env)
     _guarded, delegated = command_identity._bind_delegated_command(
         envelope, exact, cwd=state.ROOT, env=env
     )
@@ -16773,6 +16824,11 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
     actual = command_admission._nested_command(exact) or exact
     assert actual == [str(expected), *payload[1:]]
     if mode != "direct":
+        assert exact[1 : len(prefix)] == prefix[1:]
+        # Launch preserves filesystem spelling; custody identities below normalize it.
+        assert exact[len(prefix)] == str(
+            (state.ROOT / "tools/guarded_exec.py").resolve()
+        )
         assert delegated["path"] == custody_spelling(expected)
         assert delegated["sha256"] == hashlib.sha256(expected.read_bytes()).hexdigest()
     # Exercise the Cargo identity owner too, stopping only before its version probe.
@@ -16968,12 +17024,15 @@ def test_native_c_registration_is_canonical_and_persisted_envelope_cannot_drop_i
         )
     )
     envelope = command_admission.envelope_for_command(command)
-    assert envelope["cargo_native_c_units"] == ["target"]
+    assert envelope["cargo_native_units"] == {"target": ["c"]}
     command_admission.validate_envelope(envelope, command)
     changed = dict(envelope)
-    changed["cargo_native_c_units"] = []
+    changed["cargo_native_units"] = {}
     with pytest.raises(ValueError):
         command_admission.validate_envelope(changed, command)
+    retired = dict(envelope, schema="molt.proof-command-envelope.v6")
+    with pytest.raises(ValueError):
+        command_admission.validate_envelope(retired, command)
 
 
 @pytest.mark.parametrize("spelling", ["split", "equals"])

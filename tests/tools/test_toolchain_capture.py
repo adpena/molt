@@ -394,7 +394,7 @@ def test_compact_process_inventories_are_bounded_and_full_capture_is_preserved(
     rust_images = [process_image_capture.capture_image("rust-linker", owned)]
     identity["rustc"]["process_images"] = rust_images
     identity["rustc"]["link_selection"] = {
-        "schema": "molt.proof-rust-link-selection-telemetry.v4",
+        "schema": "molt.proof-rust-link-selection-telemetry.v5",
         "target": None,
         "compiler_host": "x86_64-unknown-linux-gnu",
         "selection_probe_count": 1,
@@ -421,8 +421,8 @@ def test_compact_process_inventories_are_bounded_and_full_capture_is_preserved(
         ],
         "admitted_command": ["rustc"],
         "producer_command": ["rustc"],
-        "native_c_required": [],
-        "native_c": [],
+        "native_required": {},
+        "native_build": [],
         "command_semantics_sha256": canonical_json_sha256(["rustc"]),
     }
     compact = toolchain_capture.compact_toolchains(identity)
@@ -2161,10 +2161,10 @@ def test_wasi_sdk_closure_binds_helpers_and_complete_resources(tmp_path, mutatio
             toolchain_capture.capture_wasi_sdk_resources(selection)
 
 
-def _native_c_capture_fixture(
-    tmp_path, monkeypatch, *, required=True, resources=False, armed=True
+def _native_build_capture_fixture(
+    tmp_path, monkeypatch, *, required=True, resources=False, armed=True, operation="c"
 ):
-    """Real Rust/C capture boundary with independent compiler transcripts."""
+    """Real capture boundary with independent C/C++ driver transcripts."""
     from tools import proof_plan
 
     tools = {}
@@ -2173,12 +2173,14 @@ def _native_c_capture_fixture(
         "cargo",
         "linker",
         "selected-gcc",
+        "selected-g++",
         "selected-ar",
         "cc1",
+        "cc1plus",
         "as",
     ):
         directory = tmp_path / (
-            "helpers-outside-bin" if name in {"cc1", "as"} else "bin"
+            "helpers-outside-bin" if name in {"cc1", "cc1plus", "as"} else "bin"
         )
         directory.mkdir(exist_ok=True)
         path = directory / (name + (".exe" if os.name == "nt" else ""))
@@ -2192,18 +2194,19 @@ def _native_c_capture_fixture(
         metadata = _rust_metadata_probe(command, tmp_path)
         if metadata is not None:
             return metadata
-        if str(command[0]) == str(tools["selected-gcc"]):
+        if str(command[0]) in {str(tools["selected-gcc"]), str(tools["selected-g++"])}:
             assert "-###" in command
             assert Path(kwargs["cwd"]) != tmp_path
             assert all(
                 Path(value).is_file()
                 for value in command
-                if value.endswith((".c", ".S"))
+                if value.endswith((".c", ".cc", ".S"))
             )
             language = command[command.index("-x") + 1]
             # Independent absolute frontend and PATH-resolved assembler.
-            transcript = " " + json.dumps(str(tools["cc1"])) + ' "-E"\n'
-            if language == "c":
+            frontend = "cc1plus" if language == "c++" else "cc1"
+            transcript = " " + json.dumps(str(tools[frontend])) + ' "-E"\n'
+            if language in {"c", "c++"}:
                 transcript += " " + json.dumps(tools["as"].name) + ' "-o" "unit.o"\n'
             return subprocess.CompletedProcess(command, 0, "", transcript)
         # rustc archive creation has no linker command to print. Inspect the
@@ -2219,12 +2222,19 @@ def _native_c_capture_fixture(
         )
 
     monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    command_id, requirements = {
+        "c": ("wasm.build.host", {"target": ["c"]}),
+        "c++": ("mlir.test.backend", {"host": ["c++"]}),
+        "both": ("rust.test.runtime-extension-admission", {"target": ["c", "c++"]}),
+    }[operation]
+    if not required:
+        requirements = {}
     command = (
         list(
             next(
                 row.argv
                 for row in proof_plan.ProofPlan.load().commands
-                if row.id == "wasm.build.host"
+                if row.id == command_id
             )
         )
         if required
@@ -2233,6 +2243,7 @@ def _native_c_capture_fixture(
     environment = {
         "PATH": str(tools["as"].parent),
         "CC": str(tools["selected-gcc"]),
+        "CXX": str(tools["selected-g++"]),
         "AR": str(tools["selected-ar"]),
     }
     if resources:
@@ -2242,6 +2253,7 @@ def _native_c_capture_fixture(
         forced = tmp_path / "forced.h"
         forced.write_text("#define FORCED 1\n", encoding="utf-8")
         environment["CFLAGS"] = f"-I{includes} -include {forced}"
+        environment["CXXFLAGS"] = f"-I{includes} -include {forced}"
     images, selection = toolchain_capture.capture_rust_link_process_images(
         rustc=tools["rustc"],
         cargo=tools["cargo"],
@@ -2251,14 +2263,14 @@ def _native_c_capture_fixture(
         rustc_version="rustc 1.99.0\nhost: x86_64-unknown-linux-gnu\n",
         command_argv=command,
         admitted_command=command,
-        native_c_units=["target"] if required else [],
+        native_units=requirements,
     )
     if armed:
         _, selection = toolchain_capture.revalidate_rust_link_process_images(
             {"process_images": images, "link_selection": selection},
             target=None,
             command_argv=command,
-            required_native_c=["target"] if required else [],
+            required_native_units=requirements,
         )
     compiler = process_image_capture.capture_image("rustc", tools["rustc"])
     identity = {
@@ -2320,12 +2332,12 @@ def _equivalent_image_spelling(path: str, spelling: str) -> str:
 def test_rust_image_membership_preserves_os_equivalent_spellings(
     tmp_path, monkeypatch, spelling, coordinate
 ):
-    identity, _tools, env, _command, calls = _native_c_capture_fixture(
+    identity, _tools, env, _command, calls = _native_build_capture_fixture(
         tmp_path, monkeypatch
     )
     prior_calls = list(calls)
     selection = identity["link_selection"]
-    native = selection["native_c"][0]
+    native = selection["native_build"][0]
     if coordinate == "images":
         for row in identity["process_images"]:
             row["path"] = _equivalent_image_spelling(row["path"], spelling)
@@ -2339,14 +2351,14 @@ def test_rust_image_membership_preserves_os_equivalent_spellings(
                 for field in ("path", "content_path"):
                     row[field] = _equivalent_image_spelling(row[field], spelling)
     elif coordinate == "native-compiler":
-        command = native["selection"]["compiler"]
+        command = native["selection"]["compilers"]["c"]
         changed = _equivalent_image_spelling(command[0], spelling)
         command[0] = changed
-        native["compiler"]["command"][0] = changed
-        for probe in native["compiler"]["probes"]:
+        native["compilers"]["c"]["command"][0] = changed
+        for probe in native["compilers"]["c"]["probes"]:
             probe["argv"][0] = changed
     elif coordinate == "native-helper":
-        for phase in native["compiler"]["phases"]:
+        for phase in native["compilers"]["c"]["phases"]:
             for helper in phase["helpers"]:
                 helper["path"] = _equivalent_image_spelling(helper["path"], spelling)
     else:
@@ -2358,7 +2370,7 @@ def test_rust_image_membership_preserves_os_equivalent_spellings(
         == selection
     )
     assert toolchain_capture.native_compiler_selection_is_current(
-        native["compiler"], env=env
+        native["compilers"]["c"], env=env
     )
     assert calls == prior_calls, "structural verification must not run probes"
 
@@ -2381,12 +2393,12 @@ def test_rust_image_membership_preserves_os_equivalent_spellings(
 def test_rust_image_membership_rejects_non_equivalent_custody(
     tmp_path, monkeypatch, mutation
 ):
-    identity, _tools, _env, _command, _calls = _native_c_capture_fixture(
+    identity, _tools, _env, _command, _calls = _native_build_capture_fixture(
         tmp_path, monkeypatch
     )
     selection = identity["link_selection"]
     unit = selection["units"][0]
-    native = selection["native_c"][0]
+    native = selection["native_build"][0]
     if mutation in {"different-path", "archiver"}:
         original = Path(unit["process_resolution"][0]["path"])
         foreign = tmp_path / "same-bytes-different-coordinate"
@@ -2422,9 +2434,9 @@ def test_rust_image_membership_rejects_non_equivalent_custody(
         )
         identity["process_images"].append(row)
     elif mutation == "helper-digest":
-        native["compiler"]["phases"][0]["helpers"][0]["sha256"] = "0" * 64
+        native["compilers"]["c"]["phases"][0]["helpers"][0]["sha256"] = "0" * 64
     else:
-        helper = native["compiler"]["phases"][0]["helpers"][0]
+        helper = native["compilers"]["c"]["phases"][0]["helpers"][0]
         for row in identity["process_images"]:
             if row["path"] == helper["path"]:
                 row["role"] = "rust-link-helper"
@@ -2446,16 +2458,16 @@ def test_rust_image_membership_rejects_non_equivalent_custody(
 def test_native_c_capture_uses_actual_helpers_and_independent_archiver(
     tmp_path, monkeypatch
 ):
-    identity, tools, env, command, calls = _native_c_capture_fixture(
+    identity, tools, env, command, calls = _native_build_capture_fixture(
         tmp_path, monkeypatch
     )
     selected = toolchain_capture.validate_rust_link_selection(
-        identity, required_native_c=["target"]
+        identity, required_native_units={"target": ["c"]}
     )
-    unit = selected["native_c"][0]
-    assert unit["selection"]["compiler"] == [str(tools["selected-gcc"])]
+    unit = selected["native_build"][0]
+    assert unit["selection"]["compilers"]["c"] == [str(tools["selected-gcc"])]
     assert unit["selection"]["archiver"] == str(tools["selected-ar"])
-    assert [row["language"] for row in unit["compiler"]["phases"]] == [
+    assert [row["language"] for row in unit["compilers"]["c"]["phases"]] == [
         "c",
         "assembler-with-cpp",
     ]
@@ -2469,36 +2481,42 @@ def test_native_c_capture_uses_actual_helpers_and_independent_archiver(
     assert sum("-###" in command for command in calls) == 2
     before = len(calls)
     toolchain_capture.revalidate_rust_link_process_images(
-        identity, target=None, command_argv=command, required_native_c=["target"]
+        identity,
+        target=None,
+        command_argv=command,
+        required_native_units={"target": ["c"]},
     )
     assert len(calls) == before
-    assert toolchain_capture.native_c_environment(selected)[
+    assert toolchain_capture.native_build_environment(selected)[
         "CC_x86_64_unknown_linux_gnu"
     ] == str(tools["selected-gcc"])
     assert toolchain_capture.native_compiler_selection_is_current(
-        unit["compiler"], env=env
+        unit["compilers"]["c"], env=env
     )
 
 
 @pytest.mark.parametrize("member", ["selected-gcc", "selected-ar", "cc1", "as"])
 def test_native_c_capture_refuses_changed_actual_image(tmp_path, monkeypatch, member):
-    identity, tools, _env, command, _calls = _native_c_capture_fixture(
+    identity, tools, _env, command, _calls = _native_build_capture_fixture(
         tmp_path, monkeypatch
     )
     tools[member].write_bytes(b"replacement")
     with pytest.raises(ValueError, match="changed while live custody armed"):
         toolchain_capture.revalidate_rust_link_process_images(
-            identity, target=None, command_argv=command, required_native_c=["target"]
+            identity,
+            target=None,
+            command_argv=command,
+            required_native_units={"target": ["c"]},
         )
 
 
 def test_rust_only_capture_has_no_native_c_probe_or_selection(tmp_path, monkeypatch):
-    identity, _tools, _env, _command, calls = _native_c_capture_fixture(
+    identity, _tools, _env, _command, calls = _native_build_capture_fixture(
         tmp_path, monkeypatch, required=False
     )
-    assert identity["link_selection"]["native_c"] == []
+    assert identity["link_selection"]["native_build"] == []
     assert not any("-###" in command for command in calls)
-    toolchain_capture.validate_rust_link_selection(identity, required_native_c=[])
+    toolchain_capture.validate_rust_link_selection(identity, required_native_units={})
 
 
 @pytest.mark.parametrize(
@@ -2510,30 +2528,30 @@ def test_native_c_capture_receivers_reject_resealed_omissions(
 ):
     import copy
 
-    identity, _tools, _env, _command, _calls = _native_c_capture_fixture(
+    identity, _tools, _env, _command, _calls = _native_build_capture_fixture(
         tmp_path, monkeypatch
     )
     cas = tmp_path / "cas"
     _, reference, _ = toolchain_capture.publish_capture(cas, {"rustc": identity})
     changed = copy.deepcopy(identity)
     if mutation == "units":
-        changed["link_selection"]["native_c"] = []
+        changed["link_selection"]["native_build"] = []
     elif mutation == "required":
-        del changed["link_selection"]["native_c_required"]
+        del changed["link_selection"]["native_required"]
     elif mutation == "phase":
-        changed["link_selection"]["native_c"][0]["compiler"]["phases"].pop()
+        changed["link_selection"]["native_build"][0]["compilers"]["c"]["phases"].pop()
     elif mutation == "command":
         changed["link_selection"]["admitted_command"] = []
-        changed["link_selection"]["native_c"] = []
-        changed["link_selection"]["native_c_required"] = []
+        changed["link_selection"]["native_build"] = []
+        changed["link_selection"]["native_required"] = []
     elif mutation == "resources":
-        changed["link_selection"]["native_c"][0]["resources"] = None
+        changed["link_selection"]["native_build"][0]["resources"] = None
     else:
         changed["process_images"] = [
             row
             for row in changed["process_images"]
             if not (
-                row["role"].endswith("-archiver")
+                row["role"].startswith("rust-build-native-archiver-")
                 if mutation == "archiver"
                 else "helpers-outside-bin" in row["path"]
             )
@@ -2571,7 +2589,7 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
     monkeypatch.setattr(
         command_identity, "_directory_manifest_identity", counted_directory
     )
-    identity, tools, env, command, _calls = _native_c_capture_fixture(
+    identity, tools, env, command, _calls = _native_build_capture_fixture(
         tmp_path, monkeypatch, resources=True, armed=False
     )
     assert directory_calls == []
@@ -2591,7 +2609,7 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
         cwd=tmp_path,
         env=env,
         command_argv=command,
-        native_c_units=["target"],
+        native_units={"target": ["c"]},
     )
     assert directory_calls == [] and len(_calls) == probes
     if mutation == "new-member":
@@ -2605,7 +2623,7 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
     )
     envelope = command_admission.envelope_for_command(command)
     assert envelope["toolchains"] == ["rustc", "cargo", "git"]
-    assert envelope["cargo_native_c_units"] == ["target"]
+    assert envelope["cargo_native_units"] == {"target": ["c"]}
     env["CARGO"] = str(tools["cargo"])
     # Git is admitted for source custody in addition to the build's Rust tools.
     # Give it a real executable image on this fixture's exclusive PATH.
@@ -2676,7 +2694,7 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
             == located[name]["configuration_files"]
         )
     assert directory_calls == [tmp_path / "include"]
-    assert identity["link_selection"]["native_c"][0]["resources"] is None
+    assert identity["link_selection"]["native_build"][0]["resources"] is None
     files = {
         process_image_capture._image_path_key(Path(row.path))
         for row in toolchain_capture.frozen_files(captured)
@@ -2721,7 +2739,7 @@ def test_native_c_armed_capture_covers_membership_and_reads_each_input_once(
             captured["rustc"],
             target=None,
             command_argv=command,
-            required_native_c=["target"],
+            required_native_units={"target": ["c"]},
         )
 
 
@@ -2733,13 +2751,13 @@ def test_native_c_resource_receivers_reject_resealed_substitutions(
 ):
     import copy
 
-    identity, _tools, _env, _command, _calls = _native_c_capture_fixture(
+    identity, _tools, _env, _command, _calls = _native_build_capture_fixture(
         tmp_path, monkeypatch, resources=True
     )
     cas = tmp_path / "cas"
     _, reference, _ = toolchain_capture.publish_capture(cas, {"rustc": identity})
     changed = copy.deepcopy(identity)
-    resources = changed["link_selection"]["native_c"][0]["resources"]
+    resources = changed["link_selection"]["native_build"][0]["resources"]
     file = next(row for row in resources if "path" in row)
     if mutation == "digest":
         file.pop("sha256")
@@ -2843,7 +2861,7 @@ def test_native_c_phase_failure_preserves_completed_probe_diagnostics(
 
 
 def test_native_c_cross_target_requires_actual_effective_command(tmp_path, monkeypatch):
-    _identity, tools, env, command, calls = _native_c_capture_fixture(
+    _identity, tools, env, command, calls = _native_build_capture_fixture(
         tmp_path, monkeypatch
     )
     calls.clear()
@@ -2859,7 +2877,7 @@ def test_native_c_cross_target_requires_actual_effective_command(tmp_path, monke
             env=env,
             target="aarch64-unknown-linux-gnu",
             command_argv=command,
-            native_c_units=["target"],
+            native_units={"target": ["c"]},
             rustc_version="rustc 1.99.0\nhost: x86_64-unknown-linux-gnu\n",
         )
     assert not any("-###" in argv for argv in calls)
@@ -3032,7 +3050,7 @@ def test_rust_artifact_capture_retains_admitted_cargo_role_after_custom_binding(
     from tools import proof_plan
     from tools.proof_queue_pkg import command_admission, command_identity
 
-    _identity, tools, env, _command, _calls = _native_c_capture_fixture(
+    _identity, tools, env, _command, _calls = _native_build_capture_fixture(
         tmp_path, monkeypatch, required=False
     )
     selected_name = "custom-cargo" if owner != "rustc" else "rustc"
@@ -3106,7 +3124,7 @@ def test_rust_artifact_capture_retains_admitted_cargo_role_after_custom_binding(
 def test_parent_traversal_cannot_borrow_another_captured_image(
     tmp_path, monkeypatch, same_bytes, coordinate
 ):
-    identity, tools, _env, _command, _calls = _native_c_capture_fixture(
+    identity, tools, _env, _command, _calls = _native_build_capture_fixture(
         tmp_path, monkeypatch
     )
     original = tools["linker" if coordinate == "resolution" else "cc1"]
@@ -3132,7 +3150,7 @@ def test_parent_traversal_cannot_borrow_another_captured_image(
             "content_path"
         ] = str(witness)
     else:
-        compiler = identity["link_selection"]["native_c"][0]["compiler"]
+        compiler = identity["link_selection"]["native_build"][0]["compilers"]["c"]
         helper = compiler["phases"][0]["helpers"][0]
         helper["path"] = str(witness)
         helper["command"][0] = str(witness)
@@ -3166,3 +3184,141 @@ def test_image_membership_diagnostic_bounds_untrusted_coordinates():
     assert detail["captured_images_truncated"] is True
     assert len(str(error)) < 12000
     assert detail["content_path"] == "c" * 512
+
+
+@pytest.mark.parametrize(
+    "operation,requirements,drivers",
+    [
+        ("c++", {"host": ["c++"]}, {"selected-g++"}),
+        ("both", {"target": ["c", "c++"]}, {"selected-gcc", "selected-g++"}),
+    ],
+)
+def test_native_cpp_capture_keeps_driver_helpers_language_and_build_role(
+    tmp_path, monkeypatch, operation, requirements, drivers
+):
+    identity, tools, _env, command, calls = _native_build_capture_fixture(
+        tmp_path, monkeypatch, operation=operation
+    )
+    selection = toolchain_capture.validate_rust_link_selection(
+        identity,
+        required_native_units=requirements,
+        full_capture=True,
+    )
+    native = selection["native_build"]
+    assert len(native) == 1
+    assert native[0]["selection"]["units"] == requirements
+    assert {str(tools[name]) for name in drivers} == {
+        call[0] for call in calls if "-###" in call
+    }
+    assert sum("-###" in call for call in calls) == 2 * len(drivers)
+    assert native[0]["compilers"]["c++"]["language"] == "c++"
+    assert native[0]["compilers"]["c++"]["phases"][0]["helpers"][0]["path"] == str(
+        tools["cc1plus"]
+    )
+    frozen = {str(row.path) for row in toolchain_capture.frozen_files(identity)}
+    assert str(tools["cc1plus"]) in frozen
+    assert str(tools["selected-g++"]) in frozen
+    assert (
+        sum(
+            row["role"].startswith("rust-build-native-archiver-")
+            for row in identity["process_images"]
+        )
+        == 1
+    )
+    before = list(calls)
+    toolchain_capture.revalidate_rust_link_process_images(
+        identity,
+        target=None,
+        command_argv=command,
+        required_native_units=requirements,
+    )
+    assert calls == before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["language", "role", "compiler", "helper", "extra-language", "retired-schema"],
+)
+def test_native_cpp_receipt_refuses_resealed_language_role_and_helper_omissions(
+    tmp_path, monkeypatch, mutation
+):
+    import copy
+
+    identity, tools, _env, _command, _calls = _native_build_capture_fixture(
+        tmp_path, monkeypatch, operation="c++"
+    )
+    changed = copy.deepcopy(identity)
+    native = changed["link_selection"]["native_build"][0]
+    if mutation == "retired-schema":
+        changed["link_selection"]["schema"] = (
+            "molt.proof-rust-link-selection-telemetry.v4"
+        )
+    elif mutation == "language":
+        native["compilers"]["c++"]["language"] = "c"
+    elif mutation == "role":
+        native["selection"]["units"] = {"target": ["c++"]}
+    elif mutation == "compiler":
+        del native["selection"]["compilers"]["c++"]
+    elif mutation == "extra-language":
+        native["selection"]["compilers"]["c"] = [str(tools["selected-gcc"])]
+    else:
+        changed["process_images"] = [
+            row
+            for row in changed["process_images"]
+            if row["path"] != str(tools["cc1plus"])
+        ]
+        changed["link_selection"]["selected_process_count"] -= 1
+    changed.pop("identity_sha256")
+    changed["identity_sha256"] = canonical_json_sha256(changed)
+    with pytest.raises(ValueError):
+        toolchain_capture.publish_capture(tmp_path / "cas", {"rustc": changed})
+
+
+def test_native_c_and_cpp_share_one_armed_resource_inventory(tmp_path, monkeypatch):
+    from tools.proof_queue_pkg import command_identity
+
+    observed = []
+    real = command_identity._directory_manifest_identity
+
+    def directory(path, **kwargs):
+        observed.append(path)
+        return real(path, **kwargs)
+
+    monkeypatch.setattr(command_identity, "_directory_manifest_identity", directory)
+    identity, _tools, _env, command, _calls = _native_build_capture_fixture(
+        tmp_path, monkeypatch, operation="both", resources=True, armed=False
+    )
+    assert observed == []
+    _images, selection = toolchain_capture.revalidate_rust_link_process_images(
+        identity,
+        target=None,
+        command_argv=command,
+        required_native_units={"target": ["c", "c++"]},
+    )
+    assert observed == [tmp_path / "include"]
+    resources = selection["native_build"][0]["resources"]
+    assert {row["selected_root"] for row in resources} == {
+        str(tmp_path / "include"),
+        str(tmp_path / "forced.h"),
+    }
+
+
+@pytest.mark.parametrize("required", [{}, {"target": ["c++"]}, {"host": ["c"]}])
+def test_native_build_requirement_mismatch_refuses_before_any_probe(
+    tmp_path, monkeypatch, required
+):
+    _identity, tools, env, command, calls = _native_build_capture_fixture(
+        tmp_path, monkeypatch, operation="c++"
+    )
+    calls.clear()
+    with pytest.raises(ValueError, match="requirements differ from admitted command"):
+        toolchain_capture.capture_rust_link_process_images(
+            rustc=tools["rustc"],
+            cargo=tools["cargo"],
+            cwd=tmp_path,
+            env=env,
+            target=None,
+            command_argv=command,
+            native_units=required,
+        )
+    assert calls == [], "rejected authority must not launch metadata or compiler probes"

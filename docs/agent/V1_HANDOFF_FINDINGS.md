@@ -42,11 +42,116 @@ failures must be traced to their shared cause as well. Reconcile uncovered
 instances and missing qualification into the existing owning open requirement;
 retain the historical repair evidence without treating it as release acceptance.
 
-Current integration evidence (2026-10-09 UTC): draft PR119 is not merged into
-main. Candidate `5a6758e90` fails Docs Gates, both Python unit cells, native
-integration and Windows portability in CI `37974432198`; Rust and WASM results
-are still pending. Static, LLVM, security, formal and the other portability jobs
-pass. The working successor repairs the development-side consumer failures:
+Integration decision (2026-10-10 UTC): current main is the canonical base and
+one parent integrator owns reconciliation, qualification and landing. The
+qualified ABI/supervisor unit landed at `9d943eddd`, reconciled with `50d52e471` and preserving its
+newer Windows invocation/custody, R6 admission, cache-validation and intrinsic
+retirement changes. Other committed branches and private runtime/measurement
+capsules retain their source custody; their existence is not release acceptance.
+
+Historical CI `38050591959` at `ed9c7c308` remains red: the Rust micro partition has
+777 passes, one import-error allocation-denial fixture failure and two ignores;
+Windows reports changed CPython runtime/import selection in its installed-record
+hash test; macOS reports two raw-child-stream timeout failures; WASM reports a
+10.39 MB shared runtime against the unchanged 5 MB limit and finally/pending
+observer parity failure. These remain assigned to their existing release
+obligations. The current integration does not claim to close those failures.
+
+The successor landed at `df5226c5f` and repairs the import/sequence/dictionary allocation-denial fixtures
+through the real emergency C-API channel. All three changed tests pass in
+independent Linux/aarch64 dev-fast micro-runtime processes, as does the sparse
+dictionary snapshot ownership control. Native C build custody is now declared
+for nineteen additional confirmed native-runtime command/lane consumers;
+direct and wrapped admission retain the declarations. WASM-only and frontend-only
+commands keep their distinct tool requirements. These are development-side
+checks and add no emitted-binary work.
+
+The unused pass-crate BOLT placeholder and both exports are retired; the existing
+native-link BOLT pipeline remains authoritative and its sixteen focused checks
+pass. The removed code had no production caller, fabricated a speedup estimate,
+and emitted a comment-only macOS order file. Measured macOS profile-derived
+ordering remains open. The ABI lane now collects every test executable's result
+with `--no-fail-fast`; its topology and admission cohort passes 211 checks.
+Bootstrap-parser and Windows launch-spelling fixtures retain their independent
+identity/output oracles; their focused cohorts pass 38 and 50 checks on macOS.
+Actual Windows replay remains required.
+
+The Linux/aarch64 Rust replay at `b52360cf0` has complete native custody and closed
+descendants: WASM backend, pass, and ownership-contract cohorts pass 305, 946,
+and 286 tests respectively. The full partition still fails because
+`object::accessors::tests::frame_storage_collects_inline_and_dictionary_cycles_before_scope_exit`
+segfaults. A fresh-process exact replay reproduces that crash without an RSS
+violation. Exact-image fault tracing locates the crash before collection: native
+pointer decoding sign-extends a valid Linux/AArch64 stack address whose bit 47
+is set. The runtime's decoder and six native-codegen sites share this defect.
+The unsigned 48-bit address correction, all-profile wide-address rejection,
+complete native consumer migration and incompatible-artifact ABI witness update
+pass the Linux/aarch64 runtime partition at `d43dab3cb`: 781 runtime tests
+(two existing ignores), 305 WASM backend, 946 pass, 286 ownership-contract and
+one raw-symbol check. This includes the original crashing frame-cycle case.
+The failing image and fault evidence remain retained. The final checked boxer
+is explicitly inlined at `b26875812`; alternating optimized macOS/AArch64
+microprobes measure decode medians of 0.365/0.366 ns and boxing medians of
+0.391/0.403 ns before/after. The decoder remains one machine instruction and
+boxing has no added hot-path call. These advisory samples establish neither
+an end-to-end speedup nor cross-platform performance acceptance.
+
+The compiler partition at `493082f25` passes all 1,386 tests with complete
+native custody, no violations and closed descendants. It exercises the actual
+Cranelift result, object-model address boundaries and incompatible ABI link
+witnesses in both threading modes. Six prior AArch64 execution failures shared
+one fixture defect: a Rust provider archive was passed after its dependencies
+as a raw linker argument. The shared native/LLVM helper now uses an actual
+Rust crate dependency and preserves its generated-object C ABI and independent
+behavioral oracles. LLVM at `37637b871` passes all 169 selected tests on
+Linux/aarch64 with LLVM 22.1.8, including both shared native-execution fixtures
+and the unsigned-address decoder; native custody is complete with no violations
+and closed descendants. The Windows supervisor now preserves `NTSTATUS`
+through its debug-event continuation boundary, reusing the preserved repair;
+its MSVC all-targets cross-check passes with unchanged source and tool images.
+Actual macOS/Windows execution remains unverified; these results do not qualify
+the full release matrix.
+
+The same compiler replay exposed undeclared Criterion/alloca C compilation.
+The existing compiler partition now owns that target-C obligation and the
+object-model/ABI-link tests; four LLVM rows declare their actual llvm-sys C
+wrapper compilation. The bounded dependency census also finds host C++ in
+MLIR's tblgen build and target C++ in full-runtime simdutf consumers. The
+role/language migration at `65b3deec1` replaces the C-only declaration through
+admission, selection, published compiler environment, image/resource capture,
+receipt validation and reuse. Shared host/target triples retain both role
+obligations and one resource inventory; host-only C++ does not select unused C.
+The final focused cohort passes 113 checks (12 platform skips), with 794 passes
+in the broader consumer cohort. Its disk-blocked Cargo timeout/cache fixture
+passes on Linux. After the test fixture supplies the real compiler's complete
+launcher/content identity, all four Rust/C/C++/combined capture cells pass at
+`047cb630f`. The actual GCC C++ compile produces an ELF object under the native
+supervisor; removing its `cc1plus` image is independently refused and produces
+no object. Source and tool images remain unchanged across execution.
+The full-runtime/MLIR build consumers, cold/warm reuse, and actual macOS/Windows
+execution remain release-acceptance obligations under V1-12. These are
+strictly development-side checks and add no work to emitted binaries.
+Main CI `38063172584` at `df5226c5f` retains the runtime lifecycle cascade:
+seven serial children pass, while the parallel child reports 480 failures after
+unnamed-worker class retirement finds surviving native owners. This is an
+observed shared failure mechanism, not evidence of 480 independent defects.
+The preserved GC, thread-identity and joined-service proposals remain unqualified.
+The same CI reports a macOS SIGTERM cleanup failure (2,100 other Python tests
+pass) and a macOS runtime build exceeding its 2.29 GB process-tree budget with
+unresolved artifact custody. Their existing V1-12/resource/closure obligations
+remain open. The Windows compile failure is repaired above; native Windows
+replay is still required. Metadata-only Windows Cargo checks also expose an
+unnecessary target-linker requirement in the development proof selector; its
+operation family must be corrected without weakening host proc-macro linking.
+
+Historical integration evidence: PR119 merged at `5a6758e90` on 2026-10-10.
+The clean Linux ABI qualification at `bb2b77bca` is recorded below.
+Historical CI `37974432198` for
+`5a6758e90` fails Docs Gates, both Python unit cells, native integration, Rust
+and Windows portability. WASM also fails: the split runtime is 10.46 MB against the unchanged 5 MB limit
+(39 sibling tests pass), and the finally/pending-observer build exceeds its
+600-second command budget with descendant closure and Cargo recovery unresolved.
+Static, LLVM, security, formal and the other portability jobs pass. The working successor repairs the development-side consumer failures:
 six file entrypoints bind the existing repository import authority before project
 imports; the import audit examines actual module guards; twenty shared-stdlib
 test patches use isolated module views; and the test-only dead-code inventory
@@ -66,6 +171,19 @@ are removed from two Python-only rows. The broader affected cohort reports
 sibling consumers pass all 32 focused checks after migration. These cohorts
 overlap and do not establish full hosted or target qualification.
 
+The integration successor reconciles upstream `70bd0467f` with committed
+`7bcd00b959`. Explicit compiler selection now flows from the existing release
+lane through installed compiler features, installed build commands and both
+benchmark producers; obsolete environment selection and duplicate scoreboard
+selectors are removed. Asyncio private bindings retain the context-owning task
+registration contract. The merged consumer cohort passes 1,831 checks and
+exposes eleven stale-fixture failures. Those failures and sibling missing-argument
+consumers are migrated; all 65 focused checks pass. All 28 reproducible generated
+projections are current. The merged policy cohort passes 380 checks with one
+slow deselection; formatting, dead-code, structural, test-ownership and documentation
+audits pass. Hosted/target replay remains required; these overlapping local
+cohorts do not establish main landing or release acceptance.
+
 Windows reports successful tests and closed process descendants but fails
 temporary-directory retirement on real trailing-dot/space entries. The working
 deletion authority preserves verbatim root spelling through the existing
@@ -82,7 +200,89 @@ pool ownership family. Review also finds that process-global shared-call tokens
 can collide across the two Python thread APIs or isolates, replacing and later
 consuming a callable under the wrong runtime owner. Complete payload-identity
 and service migration, compiled execution and cost qualification remain required
-before this family can land.
+before this family can land. The latest Rust micro partition reports 777 passes,
+one failure and two ignored cases: the import-error allocation-denial fixture
+incorrectly expects a heap exception instead of the emergency raised channel.
+The same defect exists in the sequence-snapshot denial fixture. Their successor
+checks the real C API for MemoryError identity and negative type matching while
+allocation remains denied, preserves pending state until clear, and retains
+the successful recovery and reference-ownership oracles. The independent micro
+runtime replays above qualify these fixture corrections; they do not qualify
+the frame-cycle crash or GC/lifecycle failures.
+
+Current execution order is frame-cycle and runtime shutdown ownership repair,
+complete runtime integration and execution, then guarded measurement
+and WASM size qualification.
+The upstream reconciliation is committed at `512a00667`. ABI fixture repairs now
+use one immutable hook profile per binary, reject conflicting normalized tables
+before thread-state attachment, prove that the mapping fixture can actually
+allocate a list, and inspect surrogate names through the Unicode code-point API.
+Their complete Linux/aarch64 dev-fast ABI family is qualified at `bb2b77bca`.
+The clone-child ordering failure exposed a preserved supervisor repair that had
+not reached the candidate.
+That successor and its current receipt consumers are now integrated: 99 Linux
+native checks pass with closed descendants and unchanged source/tool images;
+247 Python consumer checks pass with 30 platform skips. Delegation now uses the
+existing Python parser's actual target boundary, so test filenames and other
+payload data cannot masquerade as wrappers; affected binding controls pass.
+The broad Python run also exposes separate release obligations: R6 commands
+conflict with exact registered entrypoint admission, one relative-path fixture
+still expects retired parent traversal, and a macOS executable-absence test
+fails during native supervisor provisioning before reaching its intended oracle.
+The R6 admission/registration correction is now preserved from current main;
+its three versioned named-lane fixtures and CI enrollment reuse the existing
+upstream branch repair. The unrelated relative-path and executable-absence
+fixture qualifications remain open. Two Python cohorts observe interpreter ctime-only metadata
+drift with unchanged bytes, inode, path, mode and mtime; their original strict
+image-fence failures are retained and are not claimed as clean qualification.
+The complete Linux ABI development run now passes all 764 tests with one
+intentional helper ignore, admitted complete native supervision, no native
+violations, closed descendants and unchanged source content. This exposed and
+repaired two incomplete fixture capabilities: sequence hooks now enter the
+existing class-binding transaction, and the member-string fixture supplies the
+shared byte owner needed to construct structured UnicodeDecodeError. The initial dirty-source run was correctly withheld from release evidence.
+Replay of clean commit `bb2b77bca` passes the same 764 tests, with unchanged
+source, evidence-eligible custody and complete native supervision. This closes
+the Linux ABI fixture unit; Windows/macOS ABI execution, runtime lifecycle,
+standalone guest and performance qualification remain open. Earlier output-root and
+native-C declaration refusals are infrastructure results, not ABI failures.
+All of this qualification apparatus runs on the development side.
+
+Private reconciliation against observed main `e5e02838a` preserves that qualified
+ABI/native-supervisor source, the single validated release-lane compiler selector,
+and upstream Cargo admission changes. Nine merge conflicts are resolved; the
+changed-source compilation sweep also catches and removes duplicate required
+fixture arguments in two automatically merged consumers. Independent review
+finds no further blocker within this merge. The reconciled consumer cohort passes
+410 checks and six focused ABI-lane controls with unchanged source/tool images
+and closed descendants; generated projections and inventory checks pass.
+That ownership question is resolved by the integration decision above. The
+subsequent reconciliation with `ed9c7c308` keeps the canonical Python invocation
+parser and exact registered-command precedence, removing the duplicate wrapper
+heuristics. Its R6/prepared-lane cohort passes 47 checks, and its delegation
+cohort passes 76 checks in the selected checkout's locked Python environment.
+Real Linux receipt-consumer replay passes both nonce/transcript substitution
+and raw-receipt-generation controls after correcting one stale partial binding;
+all callers of that shared fixture were inspected. The earlier macOS build-floor
+refusal did not exercise that binding. These successful runs have unchanged
+source/tool images and closed descendants. The older foreign-editable-environment
+and stale-fixture failures remain retained as failures, not qualification.
+The ABI and native supervisor Rust sources are unchanged from their accepted
+Linux runs. This establishes the reconciled consumer contract; Windows/macOS
+native execution, runtime performance and release-wide acceptance remain open.
+HF-114 subsequently landed on main `50d52e471`; its test-session/artifact-root
+changes are preserved in the same integration. The resulting consumer cohorts
+pass 329 checks (32 platform skips, two native cases routed to Linux) and 76
+delegation checks. Both real Linux native cases pass again with those upstream
+changes; source/tool fences and descendant closure remain clean. No competing
+implementation of the already-landed HF-114 family is retained.
+
+The reviewed shutdown successor repairs admitted callback reentry during
+Finalizing and remains unintegrated until its complete family can be exercised.
+Measurement and WASM work remain recorded obligations, with no additional
+implementation lane opened while these first two units close. New findings
+interrupt the active unit only when required for its correctness or acceptance;
+other findings retain their existing release obligation and owner in this ledger.
 
 The working successor now unifies the installed and source release-lane
 inventory, includes LLVM in the production compiler feature tuple, and carries

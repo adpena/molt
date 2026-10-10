@@ -340,7 +340,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "1a168b707fb27a567a549906cf9f7e22b82983afb51be5b7765899ecd977c3de",
+  "authority_sha256": "56c0367de1a46d7f2f15c20de224c2b09a6e3d795a92e08e0254f738532551ff",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -926,6 +926,12 @@
         "proof-results/nightly/prepare"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [],
       "evidence_outputs": [
@@ -1102,6 +1108,12 @@
         "examples/hello.py"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [],
       "env": {
@@ -1140,6 +1152,12 @@
         "proof-results/nightly/deterministic-runtime.json"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [
         "nightly.determinism.compiler-prewarm"
@@ -1212,6 +1230,12 @@
         "examples/hello.py"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [],
       "env": {
@@ -1249,6 +1273,12 @@
         "proof-results/reproducibility-tier3.json"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [
         "nightly.verification-t3.compiler-prewarm"
@@ -1285,6 +1315,12 @@
         "proof-results/fuzz-compiler-extended.json"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [
         "nightly.verification-t3.compiler-prewarm"
@@ -1350,6 +1386,12 @@
         "tests/differential"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [
         "nightly.verification-t3.compiler-prewarm"
@@ -1824,9 +1866,12 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_native_c_units": [
-        "target"
-      ],
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "macos-arm64-py312-rust-native-dev",
       "dependencies": [],
       "family": "platform_portability",
@@ -1855,9 +1900,12 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_native_c_units": [
-        "target"
-      ],
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-aarch64-py312-rust-native-dev",
       "dependencies": [],
       "family": "platform_portability",
@@ -1892,6 +1940,12 @@
         "120"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "macos-arm64-py312-rust-native-dev",
       "dependencies": [],
       "family": "platform_portability",
@@ -2664,6 +2718,7 @@
         "tests/test_gen_runtime_profile_schema.py",
         "tests/test_gen_stringprep_tables.py",
         "tests/test_proof_plan.py",
+        "tests/tools/test_named_lanes.py",
         "tests/test_browser_asset_closure.py",
         "tests/test_l7_numeric_attestation_runner.py",
         "tests/test_perf_regression.py",
@@ -2859,9 +2914,11 @@
         "molt-wasm-host"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_native_c_units": [
-        "target"
-      ],
+      "cargo_native_units": {
+        "target": [
+          "c"
+        ]
+      },
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [],
       "family": "wasm",
@@ -3705,6 +3762,12 @@
         "tests/test_finally_pending_observer_parity.py::test_finally_pending_observer_native_wasm_parity"
       ],
       "cache_domain": "pytest",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -3765,6 +3828,12 @@
         "tests/differential/stdlib/cpython312plus_api_gap_submodule_encodings_mbcs_35072d4b.py"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-py312-wasm-dev",
       "dependencies": [
         "wasm.build.backend",
@@ -5613,6 +5682,12 @@
         "tests/test_bench_tool.py::test_bench_cli_native_smoke_contract_batch_reuses_compiler"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [],
       "family": "native_integration",
@@ -5646,6 +5721,12 @@
         "tests/cli/test_backend_daemon_sequential.py"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-py312-native-dev",
       "dependencies": [],
       "family": "native_integration",
@@ -5795,9 +5876,12 @@
         "tools/run_cargo_test_truth.py"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_native_c_units": [
-        "target"
-      ],
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -5835,10 +5919,14 @@
         "generated_artifact_custody",
         "--test",
         "ir_contract_validation",
+        "--test",
+        "generated_object_abi_link",
         "-p",
         "molt-artifact-publish",
         "-p",
         "molt-codegen-abi",
+        "-p",
+        "molt-lang-obj-model",
         "-p",
         "molt-ir",
         "-p",
@@ -5862,6 +5950,11 @@
         "--test-threads=1"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c"
+        ]
+      },
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -5875,6 +5968,7 @@
       "timeout_budget": "integration",
       "timeout_seconds": 600,
       "toolchains": [
+        "rustc",
         "cargo",
         "lune",
         "node",
@@ -5916,6 +6010,7 @@
         "call::",
         "object::",
         "arena::",
+        "seq_snapshot_bridge::",
         "builtins::attr::",
         "builtins::classes::",
         "builtins::frames::",
@@ -5929,6 +6024,11 @@
         "--test-threads=1"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c"
+        ]
+      },
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -5942,6 +6042,7 @@
       "timeout_budget": "integration",
       "timeout_seconds": 600,
       "toolchains": [
+        "rustc",
         "cargo",
         "node",
         "wasm-ld"
@@ -5964,6 +6065,12 @@
         "8"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-rust-native-release-output",
       "dependencies": [],
       "family": "rust",
@@ -6008,9 +6115,12 @@
         "--test-threads=1"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_native_c_units": [
-        "target"
-      ],
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "evidence_outputs": [
@@ -6045,9 +6155,12 @@
         "warnings"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_native_c_units": [
-        "target"
-      ],
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -6115,6 +6228,11 @@
         "native-backend llvm"
       ],
       "cache_domain": "llvm-cargo",
+      "cargo_native_units": {
+        "target": [
+          "c"
+        ]
+      },
       "cell": "linux-x86_64-py312-llvm-release-fast",
       "dependencies": [],
       "family": "llvm",
@@ -6157,6 +6275,11 @@
         "retired_operations_are_rejected_at_wire_isolated_and_checked_backend_boundaries"
       ],
       "cache_domain": "llvm-cargo",
+      "cargo_native_units": {
+        "target": [
+          "c"
+        ]
+      },
       "cell": "linux-x86_64-py312-llvm-release-fast",
       "dependencies": [
         "llvm.build.backend"
@@ -6193,6 +6316,11 @@
         "--no-fail-fast"
       ],
       "cache_domain": "llvm-cargo",
+      "cargo_native_units": {
+        "target": [
+          "c"
+        ]
+      },
       "cell": "linux-x86_64-py312-linker-release-fast",
       "dependencies": [
         "llvm.build.backend"
@@ -6233,6 +6361,11 @@
         "warnings"
       ],
       "cache_domain": "llvm-cargo",
+      "cargo_native_units": {
+        "target": [
+          "c"
+        ]
+      },
       "cell": "linux-x86_64-py312-llvm-release-fast",
       "dependencies": [
         "llvm.build.backend"
@@ -6264,6 +6397,11 @@
         "--no-fail-fast"
       ],
       "cache_domain": "mlir-cargo",
+      "cargo_native_units": {
+        "host": [
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-py312-mlir-dev",
       "cwd": "runtime/molt-backend-mlir",
       "dependencies": [
@@ -6338,6 +6476,12 @@
         "integer_carrier_matrix"
       ],
       "cache_domain": "llvm-cargo",
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-py312-llvm-release-fast",
       "dependencies": [
         "llvm.test.lowering"
@@ -6719,9 +6863,12 @@
         "tools/run_candidate_runtime_costs.py"
       ],
       "cache_domain": "cargo-workspace",
-      "cargo_native_c_units": [
-        "target"
-      ],
+      "cargo_native_units": {
+        "target": [
+          "c",
+          "c++"
+        ]
+      },
       "cell": "linux-x86_64-rust-native-release",
       "dependencies": [],
       "evidence_outputs": [

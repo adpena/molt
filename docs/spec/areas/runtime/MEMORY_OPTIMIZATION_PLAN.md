@@ -379,13 +379,10 @@ WASM-specific adaptations:
 
 - **O6.3 — Pointer compression (mandatory on WASM).** WASM already uses 32-bit pointers. The NaN-boxing scheme stores pointers in the lower 48 bits, but on WASM only 32 bits are meaningful. The upper 16 bits of the pointer field are always zero. This is already efficient — no further compression needed at the `MoltObject` level.
 
-  However, the `POINTER_MASK` (48 bits) and `canonical_addr_from_masked` (sign extension for x86-64 canonical addresses) are unnecessary on WASM. A WASM-specific fast path could skip the sign extension:
-  ```rust
-  #[cfg(target_arch = "wasm32")]
-  fn ptr_from_nanbox(bits: u64) -> *mut u8 {
-      (bits & 0xFFFF_FFFF) as *mut u8  // Lower 32 bits only
-  }
-  ```
+  Pointer decoding now uses the same unsigned payload law across targets; there
+  is no sign extension to remove on WASM. The runtime rejects decoded values
+  outside the target pointer width, while valid wasm32 generated addresses narrow
+  to 32 bits. Do not add a second decoder or silently truncate malformed carriers.
 
 - **O6.4 — Bulk memory operations.** WASM bulk memory operations (`memory.copy`, `memory.fill`) are significantly faster than byte-by-byte copies. Use these for:
   - Collection resize (list grow, dict rehash).

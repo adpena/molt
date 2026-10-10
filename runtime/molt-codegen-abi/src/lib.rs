@@ -79,7 +79,6 @@ pub const HOST_PLATFORM: HostPlatform = HostPlatform::current();
 pub const POINTER_PAYLOAD_BITS: u32 = 48;
 pub const INLINE_INT_PAYLOAD_BITS: u32 = 47;
 pub const TAG_FIELD_SHIFT: i64 = 48;
-pub const PTR_SIGN_EXT_SHIFT: i64 = 16;
 pub const SPECIAL_TAG_BASE: i64 = 0x7ff9;
 pub const SPECIAL_TAG_LIMIT: i64 = 5;
 
@@ -347,7 +346,6 @@ pub struct GeneratedObjectAbiFacts {
     pub pointer_mask: u64,
     pub pointer_payload_bits: u32,
     pub tag_field_shift: i64,
-    pub ptr_sign_ext_shift: i64,
     pub special_tag_base: i64,
     pub special_tag_limit: i64,
     pub immortal_refcount: u32,
@@ -383,7 +381,7 @@ pub struct GeneratedObjectAbiFacts {
 }
 
 impl GeneratedObjectAbiFacts {
-    pub const fn words(self) -> [u64; 58] {
+    pub const fn words(self) -> [u64; 57] {
         [
             self.header_size as i64 as u64,
             self.header_align as u64,
@@ -410,7 +408,6 @@ impl GeneratedObjectAbiFacts {
             self.pointer_mask,
             self.pointer_payload_bits as u64,
             self.tag_field_shift as u64,
-            self.ptr_sign_ext_shift as u64,
             self.special_tag_base as u64,
             self.special_tag_limit as u64,
             self.immortal_refcount as u64,
@@ -492,7 +489,6 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
     pointer_mask: POINTER_MASK,
     pointer_payload_bits: POINTER_PAYLOAD_BITS,
     tag_field_shift: TAG_FIELD_SHIFT,
-    ptr_sign_ext_shift: PTR_SIGN_EXT_SHIFT,
     special_tag_base: SPECIAL_TAG_BASE,
     special_tag_limit: SPECIAL_TAG_LIMIT,
     immortal_refcount: IMMORTAL_REFCOUNT,
@@ -533,16 +529,18 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
 /// atomic, while the refcount word is selected by concurrency mode. Revision 3
 /// binds the frame-binding homes and the function-object entry custody that
 /// generated code addresses (`frame_binding_abi_word`); the value continues
-/// revision 2's FNV-1a state over that one appended word.
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V3: u64 = 0xbf06_a926_9171_acab;
+/// revision 2's FNV-1a state over that one appended word. Revision 4 removes
+/// signed pointer reconstruction: all 48 payload bits form an unsigned user
+/// address, including bit 47 on AArch64. Old generated code cannot link to it.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V4: u64 = 0x4cd0_6d21_4d67_4e1b;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V3,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V4,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str =
-    "molt_generated_object_abi_bf06a9269171acab_gil_v3";
+    "molt_generated_object_abi_4cd06d214d674e1b_gil_v4";
 pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
-    "molt_generated_object_abi_bf06a9269171acab_free_threaded_v3";
+    "molt_generated_object_abi_4cd06d214d674e1b_free_threaded_v4";
 /// Compile-time authority consumed by runtime storage and generated native
 /// access. Cargo feature unification may enable this through any dependency;
 /// consumers must branch on this value rather than a crate-local feature.
@@ -1170,7 +1168,6 @@ pub struct NanBoxConsts {
     pub special_limit: i64,
     pub int_tag_16: i64,
     pub int_mask: i64,
-    pub shift_16: i64,
     pub canonical_nan: i64,
 }
 
@@ -1189,7 +1186,6 @@ impl NanBoxConsts {
             special_limit: SPECIAL_TAG_LIMIT,
             int_tag_16: ((QNAN | TAG_INT) >> 48) as i64,
             int_mask: INT_MASK as i64,
-            shift_16: PTR_SIGN_EXT_SHIFT,
             canonical_nan: CANONICAL_NAN_BITS as i64,
         }
     }
@@ -1227,8 +1223,15 @@ pub const fn box_pending_bits() -> i64 {
     QNAN_TAG_PENDING_I64
 }
 
+/// Box an admitted unsigned 48-bit user address. Reject wider addresses before
+/// truncation can alias another object; this invariant applies in every profile.
+#[inline(always)]
 pub const fn box_ptr_bits(addr: u64) -> i64 {
-    (QNAN | TAG_PTR | (addr & POINTER_MASK)) as i64
+    assert!(
+        addr <= POINTER_MASK,
+        "Molt pointer exceeds the unsigned 48-bit address ABI"
+    );
+    (QNAN | TAG_PTR | addr) as i64
 }
 
 pub const fn pending_bits() -> i64 {
@@ -1245,11 +1248,6 @@ pub const fn tag_bits(bits: u64) -> u64 {
 
 pub const fn ptr_payload_bits(bits: u64) -> u64 {
     bits & POINTER_MASK
-}
-
-pub const fn canonical_addr_from_masked_bits(masked: u64) -> u64 {
-    let signed = ((masked << PTR_SIGN_EXT_SHIFT) as i64) >> PTR_SIGN_EXT_SHIFT;
-    signed as u64
 }
 
 pub const fn unbox_inline_int_bits(bits: u64) -> i64 {
@@ -1439,18 +1437,35 @@ mod tests {
     }
 
     #[test]
+    fn pointer_boxing_admits_all_unsigned_payload_bits_without_truncation() {
+        for (address, wire) in [
+            (0x0000_0000_0000_0000, 0x7ffc_0000_0000_0000),
+            (0x0000_7fff_ffff_ffff, 0x7ffc_7fff_ffff_ffff),
+            (0x0000_8000_0000_0000, 0x7ffc_8000_0000_0000),
+            (0x0000_fa89_0c6a_ca20, 0x7ffc_fa89_0c6a_ca20),
+            (0x0000_ffff_ffff_ffff, 0x7ffc_ffff_ffff_ffff),
+        ] {
+            assert_eq!(box_ptr_bits(address) as u64, wire);
+            assert_eq!(ptr_payload_bits(wire), address);
+        }
+        for address in [0x0001_0000_0000_0000, 0xffff_8000_0000_0000, u64::MAX] {
+            assert!(std::panic::catch_unwind(|| box_ptr_bits(address)).is_err());
+        }
+    }
+
+    #[test]
     fn every_generated_object_fact_is_fingerprint_significant() {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V3
+            GENERATED_OBJECT_ABI_FINGERPRINT_V4
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V3,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V4,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -1458,13 +1473,13 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V3);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V4);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v3"), "{symbol}");
+            assert!(symbol.ends_with("_v4"), "{symbol}");
         }
     }
 
@@ -1474,7 +1489,7 @@ mod tests {
         // the kinds share bytes as nibbles.
         assert_eq!(frame_binding_abi_word(), 0x0110_5321_0800_1002);
         assert_eq!(
-            GENERATED_OBJECT_ABI_FACTS.words()[57],
+            GENERATED_OBJECT_ABI_FACTS.words()[56],
             frame_binding_abi_word()
         );
     }

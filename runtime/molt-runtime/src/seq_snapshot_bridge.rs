@@ -137,21 +137,10 @@ mod tests {
         }
     }
 
-    fn assert_memory_error(py: &PyToken<'_>) {
-        assert!(exception_pending(py));
-        let exception = crate::builtins::exceptions::molt_exception_last_pending();
-        assert!(crate::builtins::exceptions::exception_matches_builtin_name(
-            py,
-            exception,
-            "MemoryError"
-        ));
-        clear_exception(py);
-        dec_ref_bits(py, exception);
-    }
-
     #[test]
     fn sequence_bridge_empty_failure_and_owned_success_have_distinct_statuses() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::with_gil_entry_nopanic!(py, {
             let value_ptr = alloc_list(py, &[]);
             assert!(!value_ptr.is_null());
@@ -195,12 +184,12 @@ mod tests {
                 ptr = std::ptr::dangling();
                 len = 99;
                 let result = molt_seq_snapshot(sequence, &mut ptr, &mut len);
-                drop(reset);
                 assert_eq!(result, 0);
                 assert!(ptr.is_null());
                 assert_eq!(len, 0);
                 assert_eq!(owners(value), 3, "failed export must not retain handles");
-                assert_memory_error(py);
+                crate::test_support::assert_and_clear_emergency_memory_error(py);
+                drop(reset);
 
                 assert_eq!(molt_seq_snapshot(sequence, &mut ptr, &mut len), 1);
                 let snapshot = unsafe { molt_runtime_core::bridge_owned_handle_snapshot(ptr, len) };
@@ -257,6 +246,7 @@ mod tests {
     #[test]
     fn dictionary_bridge_empty_success_and_both_allocation_failures_are_distinct() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::with_gil_entry_nopanic!(py, {
             let dict = alloc_dict_with_pairs(py, &[]);
             assert!(!dict.is_null());
@@ -284,13 +274,13 @@ mod tests {
                 ptr = std::ptr::dangling();
                 len = 99;
                 let result = molt_dict_snapshot(dict, &mut ptr, &mut len);
-                drop(reset);
                 assert_eq!(result, 0);
                 assert!(ptr.is_null());
                 assert_eq!(len, 0);
                 assert_eq!(owners(value), 2);
                 assert_eq!(unsafe { dict_len(dict) }, 1);
-                assert_memory_error(py);
+                crate::test_support::assert_and_clear_emergency_memory_error(py);
+                drop(reset);
             }
             dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
             dec_ref_bits(py, value);

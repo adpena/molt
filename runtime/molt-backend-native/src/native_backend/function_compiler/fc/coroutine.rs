@@ -154,7 +154,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 "task_wait",
             );
             let self_ptr = builder.block_params(entry_block)[0];
-            let future_ptr = unbox_ptr_value(&mut *builder, word, nbc);
+            let future_ptr = unbox_ptr_value(&mut *builder, word);
             let sleep_register = import_func_ref(
                 &mut *module,
                 &mut *import_ids,
@@ -199,7 +199,7 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             {
                 let tracking_origin = builder.current_block();
                 let initialized = begin_task_initialization(builder, sealed_blocks, obj);
-                let obj_ptr = unbox_ptr_value(&mut *builder, obj, nbc);
+                let obj_ptr = unbox_ptr_value(&mut *builder, obj);
                 for (idx, arg_name) in arg_names.iter().enumerate() {
                     let val = var_get_boxed_overflow_safe(
                         &mut *module,

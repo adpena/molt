@@ -1,11 +1,14 @@
-#![cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+// Actual admitted-run controls: macOS has only the explicit refusal contract.
+#![cfg(any(target_os = "windows", target_os = "linux"))]
 
 use molt_proof_supervisor::evidence::{durable_atomic_write, event_artifact_path};
 use molt_proof_supervisor::{
-    ClosureMode, DerivedRoot, FixedImage, KernelAccounting, MAX_POLICY_BYTES, POLICY_SCHEMA,
-    Policy, Receipt, RootExitDisposition, platform, sha256_bytes, sha256_file,
+    Admission, ClosureMode, DerivedRoot, FixedImage, KernelAccounting, MAX_POLICY_BYTES,
+    POLICY_SCHEMA, Policy, Receipt, RootExitDisposition, SupervisorState, platform, sha256_bytes,
+    sha256_file,
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -27,14 +30,170 @@ impl Drop for TestRun {
 }
 
 #[test]
+fn verify_reports_the_exact_raw_receipt_bytes_including_whitespace_and_unicode() {
+    let run = run_fixture(ClosureMode::Leaf);
+    let mut receipt: Receipt =
+        serde_json::from_slice(&fs::read(&run.receipt_path).unwrap()).unwrap();
+    // An authentic incomplete receipt still verifies successfully. Its
+    // diagnostics give this raw-byte oracle meaningful non-ASCII material.
+    receipt.complete = false;
+    receipt.state = SupervisorState::Incomplete;
+    *receipt.lifecycle.last_mut().unwrap() = SupervisorState::Incomplete;
+    receipt.record_error("storage interruption: café 🦀");
+    receipt.seal();
+    let compact = serde_json::to_vec(&receipt).unwrap();
+    let pretty = serde_json::to_vec_pretty(&receipt).unwrap();
+    let variants = [
+        [b" \n\t".as_slice(), compact.as_slice(), b"\n ".as_slice()].concat(),
+        [b"\n".as_slice(), pretty.as_slice(), b"\t\r\n".as_slice()].concat(),
+    ];
+    let mut previous_digest = None;
+    for bytes in variants {
+        assert!(std::str::from_utf8(&bytes).unwrap().contains("café 🦀"));
+        durable_atomic_write(&run.receipt_path, &bytes).unwrap();
+        let actual = fs::read(&run.receipt_path).unwrap();
+        assert_eq!(actual, bytes);
+        let output = verify(&run.binary, &run.policy_path, &run.receipt_path);
+        assert!(output.status.success(), "{}", text(&output));
+        let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let digest = Sha256::digest(&actual)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(response["receipt_sha256"], digest);
+        assert_eq!(response["receipt_bytes"], actual.len() as u64);
+        assert_eq!(response["complete"], false);
+        assert_eq!(response["identity_valid"], true);
+        assert_ne!(
+            digest,
+            Sha256::digest(&compact)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        if let Some(previous) = previous_digest.replace(digest.clone()) {
+            assert_ne!(
+                previous, digest,
+                "semantic reserialization loses raw-byte custody"
+            );
+        }
+    }
+}
+
+#[test]
+fn receipt_publication_failure_retains_actual_terminal_evidence_and_destination() {
+    let run = prepare_fixture(ClosureMode::Leaf, &["exit", "42"]);
+    fs::create_dir(&run.receipt_path).unwrap();
+    let sentinel = run.receipt_path.join("existing-destination");
+    fs::write(&sentinel, b"preserve").unwrap();
+    let output = execute(&run);
+    let diagnostic = publication_snapshot(&output);
+    assert_eq!(diagnostic.root_exit_code, Some(42));
+    assert_eq!(diagnostic.accounting.process_creates, 1);
+    assert_eq!(diagnostic.accounting.process_exits, 1);
+    assert_eq!(diagnostic.accounting.active_processes, 0);
+    assert!(matches!(
+        diagnostic.capability.admission,
+        Admission::Admitted { .. }
+    ));
+    assert!(diagnostic.identity_is_valid());
+    let event_log = diagnostic.event_log.unwrap();
+    let published = fs::read(run.directory.join(event_log.file)).unwrap();
+    assert_eq!(
+        event_log.sha256,
+        Sha256::digest(&published)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    assert_eq!(event_log.bytes, published.len() as u64);
+    assert_eq!(fs::read(sentinel).unwrap(), b"preserve");
+    assert!(run.receipt_path.is_dir());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn publication_failure_preserves_original_admission_error_and_actual_cleanup_waits() {
+    let mut run = prepare_fixture(ClosureMode::DeclaredTree, &["exit", "0"]);
+    let marker = run.directory.join("unadmitted-child-entered");
+    let report = run.directory.join("descendant-entered.json");
+    run.policy.command = vec![
+        run.binary.display().to_string(),
+        "fixture-child".to_owned(),
+        "linux-creation-descendant".to_owned(),
+        "untraced".to_owned(),
+        marker.display().to_string(),
+        report.display().to_string(),
+    ];
+    fs::write(&run.policy_path, serde_json::to_vec(&run.policy).unwrap()).unwrap();
+    fs::create_dir(&run.receipt_path).unwrap();
+    let sentinel = run.receipt_path.join("existing-destination");
+    fs::write(&sentinel, b"preserve").unwrap();
+    // The existing independent kernel fixture denies pidfd_open in the
+    // supervisor. The subject fork really occurs, but its child cannot enter.
+    // A real directory at the receipt destination then denies final rename.
+    let output = Command::new(&run.binary)
+        .args(["fixture-child", "linux-host-denial", "pidfd-open"])
+        .arg(&run.policy_path)
+        .arg(&run.receipt_path)
+        .output()
+        .unwrap();
+    let diagnostic = publication_snapshot(&output);
+    assert!(!diagnostic.complete);
+    assert_eq!(diagnostic.accounting.process_creates, 1);
+    // The accepted journal stops before the failed descendant admission.
+    // Actual cleanup waits belong to native custody, never invented exit rows.
+    assert_eq!(diagnostic.accounting.process_exits, 0);
+    assert_eq!(diagnostic.accounting.active_processes, 1);
+    assert_eq!(diagnostic.root_exit_code, None);
+    assert!(matches!(&diagnostic.journal_coverage,
+        molt_proof_supervisor::JournalCoverage::Prefix {
+            stage: molt_proof_supervisor::CaptureStage::NativeObservation,
+            accepted_records: 2, next_sequence: 3, cause, ..
+        } if cause.contains("pidfd_open") && cause.contains("13")));
+    assert!(matches!(diagnostic.native_custody,
+        molt_proof_supervisor::NativeCustody::Linux {
+            remaining_tasks: 0, remaining_processes: 0, wait_exhausted: true,
+            root_exit_code: Some(code),
+        } if code == 128 + i64::from(libc::SIGKILL)));
+    assert!(diagnostic.native_custody_is_valid());
+    assert!(diagnostic.native_custody.is_closed());
+    assert!(
+        diagnostic
+            .errors
+            .iter()
+            .any(|error| error.contains("pidfd_open") && error.contains("13")),
+        "{diagnostic:#?}"
+    );
+    assert!(
+        diagnostic
+            .errors
+            .iter()
+            .any(|error| error.contains("cleanup terminal waits")),
+        "{diagnostic:#?}"
+    );
+    assert!(!marker.exists());
+    assert!(!report.exists());
+    assert_eq!(fs::read(sentinel).unwrap(), b"preserve");
+}
+
+fn publication_snapshot(output: &Output) -> Receipt {
+    assert_eq!(output.status.code(), Some(2), "{}", text(output));
+    let stderr = std::str::from_utf8(&output.stderr).unwrap();
+    assert!(
+        stderr.contains("terminal publication not acknowledged:"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("cannot publish evidence"), "{stderr}");
+    let (_, snapshot) = stderr
+        .split_once("terminal receipt snapshot (diagnostic only): ")
+        .unwrap();
+    serde_json::from_str(snapshot.trim()).unwrap()
+}
+
+#[test]
 fn verify_binds_every_canonical_policy_dimension() {
-    // macOS admits only leaf closure; a leaf policy cannot carry derived
-    // roots, so that dimension is exercised where tree closure exists.
-    let mode = if cfg!(target_os = "macos") {
-        ClosureMode::Leaf
-    } else {
-        ClosureMode::DeclaredTree
-    };
+    let mode = ClosureMode::DeclaredTree;
     let run = run_fixture(mode);
     assert!(
         verify(&run.binary, &run.policy_path, &run.receipt_path)
@@ -107,13 +266,13 @@ fn verify_rejects_unknown_policy_and_receipt_fields() {
     assert!(!output.status.success());
     assert!(text(&output).contains("unknown field"));
 
-    if receipt["kernel_accounting"].is_object() {
+    if receipt["native_custody"]["job"].is_object() {
         receipt
             .as_object_mut()
             .unwrap()
             .remove("unknown_receipt_authority");
         let mut nested = receipt;
-        nested["kernel_accounting"]["unknown_kernel_authority"] = Value::Bool(true);
+        nested["native_custody"]["job"]["unknown_kernel_authority"] = Value::Bool(true);
         durable_atomic_write(
             &run.receipt_path,
             &serde_json::to_vec_pretty(&nested).unwrap(),
@@ -209,9 +368,38 @@ fn verify_rejects_resealed_receipt_semantic_drift() {
     let run = run_fixture(ClosureMode::Leaf);
     let original: Receipt = serde_json::from_slice(&fs::read(&run.receipt_path).unwrap()).unwrap();
 
+    let mut obsolete = original.clone();
+    obsolete.schema = "molt.proof-process-closure-receipt.v4".to_owned();
+    assert_resealed_receipt_rejected(&run, obsolete, "\"schema_valid\":false");
+    let mut obsolete = original.clone();
+    obsolete.capability.schema = "molt.proof-supervisor-capability.v3".to_owned();
+    assert_resealed_receipt_rejected(&run, obsolete, "\"capability_valid\":false");
+
     let mut capability = original.clone();
     capability.capability.backend.push_str("-forged");
     assert_resealed_receipt_rejected(&run, capability, "\"capability_valid\":false");
+
+    let mut eligibility = original.clone();
+    eligibility.capability.admission = Admission::Eligible {};
+    assert_resealed_receipt_rejected(&run, eligibility, "\"admission_replay_valid\":false");
+    for coordinate in ["root", "create", "image"] {
+        let mut witness = original.clone();
+        let Admission::Admitted {
+            root_stable_process_id,
+            root_create_sequence,
+            initial_image_sequence,
+        } = &mut witness.capability.admission
+        else {
+            panic!("complete run must be admitted");
+        };
+        match coordinate {
+            "root" => root_stable_process_id.push_str("-other-generation"),
+            "create" => *root_create_sequence += 1,
+            "image" => *initial_image_sequence += 1,
+            _ => unreachable!(),
+        }
+        assert_resealed_receipt_rejected(&run, witness, "\"admission_replay_valid\":false");
+    }
 
     let mut root_exit = original.clone();
     root_exit.root_exit_code = root_exit.root_exit_code.map(|code| code + 1);
@@ -226,16 +414,22 @@ fn verify_rejects_resealed_receipt_semantic_drift() {
     violations.violations.push("forged violation".to_owned());
     assert_resealed_receipt_rejected(&run, violations, "\"violation_replay_valid\":false");
 
-    if original.kernel_accounting.is_some() {
+    if let molt_proof_supervisor::NativeCustody::Windows { job: Some(_), .. } =
+        &original.native_custody
+    {
         let mut kernel = original.clone();
-        let Some(KernelAccounting::WindowsJob {
-            total_processes, ..
-        }) = &mut kernel.kernel_accounting
+        let molt_proof_supervisor::NativeCustody::Windows {
+            job:
+                Some(KernelAccounting::WindowsJob {
+                    total_processes, ..
+                }),
+            ..
+        } = &mut kernel.native_custody
         else {
-            unreachable!();
+            unreachable!()
         };
         *total_processes += 1;
-        assert_resealed_receipt_rejected(&run, kernel, "\"kernel_accounting_valid\":false");
+        assert_resealed_receipt_rejected(&run, kernel, "\"native_custody_valid\":false");
     }
 }
 
@@ -252,11 +446,11 @@ fn verify_replays_contiguous_typed_policy_classified_events_after_reseal() {
         .collect();
 
     let mut wrong_dialect = rows.clone();
-    wrong_dialect[0]["event"]["image"] = if cfg!(target_os = "windows") {
-        Value::Null
+    wrong_dialect[1]["event"]["kind"] = Value::from(if cfg!(target_os = "windows") {
+        "exec"
     } else {
-        rows[1]["event"]["image"].clone()
-    };
+        "initial-image"
+    });
     assert_resealed_event_log_rejected(&run, &receipt, &wrong_dialect, "backend dialect");
 
     let mut sequence_gap = rows.clone();
@@ -301,6 +495,13 @@ fn verify_replays_contiguous_typed_policy_classified_events_after_reseal() {
 }
 
 fn run_fixture(mode: ClosureMode) -> TestRun {
+    let run = prepare_fixture(mode, &["exit", "0"]);
+    let output = execute(&run);
+    assert!(output.status.success(), "{}", text(&output));
+    run
+}
+
+fn prepare_fixture(mode: ClosureMode, fixture_args: &[&str]) -> TestRun {
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_molt-proof-supervisor"));
     let directory = unique_directory();
     fs::create_dir_all(&directory).unwrap();
@@ -317,12 +518,11 @@ fn run_fixture(mode: ClosureMode) -> TestRun {
         ),
         mode,
         cwd: std::env::current_dir().unwrap(),
-        command: vec![
-            binary.display().to_string(),
-            "fixture-child".to_owned(),
-            "exit".to_owned(),
-            "0".to_owned(),
-        ],
+        command: [
+            vec![binary.display().to_string(), "fixture-child".to_owned()],
+            fixture_args.iter().map(|arg| (*arg).to_owned()).collect(),
+        ]
+        .concat(),
         environment: platform::required_environment(),
         root_role: "fixture".to_owned(),
         fixed_images: vec![FixedImage {
@@ -334,14 +534,6 @@ fn run_fixture(mode: ClosureMode) -> TestRun {
         derived_roots: vec![],
     };
     fs::write(&policy_path, serde_json::to_vec(&policy).unwrap()).unwrap();
-    let output = Command::new(&binary)
-        .args(["run", "--policy"])
-        .arg(&policy_path)
-        .arg("--receipt")
-        .arg(&receipt_path)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{}", text(&output));
     TestRun {
         directory,
         binary,
@@ -349,6 +541,16 @@ fn run_fixture(mode: ClosureMode) -> TestRun {
         receipt_path,
         policy,
     }
+}
+
+fn execute(run: &TestRun) -> Output {
+    Command::new(&run.binary)
+        .args(["run", "--policy"])
+        .arg(&run.policy_path)
+        .arg("--receipt")
+        .arg(&run.receipt_path)
+        .output()
+        .unwrap()
 }
 
 fn verify(binary: &Path, policy: &Path, receipt: &Path) -> Output {
@@ -472,7 +674,7 @@ fn rooted_fixture() -> TestRun {
     let rows = [
         serde_json::json!({
             "sequence": 1, "process_id": 41, "stable_process_id": "41:fixture",
-            "event": {"kind": "process-create", "parent_process_id": null, "image": null}
+            "event": {"kind": "process-create", "parent_process_id": null}
         }),
         serde_json::json!({
             "sequence": 2, "process_id": 41, "stable_process_id": "41:fixture",
@@ -509,12 +711,15 @@ fn rooted_fixture() -> TestRun {
             platform: "linux".to_owned(),
             mode: ClosureMode::Leaf,
             backend: "ptrace-exitkill".to_owned(),
-            available: true,
+            admission: Admission::Admitted {
+                root_stable_process_id: "41:fixture".to_owned(),
+                root_create_sequence: 1,
+                initial_image_sequence: 2,
+            },
             pre_entry_exec_authority: true,
             pre_entry_process_create_authority: true,
             recursive_descendant_authority: true,
             required_environment: Default::default(),
-            reason: None,
         },
         policy_sha256: sha256_bytes(&serde_json::to_vec(&policy).unwrap()),
         nonce_sha256: sha256_bytes(policy.nonce.as_bytes()),
@@ -542,7 +747,13 @@ fn rooted_fixture() -> TestRun {
             root_execs: 1,
             root_exit_terminated_processes: 0,
         },
-        kernel_accounting: None,
+        journal_coverage: molt_proof_supervisor::JournalCoverage::Full {},
+        native_custody: molt_proof_supervisor::NativeCustody::Linux {
+            remaining_tasks: 0,
+            remaining_processes: 0,
+            wait_exhausted: true,
+            root_exit_code: Some(0),
+        },
         violation_count: 0,
         violations: vec![],
         error_count: 0,
@@ -608,7 +819,7 @@ fn every_policy_entrypoint_rejects_oversize_before_parse_or_execution() {
             text(&output)
         );
         assert!(
-            text(&output).contains("policy must be a regular file within"),
+            text(&output).contains("regular input exceeds its byte budget"),
             "{command}: {}",
             text(&output)
         );
