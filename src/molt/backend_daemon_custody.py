@@ -12,8 +12,8 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from molt.dx import cargo_target_dir_for_artifact_root, session_artifact_component
-from molt.build_state_layout import build_state_root
+from molt.dx import session_artifact_component
+from molt.build_state_layout import project_build_state_root
 
 IDENTITY_SCHEMA = "molt.backend_daemon.identity.v2"
 
@@ -150,34 +150,12 @@ def remove_backend_daemon_identity(identity_path: Path) -> None:
         identity_path.unlink()
 
 
-def backend_daemon_build_state_root_from_env(
-    env: Mapping[str, str],
-    *,
-    project_root: Path,
-) -> Path:
-    raw_target = env.get("CARGO_TARGET_DIR") or str(
-        cargo_target_dir_for_artifact_root(project_root, env.get("MOLT_SESSION_ID"))
-    )
-    target = Path(raw_target).expanduser()
-    if not target.is_absolute():
-        target = (Path.cwd() / target).absolute()
-    return build_state_root(
-        project_root=project_root, cargo_target=target, environment=env
-    )
-
-
 def backend_daemon_root_from_env(
     env: Mapping[str, str],
     *,
     project_root: Path,
 ) -> Path:
-    return (
-        backend_daemon_build_state_root_from_env(
-            env,
-            project_root=project_root,
-        )
-        / "backend_daemon"
-    )
+    return project_build_state_root(project_root, env) / "backend_daemon"
 
 
 def iter_backend_daemon_identity_records(

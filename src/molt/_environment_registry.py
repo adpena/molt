@@ -1881,7 +1881,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_DEBUG_ARTIFACT_DIR",
       "owner": "runtime/molt-ir/src/debug_artifacts.rs",
-      "summary": "Root directory where the compiler backends write debug artifacts such as native/compiled_funcs.txt, counted_loop_trace.txt and native batch failure replays; unset means <MOLT_EXT_ROOT or current directory>/tmp/molt-backend.",
+      "summary": "Directory where the compiler backends write debug artifacts and scratch objects such as native/compiled_funcs.txt, LLVM object files and native batch failure replays. It is the backend's only placement input. The molt CLI always passes it as an absolute path: the set value, else the compiler's run scratch folder molt-backend from molt.dx.scratch_dir. A backend started without it uses <platform temp directory>/molt-backend.",
       "values": []
     },
     {
@@ -7351,7 +7351,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_WASM_HOST_BIN",
       "owner": "src/molt/cli/wasm_host.py",
-      "summary": "Explicit path of the prebuilt molt-wasm-host executable for compiler, benchmark and validation consumers; a value that is not a regular file resolves to no host. When unset, select the caller's target directory, CARGO_TARGET_DIR, or <root>/target in that order, using only the requested Cargo profile and native executable suffix; a missing selected binary never falls through to another build.",
+      "summary": "Explicit path of the prebuilt molt-wasm-host executable for compiler, benchmark and validation consumers; a value that is not a regular file resolves to no host. When unset, select the caller's target directory, else the project's Cargo target from molt.dx.project_cargo_target_dir (CARGO_TARGET_DIR, the development artifact root, or <root>/target), using only the requested Cargo profile and native executable suffix; a missing selected binary never falls through to another build.",
       "values": []
     },
     {
@@ -7863,7 +7863,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_WITNESS_CACHE",
       "owner": "tools/witness_iter.py",
-      "summary": "Directory for the persistent content-addressed frontend-lowering cache that tools/witness_iter.py exports as MOLT_CACHE to the witness drive; default <repo>/target/witness-warm-cache, created when missing.",
+      "summary": "Directory for the persistent content-addressed frontend-lowering cache that tools/witness_iter.py exports as MOLT_CACHE to the witness drive; default witness-warm-cache in the checkout's Cargo target (molt.dx.project_cargo_target_dir), created when missing.",
       "values": []
     },
     {

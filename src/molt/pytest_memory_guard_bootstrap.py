@@ -13,7 +13,7 @@ import time
 
 
 from molt._host_exit import process_returncode_for_direct_os_exit
-from molt.dx import checkout_component, control_state_dir
+from molt.dx import RunContext, checkout_component, control_state_dir
 from molt.source_root import compiler_source_root
 from molt.temporary_artifacts import guard_scratch, windows_temporary_directory_mode
 from molt.process_spawn import (
@@ -370,6 +370,30 @@ def _pytest_user_temp_root(temproot: Path) -> Path:
     except Exception:
         user = "unknown"
     return temproot / f"pytest-of-{user}"
+
+
+def run_context_test_env(
+    environ: Mapping[str, str], *, repo_root: Path = ROOT
+) -> dict[str, str]:
+    """Return ``environ`` with the run context's Molt roots for a test process.
+
+    A test builds where a developer run does: the Cargo target, build state
+    and compile cache resolve through `molt.dx.RunContext`, never to the
+    CLI's `<checkout>/target` default (HF-114). Every guarded test handoff
+    and every pytest process applies it; explicit values stay.
+    """
+
+    return RunContext(repo_root, session_prefix="pytest").root_env(environ)
+
+
+def install_pytest_run_context() -> None:
+    """Enter the run context's Molt roots in this pytest process.
+
+    The guard handoff already did when it started this session; a session
+    that started under another guard (the proof queue) gets them here.
+    """
+
+    os.environ.update(run_context_test_env(os.environ))
 
 
 def install_pytest_custody_roots() -> bool:
@@ -768,10 +792,10 @@ def ensure_repo_test_module_memory_guard(
             "repo test module was re-execed for memory custody but no live "
             "ancestor tools/memory_guard.py process could be verified"
         )
-    outer_guard_summary_dir(source).mkdir(parents=True, exist_ok=True)
+    env = run_context_test_env(source)
+    outer_guard_summary_dir(env).mkdir(parents=True, exist_ok=True)
     module_name, module_args = invocation
-    argv = repo_test_module_outer_guard_argv(module_name, module_args, environ=source)
-    env = dict(source)
+    argv = repo_test_module_outer_guard_argv(module_name, module_args, environ=env)
     env[TEST_SCRIPT_OUTER_GUARD_REEXEC_ENV] = "1"
     handoff_to_outer_guard(argv, env)
     raise RuntimeError("failed to re-exec repo test module under tools/memory_guard.py")
@@ -827,10 +851,10 @@ def ensure_repo_test_script_memory_guard(
             "repo test script was re-execed for memory custody but no live "
             "ancestor tools/memory_guard.py process could be verified"
         )
-    outer_guard_summary_dir(source).mkdir(parents=True, exist_ok=True)
+    env = run_context_test_env(source)
+    outer_guard_summary_dir(env).mkdir(parents=True, exist_ok=True)
     script_path, script_args = invocation
-    argv = repo_test_script_outer_guard_argv(script_path, script_args, environ=source)
-    env = dict(source)
+    argv = repo_test_script_outer_guard_argv(script_path, script_args, environ=env)
     env[TEST_SCRIPT_OUTER_GUARD_REEXEC_ENV] = "1"
     handoff_to_outer_guard(argv, env)
     raise RuntimeError("failed to re-exec repo test script under tools/memory_guard.py")
@@ -939,9 +963,9 @@ def ensure_pytest_memory_guard(
             "pytest was re-execed for memory custody but no live ancestor "
             "tools/memory_guard.py process could be verified"
         )
-    outer_guard_summary_dir(source).mkdir(parents=True, exist_ok=True)
-    argv = outer_guard_argv(args, environ=source)
-    env = dict(source)
+    env = run_context_test_env(source)
+    outer_guard_summary_dir(env).mkdir(parents=True, exist_ok=True)
+    argv = outer_guard_argv(args, environ=env)
     env[PYTEST_OUTER_GUARD_REEXEC_ENV] = "1"
     env[PYTEST_CURRENT_TEST_FILE_ENV] = str(
         canonical_pytest_current_test_file_path(
@@ -960,6 +984,7 @@ def pytest_load_initial_conftests(
 ) -> None:
     del parser
     ensure_pytest_memory_guard(pytest_args=tuple(args))
+    install_pytest_run_context()
     install_pytest_custody_roots()
     install_windows_pytest_tempdir_mode_patch()
     install_pytest_cache_dir_config(early_config, args)

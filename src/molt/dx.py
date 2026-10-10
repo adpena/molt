@@ -38,7 +38,11 @@ ARTIFACT_ROOT_ENV = "MOLT_EXT_ROOT"
 # operator mounted (a macOS RAM disk). Molt never creates or mounts one.
 SCRATCH_STORAGE_ENV = "MOLT_SCRATCH_STORAGE"
 SHARED_MEMORY_ROOT = Path("/dev/shm")
-CANONICAL_ROOT_ENV_KEYS = (
+# The Molt roots of a run context: artifact root, Cargo targets, toolchain
+# root, compile cache and differential scratch. A test session enters exactly
+# these (`RunContext.root_env`), so code under test builds where a developer
+# run does; tool caches, TMPDIR and the uv environment stay the caller's.
+MOLT_ROOT_ENV_KEYS = (
     ARTIFACT_ROOT_ENV,
     "CARGO_TARGET_DIR",
     "MOLT_DIFF_CARGO_TARGET_DIR",
@@ -46,6 +50,9 @@ CANONICAL_ROOT_ENV_KEYS = (
     "MOLT_CACHE",
     "MOLT_DIFF_ROOT",
     "MOLT_DIFF_TMPDIR",
+)
+CANONICAL_ROOT_ENV_KEYS = (
+    *MOLT_ROOT_ENV_KEYS,
     "UV_CACHE_DIR",
     "UV_PROJECT_ENVIRONMENT",
     "PIP_CACHE_DIR",
@@ -234,8 +241,14 @@ def stable_uv_project_env_from_env(
 
 def session_scoped_target_dir(target_root: Path, session_id: str | None) -> Path:
     if session_id:
-        return target_root / "sessions" / session_artifact_component(session_id)
+        return session_targets_dir(target_root) / session_artifact_component(session_id)
     return target_root
+
+
+def session_targets_dir(target_root: Path) -> Path:
+    """Return the directory that holds the pinned sessions' targets of a target."""
+
+    return target_root / "sessions"
 
 
 def cargo_target_dir_for_artifact_root(
@@ -1275,6 +1288,60 @@ def artifact_root(
     return root
 
 
+def project_cargo_target_dir(
+    project_root: Path,
+    env: Mapping[str, str],
+    *,
+    session_scoped: bool = True,
+) -> Path:
+    """Return the Cargo target a Molt command builds ``project_root`` into.
+
+    This is the CLI's default target, and every consumer of it (the runtime
+    build, build control, the backend daemon, the WASM host, the lock-check
+    cache and the MLIR backend) reads it here.
+
+    An explicit ``CARGO_TARGET_DIR`` wins; a relative value is relative to the
+    working directory, as Cargo reads it. Without
+    one, a development artifact request (``MOLT_PREFER_EXTERNAL_ARTIFACTS`` or
+    ``MOLT_REQUIRE_EXTERNAL_ARTIFACTS``) builds under the run context's
+    `artifact_root`, as ``molt dx run`` does; otherwise the project keeps
+    Cargo's own ``<project>/target``. A pinned ``MOLT_SESSION_ID`` scopes
+    either default (`cargo_target_dir_for_environment`); a generated one, or
+    ``session_scoped=False``, does not. With ``MOLT_REQUIRE_EXTERNAL_ARTIFACTS``
+    the target must lie outside the project. It creates nothing.
+    """
+
+    project = Path(project_root)
+    raw = env.get("CARGO_TARGET_DIR", "").strip()
+    if raw:
+        target = Path(raw).expanduser()
+        if not target.is_absolute():
+            target = Path.cwd() / target
+        target = target.absolute()
+    else:
+        root = project_cargo_target_base(project, env)
+        target = (
+            cargo_target_dir_for_environment(root, env)
+            if session_scoped
+            else cargo_target_dir_for_artifact_root(root, None)
+        )
+    _require_external_path("CARGO_TARGET_DIR", target, env, repo_root=project)
+    return target
+
+
+def project_cargo_target_base(project_root: Path, env: Mapping[str, str]) -> Path:
+    """Return the root whose ``target`` is `project_cargo_target_dir`'s default.
+
+    That is the run context's `artifact_root` under a development artifact
+    request, else the project itself.
+    """
+
+    project = Path(project_root)
+    if development_artifacts_requested(env):
+        return artifact_root(project, env, prefer_external=True)
+    return project
+
+
 @dataclass(frozen=True, slots=True)
 class ScratchStorage:
     """Where run scratch lives: disk, or an operator's memory-backed root."""
@@ -1712,6 +1779,20 @@ class RunContext:
                 value = env.get(key)
                 if value:
                     Path(value).expanduser().mkdir(parents=True, exist_ok=True)
+        return env
+
+    def root_env(self, base: Mapping[str, str] | None = None) -> dict[str, str]:
+        """Return ``base`` with this context's Molt roots; create nothing.
+
+        Only `MOLT_ROOT_ENV_KEYS` change, to the values `canonical_env`
+        resolves: an explicit value stays, absolute. Tool caches, scratch
+        (``TMPDIR``), the uv environment and the session keep the caller's
+        values. A test session enters its roots this way (HF-114).
+        """
+
+        env = dict(os.environ if base is None else base)
+        canonical = self.canonical_env(env, create_dirs=False)
+        env.update({key: canonical[key] for key in MOLT_ROOT_ENV_KEYS})
         return env
 
     def dx_env(

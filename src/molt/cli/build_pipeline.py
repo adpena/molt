@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
-from molt.dx import session_scoped_target_dir
 from molt.cli.build_diagnostics import _emit_build_diagnostics_for_result
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli import backend_ir as _backend_ir
@@ -28,9 +26,6 @@ from molt.cli.external_native import (
 from molt.cli.output import (
     fail as _fail,
 )
-from molt.cli.runtime_paths import (
-    _molt_session_id,
-)
 from molt.cli.extension_manifest import (
     _abi_version_error as _abi_version_error,
 )
@@ -51,20 +46,6 @@ from molt.target_python import (
 from molt.cli.mlir_backend import (
     _run_mlir_backend_pipeline,
 )
-
-
-def _session_target_dir(project_root: Path) -> Path | None:
-    """Return a per-session CARGO_TARGET_DIR, or None for default.
-
-    When MOLT_SESSION_ID is set, returns
-    project_root/target/sessions/<session_id>.
-    This keeps session-isolated Cargo output under the canonical target root
-    while still eliminating lock contention between concurrent builds.
-    """
-    sid = _molt_session_id()
-    if sid is None:
-        return None
-    return session_scoped_target_dir(project_root / "target", sid)
 
 
 def _run_build_pipeline(

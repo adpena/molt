@@ -38,8 +38,10 @@ RUNTIME_WASM_VALIDATION = importlib.import_module("molt.cli.runtime_wasm_validat
 WASM_TOOLCHAIN = importlib.import_module("molt.cli.wasm_toolchain")
 
 
-def _base_env() -> dict[str, str]:
-    env = os.environ.copy()
+def _base_env(run_context: dict[str, str]) -> dict[str, str]:
+    # The child runs on the real checkout, so it gets the session's run
+    # context back (`checkout_run_context`) on top of the test's settings.
+    env = {**os.environ, **run_context}
     env["PYTHONPATH"] = str(ROOT / "src")
     env.setdefault("MOLT_BACKEND_DAEMON", "0")
     return env
@@ -80,22 +82,26 @@ def _patch_memory_guard_loader(
     )
 
 
-def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_cli(
+    args: list[str], run_context: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
     return run_cli_test_process(
         [_python_executable(), "-m", "molt.cli", *args],
         cwd=ROOT,
-        env=_base_env(),
+        env=_base_env(run_context),
         capture_output=True,
         text=True,
         check=False,
     )
 
 
-def _run_dev(args: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_dev(
+    args: list[str], run_context: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
     return run_cli_test_process(
         [_python_executable(), "tools/dev.py", *args],
         cwd=ROOT,
-        env=_base_env(),
+        env=_base_env(run_context),
         capture_output=True,
         text=True,
         check=False,
@@ -176,8 +182,10 @@ def _fake_cli_harness(
     return FakeMemoryGuard
 
 
-def test_cli_setup_json_reports_actions_and_environment() -> None:
-    res = _run_cli(["setup", "--json"])
+def test_cli_setup_json_reports_actions_and_environment(
+    checkout_run_context: dict[str, str],
+) -> None:
+    res = _run_cli(["setup", "--json"], checkout_run_context)
     assert res.returncode == 0, res.stderr
     payload = json.loads(res.stdout)
     assert payload["command"] == "setup"
@@ -190,8 +198,12 @@ def test_cli_setup_json_reports_actions_and_environment() -> None:
     assert "MOLT_CACHE" in data["environment"]
 
 
-def test_cli_validate_check_json_reports_canonical_matrix() -> None:
-    res = _run_cli(["validate", "--check", "--json", "--suite", "smoke"])
+def test_cli_validate_check_json_reports_canonical_matrix(
+    checkout_run_context: dict[str, str],
+) -> None:
+    res = _run_cli(
+        ["validate", "--check", "--json", "--suite", "smoke"], checkout_run_context
+    )
     assert res.returncode == 0, res.stderr
     payload = json.loads(res.stdout)
     assert payload["command"] == "validate"
@@ -277,8 +289,13 @@ def test_cli_validate_check_json_reports_canonical_matrix() -> None:
     assert "luau::tests::" in luau_rust_step["cmd"]
 
 
-def test_cli_validate_custody_proof_suite_reports_only_custody_step() -> None:
-    res = _run_cli(["validate", "--check", "--json", "--suite", "custody-proof"])
+def test_cli_validate_custody_proof_suite_reports_only_custody_step(
+    checkout_run_context: dict[str, str],
+) -> None:
+    res = _run_cli(
+        ["validate", "--check", "--json", "--suite", "custody-proof"],
+        checkout_run_context,
+    )
     assert res.returncode == 0, res.stderr
     payload = json.loads(res.stdout)
     data = payload["data"]
@@ -295,9 +312,12 @@ def test_cli_validate_custody_proof_suite_reports_only_custody_step() -> None:
     assert "tests/tools/test_process_sentinel.py" in custody_step["cmd"]
 
 
-def test_cli_validate_luau_backend_filter_reports_guarded_luau_steps() -> None:
+def test_cli_validate_luau_backend_filter_reports_guarded_luau_steps(
+    checkout_run_context: dict[str, str],
+) -> None:
     res = _run_cli(
-        ["validate", "--check", "--json", "--suite", "smoke", "--backend", "luau"]
+        ["validate", "--check", "--json", "--suite", "smoke", "--backend", "luau"],
+        checkout_run_context,
     )
     assert res.returncode == 0, res.stderr
     payload = json.loads(res.stdout)
@@ -326,10 +346,13 @@ def test_cli_validate_luau_backend_filter_reports_guarded_luau_steps() -> None:
 def test_cli_validate_rejects_proof_bypass_environment(
     monkeypatch: pytest.MonkeyPatch,
     bypass: str,
+    checkout_run_context: dict[str, str],
 ) -> None:
     monkeypatch.setenv(bypass, "1")
 
-    res = _run_cli(["validate", "--check", "--json", "--suite", "smoke"])
+    res = _run_cli(
+        ["validate", "--check", "--json", "--suite", "smoke"], checkout_run_context
+    )
 
     assert res.returncode == 2
     payload = json.loads(res.stdout)
@@ -340,16 +363,21 @@ def test_cli_validate_rejects_proof_bypass_environment(
 
 def test_cli_validate_allows_no_build_policy_without_bypassing_admission(
     monkeypatch: pytest.MonkeyPatch,
+    checkout_run_context: dict[str, str],
 ) -> None:
     monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
-    res = _run_cli(["validate", "--check", "--json", "--suite", "smoke"])
+    res = _run_cli(
+        ["validate", "--check", "--json", "--suite", "smoke"], checkout_run_context
+    )
     assert res.returncode == 0, res.stderr
     payload = json.loads(res.stdout)
     assert payload["command"] == "validate"
     assert payload["data"]["steps"]
 
 
-def test_cli_validate_check_json_writes_explicit_summary_out(tmp_path: Path) -> None:
+def test_cli_validate_check_json_writes_explicit_summary_out(
+    tmp_path: Path, checkout_run_context: dict[str, str]
+) -> None:
     summary_path = tmp_path / "validate-plan.json"
 
     res = _run_cli(
@@ -361,7 +389,8 @@ def test_cli_validate_check_json_writes_explicit_summary_out(tmp_path: Path) -> 
             "smoke",
             "--summary-out",
             str(summary_path),
-        ]
+        ],
+        checkout_run_context,
     )
 
     assert res.returncode == 0, res.stderr
@@ -1162,8 +1191,10 @@ def test_cli_validate_defaults_execution_summary_to_logs(
     assert payload["data"]["results"][0]["name"] == "correctness-step"
 
 
-def test_tools_dev_validate_delegates_to_canonical_cli() -> None:
-    res = _run_dev(["validate", "--check"])
+def test_tools_dev_validate_delegates_to_canonical_cli(
+    checkout_run_context: dict[str, str],
+) -> None:
+    res = _run_dev(["validate", "--check"], checkout_run_context)
     assert res.returncode == 0, res.stderr
     assert "validate" in res.stdout.lower() or "validate" in res.stderr.lower()
 
