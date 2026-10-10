@@ -93,6 +93,8 @@ jobs:
       platform_portability: ${{ steps.paths.outputs.platform_portability }}
       platform_portability_matrix: ${{ steps.paths.outputs.platform_portability_matrix }}
       python_unit_matrix: ${{ steps.paths.outputs.python_unit_matrix }}
+      python_unit_collection: ${{ steps.paths.outputs.python_unit_collection }}
+      python_unit_collection_matrix: ${{ steps.paths.outputs.python_unit_collection_matrix }}
       topology: ${{ steps.paths.outputs.topology }}
       selected: ${{ steps.paths.outputs.selected }}
     steps:
@@ -254,7 +256,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.python_unit == 'true'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 46
+    timeout-minutes: 41
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.classify-changes.outputs.python_unit_matrix) }}
@@ -282,6 +284,41 @@ jobs:
         with:
           name: proof-receipt-python-unit-${{ matrix.cell }}
           path: proof-receipts/python-unit-${{ matrix.cell }}.json
+          if-no-files-found: error
+
+  python-unit-collection:
+    name: Python Unit Collection (${{ matrix.os }} / ${{ matrix.arch }})
+    needs: classify-changes
+    if: needs.classify-changes.outputs.python_unit_collection == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 16
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.classify-changes.outputs.python_unit_collection_matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Runtime fixtures must live outside the compiler source tree.
+      - name: Setup Python unit toolchain
+        uses: ./.github/actions/setup-project
+        with:
+          rust-toolchain: pinned
+          sync: "true"
+          sync-frozen: "true"
+          sync-groups: dev
+      - name: Execute the CLI import-collection suite
+        run: >-
+          python3 tools/proof_plan.py
+          --run-family python_unit_collection --receipt
+          proof-receipts/python-unit-collection-${{ matrix.cell }}.json
+          --matrix-cell "${{ matrix.cell }}"
+      - name: Upload Python unit collection receipt
+        if: always() && hashFiles(format('proof-receipts/python-unit-collection-{0}.json', matrix.cell)) != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proof-receipt-python-unit-collection-${{ matrix.cell }}
+          path: proof-receipts/python-unit-collection-${{ matrix.cell }}.json
           if-no-files-found: error
 
   native-integration:
@@ -485,6 +522,7 @@ jobs:
       - classify-changes
       - python-static
       - python-unit
+      - python-unit-collection
       - native-integration
       - platform-portability
       - rust-build-unit-smoke

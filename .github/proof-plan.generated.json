@@ -342,7 +342,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "d3a8db54172892ee45b4f0ab85537c1efeb11b402d730d1afcd9737205776362",
+  "authority_sha256": "4459b81e4d295215ef12c4d88122fb03f0f8735d519adb3cb05dfb5a83bc06d1",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -508,7 +508,41 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 46,
+      "timeout_minutes": 41,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "admission_job": "python-unit-collection",
+      "admission_needs": [
+        "classify-changes"
+      ],
+      "admission_workflow": ".github/workflows/ci.yml",
+      "dependencies": [],
+      "description": "The whole CLI import-collection suite on Linux and macOS, in its own job so its memory never shares a runner with other unit partitions.",
+      "executor": "github-matrix",
+      "inputs": [
+        ".github/actions/setup-project/**",
+        ".github/workflows/ci.yml",
+        ".python-version",
+        "pyproject.toml",
+        "uv.lock",
+        "Cargo.toml",
+        ".cargo/**",
+        "runtime/**/Cargo.toml",
+        "src/**",
+        "tests/**",
+        "tools/**"
+      ],
+      "job": "python-unit-collection",
+      "job_reserve_seconds": 60,
+      "name": "python_unit_collection",
+      "required": true,
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_minutes": 16,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -4676,9 +4710,9 @@
         "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"
       ],
       "cache_domain": "pytest",
-      "cell": "linux-x86_64-py312-unit",
+      "cell": "linux-x86_64-py312-unit-collection",
       "dependencies": [],
-      "family": "python_unit",
+      "family": "python_unit_collection",
       "id": "python.unit.cli.import-collection",
       "resource_class": "python-tests",
       "tiers": [
@@ -4720,9 +4754,9 @@
         "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"
       ],
       "cache_domain": "pytest",
-      "cell": "macos-arm64-py312-unit",
+      "cell": "macos-arm64-py312-unit-collection",
       "dependencies": [],
-      "family": "python_unit",
+      "family": "python_unit_collection",
       "id": "python.unit.cli.import-collection.macos",
       "resource_class": "python-tests",
       "tiers": [
@@ -7179,25 +7213,49 @@
       },
       "python_unit": {
         "linux-x86_64-py312-unit": {
-          "budget_seconds": 2760,
+          "budget_seconds": 2460,
           "critical_path_seconds": 900,
           "headroom_seconds": 0,
           "job_reserve_seconds": 60,
-          "projected_makespan_seconds": 2700,
-          "required_job_seconds": 2760,
+          "projected_makespan_seconds": 2400,
+          "required_job_seconds": 2460,
           "resource_capacity_floor_seconds": {
-            "python-tests": 2610
+            "python-tests": 2160
           }
         },
         "macos-arm64-py312-unit": {
-          "budget_seconds": 2760,
+          "budget_seconds": 2460,
           "critical_path_seconds": 900,
           "headroom_seconds": 0,
           "job_reserve_seconds": 60,
-          "projected_makespan_seconds": 2700,
-          "required_job_seconds": 2760,
+          "projected_makespan_seconds": 2400,
+          "required_job_seconds": 2460,
           "resource_capacity_floor_seconds": {
-            "python-tests": 2610
+            "python-tests": 2160
+          }
+        }
+      },
+      "python_unit_collection": {
+        "linux-x86_64-py312-unit-collection": {
+          "budget_seconds": 960,
+          "critical_path_seconds": 900,
+          "headroom_seconds": 0,
+          "job_reserve_seconds": 60,
+          "projected_makespan_seconds": 900,
+          "required_job_seconds": 960,
+          "resource_capacity_floor_seconds": {
+            "python-tests": 450
+          }
+        },
+        "macos-arm64-py312-unit-collection": {
+          "budget_seconds": 960,
+          "critical_path_seconds": 900,
+          "headroom_seconds": 0,
+          "job_reserve_seconds": 60,
+          "projected_makespan_seconds": 900,
+          "required_job_seconds": 960,
+          "resource_capacity_floor_seconds": {
+            "python-tests": 450
           }
         }
       }
@@ -8533,6 +8591,26 @@
       "arch": "aarch64",
       "backend": "python-tooling",
       "id": "macos-arm64-py312-unit",
+      "os": "macos",
+      "profile": "test",
+      "python": "3.12",
+      "runner": "macos-14",
+      "target": "host"
+    },
+    {
+      "arch": "x86_64",
+      "backend": "python-tooling",
+      "id": "linux-x86_64-py312-unit-collection",
+      "os": "linux",
+      "profile": "test",
+      "python": "3.12",
+      "runner": "ubuntu-latest",
+      "target": "host"
+    },
+    {
+      "arch": "aarch64",
+      "backend": "python-tooling",
+      "id": "macos-arm64-py312-unit-collection",
       "os": "macos",
       "profile": "test",
       "python": "3.12",
