@@ -2427,6 +2427,11 @@ def _stage_external_native_required_file(
             f"External native artifact {label} checksum changed before staging: "
             f"{source_path} expected {expected}, got {actual}"
         )
+    if staged_path.is_file() and _sha256_file(staged_path).lower() == expected:
+        # The stage is content-addressed by the plan digest, so a matching file
+        # is this exact artifact. Reuse it: replacing it would fail on Windows
+        # while a concurrent build holds it open.
+        return
     _atomic_copy_file(source_path, staged_path)
     staged = _sha256_file(staged_path).lower()
     if staged != expected:
