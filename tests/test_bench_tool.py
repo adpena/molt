@@ -284,20 +284,26 @@ def test_canonical_bench_env_empty_base_ignores_ambient_artifact_env(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    # An empty base also drops a hosted job's custody contract, so the bench
+    # resolves its checkout as a plain clone and creates that clone's roots.
+    # A scratch checkout keeps them out of the real one (HF-F108).
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    monkeypatch.setattr(bench_tool, "REPO_ROOT", checkout)
+    monkeypatch.setattr(
+        bench_tool, "BENCH_RESULTS_DIR", checkout / "bench" / "results"
+    )
     ambient_root = tmp_path / "ambient-root"
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ambient_root))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(ambient_root / "target"))
 
     env = bench_tool._canonical_bench_env({})
 
-    assert env["MOLT_EXT_ROOT"] != str(ambient_root.resolve())
-    assert env["CARGO_TARGET_DIR"] != str((ambient_root / "target").resolve())
-    assert env["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_artifact_root(
-            Path(env["MOLT_EXT_ROOT"]),
-            None,
-        )
-    )
+    # The checkout is its own artifact root, and the generated bench session
+    # does not scope its target.
+    assert env["MOLT_EXT_ROOT"] == str(checkout.resolve())
+    assert env["CARGO_TARGET_DIR"] == str(checkout.resolve() / "target")
+    assert not ambient_root.exists()
 
 
 def test_prepare_molt_binary_defaults_to_cache_reuse(
