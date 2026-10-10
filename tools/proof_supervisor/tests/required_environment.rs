@@ -1,5 +1,5 @@
 use molt_proof_supervisor::{
-    CAPABILITY_SCHEMA, Capability, ClosureMode, FixedImage, POLICY_SCHEMA, Policy,
+    Admission, CAPABILITY_SCHEMA, Capability, ClosureMode, FixedImage, POLICY_SCHEMA, Policy,
     RootExitDisposition, platform, sha256_file,
 };
 use std::process::Command;
@@ -49,6 +49,8 @@ fn capability_exports_native_required_environment_in_every_mode() {
         let capability: Capability = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(capability.schema, CAPABILITY_SCHEMA);
         assert_eq!(capability.mode, mode);
+        assert!(!matches!(capability.admission, Admission::Admitted { .. }));
+        assert!(capability.admission.is_well_formed());
         assert_eq!(capability.required_environment, required);
         assert_eq!(platform::capability(mode).required_environment, required);
     }

@@ -2878,6 +2878,23 @@ owner = "runtime/molt-backend-mlir/src/bin/main.rs"
 summary = "Comma-separated i64 arguments passed to the function that molt-backend-mlir --jit executes; a value that does not parse fails the run, and unset or empty passes no arguments."
 
 [[variable]]
+name = "MOLT_JOURNAL_TEST_DIRECTORY"
+audience = "internal"
+kind = "path"
+default = ""
+owner = "tools/proof_supervisor/src/lib.rs"
+summary = "Owned rendezvous directory passed to native supervisor journal-failure test children; read only in the development test binary."
+
+[[variable]]
+name = "MOLT_JOURNAL_TEST_WORKER"
+audience = "internal"
+kind = "enum"
+default = ""
+values = ["0", "1"]
+owner = "tools/proof_supervisor/src/lib.rs"
+summary = "Selects one of the two native supervisor journal-failure test workers; unset selects the test root, and no shipped runtime reads it."
+
+[[variable]]
 name = "MOLT_KEEP_SYMBOLS"
 audience = "user"
 kind = "bool"

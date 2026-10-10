@@ -1222,43 +1222,32 @@ def _guarded_exec_invocation(argv: Sequence[str]) -> dict[str, object] | None:
     if not payload:
         return None
     first = _basename(payload[0])
-    python_index = 1
-    if _PYTHON_COMMAND.fullmatch(first) or first in _PY_LAUNCHERS:
-        if (
-            first in _PY_LAUNCHERS
-            and len(payload) > 1
-            and _PY_SELECTOR.fullmatch(payload[1])
-        ):
-            python_index = 2
-    else:
-        if any("guarded_exec" in str(value).casefold() for value in payload):
-            raise ValueError("guarded_exec delegation must be the direct Python target")
+    selector = (
+        first in _PY_LAUNCHERS
+        and len(payload) > 1
+        and _PY_SELECTOR.fullmatch(payload[1]) is not None
+    )
+    if not (_PYTHON_COMMAND.fullmatch(first) or first in _PY_LAUNCHERS):
         return None
-    if python_index >= len(payload):
-        return None
-    target = payload[python_index]
-    mode: str | None = None
-    target_indices: list[int] = []
-    after_target = python_index + 1
-    if target == "-m":
-        if after_target >= len(payload):
-            return None
-        module = payload[after_target]
-        if module == "tools.guarded_exec":
-            mode = "module"
-            target_indices = [offset + python_index, offset + after_target]
-            after_target += 1
-        elif "guarded_exec" in module.casefold():
-            raise ValueError(f"ambiguous guarded_exec module authority {module!r}")
-    elif _basename(target) == "guarded_exec.py":
+    invocation = parse_python_invocation(
+        [payload[0], *payload[2:]] if selector else payload
+    )
+    # Only the interpreter's target can be this delegation authority. Payload
+    # arguments, option operands and command strings keep their ordinary meaning.
+    after_target = len(payload) - len(invocation.arguments)
+    if invocation.mode == "module" and invocation.target == "tools.guarded_exec":
+        mode = "module"
+        first_target = after_target - (
+            1 if payload[after_target - 1] == "-mtools.guarded_exec" else 2
+        )
+        target_indices = list(range(offset + first_target, offset + after_target))
+    elif (
+        invocation.mode == "script"
+        and _basename(invocation.target or "") == "guarded_exec.py"
+    ):
         mode = "script"
-        target_indices = [offset + python_index]
-    if mode is None:
-        if any(
-            "guarded_exec" in str(value).casefold()
-            for value in payload[python_index + 1 :]
-        ):
-            raise ValueError("guarded_exec delegation must be the direct Python target")
+        target_indices = [offset + after_target - 1]
+    else:
         return None
     try:
         separator = payload.index("--", after_target)

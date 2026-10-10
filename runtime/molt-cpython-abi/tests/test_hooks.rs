@@ -7,8 +7,20 @@ mod support;
 use molt_cpython_abi::hooks::{DecodedHandleResult, hooks_or_stubs};
 use std::ptr;
 
+unsafe extern "C" fn fixture_alloc_str(_data: *const u8, _len: usize) -> u64 {
+    0
+}
+
+fn fixture_hooks() -> molt_cpython_abi::hooks::RuntimeHooks {
+    let mut hooks = support::stub_runtime_hooks();
+    // Preserve fail-closed string semantics while exercising optional Some
+    // identity through the same installer as every other test in this binary.
+    hooks.alloc_str = Some(fixture_alloc_str);
+    hooks
+}
+
 fn init() -> support::AbiTestThreadStateTransaction {
-    support::enter_abi_test(support::stub_runtime_hooks())
+    support::enter_abi_test(fixture_hooks())
 }
 
 // ---------------------------------------------------------------------------
@@ -19,8 +31,8 @@ fn init() -> support::AbiTestThreadStateTransaction {
 fn test_hooks_or_stubs_returns_stubs() {
     let _abi_test = init();
     let h = hooks_or_stubs();
-    // The test transaction changes only lifecycle custody. All object hooks
-    // retain the fail-closed stub behavior verified below.
+    // The transaction adds lifecycle custody; the explicit string fixture
+    // and all other object hooks retain fail-closed stub behavior.
     assert!(matches!(
         unsafe { h.numeric_identity_new(molt_lang_obj_model::MoltObject::from_int(1000).bits()) }
             .decode(),
@@ -354,4 +366,161 @@ fn test_abi_transaction_cleanup_reports_leaks_and_preserves_primary_failure() {
         assert!(!object::runtime_execution_thread_is_attached());
         assert!(!object::current_thread_has_retained_runtime_state());
     }
+}
+
+unsafe extern "C" fn conflicting_alloc_list() -> u64 {
+    17
+}
+
+unsafe extern "C" fn conflicting_alloc_str(_data: *const u8, _len: usize) -> u64 {
+    23
+}
+
+unsafe extern "C" fn unnormalized_runtime_is_initialized() -> std::os::raw::c_int {
+    0
+}
+
+fn assert_no_execution_state() {
+    assert!(!molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
+    assert!(!molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
+}
+
+#[test]
+fn test_abi_transaction_rejects_conflicting_normalized_hooks_before_attachment() {
+    use molt_cpython_abi::api::object;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    // Install and release the baseline before attempting another transaction:
+    // a nested attempt would block on the process-owned fixture lock.
+    drop(init());
+    assert_no_execution_state();
+    for field in [
+        "abi_magic",
+        "abi_version",
+        "struct_size",
+        "alloc_list",
+        "alloc_str_none",
+        "alloc_str_some",
+    ] {
+        let mut requested = fixture_hooks();
+        let diagnostic_field = match field {
+            "abi_magic" => {
+                requested.abi_magic ^= 1;
+                "abi_magic"
+            }
+            "abi_version" => {
+                requested.abi_version += 1;
+                "abi_version"
+            }
+            "struct_size" => {
+                requested.struct_size += 1;
+                "struct_size"
+            }
+            "alloc_list" => {
+                requested.alloc_list = conflicting_alloc_list;
+                "alloc_list"
+            }
+            "alloc_str_none" => {
+                requested.alloc_str = None;
+                "alloc_str"
+            }
+            "alloc_str_some" => {
+                requested.alloc_str = Some(conflicting_alloc_str);
+                "alloc_str"
+            }
+            _ => unreachable!(),
+        };
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            let _transaction = support::enter_abi_test(requested);
+        }));
+        let failure = outcome.expect_err("an incompatible table must be rejected");
+        let message = failure
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| failure.downcast_ref::<&str>().copied())
+            .expect("hook rejection must retain its field diagnostic");
+        assert!(
+            message.contains(&format!("incompatible RuntimeHooks.{diagnostic_field}")),
+            "{message}"
+        );
+        assert_no_execution_state();
+
+        // The rejected request never replaced either original allocator, and
+        // unwinding its lock does not prevent a subsequent valid attachment.
+        let installed = molt_cpython_abi::hooks::hooks().unwrap();
+        assert_eq!(unsafe { (installed.alloc_list)() }, 0);
+        assert_eq!(unsafe { installed.alloc_str(b"x".as_ptr(), 1) }, 0);
+        {
+            let _transaction = init();
+            assert!(object::runtime_execution_thread_is_attached());
+            assert!(unsafe { molt_cpython_abi::api::sequences::PyList_New(0) }.is_null());
+            assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+            unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+        }
+        assert_no_execution_state();
+    }
+}
+
+#[test]
+fn test_abi_transaction_accepts_identical_normalized_hooks() {
+    for override_custody in [false, false, true] {
+        let mut requested = fixture_hooks();
+        if override_custody {
+            requested.runtime_is_initialized = unnormalized_runtime_is_initialized;
+        }
+        {
+            let _transaction = support::enter_abi_test(requested);
+            assert!(molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
+            assert_eq!(unsafe { (hooks_or_stubs().runtime_is_initialized)() }, 1);
+            assert_eq!(unsafe { hooks_or_stubs().alloc_str(b"x".as_ptr(), 1) }, 0);
+        }
+        assert_no_execution_state();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_abi_transaction_rejects_malformed_first_install_before_attachment() {
+    const CHILD: &str = "MOLT_ABI_TEST_MALFORMED_FIRST_HOOKS";
+    if std::env::var_os(CHILD).is_none() {
+        // A fresh self-image is necessary: Rust test ordering cannot establish
+        // that no sibling in this process has already installed its table.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "test_abi_transaction_rejects_malformed_first_install_before_attachment",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .expect("spawn isolated hook registration control");
+        assert!(
+            output.status.success(),
+            "child stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("malformed-first-install-refused")
+        );
+        return;
+    }
+    assert!(molt_cpython_abi::hooks::hooks().is_none());
+    let mut malformed = fixture_hooks();
+    malformed.abi_magic ^= 1;
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _transaction = support::enter_abi_test(malformed);
+    }));
+    let failure = outcome.expect_err("first incompatible registration must be refused");
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap();
+    assert!(message.contains("registration failed before attachment"));
+    assert!(molt_cpython_abi::hooks::hooks().is_none());
+    assert_no_execution_state();
+    drop(init());
+    assert_no_execution_state();
+    println!("malformed-first-install-refused");
 }

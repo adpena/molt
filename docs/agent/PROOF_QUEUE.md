@@ -400,7 +400,7 @@ on both success and failure. Process cleanup lives in
 `memory_guard_core.process_custody`; guard entrypoints must not rebind that
 module's callbacks. Tests inject samplers or patch the owning module directly.
 
-Native supervisor capability v3 owns the required launch environment. The queue
+Native supervisor capability v4 owns the required launch environment. The queue
 reads it from the captured supervisor binary before toolchain, process-image,
 and source capture; both inventory and proof policies seal the effective values.
 Native policy admission rejects missing or conflicting requirements. Windows
@@ -410,14 +410,25 @@ containment, pre-entry image admission, and descendant accounting remain active.
 Other platforms advertise their own requirements rather than inheriting a
 Windows setting. Do not replace this contract with a host environment tweak.
 
-Unavailable native launch capabilities are terminal prelaunch refusals. The
-failed execution record retains the supervisor's validated capability report
-and exact reason; no command return code, transcript, supervisor policy/receipt,
-or attested execution context is published. Queue terminal metadata remains
-explicitly non-evidence. Real queue tests use the shared capability-aware adapter
-in `tests/proof_queue_custody_test_support.py`: available capabilities retain all
-execution assertions, while unavailable capabilities must prove this refusal
-contract. Neither host-name checks nor skips/xfails replace execution coverage.
+The native capability has one tagged `admission` state. `ineligible` carries
+an exact reason and refuses before launch; `eligible` permits only an attempt.
+The process ledger derives `admitted` from the accepted owned-root creation and
+policy-validated initial image, binding their sequence numbers and stable root
+identity. Linux Yama preflight does not establish that outer seccomp permits
+creation; eligible launches can fail on every backend. The terminal decoder
+therefore preserves honest eligible/admitted `INCOMPLETE` and ineligible
+`REJECTED` receipts. Native verification proves integrity, not execution success:
+queue admission separately requires a complete receipt with replay-derived
+`admitted` state. No boolean availability or caller-authored witness substitutes
+for those facts.
+
+A typed prelaunch refusal retains the validated capability and reason in the
+failed execution record, with no command return code, transcript, native
+policy/receipt or attested execution context. Queue terminal metadata remains
+explicitly non-evidence. The shared test adapter in
+`tests/proof_queue_custody_test_support.py` proves only this exact refusal branch;
+eligible launch failures cannot bypass the original execution assertions.
+Neither host-name checks nor skips/xfails replace those consumer controls.
 
 Executable and derived-root identities use canonical native paths at live
 filesystem boundaries. Safe Windows prefix simplification must preserve device
@@ -937,16 +948,21 @@ records every kernel-observed executable by path, size, and SHA-256. That sealed
 image set is the single authority consumed by both pre-spawn child custody and
 the proof supervisor; no install-directory or basename allowlist is inferred.
 Inventory is lossless only under qualified native process/image custody. The
-macOS Seatbelt/ptrace leaf implementation remains unqualified: the recorded
-blocked-SIGTRAP/re-exec negative counted one exec while two images executed.
-Its current preflight availability and a complete receipt do not establish
-release acceptance. Declared-tree and inventory-tree modes reject before launch.
-Every admitted mode needs independently demonstrated pre-entry creation/image
-custody and supervisor-death closure; neither an Endpoint Security entitlement
-nor polling/kqueue observations alone establish those guarantees. Track the
-open platform contract in [HF-07](V1_HANDOFF_FINDINGS.md). This qualification
-boundary belongs to developer proof execution and does not change the compiler's
-macOS target support.
+current native backend refuses every macOS mode as `ineligible`: the former
+Seatbelt/ptrace leaf implementation was retired after blocked SIGTRAP hid a
+re-exec, and tree modes lack retained pre-entry creation authority. Every mode
+needs independently demonstrated pre-entry creation/image, signal behavior and
+supervisor-death closure before enabling it. An Endpoint Security entitlement or
+polling/kqueue observations alone do not prove those guarantees. Track the open
+platform contract in [HF-07](V1_HANDOFF_FINDINGS.md). This developer proof
+qualification does not change the compiler's macOS target support. Native eligibility,
+implemented host/ABI restrictions and per-cell qualification are maintained in the
+[apparatus capability matrix](../../tools/proof_supervisor/README.md#apparatus-capability-matrix).
+The policy publisher and all receipt consumers project schemas and numeric budgets
+from `tools/proof_supervisor/protocol.json`; native verification binds both retained
+policy bytes and receipt bytes. Full journal coverage and actual native cleanup
+custody are independent receipt facts, and a captured prefix cannot establish
+complete execution.
 
 One queue-owned memory guard contains interpreter/tool identity probes,
 toolchain preflight, the proof command, and both source snapshots. The guarded

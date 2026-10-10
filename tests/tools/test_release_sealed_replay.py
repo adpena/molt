@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 import tarfile
 import json
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -558,6 +560,14 @@ def test_success_gate_rejects_failed_or_incomplete_terminal():
     # Exact native verifier invocation is exercised by the owning custody
     # tests. This independently rejects superficially successful failed receipts.
     valid = {
+        "capability": {
+            "admission": {
+                "state": "admitted",
+                "root_stable_process_id": "fixture:guest",
+                "root_create_sequence": 1,
+                "initial_image_sequence": 2,
+            },
+        },
         "complete": True,
         "state": "COMPLETE",
         "root_exit_code": 0,
@@ -571,6 +581,9 @@ def test_success_gate_rejects_failed_or_incomplete_terminal():
     for key, value in (
         ("complete", False),
         ("state", "FAILED"),
+        ("capability", None),
+        ("capability", {"admission": {"state": "eligible"}}),
+        ("capability", {"admission": {"state": "ineligible", "reason": "denied"}}),
         ("root_exit_code", 1),
         ("error_count", 1),
         ("violation_count", 1),
@@ -982,3 +995,215 @@ def test_replay_refuses_aliases_or_relabelled_logical_products(mutation):
         consumer_replay.expected_runs(
             [{"python": "3.12", "cells": cells}], {"python": "3.12", "cells": pip_cells}
         )
+
+
+@pytest.mark.parametrize("oversize", [False, True])
+def test_replay_stages_only_bounded_compact_supervisor_policy(
+    tmp_path, monkeypatch, oversize
+):
+    # File staging and sealing are real. The selected row and payload providers
+    # are fixture inputs; no ELF, compiler, or container claim is made here.
+    program = tmp_path / "program"
+    program.write_bytes(b"fixture program, not executed")
+    supervisor = tmp_path / "supervisor"
+    supervisor.write_bytes(b"fixture supervisor, not executed")
+    row = {
+        "id": "fixture-native",
+        "lane": {"target": "native"},
+        "artifact": {"path": str(program), **execution_root.file_identity(program)},
+    }
+    monkeypatch.setattr(execution_root, "archive_inputs", lambda **_: [])
+    monkeypatch.setattr(execution_root, "support_payloads", lambda *_, **__: ({}, []))
+    monkeypatch.setattr(consumer_replay, "wasm_loader_asset_payloads", lambda *_: {})
+    monkeypatch.setattr(consumer_replay, "expected_runs", lambda *_: [row])
+    closure_calls = []
+
+    def audit_closure(*args, **kwargs):
+        closure_calls.append(kwargs["executable_paths"])
+        return []
+
+    monkeypatch.setattr(execution_root, "audit_native_closure", audit_closure)
+    nonce = "a" * (
+        supervisor_custody.SUPERVISOR_BUDGETS["nonce_utf8_bytes"] + 1
+        if oversize
+        else 64
+    )
+    monkeypatch.setattr(consumer_replay.secrets, "token_hex", lambda _: nonce)
+    evidence = tmp_path / "evidence"
+    kwargs = dict(
+        evidence=evidence,
+        candidate={
+            "source_sha": "fixture",
+            "target": {"platform": "linux", "arch": "x86_64"},
+        },
+        proofs=[],
+        pip_proof={},
+        bundle_source=tmp_path,
+        archive_cache=tmp_path,
+        supervisor=supervisor,
+        generation={
+            "binary": {
+                "sha256": hashlib.sha256(supervisor.read_bytes()).hexdigest(),
+                "size_bytes": supervisor.stat().st_size,
+            }
+        },
+        argv=('é\n\\"',),
+    )
+    policy_path = evidence / "rootfs/policies/fixture-native.json"
+    if oversize:
+        with pytest.raises(ValueError, match="nonce_utf8_bytes"):
+            consumer_replay.prepare(**kwargs)
+        assert not policy_path.exists()
+        assert not (evidence / "rootfs.tar").exists()
+        assert closure_calls == []
+        return
+    replay = consumer_replay.prepare(**kwargs)
+    expected = {
+        "schema": supervisor_custody.SUPERVISOR_POLICY_SCHEMA,
+        "nonce": nonce,
+        "mode": "leaf",
+        "cwd": "/app",
+        "command": ["/app/fixture-native/program", *kwargs["argv"]],
+        "environment": dict(consumer_replay.ENVIRONMENT),
+        "root_role": "guest",
+        "fixed_images": [
+            {
+                "role": "guest",
+                "path": "/app/fixture-native/program",
+                "sha256": hashlib.sha256(program.read_bytes()).hexdigest(),
+                "root_exit_disposition": "require-exit",
+            }
+        ],
+        "derived_roots": [],
+    }
+    expected_raw = (
+        json.dumps(expected, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8")
+    assert policy_path.read_bytes() == expected_raw
+    retained = next(
+        item
+        for item in replay["root"]["files"]
+        if item["path"] == "policies/fixture-native.json"
+    )
+    assert retained["size"] == len(expected_raw)
+    assert retained["sha256"] == hashlib.sha256(expected_raw).hexdigest()
+    assert len(closure_calls) == 1
+    execution_root.validate_sealed_tar(
+        evidence / "rootfs.tar",
+        evidence / "rootfs",
+        expected_archive=replay["root"]["archive"],
+    )
+
+
+@pytest.mark.parametrize("host_platform", ["linux", "darwin", "win32"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "native_custody_valid",
+        "journal_coverage_valid",
+        "receipt_sha256",
+        "policy_input_bytes",
+        "guest_platform",
+    ],
+)
+def test_rooted_verifier_binds_guest_receipt_and_requires_native_custody(
+    tmp_path, monkeypatch, host_platform, mutation
+):
+    # The retained guest is Linux on every verifier host. Only execution of the
+    # native verifier is replaced; command, raw-byte binding, terminal decoding,
+    # and the standalone success consumer remain real.
+    rootfs = tmp_path / "rootfs"
+    rootfs.mkdir()
+    policy = rootfs / "policy.json"
+    policy.write_bytes(b' {"fixture":"retained guest policy"}\n')
+    receipt = {
+        "schema": supervisor_custody.SUPERVISOR_RECEIPT_SCHEMA,
+        "capability": {
+            "schema": supervisor_custody.SUPERVISOR_CAPABILITY_SCHEMA,
+            "platform": "linux",
+            "mode": "leaf",
+            "backend": "ptrace-exitkill",
+            "admission": {
+                "state": "admitted",
+                "root_stable_process_id": "fixture:guest",
+                "root_create_sequence": 1,
+                "initial_image_sequence": 2,
+            },
+            "pre_entry_exec_authority": True,
+            "pre_entry_process_create_authority": True,
+            "recursive_descendant_authority": True,
+            "required_environment": {},
+        },
+        "complete": True,
+        "state": "COMPLETE",
+        "root_exit_code": 0,
+        "error_count": 0,
+        "violation_count": 0,
+        "errors": [],
+        "violations": [],
+        "accounting": {"active_processes": 0},
+    }
+    if mutation == "guest_platform":
+        receipt["capability"]["platform"] = "macos"
+    path = tmp_path / "receipt.json"
+    raw = ("  " + json.dumps(receipt) + "\n").encode()
+    path.write_bytes(raw)
+    policy_raw = policy.read_bytes()
+    observed = []
+
+    def verify(command, **kwargs):
+        assert command == (
+            "fixture-supervisor",
+            "verify-rooted",
+            "--rootfs",
+            str(rootfs),
+            "--policy",
+            str(policy),
+            "--receipt",
+            str(path),
+        )
+        assert kwargs["text"] is False
+        observed.append(command)
+        response = {
+            "receipt_sha256": hashlib.sha256(raw).hexdigest(),
+            "receipt_bytes": len(raw),
+            "policy_input_sha256": hashlib.sha256(policy_raw).hexdigest(),
+            "policy_input_bytes": len(policy_raw),
+            "native_custody_valid": True,
+            "journal_coverage_valid": True,
+        }
+        if mutation in {"native_custody_valid", "journal_coverage_valid"}:
+            response[mutation] = False
+        elif mutation == "receipt_sha256":
+            response[mutation] = "0" * 64
+        elif mutation == "policy_input_bytes":
+            response[mutation] = len(policy_raw) + 1
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps(response).encode("utf-8"), b""
+        )
+
+    monkeypatch.setattr(
+        supervisor_custody, "sys", SimpleNamespace(platform=host_platform)
+    )
+    monkeypatch.setattr(supervisor_custody.command_identity, "_run_captured", verify)
+    arguments = dict(
+        binary=Path("fixture-supervisor"),
+        policy_path=policy,
+        receipt_path=path,
+        rootfs=rootfs,
+        cwd=tmp_path,
+        env={},
+    )
+    if mutation is not None:
+        with pytest.raises(
+            ValueError,
+            match="verified different|custody or coverage|schema or mode mismatch|platform",
+        ):
+            supervisor_custody._validated_supervisor_receipt(**arguments)
+    else:
+        validated = supervisor_custody._validated_supervisor_receipt(**arguments)
+        assert validated == receipt
+        consumer_replay.require_success(validated)
+    assert len(observed) == 1

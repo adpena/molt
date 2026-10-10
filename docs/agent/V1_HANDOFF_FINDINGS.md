@@ -106,6 +106,43 @@ allocation remains denied, preserves pending state until clear, and retains
 the successful recovery and reference-ownership oracles. Actual Rust replay is
 required; correcting these fixtures does not qualify the GC/lifecycle failures.
 
+Current execution order is ABI fixture qualification, complete runtime shutdown
+integration and execution, then guarded measurement and WASM size qualification.
+The upstream reconciliation is committed at `512a00667`. ABI fixture repairs now
+use one immutable hook profile per binary, reject conflicting normalized tables
+before thread-state attachment, prove that the mapping fixture can actually
+allocate a list, and inspect surrogate names through the Unicode code-point API.
+Their complete Linux ABI family remains unqualified. The clone-child ordering
+failure exposed a preserved supervisor repair that had not reached the candidate.
+That successor and its current receipt consumers are now integrated: 99 Linux
+native checks pass with closed descendants and unchanged source/tool images;
+247 Python consumer checks pass with 30 platform skips. Delegation now uses the
+existing Python parser's actual target boundary, so test filenames and other
+payload data cannot masquerade as wrappers; affected binding controls pass.
+The broad Python run also exposes separate release obligations: R6 commands
+conflict with exact registered entrypoint admission, one relative-path fixture
+still expects retired parent traversal, and a macOS executable-absence test
+fails during native supervisor provisioning before reaching its intended oracle.
+These remain open. Two Python cohorts observe interpreter ctime-only metadata
+drift with unchanged bytes, inode, path, mode and mtime; their original strict
+image-fence failures are retained and are not claimed as clean qualification.
+The complete Linux ABI development run now passes all 764 tests with one
+intentional helper ignore, admitted complete native supervision, no native
+violations, closed descendants and unchanged source content. This exposed and
+repaired two incomplete fixture capabilities: sequence hooks now enter the
+existing class-binding transaction, and the member-string fixture supplies the
+shared byte owner needed to construct structured UnicodeDecodeError. The queue
+correctly withholds evidence for the uncommitted source; replay of the committed
+clean snapshot remains required before qualification. Earlier output-root and
+native-C declaration refusals are infrastructure results, not ABI failures.
+All of this qualification apparatus runs on the development side.
+The reviewed shutdown successor repairs admitted callback reentry during
+Finalizing and remains unintegrated until its complete family can be exercised.
+Measurement and WASM work remain recorded obligations, with no additional
+implementation lane opened while these first two units close. New findings
+interrupt the active unit only when required for its correctness or acceptance;
+other findings retain their existing release obligation and owner in this ledger.
+
 The working successor now unifies the installed and source release-lane
 inventory, includes LLVM in the production compiler feature tuple, and carries
 the admitted static LLVM SDK through build, packaging, identity and installed

@@ -4013,6 +4013,27 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
+      "audience": "internal",
+      "default": "",
+      "kind": "path",
+      "name": "MOLT_JOURNAL_TEST_DIRECTORY",
+      "owner": "tools/proof_supervisor/src/lib.rs",
+      "summary": "Owned rendezvous directory passed to native supervisor journal-failure test children; read only in the development test binary.",
+      "values": []
+    },
+    {
+      "audience": "internal",
+      "default": "",
+      "kind": "enum",
+      "name": "MOLT_JOURNAL_TEST_WORKER",
+      "owner": "tools/proof_supervisor/src/lib.rs",
+      "summary": "Selects one of the two native supervisor journal-failure test workers; unset selects the test root, and no shipped runtime reads it.",
+      "values": [
+        "0",
+        "1"
+      ]
+    },
+    {
       "audience": "user",
       "default": "0",
       "kind": "bool",
