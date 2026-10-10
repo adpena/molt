@@ -868,15 +868,26 @@ def test_clone_outside_a_checkout_family_keeps_scratch_out_of_the_source_tree(
     assert Path(env["TMPDIR"]) == custody_layout.out_of_tree_scratch_root(repo_root)
 
 
-def _family(tmp_path: Path) -> tuple[Path, Path]:
+def _family(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """A durable checkout family, wherever the host keeps its temp root.
+
+    A project beneath the OS temp root has explicit scratch custody, and on a
+    hosted runner every ``tmp_path`` is beneath it, so the host temp root moves
+    to an unrelated directory.
+    """
+    monkeypatch.setattr(
+        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
     family = tmp_path / "Molt"
     lane = family / "worktrees" / "lane"
     lane.mkdir(parents=True)
     return family.resolve(), lane.resolve()
 
 
-def test_artifact_root_is_what_canonical_env_exports(tmp_path: Path) -> None:
-    family, lane = _family(tmp_path)
+def test_artifact_root_is_what_canonical_env_exports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    family, lane = _family(tmp_path, monkeypatch)
     explicit = tmp_path / "external"
 
     # Unset: the family root, never the worktree.
@@ -914,8 +925,10 @@ def test_artifact_root_refuses_the_checkout_when_external_is_required(
         )
 
 
-def test_scratch_dir_and_tmpdir_share_one_root(tmp_path: Path) -> None:
-    family, lane = _family(tmp_path)
+def test_scratch_dir_and_tmpdir_share_one_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    family, lane = _family(tmp_path, monkeypatch)
 
     assert dx.scratch_root(lane, {}) == family / "tmp"
     assert dx.scratch_dir(lane, "bench", {}) == family / "tmp" / "bench"
@@ -948,7 +961,7 @@ def test_scratch_never_lands_in_a_plain_clone(tmp_path: Path) -> None:
 def test_memory_storage_moves_scratch_but_not_control_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    family, lane = _family(tmp_path)
+    family, lane = _family(tmp_path, monkeypatch)
     ram = tmp_path / "ram"
     ram.mkdir()
     env = {"MOLT_SCRATCH_STORAGE": str(ram)}
@@ -993,16 +1006,20 @@ def test_memory_storage_never_creates_a_ram_disk(
         dx.scratch_storage({"MOLT_SCRATCH_STORAGE": "ram"})
 
 
-def test_memory_storage_inside_the_checkout_is_refused(tmp_path: Path) -> None:
-    _family_root, lane = _family(tmp_path)
+def test_memory_storage_inside_the_checkout_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _family_root, lane = _family(tmp_path, monkeypatch)
     inside = lane / "ram"
     inside.mkdir()
     with pytest.raises(dx.DxConfigError, match="outside the checkout"):
         dx.scratch_root(lane, {"MOLT_SCRATCH_STORAGE": str(inside)})
 
 
-def test_proof_scratch_root_prefers_the_queue_issued_root(tmp_path: Path) -> None:
-    family, lane = _family(tmp_path)
+def test_proof_scratch_root_prefers_the_queue_issued_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    family, lane = _family(tmp_path, monkeypatch)
     issued = tmp_path / "queue" / "scratch"
 
     assert dx.proof_scratch_root(lane, {}) == family / "tmp"
