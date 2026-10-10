@@ -10,14 +10,17 @@ Molt expects production-grade changes, not opportunistic patches.
    default Molt/Cargo locations, or pass explicit output/target flags; the
    external artifact-root policy is for maintainer/agent development and proof
    lanes only.
-   - DX-selected `<MOLT_EXT_ROOT>/target` for maintainer/agent Cargo/build
-     state when the resolver provides it; repo-local `target/` remains the
-     ordinary fallback/default location.
+   - `<artifact root>/target` for Cargo and build state. `molt.dx.artifact_root`
+     chooses the artifact root: `MOLT_EXT_ROOT` when set, else the checkout
+     family root (`<root>` for `<root>/molt-src`), or the clone itself for a
+     plain clone.
    - `bench/results/` for benchmark outputs
    - `logs/` for durable logs
-   - DX-selected `<MOLT_EXT_ROOT>/tmp` for maintainer/agent scratch and
-     quarantine material when the resolver provides it; repo-local `tmp/`
-     remains the ordinary fallback/default location.
+   - Run scratch from `molt.dx.scratch_dir` or `scratch_root`:
+     `<artifact root>/tmp`, or a per-checkout folder under the host temp root
+     for a plain clone. Scratch never lands in the checkout; the structural
+     audit (`scratch_authority_bypasses`) rejects a new `<root>/tmp`
+     derivation or a direct `MOLT_EXT_ROOT` read.
 4. Update docs in the same change when structure, workflow, or semantics move.
    Follow the [public source boundary](docs/ROOT_LAYOUT.md#review-rule): do not
    commit logs, scratch plans, agent handoffs, or machine-specific state. Keep
