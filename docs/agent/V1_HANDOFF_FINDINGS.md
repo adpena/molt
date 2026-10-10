@@ -116,10 +116,21 @@ The same compiler replay exposed undeclared Criterion/alloca C compilation.
 The existing compiler partition now owns that target-C obligation and the
 object-model/ABI-link tests; four LLVM rows declare their actual llvm-sys C
 wrapper compilation. The bounded dependency census also finds host C++ in
-MLIR's tblgen build and target C++ in full-runtime simdutf consumers. V1-12
-remains open until role and language requirements survive selection,
-publication, capture, verification and every affected consumer. This is
-strictly development-side tooling and adds no work to emitted binaries.
+MLIR's tblgen build and target C++ in full-runtime simdutf consumers. The
+role/language migration at `65b3deec1` replaces the C-only declaration through
+admission, selection, published compiler environment, image/resource capture,
+receipt validation and reuse. Shared host/target triples retain both role
+obligations and one resource inventory; host-only C++ does not select unused C.
+The final focused cohort passes 113 checks (12 platform skips), with 794 passes
+in the broader consumer cohort. Its disk-blocked Cargo timeout/cache fixture
+passes on Linux. After the test fixture supplies the real compiler's complete
+launcher/content identity, all four Rust/C/C++/combined capture cells pass at
+`047cb630f`. The actual GCC C++ compile produces an ELF object under the native
+supervisor; removing its `cc1plus` image is independently refused and produces
+no object. Source and tool images remain unchanged across execution.
+The full-runtime/MLIR build consumers, cold/warm reuse, and actual macOS/Windows
+execution remain release-acceptance obligations under V1-12. These are
+strictly development-side checks and add no work to emitted binaries.
 Main CI `38063172584` at `df5226c5f` retains the runtime lifecycle cascade:
 seven serial children pass, while the parallel child reports 480 failures after
 unnamed-worker class retirement finds surviving native owners. This is an
