@@ -38,14 +38,13 @@ if [ -z "$SCIENTIFIC_WITNESS_ROOTS" ]; then
 fi
 export MOLT_MODULE_ROOTS="$SCIENTIFIC_WITNESS_ROOTS"
 
-for _toolchain_root in "${MOLT_TARGET_ROOT:-}" "${MOLT_EXT_ROOT:-}"; do
-  [ -n "$_toolchain_root" ] || continue
-  _zig_dir="$(molt_shell_path "$_toolchain_root/toolchains/zig-x86_64-windows-0.16.0")"
+# Provisioned toolchains live under the canonical toolchain root only.
+if [ -n "${MOLT_TARGET_ROOT:-}" ]; then
+  _zig_dir="$(molt_shell_path "$MOLT_TARGET_ROOT/toolchains/zig-x86_64-windows-0.16.0")"
   if [ -d "$_zig_dir" ]; then
     export PATH="$_zig_dir:$PATH"
-    break
   fi
-done
+fi
 
 verdict() { printf 'WITNESS %s rc=%s %s\n' "$1" "$2" "$3"; }
 

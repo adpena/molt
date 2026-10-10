@@ -2869,3 +2869,101 @@ def test_raise_collector_finds_every_raise_in_every_statement_block():
     assert sorted(node.lineno for node in SA._python_raise_nodes(tree, source)) == (
         expected
     )
+
+
+def _scratch_bypass_count(tmp_path: Path, relative: str, body: str) -> int:
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return sum(
+        int(finding.metric)
+        for finding in SA.probe_scratch_authority_bypasses(tmp_path)
+        if finding.location.startswith(f"{relative}:")
+    )
+
+
+def test_scratch_probe_flags_every_producer_derivation(tmp_path: Path):
+    body = (
+        "import os\n"
+        "from pathlib import Path\n"
+        "from molt.dx import ARTIFACT_ROOT_ENV as KEY\n"
+        "import molt.dx as dx\n"
+        "ROOT = Path(__file__).parent\n"
+        "a = ROOT / 'tmp' / 'bench'\n"
+        "b = artifact / 'tmp/diff'\n"
+        "c = ROOT.joinpath('tmp', 'x')\n"
+        "d = os.path.join(root, 'tmp')\n"
+        "e = Path('tmp') / 'cwd'\n"
+        "f = os.environ.get('MOLT_EXT_ROOT', '')\n"
+        "g = env['MOLT_EXT_ROOT']\n"
+        "h = os.getenv('MOLT_EXT_ROOT')\n"
+        "i = env.get(KEY)\n"
+        "j = env.setdefault(dx.ARTIFACT_ROOT_ENV, '/x')\n"
+    )
+    assert _scratch_bypass_count(tmp_path, "tools/tool.py", body) == 10
+
+
+def test_scratch_probe_ignores_sets_other_names_and_lookalikes(tmp_path: Path):
+    body = (
+        "import os\n"
+        "ARTIFACT_ROOT_ENV = 'MOLT_FALCON_OCR_ARTIFACT_ROOT'\n"
+        "env['MOLT_EXT_ROOT'] = '/x'\n"
+        "env.pop('MOLT_EXT_ROOT', None)\n"
+        "keys = ('MOLT_EXT_ROOT', 'TMPDIR')\n"
+        "a = root / 'tmpfs'\n"
+        "b = root / 'tmp_cache'\n"
+        "c = os.environ.get(ARTIFACT_ROOT_ENV)\n"
+        "d = root / 'target'\n"
+    )
+    assert _scratch_bypass_count(tmp_path, "src/molt/tool.py", body) == 0
+
+
+def test_scratch_probe_lets_tests_build_fixtures_under_their_own_roots(
+    tmp_path: Path,
+):
+    body = (
+        "import os\n"
+        "def test_a(tmp_path, ext_root, env):\n"
+        "    a = tmp_path / 'tmp'\n"
+        "    b = ext_root / 'tmp' / 'diff'\n"
+        "    c = env['MOLT_EXT_ROOT']\n"
+        "    d = REPO_ROOT / 'tmp' / 'leak'\n"
+        "    e = module.ROOT / 'tmp'\n"
+        "    f = _repo_root() / 'tmp'\n"
+        "    g = os.environ.get('MOLT_EXT_ROOT')\n"
+    )
+    # Checkout constants and ambient reads count; fixture roots and a
+    # produced environment do not.
+    assert _scratch_bypass_count(tmp_path, "tests/test_sample.py", body) == 4
+
+
+def test_scratch_probe_exempts_the_authority_and_the_stdlib(tmp_path: Path):
+    body = "x = env.get('MOLT_EXT_ROOT')\ny = root / 'tmp'\n"
+    for relative in ("src/molt/dx.py", "src/molt/stdlib/tempfile.py"):
+        assert _scratch_bypass_count(tmp_path, relative, body) == 0
+
+
+def test_scratch_probe_exceptions_are_exact_and_retire_when_unused(tmp_path: Path):
+    runner = tmp_path / "tools" / "proof_queue_pkg" / "runner.py"
+    runner.parent.mkdir(parents=True)
+    runner.write_text(
+        "proof_tmp = logs_root / 'tmp'\nleak = root / 'tmp'\n", encoding="utf-8"
+    )
+    findings = SA.probe_scratch_authority_bypasses(tmp_path)
+    runner_findings = [
+        f for f in findings if f.location.startswith("tools/proof_queue_pkg/runner.py:")
+    ]
+    # The justified run-owned join passes; the root join beside it does not.
+    assert [f.metric for f in runner_findings] == [1]
+    assert "root" in runner_findings[0].detail
+    runner.write_text("leak = None\n", encoding="utf-8")
+    stale = [
+        f
+        for f in SA.probe_scratch_authority_bypasses(tmp_path)
+        if f.title == "stale scratch-authority exception"
+    ]
+    assert [f.location for f in stale] == ["tools/proof_queue_pkg/runner.py"]
+
+
+def test_the_repository_has_no_scratch_authority_bypass():
+    assert SA.probe_scratch_authority_bypasses(ROOT) == []

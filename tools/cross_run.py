@@ -433,7 +433,7 @@ def _local_compile(
         cmd.extend(["--target", target])
     env = os.environ.copy()
     env.setdefault("PYTHONPATH", str(REPO / "src"))
-    env.setdefault(ARTIFACT_ROOT_ENV, str(artifact_root(REPO, env)))
+    env[ARTIFACT_ROOT_ENV] = str(artifact_root(REPO, env))
     started = time.monotonic()
     proc = _guarded_run(
         cmd,

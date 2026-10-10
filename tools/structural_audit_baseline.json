@@ -16,6 +16,7 @@
   "rust_backend_lowering_gaps_total": 0.0,
   "rust_backend_rejection_applicability_total": 0.0,
   "rust_stub_surfaces_total": 20.0,
+  "scratch_authority_bypasses": 0.0,
   "stdlib_raw_intrinsic_bindings": 0.0,
   "undecomposed_god_files": 0.0
 }
