@@ -132,6 +132,10 @@ class MarkerRecord:
     guard: MarkerProcessIdentity | None = None
     child: MarkerProcessIdentity | None = None
     error: str | None = None
+    # Process groups the producer found outliving its child.
+    orphaned_groups: tuple[int, ...] = ()
+    # The producer's closure verdict; None in records written before it.
+    descendants_closed: bool | None = None
 
     @property
     def status(self) -> str | None:
@@ -139,21 +143,35 @@ class MarkerRecord:
         return value if isinstance(value, str) else None
 
     @property
+    def closure_proven(self) -> bool:
+        """The producer proved that no descendant outlives its run.
+
+        A record written before ``descendants_closed`` existed proves it only
+        when it lists no orphaned process group.
+        """
+        if self.descendants_closed is not None:
+            return self.descendants_closed
+        return not self.orphaned_groups
+
+    @property
     def terminal(self) -> bool:
         """The producer or a reconciliation receipt closed this record.
 
         A producer publishes ``completed`` or ``finalizer_completed`` only
         after it reaped its child, so births do not decide its own claim; a
-        fast child often exits before its birth can be read. Births are inputs
-        to third-party reconciliation, which ``observe_custody`` judges. A
-        launch that never published its outcome is never closed by status.
+        fast child often exits before its birth can be read. The status closes
+        the record only with proven descendant closure: otherwise orphaned
+        processes may still run beside its artifacts, and the record stays
+        unresolved until ``observe_custody`` sees every recorded group empty.
+        A launch that never published its outcome is never closed by status.
         """
         if self.error is not None or self.status not in TERMINAL_GUARD_STATUSES:
             return False
         assert self.payload is not None
+        if self.status == "custody_reconciled":
+            return True
         return (
-            self.status == "custody_reconciled"
-            or self.payload.get("child_launch_state") != "pending"
+            self.payload.get("child_launch_state") != "pending" and self.closure_proven
         )
 
     @property
@@ -191,6 +209,8 @@ class CustodyObservation:
     state: str
     reason: str
     evidence: tuple[ProcessCustodyEvidence, ...]
+    # Recorded process groups that hold no member in the snapshot.
+    empty_groups: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +220,7 @@ class ReconciliationDecision:
     reason: str
     previous_status: str | None
     evidence: tuple[ProcessCustodyEvidence, ...] = ()
+    empty_process_groups: tuple[int, ...] = ()
     applied: bool = False
     scratch: Mapping[str, object] | None = None
     retired_to: str | None = None
@@ -330,7 +351,21 @@ def _parse_payload(path: Path, payload: object) -> MarkerRecord:
         "custody_reconciled",
     }:
         raise ActiveCustodyError("child_launch_status_inconsistent")
-    record = MarkerRecord(path, payload=payload, guard=guard, child=child)
+    closed = payload.get("descendants_closed")
+    if closed is not None and type(closed) is not bool:
+        raise ActiveCustodyError("descendants_closed_invalid")
+    groups = payload.get("orphaned_process_groups")
+    groups = [] if groups is None else groups
+    if not isinstance(groups, list) or not all(_positive_int(g) for g in groups):
+        raise ActiveCustodyError("orphaned_process_groups_invalid")
+    record = MarkerRecord(
+        path,
+        payload=payload,
+        guard=guard,
+        child=child,
+        orphaned_groups=tuple(sorted(set(groups))),
+        descendants_closed=closed,
+    )
     if status == "custody_reconciled":
         _validate_reconciliation(record)
     return record
@@ -354,6 +389,15 @@ def _validate_reconciliation(record: MarkerRecord) -> None:
         or re.fullmatch(r"[0-9a-f]{64}", receipt["source_sha256"]) is None
     ):
         raise ActiveCustodyError("reconciliation_receipt_invalid")
+    # A receipt written before group evidence existed lists none; it is valid
+    # only for a record without orphaned groups.
+    empty_groups = receipt.get("empty_process_groups", [])
+    if (
+        not isinstance(empty_groups, list)
+        or not all(_positive_int(group) for group in empty_groups)
+        or not set(record.orphaned_groups) <= set(empty_groups)
+    ):
+        raise ActiveCustodyError("reconciliation_group_evidence_invalid")
     identities = [("guard", record.guard)]
     if record.child is not None:
         identities.append(("child", record.child))
@@ -585,6 +629,7 @@ def observe_custody(
             return CustodyObservation(
                 "live", f"{item.role}_process_identity_match", evidence
             )
+    present_groups = {sample.pgid for sample in samples.values()}
     child = record.child
     if child is not None and child.pgid is not None:
         # A reused leader pid proves its old group empty: the kernel does not
@@ -592,25 +637,37 @@ def observe_custody(
         leader_reused = (
             evidence[-1].state == "identity_mismatch" and child.pgid == child.pid
         )
-        if not leader_reused and any(
-            sample.pgid == child.pgid for sample in samples.values()
-        ):
+        if not leader_reused and child.pgid in present_groups:
             return CustodyObservation(
                 "live", "child_process_group_still_present", evidence
             )
+    # Groups the producer saw outlive its child, while its closure is open.
+    # Their leaders are not recorded, so only an empty group proves closure.
+    open_groups = () if record.terminal else record.orphaned_groups
+    if present_groups.intersection(open_groups):
+        return CustodyObservation(
+            "live", "orphaned_process_group_still_present", evidence
+        )
+    recorded_groups = set(open_groups)
+    if child is not None and child.pgid is not None:
+        recorded_groups.add(child.pgid)
+    empty_groups = tuple(sorted(recorded_groups - present_groups))
     if record.payload is not None and (
         record.payload.get("child_launch_state") == "pending"
     ):
         # The guard died between the launch boundary and the child record.
         return CustodyObservation(
-            "ambiguous", "child_launch_identity_unpublished", evidence
+            "ambiguous", "child_launch_identity_unpublished", evidence, empty_groups
         )
     for item in evidence:
         if item.state == "identity_unavailable":
             return CustodyObservation(
-                "ambiguous", f"{item.role}_process_identity_unavailable", evidence
+                "ambiguous",
+                f"{item.role}_process_identity_unavailable",
+                evidence,
+                empty_groups,
             )
-    return CustodyObservation("closed", RECONCILED_REASON, evidence)
+    return CustodyObservation("closed", RECONCILED_REASON, evidence, empty_groups)
 
 
 def _scratch_closure(
@@ -623,6 +680,7 @@ def _scratch_closure(
         "reason": observation.reason,
         "snapshot_processes": snapshot_processes,
         "process_evidence": [asdict(item) for item in observation.evidence],
+        "empty_process_groups": list(observation.empty_groups),
     }
 
 
@@ -787,6 +845,7 @@ def _publish_reconciliation(
                     "reason": decision.reason,
                     "source_sha256": record.identity.sha256,
                     "evidence": [asdict(item) for item in decision.evidence],
+                    "empty_process_groups": list(decision.empty_process_groups),
                 },
             }
             _parse_payload(canonical, payload)
@@ -881,6 +940,7 @@ def _reconcile_record(
             OPERATOR_REASON if operator else observation.reason,
             record.status,
             observation.evidence,
+            observation.empty_groups,
         )
     else:
         return ReconciliationDecision(

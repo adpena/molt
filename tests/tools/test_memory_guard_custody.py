@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 from threading import Event
 from types import SimpleNamespace
 
@@ -22,6 +23,10 @@ from molt.exact_json import read_exact
 from tools import memory_guard_custody as cli
 from tools.memory_guard_core import active_custody as custody
 from tools.memory_guard_core import process_model, windows_snapshot
+from tests.process_guard_common import (
+    close_owned_test_process,
+    start_owned_test_process,
+)
 
 # These tests fake process data the session sentinel also reads.
 pytestmark = pytest.mark.usefixtures("session_sentinel_paused")
@@ -1059,3 +1064,139 @@ def test_exit_sweep_leaves_pre_retirement_history_to_the_operator(
     # The gate stops reading at the limit plus one marker.
     assert sum(name.endswith(".json") for name in scanned) == 4
     assert len(list(active.glob("*.json"))) == 4
+
+
+# --- descendant closure ----------------------------------------------------
+
+
+def _completion(active, *, pid=10, closed=None, groups=None, status="completed"):
+    marker = _marker(active, pid=pid, status=status)
+
+    def mutate(payload):
+        if closed is not None:
+            payload["descendants_closed"] = closed
+        if groups is not None:
+            payload["orphaned_process_groups"] = groups
+
+    _rewrite(marker, mutate)
+    return marker
+
+
+@pytest.mark.parametrize(
+    "closed,groups,terminal",
+    [
+        (True, [], True),
+        (True, [30], True),
+        (False, [], False),
+        (False, [30], False),
+        # Records written before the producer published its verdict.
+        (None, None, True),
+        (None, [], True),
+        (None, [30], False),
+    ],
+)
+@pytest.mark.parametrize("status", ["completed", "finalizer_completed"])
+def test_terminal_status_closes_custody_only_with_proven_closure(
+    tmp_path, closed, groups, terminal, status
+):
+    active = _active(tmp_path)
+    marker = _completion(active, closed=closed, groups=groups, status=status)
+    assert custody.read_marker_record(marker).terminal is terminal
+    assert custody.has_active_guard_marker(active) is not terminal
+    retired = custody.retire_active_guard_marker(marker, _payload(marker)["token"])
+    assert (retired is not None) is terminal
+    assert marker.exists() is not terminal
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda p: p.update(descendants_closed=1),
+        lambda p: p.update(descendants_closed="true"),
+        lambda p: p.update(orphaned_process_groups=[0]),
+        lambda p: p.update(orphaned_process_groups=[True]),
+        lambda p: p.update(orphaned_process_groups=30),
+    ],
+)
+def test_malformed_closure_evidence_is_protective(tmp_path, mutate):
+    active = _active(tmp_path)
+    marker = _marker(active, status="completed")
+    _rewrite(marker, mutate)
+    assert custody.read_marker_record(marker).error is not None
+    assert custody.has_active_guard_marker(active)
+
+
+def test_unclosed_completion_waits_for_every_orphaned_group(tmp_path):
+    active = _active(tmp_path)
+    marker = _completion(active, closed=False, groups=[30, 40])
+    live = custody.reconcile_active_guard_markers(
+        active, _snapshot(_sample(41, 4100, pgid=40)), apply=True
+    )
+    decision = live.decisions[0]
+    assert decision.reason == "orphaned_process_group_still_present"
+    assert not decision.operator_resolvable
+    assert custody.has_active_guard_marker(active)
+    report = custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    assert report.terminalized == 1 and report.retired == 1
+    receipt = _payload(_retired(tmp_path) / marker.name)["reconciliation"]
+    assert receipt["previous_status"] == "completed"
+    # The child's own group and both orphaned groups were seen empty.
+    assert receipt["empty_process_groups"] == [20, 30, 40]
+    assert not custody.has_active_guard_marker(active)
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        lambda r: r.update(empty_process_groups=[20, 30]),
+        lambda r: r.pop("empty_process_groups"),
+        lambda r: r.update(empty_process_groups=[20, 30, 40, 0]),
+    ],
+)
+def test_reconciliation_receipt_must_name_every_orphaned_group(tmp_path, corrupt):
+    active = _active(tmp_path)
+    marker = _completion(active, closed=False, groups=[30, 40])
+    custody.reconcile_active_guard_markers(active, _snapshot(), apply=True)
+    payload = _payload(_retired(tmp_path) / marker.name)
+    corrupt(payload["reconciliation"])
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+    assert custody.read_marker_record(marker).error is not None
+    assert custody.has_active_guard_marker(active)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_a_real_orphaned_group_protects_until_its_last_member_exits(tmp_path):
+    live = process_model.sample_processes()
+    taken = set(live) | {sample.pgid for sample in live.values()}
+    guard_pid, child_pid = [pid for pid in range(70_000, 90_000) if pid not in taken][
+        :2
+    ]
+    orphan = start_owned_test_process(
+        [sys.executable, "-c", "import time; time.sleep(60)"]
+    )
+    try:
+        group = os.getpgid(orphan.pid)
+        assert group != os.getpgid(0)
+        active = _active(tmp_path)
+        marker = _marker(active, pid=guard_pid, status="completed")
+        _rewrite(
+            marker,
+            lambda p: p.update(
+                child_process={"pid": child_pid, "started_at_ns": 1, "pgid": child_pid},
+                descendants_closed=False,
+                orphaned_process_groups=[group],
+            ),
+        )
+        report = custody.reconcile_active_guard_markers(
+            active, process_model.sample_processes, apply=True
+        )
+        assert report.decisions[0].reason == "orphaned_process_group_still_present"
+        assert marker.exists()
+    finally:
+        close_owned_test_process(orphan)
+    report = custody.reconcile_active_guard_markers(
+        active, process_model.sample_processes, apply=True
+    )
+    assert report.terminalized == 1 and report.retired == 1
+    receipt = _payload(_retired(tmp_path) / marker.name)["reconciliation"]
+    assert group in receipt["empty_process_groups"]
