@@ -342,7 +342,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "095a23ac3e85904dde3640c9ddad5300daf7dd03608ec6554e88650b8a5af7db",
+  "authority_sha256": "d3a8db54172892ee45b4f0ab85537c1efeb11b402d730d1afcd9737205776362",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -508,7 +508,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 41,
+      "timeout_minutes": 46,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -2880,7 +2880,12 @@
         "-q",
         "-n",
         "auto",
-        "tests/test_wasm_runner_table_base.py"
+        "tests/test_wasm_runner_table_base.py",
+        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]",
+        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]",
+        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]",
+        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]",
+        "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-wasm-dev",
@@ -4403,9 +4408,6 @@
         "tests/cli/test_cli_frontend_pipeline_authority.py",
         "tests/cli/test_cli_frontend_scc_scheduling.py",
         "tests/cli/test_cli_frontend_worker_authority.py",
-        "tests/cli/test_cli_import_collection.py::test_codecs_graph_stays_minimal_and_prunes_lazy_regex",
-        "tests/cli/test_cli_import_collection.py::test_compile_with_backend_daemon_reports_missing_output_in_result",
-        "tests/cli/test_cli_import_collection.py::test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes",
         "tests/cli/test_cli_import_discovery_completeness.py",
         "tests/cli/test_cli_link_pipeline_authority.py",
         "tests/cli/test_cli_lowering_cache_tooling_scope.py",
@@ -4550,9 +4552,6 @@
         "tests/cli/test_cli_frontend_pipeline_authority.py",
         "tests/cli/test_cli_frontend_scc_scheduling.py",
         "tests/cli/test_cli_frontend_worker_authority.py",
-        "tests/cli/test_cli_import_collection.py::test_codecs_graph_stays_minimal_and_prunes_lazy_regex",
-        "tests/cli/test_cli_import_collection.py::test_compile_with_backend_daemon_reports_missing_output_in_result",
-        "tests/cli/test_cli_import_collection.py::test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes",
         "tests/cli/test_cli_import_discovery_completeness.py",
         "tests/cli/test_cli_link_pipeline_authority.py",
         "tests/cli/test_cli_lowering_cache_tooling_scope.py",
@@ -4648,6 +4647,94 @@
       "toolchains": [
         "python",
         "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "2",
+        "-m",
+        "not slow",
+        "tests/cli/test_cli_import_collection.py",
+        "--deselect",
+        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]",
+        "--deselect",
+        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]",
+        "--deselect",
+        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]",
+        "--deselect",
+        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]",
+        "--deselect",
+        "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"
+      ],
+      "cache_domain": "pytest",
+      "cell": "linux-x86_64-py312-unit",
+      "dependencies": [],
+      "family": "python_unit",
+      "id": "python.unit.cli.import-collection",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 900,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "-n",
+        "2",
+        "-m",
+        "not slow",
+        "tests/cli/test_cli_import_collection.py",
+        "--deselect",
+        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-False-0]",
+        "--deselect",
+        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[False-True-0]",
+        "--deselect",
+        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-False-0]",
+        "--deselect",
+        "tests/cli/test_cli_import_collection.py::test_backend_compile_stages_one_shot_output_into_cache[True-True-0]",
+        "--deselect",
+        "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard"
+      ],
+      "cache_domain": "pytest",
+      "cell": "macos-arm64-py312-unit",
+      "dependencies": [],
+      "family": "python_unit",
+      "id": "python.unit.cli.import-collection.macos",
+      "resource_class": "python-tests",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 900,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
       ]
     },
     {
@@ -5437,10 +5524,6 @@
         "tests/cli/test_installed_runtime.py",
         "tests/cli/test_installed_toolchain_rules.py",
         "tests/cli/test_cli_backend_output_pipeline_authority.py",
-        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair",
-        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest",
-        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_digest",
-        "tests/cli/test_cli_import_collection.py::test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen",
         "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift",
         "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"
       ],
@@ -5528,10 +5611,6 @@
         "tests/cli/test_installed_runtime.py",
         "tests/cli/test_installed_toolchain_rules.py",
         "tests/cli/test_cli_backend_output_pipeline_authority.py",
-        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair",
-        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_reuses_setup_callable_symbols_digest",
-        "tests/cli/test_cli_import_collection.py::test_prepare_backend_runtime_context_stages_callable_symbols_without_setup_digest",
-        "tests/cli/test_cli_import_collection.py::test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codegen",
         "tests/cli/test_cli_runtime_callable_symbols_authority.py::test_native_object_output_rejects_runtime_generation_drift",
         "tests/cli/test_native_object_publication.py::test_native_object_publication_is_one_admitted_transaction"
       ],
@@ -7100,25 +7179,25 @@
       },
       "python_unit": {
         "linux-x86_64-py312-unit": {
-          "budget_seconds": 2460,
+          "budget_seconds": 2760,
           "critical_path_seconds": 900,
           "headroom_seconds": 0,
           "job_reserve_seconds": 60,
-          "projected_makespan_seconds": 2400,
-          "required_job_seconds": 2460,
+          "projected_makespan_seconds": 2700,
+          "required_job_seconds": 2760,
           "resource_capacity_floor_seconds": {
-            "python-tests": 2160
+            "python-tests": 2610
           }
         },
         "macos-arm64-py312-unit": {
-          "budget_seconds": 2460,
+          "budget_seconds": 2760,
           "critical_path_seconds": 900,
           "headroom_seconds": 0,
           "job_reserve_seconds": 60,
-          "projected_makespan_seconds": 2400,
-          "required_job_seconds": 2460,
+          "projected_makespan_seconds": 2700,
+          "required_job_seconds": 2760,
           "resource_capacity_floor_seconds": {
-            "python-tests": 2160
+            "python-tests": 2610
           }
         }
       }

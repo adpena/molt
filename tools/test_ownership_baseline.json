@@ -2,7 +2,6 @@
  "schema": 1,
  "unowned": [
   "tests/cli/test_cli_extension_commands.py",
-  "tests/cli/test_cli_import_collection.py",
   "tests/cli/test_cli_runtime_tk_feature_plumbing.py",
   "tests/cli/test_compiler_source_root.py",
   "tests/cli/test_llvm_wasi_tools.py",
