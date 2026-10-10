@@ -189,6 +189,7 @@
     "tools/nightly_profile_feedback.py",
     "tools/nightly_shard_profile.py",
     "tools/nightly_runtime_bundle.py",
+    "src/molt/cli/native_toolchain_transfer.py",
     "tools/nightly_sharding.py",
     "tools/check_generator_manifest.py",
     "tools/check_cargo_test_truth.py",
@@ -231,6 +232,7 @@
     "tools/proof_queue_pkg/python_child_custody.py",
     "tools/proof_queue_pkg/python_custody_bootstrap.py",
     "tools/proof_queue_pkg/target_derived_toolchains.py",
+    "tools/proof_queue_pkg/windows_createprocess.py",
     "src/molt/source_extension_link_inputs.py",
     "src/molt/cli/source_extension_invocation.py",
     "src/molt/cli/source_extension_compiler_inputs.py",
@@ -338,7 +340,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "a9d7d9e5099368558dd26971131bdae6fb97fd18c9705d9476933829893e4f5d",
+  "authority_sha256": "ba1d20988419d204f86556cb18a9338135ceb718f0f22e74be1b787b9aa7f4e1",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -4732,9 +4734,6 @@
         "tests/test_platform_toolchain.py",
         "tests/test_posixsubprocess_private_module_surface.py",
         "tests/test_prefix_cache.py",
-        "tests/test_private_intrinsic_helper_surface_batch_a.py",
-        "tests/test_private_intrinsic_helper_surface_batch_b.py",
-        "tests/test_private_intrinsic_helper_surface_batch_c.py",
         "tests/test_process_guard.py",
         "tests/test_process_guard_common.py",
         "tests/test_proto.py",
@@ -4821,10 +4820,6 @@
         "tests/test_stdlib_zipfile_metadata_submodules.py",
         "tests/test_struct.py",
         "tests/test_struct_private_module_surface.py",
-        "tests/test_stub_surface_batch_au.py",
-        "tests/test_stub_surface_batch_aw.py",
-        "tests/test_stub_surface_batch_ax.py",
-        "tests/test_stub_surface_batch_ay.py",
         "tests/test_suggestions_private_module_surface.py",
         "tests/test_surface_process_guard.py",
         "tests/test_table_drift_gate.py",
@@ -5100,9 +5095,6 @@
         "tests/test_platform_toolchain.py",
         "tests/test_posixsubprocess_private_module_surface.py",
         "tests/test_prefix_cache.py",
-        "tests/test_private_intrinsic_helper_surface_batch_a.py",
-        "tests/test_private_intrinsic_helper_surface_batch_b.py",
-        "tests/test_private_intrinsic_helper_surface_batch_c.py",
         "tests/test_process_guard.py",
         "tests/test_process_guard_common.py",
         "tests/test_proto.py",
@@ -5189,10 +5181,6 @@
         "tests/test_stdlib_zipfile_metadata_submodules.py",
         "tests/test_struct.py",
         "tests/test_struct_private_module_surface.py",
-        "tests/test_stub_surface_batch_au.py",
-        "tests/test_stub_surface_batch_aw.py",
-        "tests/test_stub_surface_batch_ax.py",
-        "tests/test_stub_surface_batch_ay.py",
         "tests/test_suggestions_private_module_surface.py",
         "tests/test_surface_process_guard.py",
         "tests/test_table_drift_gate.py",
@@ -5371,6 +5359,8 @@
         "tests/test_wasm_longdouble_durable_provisioning.py",
         "tests/tools/test_nightly_runtime_bundle.py",
         "tests/tools/test_nightly_prepare.py",
+        "tests/cli/test_native_toolchain_transfer.py",
+        "tests/cli/test_runtime_native_generation.py",
         "tests/tools/test_native_link_benchmark.py",
         "tests/cli/test_runtime_c_resource_custody.py",
         "tests/cli/test_runtime_native_failure_custody.py",
@@ -5460,6 +5450,8 @@
         "tests/test_wasm_longdouble_durable_provisioning.py",
         "tests/tools/test_nightly_runtime_bundle.py",
         "tests/tools/test_nightly_prepare.py",
+        "tests/cli/test_native_toolchain_transfer.py",
+        "tests/cli/test_runtime_native_generation.py",
         "tests/tools/test_native_link_benchmark.py",
         "tests/cli/test_runtime_c_resource_custody.py",
         "tests/cli/test_runtime_native_failure_custody.py",
@@ -8024,6 +8016,7 @@
           "tools/nightly_prepare.py",
           "tools/nightly_profile_feedback.py",
           "tools/nightly_runtime_bundle.py",
+          "src/molt/cli/native_toolchain_transfer.py",
           "tools/nightly_shard_profile.py",
           "tools/nightly_sharding.py",
           "tools/check_reproducible_build.py",
@@ -8652,15 +8645,15 @@
       "executable": "node",
       "name": "node",
       "setup_evidence": [
-        "config/tool_releases.toml::version = \"26.10.0\"",
+        "config/tool_releases.toml::version = \"26.11.1\"",
         ".github/actions/setup-project/action.yml::uses: actions/setup-node@",
         ".github/workflows/formal.yml::node-version: pinned"
       ],
-      "setup_value": "26.10.0",
+      "setup_value": "26.11.1",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^v26\\.10\\.0$"
+      "version_pattern": "^v26\\.11\\.1$"
     },
     {
       "content_path_command": [
@@ -8796,14 +8789,14 @@
       "executable": "ninja",
       "name": "ninja",
       "setup_evidence": [
-        "pyproject.toml::\"ninja==1.13.0\"",
-        "uv.lock::version = \"1.13.0\""
+        "pyproject.toml::\"ninja==1.13.2\"",
+        "uv.lock::version = \"1.13.2\""
       ],
-      "setup_value": "1.13.0",
+      "setup_value": "1.13.2",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^1\\.13\\.0(?:\\.git(?:\\.kitware\\.jobserver-pipe-1)?)?$"
+      "version_pattern": "^1\\.13\\.2(?:\\.git(?:\\.kitware\\.jobserver-pipe-1)?)?$"
     },
     {
       "executable": "clang",

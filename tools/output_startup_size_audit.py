@@ -27,7 +27,6 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = ROOT / "tools"
 SRC_ROOT = ROOT / "src"
 BENCH_RESULTS_ROOT = ROOT / "bench" / "results"
-TMP_ROOT = ROOT / "tmp" / "output_startup_size_audit"
 WASM_RUNNER = ROOT / "wasm" / "run_wasm.js"
 
 if str(ROOT) not in sys.path:
@@ -38,7 +37,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
-from molt.dx import development_artifact_env  # noqa: E402
+from molt.dx import development_artifact_env, scratch_dir  # noqa: E402
 from molt.node_runtime import NodeRuntimeError, resolve_node_runtime  # noqa: E402
 from molt.wasm_artifact import (  # noqa: E402
     copy_wasm_runtime_manifest_for_artifact,
@@ -1054,7 +1053,7 @@ def _summary(cases: list[dict[str, Any]]) -> dict[str, Any]:
 
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
     stamp = _utc_stamp()
-    work_dir = args.work_dir or (TMP_ROOT / stamp)
+    work_dir = args.work_dir or (scratch_dir(ROOT, "output_startup_size_audit") / stamp)
     work_dir.mkdir(parents=True, exist_ok=True)
     script = args.script or (work_dir / "hello_world.py")
     _ensure_default_probe(script)

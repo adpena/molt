@@ -1963,10 +1963,6 @@ type = 2
 poll_table_slot = 4
 
 [[import]]
-name = "promise_set_exception"
-type = 3
-
-[[import]]
 name = "promise_set_result"
 type = 3
 
@@ -2673,12 +2669,6 @@ runtime_name = "molt_getargv"
 callable_arity = 0
 
 [[import]]
-name = "getcwd"
-type = 0
-runtime_name = "molt_getcwd"
-callable_arity = 0
-
-[[import]]
 name = "getframe"
 type = 2
 runtime_name = "molt_getframe"
@@ -3367,20 +3357,8 @@ name = "importlib_filefinder_invalidate"
 type = 2
 
 [[import]]
-name = "importlib_find_in_path"
-type = 3
-runtime_name = "molt_importlib_find_in_path"
-callable_arity = 2
-
-[[import]]
 name = "importlib_find_in_path_package_context"
 type = 3
-
-[[import]]
-name = "importlib_find_spec"
-type = 28
-runtime_name = "molt_importlib_find_spec"
-callable_arity = 8
 
 [[import]]
 name = "importlib_find_spec_orchestrate"
@@ -3416,10 +3394,6 @@ name = "importlib_invalidate_caches"
 type = 0
 
 [[import]]
-name = "importlib_known_absent_missing_name"
-type = 2
-
-[[import]]
 name = "importlib_load_module_shim"
 type = 5
 
@@ -3434,10 +3408,6 @@ type = 3
 [[import]]
 name = "importlib_metadata_entry_points_filter_payload"
 type = 12
-
-[[import]]
-name = "importlib_metadata_entry_points_select_payload"
-type = 7
 
 [[import]]
 name = "importlib_metadata_normalize_name"
@@ -3464,15 +3434,7 @@ name = "importlib_module_from_spec"
 type = 2
 
 [[import]]
-name = "importlib_module_spec_is_package"
-type = 2
-
-[[import]]
 name = "importlib_package_root_from_origin"
-type = 2
-
-[[import]]
-name = "importlib_path_is_archive_member"
 type = 2
 
 [[import]]
@@ -3630,14 +3592,6 @@ name = "importlib_resources_resource_path_from_package_parts"
 type = 7
 
 [[import]]
-name = "importlib_runtime_modules"
-type = 0
-
-[[import]]
-name = "importlib_set_module_state"
-type = 28
-
-[[import]]
 name = "importlib_source_from_cache"
 type = 2
 
@@ -3646,10 +3600,6 @@ name = "importlib_source_hash"
 type = 2
 runtime_name = "molt_importlib_source_hash"
 callable_arity = 1
-
-[[import]]
-name = "importlib_sourceless_loader_payload"
-type = 5
 
 [[import]]
 name = "importlib_spec_from_file_location"
@@ -4416,12 +4366,6 @@ runtime_name = "molt_path_exists"
 callable_arity = 1
 
 [[import]]
-name = "path_listdir"
-type = 2
-runtime_name = "molt_path_listdir"
-callable_arity = 1
-
-[[import]]
 name = "path_mkdir"
 type = 3
 runtime_name = "molt_path_mkdir"
@@ -4624,12 +4568,6 @@ name = "socket_sendto"
 type = 7
 runtime_name = "molt_socket_sendto"
 callable_arity = 4
-
-[[import]]
-name = "socket_setblocking"
-type = 3
-runtime_name = "molt_socket_setblocking"
-callable_arity = 2
 
 [[import]]
 name = "socket_setsockopt"
@@ -6795,9 +6733,6 @@ prefix = "stream_"
 
 [[pure_skip_prefix]]
 prefix = "path_exists"
-
-[[pure_skip_prefix]]
-prefix = "path_listdir"
 
 [[pure_skip_prefix]]
 prefix = "path_mkdir"

@@ -26,6 +26,10 @@ Both hosts use the same checkout-family layout. `src/molt/custody_layout.py` is
 the one rule: a checkout at `<root>/molt-src` and every worktree at
 `<root>/worktrees/<name>` resolve to the custody root `<root>`, which owns
 build artifacts, toolchains (`<root>/target-root`), guard state, and scratch.
+`molt.dx` is the only reader of `MOLT_EXT_ROOT`: `artifact_root` gives the
+artifact root, and `scratch_root`, `scratch_dir` and `control_state_dir` give
+scratch, which never lands in a checkout. The structural audit rejects a new
+`<root>/tmp` derivation or direct `MOLT_EXT_ROOT` read.
 
 | purpose | macOS (primary) | Windows (test host) |
 |---|---|---|

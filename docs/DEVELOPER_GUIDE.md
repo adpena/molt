@@ -75,8 +75,8 @@ complete structural primitive that deletes or unifies a real authority.
 
 Before risky commands in this mode, leave a death capsule: command, cwd, guard
 pid, expected child pid when known, status, timestamp, and evidence path. Use
-`tmp/memory_guard/active/`, `tmp/memory_guard/incidents/`, pytest outer-guard
-summaries, `logs/agents/codex_stall/*.json`, and
+the guard state root (`<artifact root>/tmp/memory_guard/active/` and
+`.../incidents/`; `molt.memory_guard_paths`), pytest outer-guard summaries, `logs/agents/codex_stall/*.json`, and
 `logs/agents/codex_crash/*.json` before relying on chat history. For Codex
 Desktop crash dialogs, run
 `uv run --python 3.12 python tools/agent_coordination.py codex-crash --crash-text "<dialog text>"`
@@ -288,12 +288,11 @@ Interpretation:
   runner all launch guarded subprocesses in an explicit new process group so
   timeout/RSS cleanup cannot deliver interrupt-style console control events into
   the parent guard or Codex/app control plane.
-- Shared guarded subprocesses also run the default stale-orphan preflight before
-  launch: orphaned live-proved Molt process groups older than one hour and orphaned
-  pytest-style groups older than fifteen minutes are drained with process age,
-  kill time, reason, pids, command, and next-action custody. Tune with
-  `MOLT_STALE_ORPHAN_SEC`, `MOLT_STALE_PYTEST_SEC`, or disable deliberately with
-  `MOLT_STALE_ORPHAN_CLEANUP=0`.
+- A guarded subprocess takes no process census before launch. It owns nothing
+  yet, so it could signal nothing. Stale orphaned Molt groups from earlier
+  sessions are an operator action: `molt clean --kill-processes` or
+  `python3 tools/process_sentinel.py --once --stale-orphan-sec 3600
+  --stale-pytest-sec 900`.
 - Guarded command cleanup is child-session scoped. The workload is launched in
   its own child process group/session, and timeout/RSS cleanup records the child
   pid/pgid/sid, protected control-plane pgids, watched pids, SIGTERM/SIGKILL

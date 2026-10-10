@@ -13,9 +13,6 @@ import threading
 import types
 import warnings
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 import asyncio.futures as futures
 
@@ -43,5 +40,3 @@ __all__ = [
     "types",
     "warnings",
 ]
-
-globals().pop("_require_intrinsic", None)

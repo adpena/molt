@@ -43,6 +43,7 @@ from tools.proof_queue_pkg import custody_cas
 from tools.proof_queue_pkg.process_image_capture import (
     PROCESS_IMAGE_SCHEMA,
     _image_path_key,
+    custody_file,
     custody_path,
     require_custody_coordinate,
     canonical_images,
@@ -206,10 +207,10 @@ def select_cargo_build_tool_environment(
                 f"Cargo build tool {name} requires an absolute executable path; "
                 "build-script working directories differ from Cargo's invocation directory"
             )
-        path = custody_path(path)
-        if not path.is_file() or not os.access(path, os.X_OK):
+        selected = custody_file(path)
+        if selected is None or not os.access(selected, os.X_OK):
             raise ValueError(f"Cargo build tool {name} must name one executable file")
-        return path
+        return selected
 
     def query(path: Path, arguments: Sequence[str], *, required: bool) -> str | None:
         try:

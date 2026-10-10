@@ -9,9 +9,8 @@ pub(crate) use molt_runtime_platform::path_text::{
     glob_split_path_text, glob_translate_text, path_as_uri_text, path_basename_text,
     path_compare_text, path_dirname_text, path_expandvars_with_lookup, path_glob_matches,
     path_isabs_text, path_join_many_text, path_join_raw, path_join_text, path_match_simple_pattern,
-    path_match_text, path_name_text, path_normpath_text, path_parents_text, path_parts_text,
-    path_relative_to_text, path_splitext_text, path_splitroot_text, path_stem_text,
-    path_suffix_text, path_suffixes_text,
+    path_match_text, path_name_text, path_normpath_text, path_parents_text, path_relative_to_text,
+    path_splitext_text, path_stem_text, path_suffix_text, path_suffixes_text,
 };
 use num_bigint::Sign;
 use num_traits::ToPrimitive;
@@ -396,44 +395,6 @@ pub(crate) fn path_abspath_text(_py: &PyToken<'_>, path: &str, sep: char) -> Res
         current = path_join_text(cwd, &current, sep);
     }
     Ok(path_normpath_text(&current, sep))
-}
-
-pub(crate) fn path_resolve_text(
-    _py: &PyToken<'_>,
-    path: &str,
-    sep: char,
-    strict: bool,
-) -> Result<String, u64> {
-    let absolute = path_abspath_text(_py, path, sep)?;
-    if !has_capability(_py, "fs.read") {
-        if strict {
-            return Err(raise_exception::<_>(
-                _py,
-                "PermissionError",
-                "missing fs.read capability",
-            ));
-        }
-        return Ok(absolute);
-    }
-    let resolved = std::path::Path::new(&absolute);
-    match std::fs::canonicalize(resolved) {
-        Ok(path_buf) => Ok(path_normpath_text(&path_buf.to_string_lossy(), sep)),
-        Err(err)
-            if !strict && matches!(err.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) =>
-        {
-            Ok(path_normpath_text(&absolute, sep))
-        }
-        Err(err) => {
-            let msg = err.to_string();
-            let bits = match err.kind() {
-                ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                ErrorKind::PermissionDenied => raise_exception::<_>(_py, "PermissionError", &msg),
-                ErrorKind::NotADirectory => raise_exception::<_>(_py, "NotADirectoryError", &msg),
-                _ => raise_exception::<_>(_py, "OSError", &msg),
-            };
-            Err(bits)
-        }
-    }
 }
 
 #[derive(Clone, Debug)]

@@ -8,9 +8,7 @@ import subprocess as subprocess
 from typing import Any
 
 import asyncio as _asyncio
-from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 from asyncio import (
     CancelledError,
@@ -231,5 +229,3 @@ __all__ = [
     "subprocess",
     "tasks",
 ]
-
-globals().pop("_require_intrinsic", None)

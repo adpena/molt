@@ -21,7 +21,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = Path(__file__).resolve().parent
 SRC_ROOT = REPO_ROOT / "src"
 BENCH_RESULTS_DIR = REPO_ROOT / "bench" / "results"
-BENCH_TMP_ROOT = REPO_ROOT / "tmp" / "bench"
 DEFAULT_BASELINE_PATH = BENCH_RESULTS_DIR / "baseline.json"
 DEFAULT_BATCH_BUILD_TIMEOUT_S = 600.0
 MAX_FAILURE_MESSAGE_CHARS = 4000
@@ -92,13 +91,16 @@ from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.dx import (  # noqa: E402
     CANONICAL_RUN_ENV_KEYS,
     RunContext,
-    select_external_artifact_root,
+    scratch_dir,
 )
 
 from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
     ensure_molt_conformance_dirs,
 )
+
+# Default scratch for benchmark builds outside a canonical bench env.
+BENCH_TMP_ROOT = scratch_dir(REPO_ROOT, "bench")
 
 SUPER_SAMPLES = 10
 
@@ -504,21 +506,6 @@ def _bench_session_id(env: dict[str, str] | None = None) -> str:
     return explicit or f"bench-{os.getpid()}"
 
 
-def _selected_bench_artifact_root(env: dict[str, str]) -> Path:
-    explicit = env.get("MOLT_EXT_ROOT", "").strip()
-    if explicit:
-        return Path(explicit).expanduser().resolve()
-    return (
-        select_external_artifact_root(
-            REPO_ROOT,
-            env,
-            create_dirs=True,
-            prefer_external=True,
-        )
-        or REPO_ROOT
-    )
-
-
 def _bench_tmp_root(env: dict[str, str]) -> Path:
     explicit = env.get("MOLT_BENCH_TMP_ROOT", "").strip()
     if explicit:
@@ -526,7 +513,7 @@ def _bench_tmp_root(env: dict[str, str]) -> Path:
     tmp_root = env.get("MOLT_DIFF_TMPDIR") or env.get("TMPDIR")
     if tmp_root:
         return Path(tmp_root).expanduser().resolve() / "bench"
-    return _selected_bench_artifact_root(env) / "tmp" / "bench"
+    return scratch_dir(REPO_ROOT, "bench", env)
 
 
 def _canonical_bench_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
@@ -535,6 +522,7 @@ def _canonical_bench_env(base_env: dict[str, str] | None = None) -> dict[str, st
     for key, value in build_molt_conformance_env(
         REPO_ROOT,
         _bench_session_id(env),
+        env,
     ).items():
         if key not in CANONICAL_RUN_ENV_KEYS:
             env[key] = value

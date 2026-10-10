@@ -1,6 +1,5 @@
 """Intrinsic-backed compatibility surface for CPython's `_types`."""
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 from types import (
     AsyncGeneratorType,
@@ -32,7 +31,6 @@ from types import (
     WrapperDescriptorType,
 )
 
-_MOLT_TYPES_BOOTSTRAP = _require_intrinsic("molt_types_bootstrap")
 
 __all__ = [
     "AsyncGeneratorType",
@@ -63,7 +61,3 @@ __all__ = [
     "UnionType",
     "WrapperDescriptorType",
 ]
-
-del _MOLT_TYPES_BOOTSTRAP
-
-globals().pop("_require_intrinsic", None)

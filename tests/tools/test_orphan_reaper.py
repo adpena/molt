@@ -18,6 +18,7 @@ import signal
 import sys
 import os
 from tests.process_guard_common import install_module_view
+from tools.memory_guard_core import process_custody
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "tools" / "orphan_reaper.py"
@@ -205,9 +206,7 @@ def test_reap_one_refuses_on_pid_reuse_identity_mismatch(monkeypatch) -> None:
         "sample_processes_windows_hard_timeout",
         lambda: {4321: recycled_sample},
     )
-    install_module_view(
-        monkeypatch, "os", os, module.memory_guard._process_custody, kill=fake_os_kill
-    )
+    install_module_view(monkeypatch, "os", os, process_custody, kill=fake_os_kill)
 
     killed = module._reap_one(snapshot_sample, grace=0.0)
 
@@ -241,9 +240,7 @@ def test_reap_one_signals_when_identity_matches(monkeypatch) -> None:
         "sample_processes_windows_hard_timeout",
         lambda: {4321: sample},
     )
-    install_module_view(
-        monkeypatch, "os", os, module.memory_guard._process_custody, kill=fake_os_kill
-    )
+    install_module_view(monkeypatch, "os", os, process_custody, kill=fake_os_kill)
 
     killed = module._reap_one(sample, grace=0.0)
 

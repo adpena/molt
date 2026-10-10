@@ -564,8 +564,9 @@ Recovery discipline is process containment, not permission to chip away at the
 project. A valid recovery landing removes a real source of drift, avoids
 duplicate authority, and leaves no dangling legacy lane. Before risky commands,
 leave a death capsule: command, cwd, guard pid, child pid when known, status,
-timestamp, and evidence path. Prefer `tmp/memory_guard/active/`,
-`tmp/memory_guard/incidents/`, pytest outer-guard summaries, and
+timestamp, and evidence path. Prefer the guard state root
+(`<artifact root>/tmp/memory_guard/active/` and `.../incidents/`), pytest
+outer-guard summaries, and
 `logs/agents/codex_stall/*.json`.
 
 If a process disappears, inspect git status, active guard markers, incidents,

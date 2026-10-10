@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os as _os
 from typing import IO as _IO
 
 from _intrinsics import require_intrinsic as _require_intrinsic
@@ -267,11 +268,14 @@ def disk_usage(path: str) -> tuple[int, int, int]:
 
 def get_terminal_size(
     fallback: tuple[int, int] = (80, 24),
-) -> tuple[int, int]:
-    """Get terminal window size (columns, lines) via Rust intrinsic."""
+) -> _os.terminal_size:
+    """Get terminal window size (columns, lines) via Rust intrinsic.
+
+    Returns ``os.terminal_size``, as CPython does: callers such as argparse's
+    ``HelpFormatter`` read ``.columns``.
+    """
     raw = _MOLT_SHUTIL_GET_TERMINAL_SIZE(list(fallback))
-    columns, lines = int(raw[0]), int(raw[1])
-    return (columns, lines)
+    return _os.terminal_size((int(raw[0]), int(raw[1])))
 
 
 def make_archive(

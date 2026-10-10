@@ -138,45 +138,45 @@ archive_member = "sccache-v0.18.0-aarch64-apple-darwin/sccache"
 # child-custody preload). Official nodejs.org distribution, digests from the
 # release's SHASUMS256.txt; only the interpreter binary is installed.
 [tools.node]
-version = "26.10.0"
+version = "26.11.1"
 executable = "node"
 
 [tools.node.provenance]
 kind = "checksum-manifest"
-url = "https://nodejs.org/dist/v26.10.0/SHASUMS256.txt"
+url = "https://nodejs.org/dist/v26.11.1/SHASUMS256.txt"
 
 [tools.node.assets.x86_64-windows]
-url = "https://nodejs.org/dist/v26.10.0/node-v26.10.0-win-x64.zip"
-size = 41688989
-sha256 = "9fef7eca6743a6b910989cd8e78712376b394fcb9b6e1e9c44a0799a287f90c5"
-archive_member = "node-v26.10.0-win-x64/node.exe"
+url = "https://nodejs.org/dist/v26.11.1/node-v26.11.1-win-x64.zip"
+size = 41809787
+sha256 = "97f36a8a9684ff0d3e35758b4610fef5b628a5880e96f2ccc11240e5daf9934e"
+archive_member = "node-v26.11.1-win-x64/node.exe"
 
 [tools.node.assets.aarch64-windows]
-url = "https://nodejs.org/dist/v26.10.0/node-v26.10.0-win-arm64.zip"
-size = 37149989
-sha256 = "b778640d7271566bcaa9679912cdf0684c13e824c114e41a8b696fb14af7a7aa"
-archive_member = "node-v26.10.0-win-arm64/node.exe"
+url = "https://nodejs.org/dist/v26.11.1/node-v26.11.1-win-arm64.zip"
+size = 37238969
+sha256 = "8dd03add3ed431eb436306f9abe946434bce928d2bf967b04117dc3755051208"
+archive_member = "node-v26.11.1-win-arm64/node.exe"
 
 [tools.node.assets.x86_64-linux]
-url = "https://nodejs.org/dist/v26.10.0/node-v26.10.0-linux-x64.tar.gz"
-size = 62659089
-sha256 = "cb5c9ce9c80d7b8821e3a258543c71b939138cf17c74d5cc44bbe85d6dbc5ad8"
-archive_member = "node-v26.10.0-linux-x64/bin/node"
+url = "https://nodejs.org/dist/v26.11.1/node-v26.11.1-linux-x64.tar.gz"
+size = 62798625
+sha256 = "15fc043a51a5783f2f4b634561091658f5a7f0e3db03f997dca3a8033a33e45b"
+archive_member = "node-v26.11.1-linux-x64/bin/node"
 
 [tools.node.assets.aarch64-linux]
-url = "https://nodejs.org/dist/v26.10.0/node-v26.10.0-linux-arm64.tar.gz"
-size = 62423797
-sha256 = "423a41bff8e2a2fa15e702fefe2919ef95823b2378744daccb8439302534b44f"
-archive_member = "node-v26.10.0-linux-arm64/bin/node"
+url = "https://nodejs.org/dist/v26.11.1/node-v26.11.1-linux-arm64.tar.gz"
+size = 62559273
+sha256 = "170454fb022f5e9b5f6cc76c25fa32ef5100895be44eb04e92f9780591491bbf"
+archive_member = "node-v26.11.1-linux-arm64/bin/node"
 
 [tools.node.assets.x86_64-macos]
-url = "https://nodejs.org/dist/v26.10.0/node-v26.10.0-darwin-x64.tar.gz"
-size = 59578150
-sha256 = "ebbe9ab9b58ad6bb54390d6e2c862c1afa7d4475fb7e8ae8146acde211bf70df"
-archive_member = "node-v26.10.0-darwin-x64/bin/node"
+url = "https://nodejs.org/dist/v26.11.1/node-v26.11.1-darwin-x64.tar.gz"
+size = 59713543
+sha256 = "9a8129bd9ab08039793dd1143a7aedee6b5d60ac06592ad938d8bddf36142f3a"
+archive_member = "node-v26.11.1-darwin-x64/bin/node"
 
 [tools.node.assets.aarch64-macos]
-url = "https://nodejs.org/dist/v26.10.0/node-v26.10.0-darwin-arm64.tar.gz"
-size = 58175384
-sha256 = "751fdf7439f115d87ee2a8f3f18c065b6151852068e3e666ac60ac2996f75ac9"
-archive_member = "node-v26.10.0-darwin-arm64/bin/node"
+url = "https://nodejs.org/dist/v26.11.1/node-v26.11.1-darwin-arm64.tar.gz"
+size = 58283153
+sha256 = "d916511b55965e91be7a88e17f88d895b6793ceaba3e6c9b194aefe51c2c65ac"
+archive_member = "node-v26.11.1-darwin-arm64/bin/node"

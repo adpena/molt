@@ -33,8 +33,10 @@ def _render_compat_summary(audit_text: str, platform_text: str) -> str:
     audited = _extract_count(audit_text, "Total audited modules")
     intrinsic_backed = _extract_count(audit_text, "`intrinsic-backed`")
     intrinsic_partial = _extract_count(audit_text, "`intrinsic-partial`")
+    intrinsic_support = _extract_count(audit_text, "`intrinsic-support`")
+    python_compiled = _extract_count(audit_text, "`python-compiled`")
+    stub = _extract_count(audit_text, "`stub`")
     policy_gate = _extract_count(audit_text, "`policy-gate`")
-    python_only = _extract_count(audit_text, "`python-only`")
     availability = _extract_count(
         platform_text, "Modules with explicit Availability metadata"
     )
@@ -46,8 +48,10 @@ def _render_compat_summary(audit_text: str, platform_text: str) -> str:
                 f"- Stdlib lowering audit: `{audited}` modules audited; "
                 f"`{intrinsic_backed}` intrinsic-backed; "
                 f"`{intrinsic_partial}` intrinsic-partial; "
-                f"`{policy_gate}` policy-gate; "
-                f"`{python_only}` python-only."
+                f"`{intrinsic_support}` intrinsic-support; "
+                f"`{python_compiled}` python-compiled; "
+                f"`{stub}` stub; "
+                f"`{policy_gate}` policy-gate."
             ),
             (
                 f"- Platform availability metadata: `{availability}` modules with "

@@ -17,6 +17,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 import harness_memory_guard  # noqa: E402
+from molt.dx import scratch_dir  # noqa: E402
 from molt.browser_asset_closure import (  # noqa: E402
     BROWSER_HOST_ENTRY_ASSETS,
     wasm_loader_asset_closure,
@@ -28,7 +29,7 @@ def _logs_root(project_root: Path) -> Path:
 
 
 def _tmp_root(project_root: Path) -> Path:
-    return project_root / "tmp" / "drivers" / "cloudflare"
+    return scratch_dir(project_root, "drivers/cloudflare")
 
 
 def _write_text(path: Path, text: str) -> None:

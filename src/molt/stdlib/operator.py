@@ -7,7 +7,6 @@ All exports are intrinsic-direct bindings from _operator (MOL-215).
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 from _operator import (
     abs,
     add,
@@ -66,7 +65,6 @@ from _operator import (
 
 # Keep this top-level wrapper explicitly intrinsic-gated so strict stdlib
 # enforcement never classifies `operator` as python-only.
-_MOLT_OPERATOR_MODULE_MARKER = _require_intrinsic("molt_operator_truth")
 
 __all__ = [
     "abs",
@@ -123,5 +121,3 @@ __all__ = [
     "truth",
     "xor",
 ]
-
-globals().pop("_require_intrinsic", None)

@@ -89,15 +89,6 @@ _PASSTHROUGH_ENV_PREFIX_NAMES = tuple(
 )
 
 
-def _external_root() -> Path | None:
-    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if configured:
-        root = Path(configured).expanduser().resolve()
-        if root.is_dir():
-            return root
-    return None
-
-
 def _default_output_root() -> Path:
     timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return REPO_ROOT / "bench" / "results" / "friends" / timestamp

@@ -31,10 +31,3 @@ class MIMEMessage(MIMENonMultipart):
         message.Message.attach(self, _msg)
         # And be sure our default type is set correctly
         self.set_default_type("message/rfc822")
-
-
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-
-globals().pop("_require_intrinsic", None)

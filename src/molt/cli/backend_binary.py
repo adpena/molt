@@ -227,6 +227,25 @@ def _backend_fingerprint_path(
     )
 
 
+def _canonical_backend_candidate(
+    project_root: Path, backend_bin: Path, cargo_profile: str
+) -> tuple[Path, Path]:
+    """The canonical target's backend and receipt, which every session consults."""
+    binary = (
+        _canonical_target_root(project_root)
+        / _cargo_profile_dir(cargo_profile)
+        / backend_bin.name
+    )
+    receipt = _artifact_state_path_for_build_state_root(
+        _canonical_build_state_root(project_root),
+        binary,
+        subdir="backend_fingerprints",
+        stem_suffix=f"{cargo_profile}",
+        extension="fingerprint",
+    )
+    return binary, receipt
+
+
 def _backend_probe_validation_path(
     project_root: Path,
     artifact: Path,
@@ -373,6 +392,106 @@ def _backend_fingerprint(
         "meta_digest": meta_digest,
         "source_state": source_state,
     }
+
+
+def _current_backend_fingerprint(
+    project_root: Path, *, cargo_profile: str, backend_features: tuple[str, ...]
+) -> dict[str, Any]:
+    """This checkout's backend identity, hashed in full without a receipt."""
+    return _backend_fingerprint(
+        project_root,
+        cargo_profile=cargo_profile,
+        build_admission=backend_build_admission(
+            project_root, backend_features, cargo_profile, os.environ
+        ),
+        backend_features=backend_features,
+    )
+
+
+def admitted_backend_binary(
+    project_root: Path,
+    *,
+    binary: Path,
+    cargo_profile: str,
+    backend_features: tuple[str, ...],
+) -> tuple[Path, Path]:
+    """The backend executable and receipt a build of this checkout reuses.
+
+    Candidates are the selected binary and the canonical one, in the order a
+    build consults them. A candidate counts only when its receipt matches this
+    checkout's backend identity and binds the executable's content.
+    """
+    fingerprint = _current_backend_fingerprint(
+        project_root, cargo_profile=cargo_profile, backend_features=backend_features
+    )
+    for candidate, receipt in (
+        (binary, _backend_fingerprint_path(project_root, binary, cargo_profile)),
+        _canonical_backend_candidate(project_root, binary, cargo_profile),
+    ):
+        if _runtime_artifact_fingerprint_matches(
+            candidate, fingerprint, receipt, require_artifact_digest=True
+        ):
+            return candidate, receipt
+    raise ValueError(f"no backend compiler admitted for this checkout: {binary}")
+
+
+def import_backend_binary(
+    project_root: Path,
+    *,
+    binary: Path,
+    cargo_profile: str,
+    backend_features: tuple[str, ...],
+    executable: Path,
+    receipt: Path,
+) -> Path:
+    """Admit another checkout's backend as this checkout's canonical candidate.
+
+    The transported receipt must carry this checkout's freshly hashed backend
+    identity and bind the executable's content. A build then hydrates the
+    canonical candidate exactly as it hydrates one built locally.
+    """
+    transported = _read_runtime_fingerprint(receipt)
+    if transported is None or "artifact_content_identity" not in transported:
+        raise ValueError(f"transported backend receipt is invalid: {receipt}")
+    fingerprint = _current_backend_fingerprint(
+        project_root, cargo_profile=cargo_profile, backend_features=backend_features
+    )
+    if any(
+        transported.get(key) != fingerprint.get(key)
+        for key in ("hash", "rustc", "meta_digest")
+    ):
+        raise ValueError(
+            "transported backend was built from other inputs than this checkout"
+        )
+    canonical_binary, canonical_receipt = _canonical_backend_candidate(
+        project_root, binary, cargo_profile
+    )
+    with _backend_admission_lock(project_root, cargo_profile):
+        with stable_executable_probe(executable, label="transported backend") as (
+            _entrypoint,
+            identity,
+        ):
+            if (
+                artifact_content_identity(executable)
+                != transported["artifact_content_identity"]
+            ):
+                raise ValueError("transported backend differs from its receipt")
+            canonical_binary.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_copy_file(
+                executable, canonical_binary, expected_sha256=identity.sha256
+            )
+        canonical_receipt.parent.mkdir(parents=True, exist_ok=True)
+        _write_runtime_fingerprint(
+            canonical_receipt, fingerprint, artifact=canonical_binary
+        )
+        if not _runtime_artifact_fingerprint_matches(
+            canonical_binary,
+            fingerprint,
+            canonical_receipt,
+            require_artifact_digest=True,
+        ):
+            raise ValueError("imported backend failed its own admission")
+    return canonical_binary
 
 
 @_structured_backend_lock_failure
@@ -802,16 +921,8 @@ def _ensure_backend_binary(
                 "backend_binary_artifact_freshness",
                 stage_start,
             )
-        canonical_target_root = _canonical_target_root(project_root)
-        canonical_backend_bin = (
-            canonical_target_root / _cargo_profile_dir(cargo_profile) / backend_bin.name
-        )
-        canonical_fingerprint_path = _artifact_state_path_for_build_state_root(
-            _canonical_build_state_root(project_root),
-            canonical_backend_bin,
-            subdir="backend_fingerprints",
-            stem_suffix=f"{cargo_profile}",
-            extension="fingerprint",
+        canonical_backend_bin, canonical_fingerprint_path = (
+            _canonical_backend_candidate(project_root, backend_bin, cargo_profile)
         )
         stage_start = time.perf_counter()
         if _maybe_hydrate_artifact_from_canonical_target(

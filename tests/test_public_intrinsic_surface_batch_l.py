@@ -27,7 +27,6 @@ def _load_module(name, path_text):
 
 
 install_registry({{
-    "molt_re_literal_advance": lambda *args, **kwargs: 0,
     "molt_zipfile_path_translate_glob": lambda pattern, seps, recurse: f"rx:{{pattern}}:{{seps}}:{{recurse}}",
 }})
 
@@ -65,14 +64,8 @@ framework_mod = _load_module("ctypes.macholib.framework", {str(STDLIB_ROOT / "ct
 dyld_mod = _load_module("ctypes.macholib.dyld", {str(STDLIB_ROOT / "ctypes" / "macholib" / "dyld.py")!r})
 
 checks = {{
-    "re_parser": (
-        parser_mod.parse("ab") == ("parsed", "ab")
-        and "molt_re_literal_advance" not in parser_mod.__dict__
-    ),
-    "re_casefix": (
-        casefix_mod.EXTRA_CASES == {{}}
-        and "molt_re_literal_advance" not in casefix_mod.__dict__
-    ),
+    "re_parser": parser_mod.parse("ab") == ("parsed", "ab"),
+    "re_casefix": casefix_mod.EXTRA_CASES == {{}},
     "zipfile_path_glob": (
         zipglob_mod.translate("*.py") == "rx:*.py:/:False"
         and "molt_zipfile_path_translate_glob" not in zipglob_mod.__dict__

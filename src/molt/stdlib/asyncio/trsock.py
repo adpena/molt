@@ -4,15 +4,9 @@ from __future__ import annotations
 
 from asyncio import socket as socket
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-
 
 class TransportSocket:
     pass
 
 
 __all__ = ["TransportSocket", "socket"]
-
-globals().pop("_require_intrinsic", None)

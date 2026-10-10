@@ -30,7 +30,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 TOOLS_ROOT = Path(__file__).resolve().parent
 BENCH_RESULTS_DIR = REPO_ROOT / "bench" / "results"
-BENCH_TMP_ROOT = REPO_ROOT / "tmp" / "bench"
 for _import_root in (SRC_ROOT, TOOLS_ROOT):
     if str(_import_root) not in sys.path:
         sys.path.insert(0, str(_import_root))
@@ -39,7 +38,10 @@ from bench_metadata import benchmark_reference_contract  # noqa: E402
 import harness_memory_guard  # noqa: E402
 import bench_suites  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
+from molt.dx import scratch_dir  # noqa: E402
 import perf_authority  # noqa: E402
+
+BENCH_TMP_ROOT = scratch_dir(REPO_ROOT, "bench")
 
 BENCHMARKS = bench_suites.BENCHMARKS
 MOLT_ARGS_BY_BENCH = bench_suites.MOLT_ARGS_BY_BENCH

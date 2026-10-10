@@ -49,9 +49,6 @@ if TYPE_CHECKING:
         futures_bits: Any, timeout_bits: Any, return_when_bits: Any
     ) -> Any: ...
     def molt_concurrent_as_completed(futures_bits: Any, timeout_bits: Any) -> Any: ...
-    def molt_concurrent_all_completed() -> Any: ...
-    def molt_concurrent_first_completed() -> Any: ...
-    def molt_concurrent_first_exception() -> Any: ...
 
 
 # ---------------------------------------------------------------------------
@@ -73,9 +70,6 @@ _MOLT_FUTURE_RESULT = _require_intrinsic("molt_concurrent_future_result")
 _MOLT_FUTURE_RUNNING = _require_intrinsic("molt_concurrent_future_running")
 _MOLT_WAIT = _require_intrinsic("molt_concurrent_wait")
 _MOLT_AS_COMPLETED = _require_intrinsic("molt_concurrent_as_completed")
-_MOLT_ALL_COMPLETED = _require_intrinsic("molt_concurrent_all_completed")
-_MOLT_FIRST_COMPLETED = _require_intrinsic("molt_concurrent_first_completed")
-_MOLT_FIRST_EXCEPTION = _require_intrinsic("molt_concurrent_first_exception")
 
 
 # ---------------------------------------------------------------------------

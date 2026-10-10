@@ -8,7 +8,6 @@ import warnings
 
 from . import as_file, files
 
-_require_intrinsic("molt_stdlib_probe")
 _MOLT_OPEN_BYTES_FROM_PACKAGE_PARTS = _require_intrinsic(
     "molt_importlib_resources_open_resource_bytes_from_package_parts"
 )

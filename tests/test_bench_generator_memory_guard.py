@@ -50,7 +50,8 @@ def test_generator_benchmark_uses_shared_memory_guard(monkeypatch) -> None:
     assert captured["kwargs"]["timeout"] == module.DEFAULT_RUN_TIMEOUT_SEC
 
 
-def test_generator_benchmark_default_binary_is_canonical_tmp() -> None:
+def test_generator_benchmark_default_binary_is_scratch_outside_the_checkout() -> None:
     module = _load_bench_generator()
 
-    assert module.DEFAULT_MOLT_BINARY == module.REPO_ROOT / "tmp" / "generator_molt"
+    assert module.DEFAULT_MOLT_BINARY.name == "generator_molt"
+    assert not module.DEFAULT_MOLT_BINARY.is_relative_to(module.REPO_ROOT.resolve())

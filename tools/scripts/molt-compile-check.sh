@@ -14,8 +14,10 @@ case "$FILE_PATH" in
     *) exit 0 ;;
 esac
 
-mkdir -p "$ROOT/tmp"
-OUTDIR=$(mktemp -d "$ROOT/tmp/molt-check-XXXXXX")
+. "$ROOT/tools/molt_shell_env.sh"
+SCRATCH="$(molt_shell_path "$(molt_scratch_dir "$ROOT" molt-check)")"
+mkdir -p "$SCRATCH"
+OUTDIR=$(mktemp -d "$SCRATCH/XXXXXX")
 trap 'rm -rf "$OUTDIR"' EXIT
 
 START_MS=$(($(date +%s) * 1000 + $(date +%N 2>/dev/null | sed 's/^0*//' | head -c3 || echo 0)))

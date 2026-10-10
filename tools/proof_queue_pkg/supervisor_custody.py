@@ -468,7 +468,10 @@ def _supervisor_fixed_images(
     execution_command: Sequence[str],
     platform_process_images: Sequence[Mapping[str, object]] = (),
 ) -> tuple[str, list[dict[str, str]]]:
-    root = process_image_capture._image_path_key(Path(execution_command[0]))
+    root_path = process_image_capture.custody_file(Path(execution_command[0]))
+    if root_path is None:
+        raise ValueError("supervisor root executable is unavailable")
+    root = str(root_path)
     identities: dict[str, tuple[str, str]] = {}
     images: dict[tuple[str, str], dict[str, str]] = {}
 
@@ -509,10 +512,7 @@ def _supervisor_fixed_images(
         identities[key] = identity
         images[(key, role)] = row
 
-    root_path = process_image_capture.custody_path(Path(execution_command[0]))
-    if not root_path.is_file():
-        raise ValueError("supervisor root executable is unavailable")
-    add("root-command", str(root_path), command_identity._hash_file(root_path))
+    add("root-command", root, command_identity._hash_file(root_path))
     for name, raw in toolchains.items():
         if not isinstance(raw, Mapping):
             continue

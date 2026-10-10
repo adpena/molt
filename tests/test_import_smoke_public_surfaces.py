@@ -15,11 +15,8 @@ import sys
 from tests.stdlib_intrinsic_registry import install_registry
 
 
-calls = []
-
-install_registry({{
-    "molt_import_smoke_runtime_ready": lambda: calls.append("ready"),
-}})
+# No intrinsic at all: none of these modules may require one.
+install_registry({{}}, with_capabilities=False)
 
 
 def _load_module(name, path_text):
@@ -37,7 +34,7 @@ sre_parse = _load_module("sre_parse", {str(STDLIB_ROOT / "sre_parse.py")!r})
 parsed = sre_parse.parse("abc")
 
 checks = {{
-    "behavior": calls == ["ready", "ready", "ready"] and parsed == [],
+    "behavior": parsed == [],
     "private_handles_hidden": (
         "_MOLT_IMPORT_SMOKE_RUNTIME_READY" not in grp.__dict__
         and "_MOLT_IMPORT_SMOKE_RUNTIME_READY" not in pyclbr.__dict__

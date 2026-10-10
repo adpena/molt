@@ -481,49 +481,6 @@ pub extern "C" fn molt_dataclasses_post_init(instance_bits: u64, initvar_values_
 // field() metadata support
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `molt_dataclasses_field_metadata(field_obj) -> MappingProxy | empty dict`
-///
-/// Returns the `metadata` attribute of a Field object.  If the field has no
-/// metadata or metadata is None, returns an empty dict (matching CPython's
-/// behaviour where metadata defaults to `types.MappingProxyType({})`).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dataclasses_field_metadata(field_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let missing = missing_bits(_py);
-        let Some(meta_name_bits) = attr_name_bits_from_bytes(_py, b"metadata") else {
-            // Allocation failure — return empty dict.
-            let ptr = alloc_dict_with_pairs(_py, &[]);
-            return if ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(ptr).bits()
-            };
-        };
-        let meta_bits = molt_getattr_builtin(field_bits, meta_name_bits, missing);
-        dec_ref_bits(_py, meta_name_bits);
-
-        if exception_pending(_py) {
-            clear_exception(_py);
-            let ptr = alloc_dict_with_pairs(_py, &[]);
-            return if ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(ptr).bits()
-            };
-        }
-        if meta_bits == missing || obj_from_bits(meta_bits).is_none() {
-            let ptr = alloc_dict_with_pairs(_py, &[]);
-            return if ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(ptr).bits()
-            };
-        }
-        // Return the metadata value as-is (should already be a MappingProxy or dict).
-        meta_bits
-    })
-}
-
 /// `molt_dataclasses_set_field_metadata(field_obj, metadata_dict) -> None`
 ///
 /// Sets the `metadata` attribute on a Field object, wrapping the given dict

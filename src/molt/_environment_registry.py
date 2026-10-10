@@ -110,36 +110,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "developer",
-      "default": "1",
-      "kind": "bool",
-      "owner": "tools/harness_memory_guard.py",
-      "root_fallback": "MOLT_STALE_ORPHAN_CLEANUP",
-      "suffix": "_STALE_ORPHAN_CLEANUP",
-      "summary": "Whether a guarded command first drains stale orphaned Molt process groups; set 0 only for a deliberate investigation.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "3600",
-      "kind": "float",
-      "owner": "tools/harness_memory_guard.py",
-      "root_fallback": "MOLT_STALE_ORPHAN_SEC",
-      "suffix": "_STALE_ORPHAN_SEC",
-      "summary": "Age in seconds after which an orphaned Molt process group counts as stale for the preflight drain.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "900",
-      "kind": "float",
-      "owner": "tools/harness_memory_guard.py",
-      "root_fallback": "MOLT_STALE_PYTEST_SEC",
-      "suffix": "_STALE_PYTEST_SEC",
-      "summary": "Age in seconds after which an orphaned pytest-style process group counts as stale for the preflight drain.",
-      "values": []
-    },
-    {
-      "audience": "developer",
       "default": "",
       "kind": "float",
       "owner": "tools/harness_memory_guard.py",
@@ -3679,7 +3649,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path-list",
       "name": "MOLT_EXTERNAL_ARTIFACT_ROOTS",
       "owner": "src/molt/dx.py",
-      "summary": "OS path-separator list of candidate artifact roots that src/molt/dx.py checks in order for an external MOLT_EXT_ROOT, the first with enough free space wins; the memory-guard path helpers use the first entry when MOLT_EXT_ROOT is unset, and when unset the checkout family's custody root is the only candidate.",
+      "summary": "OS path-separator list of candidate artifact roots that src/molt/dx.py checks in order for an external MOLT_EXT_ROOT when MOLT_PREFER_EXTERNAL_ARTIFACTS or MOLT_REQUIRE_EXTERNAL_ARTIFACTS asks for one; the first with enough free space wins, and when unset the checkout family's custody root is the only candidate.",
       "values": []
     },
     {
@@ -3705,8 +3675,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_EXT_ROOT",
-      "owner": "src/molt/build_state_layout.py",
-      "summary": "Artifact root for build state, caches, Cargo targets and scratch directories; src/molt/dx.py resolves and exports it (an external candidate root or the checkout custody root), src/molt/build_state_layout.py keys the build-state directory on it, and readers fall back to the repository checkout when unset.",
+      "owner": "src/molt/dx.py",
+      "summary": "Artifact root for build state, caches, Cargo targets and scratch directories. src/molt/dx.py is its only reader: configured_artifact_root returns the set value, artifact_root falls back to an external candidate root or the checkout custody root (never a worktree), and RunContext exports the choice to child processes.",
       "values": []
     },
     {
@@ -5367,6 +5337,24 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_SCIENTIFIC_STACK_CONFIG",
       "owner": "src/molt/scientific_stack_versions.py",
       "summary": "Path of the scientific stack versions TOML file; unset reads config/scientific_stack_versions.toml under the compiler source root.",
+      "values": []
+    },
+    {
+      "audience": "developer",
+      "default": "4",
+      "kind": "float",
+      "name": "MOLT_SCRATCH_BUDGET_GB",
+      "owner": "src/molt/disk_capacity.py",
+      "summary": "Free space in GiB that a guarded run's scratch volume needs; molt.temporary_artifacts.acquire_guard_scratch refuses to start the run when the volume has less, before the child launches, instead of failing mid-run with ENOSPC.",
+      "values": []
+    },
+    {
+      "audience": "user",
+      "default": "disk",
+      "kind": "string",
+      "name": "MOLT_SCRATCH_STORAGE",
+      "owner": "src/molt/dx.py",
+      "summary": "Run scratch storage: disk (scratch under the artifact root's tmp), memory (Linux /dev/shm), or the absolute path of a memory-backed directory the operator mounted, such as a macOS RAM disk; Molt never creates or mounts one. Locks, guard markers and build control stay on disk in every mode.",
       "values": []
     },
     {

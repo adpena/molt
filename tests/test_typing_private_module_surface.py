@@ -71,7 +71,6 @@ def _typing_private_payload(_typing_module):
 
 
 install_registry({{
-    "molt_stdlib_probe": lambda: None,
     "molt_typing_private_payload": _typing_private_payload,
 }})
 

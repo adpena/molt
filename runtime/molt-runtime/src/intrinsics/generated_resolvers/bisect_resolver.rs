@@ -19,14 +19,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_bisect_insort_right",
             crate::molt_bisect_insort_right as *const (),
         )),
-        "molt_insort_left" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_insort_left",
-            crate::molt_insort_left as *const (),
-        )),
-        "molt_insort_right" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_insort_right",
-            crate::molt_insort_right as *const (),
-        )),
         _ => None,
     }
 }

@@ -32,6 +32,7 @@ from molt.file_publication import (
     is_link_like,
     resolve_owned_path,
 )
+from molt.portable_paths import portable_path_component
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     stable_regular_file_identity,
@@ -153,6 +154,28 @@ def _generation_material(
     }
 
 
+_SELECTION_FIELDS = frozenset(
+    {"schema", "build_identity", "profile_dir", "runtime_name", "members", "generation"}
+)
+
+
+def _selection_payload(
+    payload: object, *, coordinate: Path, cargo_profile: str
+) -> dict[str, object] | None:
+    """A selection receipt for ``coordinate`` whose digest names its own material."""
+    if not isinstance(payload, dict) or set(payload) != _SELECTION_FIELDS:
+        return None
+    material = {key: value for key, value in payload.items() if key != "generation"}
+    if (
+        payload["schema"] != _SCHEMA
+        or payload["generation"] != canonical_json_sha256(material)
+        or payload["profile_dir"] != _cargo_profile_dir(cargo_profile)
+        or payload["runtime_name"] != coordinate.name
+    ):
+        return None
+    return payload
+
+
 def read_native_runtime_generation(
     coordinate: Path,
     *,
@@ -166,31 +189,21 @@ def read_native_runtime_generation(
     close the returned member fences before accepting it.
     """
     try:
-        payload = read_exact(
-            native_runtime_generation_path(coordinate),
-            max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
-            label="native runtime generation selection",
+        payload = _selection_payload(
+            read_exact(
+                native_runtime_generation_path(coordinate),
+                max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+                label="native runtime generation selection",
+            ),
+            coordinate=coordinate,
+            cargo_profile=cargo_profile,
         )
-        if not isinstance(payload, dict) or set(payload) != {
-            "schema",
-            "build_identity",
-            "profile_dir",
-            "runtime_name",
-            "members",
-            "generation",
-        }:
+        if payload is None:
             return None
-        material = {key: value for key, value in payload.items() if key != "generation"}
-        digest = canonical_json_sha256(material)
         profile_dir = _cargo_profile_dir(cargo_profile)
-        if (
-            payload["schema"] != _SCHEMA
-            or payload["generation"] != digest
-            or payload["profile_dir"] != profile_dir
-            or payload["runtime_name"] != coordinate.name
-        ):
-            return None
-        root = coordinate.parent / ".molt-native-generations" / digest
+        root = (
+            coordinate.parent / ".molt-native-generations" / str(payload["generation"])
+        )
         if is_link_like(root) or is_link_like(root / profile_dir):
             return None
         return _capture_generation(
@@ -209,6 +222,51 @@ def read_native_runtime_generation(
         NativeLinkDependencyManifestError,
     ):
         return None
+
+
+def _select_staged_generation(
+    coordinate: Path,
+    *,
+    stage: Path,
+    staged: NativeRuntimeGeneration,
+    cargo_profile: str,
+    target_triple: str | None,
+    inputs_are_current: Callable[[], bool],
+    expected_generation: object = None,
+) -> NativeRuntimeGeneration | None:
+    """Publish a staged closure under its digest, then select it atomically."""
+    profile_dir = _cargo_profile_dir(cargo_profile)
+    material = _generation_material(staged, cargo_profile=cargo_profile)
+    digest = canonical_json_sha256(material)
+    if expected_generation is not None and digest != expected_generation:
+        raise ValueError("native runtime generation differs from its selection")
+    if not inputs_are_current():
+        return None
+    staged.verify()
+
+    def admit(root: Path) -> NativeRuntimeGeneration:
+        return _capture_generation(
+            root / profile_dir / coordinate.name,
+            build_identity=staged.build_identity,
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+            expected_records=staged.records(),
+        )
+
+    published = publish_native_runtime_directory(
+        stage,
+        coordinate.parent / ".molt-native-generations" / digest,
+        verify_staged=staged.verify,
+        admit=admit,
+    )
+    published.verify()
+    _atomic_write_json(
+        native_runtime_generation_path(coordinate),
+        {**material, "generation": digest},
+        sort_keys=True,
+    )
+    published.verify()
+    return published
 
 
 def publish_native_runtime_generation(
@@ -257,29 +315,90 @@ def publish_native_runtime_generation(
             cargo_profile=cargo_profile,
             target_triple=target_triple,
         )
-        material = _generation_material(staged, cargo_profile=cargo_profile)
-        digest = canonical_json_sha256(material)
-        if not inputs_are_current():
-            return None
-        staged.verify()
+        return _select_staged_generation(
+            coordinate,
+            stage=stage,
+            staged=staged,
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+            inputs_are_current=inputs_are_current,
+        )
 
-        def admit(root: Path) -> NativeRuntimeGeneration:
-            return _capture_generation(
-                root / profile_dir / coordinate.name,
-                build_identity=build_identity,
-                cargo_profile=cargo_profile,
-                target_triple=target_triple,
-                expected_records=staged.records(),
+
+def import_native_runtime_generation(
+    coordinate: Path,
+    *,
+    selection: Path,
+    members: Mapping[str, Path],
+    cargo_profile: str,
+    target_triple: str | None,
+    build_identity: RuntimeBuildIdentity,
+) -> NativeRuntimeGeneration:
+    """Select a generation another checkout published, through local admission.
+
+    ``selection`` and ``members`` (keyed by role) are copies of another
+    checkout's selection receipt and generation files. ``build_identity`` is
+    this checkout's current capture: a generation built from other inputs is
+    refused before anything is published, and the republished closure must
+    reproduce the receipt's generation digest.
+    """
+    payload = _selection_payload(
+        read_exact(
+            selection,
+            max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+            label="transported native runtime generation selection",
+        ),
+        coordinate=coordinate,
+        cargo_profile=cargo_profile,
+    )
+    if payload is None:
+        raise ValueError(
+            f"transported native runtime selection is invalid: {selection}"
+        )
+    if RuntimeBuildIdentity.from_dict(payload["build_identity"]) != build_identity:
+        raise ValueError(
+            "transported native runtime was built from other inputs than this checkout"
+        )
+    records = payload["members"]
+    if not isinstance(records, list) or any(
+        not isinstance(record, dict) for record in records
+    ):
+        raise ValueError("transported native runtime members are invalid")
+    if sorted(str(record.get("role")) for record in records) != sorted(members):
+        raise ValueError("transported native runtime members differ from its selection")
+    profile_dir = _cargo_profile_dir(cargo_profile)
+    generations = coordinate.parent / ".molt-native-generations"
+    generations.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=".native-runtime-", dir=generations
+    ) as temp:
+        stage = Path(temp) / "members"
+        (stage / profile_dir).mkdir(parents=True)
+        for record in records:
+            name = portable_path_component(record.get("name"))
+            digest = record.get("sha256")
+            if not isinstance(digest, str):
+                raise ValueError("transported native runtime member digest is invalid")
+            _atomic_copy_file(
+                members[str(record["role"])],
+                stage / profile_dir / name,
+                expected_sha256=digest,
             )
-
-        published = publish_native_runtime_directory(
-            stage, generations / digest, verify_staged=staged.verify, admit=admit
+        staged = _capture_generation(
+            stage / profile_dir / coordinate.name,
+            build_identity=build_identity,
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+            expected_records=records,
         )
-        published.verify()
-        _atomic_write_json(
-            native_runtime_generation_path(coordinate),
-            {**material, "generation": digest},
-            sort_keys=True,
+        published = _select_staged_generation(
+            coordinate,
+            stage=stage,
+            staged=staged,
+            cargo_profile=cargo_profile,
+            target_triple=target_triple,
+            inputs_are_current=lambda: True,
+            expected_generation=payload["generation"],
         )
-        published.verify()
-        return published
+    assert published is not None
+    return published

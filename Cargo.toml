@@ -25,7 +25,6 @@ members = [
     "runtime/molt-runtime-platform",
     "runtime/molt-runtime-resource",
     "runtime/molt-stdlib-text",
-    "runtime/molt-stdlib-difflib",
     "runtime/molt-stdlib-graphlib",
     "runtime/molt-runtime-tk",
     "runtime/molt-obj-model",

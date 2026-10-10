@@ -31,10 +31,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_dataclasses_post_init",
             crate::molt_dataclasses_post_init as *const (),
         )),
-        "molt_dataclasses_field_metadata" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_dataclasses_field_metadata",
-            crate::molt_dataclasses_field_metadata as *const (),
-        )),
         "molt_dataclasses_set_field_metadata" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_dataclasses_set_field_metadata",
             crate::molt_dataclasses_set_field_metadata as *const (),

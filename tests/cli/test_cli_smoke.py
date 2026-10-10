@@ -1497,27 +1497,23 @@ def test_cli_build_cross_target_with_zig(tmp_path: Path) -> None:
     script.write_text("print('ok')\n", encoding="utf-8")
     output = tmp_path / "hello_molt"
 
-    try:
-        res = _run_cli_with_timeout(
-            [
-                "build",
-                "--target",
-                target_triple,
-                "--profile",
-                "dev",
-                "--out-dir",
-                str(tmp_path),
-                "--output",
-                str(output),
-                "--json",
-                str(script),
-            ],
-            timeout=300,
-        )
-    except subprocess.TimeoutExpired:
-        pytest.skip(
-            "Cross-target build exceeded 300s; warm cargo cache or prebuild runtime."
-        )
+    # A build past its budget is a failure, not a missing capability (HF-94).
+    res = _run_cli_with_timeout(
+        [
+            "build",
+            "--target",
+            target_triple,
+            "--profile",
+            "dev",
+            "--out-dir",
+            str(tmp_path),
+            "--output",
+            str(output),
+            "--json",
+            str(script),
+        ],
+        timeout=300,
+    )
     assert res.returncode == 0
     payload = json.loads(res.stdout)
     assert payload["status"] == "ok"

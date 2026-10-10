@@ -12,16 +12,15 @@ The live codebase and executable Cargo metadata remain authoritative.
 - Runtime leaf crates exist and are wired as path dependencies from
   `runtime/molt-runtime/Cargo.toml`: `molt-runtime-core`, `-math`, `-text`,
   `-collections`, `-serial`, `-crypto`, `-compression`, `-net`, `-asyncio`,
-  `-regex`, `-path`, `-itertools`, `-difflib`, `-logging`, `-http`, `-xml`,
+  `-regex`, `-path`, `-itertools`, `-logging`, `-http`, `-xml`,
   `-ipaddress`, `-zoneinfo`, `-stringprep`, and `-tk`. Guarded
   `cargo metadata --no-deps` reports these as workspace packages.
 - `molt-runtime-stringprep`, the codec identity plus generated alias and
   single-byte charmap table authority in `molt-stdlib-text`, the `html` /
   `unicodedata`
   portions of `molt-stdlib-text`, `molt-runtime-zoneinfo`, the math-family
-  modules owned by `molt-runtime-math`, XML owned by `molt-runtime-xml`,
-  `difflib` owned by `molt-stdlib-difflib`, and `ipaddress` owned by
-  `molt-runtime-ipaddress` are
+  modules owned by `molt-runtime-math`, XML owned by `molt-runtime-xml`, and
+  `ipaddress` owned by `molt-runtime-ipaddress` are
   completed leaf-ownership examples: their in-facade fallback modules are
   deleted, their generated resolver arms delegate into leaf-owned intrinsic
   sub-registries, their symbol prefixes are link-affecting feature gates, and
@@ -143,7 +142,7 @@ Hard constraints / watch-items:
   lazy-loads formatting custody only for changed Rust files, and prevents
   repeated generation from dirtying mtimes or triggering needless Cargo
   rebuilds. `molt-runtime-stringprep`, `molt-runtime-math`,
-  `molt-runtime-xml`, `molt-stdlib-difflib`, and `molt-runtime-ipaddress` now
+  `molt-runtime-xml`, and `molt-runtime-ipaddress` now
   own generated per-crate intrinsic sub-registries, with the `molt-runtime`
   category resolvers reduced to feature-gated facade delegates. `molt-runtime-path`
   now owns an event-specific audit bridge for `os_ext` and `pathlib`, replacing

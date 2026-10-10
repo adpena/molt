@@ -271,13 +271,9 @@ Execution style: correctness-first, measurable, rollback-safe, no benchmark-only
 ### Lowering Coverage Signals
 - Stdlib audit source: `docs/spec/areas/compat/surfaces/stdlib/stdlib_intrinsics_audit.generated.md`
 - Canonical snapshot source: `docs/spec/STATUS.md` (current checker mode for CPython 3.12/3.13/3.14 union coverage).
-- Current checker snapshot:
-  - `intrinsic-backed`: 0
-  - `intrinsic-partial`: 873
-  - `probe-only`: 0
-  - `python-only`: 0
-  - `missing_top_level`: 0
-  - `missing_submodules`: 0
+- Current counts: the generated compat summary in `docs/spec/STATUS.md`. Since
+  2026-10-09 (HF-91) intrinsic status counts only intrinsics a module reads;
+  `python-compiled` modules are admitted and `stub` modules are debt (spec 0016).
 - Metric mode note: historical "112 modules" counts are no longer canonical for program gating; use checker snapshot + ratchet gates from `tools/check_stdlib_intrinsics.py`.
 
 - Core lowering program source: `docs/spec/areas/compat/plans/stdlib_lowering_plan.md`
@@ -295,7 +291,7 @@ Execution style: correctness-first, measurable, rollback-safe, no benchmark-only
 | --- | --- | --- | --- | --- | --- |
 | OPT-1001 | Build Throughput and Determinism | P0 | Active (Partial) | `dev` warm cache-hit <= 3.0s | compile progress KPI green for 7 consecutive runs |
 | OPT-1002 | Core Primitive Lowering Expansion | P0 | Active (Early slices) | reduce runtime-call density in hot numeric/control ops | no new regressions in core arithmetic/loop benches |
-| OPT-1003 | Stdlib Rust Lowering Acceleration | P0 | Active (Partial) | keep `probe-only=0`, `python-only=0`, and ratchet intrinsic-partial reduction | strict lowering gates green |
+| OPT-1003 | Stdlib Rust Lowering Acceleration | P0 | Active (Partial) | ratchet `stub` and `intrinsic-partial` reduction; no unread intrinsic requirements | strict lowering gates green |
 | OPT-1004 | Runtime Dispatch/Object Fast Paths | P1 | Planned (Wave 2 target) | eliminate top native regressions (`attr_access`, `descriptor_property`, `struct`) | those benches >= 1.0x CPython |
 | OPT-1005 | WASM Lowering and Runtime Parity | P0 | Active (Partial) | wasm/native ratio median < 2.5x | wasm no longer dominant bottleneck on top-10 slowest lanes |
 | OPT-1006 | Data/Parsing/Container Kernel Program | P1 | Planned (Wave 2 target) | close csv/tuple/deep-loop gaps | each lane >= 1.0x CPython or documented incompat-risk |
@@ -690,12 +686,12 @@ adjusted from telemetry after landing PR-5/PR-6.
 ## OPT-1003: Stdlib Rust Lowering Acceleration
 
 ### Problem Statement
-- Too many stdlib modules remain `intrinsic-partial`, `probe-only`, or `python-only`, limiting both capability and performance in compiled mode.
+- Too many stdlib modules remain `stub` or `intrinsic-partial`, limiting capability in compiled mode; hot `python-compiled` modules may need intrinsics for performance.
 - Full lowering is mandatory for production-grade compiled execution semantics.
 
 ### Current Evidence
-- Checker snapshot now reports `intrinsic-backed=0`, `intrinsic-partial=873`, `probe-only=0`, `python-only=0` under full-coverage attestation mode.
-- Program KPI focuses on preserving zero probe/python-only modules while burning down intrinsic-partial backlog with ratchet governance.
+- Historical snapshot (before HF-91 changed the counting rule): `intrinsic-backed=0`, `intrinsic-partial=873`, `probe-only=0`, `python-only=0` under full-coverage attestation mode.
+- Program KPI burns down the `stub` and `intrinsic-partial` backlog with ratchet governance.
 - Program phase sequencing already exists and is active for concurrency substrate.
 
 ### Hypotheses
@@ -729,7 +725,7 @@ adjusted from telemetry after landing PR-5/PR-6.
 1. Keep 0026 program order as canonical.
 2. Create module-family work packets with explicit intrinsic manifests.
 3. Require native+wasm parity test per promoted module.
-4. Preserve `probe-only=0` and `python-only=0`, and reduce `intrinsic-partial` via ratcheted closure sprints with published scoreboards.
+4. Reduce `stub` and `intrinsic-partial` via ratcheted closure sprints with published scoreboards; move a `python-compiled` module to intrinsics only for a measured win.
 
 ### Validation Checklist
 - [ ] `tools/check_stdlib_intrinsics.py` and `tools/check_core_lane_lowering.py` green.
@@ -1005,7 +1001,7 @@ adjusted from telemetry after landing PR-5/PR-6.
 
 ### Phase C (Programmatic, 1-2 months)
 - Convert high-fanout stdlib module families to intrinsic-backed state in phase order.
-- Keep `probe-only`/`python-only` at zero while burning down `intrinsic-partial` backlog by priority surface.
+- Burn down the `stub` and `intrinsic-partial` backlog by priority surface.
 - Tie lowering-completion milestones to benchmark goals and release gates.
 
 ## 5. Success Criteria (Program)

@@ -67,54 +67,6 @@ pub extern "C" fn molt_importlib_metadata_entry_points_payload(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_metadata_entry_points_select_payload(
-    search_paths_bits: u64,
-    module_file_bits: u64,
-    group_bits: u64,
-    name_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let allowed = has_capability(_py, "fs.read");
-        audit_capability_decision(
-            "importlib.metadata.entry_points_select_payload",
-            "fs.read",
-            AuditArgs::None,
-            allowed,
-        );
-        if !allowed {
-            return raise_exception::<_>(_py, "PermissionError", "missing fs.read capability");
-        }
-        let search_paths =
-            match string_sequence_arg_from_bits(_py, search_paths_bits, "search paths") {
-                Ok(value) => value,
-                Err(bits) => return bits,
-            };
-        let module_file = match module_file_from_bits(_py, module_file_bits) {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let group = match optional_string_arg_from_bits(_py, group_bits, "group") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let name = match optional_string_arg_from_bits(_py, name_bits, "name") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let payload = importlib_metadata_entry_points_select_payload(
-            &search_paths,
-            module_file,
-            group.as_deref(),
-            name.as_deref(),
-        );
-        match alloc_string_triplets_list_bits(_py, &payload) {
-            Some(bits) => bits,
-            None => raise_exception::<_>(_py, "MemoryError", "out of memory"),
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_metadata_entry_points_filter_payload(
     search_paths_bits: u64,
     module_file_bits: u64,
@@ -1075,55 +1027,6 @@ pub(super) fn importlib_set_module_state_impl(
         dec_ref_bits(_py, spec_bits);
     }
     out
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_set_module_state(
-    module_bits: u64,
-    module_name_bits: u64,
-    loader_bits: u64,
-    origin_bits: u64,
-    is_package_bits: u64,
-    module_package_bits: u64,
-    package_root_bits: u64,
-    module_spec_cls_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let _module_name = match string_arg_from_bits(_py, module_name_bits, "module_name") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let _origin = match string_arg_from_bits(_py, origin_bits, "origin") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let _module_package = match string_arg_from_bits(_py, module_package_bits, "module_package")
-        {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let is_package = is_truthy(_py, obj_from_bits(is_package_bits));
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-
-        match importlib_set_module_state_impl(
-            _py,
-            ImportlibModuleStateArgs {
-                module_bits,
-                module_name_bits,
-                loader_bits,
-                origin_bits,
-                is_package,
-                module_package_bits,
-                package_root_bits,
-                module_spec_cls_bits,
-            },
-        ) {
-            Ok(()) => MoltObject::none().bits(),
-            Err(err) => err,
-        }
-    })
 }
 
 pub(super) fn importlib_module_dict_ptr_for_state(

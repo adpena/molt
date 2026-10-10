@@ -68,6 +68,7 @@ AUTHORITY_INPUTS = (
     "tools/nightly_shard_profile.py",
     "tools/nightly_sharding.py",
     "tools/nightly_runtime_bundle.py",
+    "src/molt/cli/native_toolchain_transfer.py",
     "config/nightly_shard_profile.json",
     "tests/harness/run_molt_conformance.py",
     "tests/molt_diff.py",
@@ -511,7 +512,6 @@ def validate_plan(
     root: Path = ROOT,
     *,
     expected_source_commit: str | None = None,
-    expected_cpython_commit: str | None = None,
 ) -> None:
     validate_plan_envelope(plan, root)
     authority = plan["authority"]
@@ -529,11 +529,6 @@ def validate_plan(
         and plan.get("source_commit") != expected_source_commit
     ):
         raise ValueError("nightly shard plan source commit mismatch")
-    if (
-        expected_cpython_commit is not None
-        and plan.get("cpython_commit") != expected_cpython_commit
-    ):
-        raise ValueError("nightly shard plan CPython commit mismatch")
     runtime_manifest = plan.get("runtime_artifact_manifest")
     if runtime_manifest is not None:
         if not isinstance(runtime_manifest, dict):
@@ -591,8 +586,11 @@ def _load_plan(path: Path, root: Path = ROOT) -> dict[str, Any]:
     validate_plan(
         payload,
         root,
+        # The envelope binds the CPython commit to the pinned authority and the
+        # regrtest sources to their digests. A shard's CPython tree arrives as
+        # an artifact without its own Git metadata, so `git rev-parse` there
+        # would answer with the enclosing Molt checkout's commit.
         expected_source_commit=_git_commit(root),
-        expected_cpython_commit=_git_commit(root / "third_party" / "cpython"),
     )
     return payload
 
@@ -873,6 +871,10 @@ def run_shard(
                 expanded,
                 cwd=root,
                 capture_output=True,
+                # The guard keeps only these tails in memory; full output goes
+                # to the files, which the temporary directory owns.
+                stdout_capture_path=temporary_root / "stdout.txt",
+                stderr_capture_path=temporary_root / "stderr.txt",
                 capture_tail_bytes=16_000,
                 text=True,
                 timeout=timeout,
