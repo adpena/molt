@@ -1154,7 +1154,7 @@ fn static_native_owner_and_buffer_policies_preserve_their_actual_error_boundary(
         let trace_class = crate::obj_from_bits(crate::builtin_classes(py).traceback)
             .as_ptr()
             .unwrap();
-        let trace_bits = crate::alloc_instance_for_class(py, trace_class);
+        let trace_bits = unsafe { crate::alloc_instance_for_class(py, trace_class) };
         let traceback = unsafe {
             refcount::ProtectedPyObject::from_owned(GLOBAL_BRIDGE.owned_handle_to_pyobj(trace_bits))
         };
@@ -1173,7 +1173,7 @@ fn static_native_owner_and_buffer_policies_preserve_their_actual_error_boundary(
             bf_releasebuffer: retirement_probe_releasebuffer as *const () as *mut _,
         };
         kind.tp_as_buffer = (&raw mut slots).cast();
-        assert_eq!(kind.ready(), 0);
+        assert_eq!(unsafe { kind.ready() }, 0);
         struct HostileReset;
         impl Drop for HostileReset {
             fn drop(&mut self) {
