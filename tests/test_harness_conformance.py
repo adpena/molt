@@ -15,7 +15,7 @@ def _load_module():
 def test_build_env_sets_canonical_roots_and_session_id(tmp_path: Path) -> None:
     module = _load_module()
 
-    env = module.build_molt_conformance_env(tmp_path, "smoke-suite")
+    env = module.build_molt_conformance_env(tmp_path, "smoke-suite", {})
 
     artifact_root = Path(env["MOLT_EXT_ROOT"])
     assert env["CARGO_TARGET_DIR"] == str(
@@ -33,7 +33,7 @@ def test_build_env_sets_canonical_roots_and_session_id(tmp_path: Path) -> None:
 
 def test_ensure_dirs_creates_expected_paths(tmp_path: Path) -> None:
     module = _load_module()
-    env = module.build_molt_conformance_env(tmp_path, "suite")
+    env = module.build_molt_conformance_env(tmp_path, "suite", {})
 
     module.ensure_molt_conformance_dirs(env)
 
@@ -152,3 +152,21 @@ def test_write_summary_and_exit_code_contract(tmp_path: Path) -> None:
         )
         == 0
     )
+
+
+def test_build_env_keeps_the_callers_artifact_root(tmp_path: Path) -> None:
+    # Resolving from the session ID alone dropped the caller's custody
+    # selectors, so a CI shard's artifacts landed in the checkout and CI
+    # custody refused them (Nightly run 38010917812).
+    module = _load_module()
+    repo = tmp_path / "repo"
+    chosen = tmp_path / "chosen-artifacts"
+    repo.mkdir()
+    chosen.mkdir()
+
+    env = module.build_molt_conformance_env(
+        repo, "suite", {"MOLT_EXT_ROOT": str(chosen)}
+    )
+
+    assert Path(env["MOLT_EXT_ROOT"]) == chosen
+    assert Path(env["CARGO_TARGET_DIR"]).is_relative_to(chosen)

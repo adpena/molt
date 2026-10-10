@@ -522,6 +522,7 @@ def _canonical_bench_env(base_env: dict[str, str] | None = None) -> dict[str, st
     for key, value in build_molt_conformance_env(
         REPO_ROOT,
         _bench_session_id(env),
+        env,
     ).items():
         if key not in CANONICAL_RUN_ENV_KEYS:
             env[key] = value

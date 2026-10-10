@@ -355,7 +355,7 @@ def _wasm_session_id(env: dict[str, str] | None = None) -> str:
 
 def _base_env() -> dict[str, str]:
     env = os.environ.copy()
-    env.update(build_molt_conformance_env(_repo_root(), _wasm_session_id(env)))
+    env.update(build_molt_conformance_env(_repo_root(), _wasm_session_id(env), env))
     ensure_molt_conformance_dirs(env)
     env["PYTHONPATH"] = str(_repo_root() / "src")
     env.setdefault("PYTHONHASHSEED", "0")
