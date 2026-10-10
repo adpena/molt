@@ -633,6 +633,41 @@ def _parse_json_output(
     return payload
 
 
+def python_selection(location: Mapping[str, object]) -> dict[str, object]:
+    """Project a validated Python location receipt into its pre-arm selection.
+
+    The locator keeps the reported launcher coordinate in its hashed receipt.
+    Selection names the launcher by its custody coordinate (on Windows the
+    actual directory entry with a lower-case drive) without resolving role
+    aliases, and resolves the base image and prefix. The producer and the
+    pre-launch check share this rule, so their spellings cannot drift.
+    """
+    executable_raw = location.get("selected_executable")
+    base_executable_raw = location.get("base_executable")
+    prefix_raw = location.get("prefix")
+    if not all(
+        isinstance(value, str) and value
+        for value in (executable_raw, base_executable_raw, prefix_raw)
+    ):
+        raise ValueError("proof Python location has no executable chain")
+    executable = process_image_capture.custody_file(Path(str(executable_raw)))
+    if executable is None:
+        raise ValueError("proof Python location has no selected executable")
+    base_executable = process_image_capture.custody_path(
+        Path(str(base_executable_raw))
+    ).resolve(strict=True)
+    prefix = Path(str(prefix_raw)).resolve(strict=True)
+    if not prefix.is_dir():
+        raise ValueError("proof Python location has no environment prefix")
+    return {
+        "executable": str(executable),
+        "executable_sha256": _hash_file(executable),
+        "base_executable": str(base_executable),
+        "base_executable_sha256": _hash_file(base_executable),
+        "prefix": str(prefix),
+    }
+
+
 def _python_identity(
     envelope: Mapping[str, object],
     *,
@@ -666,39 +701,13 @@ def _python_identity(
         raise ValueError("proof Python selection has no external-root authority")
     if selected_external_roots != location.get("external_roots"):
         raise ValueError("proof Python selection external roots differ from location")
-    prefix_raw = selection.get("prefix")
-    executable_raw = selection.get("executable")
-    base_executable_raw = selection.get("base_executable")
-    if not all(
-        isinstance(value, str) and value
-        for value in (prefix_raw, executable_raw, base_executable_raw)
-    ):
-        raise ValueError("proof Python selection identity is incomplete")
-    assert isinstance(prefix_raw, str)
-    assert isinstance(executable_raw, str)
-    assert isinstance(base_executable_raw, str)
-    if (
-        prefix_raw != location.get("prefix")
-        # The locator preserves the reported launcher coordinate in its hashed
-        # receipt. Selection uses the proof image owner's lexical coordinate;
-        # compare that same projection without resolving selected role aliases.
-        or executable_raw
-        != str(
-            process_image_capture.custody_path(
-                Path(str(location["selected_executable"]))
-            )
-        )
-        or base_executable_raw
-        != str(
-            process_image_capture.custody_path(
-                Path(str(location["base_executable"]))
-            ).resolve(strict=True)
-        )
-        or selection.get("executable_sha256") != _hash_file(Path(executable_raw))
-        or selection.get("base_executable_sha256")
-        != _hash_file(Path(base_executable_raw))
-    ):
+    # Reproject the hashed location receipt through the one selection rule and
+    # rehash the current images: a changed spelling, alias or byte refuses the
+    # launch before the capture probe runs.
+    expected = python_selection(location)
+    if any(selection.get(key) != value for key, value in expected.items()):
         raise ValueError("proof Python selection differs from its location receipt")
+    executable_raw = str(expected["executable"])
     # Selection ran the exact uv/py launcher before arming. Repeating uv run
     # here can sync or close its writable environment lock before full capture
     # has admitted that lock. Preserve the lexical venv launcher (not its base

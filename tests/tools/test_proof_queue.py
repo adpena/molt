@@ -1538,15 +1538,20 @@ def _selected_python_capture_fixture(tmp_path: Path) -> dict[str, object]:
         "file_paths": [str(base)],
     }
     location["identity_sha256"] = canonical_json_sha256(location)
-    return {
-        "prefix": str(prefix),
-        "executable": str(executable),
-        "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
-        "base_executable": str(base),
-        "base_executable_sha256": hashlib.sha256(base.read_bytes()).hexdigest(),
+    selection = {
+        **command_identity.python_selection(location),
         "external_roots": [],
         "location": location,
     }
+    # The selection rule hashes the actual images; the fixture bytes are the
+    # independent oracle for those digests.
+    assert selection["executable_sha256"] == hashlib.sha256(
+        executable.read_bytes()
+    ).hexdigest()
+    assert selection["base_executable_sha256"] == hashlib.sha256(
+        base.read_bytes()
+    ).hexdigest()
+    return selection
 
 
 @pytest.mark.parametrize("kind", ["direct", "py-launcher", "uv", "uv-console-script"])
@@ -2006,7 +2011,12 @@ def test_uv_unicode_full_capture_uses_existing_producer_digest_authority(
     exact = [str(executable), "run", "--no-sync", "python", "-c", "pass"]
 
     def version(command, **kwargs):
-        assert list(command) == [str(executable), "--version"]
+        # The owner runs the admitted custody coordinate (Windows: the actual
+        # entry spelling with a lower-case drive), never a PATH respelling.
+        assert list(command) == [
+            str(process_image_capture.custody_path(executable)),
+            "--version",
+        ]
         return subprocess.CompletedProcess(command, 0, "uv 0.12.23 (fixture)\n", "")
 
     monkeypatch.setattr(command_identity, "_run_captured", version)
