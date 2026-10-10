@@ -218,6 +218,23 @@ def test_molt_build_cmd_supports_explicit_profile() -> None:
     ]
 
 
+@pytest.fixture
+def scratch_bench_checkout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Point the bench at a scratch checkout.
+
+    `_canonical_bench_env` creates every root of the environment it resolves.
+    A base environment without a hosted job's custody contract resolves a CI
+    clone as its own artifact and toolchain root, so with the real checkout
+    the bench would create ``target/`` or ``target-root/`` there (HF-F108).
+    """
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    monkeypatch.setattr(bench_tool, "REPO_ROOT", checkout)
+    monkeypatch.setattr(bench_tool, "BENCH_RESULTS_DIR", checkout / "bench" / "results")
+    return checkout
+
+
+@pytest.mark.usefixtures("scratch_bench_checkout")
 def test_canonical_bench_env_preserves_explicit_roots_and_session(
     tmp_path: Path,
 ) -> None:
@@ -245,6 +262,7 @@ def test_canonical_bench_env_preserves_explicit_roots_and_session(
     assert env["MOLT_SESSION_ID"] == "bench-review"
 
 
+@pytest.mark.usefixtures("scratch_bench_checkout")
 def test_canonical_bench_env_preserves_independent_explicit_artifact_env(
     tmp_path: Path,
 ) -> None:
@@ -283,16 +301,9 @@ def test_canonical_bench_env_preserves_independent_explicit_artifact_env(
 def test_canonical_bench_env_empty_base_ignores_ambient_artifact_env(
     monkeypatch,
     tmp_path: Path,
+    scratch_bench_checkout: Path,
 ) -> None:
-    # An empty base also drops a hosted job's custody contract, so the bench
-    # resolves its checkout as a plain clone and creates that clone's roots.
-    # A scratch checkout keeps them out of the real one (HF-F108).
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    monkeypatch.setattr(bench_tool, "REPO_ROOT", checkout)
-    monkeypatch.setattr(
-        bench_tool, "BENCH_RESULTS_DIR", checkout / "bench" / "results"
-    )
+    checkout = scratch_bench_checkout
     ambient_root = tmp_path / "ambient-root"
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ambient_root))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(ambient_root / "target"))

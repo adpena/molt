@@ -1118,7 +1118,12 @@ def test_run_molt_does_not_fallback_after_batch_deadline(
         target_python=module.TargetPythonVersion(3, 14, 0),
         build_profile="dev",
         capabilities="",
-        environment={"MOLT_CAPABILITY_TIER": "none"},
+        # A complete execution environment names its cache; without one the
+        # layout would resolve the real checkout as its own artifact root.
+        environment={
+            "MOLT_CAPABILITY_TIER": "none",
+            "MOLT_CACHE": str(tmp_path / "molt-cache"),
+        },
     )
     result = module.run_molt_build_only(
         "tests/differential/basic/arith.py",
@@ -1173,7 +1178,12 @@ def test_run_molt_build_only_uses_build_profile_flag(
         target_python=module.TargetPythonVersion(3, 14, 0),
         build_profile="dev",
         capabilities="fs,env,time,random",
-        environment={"MOLT_CAPABILITY_TIER": "none"},
+        # A complete execution environment names its cache; without one the
+        # layout would resolve the real checkout as its own artifact root.
+        environment={
+            "MOLT_CAPABILITY_TIER": "none",
+            "MOLT_CACHE": str(tmp_path / "molt-cache"),
+        },
     )
     result = module.run_molt_build_only(
         "tests/differential/stdlib/unicodedata_basic.py",
