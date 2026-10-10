@@ -70,6 +70,13 @@ print(str(actual))'
 PATH="$bin_command:$PATH" python -I -S -B -c "$check" "$pin" "$selected" "$UV_PYTHON_INSTALL_DIR"
 PATH="$bin_command:$PATH" python3 -I -S -B -c "$check" "$pin" "$selected" "$UV_PYTHON_INSTALL_DIR"
 
+# Compile the standard library once, before anything imports it. Later imports
+# then find current bytecode and never write into the shared runtime, whose
+# files Python identity capture inventories while other processes run (HF-166).
+stdlib=$("$selected_command" -I -S -B -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')
+single_line stdlib "$stdlib"
+"$selected_command" -I -m compileall -q -j 0 -o 0 -o 1 -o 2 "$stdlib"
+
 # Nothing is published until every validation succeeds. Values used in these
 # single-line Actions records have already rejected control characters.
 {
