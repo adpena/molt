@@ -44,18 +44,49 @@ retain the historical repair evidence without treating it as release acceptance.
 
 Integration decision (2026-10-10 UTC): current main is the canonical base and
 one parent integrator owns reconciliation, qualification and landing. The
-qualified ABI/supervisor unit is reconciled with main `50d52e471`, preserving its
+qualified ABI/supervisor unit landed at `9d943eddd`, reconciled with `50d52e471` and preserving its
 newer Windows invocation/custody, R6 admission, cache-validation and intrinsic
 retirement changes. Other committed branches and private runtime/measurement
 capsules retain their source custody; their existence is not release acceptance.
 
-CI `38050591959` at that main base remains red: the Rust micro partition has
+Historical CI `38050591959` at `ed9c7c308` remains red: the Rust micro partition has
 777 passes, one import-error allocation-denial fixture failure and two ignores;
 Windows reports changed CPython runtime/import selection in its installed-record
 hash test; macOS reports two raw-child-stream timeout failures; WASM reports a
 10.39 MB shared runtime against the unchanged 5 MB limit and finally/pending
 observer parity failure. These remain assigned to their existing release
 obligations. The current integration does not claim to close those failures.
+
+The successor repairs the import/sequence/dictionary allocation-denial fixtures
+through the real emergency C-API channel. All three changed tests pass in
+independent Linux/aarch64 dev-fast micro-runtime processes, as does the sparse
+dictionary snapshot ownership control. Native C build custody is now declared
+for nineteen additional confirmed native-runtime command/lane consumers;
+direct and wrapped admission retain the declarations. WASM-only and frontend-only
+commands keep their distinct tool requirements. These are development-side
+checks and add no emitted-binary work.
+
+The unused pass-crate BOLT placeholder and both exports are retired; the existing
+native-link BOLT pipeline remains authoritative and its sixteen focused checks
+pass. The removed code had no production caller, fabricated a speedup estimate,
+and emitted a comment-only macOS order file. Measured macOS profile-derived
+ordering remains open. The ABI lane now collects every test executable's result
+with `--no-fail-fast`; its topology and admission cohort passes 211 checks.
+Bootstrap-parser and Windows launch-spelling fixtures retain their independent
+identity/output oracles; their focused cohorts pass 38 and 50 checks on macOS.
+Actual Windows replay remains required.
+
+The Linux/aarch64 Rust replay at `b52360cf0` has complete native custody and closed
+descendants: WASM backend, pass, and ownership-contract cohorts pass 305, 946,
+and 286 tests respectively. The full partition still fails because
+`object::accessors::tests::frame_storage_collects_inline_and_dictionary_cycles_before_scope_exit`
+segfaults. A fresh-process exact replay reproduces that crash without an RSS
+violation. This is a runtime ownership/GC exit blocker, not a green runtime
+qualification; the sealed image and failure evidence are retained for diagnosis.
+Main CI `38060603040` also reports macOS runtime lifecycle cascades. Seven serial
+lifecycle children pass, but unnamed-worker teardown panics leave the parallel
+runtime failure's cause unresolved. Neither result qualifies the preserved GC,
+thread-identity or joined-service proposals.
 
 Historical integration evidence: PR119 merged at `5a6758e90` on 2026-10-10.
 The clean Linux ABI qualification at `bb2b77bca` is recorded below.
@@ -119,11 +150,12 @@ incorrectly expects a heap exception instead of the emergency raised channel.
 The same defect exists in the sequence-snapshot denial fixture. Their successor
 checks the real C API for MemoryError identity and negative type matching while
 allocation remains denied, preserves pending state until clear, and retains
-the successful recovery and reference-ownership oracles. Actual Rust replay is
-required; correcting these fixtures does not qualify the GC/lifecycle failures.
+the successful recovery and reference-ownership oracles. The independent micro
+runtime replays above qualify these fixture corrections; they do not qualify
+the frame-cycle crash or GC/lifecycle failures.
 
-Current execution order is integration of the qualified ABI/supervisor unit,
-complete runtime shutdown integration and execution, then guarded measurement
+Current execution order is frame-cycle and runtime shutdown ownership repair,
+complete runtime integration and execution, then guarded measurement
 and WASM size qualification.
 The upstream reconciliation is committed at `512a00667`. ABI fixture repairs now
 use one immutable hook profile per binary, reject conflicting normalized tables
