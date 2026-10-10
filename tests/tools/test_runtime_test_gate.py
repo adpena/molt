@@ -385,9 +385,25 @@ def test_shipping_profile_rejects_assertion_overrides(environment):
         gate.observed_build(output, artifact, "release-output", environment)
 
 
-def test_default_profile_is_shipping_before_build(monkeypatch, tmp_path):
+@pytest.mark.parametrize("output_owner", ["explicit", "queue", "proof-plan"])
+def test_default_profile_is_shipping_before_build(monkeypatch, tmp_path, output_owner):
     # Observe typed build argv without compiling or publishing a synthetic pass.
     seen = []
+    source = tmp_path / "source"
+    source.mkdir()
+    scratch = tmp_path / "queue-scratch"
+    monkeypatch.setattr(gate, "ROOT", source)
+    monkeypatch.delenv("MOLT_PROOF_SCRATCH_ROOT", raising=False)
+    argv = []
+    if output_owner == "explicit":
+        monkeypatch.setenv("MOLT_PROOF_SCRATCH_ROOT", str(scratch))
+        expected_root = tmp_path / "explicit-receipts"
+        argv = ["--receipt-root", str(expected_root)]
+    elif output_owner == "queue":
+        monkeypatch.setenv("MOLT_PROOF_SCRATCH_ROOT", str(scratch))
+        expected_root = scratch / "runtime-gate-runs"
+    else:
+        expected_root = source / "proof-receipts/evidence/runtime-gate-runs"
     monkeypatch.setattr(
         gate.truth, "git_source_identity", lambda: {"schema": "molt.git-source.v1"}
     )
@@ -406,9 +422,20 @@ def test_default_profile_is_shipping_before_build(monkeypatch, tmp_path):
             )
 
     monkeypatch.setattr(gate, "COMMANDS", Commands())
-    assert gate.main(["--receipt-root", str(tmp_path)]) == 1
+    assert gate.main(argv) == 1
     command = seen[0]
     assert command[command.index("--profile") + 1] == "release-output"
+    runs = list(expected_root.iterdir())
+    assert len(runs) == 1
+    assert {path.name for path in runs[0].iterdir()} == {
+        "aggregate.json",
+        "build.stdout.jsonl",
+        "build.stderr.log",
+    }
+    if output_owner != "proof-plan":
+        assert list(source.iterdir()) == []
+    if output_owner == "explicit":
+        assert not scratch.exists()
 
 
 def test_build_rustflags_cannot_override_shipping_assertions():

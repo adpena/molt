@@ -1553,7 +1553,7 @@ mod context_queue_root_tests {
             running: Arc::new(AtomicBool::new(true)),
             deferred: Arc::new(Mutex::new(DeferredQueue::default())),
             epoch: Arc::new(AtomicU64::new(0)),
-            worker_handles: Mutex::new(Vec::new()),
+            worker_handles: crate::state::lifecycle::RuntimeServiceWorkers::default(),
         };
         assert!(runtime_state(py).scheduler.set(scheduler).is_ok());
     }
