@@ -36,9 +36,11 @@ from molt import tool_releases
 from molt.exact_json import ExactJsonError, canonical_json_sha256
 from tests.python_environment_test_support import (
     build_environment_manifest,
+    create_owned_python_venv,
     create_test_venv,
 )
 from tests import proof_queue_owned_roots
+from tests.executable_test_support import custody_spelling, native_executable_name
 from tests.proof_queue_custody_test_support import (
     ReceiptCustodyFactory,
     assert_execution_context_rejects_substitutions,
@@ -1649,7 +1651,7 @@ def test_environment_selected_executable_inputs_are_content_bound(
     )
     assert before["RUSTC_WRAPPER"]["argument_count"] == 1
     assert set(before) == set(environment)
-    assert before["RUSTC_WRAPPER"]["executable"]["path"] == str(wrapper.resolve())
+    assert before["RUSTC_WRAPPER"]["executable"]["path"] == custody_spelling(wrapper)
     wrapper.write_bytes(wrapper.read_bytes() + b"custody-mutation")
     after = execution_environment._execution_environment_executable_identities(
         environment, cwd=tmp_path
@@ -1682,7 +1684,7 @@ def test_environment_tool_paths_with_spaces_share_execution_resolution(
     assert set(identities) == set(environment)
     for record in identities.values():
         assert record["argument_count"] == 0
-        assert record["executable"]["path"] == str(tool)
+        assert record["executable"]["path"] == custody_spelling(tool)
         assert record["executable"]["sha256"] == command_identity._hash_file(tool)
 
 
@@ -2801,12 +2803,14 @@ def guarded_execution_authorities(
 @pytest.fixture(scope="module")
 def python_location_authorities(
     tmp_path_factory: pytest.TempPathFactory,
-    custody_python: Path,
 ) -> GuardedExecutionAuthorities:
     # Location/image joins need a real interpreter, but no installed project or
     # third-party packages. Keep the full environment in queue execution tests.
+    # The join tests hardlink the selected interpreter, so it is a private copy,
+    # never the host's shared installation.
     return _capture_guarded_execution_authorities(
-        custody_python, tmp_path_factory.mktemp("python-location-source")
+        create_owned_python_venv(tmp_path_factory.mktemp("owned-python")),
+        tmp_path_factory.mktemp("python-location-source"),
     )
 
 
@@ -3421,7 +3425,7 @@ def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
     )
     executable = context["command_executable"]
     assert executable["identical"] is True
-    assert executable["prelaunch"]["path"] == str(Path(os.path.abspath(sys.executable)))
+    assert executable["prelaunch"]["path"] == custody_spelling(Path(sys.executable))
     assert executable["prelaunch"]["resolved_path"] == str(
         Path(sys.executable).resolve()
     )
@@ -4363,7 +4367,7 @@ def test_rustup_role_content_resolution_tracks_physical_component_before_reuse(
     resolutions, versions = [], []
 
     def resolve(argv, **kwargs):
-        assert argv == [str(rustup), "which", role]
+        assert argv == [custody_spelling(rustup), "which", role]
         assert kwargs["env"] == environment and kwargs["cwd"] == tmp_path
         resolutions.append(list(argv))
         return subprocess.CompletedProcess(argv, 0, str(selected[0]) + "\n", "")
@@ -16699,8 +16703,11 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
     )
     for directory in (selected_dir, proxy_dir, explicit_dir):
         directory.mkdir()
+    # Windows runs only a suffixed image: an extensionless token selects it
+    # through PATHEXT, and the payload binds the image's own path.
+    image_name = name if name.endswith(".exe") else native_executable_name(name)
     selected, proxy, supplied = (
-        directory / name for directory in (selected_dir, proxy_dir, explicit_dir)
+        directory / image_name for directory in (selected_dir, proxy_dir, explicit_dir)
     )
     for path, content in (
         (selected, b"selected Cargo"),
@@ -16709,7 +16716,7 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
     ):
         path.write_bytes(content)
         path.chmod(0o755)
-    token = str(supplied) if explicit else name
+    token = str(explicit_dir / name) if explicit else name
     payload = [
         token,
         "build",
@@ -16755,7 +16762,9 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
     configured = execution_environment._execution_environment_executable_identities(
         env, cwd=state.ROOT
     )
-    assert configured["CARGO"]["executable"]["path"] == env["CARGO"]
+    assert configured["CARGO"]["executable"]["path"] == custody_spelling(
+        Path(env["CARGO"])
+    )
     exact = command_identity._exact_command(envelope, cwd=state.ROOT, env=env)
     _guarded, delegated = command_identity._bind_delegated_command(
         envelope, exact, cwd=state.ROOT, env=env
@@ -16764,7 +16773,7 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
     actual = command_admission._nested_command(exact) or exact
     assert actual == [str(expected), *payload[1:]]
     if mode != "direct":
-        assert delegated["path"] == str(expected)
+        assert delegated["path"] == custody_spelling(expected)
         assert delegated["sha256"] == hashlib.sha256(expected.read_bytes()).hexdigest()
     # Exercise the Cargo identity owner too, stopping only before its version probe.
     monkeypatch.setattr(
@@ -16775,7 +16784,7 @@ def test_cargo_bound_payload_uses_selected_executable_without_path_proxy(
     captured = command_identity._tool_identity(
         proof_plan.ProofPlan.load(), "cargo", envelope, exact, cwd=state.ROOT, env=env
     )
-    assert captured == {"selected": str(expected)}
+    assert captured == {"selected": custody_spelling(expected)}
 
 
 @pytest.mark.parametrize("selector", [None, "", "missing"])
@@ -16843,7 +16852,7 @@ def _cwd_and_ambient_cargo(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     selected_dir, ambient = tmp_path / "selected", tmp_path / "ambient"
     for directory in (selected_dir, ambient):
         directory.mkdir()
-        image = directory / "cargo"
+        image = directory / native_executable_name("cargo")
         image.write_bytes(directory.name.encode())
         image.chmod(0o755)
     (selected_dir / "sub").mkdir()
@@ -16853,19 +16862,18 @@ def _cwd_and_ambient_cargo(tmp_path: Path) -> tuple[Path, dict[str, str]]:
 def test_explicit_relative_executable_uses_command_cwd_not_path(tmp_path, monkeypatch):
     selected_dir, environment = _cwd_and_ambient_cargo(tmp_path)
     monkeypatch.chdir(environment["PATH"])
-    expected = selected_dir / "cargo"
+    token = "./" + native_executable_name("cargo")
+    expected = selected_dir / native_executable_name("cargo")
     assert (
         command_identity._resolve_outer_executable(
-            "./cargo", cwd=selected_dir, env=environment
+            token, cwd=selected_dir, env=environment
         )
         == expected
     )
-    assert (
-        execution_custody._resolve_child_executable(
-            "./cargo", environment, str(selected_dir)
-        )
-        == expected
+    child = execution_custody._resolve_child_executable(
+        token, environment, str(selected_dir)
     )
+    assert child is not None and str(child) == custody_spelling(expected)
 
 
 def test_parent_traversal_executable_is_refused_by_outer_and_child_custody(
@@ -16887,39 +16895,65 @@ def test_relative_execution_path_entries_use_command_cwd(tmp_path, monkeypatch):
     selected, ambient = tmp_path / "selected", tmp_path / "ambient"
     for directory in (selected, ambient):
         (directory / "bin").mkdir(parents=True)
-        image = directory / "bin/cargo"
+        image = directory / "bin" / native_executable_name("cargo")
         image.write_bytes(directory.name.encode())
         image.chmod(0o755)
     monkeypatch.chdir(ambient)
     environment = {"PATH": "bin"}
-    expected = selected / "bin/cargo"
+    expected = selected / "bin" / native_executable_name("cargo")
     assert (
         command_identity._resolve_outer_executable(
             "cargo", cwd=selected, env=environment
         )
         == expected
     )
-    assert (
-        execution_custody._resolve_child_executable("cargo", environment, str(selected))
-        == expected
+    child = execution_custody._resolve_child_executable(
+        "cargo", environment, str(selected)
     )
+    assert child is not None and str(child) == custody_spelling(expected)
 
 
 def test_child_explicit_environment_without_path_does_not_inherit_parent_path(
     tmp_path, monkeypatch
 ):
     # CPython os.get_exec_path({}) selects os.defpath, not the parent's PATH.
-    name = "molt-only-in-parent-path" + (".exe" if os.name == "nt" else "")
-    decoy = tmp_path / name
+    # Windows os.defpath begins with ".", so the child cwd stays separate from
+    # the parent PATH directory that holds the decoy.
+    parent_path, child_cwd = tmp_path / "parent-path", tmp_path / "child-cwd"
+    parent_path.mkdir()
+    child_cwd.mkdir()
+    name = native_executable_name("molt-only-in-parent-path")
+    decoy = parent_path / name
     decoy.write_bytes(b"ambient executable must not be selected")
     decoy.chmod(0o755)
-    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("PATH", str(parent_path))
     assert os.get_exec_path({}) == os.defpath.split(os.pathsep)
-    assert execution_custody._resolve_child_executable(name, {}, str(tmp_path)) is None
-    assert (
-        execution_custody._resolve_child_executable(name, None, str(tmp_path))
-        == decoy.resolve()
-    )
+    assert execution_custody._resolve_child_executable(name, {}, str(child_cwd)) is None
+    inherited = execution_custody._resolve_child_executable(name, None, str(child_cwd))
+    assert inherited is not None and str(inherited) == custody_spelling(decoy)
+
+
+def test_absent_custody_file_is_the_owner_typed_refusal_on_every_host(tmp_path):
+    # Windows custody looks up real directory entries; POSIX custody is
+    # lexical. An absent image must reach each owner's typed refusal on both
+    # hosts, never a host-specific lookup error.
+    tool = tmp_path / native_executable_name("present-tool")
+    tool.write_bytes(b"present image")
+    tool.chmod(0o755)
+    missing = tmp_path / "absent-directory" / native_executable_name("absent-tool")
+    assert process_image_capture.custody_file(missing) is None
+    assert process_image_capture.custody_file(tmp_path) is None
+    assert str(process_image_capture.custody_file(tool)) == custody_spelling(tool)
+    image = process_image_capture.capture_image("tool", tool)
+    tool.unlink()
+    with pytest.raises(ValueError, match="process image is unavailable"):
+        process_image_capture.canonical_images([image])
+    with pytest.raises(ValueError, match="supervisor root executable is unavailable"):
+        supervisor_custody._supervisor_fixed_images({}, {}, [str(tool)])
+    with pytest.raises(ValueError, match="CLANG_PATH must name one executable file"):
+        toolchain_capture.select_cargo_build_tool_environment(
+            cwd=tmp_path, env={"CLANG_PATH": str(missing)}
+        )
 
 
 def test_native_c_registration_is_canonical_and_persisted_envelope_cannot_drop_it():
