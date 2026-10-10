@@ -10,6 +10,8 @@ import subprocess
 
 import pytest
 
+from tests.process_guard_common import run_guarded_test_process
+
 from tools import nightly_shard_profile, nightly_sharding
 
 
@@ -560,11 +562,11 @@ def test_shard_loads_a_plan_whose_cpython_tree_has_no_git_metadata(
     # `git rev-parse` would report the enclosing checkout's commit.
     root = _repo(tmp_path)
     git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t"]
-    subprocess.run([*git, "init", "-q"], check=True)
-    subprocess.run([*git, "add", "-A"], check=True)
-    subprocess.run([*git, "commit", "-q", "-m", "fixture"], check=True)
-    head = subprocess.run(
-        [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    run_guarded_test_process([*git, "init", "-q"], check=True)
+    run_guarded_test_process([*git, "add", "-A"], check=True)
+    run_guarded_test_process([*git, "commit", "-q", "-m", "fixture"], check=True)
+    head = run_guarded_test_process(
+        [*git, "rev-parse", "HEAD"], check=True
     ).stdout.strip()
     plan = nightly_sharding.build_plan(
         root, source_commit=head, cpython_commit=CPYTHON_COMMIT

@@ -123,6 +123,7 @@ def prepare(
         env=build_env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=1800,
     )
     if packed.returncode != 0 or not manifest_path.is_file():
