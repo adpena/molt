@@ -3,7 +3,18 @@ from __future__ import annotations
 import functools
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+
+from molt.dx import configured_artifact_root
+
+
+def _configured_artifact_root_text(
+    env: Mapping[str, str], relative_to: Path
+) -> str | None:
+    """The configured artifact root as a cache-key string, or None."""
+    root = configured_artifact_root(env, relative_to=relative_to)
+    return None if root is None else os.fspath(root)
 
 
 @functools.lru_cache(maxsize=128)
@@ -66,7 +77,7 @@ def _default_molt_cache() -> Path:
         os.fspath(Path.cwd()),
         _default_home_str(),
         sys.platform,
-        os.environ.get("MOLT_EXT_ROOT"),
+        _configured_artifact_root_text(os.environ, Path.cwd()),
     )
 
 
@@ -106,7 +117,7 @@ def _default_molt_home() -> Path:
         os.fspath(Path.cwd()),
         _default_home_str(),
         sys.platform,
-        os.environ.get("MOLT_EXT_ROOT"),
+        _configured_artifact_root_text(os.environ, Path.cwd()),
     )
 
 
@@ -149,5 +160,5 @@ def _default_molt_bin() -> Path:
         os.fspath(Path.cwd()),
         _default_home_str(),
         sys.platform,
-        os.environ.get("MOLT_EXT_ROOT"),
+        _configured_artifact_root_text(os.environ, Path.cwd()),
     )

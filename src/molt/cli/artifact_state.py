@@ -11,6 +11,7 @@ from molt.cli.runtime_paths import (
     _build_state_root_cached,
     _cargo_target_root_cached,
 )
+from molt.cli.default_paths import _configured_artifact_root_text
 
 
 @functools.lru_cache(maxsize=512)
@@ -127,7 +128,7 @@ def _canonical_build_state_root(project_root: Path) -> Path:
         None,
         os.fspath(Path.cwd()),
         None,
-        os.environ.get("MOLT_EXT_ROOT"),
+        _configured_artifact_root_text(os.environ, project_root),
     )
 
 

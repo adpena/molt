@@ -12,7 +12,7 @@ from typing import Any, Literal, Mapping, Sequence
 
 from molt.source_root import compiler_source_root
 from molt.tool_releases import ToolReleaseError, require_pinned_tool
-from molt.dx import DX_ENV_KEYS, DxProject
+from molt.dx import DX_ENV_KEYS, DxProject, configured_artifact_root
 from molt.cli import wasm_toolchain
 from molt.cli.backend_daemon_config import _backend_daemon_enabled
 from molt.cli.default_paths import _default_molt_cache
@@ -802,12 +802,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
     else:
         record("molt-diff-target-dir", True, str(diff_target_dir))
 
-    configured_ext_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    ext_root = (
-        Path(configured_ext_root).expanduser().resolve()
-        if configured_ext_root
-        else None
-    )
+    ext_root = configured_artifact_root(os.environ, relative_to=root)
     if ext_root is not None and ext_root.is_dir():
         routed_paths: list[Path] = []
         if cargo_target_dir is not None:
