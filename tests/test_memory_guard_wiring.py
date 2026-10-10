@@ -1203,7 +1203,7 @@ def test_pytest_autoload_disable_requires_explicit_guard_config_plugin() -> None
     try:
         pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
             {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
-            args=("-c", str(REPO_ROOT / "tmp" / "pytest.ini")),
+            args=("-c", str(REPO_ROOT / "untrusted" / "pytest.ini")),
         )
     except SystemExit:
         pass
