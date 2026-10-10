@@ -86,12 +86,52 @@ pointer decoding sign-extends a valid Linux/AArch64 stack address whose bit 47
 is set. The runtime's decoder and six native-codegen sites share this defect.
 The unsigned 48-bit address correction, all-profile wide-address rejection,
 complete native consumer migration and incompatible-artifact ABI witness update
-are under qualification. The sealed failing image and fault evidence remain
-retained; the broad runtime partition is not yet qualified.
-Main CI `38060603040` also reports macOS runtime lifecycle cascades. Seven serial
-lifecycle children pass, but unnamed-worker teardown panics leave the parallel
-runtime failure's cause unresolved. Neither result qualifies the preserved GC,
-thread-identity or joined-service proposals.
+pass the Linux/aarch64 runtime partition at `d43dab3cb`: 781 runtime tests
+(two existing ignores), 305 WASM backend, 946 pass, 286 ownership-contract and
+one raw-symbol check. This includes the original crashing frame-cycle case.
+The failing image and fault evidence remain retained. The final checked boxer
+is explicitly inlined at `b26875812`; alternating optimized macOS/AArch64
+microprobes measure decode medians of 0.365/0.366 ns and boxing medians of
+0.391/0.403 ns before/after. The decoder remains one machine instruction and
+boxing has no added hot-path call. These advisory samples establish neither
+an end-to-end speedup nor cross-platform performance acceptance.
+
+The compiler partition at `493082f25` passes all 1,386 tests with complete
+native custody, no violations and closed descendants. It exercises the actual
+Cranelift result, object-model address boundaries and incompatible ABI link
+witnesses in both threading modes. Six prior AArch64 execution failures shared
+one fixture defect: a Rust provider archive was passed after its dependencies
+as a raw linker argument. The shared native/LLVM helper now uses an actual
+Rust crate dependency and preserves its generated-object C ABI and independent
+behavioral oracles. LLVM at `37637b871` passes all 169 selected tests on
+Linux/aarch64 with LLVM 22.1.8, including both shared native-execution fixtures
+and the unsigned-address decoder; native custody is complete with no violations
+and closed descendants. The Windows supervisor now preserves `NTSTATUS`
+through its debug-event continuation boundary, reusing the preserved repair;
+its MSVC all-targets cross-check passes with unchanged source and tool images.
+Actual macOS/Windows execution remains unverified; these results do not qualify
+the full release matrix.
+
+The same compiler replay exposed undeclared Criterion/alloca C compilation.
+The existing compiler partition now owns that target-C obligation and the
+object-model/ABI-link tests; four LLVM rows declare their actual llvm-sys C
+wrapper compilation. The bounded dependency census also finds host C++ in
+MLIR's tblgen build and target C++ in full-runtime simdutf consumers. V1-12
+remains open until role and language requirements survive selection,
+publication, capture, verification and every affected consumer. This is
+strictly development-side tooling and adds no work to emitted binaries.
+Main CI `38063172584` at `df5226c5f` retains the runtime lifecycle cascade:
+seven serial children pass, while the parallel child reports 480 failures after
+unnamed-worker class retirement finds surviving native owners. This is an
+observed shared failure mechanism, not evidence of 480 independent defects.
+The preserved GC, thread-identity and joined-service proposals remain unqualified.
+The same CI reports a macOS SIGTERM cleanup failure (2,100 other Python tests
+pass) and a macOS runtime build exceeding its 2.29 GB process-tree budget with
+unresolved artifact custody. Their existing V1-12/resource/closure obligations
+remain open. The Windows compile failure is repaired above; native Windows
+replay is still required. Metadata-only Windows Cargo checks also expose an
+unnecessary target-linker requirement in the development proof selector; its
+operation family must be corrected without weakening host proc-macro linking.
 
 Historical integration evidence: PR119 merged at `5a6758e90` on 2026-10-10.
 The clean Linux ABI qualification at `bb2b77bca` is recorded below.
