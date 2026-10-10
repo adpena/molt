@@ -151,9 +151,9 @@ def test_bench_harness_supports_explicit_molt_profile(
         "release",
     ]
     assert sentinel_calls[0]["repo_root"] == bench_harness.REPO_ROOT
-    assert sentinel_calls[0]["artifact_root"] == (
-        bench_harness.REPO_ROOT / "tmp" / "bench" / "harness"
-    )
+    harness_scratch = sentinel_calls[0]["artifact_root"]
+    assert harness_scratch.parts[-2:] == ("bench", "harness")
+    assert not harness_scratch.is_relative_to(bench_harness.REPO_ROOT.resolve())
     assert sentinel_calls[0]["label"] == "bench_harness"
     assert "memory_guard" in report_calls[0]
 

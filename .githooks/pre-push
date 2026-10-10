@@ -30,4 +30,15 @@ if ! molt_hook_uv_python pre-push "$gate" --gate --no-fetch; then
   echo "Emergency override: MOLT_SKIP_DRIFT_GATE=1 git push ..."
   exit 1
 fi
+
+# CI fails a pushed revision whose generated projections are stale (the
+# repository.generators command). This checks the working tree, which matches
+# the pushed revision when the tree is clean.
+if ! molt_hook_uv_python pre-push "$repo_root/tools/generators.py" check; then
+  echo ""
+  echo "pre-push BLOCKED: generated projections are stale. Run"
+  echo "  python3 tools/generators.py write"
+  echo "and commit the result."
+  exit 1
+fi
 exit 0

@@ -13,13 +13,12 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_EXTERNAL_ROOT = None
-
 TOOLS_ROOT = Path(__file__).resolve().parent
 if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 import harness_memory_guard  # noqa: E402
+from molt.dx import artifact_root, configured_artifact_root, scratch_dir  # noqa: E402
 
 
 def _repo_root() -> Path:
@@ -148,23 +147,19 @@ DEFAULT_CASES = tuple(
 
 
 def _resolved_external_root(*, fallback: Path | None = None) -> Path:
-    configured = os.environ.get("MOLT_EXT_ROOT")
-    if configured:
-        root = Path(configured).expanduser().resolve()
-        if root.is_dir():
-            return root
-        raise SystemExit(f"MOLT_EXT_ROOT is not a directory: {root}.")
-    if DEFAULT_EXTERNAL_ROOT is not None and DEFAULT_EXTERNAL_ROOT.is_dir():
-        return DEFAULT_EXTERNAL_ROOT
+    configured = configured_artifact_root(os.environ, relative_to=_repo_root())
+    if configured is not None:
+        if configured.is_dir():
+            return configured
+        raise SystemExit(f"MOLT_EXT_ROOT is not a directory: {configured}.")
     if fallback is not None:
         return fallback
-    return _repo_root()
+    return artifact_root(_repo_root())
 
 
 def _default_output_root() -> Path:
-    external_root = _resolved_external_root()
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return external_root / "tmp" / f"compile_progress_{stamp}"
+    return scratch_dir(_repo_root(), f"compile_progress_{stamp}")
 
 
 def _tail(text: str, lines: int = 20) -> str:
@@ -464,8 +459,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         help=(
-            "Output directory for logs/results. Defaults under the configured "
-            "artifact root (`MOLT_EXT_ROOT` when set, otherwise repo-local `tmp/`)."
+            "Output directory for logs/results. Defaults under the run scratch "
+            "root (molt.dx.scratch_dir), never inside the checkout."
         ),
     )
     parser.add_argument(

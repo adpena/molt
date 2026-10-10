@@ -16,13 +16,12 @@ from molt.dx import development_artifact_env
 from tests.compliance.process_guard import run_compliance_process
 
 MOLT_DIR = Path(__file__).resolve().parents[3]
-ARTIFACT_ROOT = Path(os.environ.get("MOLT_EXT_ROOT", str(MOLT_DIR))).expanduser()
 
 
 def _molt_build_env() -> dict[str, str]:
     env = development_artifact_env(
         MOLT_DIR,
-        {**os.environ, "MOLT_EXT_ROOT": str(ARTIFACT_ROOT)},
+        os.environ,
         session_prefix="compliance-py314",
         session_id=os.environ.get("MOLT_SESSION_ID") or "compliance-py314",
         create_dirs=True,

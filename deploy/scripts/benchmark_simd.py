@@ -34,6 +34,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 import harness_memory_guard  # noqa: E402
+from molt.dx import scratch_dir  # noqa: E402
 
 
 def benchmark_js_ops():
@@ -147,7 +148,7 @@ def benchmark_js_ops():
 def run_js_benchmark():
     """Run the JS scalar benchmark via Node.js."""
     script = benchmark_js_ops()
-    tmp_dir = ROOT / "tmp" / "deploy" / "benchmark_simd"
+    tmp_dir = scratch_dir(ROOT, "deploy/benchmark_simd")
     tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = tmp_dir / "molt_bench_simd.js"
     with open(tmp_path, "w") as f:

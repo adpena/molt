@@ -30,6 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from tests import process_guard_common  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
+from molt.dx import scratch_dir  # noqa: E402
 
 CORPUS_DIR = Path(__file__).resolve().parent / "corpus" / "monty_compat"
 
@@ -152,7 +153,7 @@ def main() -> int:
     skipped = 0
     errors: list[tuple[str, str]] = []
     limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE")
-    artifact_root = REPO_ROOT / "tmp" / "conformance"
+    artifact_root = scratch_dir(REPO_ROOT, "conformance")
 
     with harness_memory_guard.repo_process_sentinel(
         repo_root=REPO_ROOT,

@@ -25,6 +25,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 import harness_memory_guard  # noqa: E402
+from molt.dx import scratch_dir  # noqa: E402
 from git_identity import (  # noqa: E402
     clean_checkout_status_arguments,
     is_git_object_id,
@@ -838,7 +839,7 @@ def main() -> None:
     limits = bench_memory_limits(env)
     with harness_memory_guard.repo_process_sentinel(
         repo_root=ROOT,
-        artifact_root=ROOT / "tmp" / "bench" / "demo",
+        artifact_root=scratch_dir(ROOT, "bench/demo"),
         label="demo_bench",
         limits=limits,
     ):

@@ -555,8 +555,19 @@ def test_dev_py_test_argv_is_consumed_by_real_runner(monkeypatch, flags) -> None
         assert commands[1:] == expected_tail
 
 
-def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch) -> None:
+def _isolated_checkout(module, monkeypatch, tmp_path: Path) -> Path:
+    """Point dev.py at a throwaway clone, so its run context never writes
+    target, caches or uv environments into the real checkout."""
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    monkeypatch.setattr(module, "ROOT", clone)
+    monkeypatch.setattr(module, "DX", module.DxProject(clone))
+    return clone
+
+
+def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch, tmp_path) -> None:
     module = _load_dev_py()
+    _isolated_checkout(module, monkeypatch, tmp_path)
     calls: list[tuple[list[str], dict[str, str], object | None]] = []
 
     def fake_check_call_guarded(cmd, env, *, limits=None):
@@ -690,9 +701,14 @@ def test_dev_py_tty_uses_guard_when_legacy_disable_env_is_set(monkeypatch) -> No
     assert calls == [("guarded", ["pytest", "-q"])]
 
 
-def test_dev_py_uv_no_sync_version_probe_uses_memory_guard(monkeypatch) -> None:
+def test_dev_py_uv_no_sync_version_probe_uses_memory_guard(
+    monkeypatch, tmp_path
+) -> None:
     module = _load_dev_py()
-    fake_python = module.ROOT / "pyproject.toml"
+    clone = _isolated_checkout(module, monkeypatch, tmp_path)
+    # Any existing file stands in for the project interpreter.
+    fake_python = clone / "python3"
+    fake_python.write_text("", encoding="utf-8")
     fake_limits = object()
     calls: list[tuple[list[str], dict[str, object]]] = []
 

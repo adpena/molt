@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from molt.dx import cargo_target_dir_for_artifact_root
+from molt.dx import artifact_root, cargo_target_dir_for_artifact_root
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,12 +25,8 @@ def _split_runtime_imported_module_target_dirs(
     if raw_target:
         target_dir = Path(raw_target).expanduser()
     else:
-        raw_root = env.get("MOLT_EXT_ROOT", "").strip()
-        artifact_root = Path(raw_root).expanduser() if raw_root else ROOT
-        if not artifact_root.is_absolute():
-            artifact_root = ROOT / artifact_root
         target_dir = cargo_target_dir_for_artifact_root(
-            artifact_root.resolve(),
+            artifact_root(ROOT, env),
             env.get("MOLT_SESSION_ID") or session_id,
         )
     raw_diff_target = env.get("MOLT_DIFF_CARGO_TARGET_DIR", "").strip()

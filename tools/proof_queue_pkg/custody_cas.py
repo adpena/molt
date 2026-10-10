@@ -247,11 +247,28 @@ def put_json(root: Path, payload: Mapping[str, object]) -> ArtifactRef:
         compressed_bytes=len(compressed),
         uncompressed_bytes=len(canonical),
     )
-    # Publication no longer needs the encoder buffers. The receiver owns its
-    # own bounded read, including when a concurrent writer won publication.
     del canonical, compressed
-    verify_ref(reference.as_dict(), expected_root=root)
+    _verify_published_blob(reference, root)
     return reference
+
+
+def _verify_published_blob(reference: ArtifactRef, root: Path) -> None:
+    """Prove the published blob holds exactly the bytes this writer encoded.
+
+    A blob is named by the SHA-256 of its compressed bytes, and the gzip
+    encoding is deterministic, so equal size and digest prove equal content,
+    including when a concurrent writer won publication. Streaming the digest
+    avoids decompressing, parsing and re-serializing the payload again.
+    """
+    path = _require_canonical_path(
+        reference.path, _blob_path(root, reference.blob_sha256), root
+    )
+    if path.stat().st_size != reference.compressed_bytes:
+        raise ValueError("proof custody artifact compressed size changed")
+    with path.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    if digest != reference.blob_sha256:
+        raise ValueError("proof custody artifact blob digest changed")
 
 
 def put_file(

@@ -14,9 +14,6 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_EXTERNAL_ROOT = None
-
-
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -26,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.dx import artifact_root, configured_artifact_root, scratch_dir  # noqa: E402
 from tools.throughput_measurement import (  # noqa: E402
     CommandResult,
     command_result,
@@ -49,23 +47,19 @@ def _uv_python_executable() -> str:
 
 
 def _resolved_external_root(*, fallback: Path | None = None) -> Path:
-    configured = os.environ.get("MOLT_EXT_ROOT")
-    if configured:
-        root = Path(configured).expanduser().resolve()
-        if root.is_dir():
-            return root
-        raise SystemExit(f"MOLT_EXT_ROOT is not a directory: {root}.")
-    if DEFAULT_EXTERNAL_ROOT is not None and DEFAULT_EXTERNAL_ROOT.is_dir():
-        return DEFAULT_EXTERNAL_ROOT
+    configured = configured_artifact_root(os.environ, relative_to=_repo_root())
+    if configured is not None:
+        if configured.is_dir():
+            return configured
+        raise SystemExit(f"MOLT_EXT_ROOT is not a directory: {configured}.")
     if fallback is not None:
         return fallback
-    return _repo_root()
+    return artifact_root(_repo_root())
 
 
 def _default_output_root() -> Path:
-    external_root = _resolved_external_root()
     ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return external_root / "tmp" / f"throughput_matrix_{ts}"
+    return scratch_dir(_repo_root(), f"throughput_matrix_{ts}")
 
 
 def _run_command(
@@ -524,8 +518,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         help=(
-            "Output root for artifacts/results. Defaults under the configured "
-            "artifact root (`MOLT_EXT_ROOT` when set, otherwise repo-local `tmp/`)."
+            "Output root for artifacts/results. Defaults under the run scratch "
+            "root (molt.dx.scratch_dir), never inside the checkout."
         ),
     )
     parser.add_argument(

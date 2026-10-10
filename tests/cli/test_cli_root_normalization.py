@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.dx import scratch_root
 from tests.cli.process_guard import run_cli_test_process
 
 
@@ -39,7 +40,8 @@ def test_native_build_survives_samefile_root_spelling_mismatch(
 
     src_path = tmp_path / "import_os.py"
     out_path = tmp_path / "import_os"
-    cache_dir = alt_root / "tmp" / f"root-normalization-cache-{tmp_path.name}"
+    scratch = scratch_root(ROOT)
+    cache_dir = scratch / f"root-normalization-cache-{tmp_path.name}"
     src_path.write_text("import os\nprint('ok')\n", encoding="utf-8")
 
     env = os.environ.copy()
@@ -48,10 +50,10 @@ def test_native_build_survives_samefile_root_spelling_mismatch(
     env["CARGO_TARGET_DIR"] = str(alt_root / "target")
     env["MOLT_DIFF_CARGO_TARGET_DIR"] = env["CARGO_TARGET_DIR"]
     env["MOLT_CACHE"] = str(cache_dir)
-    env["MOLT_DIFF_ROOT"] = str(alt_root / "tmp" / "diff")
-    env["MOLT_DIFF_TMPDIR"] = str(alt_root / "tmp")
+    env["MOLT_DIFF_ROOT"] = str(scratch / "diff")
+    env["MOLT_DIFF_TMPDIR"] = str(scratch)
     env["UV_CACHE_DIR"] = str(alt_root / ".uv-cache")
-    env["TMPDIR"] = str(alt_root / "tmp")
+    env["TMPDIR"] = str(scratch)
     env["MOLT_BACKEND_DAEMON"] = "0"
     env["MOLT_EXT_ROOT"] = str(ROOT)
 

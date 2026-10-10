@@ -20,7 +20,7 @@ from molt._wasm_abi_generated import (
     WASM_RUNTIME_EXPORT_BY_IMPORT,
 )
 from tests.wasm_callable_table_fixtures import attested_empty_callable_table
-from molt.dx import session_artifact_component
+from molt.dx import scratch_dir, session_artifact_component
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 from tests.wasm_import_fixtures import build_wasm_tag_import_before_memory
 
@@ -34,17 +34,11 @@ def _browser_wasm_build_env(root: Path) -> dict[str, str]:
 
 
 def _browser_embed_forward_package_dir(root: Path, env: dict[str, str]) -> Path:
-    ext_root = Path(env.get("MOLT_EXT_ROOT") or root).expanduser()
     repo_key = hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()[:12]
     worker = os.environ.get("PYTEST_XDIST_WORKER", "local")
     lane = session_artifact_component(worker or "local")
-    return (
-        ext_root
-        / "tmp"
-        / "test-wasm-browser-embed"
-        / repo_key
-        / lane
-        / "browser_embed_forward"
+    return scratch_dir(
+        root, f"test-wasm-browser-embed/{repo_key}/{lane}/browser_embed_forward", env
     )
 
 

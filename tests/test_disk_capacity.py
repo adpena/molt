@@ -8,10 +8,14 @@ import pytest
 
 from molt.disk_capacity import (
     DEFAULT_MINIMUM_HEADROOM_BYTES,
+    DEFAULT_SCRATCH_BUDGET_BYTES,
     DISK_GUARD_HIGH_WATER_ENV,
+    SCRATCH_BUDGET_ENV,
     DiskCapacityError,
     minimum_headroom_bytes,
     require_build_capacity,
+    require_scratch_capacity,
+    scratch_budget_bytes,
 )
 
 
@@ -233,7 +237,9 @@ def test_invalid_configuration_fails_before_filesystem_measurement(
 
 
 def test_no_output_paths_rejects() -> None:
-    with pytest.raises(DiskCapacityError, match="at least one output path"):
+    with pytest.raises(
+        DiskCapacityError, match="build capacity admission requires at least one path"
+    ):
         require_build_capacity([], env={}, measure_free_bytes=lambda path: 10**15)
 
 
@@ -340,3 +346,37 @@ def test_every_tool_that_spells_a_cargo_compile_admits_build_capacity() -> None:
     # An exception for a module that no longer spells a Cargo compile is stale.
     assert set(_CARGO_ADMISSION_EXCEPTIONS) <= spelled
     assert "tools/rust_ir_verifier.py" in spelled
+
+
+def test_scratch_budget_default_and_override() -> None:
+    assert scratch_budget_bytes({}) == DEFAULT_SCRATCH_BUDGET_BYTES == 4 * 1024**3
+    assert scratch_budget_bytes({SCRATCH_BUDGET_ENV: "0.5"}) == 512 * 1024**2
+    with pytest.raises(DiskCapacityError, match=SCRATCH_BUDGET_ENV):
+        scratch_budget_bytes({SCRATCH_BUDGET_ENV: "0"})
+
+
+def test_scratch_admission_measures_each_scratch_volume_against_the_budget(
+    tmp_path: Path,
+) -> None:
+    ram = tmp_path / "ram"
+    disk = tmp_path / "disk"
+    ram.mkdir()
+    disk.mkdir()
+    free = {ram.resolve(): 3 * 1024**3, disk.resolve(): 9 * 1024**3}
+    env = {SCRATCH_BUDGET_ENV: "4"}
+
+    receipt = require_scratch_capacity(
+        [disk / "gs"], env=env, measure_free_bytes=lambda path: free[path]
+    )
+    assert receipt.required_bytes == 4 * 1024**3
+    assert receipt.probes[0].measured_path == disk.resolve()
+
+    with pytest.raises(DiskCapacityError) as caught:
+        require_scratch_capacity(
+            [ram / "gs", disk / "gs"], env=env, measure_free_bytes=lambda p: free[p]
+        )
+    message = str(caught.value)
+    assert message.startswith("scratch capacity admission rejected")
+    assert str(ram.resolve() / "gs") in message
+    assert str(disk.resolve() / "gs") not in message.split(" diagnostic=")[0]
+    assert "MOLT_SCRATCH_BUDGET_GB" in message
