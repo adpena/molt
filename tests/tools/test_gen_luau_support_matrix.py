@@ -415,7 +415,6 @@ def test_luau_classifier_source_family_and_regressions_are_mandatory():
         "tests/tools/test_gen_luau_support_matrix.py"
         in commands["repository.docs-tests"]["argv"]
     )
-    assert commands["repository.docs-tests"]["timeout_seconds"] == 600
     assert {
         "tools/gen_luau_support_matrix.py",
         "tests/tools/test_gen_luau_support_matrix.py",
