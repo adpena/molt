@@ -16,7 +16,7 @@ lockfiles, SBOM/signature posture, and capability gating.
 - [ ] No unintended lockfile drift in working tree unless dependency changes are intentional.
 
 ## 2) Deterministic Build Controls
-- [ ] Default deterministic hash seed behavior is preserved (`PYTHONHASHSEED=0` via CLI default, unless explicitly overridden by `MOLT_HASH_SEED`).
+- [ ] Backend JSON, streamed JSON, msgpack and cache payload identities agree across literal and random host hash seeds, including cold and warm CLI frontend caches; installed Python keeps `-I` isolation.
 - [ ] Build profile is explicit and policy-compliant:
   - `--profile dev` for development workflows.
   - `--profile release` for release validation/benchmarks/published binaries.

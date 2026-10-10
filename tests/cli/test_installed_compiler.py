@@ -272,7 +272,9 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
         "import json, os, subprocess, sys\n"
         "child = subprocess.check_output([sys.executable, '-c', 'import molt; print(molt.__file__)'], text=True).strip()\n"
         "print(json.dumps({'prefix':sys.prefix, 'args':sys.argv[1:], "
-        "'isolated':sys.flags.isolated, 'cli':__file__, 'child_source':child, "
+        "'isolated':sys.flags.isolated, 'ignore_environment':sys.flags.ignore_environment, "
+        "'no_user_site':sys.flags.no_user_site, 'safe_path':sys.flags.safe_path, "
+        "'hash_randomization':sys.flags.hash_randomization, 'cli':__file__, 'child_source':child, "
         "'home':os.environ.get('MOLT_HOME'), "
         "'project':os.environ.get('MOLT_PROJECT_ROOT')}))\n"
         "sys.exit(23)\n",
@@ -379,6 +381,9 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
     setup()
     first = json.loads(launch().stdout)
     assert first["isolated"] == 1 and first["args"] == ["literal [argument]"]
+    assert first["ignore_environment"] == first["no_user_site"] == 1
+    assert first["safe_path"] is True
+    assert first["hash_randomization"] == 1
     assert first["project"] is None
     assert Path(first["cli"]).samefile(package / "cli/__main__.py")
     assert Path(first["child_source"]).samefile(package / "__init__.py")
@@ -614,3 +619,111 @@ def test_installed_source_admission_expires_at_operation_boundary(
     with cache_fingerprints._source_tree_fingerprint_transaction():
         with pytest.raises(compiler_identity.CompilerIdentityError):
             cache_fingerprints._cache_tooling_fingerprint()
+
+
+def test_real_cli_entry_retains_isolated_startup_without_seed_restart(tmp_path):
+    from tests.cli.process_guard import run_cli_test_process
+
+    root = Path(__file__).resolve().parents[2]
+    # A selected developer venv may preload its editable Molt from a .pth file.
+    # -I deliberately keeps trusted environment site initialization. Use the
+    # real bootstrap's dependency-only installation, never repair sys.modules.
+    bundle = tmp_path / "dependency-bundle"
+    source = bundle / "source"
+    source.mkdir(parents=True)
+    for name in ("pyproject.toml", "uv.lock"):
+        shutil.copyfile(root / name, source / name)
+    environment = tmp_path / "dependency-environment"
+    setup_script = f"""
+import os, runpy, shutil
+from pathlib import Path
+bootstrap = runpy.run_path({str(root / "packaging/bootstrap.py")!r})
+uv = shutil.which('uv')
+assert uv is not None, 'locked CLI dependency setup requires uv'
+env = dict(os.environ)
+# Match the existing bootstrap caller's resolver-policy precondition; retain
+# process custody and only uv's operational cache/offline inputs.
+for name in tuple(env):
+    if name in {{'PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV'}} or (name.startswith('UV_') and name not in {{'UV_CACHE_DIR', 'UV_OFFLINE'}}):
+        env.pop(name)
+env['UV_OFFLINE'] = '1'
+python = bootstrap['_prepare_environment'](
+    uv, Path({str(bundle)!r}), Path({str(environment)!r}), env, install=True,
+)
+print(python)
+"""
+    setup = run_cli_test_process(
+        [sys.executable, "-I", "-B", "-c", setup_script],
+        cwd=tmp_path,
+        env=os.environ,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert setup.returncode == 0, setup.stderr
+    python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    assert Path(setup.stdout.strip()).samefile(python)
+    marker = tmp_path / "ambient-imported"
+    poison = tmp_path / "python-environment"
+    user_site = poison / (
+        "Python"
+        + str(sys.version_info.major)
+        + str(sys.version_info.minor)
+        + "/site-packages"
+        if os.name == "nt"
+        else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+    )
+    user_site.mkdir(parents=True)
+    poison_code = f"from pathlib import Path;Path({str(marker)!r}).touch()\n"
+    for directory in (tmp_path, poison, user_site):
+        for name in ("molt.py", "json.py", "sitecustomize.py", "usercustomize.py"):
+            (directory / name).write_text(poison_code, encoding="utf-8")
+    startup = poison / "startup.py"
+    startup.write_text(poison_code, encoding="utf-8")
+    script = f"""
+import atexit, os, runpy, sys
+from pathlib import Path
+assert Path(sys.prefix).samefile({str(environment)!r})
+assert 'molt' not in sys.modules, 'dependency environment preloaded another Molt'
+sys.path.insert(0, {str(root / "src")!r})
+assert sys.flags.isolated == sys.flags.ignore_environment == sys.flags.no_user_site == 1
+assert sys.flags.safe_path and sys.flags.hash_randomization == 1
+pid = os.getpid()
+sys.argv = ['molt', '--help']
+atexit.register(lambda: print('isolated-normal-exit'))
+try:
+    runpy.run_module('molt.cli', run_name='__main__', alter_sys=True)
+except SystemExit as exc:
+    assert exc.code == 0
+else:
+    raise AssertionError('help did not terminate normally')
+assert os.getpid() == pid
+print('isolated-source::' + sys.modules['molt'].__file__)
+"""
+    result = run_cli_test_process(
+        [str(python), "-I", "-B", "-c", script],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PYTHONHASHSEED": "123",
+            "PYTHONPATH": str(tmp_path),
+            "PYTHONHOME": str(poison),
+            "PYTHONUSERBASE": str(poison),
+            "PYTHONSTARTUP": str(startup),
+            "PYTHONINSPECT": "1",
+            "PYTHONWARNINGS": "error",
+            "VIRTUAL_ENV": str(poison),
+            "UV_PROJECT_ENVIRONMENT": str(poison),
+        },
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
+    assert result.stdout.rstrip().endswith("isolated-normal-exit")
+    origin = next(
+        line.removeprefix("isolated-source::")
+        for line in result.stdout.splitlines()
+        if line.startswith("isolated-source::")
+    )
+    assert Path(origin).samefile(root / "src/molt/__init__.py")
+    assert not marker.exists()

@@ -273,16 +273,18 @@ theorem canonicalizeNaN_idempotent (bits : UInt64) :
   split <;> simp_all [CANONICAL_QNAN]
 
 -- ══════════════════════════════════════════════════════════════════
--- Section 8: PYTHONHASHSEED pinning
+-- Section 8: PYTHONHASHSEED model constant
 -- ══════════════════════════════════════════════════════════════════
 
-/-- Molt pins PYTHONHASHSEED=0 for all compilation.
-    This ensures that Python's randomized hash (str.__hash__) is
-    deterministic across runs. The Quint model checks this as
-    `hashSeedPinned` invariant. -/
+/-- The model fixes the host hash seed as one constant.
+    The compiler does not pin or restart for PYTHONHASHSEED: its IR and
+    backend cache payloads must be independent of the host seed. That
+    independence makes one fixed model seed a sound abstraction; tests
+    validate it (tests/determinism/test_ir_determinism.py). The Quint model
+    checks the same constant as the `hashSeedPinned` invariant. -/
 def PINNED_HASH_SEED : Nat := 0
 
-/-- Hash seed is always pinned. -/
+/-- The model's host hash seed is one constant. -/
 theorem hash_seed_pinned : PINNED_HASH_SEED = 0 := rfl
 
 -- ══════════════════════════════════════════════════════════════════
@@ -317,10 +319,12 @@ theorem cse_deterministic (avail : AvailMap) (e : Expr) :
     - Map iteration uses sorted/deterministic data structures
     - Content-based hashing is a pure function of content
     - NaN canonicalization is idempotent and deterministic
-    - Hash seed is pinned to 0
+    - The model's host hash seed is one constant
     - Layer-based compilation with commutative digest combination
 
     AXIOMATIZED (validated by tests, not provable in the model):
+    - Compiler output is independent of the host hash seed
+      (tests/determinism/test_ir_determinism.py)
     - No timestamps embedded in artifacts (code review + diff tests)
     - Real SHA256 matches our content-hash model
     - Cranelift codegen is deterministic (external dependency)

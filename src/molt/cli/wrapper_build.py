@@ -158,11 +158,12 @@ _WRAPPER_BUILD_CACHE_ENV_KEYS = (
     "MOLT_CAPABILITIES",
     "MOLT_CAPABILITY_TIER",
     "MOLT_EXTERNAL_STATIC_PACKAGES",
-    "MOLT_HASH_SEED",
     "MOLT_HERMETIC_MODULE_ROOTS",
     "MOLT_MODULE_ROOTS",
     "MOLT_DEAD_MODULE_ELIMINATION",
     STATIC_IMPORT_MODULES_ENV,
+    # External build inputs share this environment; backend payload determinism
+    # alone does not prove cross-seed equivalence of the complete wrapper build.
     "PYTHONHASHSEED",
     "PYTHONPATH",
 )

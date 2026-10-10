@@ -2805,22 +2805,6 @@ owner = "src/molt/temporary_artifacts.py"
 summary = "tools/memory_guard.py sets it to the leased scratch directory of one guarded child; molt.temporary_artifacts.guard_scratch reads it and rejects a value that does not match the parent's owner.json allocation, and persistent daemon custody strips it and refuses dependency paths under it."
 
 [[variable]]
-name = "MOLT_HASH_SEED"
-audience = "user"
-kind = "string"
-default = "0"
-owner = "src/molt/cli_entry.py"
-summary = "PYTHONHASHSEED value the molt launcher restarts itself with, before the CLI loads, for deterministic builds; off, disable, or random skip the re-exec, empty means 0, and the value also keys the molt-run wrapper build cache."
-
-[[variable]]
-name = "MOLT_HASH_SEED_APPLIED"
-audience = "internal"
-kind = "bool"
-default = "0"
-owner = "src/molt/cli_entry.py"
-summary = "The molt CLI sets it to 1 in the environment of its own PYTHONHASHSEED re-exec; the child reads it and exits 127 when the seed still does not match instead of re-executing again."
-
-[[variable]]
 name = "MOLT_HERMETIC_MODULE_ROOTS"
 audience = "user"
 kind = "bool"
@@ -6902,7 +6886,17 @@ name = "MOLT_GUARD_PROFILE_MODE"
 replacement = "MOLT_GUARD_PROFILE"
 retired = 2026-10-06
 
+[[retired]]
+name = "MOLT_HASH_SEED"
+note = "Remove this variable. The compiler no longer changes the host hash seed or restarts Python; compiler output must be seed-independent. Ordinary Python accepts PYTHONHASHSEED at interpreter launch, while installed isolated Python retains standard -I semantics."
+rejected_by = ["tests/test_environment_registry.py"]
+retired = 2026-10-10
 
+[[retired]]
+name = "MOLT_HASH_SEED_APPLIED"
+note = "Remove this variable. The compiler no longer changes the host hash seed or restarts Python; compiler output must be seed-independent. Ordinary Python accepts PYTHONHASHSEED at interpreter launch, while installed isolated Python retains standard -I semantics."
+rejected_by = ["tests/test_environment_registry.py"]
+retired = 2026-10-10
 
 [[retired]]
 name = "MOLT_MAX_CONCURRENT_AGENTS"

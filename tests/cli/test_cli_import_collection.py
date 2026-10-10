@@ -33307,3 +33307,147 @@ def test_failed_wasm_link_evidence_survives_private_deployment_cleanup(
     assert {
         destination: destination.read_bytes() for destination in old_outputs
     } == old_outputs
+
+
+def _capture_hashseed_cli_builds(
+    project: Path, cache_root: Path, parse_codec: str, workers: int
+) -> dict[str, object]:
+    """Real CLI/frontend/cache inputs; replace only native artifact production."""
+    from tests.determinism.test_ir_determinism import _production_ir_record
+
+    records: list[dict[str, object]] = []
+    diagnostics: list[dict[str, object]] = []
+    backend_bin = project / "fixture-backend"
+    if not backend_bin.exists():
+        backend_bin.write_bytes(b"one unchanged backend image")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
+        patch.setenv("MOLT_CACHE", str(cache_root))
+        patch.setenv("CARGO_TARGET_DIR", str(cache_root / "cargo-target"))
+        patch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
+        patch.setattr(
+            cli_frontend_parallel,
+            "_resolve_frontend_parallel_module_workers",
+            lambda: workers,
+        )
+        patch.setattr(
+            cli_frontend_parallel, "_resolve_frontend_parallel_min_modules", lambda: 2
+        )
+        patch.setattr(
+            cli_frontend_parallel,
+            "_resolve_frontend_parallel_min_predicted_cost",
+            lambda: 0.0,
+        )
+        patch.setattr(
+            cli_frontend_parallel,
+            "_resolve_frontend_parallel_target_cost_per_worker",
+            lambda: 1.0,
+        )
+        patch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: False)
+        patch.setattr(
+            cli_backend_compile,
+            "_backend_bin_path",
+            lambda *args, **kwargs: backend_bin,
+        )
+        patch.setattr(
+            cli_backend_binary,
+            "_ensure_backend_binary",
+            lambda *args, **kwargs: cli_backend_binary._BackendBinaryEnsureResult(
+                ok=True, cache_compiler_fingerprint="same-admitted-compiler"
+            ),
+        )
+        stub_compiler_admission(patch)
+        _install_fake_backend_compile(patch)
+        prepare = cli_backend_cache_setup._prepare_backend_cache_setup
+
+        def capture(**kwargs):
+            result = prepare(**kwargs)
+            # Observe the real final CLI IR and actual cache authority, including
+            # on a warm backend hit. No test-side IR sorting or fake frontend.
+            record = _production_ir_record(kwargs["ir"])
+            record["actual_cache_key"] = result.cache_key
+            record["actual_function_cache_key"] = result.function_cache_key
+            assert record["actual_cache_key"]
+            records.append(record)
+            return result
+
+        patch.setattr(cli_backend_cache_setup, "_prepare_backend_cache_setup", capture)
+        for generation in ("cold", "warm"):
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                result = cli.build(
+                    str(project / "main.py"),
+                    emit="obj",
+                    output=str(project / "output.o"),
+                    parse_codec=parse_codec,
+                    profile="dev",
+                    deterministic=False,
+                    json_output=True,
+                    diagnostics=True,
+                )
+            assert result == 0, (generation, stdout.getvalue())
+            payload = json.loads(stdout.getvalue())
+            diagnostics.append(payload["data"]["compile_diagnostics"])
+    assert len(records) == 2
+    assert records[0] == records[1], (
+        "warm frontend hydration changed emitted IR/cache identity"
+    )
+    assert diagnostics[1]["frontend_lowering_cache"]["hits"] > 0
+    if workers:
+        assert diagnostics[0]["frontend_parallel"]["enabled"] is True
+        assert any(
+            row["mode"] == "parallel_cache_hit"
+            for row in diagnostics[1]["frontend_parallel"]["worker_timings"]
+        )
+    return {
+        "records": records,
+        "warm_hits": diagnostics[1]["frontend_lowering_cache"]["hits"],
+    }
+
+
+@pytest.mark.parametrize("parse_codec", ["json", "msgpack"])
+@pytest.mark.parametrize("workers", [0, 2], ids=["serial", "parallel"])
+def test_cli_cold_warm_production_bytes_and_cache_keys_ignore_hashseed(
+    tmp_path: Path, parse_codec: str, workers: int
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname="seed-proof"\nversion="0.1.0"\n', encoding="utf-8"
+    )
+    (project / "main.py").write_text(
+        "import beta\nimport alpha\nprint(alpha.VALUE + beta.compute(4))\n",
+        encoding="utf-8",
+    )
+    (project / "alpha.py").write_text(
+        "LEFT, RIGHT, *TAIL = [1, 2, 3, 4]\nVALUE = LEFT + RIGHT + TAIL[0]\n",
+        encoding="utf-8",
+    )
+    (project / "beta.py").write_text(
+        "def compute(limit):\n    return sum([value := item * 2 for item in range(limit)])\n",
+        encoding="utf-8",
+    )
+    records = []
+    for index, seed in enumerate(("0", "1", "42", "12345", "random", "random")):
+        cache = tmp_path / f"cache-{index}"
+        script = f"""
+import json, sys
+from pathlib import Path
+sys.path[:0] = [{str(ROOT / "src")!r}, {str(ROOT)!r}]
+from tests.cli.test_cli_import_collection import _capture_hashseed_cli_builds
+print(json.dumps(_capture_hashseed_cli_builds(Path({str(project)!r}), Path({str(cache)!r}), {parse_codec!r}, {workers})))
+"""
+        completed = run_cli_test_process(
+            [sys.executable, "-c", script],
+            cwd=ROOT,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip()
+        result = json.loads(completed.stdout)
+        assert result["warm_hits"] > 0
+        records.append(result["records"])
+    assert all(record == records[0] for record in records[1:])
