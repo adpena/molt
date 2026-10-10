@@ -5,7 +5,7 @@ publish = false
 edition.workspace = true
 rust-version.workspace = true
 license = "Apache-2.0"
-description = "Collections and container intrinsics for the Molt runtime (OrderedDict, defaultdict, deque, Counter, ChainMap, argparse)"
+description = "Collections and container intrinsics for the Molt runtime (OrderedDict, defaultdict, deque, Counter, ChainMap)"
 
 [dependencies]
 # Core runtime types used by the collection implementations

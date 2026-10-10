@@ -9,7 +9,6 @@ Policy: no host-stdlib fallback. Unsupported internals raise immediately.
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 # Keep imports at the top for lint; this is still intrinsic-first (no host fallback).
 from typing import Any
@@ -17,7 +16,6 @@ from typing import Any
 import re as _re
 
 # Avoid probe-only classification: this shim must still be intrinsic-backed.
-_require_intrinsic("molt_re_literal_advance")
 
 Pattern = _re.Pattern
 Match = _re.Match
@@ -34,6 +32,3 @@ def compile(pattern: Any, flags: int = 0) -> Pattern[str]:
 def _compile(pattern: Any, flags: int = 0) -> Pattern[str]:
     # CPython's `re` calls into `_compile` internally; keep the name available.
     return compile(pattern, flags)
-
-
-globals().pop("_require_intrinsic", None)

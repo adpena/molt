@@ -5,12 +5,6 @@ behavioral changes. Pure-Python — relies on `urllib.parse`, `urllib.error`,
 `urllib.request`, and `time` (which are already intrinsic-backed in molt).
 """
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
-_MOLT_IMPORT_SMOKE_RUNTIME_READY()
-del _MOLT_IMPORT_SMOKE_RUNTIME_READY
-
 
 import collections
 import urllib.error
@@ -239,6 +233,3 @@ class Entry:
             if line.applies_to(filename):
                 return line.allowance
         return True
-
-
-globals().pop("_require_intrinsic", None)

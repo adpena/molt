@@ -12,7 +12,6 @@ _machinery = __import__("importlib.machinery", globals(), locals(), ("ModuleSpec
 if False:
     from importlib.machinery import ModuleSpec
 
-_require_intrinsic("molt_stdlib_probe")
 _MOLT_IMPORTLIB_CACHE_FROM_SOURCE = _require_intrinsic(
     "molt_importlib_cache_from_source"
 )

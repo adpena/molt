@@ -859,7 +859,6 @@ dependencies = [
  "molt-runtime-vfs",
  "molt-runtime-xml",
  "molt-runtime-zoneinfo",
- "molt-stdlib-difflib",
  "molt-stdlib-graphlib",
  "molt-stdlib-text",
  "num-bigint 0.5.1",
@@ -1121,14 +1120,6 @@ dependencies = [
 
 [[package]]
 name = "molt-runtime-zoneinfo"
-version = "0.1.0"
-dependencies = [
- "molt-lang-obj-model",
- "molt-runtime-core",
-]
-
-[[package]]
-name = "molt-stdlib-difflib"
 version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",

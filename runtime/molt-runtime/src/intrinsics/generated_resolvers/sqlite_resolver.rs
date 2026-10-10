@@ -97,11 +97,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_sqlite3_rowcount as *const (),
         )),
         #[cfg(all(feature = "sqlite", not(target_arch = "wasm32")))]
-        "molt_sqlite3_arraysize_get" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_sqlite3_arraysize_get",
-            crate::molt_sqlite3_arraysize_get as *const (),
-        )),
-        #[cfg(all(feature = "sqlite", not(target_arch = "wasm32")))]
         "molt_sqlite3_arraysize_set" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_sqlite3_arraysize_set",
             crate::molt_sqlite3_arraysize_set as *const (),

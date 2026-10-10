@@ -1,7 +1,7 @@
 //! Path, glob, and OS filesystem operations.
 //!
 //! Split from io.rs to reduce file size. Contains all `molt_path_*`,
-//! `molt_glob*`, `molt_os_*`, and `molt_getcwd` extern functions.
+//! `molt_glob*` and `molt_os_*` extern functions.
 
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -13,14 +13,12 @@ use super::io::{
     filesystem_encode_errors, filesystem_encoding, fspath_bits_with_flavor,
     glob_dir_fd_arg_from_bits, glob_escape_text, glob_has_magic_text, glob_iter_alloc_object,
     glob_iter_new_state, glob_translate_text, path_abspath_text, path_as_uri_text,
-    path_basename_text, path_compare_text, path_dirname_text, path_expandvars_text,
-    path_expandvars_with_lookup, path_from_bits, path_glob_matches, path_isabs_text,
-    path_join_many_text, path_join_raw, path_join_text, path_match_text, path_name_text,
-    path_normpath_text, path_parents_text, path_parts_text, path_relative_to_text,
-    path_relpath_text, path_resolve_text, path_sep_char, path_sequence_from_bits,
-    path_splitext_text, path_splitroot_text, path_stem_text, path_str_arg_from_bits,
-    path_string_from_bits, path_string_with_flavor_from_bits, path_suffix_text, path_suffixes_text,
-    raise_io_error_for_glob, raw_from_bytes_text,
+    path_basename_text, path_compare_text, path_dirname_text, path_expandvars_text, path_from_bits,
+    path_glob_matches, path_isabs_text, path_join_many_text, path_join_raw, path_join_text,
+    path_match_text, path_name_text, path_normpath_text, path_parents_text, path_relative_to_text,
+    path_relpath_text, path_sep_char, path_sequence_from_bits, path_splitext_text, path_stem_text,
+    path_str_arg_from_bits, path_string_from_bits, path_string_with_flavor_from_bits,
+    path_suffix_text, path_suffixes_text, raise_io_error_for_glob, raw_from_bytes_text,
 };
 use crate::PyToken;
 use crate::audit::{AuditArgs, audit_capability_decision};
@@ -33,7 +31,6 @@ use crate::windows_abi::{
     closesocket,
 };
 use crate::*;
-use std::collections::HashMap;
 use std::io::ErrorKind;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
@@ -173,66 +170,6 @@ pub extern "C" fn molt_path_symlink(
                 }
             }
         }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_listdir(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if !has_capability(_py, "fs.read") {
-            return raise_capability_denied(_py, "fs.read");
-        }
-        let path = match path_from_bits(_py, path_bits) {
-            Ok(path) => path,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
-        };
-        let mut entries: Vec<u64> = Vec::new();
-        let read_dir = match std::fs::read_dir(&path) {
-            Ok(dir) => dir,
-            Err(err) => {
-                let msg = err.to_string();
-                return match err.kind() {
-                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                    ErrorKind::PermissionDenied => {
-                        raise_exception::<_>(_py, "PermissionError", &msg)
-                    }
-                    ErrorKind::NotADirectory => {
-                        raise_exception::<_>(_py, "NotADirectoryError", &msg)
-                    }
-                    _ => raise_exception::<_>(_py, "OSError", &msg),
-                };
-            }
-        };
-        for entry in read_dir {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(err) => {
-                    let msg = err.to_string();
-                    return raise_exception::<_>(_py, "OSError", &msg);
-                }
-            };
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let name_ptr = alloc_string(_py, name.as_bytes());
-            if name_ptr.is_null() {
-                for bits in entries {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            entries.push(MoltObject::from_ptr(name_ptr).bits());
-        }
-        let list_ptr = alloc_list(_py, entries.as_slice());
-        if list_ptr.is_null() {
-            for bits in entries {
-                dec_ref_bits(_py, bits);
-            }
-            return MoltObject::none().bits();
-        }
-        for bits in entries {
-            dec_ref_bits(_py, bits);
-        }
-        MoltObject::from_ptr(list_ptr).bits()
     })
 }
 
@@ -573,31 +510,6 @@ pub extern "C" fn molt_path_abspath(path_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_path_resolve(path_bits: u64, strict_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let sep = path_sep_char();
-        let path = match path_string_from_bits(_py, path_bits) {
-            Ok(path) => path,
-            Err(bits) => return bits,
-        };
-        let strict = is_truthy(_py, obj_from_bits(strict_bits));
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        let out = match path_resolve_text(_py, &path, sep, strict) {
-            Ok(out) => out,
-            Err(bits) => return bits,
-        };
-        let ptr = alloc_string(_py, out.as_bytes());
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_path_relpath(path_bits: u64, start_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let sep = path_sep_char();
@@ -637,40 +549,6 @@ pub extern "C" fn molt_path_expandvars(path_bits: u64) -> u64 {
             Ok(out) => out,
             Err(bits) => return bits,
         };
-        let ptr = alloc_string(_py, out.as_bytes());
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_expandvars_env(path_bits: u64, env_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let path = match path_string_from_bits(_py, path_bits) {
-            Ok(path) => path,
-            Err(bits) => return bits,
-        };
-        let Some(env_ptr) = obj_from_bits(env_bits).as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "env must be dict[str, str]");
-        };
-        if unsafe { object_type_id(env_ptr) } != TYPE_ID_DICT {
-            return raise_exception::<_>(_py, "TypeError", "env must be dict[str, str]");
-        }
-        let mut env_map: HashMap<String, String> = HashMap::new();
-        let mut cursor = 0;
-        while let Some(row) = unsafe { crate::dict_next_entry(env_ptr, &mut cursor) } {
-            let Some(key) = string_obj_to_owned(obj_from_bits(row.key)) else {
-                return raise_exception::<_>(_py, "TypeError", "env keys must be str");
-            };
-            let Some(value) = string_obj_to_owned(obj_from_bits(row.value)) else {
-                return raise_exception::<_>(_py, "TypeError", "env values must be str");
-            };
-            env_map.insert(key, value);
-        }
-        let out = path_expandvars_with_lookup(&path, |name| env_map.get(name).cloned());
         let ptr = alloc_string(_py, out.as_bytes());
         if ptr.is_null() {
             MoltObject::none().bits()
@@ -805,77 +683,6 @@ pub extern "C" fn molt_path_makedirs(path_bits: u64, mode_bits: u64, exist_ok_bi
                     _ => raise_exception::<_>(_py, "OSError", &msg),
                 }
             }
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_parts(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let sep = path_sep_char();
-        let path = match path_string_from_bits(_py, path_bits) {
-            Ok(path) => path,
-            Err(bits) => return bits,
-        };
-        let parts = path_parts_text(&path, sep);
-        let mut out_bits: Vec<u64> = Vec::with_capacity(parts.len());
-        for part in parts {
-            let ptr = alloc_string(_py, part.as_bytes());
-            if ptr.is_null() {
-                for bits in out_bits {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            out_bits.push(MoltObject::from_ptr(ptr).bits());
-        }
-        let list_ptr = alloc_list(_py, out_bits.as_slice());
-        for bits in out_bits {
-            dec_ref_bits(_py, bits);
-        }
-        if list_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(list_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_path_splitroot(path_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let sep = path_sep_char();
-        let path = match path_string_from_bits(_py, path_bits) {
-            Ok(path) => path,
-            Err(bits) => return bits,
-        };
-        let (drive, root, tail) = path_splitroot_text(&path, sep);
-        let drive_ptr = alloc_string(_py, drive.as_bytes());
-        if drive_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let root_ptr = alloc_string(_py, root.as_bytes());
-        if root_ptr.is_null() {
-            dec_ref_bits(_py, MoltObject::from_ptr(drive_ptr).bits());
-            return MoltObject::none().bits();
-        }
-        let tail_ptr = alloc_string(_py, tail.as_bytes());
-        if tail_ptr.is_null() {
-            dec_ref_bits(_py, MoltObject::from_ptr(drive_ptr).bits());
-            dec_ref_bits(_py, MoltObject::from_ptr(root_ptr).bits());
-            return MoltObject::none().bits();
-        }
-        let drive_bits = MoltObject::from_ptr(drive_ptr).bits();
-        let root_bits = MoltObject::from_ptr(root_ptr).bits();
-        let tail_bits = MoltObject::from_ptr(tail_ptr).bits();
-        let tuple_ptr = alloc_tuple(_py, &[drive_bits, root_bits, tail_bits]);
-        dec_ref_bits(_py, drive_bits);
-        dec_ref_bits(_py, root_bits);
-        dec_ref_bits(_py, tail_bits);
-        if tuple_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(tuple_ptr).bits()
         }
     })
 }
@@ -1709,39 +1516,6 @@ pub extern "C" fn molt_path_chmod(path_bits: u64, mode_bits: u64) -> u64 {
                 "NotImplementedError",
                 "chmod is unsupported on this platform",
             )
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_getcwd() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if !has_capability(_py, "fs.read") {
-            return raise_capability_denied(_py, "fs.read");
-        }
-        match std::env::current_dir() {
-            Ok(path) => {
-                let text = path.to_string_lossy();
-                let ptr = alloc_string(_py, text.as_bytes());
-                if ptr.is_null() {
-                    MoltObject::none().bits()
-                } else {
-                    MoltObject::from_ptr(ptr).bits()
-                }
-            }
-            Err(err) => {
-                let msg = err.to_string();
-                match err.kind() {
-                    ErrorKind::NotFound => raise_exception::<_>(_py, "FileNotFoundError", &msg),
-                    ErrorKind::PermissionDenied => {
-                        raise_exception::<_>(_py, "PermissionError", &msg)
-                    }
-                    ErrorKind::NotADirectory => {
-                        raise_exception::<_>(_py, "NotADirectoryError", &msg)
-                    }
-                    _ => raise_exception::<_>(_py, "OSError", &msg),
-                }
-            }
         }
     })
 }

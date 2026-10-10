@@ -4,10 +4,6 @@ from __future__ import annotations
 
 import re as _re
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-
 
 class AddrSpec:
     pass
@@ -522,5 +518,3 @@ sys = _re
 urllib = _re
 
 utils = _re
-
-globals().pop("_require_intrinsic", None)

@@ -6,11 +6,6 @@
 use super::*;
 use molt_stdlib_text::tokenize::{detect_source_encoding, scan_tokens};
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tokenize_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
 /// Tokenize a UTF-8 source string into a list of (type, string, start, end, line) tuples.
 /// Token types: 0=ENDMARKER, 1=NAME, 2=NUMBER, 4=NEWLINE, 54=OP, 64=COMMENT, 65=NL, 67=ENCODING
 #[unsafe(no_mangle)]

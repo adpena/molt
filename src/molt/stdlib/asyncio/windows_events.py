@@ -14,9 +14,6 @@ from __future__ import annotations
 import sys as _sys
 from typing import Any
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 _VERSION_INFO = getattr(_sys, "version_info", (3, 12, 0, "final", 0))
 
@@ -76,6 +73,3 @@ else:
 
         def __repr__(self) -> str:
             return f"<IocpProactor concurrency={self._concurrency:#x}>"
-
-
-globals().pop("_require_intrinsic", None)

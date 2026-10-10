@@ -1138,35 +1138,6 @@ pub extern "C" fn molt_cbor_parse_scalar_obj(obj_bits: u64) -> u64 {
 // JSON detect_encoding / loads / dumps
 // ---------------------------------------------------------------------------
 
-/// Detect the encoding of a JSON byte string by inspecting the BOM or the
-/// first few bytes. Returns a MoltObject string.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_detect_encoding(data_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(data_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "detect_encoding expects bytes");
-        };
-        let (data, len) = unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id != TYPE_ID_BYTES && type_id != TYPE_ID_BYTEARRAY {
-                let msg = format!("detect_encoding expects bytes, got {}", type_name(_py, obj));
-                return raise_exception::<u64>(_py, "TypeError", &msg);
-            }
-            let len = bytes_len(ptr);
-            let data_ptr = bytes_data(ptr);
-            (std::slice::from_raw_parts(data_ptr, len), len)
-        };
-
-        let encoding = detect_json_encoding(data, len);
-        let enc_ptr = alloc_string(_py, encoding.as_bytes());
-        if enc_ptr.is_null() {
-            return raise_exception::<u64>(_py, "MemoryError", "failed to allocate string");
-        }
-        MoltObject::from_ptr(enc_ptr).bits()
-    })
-}
-
 fn detect_json_encoding(data: &[u8], len: usize) -> &'static str {
     // Check BOM first
     if len >= 4 {
@@ -1257,59 +1228,6 @@ fn decode_json_text(_py: &PyToken<'_>, obj: MoltObject, data: &[u8]) -> Result<S
             "decoded JSON payload was not valid UTF-8",
         )),
     }
-}
-
-/// Full JSON loads: parse a JSON string and return the MoltObject tree.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_json_loads(text_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(text_bits);
-
-        // Accept str
-        if let Some(text) = string_obj_to_owned(obj) {
-            return json_loads_str(_py, &text);
-        }
-
-        // Accept bytes / bytearray with RFC/CPython-style JSON encoding detection.
-        if let Some(ptr) = obj.as_ptr() {
-            let type_id = unsafe { object_type_id(ptr) };
-            if type_id == TYPE_ID_BYTES || type_id == TYPE_ID_BYTEARRAY {
-                let slice = unsafe {
-                    let len = bytes_len(ptr);
-                    let data_ptr = bytes_data(ptr);
-                    std::slice::from_raw_parts(data_ptr, len)
-                };
-                let text = match decode_json_text(_py, obj, slice) {
-                    Ok(text) => text,
-                    Err(bits) => return bits,
-                };
-                return json_loads_str(_py, &text);
-            }
-        }
-
-        let tn = type_name(_py, obj);
-        let msg = format!("the JSON object must be str, bytes or bytearray, not {tn}");
-        raise_exception::<u64>(_py, "TypeError", &msg)
-    })
-}
-
-fn json_loads_str(_py: &PyToken<'_>, text: &str) -> u64 {
-    let v: serde_json::Value = match serde_json::from_str(text) {
-        Ok(val) => val,
-        Err(e) => {
-            let msg = format!("{e}");
-            return raise_exception::<u64>(_py, "ValueError", &msg);
-        }
-    };
-    PARSE_ARENA.with(|arena| {
-        let mut arena = arena.borrow_mut();
-        let result = value_to_object(_py, v, &mut arena);
-        arena.reset();
-        match result {
-            Ok(val) => val.bits(),
-            Err(_) => raise_exception::<u64>(_py, "ValueError", "failed to convert JSON value"),
-        }
-    })
 }
 
 #[derive(Clone, Copy)]

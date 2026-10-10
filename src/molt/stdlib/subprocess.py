@@ -9,7 +9,6 @@ from typing import Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_SUBPROCESS_RUNTIME_READY = _require_intrinsic("molt_subprocess_runtime_ready")
 _MOLT_SUBPROCESS_RUN = _require_intrinsic("molt_subprocess_run")
 _MOLT_SUBPROCESS_CHECK_CALL = _require_intrinsic("molt_subprocess_check_call")
 _MOLT_SUBPROCESS_CHECK_OUTPUT = _require_intrinsic("molt_subprocess_check_output")
@@ -391,7 +390,6 @@ class Popen:
         process_group: int | None = None,
     ) -> None:
         del bufsize, executable, preexec_fn, close_fds
-        _MOLT_SUBPROCESS_RUNTIME_READY()
         self.args = args
         self.returncode: int | None = None
         self._text = bool(text)

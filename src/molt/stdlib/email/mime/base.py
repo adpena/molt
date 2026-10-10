@@ -27,10 +27,3 @@ class MIMEBase(message.Message):
         ctype = "%s/%s" % (_maintype, _subtype)
         self.add_header("Content-Type", ctype, **_params)
         self["MIME-Version"] = "1.0"
-
-
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_require_intrinsic("molt_capabilities_has")
-
-globals().pop("_require_intrinsic", None)

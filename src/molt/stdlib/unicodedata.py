@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_UNICODEDATA_RUNTIME_READY = _require_intrinsic("molt_unicodedata_runtime_ready")
 _MOLT_UNICODEDATA_UNIDATA_VERSION = _require_intrinsic(
     "molt_unicodedata_unidata_version"
 )

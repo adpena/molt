@@ -6,12 +6,6 @@ Integral) drives `isinstance`/`issubclass` checks for code that uses
 PEP 3141 numeric polymorphism.
 """
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
-_MOLT_IMPORT_SMOKE_RUNTIME_READY()
-del _MOLT_IMPORT_SMOKE_RUNTIME_READY
-
 
 from abc import ABCMeta, abstractmethod
 
@@ -279,6 +273,3 @@ class Integral(Rational):
 
 
 Integral.register(int)
-
-
-globals().pop("_require_intrinsic", None)

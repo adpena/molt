@@ -13,7 +13,6 @@ from typing import Any as _Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe")
 _MOLT_SOCKETSERVER_SERVE_FOREVER = _require_intrinsic("molt_socketserver_serve_forever")
 _MOLT_SOCKETSERVER_HANDLE_REQUEST = _require_intrinsic(
     "molt_socketserver_handle_request"
@@ -31,7 +30,6 @@ _MOLT_SOCKETSERVER_DISPATCH_CANCEL = _require_intrinsic(
 _MOLT_SOCKETSERVER_GET_REQUEST_POLL = _require_intrinsic(
     "molt_socketserver_get_request_poll"
 )
-_MOLT_SOCKETSERVER_SET_RESPONSE = _require_intrinsic("molt_socketserver_set_response")
 
 
 # CPython exports `time` as the monotonic builtin.

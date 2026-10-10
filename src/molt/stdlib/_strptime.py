@@ -13,12 +13,6 @@ FUNCTIONS:
     _strptime — Parse a string into time components.
 """
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
-_MOLT_IMPORT_SMOKE_RUNTIME_READY()
-del _MOLT_IMPORT_SMOKE_RUNTIME_READY
-
 
 import time
 import locale
@@ -530,6 +524,3 @@ def _strptime_datetime(cls, data_string, format="%a %b %d %H:%M:%S %Y"):
         args += (tz,)
 
     return cls(*args)
-
-
-globals().pop("_require_intrinsic", None)

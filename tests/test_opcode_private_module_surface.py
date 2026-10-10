@@ -16,7 +16,6 @@ from tests.stdlib_intrinsic_registry import install_registry
 
 
 install_registry({{
-    "molt_import_smoke_runtime_ready": lambda: None,
     "molt_opcode_get_specialization_stats": lambda: {{"specialized": 1}},
     "molt_opcode_stack_effect": lambda opcode, oparg=None, *, jump=None: opcode + (0 if oparg is None else oparg),
 }})

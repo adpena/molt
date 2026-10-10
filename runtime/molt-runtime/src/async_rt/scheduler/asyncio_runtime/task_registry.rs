@@ -278,22 +278,6 @@ fn asyncio_task_registry_live_values_impl(
     Ok(out_bits)
 }
 
-fn asyncio_task_registry_live_impl(_py: &PyToken<'_>, loop_bits: u64) -> u64 {
-    let out_bits = match asyncio_task_registry_live_values_impl(_py, loop_bits) {
-        Ok(bits) => bits,
-        Err(bits) => return bits,
-    };
-    let list_ptr = alloc_list(_py, out_bits.as_slice());
-    for bits in out_bits {
-        dec_ref_bits(_py, bits);
-    }
-    if list_ptr.is_null() {
-        MoltObject::none().bits()
-    } else {
-        bits_from_ptr(list_ptr)
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_task_registry_set(token_bits: u64, task_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -347,11 +331,6 @@ pub extern "C" fn molt_asyncio_task_registry_move(old_token_bits: u64, new_token
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_task_registry_values() -> u64 {
     crate::with_gil_entry_nopanic!(_py, { asyncio_task_registry_values_impl(_py) })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_task_registry_live(loop_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { asyncio_task_registry_live_impl(_py, loop_bits) })
 }
 
 #[unsafe(no_mangle)]

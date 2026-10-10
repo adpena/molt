@@ -16,7 +16,6 @@ import socketserver as _socketserver
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 _MOLT_LOGGING_CONFIG_DICT = _require_intrinsic("molt_logging_config_dict")
 _MOLT_LOGGING_CONFIG_VALID_IDENT = _require_intrinsic("molt_logging_config_valid_ident")

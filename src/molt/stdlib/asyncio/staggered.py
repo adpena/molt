@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import contextlib
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 import asyncio.events as events
 import asyncio.exceptions as exceptions_mod
@@ -25,5 +22,3 @@ __all__ = [
     "staggered_race",
     "tasks",
 ]
-
-globals().pop("_require_intrinsic", None)

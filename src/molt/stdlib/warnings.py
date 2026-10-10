@@ -8,9 +8,6 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 import sys as _sys
 
-_MOLT_STDLIB_PROBE = _require_intrinsic("molt_stdlib_probe")
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-
 
 def _warnings_intrinsic(name: str):
     return _require_intrinsic(name)
@@ -94,9 +91,6 @@ _VALID_ACTIONS = {
     "once",
     "off",
 }
-
-del _MOLT_STDLIB_PROBE
-del _MOLT_CAPABILITIES_HAS
 
 
 def _normalize_category(category: Any) -> type:

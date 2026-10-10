@@ -186,24 +186,6 @@ pub extern "C" fn molt_socket_settimeout(_sock_bits: u64, _timeout_bits: u64) ->
 
 #[cfg(target_arch = "wasm32")]
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_socket_setblocking(_sock_bits: u64, _flag_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let handle = match socket_handle_from_bits(_py, _sock_bits) {
-            Ok(val) => val,
-            Err(msg) => return raise_exception::<_>(_py, "TypeError", &msg),
-        };
-        let flag = obj_from_bits(_flag_bits).as_bool().unwrap_or(false);
-        if flag {
-            let _ = socket_set_timeout(handle, None);
-        } else {
-            let _ = socket_set_timeout(handle, Some(Duration::ZERO));
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_socket_getblocking(_sock_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let handle = match socket_handle_from_bits(_py, _sock_bits) {

@@ -34,12 +34,6 @@ _molt_random_binomialvariate = _require_intrinsic("molt_random_binomialvariate")
 _molt_random_randrange = _require_intrinsic("molt_random_randrange")
 _molt_random_randbytes = _require_intrinsic("molt_random_randbytes")
 
-_molt_math_log2 = _require_intrinsic("molt_math_log2")
-_molt_math_floor = _require_intrinsic("molt_math_floor")
-_molt_math_fabs = _require_intrinsic("molt_math_fabs")
-_molt_math_sqrt = _require_intrinsic("molt_math_sqrt")
-_molt_math_lgamma = _require_intrinsic("molt_math_lgamma")
-_molt_math_log = _require_intrinsic("molt_math_log")
 _molt_math_isfinite = _require_intrinsic("molt_math_isfinite")
 
 _urandom = _os.urandom

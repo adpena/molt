@@ -261,23 +261,6 @@ pub extern "C" fn molt_importlib_resolve_name(name_bits: u64, package_bits: u64)
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_importlib_known_absent_missing_name(resolved_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let resolved = match string_arg_from_bits(_py, resolved_bits, "module name") {
-            Ok(value) => value,
-            Err(bits) => return bits,
-        };
-        let Some(absence) = known_import_absence(_py, &resolved) else {
-            return MoltObject::none().bits();
-        };
-        match alloc_str_bits(_py, absence.diagnostic_name()) {
-            Ok(bits) => bits,
-            Err(err) => err,
-        }
-    })
-}
-
 pub(super) fn importlib_import_module_resolved_name(
     _py: &PyToken<'_>,
     name_bits: u64,

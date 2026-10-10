@@ -11,9 +11,7 @@ from typing import Any as _Any
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_require_intrinsic("molt_stdlib_probe")
 
-_MOLT_HTTP_EXECUTE = _require_intrinsic("molt_http_client_execute")
 _MOLT_HTTP_CONN_NEW = _require_intrinsic("molt_http_client_connection_new")
 _MOLT_HTTP_CONN_NEW_HTTPS = _require_intrinsic("molt_http_client_connection_new_https")
 _MOLT_HTTP_CONN_PUTREQUEST = _require_intrinsic(

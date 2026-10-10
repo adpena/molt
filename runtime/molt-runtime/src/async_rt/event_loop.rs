@@ -46,7 +46,6 @@ mod pipe_transport;
 pub(crate) use park::LoopParker;
 pub(crate) use pipe_transport::PipeTransportRegistry;
 pub use pipe_transport::{
-    molt_event_loop_connect_read_pipe, molt_event_loop_connect_write_pipe,
     molt_pipe_transport_close, molt_pipe_transport_drop, molt_pipe_transport_get_fd,
     molt_pipe_transport_get_write_buffer_size, molt_pipe_transport_is_closing,
     molt_pipe_transport_new, molt_pipe_transport_pause_reading, molt_pipe_transport_resume_reading,
@@ -366,54 +365,6 @@ fn signal_claimed(parked: Option<Arc<LoopParker>>) {
     if let Some(parker) = parked {
         parker.unpark();
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn register_pipe_reader_callback(
-    _py: &crate::PyToken<'_>,
-    loop_handle: u64,
-    fd: i64,
-    callback_bits: u64,
-) -> Option<()> {
-    let replaced = with_loop(_py, loop_handle, |state| {
-        if state.is_closed() {
-            return None;
-        }
-        inc_ref_bits(_py, callback_bits);
-        state
-            .readers
-            .insert(fd, IoCallbackEntry { callback_bits })
-            .map(|old| old.callback_bits)
-    })?;
-    // A replaced callback's finalizer may re-enter this registry.
-    if let Some(old) = replaced {
-        dec_ref_bits(_py, old);
-    }
-    Some(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn register_pipe_writer_callback(
-    _py: &crate::PyToken<'_>,
-    loop_handle: u64,
-    fd: i64,
-    callback_bits: u64,
-) -> Option<()> {
-    let replaced = with_loop(_py, loop_handle, |state| {
-        if state.is_closed() {
-            return None;
-        }
-        inc_ref_bits(_py, callback_bits);
-        state
-            .writers
-            .insert(fd, IoCallbackEntry { callback_bits })
-            .map(|old| old.callback_bits)
-    })?;
-    // A replaced callback's finalizer may re-enter this registry.
-    if let Some(old) = replaced {
-        dec_ref_bits(_py, old);
-    }
-    Some(())
 }
 
 fn cancel_io_handle(_py: &crate::PyToken<'_>, bits: u64) {
@@ -1669,69 +1620,6 @@ mod park_tests {
             assert!(matches!(begin(py, handle), ParkStep::Proceed));
             // Close releases the ready queue's reference to the task.
             retire(py, handle, &[task]);
-        });
-    }
-
-    #[test]
-    fn replaced_pipe_callback_is_released_after_the_registry_lock() {
-        use molt_cpython_abi::api::capsule;
-        use std::sync::atomic::{AtomicBool, AtomicU64};
-
-        static PROBE_LOOP: AtomicU64 = AtomicU64::new(0);
-        static PROBE_RAN: AtomicBool = AtomicBool::new(false);
-        static PROBE_SAW_LOCK_HELD: AtomicBool = AtomicBool::new(false);
-
-        unsafe extern "C" fn reenter_registry(
-            _capsule: *mut molt_cpython_abi::abi_types::PyObject,
-        ) {
-            PROBE_RAN.store(true, Ordering::SeqCst);
-            crate::with_gil(|py| {
-                // A finalizer run under the registry lock would deadlock on
-                // any loop intrinsic; probe without blocking instead.
-                let held = event_loop_registry(&py).loops.try_lock().is_err();
-                PROBE_SAW_LOCK_HELD.store(held, Ordering::SeqCst);
-                let _ = PROBE_LOOP.load(Ordering::SeqCst);
-            });
-        }
-
-        let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
-        crate::with_gil_entry_nopanic!(py, {
-            let handle = molt_event_loop_new();
-            PROBE_LOOP.store(handle, Ordering::SeqCst);
-            PROBE_RAN.store(false, Ordering::SeqCst);
-            PROBE_SAW_LOCK_HELD.store(false, Ordering::SeqCst);
-            let payload = std::ptr::NonNull::<u8>::dangling().as_ptr().cast();
-            let capsule_ptr = unsafe {
-                capsule::PyCapsule_New(payload, std::ptr::null(), Some(reenter_registry))
-            };
-            assert!(!capsule_ptr.is_null());
-            let first = unsafe {
-                molt_cpython_abi::bridge::GLOBAL_BRIDGE.molt_value_for_pyobj(capsule_ptr)
-            }
-            .expect("capsule crosses into the runtime");
-            unsafe { molt_cpython_abi::api::refcount::Py_DECREF(capsule_ptr) };
-            let second = object(py, b"replacement");
-            assert_eq!(
-                register_pipe_reader_callback(py, handle, 7, first),
-                Some(())
-            );
-            // The registry now owns the only reference to the capsule.
-            dec_ref_bits(py, first);
-            assert!(!PROBE_RAN.load(Ordering::SeqCst));
-            assert_eq!(
-                register_pipe_reader_callback(py, handle, 7, second),
-                Some(())
-            );
-            assert!(
-                PROBE_RAN.load(Ordering::SeqCst),
-                "replacing the callback must release the old one"
-            );
-            assert!(
-                !PROBE_SAW_LOCK_HELD.load(Ordering::SeqCst),
-                "the replaced callback was released while the registry lock was held"
-            );
-            retire(py, handle, &[second]);
         });
     }
 

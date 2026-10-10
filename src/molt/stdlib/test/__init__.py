@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 import os
 from pathlib import Path
 import importlib
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 def _extend_cpython_test_path() -> None:
@@ -66,5 +63,3 @@ __all__ = [
     "support",
     "warnings_helper",
 ]
-
-globals().pop("_require_intrinsic", None)

@@ -29,8 +29,6 @@ def _load_typing(source_root: Path) -> types.ModuleType:
         return bool(acquire(blocking, timeout))
 
     def require_intrinsic(name: str) -> object:
-        if name == "molt_stdlib_probe":
-            return None
         if name == "molt_generic_alias_new":
             return lambda origin, args: types.GenericAlias(origin, args)
         if name == "molt_typing_type_param":
