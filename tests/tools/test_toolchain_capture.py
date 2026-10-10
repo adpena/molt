@@ -24,6 +24,8 @@ from tools.proof_queue_pkg import (
     toolchain_capture,
 )
 
+pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
 
 def _identity(path: Path, *, rows: int = 1) -> dict[str, object]:
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -897,6 +899,10 @@ def test_driver_dry_run_skips_malformed_or_banner_lines(line: str) -> None:
 
 
 def _rust_metadata_probe(command, root: Path):
+    if list(command[1:]) == ["--version", "--verbose"]:
+        return subprocess.CompletedProcess(
+            command, 0, "cargo 1.99.0\nrelease: 1.99.0\n", ""
+        )
     print_kinds = [
         command[index + 1]
         for index, value in enumerate(command[:-1])
@@ -1090,14 +1096,16 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
     assert observed[0][0][0] == str(cargo)
     assert observed[0][0][-2:] == ["--print", "link-args"]
     assert observed[0][0][observed[0][0].index("--target") + 1] == "test-triple"
-    assert observed[0][0][observed[0][0].index("--profile") + 1] == "frontier-fast"
+    assert (
+        "--profile" not in observed[0][0]
+    )  # generic capability, not a package profile
     assert observed[0][0][observed[0][0].index("--features") + 1] == "fast,simd"
     assert ["-C", f"linker={linker}"] == observed[0][0][
         observed[0][0].index("-C") : observed[0][0].index("-C") + 2
     ]
     assert "-Clink-arg=/DEBUG:NONE" in observed[0][0]
     assert observed[0][0][observed[0][0].index("--crate-type") + 1] == "staticlib"
-    assert '[profile.frontier-fast]\ninherits="release"' in observed_manifests[0]
+    assert "[profile.frontier-fast]" not in observed_manifests[0]
     assert (
         "[lib]" in observed_manifests[0]
         and 'crate-type=["cdylib"]' in observed_manifests[0]
@@ -1197,13 +1205,18 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
         captured_manifest["sha256"]
         == hashlib.sha256(original_manifest.read_bytes()).hexdigest()
     )
-    toolchain_capture.revalidate_rust_artifact_manifests(telemetry)
+    toolchain_capture.revalidate_rust_selection_sources(telemetry)
+    original_manifest_bytes = original_manifest.read_bytes()
     original_manifest.write_text(
         original_manifest.read_text(encoding="utf-8").replace('"cdylib"', '"rlib"'),
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="artifact manifest/source changed"):
-        toolchain_capture.revalidate_rust_artifact_manifests(telemetry)
+    with pytest.raises(
+        ValueError, match="Cargo flag source changed: cargo-profile-manifest/Cargo.toml"
+    ):
+        toolchain_capture.revalidate_rust_selection_sources(telemetry)
+
+    original_manifest.write_bytes(original_manifest_bytes)
 
     linker.write_bytes(b"substituted-linker")
     with pytest.raises(ValueError, match="changed while live custody armed"):
@@ -1530,7 +1543,7 @@ def test_rust_link_capture_resolves_sysroot_override_and_host_consumer(
     )
     if cargo_mode:
         config.write_text("[build]\nincremental=true\n", encoding="utf-8")
-        with pytest.raises(ValueError, match="--config file changed"):
+        with pytest.raises(ValueError, match="Cargo flag source changed"):
             toolchain_capture.revalidate_rust_link_process_images(
                 {"process_images": images, "link_selection": telemetry},
                 target="wasm32-wasip1",
@@ -3322,3 +3335,478 @@ def test_native_build_requirement_mismatch_refuses_before_any_probe(
             native_units=required,
         )
     assert calls == [], "rejected authority must not launch metadata or compiler probes"
+
+
+@pytest.mark.parametrize(
+    "payload,expected_probes,expected_links",
+    [
+        (["cargo", "check", "--all-targets"], ["check", "rustc"], 1),
+        (["cargo", "c"], ["check", "rustc"], 1),
+        (
+            ["cargo", "check", "--config", 'build.build-dir="/user/escape"'],
+            ["check", "rustc"],
+            1,
+        ),
+        (["cargo", "clippy"], ["check", "rustc"], 1),
+        (["cargo", "clippy", "--", "--emit=link"], ["rustc", "rustc"], 2),
+        (["cargo", "clippy", "--", "--print=sysroot"], ["rustc"], 1),
+        (
+            ["cargo", "rustc", "--profile", "check", "--", "--emit=link"],
+            ["rustc", "rustc"],
+            2,
+        ),
+        (
+            ["cargo", "rustc", "--profile", "check", "--", "--print=sysroot"],
+            ["rustc"],
+            1,
+        ),
+        (["cargo", "doc"], ["check", "rustc"], 1),
+        (["cargo", "rustdoc"], ["check", "rustc"], 1),
+        (["cargo", "metadata"], [], 0),
+        (["cargo", "check", "--help"], [], 0),
+        (["cargo", "rustc", "--", "--print=sysroot"], ["rustc"], 1),
+        (["cargo", "rustc", "--", "--emit=metadata"], ["rustc", "rustc"], 2),
+        (["rustc", "--emit=metadata=/user/output"], ["direct"], 0),
+        (["rustc", "--emit=obj"], ["direct"], 0),
+        (["rustc", "--print=sysroot"], [], 0),
+    ],
+)
+def test_nonlinking_operations_reach_capture_receiver_and_reuse(
+    tmp_path, monkeypatch, payload, expected_probes, expected_links
+):
+    # The subprocess boundary replays Rust/Cargo's independently observed
+    # operation behavior, not the artifact selector under test.
+    linker = tmp_path / (
+        "selected-linker.exe" if os.name == "nt" else "selected-linker"
+    )
+    linker.write_bytes(b"native host linker")
+    linker.chmod(0o755)
+    calls = []
+
+    def run(command, **kwargs):
+        if "--manifest-path" in command:
+            owned_root = Path(command[command.index("--manifest-path") + 1]).parent
+            overrides = [
+                command[index + 1]
+                for index, token in enumerate(command)
+                if token == "--config"
+            ]
+            build_dirs = [
+                value for value in overrides if value.startswith("build.build-dir=")
+            ]
+            assert build_dirs[-1] == "build.build-dir=" + json.dumps(
+                str(owned_root / "build")
+            )
+            assert kwargs["env"]["CARGO_TARGET_DIR"] == str(owned_root / "target")
+            if "--config" in payload:
+                assert build_dirs[0] == 'build.build-dir="/user/escape"'
+        metadata = _rust_metadata_probe(command, tmp_path)
+        if metadata is not None:
+            return metadata
+        cargo = "--manifest-path" in command
+        operation = (
+            (
+                "check"
+                if "--profile" in command
+                and command[command.index("--profile") + 1] == "check"
+                else command[1]
+            )
+            if cargo
+            else "direct"
+        )
+        calls.append(operation)
+        if operation == "check":
+            assert "--" in command and "link-args" in command
+            output = ""
+        elif not cargo:
+            assert "/user/output" not in " ".join(command)
+            output = ""
+        else:
+            assert "link-args" in command
+            output = json.dumps(str(linker)) + ' "probe.o"\n'
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    images, selection = toolchain_capture.capture_rust_link_process_images(
+        rustc=tmp_path / "rustc",
+        cargo=tmp_path / "cargo" if payload[0] == "cargo" else None,
+        cwd=tmp_path,
+        env={
+            "PATH": "",
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": "/unavailable",
+            "CARGO_BUILD_BUILD_DIR": "/user/environment-build",
+        },
+        target="x86_64-pc-windows-msvc",
+        command_argv=payload,
+    )
+    assert calls == expected_probes
+    assert (
+        sum(unit["selected_process_count"] for unit in selection["units"])
+        == expected_links
+    )
+    identity = {"process_images": images, "link_selection": selection}
+    toolchain_capture.validate_rust_link_selection(identity, command_argv=payload)
+    _, ref, _ = toolchain_capture.publish_capture(tmp_path / "cas", {"rustc": identity})
+    loaded = toolchain_capture.load_capture(ref, cas_root=tmp_path / "cas")
+    assert loaded["toolchains"]["rustc"] == identity
+    calls.clear()
+    toolchain_capture.revalidate_rust_link_process_images(
+        identity, target="x86_64-pc-windows-msvc", command_argv=payload
+    )
+    assert calls == []
+    # A receiver cannot silently upgrade this command to a build while keeping
+    # its linker-free target closure, even when every command hash is resealed.
+    if not selection["units"][0]["artifact_selection"]["link_required"]:
+        forged = __import__("copy").deepcopy(identity)
+        replacement = ["cargo", "build"] if payload[0] == "cargo" else ["rustc"]
+        capture = forged["link_selection"]
+        capture.update(
+            producer_command=replacement,
+            admitted_command=replacement,
+            command_semantics_sha256=canonical_json_sha256(replacement),
+        )
+        if payload[0] == "cargo":
+            capture["cargo_version"] = "cargo 1.99.0\nrelease: 1.99.0"
+        for unit in capture["units"]:
+            unit["command_semantics_sha256"] = canonical_json_sha256(replacement)
+        with pytest.raises(
+            ValueError, match="artifact selection|probe count|flag inputs"
+        ):
+            toolchain_capture.validate_rust_link_selection(
+                forged, command_argv=replacement
+            )
+
+
+@pytest.mark.parametrize(
+    "setting,expected_flags,target_links",
+    [
+        ("environment", ["--emit=link"], True),
+        ("encoded", ["--emit=link"], True),
+        ("active-cfg", ["--emit=link"], True),
+        ("inactive-cfg", [], False),
+        (
+            "output-destinations",
+            ["--emit=metadata=/user/metadata", "--print=cfg=/user/cfg"],
+            False,
+        ),
+        ("custom-profile", [], False),
+        ("documenter-tests", [], False),
+        ("documenter-cfg", [], False),
+        ("documenter-rendering", [], False),
+        ("forced-environment", ["--emit=metadata=/user/metadata"], False),
+    ],
+)
+def test_cargo_check_uses_source_bound_effective_flags_before_any_probe(
+    tmp_path, monkeypatch, setting, expected_flags, target_links
+):
+    from tests.rustc_test_support import rustc_target_metadata_output
+    import copy
+
+    target = "x86_64-pc-windows-msvc"
+    env = {"PATH": ""}
+    command = [
+        "cargo",
+        "doc" if setting.startswith("documenter-") else "check",
+        "--target",
+        target,
+    ]
+    config = tmp_path / ".cargo" / "config.toml"
+    config.parent.mkdir()
+    if setting == "environment":
+        env["RUSTFLAGS"] = "--emit=link"
+    elif setting == "encoded":
+        env["RUSTFLAGS"] = "--emit=metadata"
+        env["CARGO_ENCODED_RUSTFLAGS"] = "--emit=link"
+    elif setting in {"active-cfg", "inactive-cfg"}:
+        predicate = "windows" if setting == "active-cfg" else "unix"
+        config.write_text(f"[target.'cfg({predicate})']\nrustflags=[\"--emit=link\"]\n")
+    elif setting == "output-destinations":
+        env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(expected_flags)
+        config.write_text("[target.'cfg(windows)']\nrustflags=[]\n")
+    elif setting == "custom-profile":
+        (tmp_path / "Cargo.toml").write_text(
+            '[profile.small]\ninherits="dev"\nopt-level="s"\n[profile.small.package.some_package]\nopt-level=3\n'
+        )
+        command.extend(("--profile", "small"))
+    elif setting == "documenter-tests":
+        env["RUSTDOCFLAGS"] = "--test"
+    elif setting == "documenter-cfg":
+        config.write_text("[target.'cfg(windows)']\nrustdocflags=[\"--test\"]\n")
+    elif setting == "documenter-rendering":
+        env["RUSTDOCFLAGS"] = (
+            "--test --html-in-header --test --emit=html-static-files,dep-info"
+        )
+    elif setting == "forced-environment":
+        config.write_text(
+            '[env.CARGO_ENCODED_RUSTFLAGS]\nvalue="--emit=metadata=/user/metadata"\nforce=true\n'
+        )
+    linker = tmp_path / "selected-linker"
+    linker.write_bytes(b"linker")
+    linker.chmod(0o755)
+    calls = []
+
+    def run(argv, **kwargs):
+        safe_environment = kwargs.get("env", {})
+        assert "/user/" not in " ".join(argv)
+        if "--print=cfg" in argv or "--manifest-path" in argv:
+            assert "/user/" not in safe_environment.get("CARGO_ENCODED_RUSTFLAGS", "")
+            assert "--html-in-header" not in safe_environment.get(
+                "CARGO_ENCODED_RUSTFLAGS", ""
+            )
+        if setting == "forced-environment" and "--manifest-path" in argv:
+            assert 'env."CARGO_ENCODED_RUSTFLAGS".force=false' in argv
+        if "--print=cfg" in argv:
+            assert "--test" not in argv, (
+                "rustdoc flags do not determine Cargo's rustc cfg"
+            )
+            stdout, stderr = rustc_target_metadata_output(
+                tmp_path, cfg='windows\ntarget_os="windows"\n', target=target
+            )
+            return subprocess.CompletedProcess(argv, 0, stdout, stderr)
+        metadata = _rust_metadata_probe(argv, tmp_path)
+        if metadata is not None:
+            return metadata
+        root = Path(argv[argv.index("--manifest-path") + 1]).parent
+        is_host = (root / "host.rs").exists()
+        flags = safe_environment.get("CARGO_ENCODED_RUSTFLAGS", "").split("\x1f")
+        # Recorded Cargo1.99 oracles: --profile check omits default link;
+        # extra --emit=link adds it back, while host proc-macro always links.
+        emits_link = "--profile" not in argv or "--emit=link" in flags
+        calls.append((is_host, emits_link))
+        return subprocess.CompletedProcess(
+            argv, 0, json.dumps(str(linker)) + "\n" if emits_link else "", ""
+        )
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    images, selection = toolchain_capture.capture_rust_link_process_images(
+        rustc=tmp_path / "rustc",
+        cargo=tmp_path / "cargo",
+        cwd=tmp_path,
+        env=env,
+        target=target,
+        command_argv=command,
+    )
+    unit = selection["units"][0]
+    assert unit["flag_context"]["selected_flags"] == expected_flags
+    assert unit["artifact_selection"]["link_required"] is target_links
+    assert selection["units"][1]["flag_context"]["selected_flags"] == []
+    assert (True, True) in calls
+    if setting.startswith("documenter-"):
+        assert calls[2] == (False, True)
+        assert selection["units"][2]["unit"] == "target-documenter"
+        assert selection["units"][2]["artifact_selection"]["link_required"] is True
+    identity = {"process_images": images, "link_selection": selection}
+    toolchain_capture.validate_rust_link_selection(identity, command_argv=command)
+    forged = copy.deepcopy(identity)
+    forged["link_selection"]["units"][0]["flag_context"]["selected_flags"] = [
+        "--emit=metadata"
+    ]
+    with pytest.raises(ValueError, match="selected flags differ"):
+        toolchain_capture.validate_rust_link_selection(forged, command_argv=command)
+    if config.exists():
+        config.write_text(config.read_text() + "# changed after capture\n")
+        with pytest.raises(ValueError, match="Cargo flag source changed"):
+            toolchain_capture.revalidate_rust_link_process_images(
+                identity, target=target, command_argv=command
+            )
+
+
+@pytest.mark.parametrize("flag", ["@/user/args", "-Zunpretty=expanded"])
+def test_unresolved_rust_flags_fail_before_flag_bearing_probe(
+    tmp_path, monkeypatch, flag
+):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        result = _rust_metadata_probe(argv, tmp_path)
+        assert result is not None, (
+            "unsafe flags must never reach a compiler selection or cfg query"
+        )
+        return result
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    (tmp_path / ".cargo").mkdir()
+    (tmp_path / ".cargo/config.toml").write_text("[target.'cfg(unix)']\nrustflags=[]\n")
+    with pytest.raises(ValueError, match="response files|unstable Rust"):
+        toolchain_capture.capture_rust_link_process_images(
+            rustc=tmp_path / "rustc",
+            cargo=tmp_path / "cargo",
+            cwd=tmp_path,
+            env={"PATH": "", "RUSTFLAGS": flag},
+            target=None,
+            command_argv=["cargo", "check"],
+        )
+    assert all(flag not in argv for argv in calls)
+
+
+def test_rust_cargo_probe_rejects_low_capacity_before_compile(tmp_path, monkeypatch):
+    from molt import disk_capacity
+
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        result = _rust_metadata_probe(argv, tmp_path)
+        assert result is not None, "low-capacity capture must not compile"
+        return result
+
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", lambda path: 1)
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    with pytest.raises(
+        toolchain_capture.RustLinkCaptureError, match="capacity admission rejected"
+    ):
+        toolchain_capture.capture_rust_link_process_images(
+            rustc=tmp_path / "rustc",
+            cargo=tmp_path / "cargo",
+            cwd=tmp_path,
+            env={"PATH": ""},
+            target=None,
+            command_argv=["cargo", "check"],
+        )
+    assert all("--manifest-path" not in argv for argv in calls)
+
+
+@pytest.mark.parametrize(
+    "arguments,documenter",
+    [
+        (["test"], True),
+        (["t", "--doc"], True),
+        (["test", "--lib"], False),
+        (["test", "--no-run"], False),
+        (["test", "--tests"], False),
+        (["test", "--all-targets"], False),
+        (["test", "--test", "integration"], False),
+        (["rustdoc", "--", "--test"], True),
+        (["doc"], False),
+    ],
+)
+def test_documenter_has_independent_linker_witness_and_target_filters_avoid_it(
+    tmp_path, monkeypatch, arguments, documenter
+):
+    import copy
+
+    drivers = {
+        name: tmp_path / (name + "-linker")
+        for name in ("compiler", "documenter", "host")
+    }
+    for path in drivers.values():
+        path.write_bytes(path.name.encode())
+        path.chmod(0o755)
+    command = ["cargo", *arguments]
+    target = "x86_64-pc-windows-msvc"
+    position = command.index("--") if "--" in command else len(command)
+    command[position:position] = ["--target", target]
+    calls = []
+
+    def run(argv, **kwargs):
+        metadata = _rust_metadata_probe(argv, tmp_path)
+        if metadata is not None:
+            return metadata
+        tokens = kwargs["env"].get("CARGO_ENCODED_RUSTFLAGS", "").split("\x1f")
+        driver = next(
+            (
+                Path(token.split("=", 1)[1])
+                for token in tokens
+                if token.startswith("-Clinker=")
+            ),
+            drivers["host"],
+        )
+        links = "--profile" not in argv
+        calls.append(driver.name if links else None)
+        return subprocess.CompletedProcess(
+            argv, 0, json.dumps(str(driver)) + "\n" if links else "", ""
+        )
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    images, selection = toolchain_capture.capture_rust_link_process_images(
+        rustc=tmp_path / "rustc",
+        cargo=tmp_path / "cargo",
+        cwd=tmp_path,
+        env={
+            "PATH": "",
+            "RUSTFLAGS": "-Clinker=" + str(drivers["compiler"]),
+            "RUSTDOCFLAGS": "-Clinker=" + str(drivers["documenter"]),
+        },
+        target=target,
+        command_argv=command,
+    )
+    expected = [
+        "target",
+        "host-proc-macro",
+        *(["target-documenter"] if documenter else []),
+    ]
+    assert [row["unit"] for row in selection["units"]] == expected
+    assert (drivers["documenter"].name in calls) is documenter
+    if documenter:
+        assert selection["units"][2]["process_resolution"][0]["path"] == str(
+            drivers["documenter"]
+        )
+    identity = {"process_images": images, "link_selection": selection}
+    toolchain_capture.validate_rust_link_selection(identity, command_argv=command)
+    _, ref, _ = toolchain_capture.publish_capture(tmp_path / "cas", {"rustc": identity})
+    assert (
+        toolchain_capture.load_capture(ref, cas_root=tmp_path / "cas")["toolchains"][
+            "rustc"
+        ]
+        == identity
+    )
+    toolchain_capture.revalidate_rust_link_process_images(
+        identity, target=target, command_argv=command
+    )
+    if documenter:
+        forged = copy.deepcopy(identity)
+        missing = forged["link_selection"]["units"].pop()
+        forged["link_selection"]["selection_probe_count"] -= missing[
+            "selection_probe_count"
+        ]
+        with pytest.raises(ValueError, match="documenter unit family"):
+            toolchain_capture.validate_rust_link_selection(forged, command_argv=command)
+
+
+@pytest.mark.parametrize("channel", ["nightly", "bootstrap", "override"])
+def test_external_unstable_manifest_is_rejected_before_capability_compile(
+    tmp_path, monkeypatch, channel
+):
+    external = tmp_path / "external-workspace"
+    external.mkdir()
+    (external / "Cargo.toml").write_text(
+        'cargo-features=["profile-rustflags"]\n[profile.dev]\nrustflags=["--emit=link"]\n'
+    )
+    calls = []
+    env = {"PATH": ""}
+    if channel == "bootstrap":
+        env["RUSTC_BOOTSTRAP"] = "1"
+    elif channel == "override":
+        env["__CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS"] = "nightly"
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if list(argv[1:]) == ["--version", "--verbose"]:
+            return subprocess.CompletedProcess(
+                argv, 0, "cargo 1.99.0-nightly\nrelease: 1.99.0-nightly\n", ""
+            )
+        result = _rust_metadata_probe(argv, tmp_path)
+        assert result is not None, (
+            "unsupported channel must fail before capability compilation"
+        )
+        return result
+
+    monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
+    with pytest.raises(
+        toolchain_capture.RustLinkCaptureError, match="capability authority"
+    ):
+        toolchain_capture.capture_rust_link_process_images(
+            rustc=tmp_path / "rustc",
+            cargo=tmp_path / "cargo",
+            cwd=tmp_path,
+            env=env,
+            target=None,
+            command_argv=[
+                "cargo",
+                "check",
+                "--manifest-path",
+                str(external / "Cargo.toml"),
+            ],
+        )
+    assert all("--manifest-path" not in argv for argv in calls)

@@ -4035,6 +4035,16 @@ gates = [
 # =========================================================================
 
 [[named_lane]]
+id = "runtime.lifecycle-cost-image"
+description = "Build the full default-feature runtime libtest image for independent lifecycle measurements; no semantic or performance acceptance is implied."
+argv = ["cargo", "test", "--locked", "--profile", "release-output", "-p", "molt-runtime", "--lib", "--no-run", "--message-format=json"]
+toolchains = ["cargo", "rustc", "python"]
+cargo_native_units = { target = ["c", "c++"] }
+resource_family = "rust"
+contention_key = "cargo-native-runtime"
+timeout_seconds = 6300
+
+[[named_lane]]
 id = "runtime.abi-fixture-authorities"
 description = "Compile and execute the complete CPython ABI integration-test family, including native C shims and fixture lifetime controls."
 argv = ["cargo", "test", "--locked", "--no-fail-fast", "--profile", "dev-fast", "-p", "molt-lang-cpython-abi", "--tests", "--", "--test-threads=4"]

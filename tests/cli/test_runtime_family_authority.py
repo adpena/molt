@@ -2406,3 +2406,45 @@ def test_codegen_key_aliases_obey_last_selector_without_reading_shadowed_path(
     plan = _plan(plan_root, env={"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)})
     assert plan.rustflags == ("-g", "-Z", "codegen-backend=" + str(selected))
     assert any(item.identity.path == selected for item in plan.rust_resources.files)
+
+
+def test_runtime_metadata_preserves_resource_owned_unstable_backend_and_confines_outputs(
+    plan_root, monkeypatch
+):
+    backend = plan_root / "backend.dll"
+    backend.write_bytes(b"MZbackend")
+    flags = ("-Z", "codegen-backend=" + str(backend))
+    plan = _plan(plan_root, env={"CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags)})
+    assert any(item.identity.path == backend for item in plan.rust_resources.files)
+    rustc = plan_root / "metadata-rustc"
+    write_mock_executable(rustc, b"MZcompiler")
+    seen = []
+
+    def run(command, **kwargs):
+        seen.append(command)
+        assert command[command.index("-Z") + 1] == "codegen-backend=" + str(backend)
+        assert str(plan_root / "user-output") not in command
+        assert command[command.index("--emit") + 1] == "metadata"
+        assert command[command.index("-o") + 1].endswith("probe")
+        assert kwargs["input"] == ""
+        return subprocess.CompletedProcess(command, 0, _metadata_stdout(plan_root), "")
+
+    monkeypatch.setattr(plans.process_guard, "run_completed_command", run)
+    metadata = plans._rust_target_metadata(
+        rustc,
+        "target",
+        (
+            *plan.rustflags,
+            "--emit=metadata=" + str(plan_root / "user-output"),
+            "-o",
+            str(plan_root / "user-output"),
+        ),
+        root=plan_root,
+        env={},
+    )
+    assert ("selected", None) in metadata.cfg
+    assert len(seen) == 1
+    plan.verify()
+    backend.write_bytes(b"changed backend")
+    with pytest.raises(ValueError, match="changed"):
+        plan.verify()

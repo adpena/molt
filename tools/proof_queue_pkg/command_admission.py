@@ -10,7 +10,7 @@ import re
 from typing import Literal, Mapping, Sequence
 
 from molt.exact_json import canonical_json_bytes
-from molt.rust_toolchain import canonical_rust_codegen_flags, rust_flag_spans
+from molt.rust_toolchain import rust_flag_spans
 from tools import proof_plan
 from tools.command_execution import CommandExecutor
 from tools.proof_queue_pkg import cargo_output_layout
@@ -468,7 +468,6 @@ def _proof_command_registry() -> dict[str, object]:
     console_tools: dict[str, set[str]] = {}
     policy_executables: dict[str, str] = {}
     entrypoints: dict[tuple[str, str], list[str]] = {}
-    entrypoint_variants: dict[tuple[str, str], set[tuple[str, ...]]] = {}
     for policy in plan.toolchain_policies:
         # Selected SDK policies are declared by their owning command. A bare
         # executable spelling carries no SDK selection and infers only native policy.
@@ -499,7 +498,6 @@ def _proof_command_registry() -> dict[str, object]:
         entrypoint = _command_entrypoint(argv)
         if entrypoint is not None:
             entrypoints.setdefault(entrypoint, []).append(lane.id)
-            entrypoint_variants.setdefault(entrypoint, set()).add(argv)
             named_entrypoints.setdefault(entrypoint, []).append(lane.id)
     for command in plan.commands:
         argv = tuple(str(value) for value in command.argv)
@@ -525,7 +523,6 @@ def _proof_command_registry() -> dict[str, object]:
         entrypoint = _command_entrypoint(argv)
         if entrypoint is not None:
             entrypoints.setdefault(entrypoint, []).append(command.id)
-            entrypoint_variants.setdefault(entrypoint, set()).add(argv)
         if argv and _basename(argv[0]) in {"uv", "uv.exe"}:
             _prefix, payload = _uv_prefix_and_payload(argv)
             payload_name = _basename(payload[0])
@@ -542,7 +539,6 @@ def _proof_command_registry() -> dict[str, object]:
         "policy_executables": policy_executables,
         "plan": plan,
         "entrypoints": entrypoints,
-        "entrypoint_variants": entrypoint_variants,
     }
 
 
@@ -639,17 +635,7 @@ def _command_registration(
     registered_entrypoints = registry["entrypoints"]
     assert isinstance(registered_entrypoints, dict)
     near_matches = registered_entrypoints.get(entrypoint)
-    registered_variants = registry["entrypoint_variants"]
-    assert isinstance(registered_variants, dict)
-    variants = registered_variants.get(entrypoint)
-    if (
-        isinstance(near_matches, list)
-        and isinstance(variants, set)
-        and (
-            len(variants) == 1
-            or (entrypoint is not None and entrypoint[0] == "python-cli-command")
-        )
-    ):
+    if isinstance(near_matches, list) and typed_python is None:
         raise ValueError(
             "proof-plan entrypoint argv must match its registered command exactly; "
             f"near-match would discard toolchain authority for {near_matches!r}"
@@ -819,13 +805,36 @@ class CargoInvocation:
             raise ValueError("Cargo crate types require one cargo rustc selector")
         return _rust_crate_types(values[0])
 
+    def compiler_arguments(self, *, documenter: bool = False) -> tuple[str, ...]:
+        """Only these Cargo operations forward trailing argv to compiler drivers."""
+        operations = {"rustdoc"} if documenter else {"rustc", "clippy"}
+        return self.forwarded if self.subcommand in operations else ()
+
     @property
     def forwarded_crate_types(self) -> tuple[str, ...]:
-        return rustc_crate_types(self.forwarded)
+        return rustc_crate_types(self.compiler_arguments())
 
     @property
     def requires_documenter(self) -> bool:
-        return self.subcommand in {"test", "doc", "rustdoc"} and not self.is_cargo_query
+        return not self.is_cargo_query and (
+            self.subcommand in {"doc", "rustdoc"} or self.may_run_doctests
+        )
+
+    @property
+    def may_run_doctests(self) -> bool:
+        """Cargo's default test filter includes doctests; explicit target filters do not."""
+        if self.subcommand != "test" or self.is_cargo_query or "--no-run" in self.flags:
+            return False
+        if "--doc" in self.flags:
+            return True
+        return not (
+            self.flags
+            & {"--lib", "--bins", "--examples", "--tests", "--benches", "--all-targets"}
+            or any(
+                name in {"--bin", "--example", "--test", "--bench"}
+                for name, _ in self.option_values
+            )
+        )
 
     @property
     def is_cargo_query(self) -> bool:
@@ -906,12 +915,18 @@ def parse_cargo_invocation(argv: Sequence[str]) -> CargoInvocation:
         elif value.startswith("-"):
             flags.add(value)
         elif subcommand is None:
-            subcommand = {"b": "build", "c": "check", "t": "test", "r": "run"}.get(
-                value, value
-            )
+            subcommand = {
+                "b": "build",
+                "c": "check",
+                "t": "test",
+                "r": "run",
+                "d": "doc",
+            }.get(value, value)
         else:
             positionals.append(value)
         index += 1
+    if subcommand == "check" and forwarded:
+        raise ValueError("cargo check does not forward compiler arguments")
     return CargoInvocation(
         toolchain_selector,
         subcommand,
@@ -932,10 +947,12 @@ def _rust_crate_types(value: str) -> tuple[str, ...]:
     return kinds
 
 
-def rust_link_arguments(arguments: Sequence[str]) -> tuple[str, ...]:
+def rust_link_arguments(
+    arguments: Sequence[str], *, documenter: bool = False
+) -> tuple[str, ...]:
     """Project the existing compiler-selection arguments, consuming operands."""
     result: list[str] = []
-    for span in rust_flag_spans(arguments):
+    for span in rust_flag_spans(arguments, documenter=documenter):
         value = arguments[span.start]
         if span.codegen is not None:
             # This projection feeds real rustc and relative-path provenance;
@@ -943,22 +960,141 @@ def rust_link_arguments(arguments: Sequence[str]) -> tuple[str, ...]:
             result.extend(arguments[span.start : span.stop])
         elif value == "--":
             break
-        elif span.option in {"--crate-type", "--sysroot"}:
+        elif span.option == "--emit":
+            if documenter:
+                continue
+            # Probe outputs belong to its temporary root, never user destinations.
+            result.extend(("--emit", ",".join(_rust_emit_kinds(span.value or ""))))
+        elif value == "--test" or span.option in {"--crate-type", "--sysroot"}:
             result.extend(arguments[span.start : span.stop])
     return tuple(result)
 
 
 def rustc_crate_types(arguments: Sequence[str]) -> tuple[str, ...]:
-    kinds: list[str] = []
-    values = iter(canonical_rust_codegen_flags(rust_link_arguments(arguments)))
-    for argument in values:
-        if argument in {"-C", "--sysroot"}:
-            next(values)
-        elif argument == "--crate-type":
-            kinds.extend(_rust_crate_types(next(values)))
-        elif argument.startswith("--crate-type="):
-            kinds.extend(_rust_crate_types(argument.partition("=")[2]))
-    return tuple(kinds)
+    return tuple(
+        kind
+        for span in rust_flag_spans(arguments)
+        if span.option == "--crate-type"
+        for kind in _rust_crate_types(span.value or "")
+    )
+
+
+def rust_documenter_required(
+    invocation: CargoInvocation | None, flags: Sequence[str] = ()
+) -> bool:
+    if invocation is None or invocation.is_cargo_query:
+        return False
+    if invocation.may_run_doctests:
+        return True
+    arguments = (
+        *flags,
+        *invocation.compiler_arguments(documenter=True),
+    )
+    return invocation.subcommand in {"doc", "rustdoc"} and any(
+        arguments[span.start] == "--test"
+        for span in rust_flag_spans(arguments, documenter=True)
+    )
+
+
+def rust_compilation_mode(
+    argv: Sequence[str],
+    *,
+    cargo: bool,
+    cargo_invocation: CargoInvocation | None,
+    unit: str,
+    configured_flags: Sequence[str] = (),
+    documenter: bool = False,
+) -> Literal["query", "metadata", "codegen"]:
+    """Select the compiler operation before selecting its output artifact.
+
+    Cargo's compiler arguments add to its own emit selection. A forwarded
+    metadata emit does not remove Cargo's link output. Host build dependencies
+    still compile for check/documentation and forwarded compiler queries.
+    """
+    invocation = cargo_invocation
+    if invocation is not None and invocation.is_cargo_query:
+        return "query"
+    documenter = documenter or unit == "target-documenter"
+    if unit == "target-documenter" and invocation is None:
+        raise ValueError("documenter capability requires a Cargo operation")
+    if invocation is not None:
+        forwarded = (
+            ()
+            if unit == "host-proc-macro"
+            else invocation.compiler_arguments(documenter=documenter)
+        )
+    else:
+        forwarded = () if cargo else argv[1:]
+    arguments = (*configured_flags, *forwarded)
+    spans = tuple(rust_flag_spans(arguments, documenter=documenter))
+    for span in spans:
+        value = arguments[span.start]
+        short_flags = (*span.leading, value if span.option is None else "")
+        short_query = any(
+            flag.startswith("-")
+            and not flag.startswith("--")
+            and set(flag[1:]) <= set("hVvgO")
+            and set(flag[1:]) & set("hV")
+            for flag in short_flags
+        )
+        if (
+            value in {"--help", "--version"}
+            or short_query
+            or span.option == "--explain"
+        ):
+            return "query"
+        if span.option == "--print" and any(
+            item.partition("=")[0] not in {"link-args", "native-static-libs"}
+            for item in (span.value or "").split(",")
+        ):
+            return "query"
+    if (
+        invocation is not None
+        and unit == "target"
+        and (
+            invocation.subcommand in {"check", "clippy", "doc", "rustdoc"}
+            or (
+                invocation.subcommand == "rustc"
+                and ("--profile", "check") in invocation.option_values
+            )
+        )
+        and not any(
+            "link" in _rust_emit_kinds(span.value or "")
+            for span in spans
+            if span.option == "--emit"
+        )
+    ):
+        return "metadata"
+    if not cargo and not documenter:
+        emitted = tuple(
+            kind
+            for span in spans
+            if span.option == "--emit"
+            for kind in _rust_emit_kinds(span.value or "")
+        )
+        if emitted and "link" not in emitted:
+            return "metadata"
+    return "codegen"
+
+
+def _rust_emit_kinds(value: str) -> tuple[str, ...]:
+    kinds = tuple(item.partition("=")[0] for item in value.split(","))
+    if any(
+        kind
+        not in {
+            "asm",
+            "llvm-bc",
+            "llvm-ir",
+            "obj",
+            "metadata",
+            "link",
+            "dep-info",
+            "mir",
+        }
+        for kind in kinds
+    ):
+        raise ValueError("Rust emit selection is invalid")
+    return kinds
 
 
 def rust_link_artifact_selection(
@@ -968,6 +1104,7 @@ def rust_link_artifact_selection(
     cargo_invocation: CargoInvocation | None,
     unit: str,
     manifest_crate_types: Sequence[str] | None = None,
+    configured_flags: Sequence[str] = (),
 ) -> dict[str, object]:
     """Bind explicit output kinds without inventing an executable for libraries.
 
@@ -976,16 +1113,23 @@ def rust_link_artifact_selection(
     types require the retained selected manifest base and remain additive.
     Direct rustc crate types replace rustc's default bin.
     """
-    if unit == "host-proc-macro":
+    mode = rust_compilation_mode(
+        argv,
+        cargo=cargo,
+        cargo_invocation=cargo_invocation,
+        unit=unit,
+        configured_flags=configured_flags,
+    )
+    if unit in {"host-proc-macro", "target-documenter"}:
         if manifest_crate_types is not None:
             raise ValueError(
-                "host proc-macro probe cannot inherit target manifest kinds"
+                "host/documenter capability cannot inherit target manifest kinds"
             )
         return {
             "cargo_crate_types": None,
-            "rustc_crate_types": ["proc-macro"],
+            "rustc_crate_types": ["proc-macro" if unit == "host-proc-macro" else "bin"],
             "manifest_crate_types": None,
-            "link_required": True,
+            "link_required": mode == "codegen",
         }
     # Admission owns the role before executable binding changes its basename.
     invocation = cargo_invocation
@@ -993,10 +1137,19 @@ def rust_link_artifact_selection(
         raise ValueError("Cargo artifact selection requires a Cargo owner")
     override = None if invocation is None else invocation.crate_types
     forwarded = (
-        invocation.forwarded if invocation is not None else (() if cargo else argv[1:])
+        invocation.compiler_arguments()
+        if invocation is not None
+        else (() if cargo else argv[1:])
     )
-    kinds = rustc_crate_types(forwarded)
-    requires_manifest = cargo and override is None and bool(kinds)
+    compiler_flags = (*configured_flags, *forwarded)
+    kinds = rustc_crate_types(compiler_flags)
+    test_harness = any(
+        compiler_flags[span.start] == "--test"
+        for span in rust_flag_spans(compiler_flags)
+    )
+    requires_manifest = (
+        cargo and override is None and bool(rustc_crate_types(forwarded))
+    )
     if requires_manifest != (manifest_crate_types is not None):
         raise ValueError(
             "forwarded Cargo crate types require the selected manifest base"
@@ -1014,8 +1167,12 @@ def rust_link_artifact_selection(
         "cargo_crate_types": None if override is None else list(override),
         "manifest_crate_types": None if base is None else list(base),
         "rustc_crate_types": list(kinds),
-        "link_required": any(
-            kind not in {"lib", "rlib", "staticlib"} for kind in effective
+        "link_required": (
+            mode == "codegen"
+            and (
+                test_harness
+                or any(kind not in {"lib", "rlib", "staticlib"} for kind in effective)
+            )
         ),
     }
 

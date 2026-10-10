@@ -13,6 +13,7 @@ import shlex
 import shutil
 import sys
 import stat
+import tempfile
 import tomllib
 from collections.abc import Generator, Iterator, MutableMapping
 from contextlib import ExitStack, contextmanager
@@ -28,6 +29,7 @@ from molt.cli.cargo_target_cfg import (
     cargo_target_query_arguments,
     parse_rustc_target_metadata,
     select_cargo_target_flags,
+    rust_probe_arguments,
 )
 from molt.exact_json import canonical_json_sha256, string_keyed_mapping
 from molt.rust_toolchain import (
@@ -103,6 +105,19 @@ class _CargoEnvironment(MutableMapping[str, str]):
 class CargoConfigurationInput:
     label: str
     identity: StableRegularFileIdentity
+    document: Mapping[str, object]
+
+    @property
+    def path(self) -> Path:
+        return self.identity.path
+
+
+@dataclass(frozen=True, slots=True)
+class CargoConfigurationSource:
+    """Frozen configuration input, without fabricated live file identity."""
+
+    label: str
+    path: Path
     document: Mapping[str, object]
 
 
@@ -1143,6 +1158,13 @@ def _apply_cargo_environment(
 
 def _capture_config(path: Path, *, label: str) -> CargoConfigurationInput:
     identity, raw = capture_stable_regular_file(path, label=label)
+    return CargoConfigurationInput(
+        label, identity, cargo_configuration_document(raw, path)
+    )
+
+
+def cargo_configuration_document(raw: bytes, path: Path) -> Mapping[str, object]:
+    """Parse captured Cargo bytes with their existing path-origin semantics."""
     try:
         value = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeError, tomllib.TOMLDecodeError) as exc:
@@ -1174,7 +1196,7 @@ def _capture_config(path: Path, *, label: str) -> CargoConfigurationInput:
             and not Path(command).is_absolute()
         ):
             table[key] = str((path.parent.parent / command).resolve(strict=False))
-    return CargoConfigurationInput(label, identity, _freeze_json(value))
+    return _freeze_json(value)
 
 
 def _command_options(command: Sequence[str]) -> tuple[str | None, tuple[str, ...]]:
@@ -1381,13 +1403,19 @@ def _rust_target_metadata(
     env: Mapping[str, str],
     wrappers: Mapping[str, Path] = MappingProxyType({}),
 ) -> RustcTargetMetadata:
-    with _rust_probe_command(
-        rustc, wrappers, label="runtime rustc target metadata"
-    ) as command:
+    with (
+        tempfile.TemporaryDirectory(prefix="molt-rust-cfg-") as scratch,
+        _rust_probe_command(
+            rustc, wrappers, label="runtime rustc target metadata"
+        ) as command,
+    ):
+        scratch_root = Path(scratch)
+        (scratch_root / "output").mkdir()
+        safe_flags = rust_probe_arguments(flags, scratch_root)
         probe_environment = dict(env)
         probe_environment.pop("RUSTC_LOG", None)
         result = process_guard.run_completed_command(
-            [*command, *cargo_target_query_arguments(target, flags)],
+            [*command, *cargo_target_query_arguments(target, safe_flags)],
             cwd=root,
             env=probe_environment,
             input="",
@@ -1403,6 +1431,15 @@ def _rust_target_metadata(
             f"runtime rustc target metadata failed ({result.returncode}): {result.stderr.strip()}"
         )
     return parse_rustc_target_metadata(result.stdout, result.stderr)
+
+
+def cargo_environment_force_overrides(
+    forced_environment: Sequence[str],
+) -> tuple[str, ...]:
+    """Keep resolved environment values from being replaced again by Cargo."""
+    return tuple(
+        "env." + json.dumps(name) + ".force=false" for name in forced_environment
+    )
 
 
 def _pinned_tool_configurations(
@@ -1437,9 +1474,7 @@ def _pinned_tool_configurations(
     )
     # The resolved environment already contains the selected value. Disable
     # child-time force overrides so they cannot replace pinned executable paths.
-    env_pins = tuple(
-        "env." + json.dumps(name) + ".force=false" for name in forced_environment
-    )
+    env_pins = cargo_environment_force_overrides(forced_environment)
     return (*pinned, *((value, value) for value in env_pins))
 
 
@@ -1905,30 +1940,122 @@ class RuntimeCargoPlan:
         return ancestry[-1] == "dev"
 
 
-def resolve_runtime_cargo_plan(
+def cargo_requested_target(
+    configuration: Mapping[str, object],
+    cli: Mapping[str, object],
+    environment: Mapping[str, str],
+    command_target: str | None,
+) -> str | None:
+    """One Cargo target precedence authority for runtime and proof capture."""
+    configured = cargo_selected_value(
+        configuration, cli, environment, ("build", "target"), ("CARGO_BUILD_TARGET",)
+    )
+    selected = command_target or configured
+    if selected is not None and (
+        not isinstance(selected, str) or not selected or selected.endswith(".json")
+    ):
+        raise ValueError("Cargo requires one content-known target triple")
+    return selected
+
+
+def cargo_flag_inputs(
+    configuration: Mapping[str, object],
+    cli: Mapping[str, object],
+    environment: Mapping[str, str],
+    target: str,
+    *,
+    flag_kind: str = "rustflags",
+) -> tuple:
+    """Select Cargo flag sources once; cfg matching remains rustc-derived."""
+    if flag_kind not in {"rustflags", "rustdocflags"}:
+        raise ValueError("unknown Cargo compiler flag family")
+    cargo_target = target.upper().replace("-", "_")
+    configured_targets, cli_targets = (
+        configuration.get("target", {}),
+        cli.get("target", {}),
+    )
+    if not isinstance(configured_targets, Mapping) or not isinstance(
+        cli_targets, Mapping
+    ):
+        raise ValueError("runtime Cargo target configuration must be a table")
+    target_tables = _merge(
+        _table(configured_targets, label="target"),
+        _table(cli_targets, label="CLI target"),
+    )
+    cfg_tables = {
+        key: _table(value, label=f"target.{key}")
+        for key, value in target_tables.items()
+        if key.startswith("cfg(")
+    }
+    target_flags = _cargo_string_list(
+        configuration,
+        cli,
+        environment,
+        ("target", target, flag_kind),
+        f"CARGO_TARGET_{cargo_target}_{flag_kind.upper()}",
+    )
+    build_flags = _cargo_string_list(
+        configuration,
+        cli,
+        environment,
+        ("build", flag_kind),
+        "CARGO_BUILD_" + flag_kind.upper(),
+    )
+    environment_flags = None
+    if "CARGO_ENCODED_" + flag_kind.upper() in environment:
+        encoded = environment["CARGO_ENCODED_" + flag_kind.upper()]
+        environment_flags = tuple(encoded.split("\x1f")) if encoded else ()
+    elif flag_kind.upper() in environment:
+        environment_flags = _flags(
+            environment[flag_kind.upper()], label=flag_kind.upper()
+        )
+    return cfg_tables, target_flags, build_flags, environment_flags
+
+
+def capture_cargo_configuration_inputs(
     project_root: Path,
     *,
     env: Mapping[str, str],
     cargo_command: Sequence[str],
-    requested_target: str | None,
-    host_target: str | None = None,
-    environment_transform: Callable[[Mapping[str, str]], Mapping[str, str]]
-    | None = None,
-    rustflags_transform: Callable[[tuple[str, ...]], tuple[str, ...]] | None = None,
-) -> RuntimeCargoPlan:
-    root = project_root.resolve(strict=True)
+    captured_sources: Mapping[str, CargoConfigurationSource] | None = None,
+    captured_paths: Sequence[Path] | None = None,
+) -> tuple:
+    """Capture Cargo configuration before any compiler or native tool probe.
+
+    Shared by runtime planning and proof capability selection. The returned
+    documents retain the existing merge and configured-environment authority.
+    """
+    root = (
+        project_root.resolve(strict=True) if captured_sources is None else project_root
+    )
     if not cargo_command or not all(
         isinstance(item, str) and item for item in cargo_command
     ):
         raise ValueError("runtime Cargo command is empty or malformed")
-    if any(item.startswith("+") for item in cargo_command[1:2]):
-        raise ValueError(
-            "runtime Cargo toolchain selector must be resolved through RUSTUP_TOOLCHAIN"
-        )
     environment = _CargoEnvironment(env)
-    paths = cargo_configuration_paths(root, environment)
+    paths = (
+        cargo_configuration_paths(root, environment)
+        if captured_paths is None
+        else tuple(captured_paths)
+    )
+
+    def read(path: Path, *, label: str):
+        if captured_sources is None:
+            return _capture_config(path, label=label)
+        value = captured_sources.get(label)
+        if value is None or value.label != label:
+            raise ValueError("Cargo configuration source custody is incomplete")
+        return value
+
+    def exists(path: Path) -> bool:
+        return (
+            path.is_file()
+            if captured_sources is None
+            else any(source.path == path for source in captured_sources.values())
+        )
+
     inputs = [
-        _capture_config(path, label=f"cargo-config/{index}/{path.name}")
+        read(path, label=f"cargo-config/{index}/{path.name}")
         for index, path in enumerate(paths)
     ]
     configuration: dict[str, object] = {}
@@ -1936,14 +2063,12 @@ def resolve_runtime_cargo_plan(
     for item in inputs:
         configuration = _merge(configuration, item.document)
         _environment_origins(
-            item.document, item.identity.path.parent.parent, environment_origins
+            item.document, item.path.parent.parent, environment_origins
         )
     profiles: dict[str, object] = {}
     manifest = root / "Cargo.toml"
-    if manifest.is_file():
-        profile_input = _capture_config(
-            manifest, label="cargo-profile-manifest/Cargo.toml"
-        )
+    if exists(manifest):
+        profile_input = read(manifest, label="cargo-profile-manifest/Cargo.toml")
         inputs.append(profile_input)
         profiles = dict(profile_input.document)
     profiles = _merge(profiles, configuration)
@@ -1953,13 +2078,13 @@ def resolve_runtime_cargo_plan(
         candidate = Path(override)
         if not candidate.is_absolute():
             candidate = root / candidate
-        if "=" not in override or candidate.is_file():
-            captured = _capture_config(
+        if "=" not in override or exists(candidate):
+            captured = read(
                 candidate, label=f"cargo-cli-config/{index}/{candidate.name}"
             )
             inputs.append(captured)
             document = captured.document
-            environment_base = captured.identity.path.parent.parent
+            environment_base = captured.path.parent.parent
         else:
             try:
                 document = tomllib.loads(override)
@@ -1976,6 +2101,49 @@ def resolve_runtime_cargo_plan(
         _environment_origins(document, environment_base, environment_origins)
     environment, forced_environment, environment_resources = _apply_cargo_environment(
         configuration, cli, environment, environment_origins
+    )
+    return (
+        root,
+        environment,
+        paths,
+        inputs,
+        configuration,
+        profiles,
+        command_target,
+        cli,
+        forced_environment,
+        environment_resources,
+    )
+
+
+def resolve_runtime_cargo_plan(
+    project_root: Path,
+    *,
+    env: Mapping[str, str],
+    cargo_command: Sequence[str],
+    requested_target: str | None,
+    host_target: str | None = None,
+    environment_transform: Callable[[Mapping[str, str]], Mapping[str, str]]
+    | None = None,
+    rustflags_transform: Callable[[tuple[str, ...]], tuple[str, ...]] | None = None,
+) -> RuntimeCargoPlan:
+    if any(item.startswith("+") for item in cargo_command[1:2]):
+        raise ValueError(
+            "runtime Cargo toolchain selector must be resolved through RUSTUP_TOOLCHAIN"
+        )
+    (
+        root,
+        environment,
+        paths,
+        inputs,
+        configuration,
+        profiles,
+        command_target,
+        cli,
+        forced_environment,
+        environment_resources,
+    ) = capture_cargo_configuration_inputs(
+        project_root, env=env, cargo_command=cargo_command
     )
     if environment_transform is not None:
         environment = _CargoEnvironment(
@@ -2036,12 +2204,11 @@ def resolve_runtime_cargo_plan(
         if result.returncode != 0 or match is None:
             raise ValueError("runtime rustc host selection could not be proven")
         host_target = match.group(1)
-    configured_target = cargo_selected_value(
-        configuration, cli, environment, ("build", "target"), ("CARGO_BUILD_TARGET",)
+    configured_target = cargo_requested_target(configuration, cli, environment, None)
+    target = (
+        cargo_requested_target(configuration, cli, environment, command_target)
+        or host_target
     )
-    target = command_target or configured_target or host_target
-    if not isinstance(target, str) or not target or target.endswith(".json"):
-        raise ValueError("runtime Cargo requires one content-known target triple")
     if requested_target is None and target != host_target:
         raise ValueError(
             "runtime implicit cross target requires explicit target selection"
@@ -2081,43 +2248,9 @@ def resolve_runtime_cargo_plan(
         environment.setdefault(
             f"CARGO_TARGET_{cargo_target}_LINKER", str(wasi_plan.linker)
         )
-    configured_targets, cli_targets = (
-        configuration.get("target", {}),
-        cli.get("target", {}),
+    cfg_tables, target_flags, build_flags, environment_flags = cargo_flag_inputs(
+        configuration, cli, environment, target
     )
-    if not isinstance(configured_targets, Mapping) or not isinstance(
-        cli_targets, Mapping
-    ):
-        raise ValueError("runtime Cargo target configuration must be a table")
-    target_tables = _merge(
-        _table(configured_targets, label="target"),
-        _table(cli_targets, label="CLI target"),
-    )
-    cfg_tables = {
-        key: _table(value, label=f"target.{key}")
-        for key, value in target_tables.items()
-        if key.startswith("cfg(")
-    }
-    target_flags = _cargo_string_list(
-        configuration,
-        cli,
-        environment,
-        ("target", target, "rustflags"),
-        f"CARGO_TARGET_{cargo_target}_RUSTFLAGS",
-    )
-    build_flags = _cargo_string_list(
-        configuration,
-        cli,
-        environment,
-        ("build", "rustflags"),
-        "CARGO_BUILD_RUSTFLAGS",
-    )
-    environment_flags = None
-    if "CARGO_ENCODED_RUSTFLAGS" in environment:
-        encoded = environment["CARGO_ENCODED_RUSTFLAGS"]
-        environment_flags = tuple(encoded.split("\x1f")) if encoded else ()
-    elif "RUSTFLAGS" in environment:
-        environment_flags = _flags(environment["RUSTFLAGS"], label="RUSTFLAGS")
     target_argument = (
         target if command_target is not None or configured_target is not None else None
     )

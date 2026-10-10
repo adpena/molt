@@ -322,8 +322,38 @@ _RUST_VALUE_OPTIONS = frozenset(
 _RUST_SHORT_VALUE_OPTIONS = frozenset("CLloAWDFZ")
 _RUST_SHORT_FLAGS = frozenset("hVvgO")
 
+# Rustdoc 1.99 stable option arity (librustdoc/lib.rs::opts). This extends
+# lexical boundaries only when the caller selects the documenter grammar.
+_RUSTDOC_VALUE_OPTIONS = frozenset(
+    {
+        "--output-format",
+        "--output",
+        "--library-path",
+        "--test-args",
+        "--test-run-directory",
+        "--markdown-css",
+        "--html-in-header",
+        "--html-before-content",
+        "--html-after-content",
+        "--markdown-playground-url",
+        "--extend-css",
+        "--crate-version",
+        "--default-theme",
+        "--theme",
+        "--check-theme",
+        "--test-runtool",
+        "--test-runtool-arg",
+        "--plugin-path",
+        "--passes",
+        "--plugins",
+        "--input-format",
+    }
+)
 
-def rust_flag_spans(arguments: Sequence[str]) -> Iterator[RustFlagSpan]:
+
+def rust_flag_spans(
+    arguments: Sequence[str], *, documenter: bool = False
+) -> Iterator[RustFlagSpan]:
     """Consume rustc's lexical option boundaries without shell tokenization."""
     index = 0
     while index < len(arguments):
@@ -337,7 +367,12 @@ def rust_flag_spans(arguments: Sequence[str]) -> Iterator[RustFlagSpan]:
         leading: tuple[str, ...] = ()
         if argument.startswith("--"):
             key, separator, operand = argument.partition("=")
-            if key == "--codegen" or key in _RUST_VALUE_OPTIONS:
+            if (
+                key == "--codegen"
+                or key in _RUST_VALUE_OPTIONS
+                or documenter
+                and key in _RUSTDOC_VALUE_OPTIONS
+            ):
                 option = "-C" if key == "--codegen" else key
                 if separator:
                     value = operand
@@ -345,7 +380,11 @@ def rust_flag_spans(arguments: Sequence[str]) -> Iterator[RustFlagSpan]:
             for offset, character in enumerate(argument[1:], start=1):
                 if character in _RUST_SHORT_FLAGS:
                     continue
-                if character in _RUST_SHORT_VALUE_OPTIONS:
+                if (
+                    character in _RUST_SHORT_VALUE_OPTIONS
+                    or documenter
+                    and character in "wer"
+                ):
                     option = "-" + character
                     leading = (argument[:offset],) if offset > 1 else ()
                     value = argument[offset + 1 :] or None

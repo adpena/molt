@@ -137,6 +137,72 @@ class RustcTargetMetadata:
         return self.sysroot / "lib" / "rustlib" / target / "lib"
 
 
+def rust_probe_arguments(
+    arguments: tuple[str, ...], root: Path, *, documenter: bool = False
+) -> tuple[str, ...]:
+    """Confine output-bearing Rust arguments before executing an owned probe.
+
+    Callers retain original tokens for semantic/source custody. Queries replace
+    user print requests with their own exact metadata request; compilation mode
+    is decided from the originals. Rust response files remain an explicit
+    unsupported custody boundary, shared with runtime resource capture.
+    """
+    from molt.rust_toolchain import rust_flag_spans
+
+    if any(token.startswith("@") for token in arguments):
+        raise ValueError("Rust argument response files require parsed argument custody")
+    result: list[str] = []
+    for span in rust_flag_spans(arguments, documenter=documenter):
+        token = arguments[span.start]
+        leading = tuple(
+            "-" + "".join(char for char in flag[1:] if char not in "hV")
+            for flag in span.leading
+        )
+        leading = tuple(flag for flag in leading if flag != "-")
+        if (
+            span.option is None
+            and token.startswith("-")
+            and not token.startswith("--")
+            and set(token[1:]) <= set("hVvgO")
+        ):
+            preserved = "-" + "".join(char for char in token[1:] if char not in "hV")
+            if preserved != "-":
+                result.append(preserved)
+            continue
+        if span.option in {"--print", "--explain"} or token in {
+            "--help",
+            "--version",
+            "-h",
+            "-V",
+            "-vV",
+        }:
+            continue
+        if span.option == "--emit":
+            if documenter:
+                continue  # Rustdoc HTML/dep-info outputs never belong in rustc probes.
+            result.extend(
+                (
+                    "--emit",
+                    ",".join(item.partition("=")[0] for item in span.value.split(",")),
+                )
+            )
+        elif span.option in {"-o", "--out-dir"}:
+            result.extend(
+                (
+                    *leading,
+                    span.option,
+                    str(root / ("probe" if span.option == "-o" else "output")),
+                )
+            )
+        elif span.codegen is not None and span.codegen.startswith("incremental="):
+            result.extend((*leading, "-C", "incremental=" + str(root / "incremental")))
+        elif leading != span.leading and span.option is not None:
+            result.extend((*leading, span.option, span.value))
+        else:
+            result.extend(arguments[span.start : span.stop])
+    return tuple(result)
+
+
 def cargo_target_query_arguments(
     target: str | None, flags: tuple[str, ...]
 ) -> tuple[str, ...]:
@@ -208,6 +274,8 @@ def select_cargo_target_flags(
     flags: Callable[[object], tuple[str, ...]],
     probe: Callable[[tuple[str, ...]], CfgFacts],
     transform: Callable[[tuple[str, ...]], tuple[str, ...]] | None = None,
+    flag_kind: str = "rustflags",
+    cfg_facts: CfgFacts | None = None,
 ) -> tuple[tuple[str, ...], tuple[tuple[str, Mapping[str, object]], ...]]:
     predicates = tuple(
         (key, parse_cargo_cfg(key), value) for key, value in sorted(tables.items())
@@ -228,15 +296,18 @@ def select_cargo_target_flags(
         combined = target_flags + tuple(
             token
             for _, table in matches
-            if "rustflags" in table
-            for token in flags(table["rustflags"])
+            if flag_kind in table
+            for token in flags(table[flag_kind])
         )
         # Cargo treats an empty target flag vector as absent, not an override.
         return combined or build_flags
 
     current = selected(())
     matched: tuple[tuple[str, Mapping[str, object]], ...] = ()
-    if predicates:
+    if cfg_facts is not None:
+        matched = matching(cfg_facts)
+        current = selected(matched)
+    elif predicates:
         for _turn in range(2):
             matched = matching(probe(current))
             next_flags = selected(matched)
