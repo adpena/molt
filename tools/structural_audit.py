@@ -2966,7 +2966,7 @@ def probe_stdlib_raw_intrinsic_names(root: Path) -> list[Finding]:
     return findings
 
 
-# --- scratch and artifact-root authority (HF-41, HF-71) ----------------------
+# --- scratch and artifact-root authority (HF-F103, HF-F104) ------------------
 
 # Python that places scratch or artifacts. molt.dx owns the artifact root
 # (configured_artifact_root, artifact_root) and run scratch (scratch_root,
