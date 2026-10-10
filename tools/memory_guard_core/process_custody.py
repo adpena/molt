@@ -954,6 +954,11 @@ def _terminate_single_pid(pid: int, *, grace: float) -> bool:
 
 
 _EXIT_PROBE_INTERVAL_S = 0.02
+# How long a SIGKILLed target may take to disappear before the guard reports it
+# live. Independent of the caller's TERM grace: a zero grace means "kill now",
+# not "the kernel tears the tree down in 20 ms". The probe stops at ESRCH, so a
+# prompt exit costs one probe interval.
+_KILL_EXIT_OBSERVATION_S = 2.0
 
 
 def _signal_probe_reports_absence(probe: Callable[[], None], *, grace: float) -> bool:
@@ -1391,7 +1396,11 @@ def terminate_watched_processes(
             action.target_id,
             identities,
             sampler=sampler,
-            grace=grace,
+            grace=(
+                max(grace, _KILL_EXIT_OBSERVATION_S)
+                if action.signal == fallback_kill_signal()
+                else grace
+            ),
         )
         actions.append(terminal)
         if terminal.result == "exited":
