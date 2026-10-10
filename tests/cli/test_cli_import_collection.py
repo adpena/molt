@@ -19131,7 +19131,7 @@ def test_stdlib_module_init_scan_excludes_lazy_regex_and_struct_edges() -> None:
         )
 
 
-def test_codecs_graph_retains_reentrant_os_guard_but_prunes_lazy_regex() -> None:
+def test_codecs_graph_stays_minimal_and_prunes_lazy_regex() -> None:
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve()]
     roots = module_roots + [stdlib_root]
@@ -19153,11 +19153,11 @@ def test_codecs_graph_retains_reentrant_os_guard_but_prunes_lazy_regex() -> None
     graph = discovery_result.graph
     _explicit_imports = discovery_result.explicit_imports
 
+    # codecs imports only sys and the intrinsic loader at module level (its
+    # os reentrancy guard left with d2fafa188); lazy regex and warnings stay out.
     assert "codecs" in graph
-    assert "os" in graph
-    assert "typing" in graph
-    assert "warnings" not in graph
-    assert "re" not in graph
+    for heavy in ("os", "typing", "warnings", "re"):
+        assert heavy not in graph, heavy
 
 
 def test_decimal_graph_keeps_intrinsic_dependencies_without_typing_or_regex(
