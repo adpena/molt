@@ -1352,6 +1352,7 @@ resource_class = "scheduled-suite"
 # command spelling is never duplicated in YAML.
 [[command]]
 id = "nightly.shards.prepare"
+cargo_native_c_units = ["target"]
 family = "nightly_shard_prepare"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1423,6 +1424,7 @@ toolchains = ["python", "uv"]
 # outlive it.
 [[command]]
 id = "nightly.determinism.compiler-prewarm"
+cargo_native_c_units = ["target"]
 family = "nightly_determinism"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1436,6 +1438,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
 [[command]]
 id = "nightly.determinism.runtime"
+cargo_native_c_units = ["target"]
 family = "nightly_determinism"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1474,6 +1477,7 @@ toolchains = ["python", "uv", "rustc", "cargo"]
 # outlive it.
 [[command]]
 id = "nightly.verification-t3.compiler-prewarm"
+cargo_native_c_units = ["target"]
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1492,6 +1496,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 # `-u` streams progress, so a timeout shows how far the sweep got.
 [[command]]
 id = "nightly.verification-t3.reproducibility"
+cargo_native_c_units = ["target"]
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1508,6 +1513,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "clang"]
 # room for 100 after the cold prewarm.
 [[command]]
 id = "nightly.verification-t3.fuzz-compiler"
+cargo_native_c_units = ["target"]
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1536,6 +1542,7 @@ toolchains = ["python", "uv"]
 # other Tier 3 suites in Nightly run 37953183680.
 [[command]]
 id = "nightly.verification-t3.translation"
+cargo_native_c_units = ["target"]
 family = "nightly_verification_t3"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["scheduled"]
@@ -1720,6 +1727,7 @@ toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "portability.rust.macos.runtime-gate"
+cargo_native_c_units = ["target"]
 family = "platform_portability"
 cell = "macos-arm64-py312-rust-native-dev"
 tiers = ["main"]
@@ -2398,6 +2406,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools
 
 [[command]]
 id = "wasm.test.finally-pending-observer-parity"
+cargo_native_c_units = ["target"]
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
 tiers = ["pr", "main"]
@@ -2414,6 +2423,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-config", "ld.lld"
 # admit that once through the CLI, without a second build-only pass.
 [[command]]
 id = "wasm.test.import-from-codec-parity"
+cargo_native_c_units = ["target"]
 evidence_outputs = ["proof-receipts/evidence/import-from-codec"]
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
@@ -2673,6 +2683,7 @@ toolchains = ["python", "uv", "rustc", "clang", "llvm-ar", "llvm-nm", "wasm-ld"]
 
 [[command]]
 id = "native.integration.bench-cli"
+cargo_native_c_units = ["target"]
 family = "native_integration"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["main"]
@@ -2688,6 +2699,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 # build and reuse its dev-fast native backend instead of building their own.
 [[command]]
 id = "native.integration.capability-manifest"
+cargo_native_c_units = ["target"]
 family = "native_integration"
 cell = "linux-x86_64-py312-native-dev"
 tiers = ["pr", "main"]
@@ -2797,6 +2809,7 @@ toolchains = ["cargo", "lune", "node", "wasm-ld"]
 
 [[command]]
 id = "rust.test.ir-wasm-runtime-authorities"
+cargo_native_c_units = ["target"]
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
@@ -2814,11 +2827,12 @@ dependencies = []
 # default-truth owns feature-enabled native and the two-cell WASM artifact target.
 # Emit assertion detail immediately; a later fatal ownership check must not
 # erase the earlier mismatch diagnostics held by libtest's output capture.
-argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set", "--", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "test_raw_compression_c_exports_are_linkable", "--nocapture", "--test-threads=1"]
-toolchains = ["cargo", "node", "wasm-ld"]
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.molt-runtime.opt-level=0", "--no-fail-fast", "--lib", "--test", "ownership_memory_contracts", "--test", "test_builtins", "-p", "molt-passes", "-p", "molt-backend-wasm", "-p", "molt-runtime", "--no-default-features", "--features", "molt-passes/native-backend,molt-passes/wasm-backend,molt-passes/test-util,molt-backend-wasm/test-util,molt-runtime/stdlib_micro,molt-runtime/builtin_complex,molt-runtime/builtin_set", "--", "tir::", "wasm::", "wasm_abi::", "async_rt::channels::", "async_rt::net_stubs::", "intrinsics::registry::", "call::", "object::", "arena::", "seq_snapshot_bridge::", "builtins::attr::", "builtins::classes::", "builtins::frames::", "builtins::types::", "builtins::modules::", "builtins::functions::function_abi::", "builtins::attributes::", "builtin_bootstrap_lookup", "test_raw_compression_c_exports_are_linkable", "--nocapture", "--test-threads=1"]
+toolchains = ["rustc", "cargo", "node", "wasm-ld"]
 
 [[command]]
 id = "rust.test.runtime-cold-lifecycle"
+cargo_native_c_units = ["target"]
 family = "rust"
 cell = "linux-x86_64-rust-native-release-output"
 tiers = ["pre-push", "pr", "main"]
@@ -2957,6 +2971,7 @@ toolchains = ["python", "uv", "clang", "llvm-config", "ld.lld"]
 
 [[command]]
 id = "llvm.test.differential"
+cargo_native_c_units = ["target"]
 family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["main", "scheduled"]
@@ -4023,6 +4038,7 @@ timeout_seconds = 1800
 
 [[named_lane]]
 id = "pact.witness.acceptance.native"
+cargo_native_c_units = ["target"]
 description = "Pact Kernel A native acceptance: build and execute field_solve.py, compare the oracle, publish a portable acceptance receipt."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tools/pact_witness_acceptance.py", "--target", "native"]
 toolchains = ["python", "uv", "rustc", "cargo", "clang"]
@@ -4054,6 +4070,7 @@ timeout_seconds = 900
 
 [[named_lane]]
 id = "r6.target-version-parity.py312"
+cargo_native_c_units = ["target"]
 description = "R6 target-version parity for CPython 3.12: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.12", "--build-profile", "dev", "--fail-fast", "tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
@@ -4063,6 +4080,7 @@ timeout_seconds = 900
 
 [[named_lane]]
 id = "r6.target-version-parity.py313"
+cargo_native_c_units = ["target"]
 description = "R6 target-version parity for CPython 3.13: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.13", "--build-profile", "dev", "--fail-fast", "tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
@@ -4072,6 +4090,7 @@ timeout_seconds = 900
 
 [[named_lane]]
 id = "r6.target-version-parity.py314"
+cargo_native_c_units = ["target"]
 description = "R6 target-version parity for CPython 3.14: sys metadata, stat, queue shutdown and removed-module fixtures; a missing target interpreter fails closed."
 argv = ["uv", "run", "--active", "--project", ".", "--python", "3.12", "--no-sync", "--no-config", "python", "tests/molt_diff.py", "--jobs", "1", "--python-version", "3.14", "--build-profile", "dev", "--fail-fast", "tests/differential/stdlib/sys_metadata_intrinsics.py", "tests/differential/stdlib/sys_stat_version_gate.py", "tests/differential/stdlib/stat_api_surface_versioned.py", "tests/differential/stdlib/queue_shutdown_version_gate.py", "tests/differential/stdlib/removed_stdlib_modules_version_gate.py"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
