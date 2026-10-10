@@ -4667,20 +4667,21 @@ def test_ninja_identity_binds_locked_release_and_observed_distribution_banner(
         ]
         if item["name"] == "ninja"
     )
-    assert package["version"] == policy.data["setup_value"] == "1.13.0"
+    assert package["version"] == policy.data["setup_value"] == "1.13.2"
     assert any(
         wheel["hash"]
-        == "sha256:fa2a8bfc62e31b08f83127d1613d10821775a0eb334197154c4d6067b7068ff1"
+        == "sha256:fd82e26c0706ad4ab88e5fdd26f3fab0a987a90f810160f6c322e752c6af298b"
         for wheel in package["wheels"]
     )
     pattern = str(policy.data["version_pattern"])
-    observed = "1.13.0.git.kitware.jobserver-pipe-1"
+    observed = "1.13.2"
     assert re.fullmatch(pattern, observed)
     for rejected in (
         "1.13.1.git.kitware.jobserver-pipe-1",
-        "1.13.01",
-        "1.13.0.git.unowned",
-        "1.13.0.git.kitware.jobserver-pipe-2",
+        "1.13.0",
+        "1.13.21",
+        "1.13.2.git.unowned",
+        "1.13.2.git.kitware.jobserver-pipe-2",
     ):
         assert not re.fullmatch(pattern, rejected)
     executable = tmp_path / "ninja"
