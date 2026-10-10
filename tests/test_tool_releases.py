@@ -828,7 +828,9 @@ def test_pinned_discovery_keeps_explicit_tool_state_across_source_and_cwd(
         (tmp_path / "config/tool_releases.toml").read_bytes()
     )
     if source_kind == "bundle":
-        (source / "release-compiler-source.json").write_text("layout marker only")
+        (source / "release-compiler-source.json").write_text(
+            "layout marker only", encoding="utf-8"
+        )
     guest = tmp_path / "unrelated guest"
     guest.mkdir()
     monkeypatch.chdir(guest)
@@ -894,7 +896,9 @@ def test_installed_tool_discovery_uses_home_default_without_creating_state(
     (source / "config/tool_releases.toml").write_bytes(
         (tmp_path / "config/tool_releases.toml").read_bytes()
     )
-    (source / "release-compiler-source.json").write_text("layout marker only")
+    (source / "release-compiler-source.json").write_text(
+        "layout marker only", encoding="utf-8"
+    )
     assert tool_releases.require_pinned_tool("demo", source) == discovery
     assert not (tmp_path / "source/target-root").exists()
 

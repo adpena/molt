@@ -379,7 +379,9 @@ def test_direct_cargo_sccache_uses_selected_environment_and_installed_home(
     discovery = _installed_demo(tmp_path, monkeypatch)
     source = tmp_path / "bundle/source"
     source.mkdir(parents=True)
-    (source / "release-compiler-source.json").write_text("layout only")
+    (source / "release-compiler-source.json").write_text(
+        "layout only", encoding="utf-8"
+    )
     monkeypatch.setattr(tool_releases, "compiler_source_root", lambda: source)
     # Reuse the actual attested fixture generation at the generic release owner.
     monkeypatch.setattr(
@@ -396,7 +398,7 @@ def test_direct_cargo_sccache_uses_selected_environment_and_installed_home(
         is None
     )
     invalid = tmp_path / "invalid"
-    invalid.write_text("not a directory")
+    invalid.write_text("not a directory", encoding="utf-8")
     import pytest
 
     with pytest.raises(tool_releases.ToolReleaseError, match="not a directory"):

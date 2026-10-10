@@ -206,7 +206,7 @@ def test_build_and_ir_receipt_environments_match_real_children(
             and "from molt.frontend import compile_to_tir" in command[2]
         ):
             phase = "compiler"
-            assert kwargs["input"] == source.read_text()
+            assert kwargs["input"] == source.read_text(encoding="utf-8")
             tail = "print('{}')"
         else:
             return real_guard(command, **kwargs)
@@ -260,7 +260,7 @@ def test_build_and_ir_receipt_environments_match_real_children(
         for index, (row, witness) in enumerate(
             zip(result["observations"], witnesses[phase], strict=True)
         ):
-            observed = json.loads(witness.read_text())
+            observed = json.loads(witness.read_text(encoding="utf-8"))
             launch = row[phase]
             assert launch["environment"] == observed["environment"]
             assert launch["argv"] == observed["argv"]
@@ -341,7 +341,7 @@ def test_malformed_artifact_shape_is_a_counted_error(
     tmp_path: Path, monkeypatch, build_json: object, mode: str
 ) -> None:
     source = tmp_path / "source.py"
-    source.write_text("print('stable')\n")
+    source.write_text("print('stable')\n", encoding="utf-8")
     receipt = tmp_path / "receipt.json"
     calls = []
     real_guard = reproducibility.harness_memory_guard.guarded_completed_process
@@ -362,14 +362,14 @@ def test_malformed_artifact_shape_is_a_counted_error(
         args = ["--build", str(source)]
     else:
         document = tmp_path / "build.json"
-        document.write_text(json.dumps(build_json))
+        document.write_text(json.dumps(build_json), encoding="utf-8")
         args = [str(document), str(document)]
     monkeypatch.setattr(
         sys, "argv", ["check_reproducible_build.py", *args, "--json-out", str(receipt)]
     )
 
     assert reproducibility.main() == 2
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     assert (
         payload["selected"],
         payload["executed"],
@@ -396,7 +396,7 @@ def test_later_build_artifact_failure_retains_completed_child(
     from contextlib import contextmanager
 
     source = tmp_path / "source.py"
-    source.write_text("print('stable')\n")
+    source.write_text("print('stable')\n", encoding="utf-8")
     receipt = tmp_path / "receipt.json"
     real_guard = reproducibility.harness_memory_guard.guarded_completed_process
     real_temp = reproducibility.OwnedTemporaryDirectory
@@ -483,7 +483,7 @@ def test_later_build_artifact_failure_retains_completed_child(
     with monkeypatch.context() as filesystem_boundary:
         filesystem_boundary.setattr(Path, "stat", artifact_stat)
         assert reproducibility.main() == 2
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     assert payload["errors"] == 1 and payload["executed"] == payload["passed"] == 0
     result = payload["results"][0]
     assert result["completed_runs"] == 1
@@ -519,7 +519,7 @@ def test_later_ir_empty_oserror_cannot_pass_or_erase_completed_observation(
     import hashlib
 
     source = tmp_path / "source.py"
-    source.write_text("print('stable')\n")
+    source.write_text("print('stable')\n", encoding="utf-8")
     receipt = tmp_path / "receipt.json"
     real_guard = reproducibility.harness_memory_guard.guarded_completed_process
     real_temp = reproducibility.OwnedTemporaryDirectory
@@ -588,7 +588,7 @@ def test_later_ir_empty_oserror_cannot_pass_or_erase_completed_observation(
     )
 
     assert reproducibility.main() == 2
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     assert (
         payload["selected"],
         payload["executed"],
@@ -646,7 +646,7 @@ def test_later_batch_source_refusal_retains_prior_real_child_cell(
 ) -> None:
     good, refused = tmp_path / "good.py", tmp_path / "refused.py"
     for source in (good, refused):
-        source.write_text("print('stable')\n")
+        source.write_text("print('stable')\n", encoding="utf-8")
     receipt = tmp_path / "receipt.json"
     real_guard = reproducibility.harness_memory_guard.guarded_completed_process
     real_stat, real_open = Path.stat, Path.open
@@ -702,7 +702,7 @@ def test_later_batch_source_refusal_retains_prior_real_child_cell(
         admission.setattr(Path, "stat", source_stat)
         admission.setattr(Path, "open", source_open)
         assert reproducibility.main() == 2
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     cells = 2 if audit_ir else 1
     assert (
         payload["selected"],
@@ -732,7 +732,7 @@ def test_post_build_source_admission_belongs_only_to_requested_ir_cell(
     tmp_path: Path, monkeypatch, audit_ir: bool
 ) -> None:
     source = tmp_path / "source.py"
-    source.write_text("print('stable')\n")
+    source.write_text("print('stable')\n", encoding="utf-8")
     receipt = tmp_path / "receipt.json"
     real_guard = reproducibility.harness_memory_guard.guarded_completed_process
     real_is_file, real_read_text = Path.is_file, Path.read_text
@@ -786,7 +786,7 @@ def test_post_build_source_admission_belongs_only_to_requested_ir_cell(
         admission.setattr(Path, "is_file", is_file)
         admission.setattr(Path, "read_text", read_text)
         assert reproducibility.main() == (2 if audit_ir else 0)
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     assert post_build_preflights == []
     assert payload["selected"] == (2 if audit_ir else 1)
     assert payload["executed"] == payload["passed"] == 1
@@ -808,7 +808,7 @@ def test_source_admission_error_is_a_counted_cell_without_launch(
     tmp_path: Path, monkeypatch, mode: str
 ) -> None:
     source = tmp_path / "source.py"
-    source.write_text("print('stable')\n")
+    source.write_text("print('stable')\n", encoding="utf-8")
     receipt = tmp_path / "receipt.json"
     real_stat = Path.stat
 
@@ -825,7 +825,7 @@ def test_source_admission_error_is_a_counted_cell_without_launch(
     with monkeypatch.context() as admission:
         admission.setattr(Path, "stat", source_stat)
         assert reproducibility.main() == 2
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     assert payload["selected"] == payload["errors"] == 1
     assert payload["executed"] == payload["passed"] == payload["failed"] == 0
     result = payload["results"][0]
@@ -844,7 +844,7 @@ def test_compare_input_failures_have_one_counted_receiver_without_launch(
     artifact = tmp_path / "artifact"
     artifact.write_bytes(b"fixture")
     document = tmp_path / "build.json"
-    document.write_text(json.dumps({"output": str(artifact)}))
+    document.write_text(json.dumps({"output": str(artifact)}), encoding="utf-8")
     if failure == "json-utf8":
         document.write_bytes(b"\xff")
     receipt = tmp_path / "receipt.json"
@@ -885,7 +885,7 @@ def test_compare_input_failures_have_one_counted_receiver_without_launch(
         admission.setattr(builtins, "open", selected_open)
         admission.setattr(Path, "stat", selected_stat)
         assert reproducibility.main() == (0 if failure == "json-stat" else 2)
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     assert metadata_calls == []
     assert payload["selected"] == 1
     assert payload["passed"] == payload["executed"] == int(failure == "json-stat")

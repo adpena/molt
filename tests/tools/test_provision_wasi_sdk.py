@@ -663,7 +663,7 @@ def test_cli_provisioner_and_reader_share_selected_tool_state(
         args += ["--toolchain-root", str(selected)]
     assert provisioner.main(args) == 0
     prefix = llvm_toolchain.wasi_sdk_install_prefix(selected, asset)
-    assert f"install={prefix}\n" in output.read_text()
+    assert f"install={prefix}\n" in output.read_text(encoding="utf-8")
     assert (
         llvm_toolchain.provisioned_wasi_sdk_prefix(
             provisioner.ROOT, environ={"MOLT_TARGET_ROOT": str(selected)}

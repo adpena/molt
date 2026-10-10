@@ -1863,7 +1863,7 @@ def test_freestanding_explicit_family_does_not_select_unused_sdk_state(
     for path in paths.values():
         path.chmod(0o755)
     invalid = tmp_path / "invalid-state"
-    invalid.write_text("not a directory")
+    invalid.write_text("not a directory", encoding="utf-8")
     environment = {
         "MOLT_WASM_CC": str(paths["cc"]),
         "MOLT_TARGET_ROOT": str(invalid),

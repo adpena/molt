@@ -17455,7 +17455,8 @@ def test_grouped_python_command_bootstrap_matches_actual_cpython(tmp_path, prefi
 )
 def test_grouped_python_module_bootstrap_matches_actual_cpython(tmp_path, prefix):
     (tmp_path / "argument_probe.py").write_text(
-        "import sys;print((sys.flags.optimize,sys.flags.hash_randomization,sys.argv))\n"
+        "import sys;print((sys.flags.optimize,sys.flags.hash_randomization,sys.argv))\n",
+        encoding="utf-8",
     )
     command = [sys.executable, prefix, "-E"]
     rewritten = command_admission._python_bootstrap_command(

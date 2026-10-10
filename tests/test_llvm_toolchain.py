@@ -2400,7 +2400,9 @@ def test_sdk_and_native_llvm_share_selected_state_without_provisioning(
             (source / "config" / name).write_bytes(
                 (ROOT / "config" / name).read_bytes()
             )
-        (source / source_root.MANIFEST_NAME).write_text("classification only")
+        (source / source_root.MANIFEST_NAME).write_text(
+            "classification only", encoding="utf-8"
+        )
     selected = tmp_path / "child tools"
     ambient = tmp_path / "ambient tools"
     monkeypatch.setenv("MOLT_TARGET_ROOT", str(ambient))
@@ -2440,7 +2442,7 @@ def test_sdk_and_native_llvm_share_selected_state_without_provisioning(
 @pytest.mark.parametrize("selector", ["native", "sdk"])
 def test_tool_state_errors_keep_llvm_admission_boundary(tmp_path, selector):
     selected = tmp_path / "file-not-tool-state"
-    selected.write_text("invalid root")
+    selected.write_text("invalid root", encoding="utf-8")
     with pytest.raises(
         LlvmToolchainConfigError, match="toolchain custody is unresolved"
     ):
@@ -2462,7 +2464,7 @@ def test_explicit_native_llvm_keeps_unused_invalid_tool_state_out_of_admission(
     _mock_tool_process_versions(monkeypatch)
     _mock_llvm_config(prefix, monkeypatch)
     invalid = tmp_path / "invalid-state"
-    invalid.write_text("not a directory")
+    invalid.write_text("not a directory", encoding="utf-8")
     monkeypatch.setenv("MOLT_TARGET_ROOT", str(invalid))
     # Prefix verification uses a synthetic compiler. The actual guarded platform
     # query boundary is covered by the harness owner, without mocking its env.
@@ -2477,7 +2479,7 @@ def test_explicit_native_llvm_keeps_unused_invalid_tool_state_out_of_admission(
         ROOT, verification, projects=("clang", "lld", "mlir", "polly")
     )
     assert (
-        json.loads(attestation.read_text())["custody"]
+        json.loads(attestation.read_text(encoding="utf-8"))["custody"]
         == "manifest-release-noncanonical-prefix"
     )
     with pytest.raises(LlvmToolchainConfigError, match="not a directory"):
@@ -2514,7 +2516,7 @@ def test_external_wasm_nm_does_not_admit_unused_tool_state(tmp_path, monkeypatch
     selected = tmp_path / "external" / "llvm-nm"
     _write(selected, "reader")
     invalid = tmp_path / "not-a-directory"
-    invalid.write_text("file")
+    invalid.write_text("file", encoding="utf-8")
     seen = []
     monkeypatch.setattr(
         llvm_toolchain,

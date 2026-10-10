@@ -165,7 +165,7 @@ def test_finally_warning_is_compiler_diagnostic_without_guest_output():
 def test_finally_warning_filters_and_compiler_error_location(tmp_path):
     source = "def f():\n    try: pass\n    finally: return 1\n"
     path = tmp_path / "warning.py"
-    path.write_text(source)
+    path.write_text(source, encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
     with warnings.catch_warnings(record=True) as observed:
         warnings.simplefilter("ignore", SyntaxWarning)

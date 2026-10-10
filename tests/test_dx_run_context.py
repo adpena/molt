@@ -1592,7 +1592,9 @@ def test_installed_toolchain_default_is_home_state_not_source(
     home = tmp_path / "mutable home"
     env = {"MOLT_HOME": str(home)}
     if layout == "bundle":
-        (source / source_root.MANIFEST_NAME).write_text("content admission is separate")
+        (source / source_root.MANIFEST_NAME).write_text(
+            "content admission is separate", encoding="utf-8"
+        )
     elif layout == "damaged-bundle":
         env["MOLT_BUNDLE_ROOT"] = str(bundle)
     else:
@@ -1615,7 +1617,7 @@ def test_installed_toolchain_default_reuses_shared_home_and_refuses_nested_state
     source = bundle / "source"
     source.mkdir(parents=True)
     (source / source_root.MANIFEST_NAME).write_text(
-        "invalid manifest must not imply development"
+        "invalid manifest must not imply development", encoding="utf-8"
     )
     monkeypatch.setattr(
         default_paths, "_default_home_str", lambda _environ=None: str(tmp_path / "user")
@@ -1642,7 +1644,7 @@ def test_toolchain_selector_preserves_relative_paths_and_rejects_file_roots(tmp_
         require_exists=False,
     )
     assert selected == tmp_path / "relative tools"
-    selected.write_text("not a directory")
+    selected.write_text("not a directory", encoding="utf-8")
     with pytest.raises(dx.DxConfigError, match="not a directory"):
         dx.canonical_toolchain_root(
             project, {"MOLT_TARGET_ROOT": str(selected)}, require_exists=False
@@ -1655,7 +1657,9 @@ def test_installed_tool_state_expands_selected_child_home(
 ):
     source = tmp_path / "bundle/source"
     source.mkdir(parents=True)
-    (source / "release-compiler-source.json").write_text("layout only")
+    (source / "release-compiler-source.json").write_text(
+        "layout only", encoding="utf-8"
+    )
     key = "USERPROFILE" if os.name == "nt" else "HOME"
     monkeypatch.setenv(key, str(tmp_path / "ambient"))
     child_home = tmp_path / "selected home"
