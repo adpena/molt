@@ -34,8 +34,22 @@ def _load_ci_gate():
     return module
 
 
-def test_run_check_uses_memory_guard_by_default(monkeypatch) -> None:
+def _load_ci_gate_in_scratch(monkeypatch, tmp_path: Path):
+    """Load ci_gate against a scratch checkout.
+
+    _check_env creates every root it seeds. Under the developer-host context a
+    plain CI clone is its own custody root, so a test that resolves an
+    environment against the real checkout writes into it.
+    """
     module = _load_ci_gate()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    monkeypatch.setattr(module, "ROOT", checkout)
+    return module
+
+
+def test_run_check_uses_memory_guard_by_default(monkeypatch, tmp_path) -> None:
+    module = _load_ci_gate_in_scratch(monkeypatch, tmp_path)
     calls: list[dict[str, object]] = []
 
     def fake_guarded_completed_process(command, **kwargs):
@@ -95,8 +109,8 @@ def test_run_check_uses_memory_guard_by_default(monkeypatch) -> None:
     assert calls[0]["env"]["PYTHONPATH"] == str(module.ROOT / "src")
 
 
-def test_run_check_default_limits_resolve_adaptively(monkeypatch) -> None:
-    module = _load_ci_gate()
+def test_run_check_default_limits_resolve_adaptively(monkeypatch, tmp_path) -> None:
+    module = _load_ci_gate_in_scratch(monkeypatch, tmp_path)
     calls: list[dict[str, object]] = []
 
     def fake_adaptive_memory_budget(prefix, environ=None, *, accounted_rss_kb=0):
@@ -145,12 +159,7 @@ def test_run_check_default_limits_resolve_adaptively(monkeypatch) -> None:
 
 
 def test_check_env_seeds_canonical_artifact_roots(monkeypatch, tmp_path) -> None:
-    module = _load_ci_gate()
-    # _check_env creates every root it seeds; a scratch checkout keeps those
-    # directories out of the real one.
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    monkeypatch.setattr(module, "ROOT", checkout)
+    module = _load_ci_gate_in_scratch(monkeypatch, tmp_path)
     for key in (
         "MOLT_EXT_ROOT",
         "CARGO_TARGET_DIR",
@@ -196,10 +205,7 @@ def test_check_env_seeds_canonical_artifact_roots(monkeypatch, tmp_path) -> None
 
 
 def test_check_env_preserves_explicit_artifact_roots(monkeypatch, tmp_path) -> None:
-    module = _load_ci_gate()
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    monkeypatch.setattr(module, "ROOT", checkout)
+    module = _load_ci_gate_in_scratch(monkeypatch, tmp_path)
     target = tmp_path / "target-custom"
     diff_target = tmp_path / "target-diff-custom"
     cache = tmp_path / "cache-custom"
@@ -217,8 +223,8 @@ def test_check_env_preserves_explicit_artifact_roots(monkeypatch, tmp_path) -> N
     assert env["CARGO_BUILD_JOBS"] == "1"
 
 
-def test_run_check_cannot_opt_out_of_memory_guard(monkeypatch) -> None:
-    module = _load_ci_gate()
+def test_run_check_cannot_opt_out_of_memory_guard(monkeypatch, tmp_path) -> None:
+    module = _load_ci_gate_in_scratch(monkeypatch, tmp_path)
     guarded_calls: list[dict[str, object]] = []
 
     disabled_limits = module.MemoryGuardLimits(
@@ -275,8 +281,10 @@ def test_ci_gate_finds_uv_run_tool_script_after_interpreter() -> None:
     )
 
 
-def test_required_missing_toolchain_is_unmet_prerequisite(monkeypatch) -> None:
-    module = _load_ci_gate()
+def test_required_missing_toolchain_is_unmet_prerequisite(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_ci_gate_in_scratch(monkeypatch, tmp_path)
 
     monkeypatch.setattr(module, "_has_tool", lambda name: False)
     monkeypatch.setattr(
@@ -302,8 +310,8 @@ def test_required_missing_toolchain_is_unmet_prerequisite(monkeypatch) -> None:
     assert module._results_to_dict([result])["summary"]["success"] is False
 
 
-def test_optional_missing_toolchain_remains_skip(monkeypatch) -> None:
-    module = _load_ci_gate()
+def test_optional_missing_toolchain_remains_skip(monkeypatch, tmp_path) -> None:
+    module = _load_ci_gate_in_scratch(monkeypatch, tmp_path)
 
     monkeypatch.setattr(module, "_has_tool", lambda name: False)
 
@@ -323,8 +331,10 @@ def test_optional_missing_toolchain_remains_skip(monkeypatch) -> None:
     assert summary["zero_work"] is True
 
 
-def test_missing_uv_run_script_is_detected_before_execution(monkeypatch) -> None:
-    module = _load_ci_gate()
+def test_missing_uv_run_script_is_detected_before_execution(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_ci_gate_in_scratch(monkeypatch, tmp_path)
     missing = module.TOOLS / "definitely_missing_ci_gate_script.py"
     assert not missing.exists()
     executed = False
@@ -354,8 +364,10 @@ def test_missing_uv_run_script_is_detected_before_execution(monkeypatch) -> None
     assert executed is False
 
 
-def test_main_exits_nonzero_for_required_unmet_prerequisite(monkeypatch) -> None:
-    module = _load_ci_gate()
+def test_main_exits_nonzero_for_required_unmet_prerequisite(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_ci_gate_in_scratch(monkeypatch, tmp_path)
 
     monkeypatch.setattr(
         module,
@@ -471,8 +483,8 @@ def test_ci_gate_tier3_consumes_the_typed_scheduled_family() -> None:
     assert "--receipt" in check.cmd
 
 
-def test_run_check_acquires_compile_slot_for_rust_checks(monkeypatch) -> None:
-    module = _load_ci_gate()
+def test_run_check_acquires_compile_slot_for_rust_checks(monkeypatch, tmp_path) -> None:
+    module = _load_ci_gate_in_scratch(monkeypatch, tmp_path)
     slot_calls: list[dict[str, object]] = []
 
     class FakeSlot:
