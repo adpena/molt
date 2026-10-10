@@ -921,13 +921,14 @@ def test_matrix_family_budget_binds_each_cell() -> None:
     errors = replace(PLAN, commands=commands).validate()
     # Commands take the first free slot in declaration order. Harness (2401 s)
     # holds slot 1; custody (300), binding (300), frontend (600), CLI (900)
-    # and surface contracts (600) fill slot 2 until 2700 s; runtime-artifacts
-    # (600) takes slot 1 at 2401 s and ends at 3001 s; the 120 s boundary
-    # partition takes slot 2 at 2700 s. The makespan is 3001 s. The Linux job
-    # is unchanged, so only the macOS cell exceeds its 41-minute budget.
+    # and import collection (900) fill slot 2 until 3000 s; surface contracts
+    # (600) take slot 1 at 2401 s and end at 3001 s; runtime-artifacts (600)
+    # takes slot 2 at 3000 s and ends at 3600 s; the 120 s boundary partition
+    # takes slot 1 at 3001 s. The makespan is 3600 s. The Linux job is
+    # unchanged, so only the macOS cell exceeds its 46-minute budget.
     assert [error for error in errors if "timeout envelope" in error] == [
-        "python_unit: projected resource-aware timeout envelope 3001s in matrix "
-        "cell macos-arm64-py312-unit plus job reserve 60s exceeds GitHub job budget 2460s"
+        "python_unit: projected resource-aware timeout envelope 3600s in matrix "
+        "cell macos-arm64-py312-unit plus job reserve 60s exceeds GitHub job budget 2760s"
     ]
 
 
@@ -1358,8 +1359,16 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
     assert not startup.dependencies
     runner = rows["wasm.host.runner-fixtures"]
     assert runner.dependencies == ("wasm.build.backend",)
+    # The import-collection cases that validate WASM with the pinned
+    # wasm-tools run here, where the job provisions it (HF-160).
     assert {arg for arg in runner.argv if arg.startswith("tests/")} == {
-        "tests/test_wasm_runner_table_base.py"
+        "tests/test_wasm_runner_table_base.py",
+        *(
+            "tests/cli/test_cli_import_collection.py::"
+            f"test_backend_compile_stages_one_shot_output_into_cache[{case}-0]"
+            for case in ("False-False", "False-True", "True-False", "True-True")
+        ),
+        "tests/cli/test_cli_import_collection.py::test_cached_backend_artifact_validity_guard",
     }
     assert not set(startup.argv[6:]) & {
         arg for arg in runner.argv if arg.startswith("tests/")
