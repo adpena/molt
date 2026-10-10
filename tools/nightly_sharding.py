@@ -871,6 +871,10 @@ def run_shard(
                 expanded,
                 cwd=root,
                 capture_output=True,
+                # The guard keeps only these tails in memory; full output goes
+                # to the files, which the temporary directory owns.
+                stdout_capture_path=temporary_root / "stdout.txt",
+                stderr_capture_path=temporary_root / "stderr.txt",
                 capture_tail_bytes=16_000,
                 text=True,
                 timeout=timeout,
