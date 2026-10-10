@@ -93,6 +93,7 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 import harness_memory_guard  # noqa: E402
+from molt.dx import ARTIFACT_ROOT_ENV, artifact_root  # noqa: E402
 
 VALID_SHELLS = ("bash", "sh", "powershell")
 VALID_TRANSPORTS = ("ssh", "docker")
@@ -432,7 +433,7 @@ def _local_compile(
         cmd.extend(["--target", target])
     env = os.environ.copy()
     env.setdefault("PYTHONPATH", str(REPO / "src"))
-    env.setdefault("MOLT_EXT_ROOT", str(REPO))
+    env.setdefault(ARTIFACT_ROOT_ENV, str(artifact_root(REPO, env)))
     started = time.monotonic()
     proc = _guarded_run(
         cmd,

@@ -77,10 +77,10 @@ def test_resolve_output_root_defaults_under_tmp(tmp_path: Path, monkeypatch) -> 
 
     output_root, molt_ext_root = mod._resolve_output_root(None)
 
-    assert (
-        output_root == ext_root / "tmp" / "bench_backend_incremental_20260409T101112Z"
+    assert output_root == (
+        ext_root.resolve() / "tmp" / "bench_backend_incremental_20260409T101112Z"
     )
-    assert molt_ext_root == ext_root
+    assert molt_ext_root == ext_root.resolve()
 
 
 def test_backend_incremental_uses_shared_phase_result_schema() -> None:

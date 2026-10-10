@@ -28,7 +28,6 @@ EXIT_SPAWN = 125
 
 ROOT = Path(__file__).resolve().parents[1]
 MEMORY_GUARD = ROOT / "tools" / "memory_guard.py"
-SUMMARY_ROOT = ROOT / "tmp" / "safe_run"
 
 
 def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
@@ -76,8 +75,11 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
 
 def _summary_path(label: str) -> Path:
     safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in label)
-    SUMMARY_ROOT.mkdir(parents=True, exist_ok=True)
-    return SUMMARY_ROOT / f"{os.getpid()}-{safe}.summary.json"
+    from molt.dx import scratch_dir
+
+    summary_root = scratch_dir(ROOT, "safe_run")
+    summary_root.mkdir(parents=True, exist_ok=True)
+    return summary_root / f"{os.getpid()}-{safe}.summary.json"
 
 
 def _load_summary(path: Path) -> dict[str, object]:

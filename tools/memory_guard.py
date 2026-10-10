@@ -187,6 +187,7 @@ from tools.memory_guard_core import repro_context as _repro_context  # noqa: E40
 from tools.memory_guard_core import reporting as _reporting  # noqa: E402
 from molt.memory_guard_paths import (  # noqa: E402
     active_guard_marker_dir,
+    memory_guard_state_root,
 )
 from tools.memory_guard_core.process_custody import (  # noqa: E402
     sample_processes_posix as sample_processes_posix,
@@ -2759,8 +2760,10 @@ def _write_worker_exit_summary_json(
     )
 
 
-def _default_incident_summary_path() -> Path:
-    return _reporting.default_incident_summary_path(ROOT)
+def _default_incident_summary_path(environ: Mapping[str, str]) -> Path:
+    return _reporting.default_incident_summary_path(
+        memory_guard_state_root(ROOT, environ)
+    )
 
 
 def _prune_default_incident_summaries(
@@ -3015,7 +3018,7 @@ def main(
             print(f"memory_guard: failed to write summary JSON: {exc}", file=sys.stderr)
             return 2 if result.returncode == 0 else result.returncode
     elif incident is not None:
-        incident_summary_path = _default_incident_summary_path()
+        incident_summary_path = _default_incident_summary_path(current_env)
         try:
             _write_summary_json(
                 str(incident_summary_path),

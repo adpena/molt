@@ -8,11 +8,6 @@ SHELL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$SHELL_ROOT/tools/molt_shell_env.sh"
 molt_init_shell_context "$SHELL_ROOT"
 ROOT="$MOLT_HOST_ROOT"
-ENTRY="${1:-tmp/pact_witness_acceptance_queue/debug_import_trace/alias_probe.py}"
-MODE="${2:-cycle}"
-OUT="$ROOT/tmp/pact_witness_acceptance_queue/debug_import_trace/build"
-OUT_SHELL="$SHELL_ROOT/tmp/pact_witness_acceptance_queue/debug_import_trace/build"
-LOG="$SHELL_ROOT/tmp/pact_witness_acceptance_queue/debug_import_trace/cycle.log"
 PYTHON="$MOLT_PYTHON"
 NODE="${NODE:-$(command -v node || command -v node.exe || true)}"
 export MOLT_SESSION_ID="${MOLT_SESSION_ID:-witness-warm}"
@@ -24,6 +19,14 @@ if [ -z "${MOLT_EXT_ROOT:-}" ] || [ -z "${CARGO_TARGET_DIR:-}" ] || [ -z "${MOLT
     --dx \
     --format posix)"
 fi
+# Witness inputs and outputs are run scratch, never in the checkout.
+WITNESS_SCRATCH="$(molt_scratch_dir "$SHELL_ROOT" pact_witness_acceptance_queue/debug_import_trace)"
+WITNESS_SCRATCH_SHELL="$(molt_shell_path "$WITNESS_SCRATCH")"
+ENTRY="${1:-$WITNESS_SCRATCH/alias_probe.py}"
+MODE="${2:-cycle}"
+OUT="$WITNESS_SCRATCH/build"
+OUT_SHELL="$WITNESS_SCRATCH_SHELL/build"
+LOG="$WITNESS_SCRATCH_SHELL/cycle.log"
 export MOLT_MEMORY_GUARD_POLL_SEC="${MOLT_MEMORY_GUARD_POLL_SEC:-2.0}"
 export MOLT_STDLIB_PROFILE=full
 export MOLT_EXTERNAL_STATIC_PACKAGES="numpy scipy"

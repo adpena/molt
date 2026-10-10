@@ -56,7 +56,11 @@ if str(SRC_ROOT) not in sys.path:
 
 from tools import harness_memory_guard  # noqa: E402
 from tools.proof_counts import fail_closed_proof_exit_code  # noqa: E402
-from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
+from molt.dx import (  # noqa: E402
+    artifact_root,
+    cargo_target_dir_for_artifact_root,
+    scratch_dir,
+)
 
 DEFAULT_TARGET_DIR = SRC_ROOT / "molt"
 DEFAULT_TEST_SUBSET = REPO_ROOT / "tests" / "differential" / "basic"
@@ -826,11 +830,7 @@ def apply_single_mutation(source: str, site: MutationSite) -> str | None:
 
 
 def _temp_root() -> Path:
-    ext = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if ext:
-        base = Path(ext).expanduser() / "mutation_tmp"
-    else:
-        base = REPO_ROOT / "tmp" / "mutation_tmp"
+    base = scratch_dir(REPO_ROOT, "mutation_tmp")
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -841,11 +841,7 @@ def _default_cargo_target_dir() -> Path:
         return Path(configured).expanduser()
 
     session_id = os.environ.get("MOLT_SESSION_ID") or f"mutation-{os.getpid()}"
-    ext = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if ext:
-        return cargo_target_dir_for_artifact_root(Path(ext).expanduser(), session_id)
-
-    return cargo_target_dir_for_artifact_root(REPO_ROOT, session_id)
+    return cargo_target_dir_for_artifact_root(artifact_root(REPO_ROOT), session_id)
 
 
 def create_mutant_workspace(
