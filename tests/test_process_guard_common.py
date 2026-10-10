@@ -399,6 +399,10 @@ def test_isolated_python_probe_excludes_concurrent_parent_allocations(tmp_path) 
                 ready, polluted = map(Path, sys.argv[1:])
                 if tracemalloc.is_tracing():
                     raise RuntimeError("probe requires exclusive allocation tracing")
+                # Parse both paths before tracing. pathlib interns their parts,
+                # and the interned-string table resizes at a count that depends
+                # on every module this interpreter imported.
+                str(ready), str(polluted)
                 gc.collect()
                 tracemalloc.start()
                 try:

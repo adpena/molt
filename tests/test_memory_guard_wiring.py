@@ -97,6 +97,24 @@ _GUARD_LAUNCHERS = frozenset(
 )
 
 
+def test_tests_consume_the_outer_guard_lease_under_the_session_root(
+    test_guard_custody_roots,
+) -> None:
+    """The CI failure of HF-163: a test allocates helper scratch in process.
+
+    The session points the guards that tests start at its own state root,
+    but this process still holds the outer guard's lease. Its helper scratch
+    must come from that lease, wherever the state root points.
+    """
+    from tests.process_guard_common import guarded_temporary_directory
+
+    lease_target = Path(os.environ[temporary_artifacts.SCRATCH_ENV]).resolve()
+    with guarded_temporary_directory(prefix="hf163-") as helper:
+        assert helper.parent == lease_target
+        assert helper.is_dir()
+    assert test_guard_custody_roots.state_root.parent not in helper.parents
+
+
 def _minimal_guard_environments(source: str) -> list[int]:
     """Lines where a test hands a guard a literal environment without custody."""
     import ast

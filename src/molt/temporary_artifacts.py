@@ -15,6 +15,7 @@ from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+import errno
 import os
 import re
 import reprlib
@@ -54,6 +55,10 @@ SCRATCH_ENV = "MOLT_GUARD_SCRATCH_ROOT"
 _ROOT_DIRNAME = "gs"
 # Reclaimed generations move here before their receipts are deleted.
 _REMOVING_DIRNAME = "removing"
+# Allocation receipt inside a lease target. A file identity alone cannot
+# tell a replacement directory from the original: Linux reuses a freed inode
+# number. The receipt's nonce, recorded in the owner, can.
+_TARGET_RECEIPT = ".molt-scratch-target.json"
 
 
 class ScratchBusy(RuntimeError):
@@ -135,13 +140,25 @@ def _target(generation: Path, owner: Mapping[str, object]) -> Path:
 
 @contextmanager
 def _locked(generation: Path) -> Generator[None]:
+    """Hold one existing generation's lock; never create or revive custody.
+
+    A remover moves a reclaimed generation away without its lock. Opening
+    the lock must not create the generation again, and a generation that
+    moved between the check and the lock is gone.
+    """
     resolve_owned_path(generation)
-    _identity(generation)
-    handle = _try_acquire_file_lock(resolve_owned_path(generation / "lock"))
+    identity = _identity(generation)
+    handle = _try_acquire_file_lock(
+        resolve_owned_path(generation / "lock"), create=False
+    )
     if handle is None:
         raise ScratchBusy(f"scratch generation is busy: {generation}")
     try:
         resolve_owned_path(generation)
+        if _identity(generation) != identity:
+            raise FileNotFoundError(
+                errno.ENOENT, "scratch generation was removed", str(generation)
+            )
         yield
     finally:
         _release_file_lock(handle)
@@ -310,6 +327,10 @@ def acquire_guard_scratch(
     target: Path | None = None
     try:
         target = new_temporary_directory(generation.parent.parent, prefix="pt-")
+        nonce = secrets.token_hex(16)
+        write_exact(
+            target / _TARGET_RECEIPT, {"schema": SCHEMA, "nonce": nonce}, exclusive=True
+        )
         owner = {
             "schema": SCHEMA,
             "token": token,
@@ -317,6 +338,7 @@ def acquire_guard_scratch(
             "guard_marker": str(marker),
             "target": str(target),
             "target_identity": _identity(target),
+            "target_receipt": nonce,
             "state": "leased",
         }
         write_exact(generation / "owner.json", owner, exclusive=True)
@@ -329,10 +351,25 @@ def acquire_guard_scratch(
         raise
 
 
-def guard_scratch(repo_root: Path, environ: Mapping[str, str]) -> Path:
-    """Consume the parent's allocation; child metadata never grants deletion."""
-    token = environ.get("MOLT_MEMORY_GUARD_TOKEN", "")
-    generation = _generation(scratch_root(repo_root, environ), token)
+def _generation_of_target(target: Path, token: str) -> Path:
+    """Return the generation that owns a lease target (``acquire_guard_scratch``)."""
+    return _generation(resolve_owned_path(target.parent / _ROOT_DIRNAME), token)
+
+
+def guard_scratch(environ: Mapping[str, str]) -> Path:
+    """Consume the parent's allocation; child metadata never grants deletion.
+
+    The generation comes from the allocation this process inherited, its
+    lease target and guard token, never from a state root. A process may
+    point the guards it starts at another state root (the test session
+    does); that cannot move the lease it already holds.
+    """
+    raw_target = environ.get(SCRATCH_ENV, "").strip()
+    if not raw_target:
+        raise ValueError("scratch is not the active parent's allocation")
+    generation = _generation_of_target(
+        Path(raw_target), environ.get("MOLT_MEMORY_GUARD_TOKEN", "")
+    )
     owner = _owner(generation)
     target = _target(generation, owner)
     if (
@@ -348,13 +385,15 @@ def guard_scratch(repo_root: Path, environ: Mapping[str, str]) -> Path:
 
 
 def _target_bytes(target: Path) -> int:
+    """Payload bytes; the allocation receipt is custody, not payload."""
     total = 0
+    receipt = target / _TARGET_RECEIPT
     stack = [target]
     while stack:
         with os.scandir(stack.pop()) as entries:
             for entry in entries:
                 path = Path(entry.path)
-                if is_link_like(path):
+                if is_link_like(path) or path == receipt:
                     continue
                 if entry.is_dir(follow_symlinks=False):
                     stack.append(path)
@@ -584,6 +623,26 @@ def _retire_locked(
     return owner
 
 
+def _holds_target_receipt(target: Path, owner: Mapping[str, object]) -> bool:
+    """The target still holds the receipt its allocation wrote.
+
+    An owner from before receipts existed names none; its recorded file
+    identity is then the only identity it has.
+    """
+    nonce = owner.get("target_receipt")
+    if nonce is None:
+        return True
+    try:
+        receipt = read_exact(
+            resolve_owned_path(target / _TARGET_RECEIPT),
+            max_bytes=_MAX_RECEIPT_BYTES,
+            label="scratch target receipt",
+        )
+    except (OSError, ValueError):
+        return False
+    return receipt == {"schema": SCHEMA, "nonce": nonce}
+
+
 def _adopt_locked(
     generation: Path, owner: dict[str, object], closure: Mapping[str, object]
 ) -> dict[str, object]:
@@ -625,7 +684,7 @@ def _adopt_locked(
         }
         write_exact(generation / "owner.json", owner)
         return owner
-    if identity != owner["target_identity"]:
+    if identity != owner["target_identity"] or not _holds_target_receipt(target, owner):
         owner = {
             **owner,
             "state": "blocked",
@@ -651,9 +710,7 @@ def scratch_generation(token: str, outcome: Mapping[str, object]) -> Path | None
         return resolve_owned_path(Path(receipt).parent)
     target = outcome.get("target")
     if isinstance(target, str):
-        return _generation(
-            resolve_owned_path(Path(target).parent / _ROOT_DIRNAME), token
-        )
+        return _generation_of_target(Path(target), token)
     return None
 
 
@@ -1006,13 +1063,11 @@ def reclaim_terminal_scratch(
     }
 
 
-def new_guarded_directory(
-    repo_root: Path, environ: Mapping[str, str], *, prefix: str
-) -> Path:
+def new_guarded_directory(environ: Mapping[str, str], *, prefix: str) -> Path:
     """Allocate a helper subtree; the outer guard owns its terminal cleanup."""
     if re.fullmatch(r"[A-Za-z0-9_.-]{1,48}", prefix) is None:
         raise ValueError("scratch prefix must be a short basename")
-    root = guard_scratch(repo_root, environ)
+    root = guard_scratch(environ)
     path = new_temporary_directory(root, prefix=prefix)
     if resolve_owned_path(path).parent != root:
         raise ValueError("scratch helper escaped its owning allocation")
