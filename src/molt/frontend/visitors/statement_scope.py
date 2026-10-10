@@ -199,6 +199,9 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         return pruned
 
     def visit_Module(self, node: ast.Module) -> None:
+        # Compiler diagnostics cover source before reachability pruning and
+        # execute during compilation, including for uncalled function bodies.
+        self._emit_finally_transfer_warnings(node)
         resolve_python_private_names(node)
         from molt.frontend.lowering.gpu_kernel_descriptor import body_origin_evidence
 
@@ -371,10 +374,8 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         if defer:
             self.defer_module_attrs = True
             self.deferred_module_attrs = set()
-        # Pre-scan for compile-time warnings (~bool, etc.) and emit
-        # WARN_STDERR ops at module startup, before any print output.
-        # This matches CPython which emits compile-time warnings before
-        # executing any code.
+        # Keep bool-deprecation selection after native support pruning.
+        # PEP765 is a source compiler diagnostic, never a guest operation.
         self._prescan_compile_warnings(node)
         self._emit_deferred_warnings()
         self.del_targets = self._collect_deleted_names(node.body)

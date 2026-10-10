@@ -119,7 +119,6 @@ class _GeneratorProtocolAttrs(Protocol):
     exception_stack_prev_baseline: MoltValue | None
     explicit_type_hints: dict[str, str]
     fallback_policy: Any
-    finally_depth: Any
     frame_code_slots: CodeSlotDeclaration | None
     frame_home_slots: dict[str, int] | None
     free_var_hints: dict[str, str]
