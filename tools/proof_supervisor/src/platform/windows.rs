@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{
     CloseHandle, DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED, ERROR_SEM_TIMEOUT, EXCEPTION_BREAKPOINT,
-    GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
+    GetLastError, HANDLE, INVALID_HANDLE_VALUE, NTSTATUS, WAIT_FAILED, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW, VOLUME_NAME_DOS,
@@ -247,7 +247,9 @@ unsafe fn supervise(
         };
         let mut image_file =
             (!image_handle.is_null()).then(|| unsafe { File::from_raw_handle(image_handle as _) });
-        let observed = (|| -> Result<(u32, Option<u32>), String> {
+        // ContinueDebugEvent takes the NTSTATUS that DBG_CONTINUE and
+        // DBG_EXCEPTION_NOT_HANDLED carry.
+        let observed = (|| -> Result<(NTSTATUS, Option<u32>), String> {
             let mut continue_status = DBG_CONTINUE;
             let mut terminate_code = None;
             match event.dwDebugEventCode {
