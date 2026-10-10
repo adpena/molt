@@ -12,6 +12,7 @@ import sys
 
 import pytest
 
+from tests.executable_test_support import custody_spelling
 from tests.process_guard_common import run_custody_subject_process
 from tests import proof_queue_owned_roots
 from tools.proof_queue_pkg import (
@@ -435,8 +436,7 @@ def test_windows_process_image_roundtrip_keeps_canonical_coordinate(
     physical = executable.resolve(strict=True)
     if len(physical.drive) != 2 or physical.drive[1] != ":":
         pytest.skip("fixture requires a DOS drive spelling")
-    # Independent expected wire spelling: lower-case drive, actual entry names.
-    expected_path = physical.drive.lower() + str(physical)[len(physical.drive) :]
+    expected_path = custody_spelling(physical)
     request = Path(physical.drive.upper() + str(physical)[len(physical.drive) :])
     expected = {
         "schema": "molt.proof-process-image-capture.v1",

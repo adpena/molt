@@ -34,6 +34,20 @@ def custody_path(path: Path) -> Path:
     return lexical_path_identity(path)
 
 
+def custody_file(path: Path) -> Path | None:
+    """Return an existing file's custody coordinate, or None when it is absent.
+
+    Windows custody names an actual directory entry, so its lookup raises for
+    an absent one; POSIX custody is lexical and does not look. Callers refuse
+    an absent or non-file coordinate with their own typed error on every host.
+    """
+    try:
+        selected = custody_path(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return selected if selected.is_file() else None
+
+
 def _image_path_key(path: Path) -> str:
     return str(custody_path(path))
 
@@ -173,9 +187,9 @@ def canonical_images(
             raise ValueError("process image has invalid root-exit disposition")
         if path_kind not in {"resolved", "selection"}:
             raise ValueError("process image has invalid path kind")
-        path = custody_path(Path(raw_path))
-        if not path.is_file():
-            raise ValueError(f"process image is unavailable: {path}")
+        path = custody_file(Path(raw_path))
+        if path is None:
+            raise ValueError(f"process image is unavailable: {raw_path}")
         normalized = _image_path_key(path)
         identity = (digest, disposition, size)
         prior = identities.get(normalized)
