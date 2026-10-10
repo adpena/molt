@@ -771,7 +771,7 @@ def _execute_backend_compile(
         wasm_data_base: int | None = None
         wasm_table_base: int | None = None
         wasm_split_runtime_app_table_base: int | None = None
-        if is_wasm and backend_env is not None:
+        if is_wasm:
             wasm_link = backend_env.get("MOLT_WASM_RELOCATABLE") == "1"
             raw_data_base = backend_env.get("MOLT_WASM_DATA_BASE")
             raw_table_base = backend_env.get("MOLT_WASM_TABLE_BASE")

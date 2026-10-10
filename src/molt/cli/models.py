@@ -2199,7 +2199,7 @@ class _PreparedBackendSetup:
 
 @dataclass(frozen=True)
 class _PreparedBackendDispatch:
-    backend_env: dict[str, str] | None
+    backend_env: dict[str, str]
     reloc_requested: bool
     backend_bin: Path
     daemon_socket: Path | None

@@ -397,10 +397,7 @@ def _attest_sccache_stats(
         )
     except (OSError, subprocess.SubprocessError):
         return
-    if (
-        result.returncode != 0
-        or len(result.stdout) > _CARGO_ATTEMPT_TEXT_LIMIT
-    ):
+    if result.returncode != 0 or len(result.stdout) > _CARGO_ATTEMPT_TEXT_LIMIT:
         return
     try:
         payload = loads_exact(result.stdout)
