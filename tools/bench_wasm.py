@@ -38,7 +38,7 @@ from molt._runtime_profile_schema import is_process_profile, is_profile_epoch  #
 from molt.exact_json import loads_exact  # noqa: E402
 from molt.dx import (  # noqa: E402
     artifact_root,
-    cargo_target_dir_for_artifact_root,
+    cargo_target_dir_for_environment,
     configured_artifact_root,
     scratch_dir,
 )
@@ -137,9 +137,7 @@ def _cargo_target_root() -> Path:
     env_root = os.environ.get("CARGO_TARGET_DIR")
     if env_root:
         return Path(env_root).expanduser()
-    return cargo_target_dir_for_artifact_root(
-        artifact_root(_repo_root()), _wasm_session_id()
-    )
+    return cargo_target_dir_for_environment(artifact_root(_repo_root()), os.environ)
 
 
 def _runtime_source_mtime() -> float:
@@ -347,10 +345,10 @@ def _git_rev() -> str | None:
     return res.stdout.strip() or None
 
 
-def _wasm_session_id(env: dict[str, str] | None = None) -> str:
+def _wasm_session_id(env: dict[str, str] | None = None) -> str | None:
+    """The caller's pinned session, or None to share the warm Cargo target."""
     source = env if env is not None else os.environ
-    explicit = source.get("MOLT_SESSION_ID", "").strip()
-    return explicit or f"bench-wasm-{os.getpid()}"
+    return source.get("MOLT_SESSION_ID", "").strip() or None
 
 
 def _base_env() -> dict[str, str]:
@@ -437,9 +435,7 @@ def build_runtime_wasm(
     env = os.environ.copy()
     target_root = _cargo_target_root()
     if os.environ.get("MOLT_WASM_RUNTIME_FORCE_LOCAL_TARGET") == "1":
-        target_root = cargo_target_dir_for_artifact_root(
-            _repo_root(), _wasm_session_id(env)
-        )
+        target_root = cargo_target_dir_for_environment(_repo_root(), env)
     env["CARGO_TARGET_DIR"] = str(target_root)
     kind = "reloc" if reloc else "shared"
     resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)

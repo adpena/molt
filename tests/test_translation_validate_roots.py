@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -13,13 +12,6 @@ import translation_validate
 from molt import python_interpreter
 import shutil
 from tests.process_guard_common import install_module_view
-
-
-def _expected_translation_target_root(root: Path) -> Path:
-    return translation_validate.cargo_target_dir_for_artifact_root(
-        root,
-        f"translation-validate-{os.getpid()}",
-    )
 
 
 def test_temp_root_defaults_to_scratch_outside_the_checkout(monkeypatch) -> None:
@@ -54,12 +46,10 @@ def test_target_root_defaults_to_the_canonical_artifact_root(monkeypatch) -> Non
     for key in ("CARGO_TARGET_DIR", "MOLT_EXT_ROOT"):
         monkeypatch.delenv(key, raising=False)
 
-    # The checkout family root, not the worktree: one target per family.
-    assert translation_validate._cargo_target_root({}) == (
-        _expected_translation_target_root(
-            translation_validate.artifact_root(translation_validate._REPO_ROOT, {})
-        )
-    )
+    # The checkout family root, not the worktree, and no per-process session:
+    # every run shares the family's warm target (HF-144).
+    family = translation_validate.artifact_root(translation_validate._REPO_ROOT, {})
+    assert translation_validate._cargo_target_root({}) == family / "target"
 
 
 def test_target_root_prefers_explicit_override(tmp_path: Path) -> None:
@@ -74,7 +64,16 @@ def test_target_root_prefers_explicit_override(tmp_path: Path) -> None:
 
     env.pop("CARGO_TARGET_DIR")
     assert translation_validate._cargo_target_root(env) == (
-        _expected_translation_target_root(ext_root.resolve())
+        ext_root.resolve() / "target"
+    )
+    # A pinned session scopes the target; a generated one does not.
+    env["MOLT_SESSION_ID"] = "lane-a"
+    assert translation_validate._cargo_target_root(env) == (
+        ext_root.resolve() / "target" / "sessions" / "lane-a"
+    )
+    env["MOLT_SESSION_ID_GENERATED"] = "1"
+    assert translation_validate._cargo_target_root(env) == (
+        ext_root.resolve() / "target"
     )
 
 

@@ -599,7 +599,30 @@ def _cargo_target_dir(
         if target.is_absolute():
             return target.resolve(strict=False)
         return (base / target).resolve(strict=False)
-    return (base / "target").resolve(strict=False)
+    return (_cargo_build_root(base) / "target").resolve(strict=False)
+
+
+def _cargo_build_root(directory: Path) -> Path:
+    """The directory whose ``target/`` Cargo builds into from ``directory``.
+
+    That is the workspace root of the nearest manifest (HF-145), not the
+    working directory: a guarded ``cargo`` started in a member crate builds
+    into the workspace's target. A malformed workspace makes Cargo refuse to
+    build, so no incremental state exists there; the package directory then
+    names the only place Cargo could have written.
+    """
+    from molt.cargo_workspace import cargo_workspace_manifest
+
+    for candidate in (directory, *directory.parents):
+        manifest = candidate / "Cargo.toml"
+        if not manifest.is_file():
+            continue
+        try:
+            owner = cargo_workspace_manifest(manifest)
+        except ValueError:
+            return candidate
+        return (owner or manifest).parent
+    return directory
 
 
 def _cargo_incremental_dirs(target_dir: Path) -> tuple[Path, ...]:
