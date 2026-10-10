@@ -36,6 +36,7 @@ from molt import tool_releases
 from molt.exact_json import ExactJsonError, canonical_json_sha256
 from tests.python_environment_test_support import (
     build_environment_manifest,
+    create_owned_python_venv,
     create_test_venv,
 )
 from tests import proof_queue_owned_roots
@@ -2802,12 +2803,14 @@ def guarded_execution_authorities(
 @pytest.fixture(scope="module")
 def python_location_authorities(
     tmp_path_factory: pytest.TempPathFactory,
-    custody_python: Path,
 ) -> GuardedExecutionAuthorities:
     # Location/image joins need a real interpreter, but no installed project or
     # third-party packages. Keep the full environment in queue execution tests.
+    # The join tests hardlink the selected interpreter, so it is a private copy,
+    # never the host's shared installation.
     return _capture_guarded_execution_authorities(
-        custody_python, tmp_path_factory.mktemp("python-location-source")
+        create_owned_python_venv(tmp_path_factory.mktemp("owned-python")),
+        tmp_path_factory.mktemp("python-location-source"),
     )
 
 

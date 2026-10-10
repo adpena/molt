@@ -6,6 +6,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 from typing import Iterable, Sequence
 
@@ -16,6 +17,7 @@ from molt.python_runtime_identity import _NATIVE_DEPENDENCY_POLICIES
 from molt.cli import source_build_environment_schema
 from molt.exact_json import canonical_json_sha256
 from molt.python_external_custody import empty_external_import_custody
+from tests.process_guard_common import run_guarded_test_process
 
 
 Package = tuple[str, str]
@@ -192,6 +194,30 @@ def create_test_venv(environment: Path) -> Path:
     copies because symlinks need a privilege there. Returns the launcher.
     """
     venv.EnvBuilder(symlinks=os.name != "nt", with_pip=False).create(environment)
+    return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def create_owned_python_venv(root: Path) -> Path:
+    """Create a venv whose base interpreter the caller owns; return its launcher.
+
+    A test that hardlinks or otherwise touches interpreter files must not touch
+    the host's shared installation: a hardlink changes that file's link count
+    and change time, so every concurrent build or proof that captured its
+    identity fails. The base installation is copied whole (python-build-
+    standalone resolves libpython relative to its own location), and the venv
+    is made from the copy the way ``python -m venv`` makes one.
+    """
+    base = Path(sys.base_prefix).resolve()
+    install = root / "python"
+    shutil.copytree(base, install, symlinks=True)
+    base_executable = install / Path(sys._base_executable).resolve().relative_to(base)
+    environment = root / "venv"
+    completed = run_guarded_test_process(
+        [str(base_executable), "-m", "venv", "--without-pip", str(environment)],
+        timeout=120,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"owned interpreter venv failed: {completed.stderr}")
     return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
