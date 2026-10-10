@@ -162,12 +162,15 @@ def test_demo_bench_run_k6_uses_live_tree_guard(
         "guarded_completed_process",
         fake_guarded_completed_process,
     )
+    # The k6 stderr log goes to the results directory; never the checkout's.
+    monkeypatch.setattr(demo_bench, "RESULTS_DIR", tmp_path)
 
     data, proc_metrics = demo_bench.run_k6(
         tmp_path / "scenario.js",
         {"K6_SUMMARY_EXPORT": str(summary_path)},
     )
 
+    assert (tmp_path / "k6_scenario_stderr.log").is_file()
     assert data["metrics"]["http_reqs"]["rate"] == 1
     assert proc_metrics == {}
     call = guard_calls[0]

@@ -8,7 +8,7 @@ from pathlib import Path
 import subprocess
 from typing import Literal
 
-from molt.dx import TOOLCHAINS_DIRNAME
+from molt.dx import TOOLCHAINS_DIRNAME, canonical_toolchain_root
 
 from molt.cli.command_runtime import _run_completed_command
 from molt.llvm_toolchain import LlvmToolchainConfigError, selected_wasi_sdk_installation
@@ -230,7 +230,12 @@ def _managed_llvm_bin_directories(
     ).strip()
     if raw_target_root:
         roots.append(Path(raw_target_root))
-    roots.extend(checkout / "target" for checkout in _source_checkout_roots())
+    # Each source checkout's durable toolchain custody (molt.dx), which a
+    # worktree shares with its common checkout's family.
+    roots.extend(
+        canonical_toolchain_root(checkout, require_exists=False)
+        for checkout in _source_checkout_roots()
+    )
 
     normalized_roots = tuple(
         map(os.fspath, _dedupe_search_directories(roots, environment=environment))

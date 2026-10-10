@@ -24,7 +24,13 @@ from molt.backend_executable_names import (
 )
 from molt.build_state_layout import build_state_root
 from molt.compiler_distribution import installed_compiler
-from molt.dx import configured_artifact_root, scratch_dir
+from molt.dx import (
+    cargo_target_dir_for_artifact_root,
+    configured_artifact_root,
+    project_cargo_target_base,
+    scratch_dir,
+    session_targets_dir,
+)
 from molt.exact_json import canonical_json_sha256
 from molt.file_publication import is_link_like, resolve_owned_path
 from molt.toolchain_identity import executable_content_identity
@@ -64,7 +70,7 @@ from molt.cli.backend_artifact_contract import BackendArtifactContract
 from molt.cli.runtime_paths import (
     _build_state_root,
     _cargo_profile_dir,
-    _cargo_target_root_cached,
+    _cargo_target_root,
     _molt_session_id,
 )
 
@@ -100,26 +106,17 @@ _WASM_CODEGEN_ENV_KNOBS = environment_keys("wasm")
 
 @functools.lru_cache(maxsize=256)
 def _backend_bin_path_cached(
-    project_root_str: str,
+    cargo_target_str: str,
     cargo_profile: str,
-    cargo_target_override: str | None,
-    cwd_str: str,
     os_name: str,
     backend_features: tuple[str, ...] = _DEFAULT_BACKEND_FEATURES,
-    session_id: str | None = None,
 ) -> Path:
     profile_dir = _cargo_profile_dir(cargo_profile)
-    target_root = _cargo_target_root_cached(
-        project_root_str,
-        cargo_target_override,
-        cwd_str,
-        session_id,
-    )
     # Cargo's unqualified output is mutable publication input, including for
     # native. Every selected variant has its own admitted executable so a
     # different target's Cargo build cannot replace it.
     return (
-        target_root
+        Path(cargo_target_str)
         / profile_dir
         / backend_executable_name(os_name=os_name, features=backend_features)
     )
@@ -134,13 +131,10 @@ def _backend_bin_path(
     if installed is not None:
         return installed.binary
     return _backend_bin_path_cached(
-        os.fspath(project_root),
+        os.fspath(_cargo_target_root(project_root)),
         cargo_profile,
-        os.environ.get("CARGO_TARGET_DIR"),
-        os.fspath(Path.cwd()),
         os.name,
         backend_features,
-        _molt_session_id(),
     )
 
 
@@ -496,11 +490,17 @@ def _sweep_orphaned_backend_daemon_locks(
         include_other_sessions
         and not os.environ.get("MOLT_BUILD_STATE_DIR", "").strip()
     ):
-        # An explicit override cannot be inferred for another session.
-        sessions_roots = [project_root / "target" / "sessions"]
+        # An explicit override cannot be inferred for another session. Sibling
+        # sessions may come from a bare CLI run, this process's rule, or a run
+        # context with an artifact root.
+        bases = [project_root, project_cargo_target_base(project_root, os.environ)]
         artifact = configured_artifact_root(os.environ, relative_to=project_root)
         if artifact is not None:
-            sessions_roots.append(artifact / "target" / "sessions")
+            bases.append(artifact)
+        sessions_roots = [
+            session_targets_dir(cargo_target_dir_for_artifact_root(base, None))
+            for base in bases
+        ]
         for sessions_root in dict.fromkeys(sessions_roots):
             try:
                 session_dirs = (

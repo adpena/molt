@@ -4,6 +4,8 @@ import inspect
 import os
 from pathlib import Path
 
+import pytest
+
 import molt.cli as cli
 from molt.cli import mlir_backend
 import shutil
@@ -30,8 +32,26 @@ def test_cli_mlir_backend_authority_is_single_home() -> None:
         assert f"def {name}(" not in cli_source
 
 
-def test_find_mlir_backend_binary_prefers_crate_release_build(tmp_path: Path) -> None:
-    backend = (
+def _place_backend(path: Path) -> Path:
+    path.parent.mkdir(parents=True)
+    path.write_text("", encoding="utf-8")
+    return path
+
+
+def _no_backend_on_path(monkeypatch) -> None:
+    install_module_view(
+        monkeypatch, "shutil", shutil, mlir_backend, which=lambda _: None
+    )
+
+
+@pytest.mark.usefixtures("developer_host_context")
+def test_find_mlir_backend_binary_searches_only_the_project_target(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _no_backend_on_path(monkeypatch)
+    # Cargo's own default for the standalone workspace is not where Molt builds.
+    _place_backend(
         tmp_path
         / "runtime"
         / "molt-backend-mlir"
@@ -39,27 +59,29 @@ def test_find_mlir_backend_binary_prefers_crate_release_build(tmp_path: Path) ->
         / "release"
         / _backend_name()
     )
-    backend.parent.mkdir(parents=True)
-    backend.write_text("", encoding="utf-8")
+    assert mlir_backend._find_mlir_backend_binary(tmp_path) is None
 
+    backend = _place_backend(tmp_path / "target" / "release" / _backend_name())
     assert mlir_backend._find_mlir_backend_binary(tmp_path) == backend
 
 
-def test_find_mlir_backend_binary_uses_session_target_before_default(
+@pytest.mark.usefixtures("developer_host_context")
+def test_find_mlir_backend_binary_follows_a_pinned_session_target(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    _no_backend_on_path(monkeypatch)
     monkeypatch.setenv("MOLT_SESSION_ID", "agent-a")
-    session_backend = tmp_path / "target-agent-a" / "debug" / _backend_name()
-    default_backend = tmp_path / "target" / "release" / _backend_name()
-    session_backend.parent.mkdir(parents=True)
-    default_backend.parent.mkdir(parents=True)
-    session_backend.write_text("", encoding="utf-8")
-    default_backend.write_text("", encoding="utf-8")
+    _place_backend(tmp_path / "target" / "release" / _backend_name())
+    _place_backend(tmp_path / "target-agent-a" / "release" / _backend_name())
+    session_backend = _place_backend(
+        tmp_path / "target" / "sessions" / "agent-a" / "debug" / _backend_name()
+    )
 
     assert mlir_backend._find_mlir_backend_binary(tmp_path) == session_backend
 
 
+@pytest.mark.usefixtures("developer_host_context")
 def test_ensure_mlir_backend_builds_once_with_canonical_environment(
     tmp_path: Path,
     monkeypatch,
@@ -69,7 +91,9 @@ def test_ensure_mlir_backend_builds_once_with_canonical_environment(
     manifest.write_text(
         "[workspace]\n[package]\nname='m'\nversion='0.0.0'\n", encoding="utf-8"
     )
-    backend = manifest.parent / "target" / "release" / _backend_name()
+    cargo_target = tmp_path / "cargo-target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(cargo_target))
+    backend = cargo_target / "release" / _backend_name()
     captured: dict[str, object] = {}
 
     install_module_view(
@@ -124,6 +148,7 @@ def test_ensure_mlir_backend_builds_once_with_canonical_environment(
         "RUSTC_WRAPPER": "/usr/bin/sccache",
         "CARGO_INCREMENTAL": "0",
         "MOLT_LLVM_PREFIX": "C:/LLVM",
+        "CARGO_TARGET_DIR": str(cargo_target),
     }
     assert kwargs["timeout"] == 1800
 

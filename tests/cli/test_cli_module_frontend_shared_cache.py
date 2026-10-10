@@ -44,19 +44,20 @@ def _clear_path_caches() -> None:
 
     default_paths._default_molt_cache_cached.cache_clear()
     runtime_paths._build_state_root_cached.cache_clear()
-    runtime_paths._cargo_target_root_cached.cache_clear()
     module_graph_cache._resolved_module_cache_key.cache_clear()
     module_source._source_content_sha256_cached.cache_clear()
 
 
 @pytest.fixture(autouse=True)
-def _isolated_caches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def _isolated_caches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, developer_host_context: None
+) -> Path:
+    # The developer-host context drops the session's generated MOLT_SESSION_ID,
+    # so `_use_session` pins one and scopes the project target by it.
     shared_root = tmp_path / "molt_cache"
     monkeypatch.setenv("MOLT_CACHE", str(shared_root))
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
     monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
-    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
     _clear_path_caches()
     yield shared_root
     _clear_path_caches()

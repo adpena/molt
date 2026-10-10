@@ -653,55 +653,42 @@ def test_prewarm_cargo_failure_keeps_json_framing_and_stderr_detail(
     assert message in captured.err
 
 
+@pytest.mark.usefixtures("developer_host_context")
 def test_backend_path_cache_tracks_session_changes(monkeypatch, tmp_path):
     from molt.cli import backend_execution
 
     monkeypatch.setattr(backend_execution, "installed_compiler", lambda root: None)
-    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
-    monkeypatch.setattr(
-        backend_execution,
-        "_cargo_target_root_cached",
-        lambda root, override, cwd, session: tmp_path / "sessions" / session,
-    )
-    backend_execution._backend_bin_path_cached.cache_clear()
-    try:
-        monkeypatch.setenv("MOLT_SESSION_ID", "first-session")
-        first = backend_execution._backend_bin_path(tmp_path, "release")
-        monkeypatch.setenv("MOLT_SESSION_ID", "second-session")
-        second = backend_execution._backend_bin_path(tmp_path, "release")
-        assert first.parent.parent == tmp_path / "sessions" / "first-session"
-        assert second.parent.parent == tmp_path / "sessions" / "second-session"
-        assert first != second
-    finally:
-        backend_execution._backend_bin_path_cached.cache_clear()
+    sessions = tmp_path / "target" / "sessions"
+    monkeypatch.setenv("MOLT_SESSION_ID", "first-session")
+    first = backend_execution._backend_bin_path(tmp_path, "release")
+    monkeypatch.setenv("MOLT_SESSION_ID", "second-session")
+    second = backend_execution._backend_bin_path(tmp_path, "release")
+    # A generated session never scopes the target (molt.dx).
+    monkeypatch.setenv("MOLT_SESSION_ID_GENERATED", "1")
+    generated = backend_execution._backend_bin_path(tmp_path, "release")
+    assert first.parent.parent == sessions / "first-session"
+    assert second.parent.parent == sessions / "second-session"
+    assert generated.parent.parent == tmp_path / "target"
 
 
 @pytest.mark.parametrize("profile", ["dev-fast", "release-fast", "release-output"])
 @pytest.mark.parametrize("target", [None, "aarch64-unknown-linux-gnu", "wasm32-wasip1"])
 @pytest.mark.parametrize("stdlib", ["micro", "full"])
+@pytest.mark.usefixtures("developer_host_context")
 def test_runtime_path_cache_tracks_session_changes(
     monkeypatch, tmp_path, profile, target, stdlib
 ):
     from molt.cli import runtime_paths
 
-    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
-    monkeypatch.setattr(
-        runtime_paths,
-        "_cargo_target_root_cached",
-        lambda root, override, cwd, session: tmp_path / "sessions" / session,
-    )
-    runtime_paths._runtime_lib_path_cached.cache_clear()
-    try:
-        monkeypatch.setenv("MOLT_SESSION_ID", "first-session")
-        first = runtime_paths._runtime_lib_path(tmp_path, profile, target, stdlib)
-        monkeypatch.setenv("MOLT_SESSION_ID", "second-session")
-        second = runtime_paths._runtime_lib_path(tmp_path, profile, target, stdlib)
-        first.relative_to(tmp_path / "sessions" / "first-session")
-        second.relative_to(tmp_path / "sessions" / "second-session")
-        assert first.name == second.name
-        assert first != second
-    finally:
-        runtime_paths._runtime_lib_path_cached.cache_clear()
+    sessions = tmp_path / "target" / "sessions"
+    monkeypatch.setenv("MOLT_SESSION_ID", "first-session")
+    first = runtime_paths._runtime_lib_path(tmp_path, profile, target, stdlib)
+    monkeypatch.setenv("MOLT_SESSION_ID", "second-session")
+    second = runtime_paths._runtime_lib_path(tmp_path, profile, target, stdlib)
+    first.relative_to(sessions / "first-session")
+    second.relative_to(sessions / "second-session")
+    assert first.name == second.name
+    assert first != second
 
 
 def test_same_content_backend_metadata_refresh_preserves_admission(

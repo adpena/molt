@@ -340,7 +340,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "924670269c6c2e2df5cd39662f17bccae94a29d49e204e30d56d357e979c574f",
+  "authority_sha256": "0546555085a7f22b788edee7c7cafe23e6cd659ff2e6627371254c8f0c93c81f",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1647,7 +1647,7 @@
         "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
         "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content",
         "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds",
-        "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root",
+        "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_follows_the_cli_target_rule",
         "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit",
         "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"
       ],
@@ -1684,7 +1684,7 @@
         "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
         "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content",
         "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds",
-        "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root",
+        "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_follows_the_cli_target_rule",
         "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit",
         "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"
       ],
@@ -1722,7 +1722,7 @@
         "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody",
         "tests/tools/test_proof_queue.py::test_python_selection_location_join_preserves_coordinate_and_content",
         "tests/test_wasm_linked_runner_node_flags.py::test_missing_selected_wasm_host_does_not_use_other_builds",
-        "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_is_relative_to_build_root",
+        "tests/test_wasm_linked_runner_node_flags.py::test_relative_cargo_host_directory_follows_the_cli_target_rule",
         "tests/test_wasm_linked_runner_node_flags.py::test_proof_wasm_host_runner_preserves_actual_child_arguments_and_exit",
         "tests/test_bench_wasm_node_resolver.py::test_wasmtime_runner_uses_one_selected_host_build"
       ],

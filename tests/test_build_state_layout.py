@@ -1,17 +1,20 @@
+import os
 from pathlib import Path
+import shutil
+
 import pytest
 
-from molt.build_state_layout import build_state_root
+from molt.build_state_layout import build_state_root, project_build_state_root
 from molt.memory_guard_paths import (
     harness_guard_artifact_dir,
     memory_guard_state_root,
     pytest_guard_summary_dir,
 )
-from molt.dx import development_artifact_env
-from molt.backend_daemon_custody import backend_daemon_build_state_root_from_env
+from molt.dx import development_artifact_env, project_cargo_target_dir
 from molt.cli.runtime_paths import _build_state_root_cached
 from tools.build_control_path import build_control_output
 from tools.harness_memory_guard import canonical_harness_env
+from tests.process_guard_common import install_module_view
 
 
 @pytest.mark.parametrize("pinned_session", [False, True])
@@ -44,7 +47,7 @@ def test_ci_build_control_output_uses_admitted_consumer_root(
             else "diagnostics/selected-profile.jsonl"
         )
     admitted = canonical_harness_env(env, repo_root=repo)
-    expected = backend_daemon_build_state_root_from_env(admitted, project_root=repo)
+    expected = project_build_state_root(repo, admitted)
     expected_profile = (
         tmp_path / "selected-profile.jsonl"
         if profile == "absolute"
@@ -58,9 +61,7 @@ def test_ci_build_control_output_uses_admitted_consumer_root(
     producer_root = _build_state_root_cached(
         str(repo),
         producer_env.get("MOLT_BUILD_STATE_DIR"),
-        producer_env.get("CARGO_TARGET_DIR"),
-        str(Path.cwd()),
-        producer_env.get("MOLT_SESSION_ID"),
+        os.fspath(project_cargo_target_dir(repo, producer_env)),
         producer_env.get("MOLT_EXT_ROOT"),
     )
     assert producer_root == expected
@@ -95,11 +96,9 @@ def test_same_target_shares_canonical_control_across_receipt_roots(tmp_path: Pat
     assert expected == build_state_root(
         project_root=repo, cargo_target=target, environment=second
     )
-    assert expected == backend_daemon_build_state_root_from_env(
-        first, project_root=repo
-    )
+    assert expected == project_build_state_root(repo, first)
     assert expected == _build_state_root_cached(
-        str(repo), None, str(target), str(repo), None, str(artifact)
+        str(repo), None, str(target), str(artifact)
     )
     assert expected != build_state_root(
         project_root=repo,
@@ -122,4 +121,95 @@ def test_explicit_build_state_override_is_preserved(tmp_path: Path):
         build_state_root(project_root=repo, cargo_target=target, environment=env)
         == expected
     )
-    assert backend_daemon_build_state_root_from_env(env, project_root=repo) == expected
+    assert project_build_state_root(repo, env) == expected
+
+
+@pytest.mark.usefixtures("developer_host_context")
+@pytest.mark.parametrize("session", ["none", "pinned", "generated"])
+@pytest.mark.parametrize(
+    "request_env",
+    [
+        "none",
+        "artifact-root-only",
+        "MOLT_PREFER_EXTERNAL_ARTIFACTS",
+        "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
+    ],
+)
+def test_every_consumer_reads_one_project_cargo_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request_env: str,
+    session: str,
+) -> None:
+    """HF-133: the CLI default target has one rule and every reader agrees.
+
+    A project builds in ``<project>/target`` unless a development artifact
+    request moves it to the artifact root; ``MOLT_EXT_ROOT`` alone does not.
+    Only a pinned session scopes it.
+    """
+    from molt.backend_daemon_custody import backend_daemon_root_from_env
+    from molt.cli import backend_execution, lockfiles, mlir_backend, runtime_paths
+    from molt.cli.cargo_execution import _cargo_build_env
+    from molt.cli.wasm_host import (
+        molt_wasm_host_exe_name,
+        resolve_molt_wasm_host_binary,
+    )
+    import tools.compile_governor as compile_governor
+
+    project = tmp_path / "project"
+    project.mkdir()
+    external = tmp_path / "external"
+    base = project
+    if request_env != "none":
+        monkeypatch.setenv("MOLT_EXT_ROOT", str(external))
+    if request_env.startswith("MOLT_"):
+        monkeypatch.setenv(request_env, "1")
+        base = external.resolve()
+    if session != "none":
+        monkeypatch.setenv("MOLT_SESSION_ID", "lane-a")
+    if session == "generated":
+        monkeypatch.setenv("MOLT_SESSION_ID_GENERATED", "1")
+    expected = base / "target"
+    if session == "pinned":
+        expected = expected / "sessions" / "lane-a"
+    # The Cargo build environment creates the run context's roots; keep the
+    # toolchain root, which a plain clone would place in itself, in scratch.
+    monkeypatch.setenv("MOLT_TARGET_ROOT", str(tmp_path / "toolchain-root"))
+    monkeypatch.setattr(backend_execution, "installed_compiler", lambda _root: None)
+    install_module_view(
+        monkeypatch, "shutil", shutil, mlir_backend, which=lambda _: None
+    )
+    monkeypatch.delenv("MOLT_WASM_HOST_BIN", raising=False)
+
+    assert project_cargo_target_dir(project, os.environ) == expected
+    assert runtime_paths._cargo_target_root(project) == expected
+    control = build_state_root(
+        project_root=project, cargo_target=expected, environment=os.environ
+    )
+    assert runtime_paths._build_state_root(project) == control
+    assert project_build_state_root(project, os.environ) == control
+    assert (
+        backend_daemon_root_from_env(os.environ, project_root=project)
+        == control / "backend_daemon"
+    )
+    assert lockfiles._lock_check_cache_path(project, "uv") == (
+        expected / "lock_checks" / "uv.json"
+    )
+    assert backend_execution._backend_bin_path(project, "dev-fast").parent == (
+        expected / "dev-fast"
+    )
+    host = expected / "dev-fast" / molt_wasm_host_exe_name()
+    host.parent.mkdir(parents=True)
+    host.write_bytes(b"host")
+    assert resolve_molt_wasm_host_binary(project, cargo_profile="dev-fast") == str(host)
+    mlir = expected / "release" / mlir_backend._mlir_backend_executable_name()
+    mlir.parent.mkdir(parents=True)
+    mlir.write_bytes(b"mlir")
+    assert mlir_backend._find_mlir_backend_binary(project) == mlir
+    if request_env.startswith("MOLT_"):
+        # The CLI's Cargo builds use the same target: no per-process session.
+        assert _cargo_build_env()["CARGO_TARGET_DIR"] == str(expected)
+    compiler_root = Path(compile_governor.__file__).resolve().parents[1]
+    assert compile_governor._guard_root(os.environ) == (
+        project_build_state_root(compiler_root, os.environ) / "compile_guard"
+    )

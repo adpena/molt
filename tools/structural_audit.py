@@ -2979,6 +2979,11 @@ _SCRATCH_AUTHORITY_OWNER = "src/molt/dx.py"
 _ARTIFACT_ROOT_ENV = "MOLT_EXT_ROOT"
 _ARTIFACT_ROOT_CONSTANT = "ARTIFACT_ROOT_ENV"
 _TMP_SEGMENT_RE = re.compile(r"tmp(?:[/\\\\]|$)")
+# Rust cannot import molt.dx. The backend takes the one directory the CLI
+# passes (MOLT_DEBUG_ARTIFACT_DIR, HF-111), so Rust that names the artifact
+# root or joins "tmp" onto a base derives a root itself.
+_RUST_ARTIFACT_ROOT_RE = re.compile(r'"MOLT_EXT_ROOT"')
+_RUST_TMP_JOIN_RE = re.compile(r'\.join\(\s*"tmp(?:[/\\\\][^"]*)?"\s*\)')
 # Module constants and helpers that name a checkout in tests; a test's own
 # fixture roots (tmp_path, ext_root, ...) are not checkouts.
 _CHECKOUT_ROOT_NAMES = frozenset(
@@ -3160,6 +3165,18 @@ def _scratch_authority_sites(
     return sorted(sites)
 
 
+def _rust_scratch_authority_sites(text: str) -> list[tuple[int, str, str]]:
+    """(line, kind, base) for each Rust root derivation, outside line comments."""
+    sites: list[tuple[int, str, str]] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        code = line.split("//", 1)[0]
+        if _RUST_ARTIFACT_ROOT_RE.search(code):
+            sites.append((line_number, "artifact-root-read", _ARTIFACT_ROOT_ENV))
+        if _RUST_TMP_JOIN_RE.search(code):
+            sites.append((line_number, "tmp-join", "rust"))
+    return sites
+
+
 def _iter_scratch_authority_files(root: Path) -> list[Path]:
     scope = _source_scope(root)
     if scope is not None:
@@ -3175,6 +3192,7 @@ def _iter_scratch_authority_files(root: Path) -> list[Path]:
             if (root / sub).is_dir()
             for path in _iter_pruned_files(root / sub, root, (".py",))
         ]
+    candidates.extend(_iter_source_files(root, (".rs",)))
     return sorted(
         (
             path
@@ -3195,7 +3213,8 @@ def probe_scratch_authority_bypasses(root: Path) -> list[Finding]:
 
     Scratch comes from ``molt.dx.scratch_dir``/``scratch_root`` (never in the
     checkout, on the selected storage) and the artifact root from
-    ``molt.dx.artifact_root``/``configured_artifact_root``. A second
+    ``molt.dx.artifact_root``/``configured_artifact_root``. Rust under the
+    source roots takes the directory the CLI passes and derives neither. A second
     derivation writes into a plain clone or duplicates the family root's
     caches. Justified exceptions live in ``_SCRATCH_AUTHORITY_EXCEPTIONS``;
     an exception that matches no site is itself a finding. The ratchet
@@ -3217,13 +3236,17 @@ def probe_scratch_authority_bypasses(root: Path) -> list[Finding]:
             and (_ARTIFACT_ROOT_CONSTANT not in text)
         ):
             continue
-        try:
-            tree = ast.parse(text)
-        except SyntaxError:
-            continue
-        test_module = rel.startswith("tests/") and path.name.startswith("test_")
+        if path.suffix == ".rs":
+            found = _rust_scratch_authority_sites(text)
+        else:
+            try:
+                tree = ast.parse(text)
+            except SyntaxError:
+                continue
+            test_module = rel.startswith("tests/") and path.name.startswith("test_")
+            found = _scratch_authority_sites(tree, test_module=test_module)
         sites = []
-        for line, kind, base in _scratch_authority_sites(tree, test_module=test_module):
+        for line, kind, base in found:
             key = (rel, base)
             if kind == "tmp-join" and key in _SCRATCH_AUTHORITY_EXCEPTIONS:
                 matched.add(key)
