@@ -1172,12 +1172,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::FileFlush],
             discard_result: false,
         }),
-        "block_on" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::BlockOn,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::BlockOn],
-            discard_result: false,
-        }),
         "is_generator" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::IsGenerator,
             args: &[OpLoopRuntimeArgSpec::Local(0)],

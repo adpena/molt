@@ -574,17 +574,6 @@ class SerializationLoopStringAsyncOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "ASYNC_BLOCK_ON":
-            ctx.json_ops.append(
-                {
-                    "kind": "block_on",
-                    "args": [
-                        arg.name if hasattr(arg, "name") else str(arg)
-                        for arg in op.args
-                    ],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "BRIDGE_UNAVAILABLE":
             ctx.json_ops.append(
                 {

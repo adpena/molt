@@ -40,22 +40,22 @@ from asyncio import (
     _event_waiters_unregister,
     _event_waiters_cleanup_token,
     iscoroutine,
-    molt_async_sleep,
-    molt_asyncio_future_cancelled,
-    molt_asyncio_future_done,
-    molt_asyncio_task_cancel_apply,
-    molt_asyncio_task_last_exception_clear,
-    molt_asyncio_task_registry_live_set,
-    molt_asyncio_task_uncancel_apply,
-    molt_cancel_token_cancel,
-    molt_cancel_token_clone,
-    molt_cancel_token_drop,
-    molt_cancel_token_get_current,
-    molt_cancel_token_is_cancelled,
-    molt_cancel_token_new,
-    molt_cancel_token_set_current,
-    molt_spawn,
-    molt_task_register_execution,
+    _molt_async_sleep,
+    _molt_asyncio_future_cancelled,
+    _molt_asyncio_future_done,
+    _molt_asyncio_task_cancel_apply,
+    _molt_asyncio_task_last_exception_clear,
+    _molt_asyncio_task_registry_live_set,
+    _molt_asyncio_task_uncancel_apply,
+    _molt_cancel_token_cancel,
+    _molt_cancel_token_clone,
+    _molt_cancel_token_drop,
+    _molt_cancel_token_get_current,
+    _molt_cancel_token_is_cancelled,
+    _molt_cancel_token_new,
+    _molt_cancel_token_set_current,
+    _molt_spawn,
+    _molt_task_register_execution,
 )
 
 if TYPE_CHECKING:
@@ -97,36 +97,36 @@ FIRST_EXCEPTION = object()
 ALL_COMPLETED = object()
 
 def spawn(task: Any) -> None:
-    molt_spawn(task)
+    _molt_spawn(task)
 
 class CancellationToken:
     def __init__(self) -> None:
-        self._token = int(molt_cancel_token_new(None))
+        self._token = int(_molt_cancel_token_new(None))
         self._owned = True
 
     @classmethod
     def detached(cls) -> "CancellationToken":
         token = cls()
         old_id = token._token
-        token._token = int(molt_cancel_token_new(-1))
-        molt_cancel_token_drop(old_id)
+        token._token = int(_molt_cancel_token_new(-1))
+        _molt_cancel_token_drop(old_id)
         return token
 
     def child(self) -> "CancellationToken":
         token = CancellationToken()
         old_id = token._token
-        token._token = int(molt_cancel_token_new(self._token))
-        molt_cancel_token_drop(old_id)
+        token._token = int(_molt_cancel_token_new(self._token))
+        _molt_cancel_token_drop(old_id)
         return token
 
     def cancelled(self) -> bool:
-        return bool(molt_cancel_token_is_cancelled(self._token))
+        return bool(_molt_cancel_token_is_cancelled(self._token))
 
     def cancel(self) -> None:
-        molt_cancel_token_cancel(self._token)
+        _molt_cancel_token_cancel(self._token)
 
     def set_current(self) -> "CancellationToken":
-        prev_id = int(molt_cancel_token_set_current(self._token))
+        prev_id = int(_molt_cancel_token_set_current(self._token))
         return _wrap_existing_token(prev_id, False)
 
     def token_id(self) -> int:
@@ -134,7 +134,7 @@ class CancellationToken:
 
     def __del__(self) -> None:
         if getattr(self, "_owned", False):
-            molt_cancel_token_drop(int(self._token))
+            _molt_cancel_token_drop(int(self._token))
 
 def _wrap_existing_token(token_id: int, owned: bool) -> CancellationToken:
     token = CancellationToken()
@@ -142,29 +142,29 @@ def _wrap_existing_token(token_id: int, owned: bool) -> CancellationToken:
     token._token = int(token_id)
     token._owned = bool(owned)
     if owned:
-        molt_cancel_token_clone(int(token_id))
+        _molt_cancel_token_clone(int(token_id))
     if old_id != token_id:
-        molt_cancel_token_drop(int(old_id))
+        _molt_cancel_token_drop(int(old_id))
     return token
 
 def _swap_current_token(token: CancellationToken) -> int:
-    if molt_cancel_token_set_current is not None:  # type: ignore[name-defined]
-        return molt_cancel_token_set_current(token.token_id())  # type: ignore[name-defined]
+    if _molt_cancel_token_set_current is not None:  # type: ignore[name-defined]
+        return _molt_cancel_token_set_current(token.token_id())  # type: ignore[name-defined]
     return 0
 
 def _restore_token_id(token_id: int) -> None:
-    if molt_cancel_token_set_current is not None:  # type: ignore[name-defined]
-        molt_cancel_token_set_current(token_id)  # type: ignore[name-defined]
+    if _molt_cancel_token_set_current is not None:  # type: ignore[name-defined]
+        _molt_cancel_token_set_current(token_id)  # type: ignore[name-defined]
     return None
 
 def _current_token_id() -> int:
-    if molt_cancel_token_get_current is not None:  # type: ignore[name-defined]
-        return molt_cancel_token_get_current()  # type: ignore[name-defined]
+    if _molt_cancel_token_get_current is not None:  # type: ignore[name-defined]
+        return _molt_cancel_token_get_current()  # type: ignore[name-defined]
     return 0
 
 def _future_done(task: Any) -> bool:
     if isinstance(task, Future):
-        return bool(molt_asyncio_future_done(task._fut_handle))
+        return bool(_molt_asyncio_future_done(task._fut_handle))
     done_fn = getattr(task, "done", None)
     if callable(done_fn):
         return done_fn()
@@ -172,7 +172,7 @@ def _future_done(task: Any) -> bool:
 
 def _future_cancelled(task: Any) -> bool:
     if isinstance(task, Future):
-        return bool(molt_asyncio_future_cancelled(task._fut_handle))
+        return bool(_molt_asyncio_future_cancelled(task._fut_handle))
     cancelled_fn = getattr(task, "cancelled", None)
     if callable(cancelled_fn):
         return cancelled_fn()
@@ -243,14 +243,14 @@ class Task(Future):
         _task_registry_set(self._token.token_id(), self)
         self._fut_waiter = None
         token_id = self._token.token_id()
-        if molt_task_register_execution is not None:  # type: ignore[name-defined]
-            molt_task_register_execution(self._coro, token_id, None)  # type: ignore[name-defined]
+        if _molt_task_register_execution is not None:  # type: ignore[name-defined]
+            _molt_task_register_execution(self._coro, token_id, None)  # type: ignore[name-defined]
         prev_id = _swap_current_token(self._token)
         try:
             runner = self._runner(self._coro)
             self._runner_task = runner
-            if molt_task_register_execution is not None:  # type: ignore[name-defined]
-                molt_task_register_execution(  # type: ignore[name-defined]
+            if _molt_task_register_execution is not None:  # type: ignore[name-defined]
+                _molt_task_register_execution(  # type: ignore[name-defined]
                     runner, token_id, context
                 )
             self._loop._spawn_task(runner)
@@ -271,7 +271,7 @@ class Task(Future):
             return True
         self._cancel_message = msg
         _require_asyncio_intrinsic(
-            molt_asyncio_task_cancel_apply, "asyncio_task_cancel_apply"
+            _molt_asyncio_task_cancel_apply, "asyncio_task_cancel_apply"
         )(self._coro, msg)
         return True
 
@@ -303,7 +303,7 @@ class Task(Future):
         if self._cancel_requested == 0 and _VERSION_INFO >= (3, 13):
             self._cancel_message = None
             _require_asyncio_intrinsic(
-                molt_asyncio_task_uncancel_apply, "asyncio_task_uncancel_apply"
+                _molt_asyncio_task_uncancel_apply, "asyncio_task_uncancel_apply"
             )(self._coro)
         return self._cancel_requested
 
@@ -324,11 +324,11 @@ class Task(Future):
         except BaseException as err:
             exc = err
         if exc is None:
-            if not molt_asyncio_future_done(self._fut_handle):
+            if not _molt_asyncio_future_done(self._fut_handle):
                 Future.set_result(self, result)
-            molt_asyncio_task_last_exception_clear(coro)
+            _molt_asyncio_task_last_exception_clear(coro)
         else:
-            if not molt_asyncio_future_done(self._fut_handle):
+            if not _molt_asyncio_future_done(self._fut_handle):
                 if _is_cancelled_exc(exc):
                     self._set_cancelled(exc, self._cancel_message)
                 else:
@@ -350,9 +350,9 @@ class Task(Future):
         raise RuntimeError("Task does not support set_exception operation")
 
     def __repr__(self) -> str:
-        if molt_asyncio_future_cancelled(self._fut_handle):
+        if _molt_asyncio_future_cancelled(self._fut_handle):
             state = "cancelled"
-        elif molt_asyncio_future_done(self._fut_handle):
+        elif _molt_asyncio_future_done(self._fut_handle):
             state = "finished"
         else:
             state = "pending"
@@ -688,7 +688,7 @@ async def sleep(delay: float = 0.0, result: Any | None = None) -> Any:
         delay = 0.0
     else:
         delay = float(delay)
-    fut = _require_asyncio_intrinsic(molt_async_sleep, "async_sleep")(delay, result)
+    fut = _require_asyncio_intrinsic(_molt_async_sleep, "async_sleep")(delay, result)
     return await fut
 
 async def to_thread(func: Any, /, *args: Any, **kwargs: Any) -> Any:
@@ -875,7 +875,7 @@ def all_tasks(loop: EventLoop | None = None) -> set[Task]:
     if loop is None:
         loop = get_running_loop()
     task_values = _require_asyncio_intrinsic(
-        molt_asyncio_task_registry_live_set, "asyncio_task_registry_live_set"
+        _molt_asyncio_task_registry_live_set, "asyncio_task_registry_live_set"
     )(loop)
     if isinstance(task_values, set):
         return task_values

@@ -6543,7 +6543,6 @@ kinds = [
   "id",
   "file_close",
   "file_flush",
-  "block_on",
   "is_generator",
   "is_native_awaitable",
   "is_callable",

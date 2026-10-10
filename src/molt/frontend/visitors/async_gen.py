@@ -123,7 +123,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             )
             self._inherit_free_var_import_resolution(free_vars, prev_state)
             self.current_method_first_param = params[0] if params else None
-            self.async_context = True
             self.global_decls = self._collect_global_decls(node.body)
             self.nonlocal_decls = self._collect_nonlocal_decls(node.body)
             assigned = self._collect_assigned_names(node.body)
@@ -342,7 +341,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         )
         self._inherit_free_var_import_resolution(free_vars, prev_state)
         self.current_method_first_param = params[0] if params else None
-        self.async_context = True
         self.global_decls = self._collect_global_decls(node.body)
         self.nonlocal_decls = self._collect_nonlocal_decls(node.body)
         assigned = self._collect_assigned_names(node.body)
@@ -486,11 +484,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         return None
 
     def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
-        if not self.is_async():
-            raise FrontendRejection(
-                Diagnostic.CONTROL_FLOW,
-                "async with is only supported in async functions",
-            )
+        self._require_coroutine_body(node, "'async with'")
         if len(node.items) != 1:
             nested = ast.AsyncWith(
                 items=node.items[1:],
@@ -546,11 +540,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
     def _visit_async_for(
         self, node: ast.AsyncFor, *, iterator: MoltValue | None = None
     ) -> None:
-        if not self.is_async():
-            raise FrontendRejection(
-                Diagnostic.CONTROL_FLOW,
-                "async for is only supported in async functions",
-            )
+        self._require_coroutine_body(node, "'async for'")
         self._prepare_exact_class_loop_entry(node.body)
         provenance_flow = self._begin_module_provenance_flow(
             record_exception_prefixes=True
@@ -664,14 +654,32 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
 
     def visit_Await(self, node: ast.Await) -> Any:
         # Await consumes the result of an ordinary, live Python expression.
-        if not self.is_async():
-            coro = self.visit(node.value)
-            coro = self._emit_awaitable_transform(coro)
-            res = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(MoltOp(kind="ASYNC_BLOCK_ON", args=[coro], result=res))
-            self._emit_raise_if_pending()
-            return res
+        self._require_coroutine_body(node, "'await'")
         return self._emit_await_value(self.visit(node.value))
+
+    def _in_coroutine_body(self) -> bool:
+        """Whether the innermost scope is an ``async def`` or async genexpr body.
+
+        Generators also own a stateful frame, and a class body compiles inline in
+        its enclosing function, so neither decides where ``await`` may appear.
+        """
+        if self._class_body_depth > 0:
+            return False
+        plan = self.funcs_map[self.current_func_name].get("stateful_frame_plan")
+        return plan is not None and plan.kind in (
+            FunctionKind.ASYNC,
+            FunctionKind.ASYNC_GENERATOR,
+        )
+
+    def _require_coroutine_body(self, node: ast.AST, construct: str) -> None:
+        """Reject an async construct where CPython's compiler rejects it."""
+        if self._in_coroutine_body():
+            return
+        if construct == "'await'" and (
+            self._class_body_depth > 0 or self.current_func_name == "molt_main"
+        ):
+            self._raise_syntax_error("'await' outside function", node)
+        self._raise_syntax_error(f"{construct} outside async function", node)
 
     def visit_Yield(self, node: ast.Yield) -> Any:
         if not self.in_generator:
@@ -988,9 +996,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             self.funcs_map[self.current_func_name].get("stateful_frame_plan")
             is not None
         )
-
-    def is_async_context(self) -> bool:
-        return self.async_context
 
     def _allocate_async_frame_slot(
         self,
@@ -1457,7 +1462,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
     def _emit_await_value(
         self, awaitable: MoltValue, *, raise_pending: bool = True
     ) -> MoltValue:
-        if not self.is_async():
+        if not self._in_coroutine_body():
             raise FrontendRejection(
                 Diagnostic.CONTROL_FLOW, "await outside async function"
             )

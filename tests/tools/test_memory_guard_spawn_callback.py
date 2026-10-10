@@ -122,7 +122,12 @@ def test_windows_job_sampling_automatically_avoids_global_process_table() -> Non
     assert result.sampling_telemetry.process_rows > 0
     assert result.sampling_telemetry.max_process_rows < 16
     assert result.sampling_telemetry.observer_wall_time_s > 0.0
-    assert 0.0 <= result.sampling_telemetry.observer_cpu_duty_cycle <= 1.0
+    duty_cycle = result.sampling_telemetry.observer_cpu_duty_cycle
+    if result.sampling_telemetry.observer_cpu_time_s > 0.0:
+        assert duty_cycle is not None and 0.0 < duty_cycle <= 1.0
+    else:
+        # A coarse Windows CPU clock can read zero; the share is unmeasurable.
+        assert duty_cycle is None
 
 
 @pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows Job telemetry")

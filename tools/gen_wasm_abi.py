@@ -1250,37 +1250,10 @@ def _render_rs_container_runtime_selector(
             "    pub(crate) import: WasmRuntimeImport,\n",
             "    pub(crate) lir_runtime_call: Option<LirRuntimeCall>,\n",
             "}\n\n",
-            "#[allow(dead_code)]\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct WasmContainerRuntimeSelectorSpec {\n",
-            "    pub(crate) op: WasmContainerRuntimeOp,\n",
-            "    pub(crate) fact: WasmContainerRuntimeFact,\n",
-            "    pub(crate) selection: WasmContainerRuntimeSelection,\n",
-            "}\n\n",
-            "#[allow(dead_code)]\n",
-            "pub(crate) const WASM_CONTAINER_RUNTIME_SELECTORS: &[WasmContainerRuntimeSelectorSpec] = &[\n",
         ]
     )
-    for entry in selectors:
-        lir_variant = entry.get("lir_variant")
-        lir_call = (
-            "None" if lir_variant is None else f"Some(LirRuntimeCall::{lir_variant})"
-        )
-        lines.extend(
-            [
-                "    WasmContainerRuntimeSelectorSpec {\n",
-                f"        op: WasmContainerRuntimeOp::{op_variants[entry['op']]},\n",
-                f"        fact: WasmContainerRuntimeFact::{fact_variants[entry['fact']]},\n",
-                "        selection: WasmContainerRuntimeSelection {\n",
-                f"            import: {_rust_runtime_import(import_variants, entry['import_name'])},\n",
-                f"            lir_runtime_call: {lir_call},\n",
-                "        },\n",
-                "    },\n",
-            ]
-        )
     lines.extend(
         [
-            "];\n\n",
             "#[inline]\n",
             "pub(crate) fn wasm_container_runtime_op(kind: &str) -> Option<WasmContainerRuntimeOp> {\n",
             "    match kind {\n",
@@ -1354,35 +1327,11 @@ def _render_rs_method_ic_selector(
             "pub(crate) struct WasmMethodIcSelection {\n",
             "    pub(crate) import: WasmRuntimeImport,\n",
             "}\n\n",
-            "#[allow(dead_code)]\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct WasmMethodIcSelectorSpec {\n",
-            "    pub(crate) family: WasmMethodIcFamily,\n",
-            "    pub(crate) extra_arg_count: usize,\n",
-            "    pub(crate) selection: WasmMethodIcSelection,\n",
-            "}\n\n",
             f"pub(crate) const WASM_METHOD_IC_MAX_EXTRA_ARGS: usize = {METHOD_IC_MAX_EXTRA_ARGS};\n\n",
-            "#[allow(dead_code)]\n",
-            "pub(crate) const WASM_METHOD_IC_SELECTORS: &[WasmMethodIcSelectorSpec] = &[\n",
         ]
     )
-    for family in METHOD_IC_SELECTOR_FAMILIES:
-        for extra_arg_count in range(METHOD_IC_MAX_EXTRA_ARGS + 1):
-            entry = selector_by_key[(family, extra_arg_count)]
-            lines.extend(
-                [
-                    "    WasmMethodIcSelectorSpec {\n",
-                    f"        family: WasmMethodIcFamily::{family_variants[family]},\n",
-                    f"        extra_arg_count: {extra_arg_count},\n",
-                    "        selection: WasmMethodIcSelection {\n",
-                    f"            import: {_rust_runtime_import(import_variants, entry['import_name'])},\n",
-                    "        },\n",
-                    "    },\n",
-                ]
-            )
     lines.extend(
         [
-            "];\n\n",
             "#[inline]\n",
             "pub(crate) fn wasm_method_ic_selection(\n",
             "    family: WasmMethodIcFamily,\n",
@@ -1512,75 +1461,10 @@ def _render_rs_numeric_runtime_selector(
 
 def _render_rs_runtime_surface(data: dict) -> str:
     lines: list[str] = [_header("//")]
-    lines.append("use wasm_encoder::ValType;\n\n")
-    lines.extend(
-        [
-            "#[allow(dead_code)]\n",
-            "pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[\n",
-        ]
-    )
+    lines.append("pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[\n")
     for name in data["runtime_export_policy"]["host_exports"]:
         lines.append(f'    "{name}",\n')
-    lines.append("];\n\n")
-    lines.extend(
-        [
-            "#[allow(dead_code)]\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct RuntimeHostExportSignature {\n",
-            "    pub(crate) name: &'static str,\n",
-            "    pub(crate) params: &'static [ValType],\n",
-            "    pub(crate) results: &'static [ValType],\n",
-            "}\n\n",
-            "#[allow(dead_code)]\n",
-            "pub(crate) const RUNTIME_HOST_EXPORT_SIGNATURES: &[RuntimeHostExportSignature] = &[\n",
-        ]
-    )
-    for entry in data["runtime_host_export_signature"]:
-        lines.extend(
-            [
-                "    RuntimeHostExportSignature {\n",
-                f'        name: "{entry["name"]}",\n',
-                f"        params: {_rust_val_slice(entry['params'])},\n",
-                f"        results: {_rust_val_slice(entry['results'])},\n",
-                "    },\n",
-            ]
-        )
-    lines.append("];\n\n")
-    lines.extend(
-        [
-            "#[allow(dead_code)]\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct RuntimeImportFallbackSpec {\n",
-            "    pub(crate) import_name: &'static str,\n",
-            "    pub(crate) strategy: &'static str,\n",
-            "    pub(crate) call_arity: Option<usize>,\n",
-            "    pub(crate) fallback_exports: &'static [&'static str],\n",
-            "}\n\n",
-            "#[allow(dead_code)]\n",
-            "pub(crate) const RUNTIME_IMPORT_FALLBACK_EXPORTS: &[RuntimeImportFallbackSpec] = &[\n",
-        ]
-    )
-    for entry in data.get("runtime_import_fallback", []):
-        lines.extend(
-            [
-                "    RuntimeImportFallbackSpec {\n",
-                f'        import_name: "{entry["import"]}",\n',
-                f'        strategy: "{entry["strategy"]}",\n',
-                "        call_arity: "
-                + (f"Some({entry['call_arity']})" if "call_arity" in entry else "None")
-                + ",\n",
-                "        fallback_exports: &[\n",
-            ]
-        )
-        for export_name in entry["exports"]:
-            lines.append(f'            "{export_name}",\n')
-        lines.extend(
-            [
-                "        ],\n",
-                "    },\n",
-            ]
-        )
-    lines.append("];\n\n")
+    lines.append("];\n")
     return "".join(lines)
 
 

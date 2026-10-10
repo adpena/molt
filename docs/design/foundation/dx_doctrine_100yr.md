@@ -224,7 +224,7 @@ Governed entirely by R1.1 (kill the silent `build`/`run` divergence) + R1.2 (pro
 
 ### 4.4 stdlib-profile (`full` | `micro`)
 
-The former footgun is now structurally closed: `config_resolution.resolve_stdlib_profile` owns the single default and precedence order; `entrypoint_dispatch` resolves it once; `build` re-exports that concrete value to `MOLT_STDLIB_PROFILE` for the module-graph reader; and `quality_commands._normalize_internal_batch_stdlib_profile` consumes the same `DEFAULT_STDLIB_PROFILE`. The retained dispatch comment documents why an env-only `full` closure paired with a `micro` staticlib must remain unexpressible.
+The former footgun is now structurally closed: `config_resolution.resolve_stdlib_profile` owns the single default and precedence order; `entrypoint_dispatch` resolves it once; `build` passes that concrete value as a parameter to the module-graph reader and the runtime selector, never through the process environment; and `quality_commands._normalize_internal_batch_stdlib_profile` consumes the same `DEFAULT_STDLIB_PROFILE`. The retained dispatch comment documents why an env-only `full` closure paired with a `micro` staticlib must remain unexpressible.
 
 **Decision (binding):** `stdlib-profile` is resolved **only** through the one config authority (flag → `[tool.molt.<cmd>]` → `[tool.molt]` → single default), and `MOLT_STDLIB_PROFILE` becomes (at most) a documented alias that flows *into* that resolver — never a second independent reader. The single default is consolidated to one constant. `molt config` reports the resolved value and its source. This is the template for migrating *all* ~70 `MOLT_*` env vars off the parallel authority and under D5.
 

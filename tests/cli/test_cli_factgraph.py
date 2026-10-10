@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 
 import molt.cli as cli
+from molt.backend_environment import CodegenSelection
 from molt.cli import factgraph as factgraph_module
 
 
@@ -60,12 +61,14 @@ def test_factgraph_cli_dispatches_typed_backend_request(
     assert captured["json_output"] is True
     assert captured["python_version"] == "3.12"
     assert "build_config" in captured
-    assert os.environ["MOLT_BACKEND"] == "llvm"
+    # The selection is a typed parameter; the process environment never
+    # carries it into later in-process work (HF-60).
+    assert captured["codegen_backend"] == "llvm"
+    assert "MOLT_BACKEND" not in os.environ
     assert isinstance(request, factgraph_module.FactGraphRequest)
     assert request.output_path == output
     assert request.function_name == "main"
     assert request.requested_target == "llvm"
-    assert request.effective_backend == "llvm"
 
 
 def test_factgraph_cli_dispatches_module_entry(tmp_path: Path, monkeypatch) -> None:
@@ -105,7 +108,7 @@ def test_factgraph_cli_dispatches_module_entry(tmp_path: Path, monkeypatch) -> N
     assert request.output_path == output
     assert request.function_name == "entry"
     assert request.requested_target == "native"
-    assert request.effective_backend == "cranelift"
+    assert captured["codegen_backend"] == "cranelift"
 
 
 def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
@@ -136,7 +139,6 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
             output_path=output,
             function_name="molt_main",
             requested_target="wasm",
-            effective_backend="cranelift",
         ),
         is_luau_transpile=False,
         is_rust_transpile=False,
@@ -237,6 +239,10 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[bytes]:
         env = kwargs["env"]
+        # The backend process gets the selection in its own mapping, while
+        # the caller's environment never holds it.
+        assert env["MOLT_BACKEND"] == "llvm"
+        assert "MOLT_BACKEND" not in os.environ
         assert env["MOLT_RUNTIME_CALLABLE_SYMBOLS"] == str(
             binding.callable_symbols.path
         )
@@ -269,7 +275,6 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
             output_path=output,
             function_name="main",
             requested_target="llvm",
-            effective_backend="llvm",
         ),
         output_layout=SimpleNamespace(
             is_rust_transpile=False,
@@ -292,6 +297,7 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
             cargo_timeout=None,
             backend_cargo_profile="release",
             backend_timeout=3.0,
+            codegen=CodegenSelection(backend="llvm"),
         ),
         build_roots=SimpleNamespace(project_root=tmp_path, molt_root=tmp_path),
         build_preamble=SimpleNamespace(

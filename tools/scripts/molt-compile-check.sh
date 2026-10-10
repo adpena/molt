@@ -20,9 +20,9 @@ trap 'rm -rf "$OUTDIR"' EXIT
 
 START_MS=$(($(date +%s) * 1000 + $(date +%N 2>/dev/null | sed 's/^0*//' | head -c3 || echo 0)))
 
-if MOLT_WASM_PROFILE=pure python3 "$ROOT/tools/guarded_exec.py" --prefix MOLT_TEST_SUITE --cwd "$ROOT" -- \
+if python3 "$ROOT/tools/guarded_exec.py" --prefix MOLT_TEST_SUITE --cwd "$ROOT" -- \
     .venv/bin/python -m molt build "$FILE_PATH" \
-    --target wasm --stdlib-profile micro \
+    --target wasm --wasm-profile pure --stdlib-profile micro \
     --output "$OUTDIR/output.wasm" \
     --linked-output "$OUTDIR/linked.wasm" 2>/dev/null; then
 

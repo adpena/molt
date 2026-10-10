@@ -317,7 +317,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[str] = frozenset(
         "bit_not",
         "bit_or",
         "bit_xor",
-        "block_on",
         "bool",
         "bool_const",
         "bor",
@@ -906,7 +905,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[str] = frozenset(
         "ANY",
         "ASCII_FROM_OBJ",
         "ASYNCGEN_NEW",
-        "ASYNC_BLOCK_ON",
         "ASYNC_FOR_END",
         "ASYNC_FOR_START",
         "ASYNC_WORK_POLL",
@@ -1462,7 +1460,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[str] = frozenset(
 
 # Explicit frontend spellings replacing the uppercase wire default.
 FRONTEND_LOWERING_KINDS_BY_WIRE: dict[str, tuple[str, ...]] = {
-    'block_on': ('ASYNC_BLOCK_ON',),
     'class_layout_version': ('CLASS_VERSION',),
     'closure_load': ('LOAD_CLOSURE',),
     'closure_store': ('STORE_CLOSURE',),
@@ -2864,7 +2861,6 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "bit_not": 0,
     "bit_or": 0,
     "bit_xor": 0,
-    "block_on": 1024,
     "bool": 128,
     "bor": 0,
     "borrow": 8,
@@ -3757,7 +3753,6 @@ BINARY_IMAGE_OWNED_VALUE_ROOT_KINDS: frozenset[str] = frozenset(
         "anext",
         "ascii_from_obj",
         "asyncgen_new",
-        "block_on",
         "bound_method_new",
         "bridge_unavailable",
         "buffer2d_get",

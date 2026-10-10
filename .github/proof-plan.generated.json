@@ -338,7 +338,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "bb070cecd2abe6a98004450b644fe709165658884520b409d6e3bc2039cf6da8",
+  "authority_sha256": "4adf0cf7e30bedd8db1fb9086a4f09bbea34cd3bb282d4c4fbd52420599613e4",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2715,7 +2715,12 @@
         "tests/tools/test_legacy_default_cleanup.py",
         "tests/tools/test_wasm_link_fact_provider.py",
         "tests/tools/test_cargo_test_binary_discovery.py",
-        "tests/test_wasm_profile_tool.py"
+        "tests/test_wasm_profile_tool.py",
+        "tests/tools/test_fuzz_compiler_reporting.py",
+        "tests/tools/test_new_agent_task.py",
+        "tests/tools/test_proof_queue_disk_capacity.py",
+        "tests/test_artifact_poison_gate.py",
+        "tests/tools/test_signed_ratio.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -4223,7 +4228,8 @@
         "tests/test_frontend_midend_passes.py",
         "tests/test_frontend_inline_frame_legality.py",
         "tests/test_python_binding_join_frontier.py",
-        "tests/test_class_annotation_namespace_lowering.py"
+        "tests/test_class_annotation_namespace_lowering.py",
+        "tests/test_frontend_async_placement.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -4280,7 +4286,8 @@
         "tests/test_frontend_midend_passes.py",
         "tests/test_frontend_inline_frame_legality.py",
         "tests/test_python_binding_join_frontier.py",
-        "tests/test_class_annotation_namespace_lowering.py"
+        "tests/test_class_annotation_namespace_lowering.py",
+        "tests/test_frontend_async_placement.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
@@ -4421,7 +4428,9 @@
         "tests/cli/test_app_export_contract.py",
         "tests/cli/test_fail_closed_gate.py",
         "tests/cli/test_cli_progress.py",
-        "tests/cli/test_cli_wasm_codegen_layout.py"
+        "tests/cli/test_cli_wasm_codegen_layout.py",
+        "tests/cli/test_cli_guard_infrastructure.py",
+        "tests/cli/test_cli_environment_custody.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -4562,7 +4571,9 @@
         "tests/cli/test_app_export_contract.py",
         "tests/cli/test_fail_closed_gate.py",
         "tests/cli/test_cli_progress.py",
-        "tests/cli/test_cli_wasm_codegen_layout.py"
+        "tests/cli/test_cli_wasm_codegen_layout.py",
+        "tests/cli/test_cli_guard_infrastructure.py",
+        "tests/cli/test_cli_environment_custody.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",
@@ -4929,7 +4940,8 @@
         "tests/test_generate_worker.py",
         "tests/test_tinygrad_tokenizer_contract.py",
         "tests/test_nemotron_ocr_boundaries.py",
-        "tests/test_wasm_build_policy_authority.py"
+        "tests/test_wasm_build_policy_authority.py",
+        "tests/test_runtime_state_ownership.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-unit",
@@ -5296,7 +5308,8 @@
         "tests/test_generate_worker.py",
         "tests/test_tinygrad_tokenizer_contract.py",
         "tests/test_nemotron_ocr_boundaries.py",
-        "tests/test_wasm_build_policy_authority.py"
+        "tests/test_wasm_build_policy_authority.py",
+        "tests/test_runtime_state_ownership.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-unit",

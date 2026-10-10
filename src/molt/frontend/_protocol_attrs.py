@@ -71,7 +71,6 @@ class _GeneratorProtocolAttrs(Protocol):
     annotation_type_params: dict[str, MoltValue]
     app_callable_bindings: dict[str, dict[str, Any]]
     async_closure_offset: int | None
-    async_context: Any
     async_frame_slots: list[AsyncFrameSlot]
     async_internal_bindings: dict[str, AsyncFrameSlot]
     async_internal_hints: dict[str, str]

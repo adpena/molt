@@ -11,15 +11,18 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use crate::ir::ExecutionContextPolicy;
 use crate::ir::{FunctionIR, OpIR, SimpleIR};
+use crate::tir::cfg_liveness::{SimpleNameSet, SimpleNameTable};
 use crate::tir::dominators::{
     exception_edge_binds_handler_arguments, is_simple_exception_transfer_kind,
 };
 use crate::tir::op_kinds_generated::{
     SimpleIrCallTargetRole, SimpleIrVerifierRegionRole, kind_to_opcode_table,
-    simpleir_call_target_role, simpleir_kind_is_repoll, simpleir_kind_is_suspend,
+    simpleir_call_target_role, simpleir_kind_clears_pending_exception,
+    simpleir_kind_is_exception_check, simpleir_kind_is_repoll, simpleir_kind_is_suspend,
     simpleir_kind_is_terminator, simpleir_kind_is_verifier_label_definition,
     simpleir_kind_is_verifier_label_reference, simpleir_kind_is_verifier_loop_scoped,
-    simpleir_kind_is_verifier_phi, simpleir_verifier_region_role,
+    simpleir_kind_is_verifier_phi, simpleir_kind_raises_pending_exception,
+    simpleir_verifier_region_role,
 };
 use crate::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
 
@@ -901,12 +904,94 @@ fn canonical_phi_edges(
     edges
 }
 
-fn definitions(op: &OpIR) -> BTreeSet<String> {
-    let mut result = BTreeSet::new();
-    visit_simple_ir_defined_names(op, |name| {
-        result.insert(name.to_string());
-    });
-    result
+/// Definite definitions on the paths that reach a point, split by whether an
+/// exception is pending there. `None` means no path reaches the point in that
+/// mode, which is the identity for the meet.
+///
+/// SimpleIR `raise` records a pending exception and execution continues to the
+/// next exception check, so code between them runs with the exception pending.
+/// A check's fall-through edge carries only the paths without one; that keeps
+/// a re-raising handler arm from appearing to reach the code after the `try`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ModeDefinitions {
+    clear: Option<SimpleNameSet>,
+    pending: Option<SimpleNameSet>,
+}
+
+fn meet_mode(left: &Option<SimpleNameSet>, right: &Option<SimpleNameSet>) -> Option<SimpleNameSet> {
+    match (left, right) {
+        (None, other) | (other, None) => other.clone(),
+        (Some(left), Some(right)) => {
+            let mut meet = left.clone();
+            meet.intersect_with(right);
+            Some(meet)
+        }
+    }
+}
+
+impl ModeDefinitions {
+    fn unreached() -> Self {
+        Self {
+            clear: None,
+            pending: None,
+        }
+    }
+
+    /// Names defined on every path that reaches this point, in either mode.
+    fn on_every_path(&self) -> Option<SimpleNameSet> {
+        meet_mode(&self.clear, &self.pending)
+    }
+
+    fn meet(&mut self, other: &Self) {
+        self.clear = meet_mode(&self.clear, &other.clear);
+        self.pending = meet_mode(&self.pending, &other.pending);
+    }
+
+    fn define(&mut self, id: u32) {
+        for set in [&mut self.clear, &mut self.pending].into_iter().flatten() {
+            set.insert(id);
+        }
+    }
+
+    fn apply_pending_effect(&mut self, kind: &str) {
+        if simpleir_kind_raises_pending_exception(kind) {
+            self.pending = self.on_every_path();
+            self.clear = None;
+        } else if simpleir_kind_clears_pending_exception(kind) {
+            self.clear = self.on_every_path();
+            self.pending = None;
+        } else {
+            // Any other operation may raise, and leaves a pending one in place.
+            self.pending = self.on_every_path();
+        }
+    }
+
+    /// The state that `edge` carries out of a block whose last op is `end_kind`.
+    fn along(&self, end_kind: &str, edge: &LogicalEdge) -> Self {
+        let exceptional = edge.execution_role == EdgeRole::Exception;
+        if simpleir_kind_is_exception_check(end_kind) {
+            if exceptional {
+                Self {
+                    clear: None,
+                    pending: self.pending.clone(),
+                }
+            } else {
+                Self {
+                    clear: self.clear.clone(),
+                    pending: None,
+                }
+            }
+        } else if exceptional {
+            // Handler-reachability metadata (TRY_START): the handler may be
+            // entered with the definitions available here.
+            Self {
+                clear: None,
+                pending: self.on_every_path(),
+            }
+        } else {
+            self.clone()
+        }
+    }
 }
 
 fn verify_definite_definitions(
@@ -917,13 +1002,11 @@ fn verify_definite_definitions(
     let ops = &function.ops;
     let blocks = basic_blocks(ops, edges);
     let mut successors = vec![BTreeSet::new(); blocks.ranges.len()];
-    let mut predecessors = vec![BTreeSet::new(); blocks.ranges.len()];
     let mut incoming = vec![Vec::new(); blocks.ranges.len()];
     for (block, (_, end)) in blocks.ranges.iter().enumerate() {
         for edge in &edges[*end] {
             let successor = blocks.op_to_block[edge.target];
             successors[block].insert(successor);
-            predecessors[successor].insert(block);
             incoming[successor].push(LogicalEdge {
                 source: block,
                 target: successor,
@@ -941,38 +1024,59 @@ fn verify_definite_definitions(
             pending.extend(successors[block].iter().copied());
         }
     }
-    let params: BTreeSet<String> = function.params.iter().cloned().collect();
+    // The canonical dense name table and bitsets: each block boundary set
+    // takes `names / 8` bytes. Name-keyed sets cost a heap string per name per
+    // block, which drove the verifier past 7 GB on large functions (HF-96).
+    let mut names = SimpleNameTable::for_ops(ops);
+    for param in &function.params {
+        names.intern(param);
+    }
+    let name_id = |name: &str| {
+        names
+            .id(name)
+            .expect("SimpleIR name table holds every name")
+    };
+    let mut params = SimpleNameSet::empty(names.len());
+    for param in &function.params {
+        params.insert(name_id(param));
+    }
     let mut universe = params.clone();
     for op in ops {
-        universe.extend(definitions(op));
+        visit_simple_ir_defined_names(op, |name| universe.insert(name_id(name)));
     }
-    let generated: Vec<BTreeSet<String>> = blocks
-        .ranges
-        .iter()
-        .map(|(start, end)| ops[*start..=*end].iter().flat_map(definitions).collect())
-        .collect();
-    let mut definite_in = vec![universe.clone(); blocks.ranges.len()];
-    let mut definite_out = vec![universe.clone(); blocks.ranges.len()];
-    definite_in[0] = params.clone();
-    definite_out[0] = params.union(&generated[0]).cloned().collect();
+    let end_kind = |block: usize| ops[blocks.ranges[block].1].kind.as_str();
+    let transfer = |block: usize, state: &ModeDefinitions| {
+        let mut state = state.clone();
+        let (start, end) = blocks.ranges[block];
+        for op in &ops[start..=end] {
+            state.apply_pending_effect(&op.kind);
+            visit_simple_ir_defined_names(op, |name| state.define(name_id(name)));
+        }
+        state
+    };
+    let entry = ModeDefinitions {
+        clear: Some(params.clone()),
+        pending: None,
+    };
+    let mut block_in = vec![ModeDefinitions::unreached(); blocks.ranges.len()];
+    let mut block_out = vec![ModeDefinitions::unreached(); blocks.ranges.len()];
     loop {
         let mut changed = false;
-        for block in &reachable {
-            let new_in = if *block == 0 {
-                params.clone()
+        for &block in &reachable {
+            let mut new_in = if block == 0 {
+                entry.clone()
             } else {
-                let mut pred_iter = predecessors[*block].intersection(&reachable);
-                match pred_iter.next() {
-                    None => BTreeSet::new(),
-                    Some(first) => pred_iter.fold(definite_out[*first].clone(), |acc, pred| {
-                        acc.intersection(&definite_out[*pred]).cloned().collect()
-                    }),
-                }
+                ModeDefinitions::unreached()
             };
-            let new_out = new_in.union(&generated[*block]).cloned().collect();
-            if new_in != definite_in[*block] || new_out != definite_out[*block] {
-                definite_in[*block] = new_in;
-                definite_out[*block] = new_out;
+            for edge in &incoming[block] {
+                if reachable.contains(&edge.source) {
+                    new_in.meet(&block_out[edge.source].along(end_kind(edge.source), edge));
+                }
+            }
+            let new_out = transfer(block, &new_in);
+            if new_in != block_in[block] || new_out != block_out[block] {
+                block_in[block] = new_in;
+                block_out[block] = new_out;
                 changed = true;
             }
         }
@@ -980,10 +1084,10 @@ fn verify_definite_definitions(
             break;
         }
     }
-    for block in &reachable {
-        let (start, end) = blocks.ranges[*block];
-        let mut available = definite_in[*block].clone();
-        let phi_edges = canonical_phi_edges(*block, &incoming, &reachable);
+    for &block in &reachable {
+        let (start, end) = blocks.ranges[block];
+        let mut state = block_in[block].clone();
+        let phi_edges = canonical_phi_edges(block, &incoming, &reachable);
         for (index, op) in ops.iter().enumerate().take(end + 1).skip(start) {
             if simpleir_kind_is_verifier_phi(&op.kind) {
                 let args = op.args.as_deref().unwrap_or_default();
@@ -1004,7 +1108,14 @@ fn verify_definite_definitions(
                     let Some(value) = args.get(if collapsed { 0 } else { edge_index }) else {
                         continue;
                     };
-                    if !definite_out[edge.source].contains(value) {
+                    // An edge that no executable path takes constrains nothing.
+                    let Some(carried) = block_out[edge.source]
+                        .along(end_kind(edge.source), edge)
+                        .on_every_path()
+                    else {
+                        continue;
+                    };
+                    if !names.id(value).is_some_and(|id| carried.contains(id)) {
                         errors.push(diagnostic(
                             &function.name,
                             index as isize,
@@ -1016,12 +1127,16 @@ fn verify_definite_definitions(
                         ));
                     }
                 }
-            } else {
+            } else if let Some(available) = state.on_every_path() {
                 visit_simple_ir_reads(op, |read| {
-                    if read.name == "none" || available.contains(read.name) {
+                    if read.name == "none" {
                         return;
                     }
-                    let kind = if universe.contains(read.name) {
+                    let id = name_id(read.name);
+                    if available.contains(id) {
+                        return;
+                    }
+                    let kind = if universe.contains(id) {
                         "non-dominating-definition"
                     } else {
                         "use-before-def"
@@ -1037,7 +1152,8 @@ fn verify_definite_definitions(
                     ));
                 });
             }
-            available.extend(definitions(op));
+            state.apply_pending_effect(&op.kind);
+            visit_simple_ir_defined_names(op, |name| state.define(name_id(name)));
         }
     }
 }
@@ -1960,6 +2076,100 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["non-dominating-definition"]
         );
+    }
+
+    fn error_kinds(report: &SimpleIrVerificationReport) -> Vec<&str> {
+        report
+            .errors
+            .iter()
+            .map(|diagnostic| diagnostic.kind.as_str())
+            .collect()
+    }
+
+    /// `if c: g = 1 / else: raise` followed by an exception check: the raising
+    /// arm leaves through the check's exception edge, so `g` is defined on
+    /// every path that reaches the code after the check (HF-100).
+    fn reraise_arm(read_before_check: bool) -> SimpleIrVerificationReport {
+        let mut branch = op("if");
+        branch.args = Some(vec!["c".to_string()]);
+        let mut define = op("const");
+        define.value = Some(1);
+        define.out = Some("g".to_string());
+        let mut raise = op("raise");
+        raise.args = Some(vec!["c".to_string()]);
+        let mut check = op("check_exception");
+        check.value = Some(3);
+        let mut use_g = op("ret");
+        use_g.args = Some(vec!["g".to_string()]);
+        let mut exit_label = op("label");
+        exit_label.value = Some(3);
+        let mut exit = op("ret");
+        exit.args = Some(vec!["c".to_string()]);
+        let mut ops = vec![branch, define, op("else"), raise, op("end_if")];
+        if read_before_check {
+            let mut read = op("add");
+            read.args = Some(vec!["g".to_string(), "c".to_string()]);
+            read.out = Some("early".to_string());
+            ops.push(read);
+        }
+        ops.extend([check, use_g, exit_label, exit]);
+        verify(&["c"], ops)
+    }
+
+    #[test]
+    fn reraising_arm_does_not_reach_code_after_the_exception_check() {
+        assert_eq!(error_kinds(&reraise_arm(false)), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn read_between_raise_and_check_still_needs_a_definition() {
+        // The read at op 5 runs on the raising path too; `ret g` after the
+        // check still runs only on the path that defined `g`.
+        let report = reraise_arm(true);
+        let errors: Vec<(&str, isize)> = report
+            .errors
+            .iter()
+            .map(|diagnostic| (diagnostic.kind.as_str(), diagnostic.op_index))
+            .collect();
+        assert_eq!(errors, vec![("non-dominating-definition", 5)]);
+    }
+
+    #[test]
+    fn read_of_a_name_nothing_defines_is_use_before_def() {
+        let mut ret = op("ret");
+        ret.args = Some(vec!["ghost".to_string()]);
+
+        let report = verify(&[], vec![ret]);
+        assert_eq!(error_kinds(&report), vec!["use-before-def"]);
+    }
+
+    #[test]
+    fn definitions_on_every_branch_reach_the_join() {
+        let mut branch = op("if");
+        branch.args = Some(vec!["condition".to_string()]);
+        let mut left = op("const");
+        left.value = Some(1);
+        left.out = Some("joined".to_string());
+        let mut right = op("const");
+        right.value = Some(2);
+        right.out = Some("joined".to_string());
+        let mut ret = op("ret");
+        ret.args = Some(vec!["joined".to_string()]);
+
+        let report = verify(
+            &["condition", "unused_param"],
+            vec![branch, left, op("else"), right, op("end_if"), ret],
+        );
+        assert_eq!(error_kinds(&report), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn parameter_reads_need_no_defining_op() {
+        let mut ret = op("ret");
+        ret.args = Some(vec!["param".to_string()]);
+
+        let report = verify(&["param"], vec![ret]);
+        assert_eq!(error_kinds(&report), Vec::<&str>::new());
     }
 
     #[test]

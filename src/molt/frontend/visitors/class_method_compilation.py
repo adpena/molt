@@ -785,7 +785,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 type_facts_name=f"{class_node.name}.{method_name}",
                 needs_return_slot=has_return,
             )
-            self.async_context = True
             self.global_decls = self._collect_global_decls(item.body)
             self.nonlocal_decls = self._collect_nonlocal_decls(item.body)
             assigned = self._collect_assigned_names(item.body)
@@ -996,7 +995,6 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             type_facts_name=f"{class_node.name}.{method_name}",
             needs_return_slot=has_return,
         )
-        self.async_context = True
         self.global_decls = self._collect_global_decls(item.body)
         self.nonlocal_decls = self._collect_nonlocal_decls(item.body)
         assigned = self._collect_assigned_names(item.body)

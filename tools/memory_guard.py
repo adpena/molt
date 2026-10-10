@@ -177,6 +177,7 @@ from molt.process_spawn import (  # noqa: E402
     inherit_stdio_kwargs,
 )
 from molt import temporary_artifacts as _temporary_artifacts  # noqa: E402
+from molt.metric_ratios import RatioDirection, signed_ratio_value  # noqa: E402
 from tools import win_job as _win_job  # noqa: E402
 
 WindowsJobCleanup = _win_job.WindowsJobCleanup
@@ -1391,10 +1392,10 @@ def run_guarded(
                 max_process_rows=max_sampling_process_rows,
                 observer_wall_time_s=observer_wall_time_s,
                 observer_cpu_time_s=observer_cpu_time_s,
-                observer_cpu_duty_cycle=(
-                    observer_cpu_time_s / observer_wall_time_s
-                    if observer_wall_time_s > 0.0
-                    else 0.0
+                observer_cpu_duty_cycle=signed_ratio_value(
+                    observer_cpu_time_s,
+                    observer_wall_time_s,
+                    direction=RatioDirection.RATIO,
                 ),
             )
 

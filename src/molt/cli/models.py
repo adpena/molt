@@ -21,6 +21,7 @@ from typing import (
     TYPE_CHECKING,
 )
 
+from molt.backend_environment import CodegenSelection
 from molt.cli.output import CliFailure as _CliFailure
 from molt.native_callable_exports import (
     NativeCallableExport as _ExternalNativeCallableExport,
@@ -2079,6 +2080,8 @@ class _PreparedBuildConfig:
     capabilities_source: str | None
     target_python: TargetPythonVersion
     target_sys_platform: str | None
+    # The backend-process selection for this build; see CodegenSelection.
+    codegen: CodegenSelection
 
     @property
     def capabilities_list(self) -> list[str]:
@@ -2197,7 +2200,7 @@ class _PreparedBackendSetup:
 
 @dataclass(frozen=True)
 class _PreparedBackendDispatch:
-    backend_env: dict[str, str] | None
+    backend_env: dict[str, str]
     reloc_requested: bool
     backend_bin: Path
     daemon_socket: Path | None

@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,9 +14,9 @@ import pytest
 
 from molt import disk_capacity
 from tools import disk_guard
-from tools.proof_supervisor import build as supervisor_build
 from tools.proof_queue_pkg import (
     command_admission,
+    command_identity,
     diagnostic_build_rules,
     diagnostic_engine,
     evidence,
@@ -22,6 +24,7 @@ from tools.proof_queue_pkg import (
     runner,
     scheduling,
     state,
+    supervisor_generation,
 )
 
 
@@ -162,46 +165,62 @@ def test_other_compile_failures_are_not_reclassified_as_disk_capacity(
     assert diagnostic_build_rules._disk_capacity_diagnostic(row, text) is None
 
 
+def _supervisor_inputs(source_root: Path) -> dict[str, object]:
+    return {
+        "source_root": str(source_root),
+        "command": ["cargo", "build"],
+        "cargo_inputs": {},
+        "target": None,
+        "profile": "debug",
+    }
+
+
 def test_supervisor_build_refuses_capacity_before_starting_cargo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "supervisor-target"))
+    target = tmp_path / "supervisor-target"
     monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", lambda path: 0)
-    monkeypatch.setattr(supervisor_build.sys, "argv", ["build.py", "--release"])
 
     def never_run(*args: object, **kwargs: object) -> None:
         pytest.fail("supervisor capacity rejection started Cargo")
 
-    monkeypatch.setattr(supervisor_build, "_COMMANDS", SimpleNamespace(run=never_run))
+    monkeypatch.setattr(command_identity, "_run_captured", never_run)
     with pytest.raises(disk_capacity.DiskCapacityError):
-        supervisor_build.main()
-    assert not (tmp_path / "supervisor-target").exists()
+        supervisor_generation.build_cargo(
+            inputs=_supervisor_inputs(tmp_path),
+            env={"CARGO_TARGET_DIR": str(target)},
+        )
+    assert not target.exists()
 
 
 def test_supervisor_build_probes_separate_build_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(supervisor_build, "ROOT", tmp_path)
-    monkeypatch.setenv("CARGO_TARGET_DIR", "output")
-    monkeypatch.setenv("CARGO_BUILD_BUILD_DIR", "build")
-    monkeypatch.setattr(supervisor_build.sys, "argv", ["build.py"])
-    observed = []
+    crate = (tmp_path / "tools" / "proof_supervisor").resolve()
+    crate.mkdir(parents=True)
+    observed: list[Path] = []
 
     def admit(paths, **kwargs):
         observed.extend(paths)
 
     def run(command, **kwargs):
-        assert command[-2:] == ["--target-dir", str(tmp_path / "output")]
-        assert kwargs["cwd"] == tmp_path
-        output = tmp_path / "output" / "debug"
+        assert command[-2:] == ["--target-dir", str(crate / "output")]
+        assert kwargs["cwd"] == crate
+        output = crate / "output" / "debug"
         output.mkdir(parents=True)
-        suffix = ".exe" if supervisor_build.os.name == "nt" else ""
+        suffix = ".exe" if os.name == "nt" else ""
         (output / f"molt-proof-supervisor{suffix}").write_bytes(b"fixture")
+        return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(supervisor_build, "require_build_capacity", admit)
-    monkeypatch.setattr(supervisor_build, "_COMMANDS", SimpleNamespace(run=run))
-    assert supervisor_build.main() == 0
-    assert observed == [tmp_path / "output", tmp_path / "build"]
+    monkeypatch.setattr(disk_capacity, "require_build_capacity", admit)
+    monkeypatch.setattr(command_identity, "_run_captured", run)
+    binary, completed = supervisor_generation.build_cargo(
+        inputs=_supervisor_inputs(crate.parents[1]),
+        env={"CARGO_TARGET_DIR": "output", "CARGO_BUILD_BUILD_DIR": "build"},
+    )
+    assert completed.returncode == 0
+    assert binary.parent == crate / "output" / "debug"
+    assert observed == [crate / "output", crate / "build"]
 
 
 @pytest.mark.parametrize("safe", [False, True])

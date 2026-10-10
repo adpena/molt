@@ -882,7 +882,7 @@ def _prepare_non_native_build_result_in_generation(
         # app/runtime bundle.  The old raw ``output.wasm`` lane had no manifest,
         # no owned-result adapters, and could not satisfy browser_host's strict
         # ABI/integrity contract.  Keep raw output only as a build intermediate.
-        _split_runtime = split_runtime or os.environ.get("MOLT_SPLIT_RUNTIME") == "1"
+        _split_runtime = split_runtime
         staged_runtime_wasm: Path | None = None
         runtime_wasm: Path | None = None
         runtime_reloc_wasm: Path | None = None

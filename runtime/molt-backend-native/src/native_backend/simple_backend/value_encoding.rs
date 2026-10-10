@@ -73,19 +73,6 @@ pub(crate) fn unbox_int_or_bool(
     builder.block_params(merge_block)[0]
 }
 
-#[allow(dead_code)]
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::simple_backend) fn is_int_tag(
-    builder: &mut FunctionBuilder,
-    val: Value,
-    nbc: &NanBoxConsts,
-) -> Value {
-    let mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
-    let tag = builder.ins().iconst(types::I64, nbc.qnan_tag_int);
-    let masked = builder.ins().band(val, mask);
-    builder.ins().icmp(IntCC::Equal, masked, tag)
-}
-
 /// Fused tag-check-and-unbox for a single NaN-boxed value.
 ///
 /// XORs the value against the expected int tag pattern `(QNAN | TAG_INT)`.
@@ -437,70 +424,4 @@ pub(crate) fn box_ptr_value(
     let masked = builder.ins().band(val, mask);
     let tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
     builder.ins().bor(tag, masked)
-}
-
-/// Fully inline list_int bounds check  zero FFI calls.
-///
-/// Extracts the raw heap pointer from the NaN-boxed list value, then
-/// dereferences the object layout directly:
-///
-///   obj_ptr  = unbox_ptr(list_bits)   // past MoltHeader
-///   vec_ptr  = *(obj_ptr as *const *const Vec<i64>)   // offset 0
-///   data_ptr = *(vec_ptr + 0)         // Vec::ptr  (offset 0)
-///   len      = *(vec_ptr + 8)         // Vec::len  (offset 8)
-///
-/// Returns (data_ptr, in_bounds)  the caller must branch on in_bounds
-/// BEFORE loading/storing the element.
-#[cfg(feature = "native-backend")]
-#[allow(dead_code)]
-pub(in crate::native_backend::simple_backend) fn emit_list_int_bounds_check(
-    builder: &mut FunctionBuilder,
-    list_bits: Value,
-    index_raw: Value,
-    _nbc: &NanBoxConsts,
-) -> (Value, Value) {
-    // Step 1: extract raw pointer from NaN-boxed value.
-    //
-    // The NaN-boxed pointer layout is: QNAN | TAG_PTR | (addr & POINTER_MASK).
-    // To extract the address: mask off the top 16 bits (QNAN+tag), then
-    // sign-extend from bit 47 to reconstruct canonical aarch64 addresses.
-    //
-    // Use _imm variants to avoid introducing SSA variable dependencies that
-    // could interact with Cranelift's block sealing in complex control flow.
-    let masked = builder.ins().band_imm(list_bits, POINTER_MASK as i64);
-    // Sign-extend from bit 47: shift left 16, arithmetic shift right 16.
-    let shifted = builder.ins().ishl_imm(masked, 16);
-    let obj_ptr = builder.ins().sshr_imm(shifted, 16);
-    // Step 2: load *mut Vec<i64> from offset 0 of the object payload
-    let vec_ptr = builder
-        .ins()
-        .load(types::I64, MemFlagsData::trusted(), obj_ptr, 0);
-    // Step 3: load data pointer from Vec (offset 0) and length (offset 8)
-    let data_ptr = builder
-        .ins()
-        .load(types::I64, MemFlagsData::trusted(), vec_ptr, 0);
-    let len = builder
-        .ins()
-        .load(types::I64, MemFlagsData::trusted(), vec_ptr, 8);
-    // Step 4: unsigned compare index < length
-    let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, index_raw, len);
-    (data_ptr, in_bounds)
-}
-
-/// Load element from list_int data pointer at given index.
-/// MUST only be called after bounds check passes (i.e., inside the fast block).
-#[cfg(feature = "native-backend")]
-#[allow(dead_code)]
-pub(in crate::native_backend::simple_backend) fn emit_list_int_load(
-    builder: &mut FunctionBuilder,
-    data_ptr: Value,
-    index_raw: Value,
-    nbc: &NanBoxConsts,
-) -> Value {
-    let offset = builder.ins().imul_imm(index_raw, 8);
-    let elem_addr = builder.ins().iadd(data_ptr, offset);
-    let raw_val = builder
-        .ins()
-        .load(types::I64, MemFlagsData::trusted(), elem_addr, 0);
-    box_int_value(builder, raw_val, nbc)
 }

@@ -12,6 +12,7 @@ from pathlib import Path
 import tomllib
 from typing import Any
 
+from molt.backend_executable_names import CodegenBackend
 from molt.portable_paths import portable_relative_path
 from molt.source_root import compiler_source_root
 from molt.toolchain_identity import (
@@ -38,6 +39,10 @@ class ReleaseLane:
         return "-".join(self.as_record().values())
 
     @property
+    def codegen_backend(self) -> CodegenBackend:
+        return "llvm" if self.backend == "llvm" else "cranelift"
+
+    @property
     def compiler_features(self) -> tuple[str, ...]:
         from molt.backend_executable_names import backend_features_for_target
 
@@ -45,7 +50,7 @@ class ReleaseLane:
             is_wasm=self.target == "wasm",
             is_luau_transpile=False,
             is_rust_transpile=False,
-            env={"MOLT_BACKEND": self.backend},
+            codegen_backend=self.codegen_backend,
         )
 
     def as_record(self) -> dict[str, str]:
@@ -60,7 +65,6 @@ class ReleaseLane:
     def environment(self) -> dict[str, str]:
         """Pin the existing producer selectors; no profile/ambient aliasing."""
         return {
-            "MOLT_BACKEND": "llvm" if self.backend == "llvm" else "cranelift",
             "MOLT_BACKEND_PROFILE": "release",
             "MOLT_RELEASE_BACKEND_CARGO_PROFILE": self.compiler_profile,
             "MOLT_DEV_BACKEND_CARGO_PROFILE": self.compiler_profile,

@@ -343,6 +343,7 @@ def _prepare_frontend_lowering_config(
     native_callable_exports: Mapping[str, Mapping[str, Any]] | None,
     native_python_exports: Collection[str] | None = None,
     native_support_function_roots_by_module: Mapping[str, Sequence[str]] | None = None,
+    is_luau_transpile: bool,
     pgo_hot_function_names: set[str],
     generated_module_source_paths: Mapping[str, str],
     entry_module: str,
@@ -446,8 +447,9 @@ def _prepare_frontend_lowering_config(
         # chunk can still arrive at the backend as a ~2800-op megafunction.
         # Tightening the frontend budget keeps those exception-heavy stdlib
         # chunks under the backend's practical Cranelift sweet spot without
-        # changing runtime semantics.
-        module_chunk_max_ops = 1400
+        # changing runtime semantics. Luau transpile output keeps the larger
+        # 1500-op chunks its emitter was tuned for.
+        module_chunk_max_ops = 1500 if is_luau_transpile else 1400
         env_native_chunk_ops = os.environ.get("MOLT_MODULE_CHUNK_OPS")
         if env_native_chunk_ops:
             try:
@@ -595,9 +597,14 @@ def _dead_module_elimination_mode(
     *,
     output_layout: _BuildOutputLayout,
     tree_shake: bool,
+    wasm_profile: str | None,
 ) -> str | None:
-    wasm_profile = os.environ.get("MOLT_WASM_PROFILE", "").strip().lower()
-    if tree_shake and output_layout.is_wasm and wasm_profile == "pure":
+    """``wasm_profile`` is the build's selection (CodegenSelection.wasm_profile)."""
+    if (
+        tree_shake
+        and output_layout.is_wasm
+        and (wasm_profile or "").strip().lower() == "pure"
+    ):
         return "pure-wasm"
     if os.environ.get("MOLT_DEAD_MODULE_ELIMINATION") == "1":
         return "explicit"
@@ -653,6 +660,7 @@ def _prepare_frontend_stage_state(
     type_facts_path: str | None,
     type_hint_policy: TypeHintPolicy,
     profile: BuildProfile,
+    stdlib_profile: str,
 ) -> tuple[
     tuple[
         _ImportPlan,
@@ -731,6 +739,7 @@ def _prepare_frontend_stage_state(
         target_python=prepared_build_config.target_python,
         capability_config_digest=prepared_build_config.capability_config_cache_digest,
         image_scope=resolved_build_entry.image_scope,
+        stdlib_profile=stdlib_profile,
     )
     if prepared_module_graph_error is not None:
         return None, prepared_module_graph_error
@@ -929,6 +938,7 @@ def _prepare_frontend_stage_state(
             namespace_module_names=set(import_plan.namespace_module_names),
             module_source_catalog=prepared_frontend_analysis.module_source_catalog,
             is_wasm=prepared_build_outputs.output_layout.is_wasm,
+            is_luau_transpile=prepared_build_outputs.output_layout.is_luau_transpile,
             frontend_parallel_details=frontend_parallel_details,
             frontend_phase_timeout=frontend_phase_timeout,
         )
@@ -979,6 +989,7 @@ def _prepare_frontend_pipeline(
     emit_ir: str | None,
     type_facts_path: str | None,
     tree_shake: bool,
+    stdlib_profile: str,
 ) -> tuple[_PreparedFrontendPipelineBundle | None, _CliFailure | None]:
     prepared_frontend_stage_bundle, prepared_frontend_stage_state_error = (
         _prepare_frontend_stage_state(
@@ -1001,6 +1012,7 @@ def _prepare_frontend_pipeline(
             type_facts_path=type_facts_path,
             type_hint_policy=type_hint_policy,
             profile=profile,
+            stdlib_profile=stdlib_profile,
         )
     )
     if prepared_frontend_stage_state_error is not None:
@@ -1065,6 +1077,7 @@ def _prepare_frontend_pipeline(
     dme_mode = _dead_module_elimination_mode(
         output_layout=prepared_build_outputs.output_layout,
         tree_shake=tree_shake,
+        wasm_profile=prepared_build_config.codegen.wasm_profile,
     )
     if dme_mode is not None:
         dme_roots = _dead_module_elimination_extra_roots(

@@ -16,7 +16,7 @@
       "hardest_feature": null,
       "source": "doc-24 paper triage",
       "compile_probe_status": "pending",
-      "source_basis": "doc 24 Lane C: 'compatible'; 'pure-Python compat shims; import-tested (scripts/test_six.py)'. D17 is the import-time-patching capability six PROVIDES to consumers, not required on six's own used path -> optional."
+      "source_basis": "doc 24 Lane C: 'compatible'; 'pure-Python compat shims; import-tested (scripts/compat_six.py)'. D17 is the import-time-patching capability six PROVIDES to consumers, not required on six's own used path -> optional."
     },
     "typing-extensions": {
       "required_features": ["D10"],

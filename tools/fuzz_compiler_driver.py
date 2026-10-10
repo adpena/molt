@@ -7,7 +7,7 @@ from random import Random
 
 from tools.fuzz_compiler_core import fuzz_one_reject, fuzz_one_safe
 from tools.fuzz_compiler_execution import fuzz_build_env
-from tools.fuzz_compiler_reporting import _log, _print_diff_snippet, _save_failure
+from tools.fuzz_compiler_reporting import _log, _log_failure_detail, _save_failure
 from tools.fuzz_compiler_safe import SafeProgramGenerator
 from tools.fuzz_compiler_shrink import _validate_syntax
 from tools.fuzz_compiler_types import FuzzSummary
@@ -94,8 +94,7 @@ def run_safe_fuzzer(
                 summary.mismatches += 1
                 summary.failures.append(result)
                 _log(f"  [#{i:4d}] MISMATCH (seed={program_seed})")
-                if verbose:
-                    _print_diff_snippet(result)
+                _log_failure_detail(result)
                 if output_dir:
                     saved = _save_failure(result, output_dir)
                     _log(f"         saved: {saved}")
@@ -103,16 +102,14 @@ def run_safe_fuzzer(
                 summary.build_errors += 1
                 summary.failures.append(result)
                 _log(f"  [#{i:4d}] BUILD_ERROR (seed={program_seed})")
-                if verbose:
-                    _log(f"         {result.error_detail[:200]}")
+                _log_failure_detail(result)
                 if output_dir:
                     _save_failure(result, output_dir)
             elif result.status == "molt_run_error":
                 summary.molt_run_errors += 1
                 summary.failures.append(result)
                 _log(f"  [#{i:4d}] MOLT_RUN_ERROR (seed={program_seed})")
-                if verbose:
-                    _print_diff_snippet(result)
+                _log_failure_detail(result)
                 if output_dir:
                     _save_failure(result, output_dir)
             elif result.status == "cpython_error":
@@ -123,6 +120,7 @@ def run_safe_fuzzer(
                 summary.timeouts += 1
                 summary.failures.append(result)
                 _log(f"  [#{i:4d}] TIMEOUT (seed={program_seed})")
+                _log_failure_detail(result)
                 if output_dir:
                     _save_failure(result, output_dir)
 
@@ -176,14 +174,14 @@ def run_reject_fuzzer(
                 summary.reject_fail += 1
                 summary.failures.append(result)
                 _log(f"  [#{i:4d}] REJECT_FAIL (seed={program_seed})")
-                _log(f"         {result.error_detail[:200]}")
+                _log_failure_detail(result)
                 if output_dir:
                     _save_failure(result, output_dir)
             elif result.status == "reject_crash":
                 summary.reject_fail += 1
                 summary.failures.append(result)
                 _log(f"  [#{i:4d}] REJECT_CRASH (seed={program_seed})")
-                _log(f"         {result.error_detail[:200]}")
+                _log_failure_detail(result)
                 if output_dir:
                     _save_failure(result, output_dir)
             elif result.status == "timeout":

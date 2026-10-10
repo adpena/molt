@@ -3,8 +3,10 @@ from __future__ import annotations
 import importlib.util
 from functools import cache
 import sys
+import time
 from pathlib import Path
 
+from tests.process_guard_common import install_module_view
 from tools import guarded_entrypoints
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1485,7 +1487,7 @@ def test_terminate_group_uses_pid_kill_without_getpgrp_on_windows(monkeypatch) -
         lambda pgid, sig: killpg_calls.append((pgid, sig)),
         raising=False,
     )
-    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    install_module_view(monkeypatch, "time", time, module, sleep=lambda _seconds: None)
     monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
 
     module.terminate_group(
@@ -1519,7 +1521,7 @@ def test_terminate_group_report_only_env_skips_windows_termination(
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
     monkeypatch.setattr(module.os, "getpid", lambda: 9999)
     monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    install_module_view(monkeypatch, "time", time, module, sleep=lambda _seconds: None)
     monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
 
     module.terminate_group(
@@ -1738,7 +1740,7 @@ def test_terminate_group_windows_keeps_current_sentinel_child_killable(
     monkeypatch.setattr(module, "_safe_getpgrp", lambda: None)
     monkeypatch.setattr(module.os, "getpid", lambda: 999)
     monkeypatch.setattr(module.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    install_module_view(monkeypatch, "time", time, module, sleep=lambda _seconds: None)
     monkeypatch.setattr(module, "sample_processes_for_sentinel", lambda: samples)
 
     module.terminate_group(
@@ -2193,7 +2195,7 @@ def test_main_once_reports_repo_match_without_terminating(
     clock = 100.0
 
     monkeypatch.setattr(module, "_utc_timestamp", lambda: "2026-05-24T10:00:00Z")
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock)
+    install_module_view(monkeypatch, "time", time, module, monotonic=lambda: clock)
     monkeypatch.setattr(
         module,
         "sample_processes_for_sentinel",
@@ -2233,7 +2235,7 @@ def test_main_json_reports_operator_incident_fields(monkeypatch, capsys) -> None
     module = _load_process_sentinel()
 
     monkeypatch.setattr(module, "_utc_timestamp", lambda: "2026-05-24T10:00:00Z")
-    monkeypatch.setattr(module.time, "monotonic", lambda: 50.0)
+    install_module_view(monkeypatch, "time", time, module, monotonic=lambda: 50.0)
     monkeypatch.setenv("MOLT_SESSION_ID", "sentinel-unit")
     monkeypatch.setenv(
         "PYTEST_CURRENT_TEST",
@@ -2332,8 +2334,9 @@ def test_main_until_clean_drains_delayed_launches(monkeypatch) -> None:
         clock += seconds
 
     monkeypatch.setattr(module, "sample_processes_for_sentinel", fake_sample_processes)
-    monkeypatch.setattr(module.time, "monotonic", fake_monotonic)
-    monkeypatch.setattr(module.time, "sleep", fake_sleep)
+    install_module_view(
+        monkeypatch, "time", time, module, monotonic=fake_monotonic, sleep=fake_sleep
+    )
     monkeypatch.setattr(
         module,
         "terminate_group",
@@ -2385,8 +2388,9 @@ def test_main_until_clean_waits_for_no_matched_groups(monkeypatch) -> None:
         clock += seconds
 
     monkeypatch.setattr(module, "sample_processes_for_sentinel", fake_sample_processes)
-    monkeypatch.setattr(module.time, "monotonic", fake_monotonic)
-    monkeypatch.setattr(module.time, "sleep", fake_sleep)
+    install_module_view(
+        monkeypatch, "time", time, module, monotonic=fake_monotonic, sleep=fake_sleep
+    )
 
     rc = module.main(
         [

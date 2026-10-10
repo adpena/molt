@@ -18,23 +18,6 @@ pub(crate) enum ObjectConstructorCall {
     Init,
 }
 
-#[allow(dead_code)]
-#[inline]
-pub(crate) unsafe fn callable_function_addr(bits: Option<u64>) -> Option<u64> {
-    unsafe {
-        let bits = bits?;
-        let mut func_ptr = obj_from_bits(bits).as_ptr()?;
-        if object_type_id(func_ptr) == TYPE_ID_BOUND_METHOD {
-            let inner_bits = bound_method_func_bits(func_ptr);
-            func_ptr = obj_from_bits(inner_bits).as_ptr()?;
-        }
-        if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-            return None;
-        }
-        Some(function_fn_ptr(func_ptr))
-    }
-}
-
 #[inline]
 pub(crate) unsafe fn callable_matches_runtime_symbol(
     bits: Option<u64>,

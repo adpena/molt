@@ -81,7 +81,9 @@ def _compile_and_run(python_source: str, *, expect_fail: bool = False) -> str:
         if result.returncode != 0:
             if expect_fail:
                 return ""
-            pytest.skip(f"Compilation failed: {result.stderr[:200]}")
+            pytest.fail(
+                f"Compilation failed (exit {result.returncode}): {result.stderr[-2000:]}"
+            )
 
         try:
             result = run_native_test_process(
@@ -650,7 +652,9 @@ class TestPerformance:
             )
             compile_time = time.perf_counter() - t0
             if result.returncode != 0:
-                pytest.skip(f"Compilation failed: {result.stderr[:200]}")
+                pytest.fail(
+                    f"Compilation failed (exit {result.returncode}): {result.stderr[-2000:]}"
+                )
 
             t0 = time.perf_counter()
             try:

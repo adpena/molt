@@ -553,21 +553,16 @@ def _cache_fingerprint(
         compiler_cargo_profile,
         installed_compiler_admission,
     )
-    from molt.backend_executable_names import backend_features_for_target
+    from molt.backend_executable_names import DEFAULT_BACKEND_FEATURES
 
     try:
         root = _compiler_root()
         source = os.environ if env is None else env
         profile = cargo_profile or compiler_cargo_profile(source)
-        selected_features = (
-            backend_features_for_target(
-                is_wasm=False,
-                is_luau_transpile=False,
-                is_rust_transpile=False,
-                env=source,
-            )
-            if backend_features is None
-            else _selected_source_features(backend_features)
+        # Without explicit features this is the default native (cranelift)
+        # compiler; the process environment never selects the backend.
+        selected_features = _selected_source_features(
+            DEFAULT_BACKEND_FEATURES if backend_features is None else backend_features
         )
         installed = installed_compiler_admission(root, selected_features, profile)
         if installed is not None:

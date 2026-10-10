@@ -168,7 +168,7 @@ kind = "enum"
 default = "cranelift"
 values = ["cranelift", "llvm"]
 owner = "runtime/molt-backend-native/src/native_backend/simple_backend/compile_driver.rs"
-summary = "Selects the native code generator in molt-backend: llvm routes through the LLVM backend and panics when the binary was built without the llvm feature, any other value or unset uses Cranelift; molt sets it from --backend (auto becomes cranelift) and appends the llvm feature to the backend executable name."
+summary = "Selects the native code generator in molt-backend: llvm routes through the LLVM backend and panics when the binary was built without the llvm feature, any other value or unset uses Cranelift; molt build sets it from --backend (auto becomes cranelift) in the backend process environment and its daemon requests, never in its own environment, and appends the llvm feature to the backend executable name; the value in molt's own environment selects nothing."
 
 [[variable]]
 name = "MOLT_BACKEND_BATCH_OP_BUDGET"
@@ -3342,7 +3342,7 @@ audience = "user"
 kind = "int"
 default = "1400"
 owner = "src/molt/cli/frontend_pipeline.py"
-summary = "Maximum ops per chunk when the frontend splits native module-init functions into eagerly called chunks; 0 disables chunking, negative values clamp to 0, a non-integer value keeps 1400 with a warning, and Luau transpile builds set 1500 when it is unset."
+summary = "Maximum ops per chunk when the frontend splits native module-init functions into eagerly called chunks; 0 disables chunking, negative values clamp to 0, a non-integer value keeps the default with a warning; the default is 1400, and 1500 for Luau transpile builds."
 
 [[variable]]
 name = "MOLT_MODULE_ROOTS"
@@ -4220,14 +4220,6 @@ owner = "tools/specialization_slo.py"
 summary = "Minimum specialization success rate the SLO tracker accepts; a float, and invalid values fall back to the default 0.80."
 
 [[variable]]
-name = "MOLT_SPLIT_RUNTIME"
-audience = "user"
-kind = "bool"
-default = "0"
-owner = "src/molt/cli/non_native_output.py"
-summary = "Requests the sealed split app/runtime wasm bundle from the non-native output handler when set to exactly 1; molt build --split-runtime sets it in its scoped environment; default off."
-
-[[variable]]
 name = "MOLT_SROA_REPORT"
 audience = "user"
 kind = "bool"
@@ -4290,7 +4282,7 @@ kind = "enum"
 default = "auto"
 values = ["auto", "micro", "edge", "standard", "server", "full"]
 owner = "src/molt/cli/config_resolution.py"
-summary = "Stdlib profile ceiling for a build; the --stdlib-profile flag outranks it, it outranks toml config and deploy defaults, and the CLI re-exports the resolved value before module-graph construction so the closure reader and the runtime staticlib selector agree; invalid values are ignored and unset means auto."
+summary = "Stdlib profile ceiling for a build; the --stdlib-profile flag outranks it, it outranks toml config and deploy defaults, and the CLI passes the one resolved value to module-graph construction and to the runtime staticlib selector so they agree; invalid values are ignored and unset means auto."
 
 [[variable]]
 name = "MOLT_STREAM_MAX_QUEUED_BYTES"
@@ -5997,12 +5989,12 @@ summary = "Path of the runtime module's precompiled container: molt-wasm-host re
 
 [[variable]]
 name = "MOLT_WASM_PROFILE"
-audience = "user"
+audience = "internal"
 kind = "enum"
 default = "auto"
 values = ["auto", "full", "pure"]
-owner = "src/molt/cli/frontend_pipeline.py"
-summary = "Wasm import-planning profile that molt build --wasm-profile exports to the frontend and the wasm backend: auto, full, or pure (the backend treats any other spelling as auto), where pure also enables pure-wasm dead-module elimination when tree shaking is on; default auto."
+owner = "runtime/molt-backend-wasm/src/wasm_options.rs"
+summary = "Wasm import-planning profile for the wasm backend: auto, full, or pure (the backend treats any other spelling as auto); molt build sets it from --wasm-profile in the backend process environment, and the frontend takes the same value as a parameter (pure also enables pure-wasm dead-module elimination when tree shaking is on); default auto."
 
 [[variable]]
 name = "MOLT_WASM_RELOCATABLE"
@@ -6946,6 +6938,11 @@ retired = 2026-10-06
 [[retired]]
 name = "MOLT_PRESERVE_TARGET_ROOT"
 replacement = "MOLT_TARGET_ROOT"
+retired = 2026-10-09
+
+[[retired]]
+name = "MOLT_SPLIT_RUNTIME"
+note = "use `molt build --split-runtime`"
 retired = 2026-10-09
 
 [[retired]]

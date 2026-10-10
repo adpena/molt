@@ -209,20 +209,20 @@ def test_native_provider_inventory_does_not_pull_python_io_dependencies() -> Non
         assert len(names) == len(set(names))
 
 
-def test_build_reexports_resolved_env_before_module_graph(monkeypatch) -> None:
-    """``build()`` called with ``stdlib_profile=None`` must resolve through the
-    authority and re-export the resolved value to ``MOLT_STDLIB_PROFILE`` BEFORE
-    the module-graph closure reads it, so the closure reader and the
-    runtime-staticlib selector observe the same profile.
+def test_build_passes_resolved_profile_to_module_graph(monkeypatch) -> None:
+    """``build()`` called with ``stdlib_profile=None`` resolves through the
+    authority and passes the one resolved value to module-graph construction as
+    a parameter, so the closure reader and the runtime-staticlib selector
+    observe the same profile. It never writes ``MOLT_STDLIB_PROFILE`` back to
+    the process environment (HF-60): the old code exported it, so a later
+    in-process build saw the previous build's profile.
 
-    We capture the env at ``_prepare_build_inputs`` — the first build step, run
-    before module-graph construction — and short-circuit there to avoid the
-    heavy compile."""
+    The frontend stage is captured and short-circuited to avoid the compile."""
 
     import os
 
     import molt.cli as cli
-    from molt.cli import build_inputs
+    from molt.cli import build_inputs, frontend_pipeline
 
     for env_value, expected in (("full", "full"), (None, DEFAULT_STDLIB_PROFILE)):
         if env_value is None:
@@ -232,15 +232,25 @@ def test_build_reexports_resolved_env_before_module_graph(monkeypatch) -> None:
 
         captured: dict[str, object] = {}
 
-        def fake_prepare(*args, **kwargs):
-            # The env the module-graph closure reader will observe.
-            captured["env"] = os.environ.get(MOLT_STDLIB_PROFILE_ENV)
-            return None, 0  # (no inputs, sentinel error) -> build() returns early
+        def fake_prepare_inputs(*args, **kwargs):
+            captured["env_at_inputs"] = os.environ.get(MOLT_STDLIB_PROFILE_ENV)
+            return (object(), object(), object(), object()), None
 
-        monkeypatch.setattr(build_inputs, "_prepare_build_inputs", fake_prepare)
-        cli.build("examples/hello.py", stdlib_profile=None)
+        def fake_frontend(**kwargs):
+            captured["stdlib_profile"] = kwargs["stdlib_profile"]
+            captured["env_at_frontend"] = os.environ.get(MOLT_STDLIB_PROFILE_ENV)
+            return None, 7  # (no bundle, sentinel error) -> build() returns early
 
-        assert captured.get("env") == expected
+        monkeypatch.setattr(build_inputs, "_prepare_build_inputs", fake_prepare_inputs)
+        monkeypatch.setattr(
+            frontend_pipeline, "_prepare_frontend_pipeline", fake_frontend
+        )
+        assert cli.build("examples/hello.py", stdlib_profile=None) == 7
+
+        assert captured["stdlib_profile"] == expected
+        assert captured["env_at_inputs"] == env_value
+        assert captured["env_at_frontend"] == env_value
+        assert os.environ.get(MOLT_STDLIB_PROFILE_ENV) == env_value
 
 
 def test_no_independent_micro_literal_default_in_cli() -> None:

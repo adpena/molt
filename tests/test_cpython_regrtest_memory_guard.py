@@ -39,8 +39,22 @@ def test_cpython_source_authority_is_commit_pinned() -> None:
             revision="3bb231a6a5dc02b95658877318bf61501a7209e9",
             tag="v3.12.13",
             git_url="https://github.com/python/cpython.git",
-        )
+        ),
+        "3.13": module.CPythonSource(
+            python="3.13",
+            revision="cbc944f4bc59639a444dd971c737788ba2283a91",
+            tag="v3.13.16",
+            git_url="https://github.com/python/cpython.git",
+        ),
+        "3.14": module.CPythonSource(
+            python="3.14",
+            revision="8e6e75d9102e39bed2a2b279203a396741180f12",
+            tag="v3.14.8",
+            git_url="https://github.com/python/cpython.git",
+        ),
     }
+    # The regrtest default is the first row.
+    assert next(iter(sources)) == "3.12"
 
 
 def test_existing_cpython_checkout_fails_closed_on_revision_drift(

@@ -101,7 +101,6 @@ FUNCTION_CACHE_STATE_ATTRS = (
     "const_ints",
     "_op_by_result",
     "in_generator",
-    "async_context",
     "current_line",
 )
 
@@ -261,7 +260,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
         # needed beyond clearing the current function/chunk view.
         self._op_by_result = {}
         self.in_generator = False
-        self.async_context = False
         self.current_line = None
 
     def _reset_control_flow_state(

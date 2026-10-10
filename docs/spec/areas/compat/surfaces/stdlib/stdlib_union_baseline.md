@@ -19,16 +19,24 @@ The gates enforce that Molt always has one canonical module/package entry for:
 ## 2. Definitions
 - **Top-level stdlib name**:
   - A name in `sys.stdlib_module_names` (for example `json`, `re`, `sqlite3`,
-    `_socket`, `xml`).
+    `_socket`, `xml`). The baseline reads the list from
+    `Python/stdlib_module_names.h` at the pinned CPython revision; CPython
+    compiles `sys.stdlib_module_names` from that file.
 - **Top-level module entry**:
   - A file `src/molt/stdlib/<name>.py`.
 - **Top-level package entry**:
   - A package directory `src/molt/stdlib/<name>/__init__.py`.
 - **Package-kind requirement**:
   - If CPython exposes `<name>` as a package, Molt must expose it as a package.
+    The baseline counts `<name>` as a package when `Lib/<name>` is a directory
+    at the pinned revision, which is what `importlib.util.find_spec` reports on
+    an unmodified install.
 - **Submodule stdlib name**:
   - A dotted `.py` module/package under a CPython stdlib top-level module (for
-    example `asyncio.events`, `importlib.resources._common`, `json.tool`).
+    example `asyncio.events`, `importlib.resources._common`, `json.tool`), read
+    from the `Lib/` tree at the pinned revision. Test packages inside a stdlib
+    package (`idlelib.idle_test`) count; the top-level `test` package does not,
+    because `test` is not a stdlib module name.
 - **Coverage baseline**:
   - The versioned union file `tools/stdlib_module_union.py`.
 
@@ -49,9 +57,16 @@ The gates enforce that Molt always has one canonical module/package entry for:
 Failure of any invariant is a hard CI failure.
 
 ## 4. Canonical Files
+- Pinned CPython sources (one tag and commit per supported version, shared
+  with regrtest):
+  - `config/cpython_regrtest_sources.toml`
+- Source snapshot with receipts (the header lines and the `Lib/` directories
+  and `.py` files below stdlib names, each input with its git object id and
+  sha256):
+  - `config/cpython_stdlib_snapshot.json`
 - Baseline data:
   - `tools/stdlib_module_union.py`
-- Baseline generator:
+- Baseline generator (CI checks it offline in `repository.generators`):
   - `tools/gen_stdlib_module_union.py`
 - Stub generator (one template for every stub; `tests/test_stdlib_stubs.py`
   pins it):
@@ -72,19 +87,25 @@ Failure of any invariant is a hard CI failure.
 4. Refresh audit after meaningful lowering change:
    - `python3 tools/check_stdlib_intrinsics.py --update-doc`
 
-### 5.2 Add A New CPython Version (Example: 3.15)
-1. Ensure interpreter is available to `uv`.
-2. Add the version to the target-Python authority (`src/molt/target_python.py`;
-   `tools/check_table_drift.py` requires the baseline versions to equal it), then regenerate:
+### 5.2 Add A New CPython Version Or Move A Pin (Example: 3.15)
+1. Add the version to the target-Python authority (`src/molt/target_python.py`;
+   `tools/check_table_drift.py` requires the baseline versions to equal it).
+2. Pin its latest stable tag and that tag's commit in
+   `config/cpython_regrtest_sources.toml`. A patch-release advance changes
+   only the pin.
+3. Fetch the pinned inputs (network; git verifies each tag against its pinned
+   commit, and content at an unchanged commit must match its receipt):
+   - `python3 tools/gen_stdlib_module_union.py --refresh-sources`
+4. Regenerate the baseline offline:
    - `python3 tools/gen_stdlib_module_union.py --write`
-3. Materialize stubs for the new union entries:
+5. Materialize stubs for the new union entries:
    - `python3 tools/gen_stdlib_stubs.py --write`
-4. Run gates:
+6. Run gates:
    - `python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only`
    - `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`
-5. Regenerate audit:
+7. Regenerate audit:
    - `python3 tools/check_stdlib_intrinsics.py --update-doc`
-6. Update documentation:
+8. Update documentation:
    - `docs/spec/STATUS.md`
    - `ROADMAP.md`
    - `docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md`
@@ -92,6 +113,8 @@ Failure of any invariant is a hard CI failure.
 
 ### 5.3 Inspect The Baseline Without Writing
 - `python3 tools/gen_stdlib_module_union.py --check` names every stale output.
+  It reads only committed files, so it gives the same answer on every host,
+  and it fails closed when the snapshot disagrees with its receipts or pins.
 
 ## 6. Stub Policy (Non-Negotiable)
 `tools/gen_stdlib_stubs.py` owns every stub. It writes one for each union
@@ -186,6 +209,10 @@ Before release or large lowering tranche merge:
   accidental regression when a name exists only in one supported minor.
 - Baseline is versioned in-repo so CI is deterministic and does not depend on
   runtime host Python state.
+- The baseline comes from pinned CPython sources, not from an interpreter.
+  Interpreter builds differ: uv's 3.12 build omits `msilib`, and some builds
+  strip `idlelib/idle_test`. A live-interpreter baseline therefore changed
+  with the host, and its `--check` could not pass in CI.
 - Platform-specific names are intentionally included if present in the baseline;
   they remain subject to intrinsic-first stub policy until fully lowered.
 

@@ -353,6 +353,8 @@ _TERMINATOR_VARIANTS = (
 # the classifier groups per-individual-kind, not per-OpCode-equivalence.
 _CLASSIFIER_SETS = (
     "exception_check_kinds",
+    "simpleir_pending_exception_raise_kinds",
+    "simpleir_pending_exception_clear_kinds",
     "async_work_poll_kinds",
     "async_work_poll_marker_kinds",
     "simpleir_luau_ordered_mapping_kinds",

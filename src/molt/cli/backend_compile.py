@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Mapping
 
+from molt.backend_environment import CodegenSelection
+from molt.backend_executable_names import CodegenBackend
 from molt.capability_manifest import ResolvedRuntimePolicy
 from molt.cli.compiler_identity import CompilerIdentityError
 from molt.cli import backend_binary as _backend_binary
@@ -137,18 +139,20 @@ def _select_backend_binary(
     is_wasm: bool,
     is_luau_transpile: bool,
     is_rust_transpile: bool,
+    codegen_backend: CodegenBackend,
 ) -> _BackendSelection:
     """Select the backend compiler for a build lane.
 
     Build setup, backend dispatch, and the ``internal-backend-build`` prewarm
     all select here, so a prewarm admits the exact feature-tagged binary a
-    later build runs. The feature authority folds ``MOLT_BACKEND=llvm`` into
-    both the Cargo features and the binary path.
+    later build runs. The feature authority folds the ``llvm`` codegen backend
+    into both the Cargo features and the binary path.
     """
     backend_features = _backend_features_for_target(
         is_wasm=is_wasm,
         is_luau_transpile=is_luau_transpile,
         is_rust_transpile=is_rust_transpile,
+        codegen_backend=codegen_backend,
     )
     return _BackendSelection(
         cargo_profile=backend_cargo_profile,
@@ -207,6 +211,7 @@ def _prepare_backend_setup(
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
     resolved_modules: set[str] | frozenset[str] | None = None,
+    codegen: CodegenSelection,
     resolved_capability_policy: ResolvedRuntimePolicy | None = None,
     stage_timings_ms: dict[str, float] | None = None,
     build_python_admission: BuildPythonAdmission | None = None,
@@ -265,6 +270,7 @@ def _prepare_backend_setup(
         is_wasm=is_wasm,
         is_luau_transpile=is_luau_transpile,
         is_rust_transpile=is_rust_transpile,
+        codegen_backend=codegen.backend,
     )
     backend_bin = backend_selection.binary
     backend_binary_start = time.perf_counter()
@@ -340,6 +346,7 @@ def _prepare_backend_setup(
             runtime_wasm_codegen_digest=runtime_wasm_codegen_digest,
             backend_compiler_fingerprint=backend_ensure_result.cache_compiler_fingerprint,
             resolved_capability_policy=resolved_capability_policy,
+            codegen=codegen,
             stage_timings_ms=stage_timings_ms,
         )
     except (NativeSymbolInspectionError, OSError, ValueError) as error:
@@ -535,6 +542,7 @@ def _prepare_backend_dispatch(
     json_output: bool,
     backend_daemon_config_digest: str | None,
     warnings: list[str],
+    codegen: CodegenSelection,
     backend_bin: Path | None = None,
     backend_compiler_fingerprint: str | None = None,
     start_daemon: bool = True,
@@ -548,9 +556,11 @@ def _prepare_backend_dispatch(
             raise ValueError(
                 "native backend dispatch requires an admitted runtime binding"
             )
+        # The backend process gets its own mapping: the caller's environment
+        # plus this build's codegen selection. os.environ is never written.
         backend_env = _backend_environment_with_compiler_fingerprint(
             native_runtime_codegen_environment(
-                os.environ, native_runtime_codegen_binding
+                codegen.environment(os.environ), native_runtime_codegen_binding
             ),
             backend_compiler_fingerprint,
         )
@@ -570,13 +580,14 @@ def _prepare_backend_dispatch(
         backend_env.update(wasm_layout.backend_environment())
     # Single source of truth (shared with setup, the backend prewarm, and the
     # cache-key binary-identity resolver): the 'llvm' feature is folded in by
-    # the helper when MOLT_BACKEND == "llvm" so the backend binary is compiled
+    # the helper for the llvm codegen backend so the backend binary is compiled
     # with inkwell/LLVM support and the feature-tagged path/identity stays
     # consistent.
     backend_features: tuple[str, ...] = _backend_features_for_target(
         is_wasm=is_wasm,
         is_luau_transpile=is_luau_transpile,
         is_rust_transpile=is_rust_transpile,
+        codegen_backend=codegen.backend,
     )
     if deterministic or profile == "release":
         backend_env.setdefault("SOURCE_DATE_EPOCH", "315532800")
@@ -593,6 +604,7 @@ def _prepare_backend_dispatch(
             is_wasm=is_wasm,
             is_luau_transpile=is_luau_transpile,
             is_rust_transpile=is_rust_transpile,
+            codegen_backend=codegen.backend,
         )
         backend_bin = backend_selection.binary
         backend_ensure_result = _ensure_selected_backend_binary(
@@ -689,7 +701,7 @@ def _execute_backend_compile(
     warnings: list[str],
     verbose: bool,
     backend_bin: Path,
-    backend_env: dict[str, str] | None,
+    backend_env: Mapping[str, str],
     backend_timeout: float | None,
     molt_root: Path,
     backend_cargo_profile: str,
@@ -698,9 +710,14 @@ def _execute_backend_compile(
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
     backend_daemon_health: dict[str, Any] | None,
+    codegen: CodegenSelection,
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
 ) -> tuple[_BackendExecutionResult | None, _CliFailure | None]:
     target_triple = cache_setup.artifact_contract.target_triple
+    # A daemon resets its request controls from the backend environment
+    # catalog for every request, so each request carries this build's
+    # selection; the daemon's startup environment cannot carry it.
+    daemon_request_environment = codegen.environment(os.environ)
     try:
         if (
             cache_setup.artifact_contract.is_native
@@ -710,8 +727,7 @@ def _execute_backend_compile(
                 "native backend execution requires an admitted runtime binding"
             )
         backend_env = native_runtime_codegen_environment(
-            os.environ if backend_env is None else backend_env,
-            native_runtime_codegen_binding,
+            backend_env, native_runtime_codegen_binding
         )
     except (OSError, ValueError) as exc:
         return None, _fail(str(exc), json_output, command="build")
@@ -756,7 +772,7 @@ def _execute_backend_compile(
         wasm_data_base: int | None = None
         wasm_table_base: int | None = None
         wasm_split_runtime_app_table_base: int | None = None
-        if is_wasm and backend_env is not None:
+        if is_wasm:
             wasm_link = backend_env.get("MOLT_WASM_RELOCATABLE") == "1"
             raw_data_base = backend_env.get("MOLT_WASM_DATA_BASE")
             raw_table_base = backend_env.get("MOLT_WASM_TABLE_BASE")
@@ -861,6 +877,7 @@ def _execute_backend_compile(
                 stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                 timeout=None,
                 daemon_identity=daemon_identity,
+                request_environment=daemon_request_environment,
             )
             backend_compiled = daemon_compile.ok
             backend_output_written = daemon_compile.output_written
@@ -929,6 +946,7 @@ def _execute_backend_compile(
                         stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
                         stdlib_module_symbols=cache_setup.stdlib_module_symbols,
                         timeout=None,
+                        request_environment=daemon_request_environment,
                         daemon_identity=(
                             _read_backend_daemon_identity(daemon_identity_path)
                             if daemon_identity_path is not None
@@ -1172,6 +1190,7 @@ def _prepare_backend_compile(
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
     backend_daemon_health: dict[str, Any] | None,
+    codegen: CodegenSelection,
     backend_bin: Path | None = None,
     backend_compiler_fingerprint: str | None = None,
 ) -> tuple[_PreparedBackendCompile | None, _CliFailure | None]:
@@ -1255,6 +1274,7 @@ def _prepare_backend_compile(
                     warnings=warnings,
                     backend_bin=backend_bin,
                     backend_compiler_fingerprint=backend_compiler_fingerprint,
+                    codegen=codegen,
                 )
             )
             if prepared_backend_dispatch_error is not None:
@@ -1299,6 +1319,7 @@ def _prepare_backend_compile(
                     backend_daemon_cached=backend_daemon_cached,
                     backend_daemon_cache_tier=backend_daemon_cache_tier,
                     backend_daemon_health=backend_daemon_health,
+                    codegen=codegen,
                 )
             )
             if backend_execution_error is not None:

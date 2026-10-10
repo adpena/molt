@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
+from molt.backend_environment import CodegenSelection
 from molt.capability_manifest import (
     ResolvedRuntimePolicy,
     resolve_runtime_policy_from_env,
@@ -310,6 +311,7 @@ def _prepare_backend_cache_setup(
     runtime_wasm_codegen_digest: str = "",
     resolved_capability_policy: ResolvedRuntimePolicy | None = None,
     backend_compiler_fingerprint: str | None = None,
+    codegen: CodegenSelection,
     stage_timings_ms: dict[str, float] | None = None,
 ) -> _BackendCacheSetup:
     # Cache identities and archive manifests must use the same admitted target
@@ -339,7 +341,7 @@ def _prepare_backend_cache_setup(
     # matches the actual daemon executable for this target/profile.
     stage_start = time.perf_counter()
     backend_features = _backend_features_for_build_target(
-        target=target, is_wasm=is_wasm
+        target=target, is_wasm=is_wasm, codegen_backend=codegen.backend
     )
     backend_binary_identity = _backend_binary_identity(backend_bin)
     _record_backend_cache_stage_ms(
@@ -397,6 +399,11 @@ def _prepare_backend_cache_setup(
         return cache_fingerprint_inputs
 
     stage_start = time.perf_counter()
+    # The same projection the backend process receives (backend_compile's
+    # dispatch), so the cache key binds what the backend actually reads.
+    backend_environment = native_runtime_codegen_environment(
+        codegen.environment(os.environ), native_runtime_codegen_binding
+    )
     cache_variant = _build_cache_variant(
         profile=profile,
         runtime_cargo=runtime_cargo_profile,
@@ -404,10 +411,7 @@ def _prepare_backend_cache_setup(
         emit=emit_mode,
         stdlib_split=split_stdlib_object,
         codegen_env=_backend_codegen_env_digest(
-            is_wasm=is_wasm,
-            env=native_runtime_codegen_environment(
-                os.environ, native_runtime_codegen_binding
-            ),
+            is_wasm=is_wasm, env=backend_environment
         ),
         linked=linked,
         target_python=target_python,
@@ -418,9 +422,7 @@ def _prepare_backend_cache_setup(
                 backend_bin,
                 backend_identity=backend_binary_identity,
                 target_triple=artifact_contract.native_target.triple,
-                env=native_runtime_codegen_environment(
-                    os.environ, native_runtime_codegen_binding
-                ),
+                env=backend_environment,
             )
             if artifact_contract.native_target is not None
             else ""

@@ -1473,7 +1473,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 - `python3 tools/check_stdlib_intrinsics.py`: validate stdlib/intrinsic coverage (use `--fallback-intrinsic-backed-only` for strict checks, `--critical-allowlist` for gating, and `--update-doc` to refresh docs).
 - `python3 tools/check_dynamic_policy.py`: enforce dynamic-execution policy guardrails (no accidental policy drift for `eval`/`exec`, monkeypatching, or unrestricted reflection lanes).
 - `python3 tools/gen_stdlib_stubs.py --write`: write a stub for each stdlib union module Molt lacks and hold every stub to the one template (`--check` names drift).
-- `python3 tools/gen_stdlib_module_union.py --write`: regenerate the stdlib module union list used by stub syncing and checks.
+- `python3 tools/gen_stdlib_module_union.py --write`: regenerate the stdlib module union list used by stub syncing and checks, offline, from the pinned CPython snapshot `config/cpython_stdlib_snapshot.json`; `--refresh-sources` re-fetches that snapshot after a pin in `config/cpython_regrtest_sources.toml` moves.
 - `python3 tools/gen_compat_platform_availability.py --write`: regenerate CPython 3.12/3.13/3.14 stdlib Availability matrix at `docs/spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md`.
 - `python3 tools/diff_coverage.py`: generate [tests/differential/COVERAGE_REPORT.md](tests/differential/COVERAGE_REPORT.md).
 - `python3 tools/bench_diff.py <old.json> <new.json> --top 10 --json-out <path>`: diff two benchmark JSON artifacts and emit a summary report.

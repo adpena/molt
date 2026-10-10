@@ -61,8 +61,6 @@ impl HashHandle {
 #[derive(Debug)]
 pub enum HashError {
     XofLengthMissing,
-    #[allow(dead_code)]
-    XofLengthNegative,
 }
 
 impl HashKind {
@@ -705,13 +703,6 @@ pub extern "C" fn molt_hash_digest(handle_bits: u64, length_bits: u64) -> u64 {
                     _py,
                     "TypeError",
                     "digest() missing required argument 'length' (pos 1)",
-                );
-            }
-            Err(HashError::XofLengthNegative) => {
-                return raise_exception::<u64>(
-                    _py,
-                    "SystemError",
-                    "Negative size passed to PyBytes_FromStringAndSize",
                 );
             }
         };

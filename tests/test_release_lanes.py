@@ -117,7 +117,6 @@ def test_lane_environment_selects_runtime_and_compiler_independently():
         backend="llvm", runtime_profile="release-size"
     )
     assert lane.environment() == {
-        "MOLT_BACKEND": "llvm",
         "MOLT_BACKEND_PROFILE": "release",
         "MOLT_RELEASE_BACKEND_CARGO_PROFILE": "release",
         "MOLT_DEV_BACKEND_CARGO_PROFILE": "release",
@@ -137,16 +136,17 @@ def test_lane_environment_selects_runtime_and_compiler_independently():
         ("wasm", "wasm-release", "cranelift"),
     ],
 )
-def test_lane_environment_replaces_ambient_codegen_selection(
-    backend, profile, selected
-):
+def test_lane_codegen_selection_is_explicit(backend, profile, selected):
     lane = capture_release_lanes(ROOT).select(backend=backend, runtime_profile=profile)
     env = {
         "MOLT_BACKEND": "llvm",
         "MOLT_RUNTIME_BUILD_PROFILE": "unrelated",
         **lane.environment(),
     }
-    assert env["MOLT_BACKEND"] == selected
+    assert env["MOLT_BACKEND"] == "llvm", (
+        "lane profiles do not select a backend via environment"
+    )
+    assert lane.codegen_backend == selected
     assert env["MOLT_RUNTIME_BUILD_PROFILE"] == ""
     assert lane.compiler_features == (
         ("native-backend", "llvm")

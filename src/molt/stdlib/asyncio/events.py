@@ -46,62 +46,62 @@ from asyncio import (
     gather,
     create_subprocess_exec,
     create_subprocess_shell,
-    molt_asyncio_child_watcher_add,
-    molt_asyncio_child_watcher_clear,
-    molt_asyncio_child_watcher_pop,
-    molt_asyncio_child_watcher_remove,
-    molt_asyncio_event_loop_get_current,
-    molt_asyncio_event_loop_policy_get,
-    molt_asyncio_event_loop_policy_set,
-    molt_asyncio_event_loop_set,
-    molt_asyncio_fd_watcher_register,
-    molt_asyncio_fd_watcher_unregister,
-    molt_asyncio_running_loop_get,
-    molt_asyncio_running_loop_set,
-    molt_asyncio_sock_accept_new,
-    molt_asyncio_sock_connect_new,
-    molt_asyncio_sock_recv_into_new,
-    molt_asyncio_sock_recv_new,
-    molt_asyncio_sock_recvfrom_into_new,
-    molt_asyncio_sock_recvfrom_new,
-    molt_asyncio_sock_sendall_new,
-    molt_asyncio_sock_sendto_new,
-    molt_event_loop_add_reader,
-    molt_event_loop_add_writer,
-    molt_event_loop_call_at,
-    molt_event_loop_call_soon,
-    molt_event_loop_cancel_timer,
-    molt_event_loop_close,
-    molt_event_loop_drop,
-    molt_event_loop_get_debug,
-    molt_event_loop_get_exception_handler,
-    molt_event_loop_get_task_factory,
-    molt_event_loop_is_closed,
-    molt_event_loop_is_running,
-    molt_event_loop_new,
-    molt_event_loop_notify_reader_ready,
-    molt_event_loop_notify_writer_ready,
-    molt_event_loop_remove_reader,
-    molt_event_loop_remove_writer,
-    molt_event_loop_run_once,
-    molt_event_loop_set_debug,
-    molt_event_loop_set_exception_handler,
-    molt_event_loop_set_task_factory,
-    molt_event_loop_spawn,
-    molt_event_loop_start,
-    molt_event_loop_stop,
-    molt_event_loop_time,
-    molt_event_loop_wait,
-    molt_event_loop_wake,
-    molt_pipe_transport_close,
-    molt_pipe_transport_drop,
-    molt_pipe_transport_get_fd,
-    molt_pipe_transport_get_write_buffer_size,
-    molt_pipe_transport_is_closing,
-    molt_pipe_transport_new,
-    molt_pipe_transport_pause_reading,
-    molt_pipe_transport_resume_reading,
-    molt_pipe_transport_write,
+    _molt_asyncio_child_watcher_add,
+    _molt_asyncio_child_watcher_clear,
+    _molt_asyncio_child_watcher_pop,
+    _molt_asyncio_child_watcher_remove,
+    _molt_asyncio_event_loop_get_current,
+    _molt_asyncio_event_loop_policy_get,
+    _molt_asyncio_event_loop_policy_set,
+    _molt_asyncio_event_loop_set,
+    _molt_asyncio_fd_watcher_register,
+    _molt_asyncio_fd_watcher_unregister,
+    _molt_asyncio_running_loop_get,
+    _molt_asyncio_running_loop_set,
+    _molt_asyncio_sock_accept_new,
+    _molt_asyncio_sock_connect_new,
+    _molt_asyncio_sock_recv_into_new,
+    _molt_asyncio_sock_recv_new,
+    _molt_asyncio_sock_recvfrom_into_new,
+    _molt_asyncio_sock_recvfrom_new,
+    _molt_asyncio_sock_sendall_new,
+    _molt_asyncio_sock_sendto_new,
+    _molt_event_loop_add_reader,
+    _molt_event_loop_add_writer,
+    _molt_event_loop_call_at,
+    _molt_event_loop_call_soon,
+    _molt_event_loop_cancel_timer,
+    _molt_event_loop_close,
+    _molt_event_loop_drop,
+    _molt_event_loop_get_debug,
+    _molt_event_loop_get_exception_handler,
+    _molt_event_loop_get_task_factory,
+    _molt_event_loop_is_closed,
+    _molt_event_loop_is_running,
+    _molt_event_loop_new,
+    _molt_event_loop_notify_reader_ready,
+    _molt_event_loop_notify_writer_ready,
+    _molt_event_loop_remove_reader,
+    _molt_event_loop_remove_writer,
+    _molt_event_loop_run_once,
+    _molt_event_loop_set_debug,
+    _molt_event_loop_set_exception_handler,
+    _molt_event_loop_set_task_factory,
+    _molt_event_loop_spawn,
+    _molt_event_loop_start,
+    _molt_event_loop_stop,
+    _molt_event_loop_time,
+    _molt_event_loop_wait,
+    _molt_event_loop_wake,
+    _molt_pipe_transport_close,
+    _molt_pipe_transport_drop,
+    _molt_pipe_transport_get_fd,
+    _molt_pipe_transport_get_write_buffer_size,
+    _molt_pipe_transport_is_closing,
+    _molt_pipe_transport_new,
+    _molt_pipe_transport_pause_reading,
+    _molt_pipe_transport_resume_reading,
+    _molt_pipe_transport_write,
     open_connection,
     open_unix_connection,
     start_server,
@@ -465,7 +465,7 @@ class _EventLoop(AbstractEventLoop):
     def __init__(self, selector: Any | None = None) -> None:
         # Rust owns callback and timer custody for every loop driver.
         self._loop_handle: Any = _require_asyncio_intrinsic(
-            molt_event_loop_new, "event_loop_new"
+            _molt_event_loop_new, "event_loop_new"
         )()
         self._readers: dict[int, tuple[Any, tuple[Any, ...], Task]] = {}
         self._writers: dict[int, tuple[Any, tuple[Any, ...], Task]] = {}
@@ -479,9 +479,9 @@ class _EventLoop(AbstractEventLoop):
 
     def __del__(self) -> None:
         handle = getattr(self, "_loop_handle", None)
-        if handle is not None and molt_event_loop_drop is not None:  # type: ignore[name-defined]
+        if handle is not None and _molt_event_loop_drop is not None:  # type: ignore[name-defined]
             try:
-                molt_event_loop_drop(handle)  # type: ignore[name-defined]
+                _molt_event_loop_drop(handle)  # type: ignore[name-defined]
             except Exception:
                 pass
 
@@ -507,7 +507,7 @@ class _EventLoop(AbstractEventLoop):
         return task
 
     def _spawn_task(self, runner: Any) -> None:
-        _require_asyncio_intrinsic(molt_event_loop_spawn, "event_loop_spawn")(
+        _require_asyncio_intrinsic(_molt_event_loop_spawn, "event_loop_spawn")(
             self._loop_handle, runner
         )
 
@@ -524,7 +524,7 @@ class _EventLoop(AbstractEventLoop):
                 context = None
         handle = Handle(callback, args, self, context)
         # Notify Rust handle-level event loop of the immediate callback.
-        _require_asyncio_intrinsic(molt_event_loop_call_soon, "event_loop_call_soon")(
+        _require_asyncio_intrinsic(_molt_event_loop_call_soon, "event_loop_call_soon")(
             self._loop_handle, handle
         )
         return handle
@@ -550,7 +550,7 @@ class _EventLoop(AbstractEventLoop):
             raise RuntimeError("Event loop is closed")
         handle = TimerHandle(float(when), callback, args, self, context)
         handle._timer_id = _require_asyncio_intrinsic(
-            molt_event_loop_call_at, "event_loop_call_at"
+            _molt_event_loop_call_at, "event_loop_call_at"
         )(self._loop_handle, float(when), handle)
         return handle
 
@@ -560,14 +560,14 @@ class _EventLoop(AbstractEventLoop):
         if handler is not None and not callable(handler):
             raise TypeError("A callable object or None is expected")
         _require_asyncio_intrinsic(
-            molt_event_loop_set_exception_handler, "event_loop_set_exception_handler"
+            _molt_event_loop_set_exception_handler, "event_loop_set_exception_handler"
         )(self._loop_handle, handler)
 
     def get_exception_handler(
         self,
     ) -> Callable[["EventLoop", dict[str, Any]], Any] | None:
         return _require_asyncio_intrinsic(
-            molt_event_loop_get_exception_handler, "event_loop_get_exception_handler"
+            _molt_event_loop_get_exception_handler, "event_loop_get_exception_handler"
         )(self._loop_handle)
 
     def default_exception_handler(self, context: dict[str, Any]) -> None:
@@ -602,30 +602,30 @@ class _EventLoop(AbstractEventLoop):
                 _write_exception_message(f"Exception in default exception handler: {error}")
 
     def set_debug(self, enabled: bool) -> None:
-        _require_asyncio_intrinsic(molt_event_loop_set_debug, "event_loop_set_debug")(
+        _require_asyncio_intrinsic(_molt_event_loop_set_debug, "event_loop_set_debug")(
             self._loop_handle, bool(enabled)
         )
 
     def get_debug(self) -> bool:
         return bool(
             _require_asyncio_intrinsic(
-                molt_event_loop_get_debug, "event_loop_get_debug"
+                _molt_event_loop_get_debug, "event_loop_get_debug"
             )(self._loop_handle)
         )
 
     def set_task_factory(self, factory: Callable[..., Task] | None) -> None:
         _require_asyncio_intrinsic(
-            molt_event_loop_set_task_factory, "event_loop_set_task_factory"
+            _molt_event_loop_set_task_factory, "event_loop_set_task_factory"
         )(self._loop_handle, factory)
 
     def get_task_factory(self) -> Callable[..., Task] | None:
         return _require_asyncio_intrinsic(
-            molt_event_loop_get_task_factory, "event_loop_get_task_factory"
+            _molt_event_loop_get_task_factory, "event_loop_get_task_factory"
         )(self._loop_handle)
 
     def time(self) -> float:
         return float(
-            _require_asyncio_intrinsic(molt_event_loop_time, "event_loop_time")(
+            _require_asyncio_intrinsic(_molt_event_loop_time, "event_loop_time")(
                 self._loop_handle
             )
         )
@@ -633,14 +633,14 @@ class _EventLoop(AbstractEventLoop):
     def is_running(self) -> bool:
         return bool(
             _require_asyncio_intrinsic(
-                molt_event_loop_is_running, "event_loop_is_running"
+                _molt_event_loop_is_running, "event_loop_is_running"
             )(self._loop_handle)
         )
 
     def is_closed(self) -> bool:
         return bool(
             _require_asyncio_intrinsic(
-                molt_event_loop_is_closed, "event_loop_is_closed"
+                _molt_event_loop_is_closed, "event_loop_is_closed"
             )(self._loop_handle)
         )
 
@@ -648,7 +648,7 @@ class _EventLoop(AbstractEventLoop):
         self._stopping = True
         # The request lives outside the Rust queues: wake a parked loop so it
         # observes it. Stopping a retired loop is a no-op, as in CPython.
-        _require_asyncio_intrinsic(molt_event_loop_wake, "event_loop_wake")(
+        _require_asyncio_intrinsic(_molt_event_loop_wake, "event_loop_wake")(
             self._loop_handle
         )
 
@@ -657,7 +657,7 @@ class _EventLoop(AbstractEventLoop):
             raise RuntimeError("Cannot close a running event loop")
         if self.is_closed():
             return
-        _require_asyncio_intrinsic(molt_event_loop_close, "event_loop_close")(
+        _require_asyncio_intrinsic(_molt_event_loop_close, "event_loop_close")(
             self._loop_handle
         )
         self._executor_shutdown_called = True
@@ -699,92 +699,92 @@ class _EventLoop(AbstractEventLoop):
     def add_reader(self, fd: Any, callback: Any, *args: Any) -> None:
         fileno = _fd_from_fileobj(fd)
         # Register with Rust event loop for I/O readiness notification.
-        _require_asyncio_intrinsic(molt_event_loop_add_reader, "event_loop_add_reader")(
+        _require_asyncio_intrinsic(_molt_event_loop_add_reader, "event_loop_add_reader")(
             self._loop_handle, fileno, Handle(callback, args, self, None)
         )
         _require_asyncio_intrinsic(
-            molt_asyncio_fd_watcher_register, "asyncio_fd_watcher_register"
+            _molt_asyncio_fd_watcher_register, "asyncio_fd_watcher_register"
         )(self, self._readers, fileno, self._notify_reader_ready, (fileno,), 1)
 
     def remove_reader(self, fd: Any) -> bool:
         fileno = _fd_from_fileobj(fd)
         _require_asyncio_intrinsic(
-            molt_event_loop_remove_reader, "event_loop_remove_reader"
+            _molt_event_loop_remove_reader, "event_loop_remove_reader"
         )(self._loop_handle, fileno)
         return bool(
             _require_asyncio_intrinsic(
-                molt_asyncio_fd_watcher_unregister, "asyncio_fd_watcher_unregister"
+                _molt_asyncio_fd_watcher_unregister, "asyncio_fd_watcher_unregister"
             )(self._readers, fileno)
         )
 
     def add_writer(self, fd: Any, callback: Any, *args: Any) -> None:
         fileno = _fd_from_fileobj(fd)
         # Register with Rust event loop for I/O writability notification.
-        _require_asyncio_intrinsic(molt_event_loop_add_writer, "event_loop_add_writer")(
+        _require_asyncio_intrinsic(_molt_event_loop_add_writer, "event_loop_add_writer")(
             self._loop_handle, fileno, Handle(callback, args, self, None)
         )
         _require_asyncio_intrinsic(
-            molt_asyncio_fd_watcher_register, "asyncio_fd_watcher_register"
+            _molt_asyncio_fd_watcher_register, "asyncio_fd_watcher_register"
         )(self, self._writers, fileno, self._notify_writer_ready, (fileno,), 2)
 
     async def sock_recv(self, sock: Any, n: int) -> bytes:
         fut = _require_asyncio_intrinsic(
-            molt_asyncio_sock_recv_new, "asyncio_sock_recv_new"
+            _molt_asyncio_sock_recv_new, "asyncio_sock_recv_new"
         )(sock, n, _socket_wait_key(sock))
         return await fut
 
     async def sock_recv_into(self, sock: Any, buf: Any) -> int:
         nbytes = len(buf)
         fut = _require_asyncio_intrinsic(
-            molt_asyncio_sock_recv_into_new, "asyncio_sock_recv_into_new"
+            _molt_asyncio_sock_recv_into_new, "asyncio_sock_recv_into_new"
         )(sock, buf, nbytes, _socket_wait_key(sock))
         return await fut
 
     async def sock_sendall(self, sock: Any, data: bytes) -> None:
         fut = _require_asyncio_intrinsic(
-            molt_asyncio_sock_sendall_new, "asyncio_sock_sendall_new"
+            _molt_asyncio_sock_sendall_new, "asyncio_sock_sendall_new"
         )(sock, data, _socket_wait_key(sock))
         await fut
 
     async def sock_recvfrom(self, sock: Any, bufsize: int) -> tuple[Any, Any]:
         fut = _require_asyncio_intrinsic(
-            molt_asyncio_sock_recvfrom_new, "asyncio_sock_recvfrom_new"
+            _molt_asyncio_sock_recvfrom_new, "asyncio_sock_recvfrom_new"
         )(sock, bufsize, _socket_wait_key(sock))
         return await fut
 
     async def sock_recvfrom_into(self, sock: Any, buf: Any) -> tuple[int, Any]:
         nbytes = len(buf)
         fut = _require_asyncio_intrinsic(
-            molt_asyncio_sock_recvfrom_into_new, "asyncio_sock_recvfrom_into_new"
+            _molt_asyncio_sock_recvfrom_into_new, "asyncio_sock_recvfrom_into_new"
         )(sock, buf, nbytes, _socket_wait_key(sock))
         return await fut
 
     async def sock_sendto(self, sock: Any, data: bytes, addr: Any) -> int:
         fut = _require_asyncio_intrinsic(
-            molt_asyncio_sock_sendto_new, "asyncio_sock_sendto_new"
+            _molt_asyncio_sock_sendto_new, "asyncio_sock_sendto_new"
         )(sock, data, addr, _socket_wait_key(sock))
         return await fut
 
     async def sock_connect(self, sock: Any, address: Any) -> None:
         fut = _require_asyncio_intrinsic(
-            molt_asyncio_sock_connect_new, "asyncio_sock_connect_new"
+            _molt_asyncio_sock_connect_new, "asyncio_sock_connect_new"
         )(sock, address, _socket_wait_key(sock))
         await fut
 
     async def sock_accept(self, sock: Any) -> tuple[Any, Any]:
         fut = _require_asyncio_intrinsic(
-            molt_asyncio_sock_accept_new, "asyncio_sock_accept_new"
+            _molt_asyncio_sock_accept_new, "asyncio_sock_accept_new"
         )(sock, _socket_wait_key(sock))
         return await fut
 
     def remove_writer(self, fd: Any) -> bool:
         fileno = _fd_from_fileobj(fd)
         _require_asyncio_intrinsic(
-            molt_event_loop_remove_writer, "event_loop_remove_writer"
+            _molt_event_loop_remove_writer, "event_loop_remove_writer"
         )(self._loop_handle, fileno)
         return bool(
             _require_asyncio_intrinsic(
-                molt_asyncio_fd_watcher_unregister, "asyncio_fd_watcher_unregister"
+                _molt_asyncio_fd_watcher_unregister, "asyncio_fd_watcher_unregister"
             )(self._writers, fileno)
         )
 
@@ -796,7 +796,7 @@ class _EventLoop(AbstractEventLoop):
         Returns the number of callbacks executed (0 means idle).
         """
         return int(
-            _require_asyncio_intrinsic(molt_event_loop_run_once, "event_loop_run_once")(
+            _require_asyncio_intrinsic(_molt_event_loop_run_once, "event_loop_run_once")(
                 self._loop_handle
             )
         )
@@ -804,7 +804,7 @@ class _EventLoop(AbstractEventLoop):
     def _cancel_rust_timer(self, timer_id: Any) -> None:
         """Cancel a Rust-level timer by the opaque timer_id returned from call_later/call_at."""
         _require_asyncio_intrinsic(
-            molt_event_loop_cancel_timer, "event_loop_cancel_timer"
+            _molt_event_loop_cancel_timer, "event_loop_cancel_timer"
         )(self._loop_handle, timer_id)
 
     def _notify_reader_ready(self, fd: int) -> None:
@@ -814,13 +814,13 @@ class _EventLoop(AbstractEventLoop):
         outside of the normal Rust poll path.
         """
         _require_asyncio_intrinsic(
-            molt_event_loop_notify_reader_ready, "event_loop_notify_reader_ready"
+            _molt_event_loop_notify_reader_ready, "event_loop_notify_reader_ready"
         )(self._loop_handle, fd)
 
     def _notify_writer_ready(self, fd: int) -> None:
         """Notify the Rust event loop that *fd* is writable."""
         _require_asyncio_intrinsic(
-            molt_event_loop_notify_writer_ready, "event_loop_notify_writer_ready"
+            _molt_event_loop_notify_writer_ready, "event_loop_notify_writer_ready"
         )(self._loop_handle, fd)
 
     def _check_running(self) -> None:
@@ -853,7 +853,7 @@ class _EventLoop(AbstractEventLoop):
         self._check_running()
         previous_hooks = sys.get_asyncgen_hooks()
         _set_running_loop(self)
-        _require_asyncio_intrinsic(molt_event_loop_start, "event_loop_start")(
+        _require_asyncio_intrinsic(_molt_event_loop_start, "event_loop_start")(
             self._loop_handle
         )
         try:
@@ -871,7 +871,7 @@ class _EventLoop(AbstractEventLoop):
                     self._run_forever_idle_wait()
         finally:
             self._stopping = False
-            _require_asyncio_intrinsic(molt_event_loop_stop, "event_loop_stop")(
+            _require_asyncio_intrinsic(_molt_event_loop_stop, "event_loop_stop")(
                 self._loop_handle
             )
             _set_running_loop(None)
@@ -882,7 +882,7 @@ class _EventLoop(AbstractEventLoop):
         # stop(), close, or a signal delivery for the main thread; native parks
         # release the GIL. Python signal handlers run at the safepoint that
         # follows this call's return.
-        _require_asyncio_intrinsic(molt_event_loop_wait, "event_loop_wait")(
+        _require_asyncio_intrinsic(_molt_event_loop_wait, "event_loop_wait")(
             self._loop_handle
         )
 
@@ -1043,7 +1043,7 @@ class _EventLoop(AbstractEventLoop):
             return
         # The same Handle, with its registration-time context, is queued for
         # each delivery; queuing wakes a parked loop.
-        _require_asyncio_intrinsic(molt_event_loop_call_soon, "event_loop_call_soon")(
+        _require_asyncio_intrinsic(_molt_event_loop_call_soon, "event_loop_call_soon")(
             self._loop_handle, handle
         )
 
@@ -1067,7 +1067,7 @@ class _EventLoop(AbstractEventLoop):
         protocol = protocol_factory()
         # Allocate the Rust-side pipe transport (read mode).
         new_fn = _require_asyncio_intrinsic(
-            molt_pipe_transport_new, "pipe_transport_new"
+            _molt_pipe_transport_new, "pipe_transport_new"
         )
         pipe_handle = new_fn(fd, True)
         transport = _ReadPipeTransport(self, pipe, protocol, pipe_handle)
@@ -1087,7 +1087,7 @@ class _EventLoop(AbstractEventLoop):
         if transport.is_closing():
             return
         fd_fn = _require_asyncio_intrinsic(
-            molt_pipe_transport_get_fd, "pipe_transport_get_fd"
+            _molt_pipe_transport_get_fd, "pipe_transport_get_fd"
         )
         fd = fd_fn(transport._pipe_handle)
         data = _os.read(fd, 65536)
@@ -1125,7 +1125,7 @@ class _EventLoop(AbstractEventLoop):
         protocol = protocol_factory()
         # Allocate the Rust-side pipe transport (write mode).
         new_fn = _require_asyncio_intrinsic(
-            molt_pipe_transport_new, "pipe_transport_new"
+            _molt_pipe_transport_new, "pipe_transport_new"
         )
         pipe_handle = new_fn(fd, False)
         transport = _WritePipeTransport(self, pipe, protocol, pipe_handle)
@@ -1420,13 +1420,13 @@ class AbstractEventLoopPolicy:
 
 class DefaultEventLoopPolicy(AbstractEventLoopPolicy):
     def get_event_loop(self) -> EventLoop:
-        loop = molt_asyncio_event_loop_get_current()
+        loop = _molt_asyncio_event_loop_get_current()
         if _TYPE_CHECKING:
             return _cast(EventLoop, loop)
         return loop
 
     def set_event_loop(self, loop: EventLoop | None) -> None:
-        molt_asyncio_event_loop_set(loop)
+        _molt_asyncio_event_loop_set(loop)
 
     def new_event_loop(self) -> EventLoop:
         loop_cls = _EventLoop
@@ -1456,19 +1456,19 @@ class AbstractChildWatcher:
 
     def add_child_handler(self, pid: int, callback: Any, *args: Any) -> None:
         _require_asyncio_intrinsic(
-            molt_asyncio_child_watcher_add, "asyncio_child_watcher_add"
+            _molt_asyncio_child_watcher_add, "asyncio_child_watcher_add"
         )(self._callbacks, int(pid), callback, args)
 
     def remove_child_handler(self, pid: int) -> bool:
         return bool(
             _require_asyncio_intrinsic(
-                molt_asyncio_child_watcher_remove, "asyncio_child_watcher_remove"
+                _molt_asyncio_child_watcher_remove, "asyncio_child_watcher_remove"
             )(self._callbacks, int(pid))
         )
 
     def close(self) -> None:
         _require_asyncio_intrinsic(
-            molt_asyncio_child_watcher_clear, "asyncio_child_watcher_clear"
+            _molt_asyncio_child_watcher_clear, "asyncio_child_watcher_clear"
         )(self._callbacks)
         self._loop = None
 
@@ -1477,7 +1477,7 @@ class AbstractChildWatcher:
 
     def _notify_child_exit(self, pid: int, returncode: int) -> None:
         entry = _require_asyncio_intrinsic(
-            molt_asyncio_child_watcher_pop, "asyncio_child_watcher_pop"
+            _molt_asyncio_child_watcher_pop, "asyncio_child_watcher_pop"
         )(self._callbacks, int(pid))
         if entry is None:
             return
@@ -1628,7 +1628,7 @@ class _ReadPipeTransport(Transport):
         if self._closing:
             return True
         is_closing_fn = _require_asyncio_intrinsic(
-            molt_pipe_transport_is_closing, "pipe_transport_is_closing"
+            _molt_pipe_transport_is_closing, "pipe_transport_is_closing"
         )
         return bool(is_closing_fn(self._pipe_handle))
 
@@ -1637,7 +1637,7 @@ class _ReadPipeTransport(Transport):
             return
         self._closing = True
         close_fn = _require_asyncio_intrinsic(
-            molt_pipe_transport_close, "pipe_transport_close"
+            _molt_pipe_transport_close, "pipe_transport_close"
         )
         close_fn(self._pipe_handle)
         connection_lost = getattr(self._protocol, "connection_lost", None)
@@ -1649,7 +1649,7 @@ class _ReadPipeTransport(Transport):
             return
         self._paused = True
         pause_fn = _require_asyncio_intrinsic(
-            molt_pipe_transport_pause_reading, "pipe_transport_pause_reading"
+            _molt_pipe_transport_pause_reading, "pipe_transport_pause_reading"
         )
         pause_fn(self._pipe_handle)
 
@@ -1658,7 +1658,7 @@ class _ReadPipeTransport(Transport):
             return
         self._paused = False
         resume_fn = _require_asyncio_intrinsic(
-            molt_pipe_transport_resume_reading, "pipe_transport_resume_reading"
+            _molt_pipe_transport_resume_reading, "pipe_transport_resume_reading"
         )
         resume_fn(self._pipe_handle)
 
@@ -1670,7 +1670,7 @@ class _ReadPipeTransport(Transport):
 
     def __del__(self) -> None:
         drop_fn = _require_asyncio_intrinsic(
-            molt_pipe_transport_drop, "pipe_transport_drop"
+            _molt_pipe_transport_drop, "pipe_transport_drop"
         )
         drop_fn(self._pipe_handle)
 
@@ -1703,7 +1703,7 @@ class _WritePipeTransport(Transport):
         if self._closing:
             return True
         is_closing_fn = _require_asyncio_intrinsic(
-            molt_pipe_transport_is_closing, "pipe_transport_is_closing"
+            _molt_pipe_transport_is_closing, "pipe_transport_is_closing"
         )
         return bool(is_closing_fn(self._pipe_handle))
 
@@ -1713,7 +1713,7 @@ class _WritePipeTransport(Transport):
         if not data:
             return
         write_fn = _require_asyncio_intrinsic(
-            molt_pipe_transport_write, "pipe_transport_write"
+            _molt_pipe_transport_write, "pipe_transport_write"
         )
         write_fn(self._pipe_handle, data)
 
@@ -1725,7 +1725,7 @@ class _WritePipeTransport(Transport):
 
     def get_write_buffer_size(self) -> int:
         buf_fn = _require_asyncio_intrinsic(
-            molt_pipe_transport_get_write_buffer_size,
+            _molt_pipe_transport_get_write_buffer_size,
             "pipe_transport_get_write_buffer_size",
         )
         return int(buf_fn(self._pipe_handle))
@@ -1735,7 +1735,7 @@ class _WritePipeTransport(Transport):
             return
         self._closing = True
         close_fn = _require_asyncio_intrinsic(
-            molt_pipe_transport_close, "pipe_transport_close"
+            _molt_pipe_transport_close, "pipe_transport_close"
         )
         close_fn(self._pipe_handle)
         connection_lost = getattr(self._protocol, "connection_lost", None)
@@ -1753,15 +1753,15 @@ class _WritePipeTransport(Transport):
 
     def __del__(self) -> None:
         drop_fn = _require_asyncio_intrinsic(
-            molt_pipe_transport_drop, "pipe_transport_drop"
+            _molt_pipe_transport_drop, "pipe_transport_drop"
         )
         drop_fn(self._pipe_handle)
 
 def _get_running_loop() -> EventLoop | None:
-    return molt_asyncio_running_loop_get()
+    return _molt_asyncio_running_loop_get()
 
 def _set_running_loop(loop: EventLoop | None) -> None:
-    molt_asyncio_running_loop_set(loop)
+    _molt_asyncio_running_loop_set(loop)
 
 def get_running_loop() -> EventLoop:
     loop = _get_running_loop()
@@ -1776,10 +1776,10 @@ def get_event_loop_policy() -> AbstractEventLoopPolicy:
             DeprecationWarning,
             stacklevel=2,
         )
-    policy = molt_asyncio_event_loop_policy_get()
+    policy = _molt_asyncio_event_loop_policy_get()
     if policy is None:
         policy = _default_event_loop_policy()
-        molt_asyncio_event_loop_policy_set(policy)
+        _molt_asyncio_event_loop_policy_set(policy)
     return policy
 
 def set_event_loop_policy(policy: AbstractEventLoopPolicy | None) -> None:
@@ -1791,7 +1791,7 @@ def set_event_loop_policy(policy: AbstractEventLoopPolicy | None) -> None:
         )
     if policy is None:
         policy = _default_event_loop_policy()
-    molt_asyncio_event_loop_policy_set(policy)
+    _molt_asyncio_event_loop_policy_set(policy)
 
 def get_event_loop() -> EventLoop:
     if _VERSION_INFO >= (3, 14):

@@ -135,12 +135,7 @@ RUN_BLOCKED_BACKENDS = {"wasm"}
 
 @dataclass(frozen=True)
 class BackendSpec:
-    """A (target, backend) build lane.
-
-    The release lane owns the selected ``MOLT_BACKEND`` environment so the daemon
-    selects the right codegen (native Cranelift vs the inkwell/LLVM feature).
-    ``build_target`` is the CLI ``--target`` (native vs wasm).
-    """
+    """A logical scoreboard coordinate resolved through the release lanes."""
 
     target: str  # logical target name in the scoreboard ("native", "wasm")
     backend: str  # codegen backend ("native", "llvm", "wasm")

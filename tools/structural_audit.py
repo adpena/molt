@@ -2781,10 +2781,12 @@ def probe_process_wide_test_patches(root: Path) -> list[Finding]:
 
 
 _BUILD_SKIP_PREFILTER = re.compile(r"\.skip\(")
-# A skip message that reports a failed build, as opposed to a missing tool
-# ("cargo is required for backend compilation").
+# A skip message that reports a failed or timed-out build or warm-up, as
+# opposed to a missing tool ("cargo is required for backend compilation").
 _BUILD_FAILURE_SKIP_MESSAGE = re.compile(
-    r"\b(?:builds?|compil\w*)\b.*\b(?:fail\w*|error)\b|killed during compilation",
+    r"\b(?:builds?|compil\w*|warm\w*)\b.*"
+    r"\b(?:fail\w*|error|timed out|timeout|exceeded)\b"
+    r"|killed during compilation",
     re.IGNORECASE,
 )
 

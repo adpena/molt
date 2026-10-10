@@ -17,14 +17,6 @@ use inkwell::values::FunctionValue;
 //
 // Each 2-bit field: 0 = None, 1 = Read, 2 = Write, 3 = ReadWrite.
 
-/// `memory(none)` — the function does not access any memory.
-/// Currently unused: all molt runtime functions dereference NaN-boxed
-/// heap pointers in at least their fallback paths.  Retained for future
-/// use when we add inline NaN-box tag extraction intrinsics.
-#[cfg(feature = "llvm")]
-#[allow(dead_code)]
-const MEMORY_NONE: u64 = 0;
-
 /// `memory(read)` — the function may read any memory but never writes.
 /// All three location classes set to Read (01): 0b01_01_01 = 21.
 #[cfg(feature = "llvm")]
@@ -49,18 +41,6 @@ pub(super) fn add_nounwind(ctx: &Context, func: FunctionValue<'_>) {
 pub(super) fn add_willreturn(ctx: &Context, func: FunctionValue<'_>) {
     let kind = Attribute::get_named_enum_kind_id("willreturn");
     func.add_attribute(AttributeLoc::Function, ctx.create_enum_attribute(kind, 0));
-}
-
-/// Apply `memory(none)` to a function — it neither reads nor writes memory.
-/// See `MEMORY_NONE` for why this is currently unused.
-#[cfg(feature = "llvm")]
-#[allow(dead_code)]
-fn add_memory_none(ctx: &Context, func: FunctionValue<'_>) {
-    let kind = Attribute::get_named_enum_kind_id("memory");
-    func.add_attribute(
-        AttributeLoc::Function,
-        ctx.create_enum_attribute(kind, MEMORY_NONE),
-    );
 }
 
 /// Apply `memory(read)` to a function — it may read memory but never writes.

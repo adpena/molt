@@ -17,12 +17,9 @@ from random import Random
 import pytest
 
 from tests.native_process_guard import run_native_test_process
+from tools.fuzz_compiler_safe import SafeProgramGenerator
 
-# Allow importing tools/fuzz_compiler.py from the repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_REPO_ROOT / "tools"))
-
-from fuzz_compiler import SafeProgramGenerator  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers

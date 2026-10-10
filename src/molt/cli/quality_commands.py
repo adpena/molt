@@ -17,6 +17,7 @@ from molt.cli.command_runtime import (
 from molt.cli.config_resolution import (
     DEFAULT_STDLIB_PROFILE,
     STDLIB_PROFILE_CHOICES,
+    _select_codegen_backend,
 )
 from molt.cli.env_overrides import temporary_env_overrides as _temporary_env_overrides
 from molt.cli.env_paths import _base_env
@@ -25,7 +26,6 @@ from molt.cli.models import (
     EmitMode,
     FallbackPolicy,
     ParseCodec,
-    Target,
     TypeHintPolicy,
 )
 from molt.cli.output import emit_json as _emit_json
@@ -128,7 +128,14 @@ def _internal_batch_build_server(
             )
             continue
         assert stdlib_profile is not None
-        env_overrides["MOLT_STDLIB_PROFILE"] = stdlib_profile
+        # The request selects the backend as a typed parameter, like the CLI's
+        # --backend; an env_overrides MOLT_BACKEND selects nothing.
+        target, codegen_backend, backend_error = _select_codegen_backend(
+            str(params.get("target", "native")), str(params.get("backend", "auto"))
+        )
+        if backend_error is not None:
+            _emit_response({"id": req_id, "ok": False, "error": backend_error})
+            continue
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
         try:
@@ -142,7 +149,8 @@ def _internal_batch_build_server(
                         active_build_fn = build_fn
                     rc = active_build_fn(
                         file_path=params.get("file_path"),
-                        target=cast(Target, params.get("target", "native")),
+                        target=target,
+                        codegen_backend=codegen_backend,
                         parse_codec=cast(ParseCodec, params.get("codec", "msgpack")),
                         type_hint_policy=cast(
                             TypeHintPolicy, params.get("type_hints", "check")
