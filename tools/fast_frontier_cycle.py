@@ -50,6 +50,8 @@ except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
+from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
+
 # Windows consoles default to cp1252 and choke on non-ASCII; force UTF-8 so this
 # tool never dies on an encode error while relaying subprocess output (recurring
 # Windows bug class). One shared primitive backstops it.
@@ -68,6 +70,7 @@ WASM_WITNESS_SECONDS = 1800  # ~30 min baseline the wasm witness cycle costs.
 def _cargo(args: list[str], capture: bool) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     cmd = ["cargo", *args]
+    admit_cargo_build(cmd, cwd=REPO_ROOT, env=env)
     return _COMMANDS.run(
         cmd,
         cwd=REPO_ROOT,

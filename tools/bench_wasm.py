@@ -27,6 +27,7 @@ if str(SRC_ROOT) not in sys.path:
 import bench_suites  # noqa: E402
 import harness_memory_guard  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
+from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.cli.wasm_host import resolve_molt_wasm_host_binary  # noqa: E402
 from molt.node_runtime import resolve_node_runtime  # noqa: E402
 from molt.harness_conformance import (  # noqa: E402
@@ -205,6 +206,7 @@ def _run_cmd(
     limits: harness_memory_guard.HarnessMemoryLimits | None = None,
     cwd: Path | None = None,
 ) -> _RunResult:
+    admit_cargo_build(cmd, cwd=None, env=env)
     resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
     if tty and not capture:
         print(

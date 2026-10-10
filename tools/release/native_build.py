@@ -21,7 +21,10 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES  # noqa: E402
+from molt.cargo_execution_policy import (  # noqa: E402
+    CARGO_WRAPPER_ENV_NAMES,
+    admit_cargo_build,
+)
 from molt.cli.native_binary import validate_native_binary_architecture  # noqa: E402
 from molt.cli.compiler_identity import LlvmCompilerInputs, admit_llvm_compiler_inputs  # noqa: E402
 from molt.llvm_toolchain import (  # noqa: E402
@@ -846,12 +849,12 @@ def produce_native_build(
             for role, plan in plans.items():
                 if role == "compiler":
                     llvm_inputs.verify()
-                _COMMANDS.run(
-                    cargo_command(plan, source=source, work=work, cargo=paths["cargo"]),
-                    cwd=work,
-                    env=compiler_env if role == "compiler" else env,
-                    check=True,
+                role_env = compiler_env if role == "compiler" else env
+                command = cargo_command(
+                    plan, source=source, work=work, cargo=paths["cargo"]
                 )
+                admit_cargo_build(command, cwd=work, env=role_env)
+                _COMMANDS.run(command, cwd=work, env=role_env, check=True)
                 binary = (
                     work / "target" / triple / plan["profile"] / Path(plan["path"]).name
                 )

@@ -86,6 +86,7 @@ from molt.disk_capacity import (  # noqa: E402
     minimum_headroom_bytes,
 )
 from molt.custody_layout import custody_root  # noqa: E402
+from molt.dx import cargo_target_dir_for_artifact_root  # noqa: E402
 from molt.file_deletion import delete_path  # noqa: E402
 from tools.memory_guard_core.active_custody import has_active_guard_marker  # noqa: E402
 
@@ -1244,14 +1245,17 @@ def _protected_paths(
 ) -> list[Path]:
     """Paths that must never be reclaimed even if they match the allow-set.
 
-    Currently the current session's target dir (``target/sessions/<id>`` and any
-    registered dir under it), protecting an in-flight build of THIS process.
+    Currently the current session's target dir (``target/sessions/<component>``,
+    named by the DX session-component authority, and any registered dir under
+    it), protecting an in-flight build of THIS process.
     """
     scan_roots = (roots,) if isinstance(roots, Path) else tuple(roots)
     protected: list[Path] = []
     session = str(env.get("MOLT_SESSION_ID", "")).strip()
     if session:
-        protected.extend(root / "target" / "sessions" / session for root in scan_roots)
+        protected.extend(
+            cargo_target_dir_for_artifact_root(root, session) for root in scan_roots
+        )
     for name in (
         "CARGO_TARGET_DIR",
         "MOLT_DIFF_CARGO_TARGET_DIR",

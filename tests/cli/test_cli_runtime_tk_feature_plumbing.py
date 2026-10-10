@@ -393,7 +393,7 @@ def test_cargo_target_root_ignores_removed_legacy_target_root_env(
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
 
     assert cli._cargo_target_root(tmp_path) == (
-        tmp_path / "target" / "sessions" / "alpha_session_beta"
+        tmp_path / "target" / "sessions" / "alpha_session_b-575cb2aec94ffa27"
     )
 
 

@@ -11,6 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
+# Cargo runs in this file are fakes; build capacity is not under test.
+pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DX_BUILD_TIMER = REPO_ROOT / "tools" / "dx_build_timer.py"

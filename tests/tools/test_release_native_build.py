@@ -19,6 +19,9 @@ from tests.runtime_build_identity_helper import build_python_identity_fixture
 from tools.release import native_build
 from tools.release.git_source_snapshot import GitSourceFile, GitSourceSnapshot
 
+# Cargo runs in this file are fakes; build capacity is not under test.
+pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
 
 def native_image(platform="linux", arch="x86_64"):
     if platform == "windows":

@@ -51,6 +51,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.perf_authority import non_canonical_provenance  # noqa: E402
 from tools.throughput_measurement import elapsed_sec, phase_result  # noqa: E402
@@ -171,6 +172,7 @@ def _run_completed(
     progress_label: str | None = None,
     prefer_outer_guard_when_active: bool = False,
 ) -> tuple[harness_memory_guard.GuardedCompletedProcess, float]:
+    admit_cargo_build(cmd, cwd=cwd, env=env)
     if prefer_outer_guard_when_active and _outer_memory_guard_reuse_enabled(env):
         return _run_completed_inside_active_guard(
             cmd,

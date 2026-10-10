@@ -29,6 +29,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.dx import development_artifact_env  # noqa: E402
 
 BACKEND_SCHEMA = "molt.typed_repr_report.v1"
@@ -91,8 +92,10 @@ def run_backend_report(ir: dict[str, Any]) -> dict[str, Any]:
     payload = json.dumps(ir, sort_keys=True, separators=(",", ":"))
     env = _canonical_env()
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
+    command = backend_report_command()
+    admit_cargo_build(command, cwd=REPO_ROOT, env=env)
     completed = harness_memory_guard.guarded_completed_process(
-        backend_report_command(),
+        command,
         prefix="MOLT_TEST_SUITE",
         input=payload,
         text=True,

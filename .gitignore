@@ -26,6 +26,7 @@ tmp/
 .molt-artifact-publication-*.json.stage-*.tmp
 .molt-artifact-receipt-*.json
 .sccache/
+.sccache-tmp/
 .uv-cache/
 .uv-cache-*/
 diff/

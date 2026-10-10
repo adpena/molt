@@ -1700,10 +1700,16 @@ def test_static_command_rejects_target_derived_toolchain() -> None:
 )
 def test_sccache_environment_policy_covers_every_rust_proof_family(
     monkeypatch,
+    tmp_path: Path,
     wrapper_env: str,
 ) -> None:
     monkeypatch.setenv(wrapper_env, "/opt/cache/sccache")
     monkeypatch.setenv("CARGO_INCREMENTAL", "1")
+    # A run's scratch TMPDIR must not reach the shared sccache server (HF-105).
+    monkeypatch.setenv("SCCACHE_DIR", str(tmp_path / "artifacts" / ".sccache"))
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        monkeypatch.setenv(name, str(tmp_path / "run-scratch"))
+    server_temp = str(tmp_path / "artifacts" / ".sccache-tmp")
     rust_commands = [
         command
         for command in PLAN.commands
@@ -1728,7 +1734,13 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
     for command in rust_commands:
         environment, applied = proof_plan._command_environment(PLAN, command, 30)
         assert environment["CARGO_INCREMENTAL"] == "0", command.id
-        assert applied == ("sccache-disables-incremental",), command.id
+        assert applied == (
+            "sccache-disables-incremental",
+            "sccache-server-temp-dir",
+        ), command.id
+        assert {environment[name] for name in ("TMPDIR", "TMP", "TEMP")} == {
+            server_temp
+        }, command.id
 
 
 def test_compiler_build_commands_use_shared_timeout_budgets() -> None:

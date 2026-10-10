@@ -163,6 +163,7 @@ def test_run_cmd_raises_guard_failure_instead_of_a_layer_status(
             "",
             "memory_guard: temporary artifact custody incomplete\n",
             elapsed_s=0.01,
+            child_stderr="",
             child_returncode=child_returncode,
             child_stderr="",
             infrastructure_failure=GuardInfrastructureFailure(

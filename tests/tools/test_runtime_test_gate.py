@@ -8,6 +8,9 @@ import pytest
 from tests import runtime_descendant_test_support as support
 from tools import run_runtime_test_gate as gate
 
+# Cargo runs in this file are fakes; build capacity is not under test.
+pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
 # The actual runtime remainder contains the trap and cold-denial owners (and
 # the trap's child test); the process-exit owner is a mandatory isolated case.
 REMAINDER = ["ordinary::parallel_case", support.TRAP, support.TRAP_CHILD, support.COLD]
