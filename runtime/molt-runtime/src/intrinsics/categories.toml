@@ -119,9 +119,6 @@ prefixes = ["thread_"]
 prefixes = ["asyncio_", "async_sleep", "event_loop_", "pipe_transport_"]
 feature = "stdlib_asyncio"
 feature_prefixes = ["asyncio_", "event_loop_", "pipe_transport_"]
-[stdlib.argparse]
-prefixes = ["argparse_"]
-feature = "stdlib_collections"
 [stdlib.collections]
 prefixes = [
     "namedtuple_",

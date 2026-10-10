@@ -8009,61 +8009,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_argparse_add_argument",
-        import: WasmRuntimeImport::ArgparseAddArgument,
-        arity: 10,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_argparse_add_mutually_exclusive",
-        import: WasmRuntimeImport::ArgparseAddMutuallyExclusive,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_argparse_add_parser",
-        import: WasmRuntimeImport::ArgparseAddParser,
-        arity: 3,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_argparse_add_subparsers",
-        import: WasmRuntimeImport::ArgparseAddSubparsers,
-        arity: 4,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_argparse_error",
-        import: WasmRuntimeImport::ArgparseError,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_argparse_format_help",
-        import: WasmRuntimeImport::ArgparseFormatHelp,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_argparse_format_usage",
-        import: WasmRuntimeImport::ArgparseFormatUsage,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_argparse_group_add_argument",
-        import: WasmRuntimeImport::ArgparseGroupAddArgument,
-        arity: 7,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_argparse_parse_args",
-        import: WasmRuntimeImport::ArgparseParseArgs,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_argparse_parser_drop",
-        import: WasmRuntimeImport::ArgparseParserDrop,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_argparse_parser_new",
-        import: WasmRuntimeImport::ArgparseParserNew,
-        arity: 3,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_bz2_compress",
         import: WasmRuntimeImport::Bz2Compress,
         arity: 2,
@@ -14781,19 +14726,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_opcode_stack_effect" => Some(WasmRuntimeImport::OpcodeStackEffect),
         "molt_imghdr_test" => Some(WasmRuntimeImport::ImghdrTest),
         "molt_imghdr_what" => Some(WasmRuntimeImport::ImghdrWhat),
-        "molt_argparse_add_argument" => Some(WasmRuntimeImport::ArgparseAddArgument),
-        "molt_argparse_add_mutually_exclusive" => {
-            Some(WasmRuntimeImport::ArgparseAddMutuallyExclusive)
-        }
-        "molt_argparse_add_parser" => Some(WasmRuntimeImport::ArgparseAddParser),
-        "molt_argparse_add_subparsers" => Some(WasmRuntimeImport::ArgparseAddSubparsers),
-        "molt_argparse_error" => Some(WasmRuntimeImport::ArgparseError),
-        "molt_argparse_format_help" => Some(WasmRuntimeImport::ArgparseFormatHelp),
-        "molt_argparse_format_usage" => Some(WasmRuntimeImport::ArgparseFormatUsage),
-        "molt_argparse_group_add_argument" => Some(WasmRuntimeImport::ArgparseGroupAddArgument),
-        "molt_argparse_parse_args" => Some(WasmRuntimeImport::ArgparseParseArgs),
-        "molt_argparse_parser_drop" => Some(WasmRuntimeImport::ArgparseParserDrop),
-        "molt_argparse_parser_new" => Some(WasmRuntimeImport::ArgparseParserNew),
         "molt_bz2_compress" => Some(WasmRuntimeImport::Bz2Compress),
         "molt_bz2_compressor_compress" => Some(WasmRuntimeImport::Bz2CompressorCompress),
         "molt_bz2_compressor_drop" => Some(WasmRuntimeImport::Bz2CompressorDrop),

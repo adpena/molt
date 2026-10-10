@@ -159,16 +159,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "symbol_path_prefix": "molt_runtime_tk::intrinsics",
         "function_path_prefix": "crate::intrinsics",
     },
-    "argparse": {
-        "output": COLLECTIONS_LEAF_RESOLVERS_DIR / "argparse_resolver.rs",
-        "module_index": COLLECTIONS_LEAF_RESOLVER_INDEX,
-        "crate_path": "molt_runtime_collections",
-        "crate_resolver_path": (
-            "molt_runtime_collections::intrinsics_generated::argparse_resolver"
-        ),
-        "symbol_path_prefix": "molt_runtime_collections::argparse",
-        "function_path_prefix": "crate::argparse",
-    },
     "collections": {
         "output": COLLECTIONS_LEAF_RESOLVERS_DIR / "collections_resolver.rs",
         "module_index": COLLECTIONS_LEAF_RESOLVER_INDEX,
