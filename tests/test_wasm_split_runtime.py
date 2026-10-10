@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 import urllib.error
 import urllib.request
-from molt.dx import cargo_target_dir_for_artifact_root
+from molt.dx import artifact_root, cargo_target_dir_for_artifact_root
 import molt.wasm_artifact as wasm_artifact
 from tools import harness_memory_guard
 import tools.bench_wasm as bench_wasm
@@ -68,12 +68,8 @@ def _split_runtime_target_dirs(
     if raw_target:
         target_dir = Path(raw_target).expanduser()
     else:
-        raw_root = env.get("MOLT_EXT_ROOT", "").strip()
-        artifact_root = Path(raw_root).expanduser() if raw_root else ROOT
-        if not artifact_root.is_absolute():
-            artifact_root = ROOT / artifact_root
         target_dir = cargo_target_dir_for_artifact_root(
-            artifact_root.resolve(),
+            artifact_root(ROOT, env),
             env.get("MOLT_SESSION_ID") or session_id,
         )
     raw_diff_target = env.get("MOLT_DIFF_CARGO_TARGET_DIR", "").strip()
@@ -113,8 +109,9 @@ def test_split_runtime_target_dir_respects_explicit_env_override() -> None:
 def test_split_runtime_target_dir_defaults_to_dx_session_target() -> None:
     target_dir, diff_target_dir = _split_runtime_target_dirs({})
 
+    # The canonical artifact root (the checkout family root), not the checkout.
     assert target_dir == cargo_target_dir_for_artifact_root(
-        ROOT,
+        artifact_root(ROOT, {}),
         "test-wasm-split-runtime",
     )
     assert diff_target_dir == target_dir

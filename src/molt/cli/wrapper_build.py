@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from molt.capability_manifest import resolve_runtime_policy_from_env
+from molt.dx import scratch_dir
 from molt.cli import build_inputs as _build_inputs
 from molt.cli import frontend_pipeline as _frontend_pipeline
 from molt.cli import progress as _progress
@@ -268,7 +269,7 @@ def _wrapper_build_dependency_fingerprints(
             prepared_module_graph=prepared_module_graph,
             module_reasons=module_reasons,
             stdlib_root=stdlib_root,
-            artifacts_root=project_root / "tmp" / "wrapper-build-closure",
+            artifacts_root=scratch_dir(project_root, "wrapper-build-closure"),
             entry_module=resolved_build_entry.entry_module,
             diagnostics_enabled=False,
         )

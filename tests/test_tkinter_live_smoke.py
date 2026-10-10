@@ -9,17 +9,11 @@ from pathlib import Path
 
 import pytest
 
+from molt.dx import development_artifact_env, scratch_root
 from tests.native_process_guard import run_native_test_process
 
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def _artifact_root() -> Path:
-    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return ROOT
 
 
 def _python_executable() -> str:
@@ -46,20 +40,14 @@ def _require_live_smoke_prereqs(expected_platform: str) -> None:
 
 
 def _build_env() -> dict[str, str]:
-    artifact_root = _artifact_root()
-    tmp_root = artifact_root / "tmp"
-    env = os.environ.copy()
+    env = development_artifact_env(
+        ROOT,
+        {**os.environ, "MOLT_USE_SCCACHE": "0"},
+        session_prefix="tk-live-smoke",
+        session_id="tk-live-smoke",
+    )
     env["PYTHONPATH"] = str(ROOT / "src")
-    env["MOLT_EXT_ROOT"] = str(artifact_root)
-    env["CARGO_TARGET_DIR"] = str(artifact_root / "target" / "tk-live-smoke")
-    env["MOLT_DIFF_CARGO_TARGET_DIR"] = env["CARGO_TARGET_DIR"]
-    env["MOLT_CACHE"] = str(artifact_root / ".molt_cache")
-    env["MOLT_DIFF_ROOT"] = str(tmp_root / "diff")
-    env["MOLT_DIFF_TMPDIR"] = str(tmp_root)
-    env["UV_CACHE_DIR"] = str(artifact_root / ".uv-cache")
-    env["TMPDIR"] = str(tmp_root)
     env["MOLT_BACKEND_DAEMON"] = "0"
-    env["MOLT_USE_SCCACHE"] = "0"
     env["MOLT_RUNTIME_TK_NATIVE"] = "1"
     return env
 
@@ -638,7 +626,7 @@ def _live_smoke_script(expected_platform: str) -> str:
 
 def _run_live_smoke(expected_platform: str) -> None:
     _require_live_smoke_prereqs(expected_platform)
-    base_tmp = _artifact_root() / "tmp"
+    base_tmp = scratch_root(ROOT)
     base_tmp.mkdir(parents=True, exist_ok=True)
     run_dir = Path(
         tempfile.mkdtemp(prefix=f"tk_live_{expected_platform}_", dir=str(base_tmp))
@@ -835,7 +823,7 @@ def _live_filehandler_smoke_script(expected_platform: str) -> str:
 
 def _run_live_filehandler_smoke(expected_platform: str) -> None:
     _require_live_smoke_prereqs(expected_platform)
-    base_tmp = _artifact_root() / "tmp"
+    base_tmp = scratch_root(ROOT)
     base_tmp.mkdir(parents=True, exist_ok=True)
     run_dir = Path(
         tempfile.mkdtemp(

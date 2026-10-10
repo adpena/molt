@@ -37,7 +37,13 @@ from molt.cli.runtime_wasm_build_spec import (  # noqa: E402
     _runtime_wasm_toolchain_manifest_path,
 )
 from molt.cli.runtime_wasm_generation import runtime_wasm_generation_path  # noqa: E402
-from molt.dx import checkout_custody, development_artifact_env  # noqa: E402
+from molt.dx import (  # noqa: E402
+    ARTIFACT_ROOT_ENV,
+    checkout_custody,
+    configured_artifact_root,
+    development_artifact_env,
+)
+from molt.memory_guard_paths import active_guard_marker_dirs_of  # noqa: E402
 from molt.path_custody import (  # noqa: E402
     PathCustodyError,
     canonical_host_path,
@@ -268,17 +274,14 @@ def _marker_directories(
     project_root: Path,
     custody_root: Path,
 ) -> tuple[Path, ...]:
-    candidates = {
-        project_root / "tmp/memory_guard/active",
-        custody_root / "tmp/memory_guard/active",
+    roots = {
+        project_root,
+        custody_root,
+        *_worktree_roots(project_root, custody_root=custody_root),
     }
-    candidates.update(
-        root / "tmp/memory_guard/active"
-        for root in _worktree_roots(
-            project_root,
-            custody_root=custody_root,
-        )
-    )
+    candidates = {
+        markers for root in roots for markers in active_guard_marker_dirs_of(root)
+    }
     return tuple(sorted(candidates, key=os.fspath))
 
 
@@ -548,7 +551,8 @@ def _planned_pair(
     stdlib_profile: str,
     build_env: Mapping[str, str],
 ) -> dict[str, object]:
-    if not build_env.get("MOLT_EXT_ROOT", "").strip():
+    planned_root = configured_artifact_root(build_env, relative_to=project_root)
+    if planned_root is None:
         raise ValueError("planned runtime build has no canonical artifact root")
     for name, expected in (
         ("CARGO_TARGET_DIR", target_root),
@@ -561,7 +565,7 @@ def _planned_pair(
         "CARGO_TARGET_DIR": os.fspath(target_root),
         "MOLT_CACHE": os.fspath(cache_root),
         "MOLT_WASM_RUNTIME_DIR": os.fspath(runtime_dir),
-        "MOLT_EXT_ROOT": build_env["MOLT_EXT_ROOT"],
+        ARTIFACT_ROOT_ENV: os.fspath(planned_root),
     }
     if state_override := build_env.get("MOLT_BUILD_STATE_DIR"):
         required_env["MOLT_BUILD_STATE_DIR"] = state_override

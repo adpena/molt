@@ -12,17 +12,12 @@ This directory is the canonical home for Molt differential tests.
 
 ## Running
 
-Use canonical artifact roots before long sweeps:
+Use canonical artifact roots before long sweeps. The run context exports the
+artifact root, Cargo target, caches and scratch; scratch never lands in the
+checkout:
 
 ```bash
-export MOLT_EXT_ROOT=$PWD
-export CARGO_TARGET_DIR=$PWD/target
-export MOLT_DIFF_CARGO_TARGET_DIR=$CARGO_TARGET_DIR
-export MOLT_CACHE=$PWD/.molt_cache
-export MOLT_DIFF_ROOT=$PWD/tmp/diff
-export MOLT_DIFF_TMPDIR=$PWD/tmp
-export UV_CACHE_DIR=$PWD/.uv-cache
-export TMPDIR=$PWD/tmp
+eval "$(python3 tools/run_context_env.py --format posix)"
 # RSS measurement and adaptive memory limits are default-on; set
 # MOLT_DIFF_MEASURE_RSS=0 or MOLT_DIFF_CHILD_RLIMIT_GB=0 only for explicit local
 # investigations.

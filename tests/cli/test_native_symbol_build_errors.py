@@ -91,7 +91,9 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
     )
     phases: list[str] = []
     leases: list[Path] = []
-    lease_dir = tmp_path / "tmp" / "backend-ir-leases"
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
+    lease_dir = artifacts.resolve() / "tmp" / "backend-ir-leases"
     lease_dir.mkdir(parents=True)
     unrelated_lease = lease_dir / "other-owner.json"
     unrelated_lease.write_text("other owner", encoding="utf-8")

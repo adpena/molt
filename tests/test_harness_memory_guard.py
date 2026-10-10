@@ -159,18 +159,23 @@ def test_harness_default_outputs_follow_guard_state_authority(
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(harness_memory_guard, "_REPO_ROOT", repo)
-    env = {"MOLT_GUARD_PROFILE": "incident"}
-    # Unconfigured state belongs to the checkout family, never the tree.
-    expected = (
-        custody_layout.unconfigured_state_root(repo) / "tmp" / "harness_memory_guard"
+    # The synthetic repo is a plain clone, not explicit host scratch.
+    monkeypatch.setattr(
+        molt_dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
     )
+    env = {"MOLT_GUARD_PROFILE": "incident"}
+    # A plain clone's guard state goes to its out-of-tree scratch.
+    expected = custody_layout.out_of_tree_scratch_root(repo) / "harness_memory_guard"
     if root_kind == "external":
         env["MOLT_EXT_ROOT"] = str(external)
         expected = external / "tmp" / "harness_memory_guard"
     elif root_kind == "external_forest":
+        # Candidates count only when the run asks for an external root.
         env["MOLT_EXTERNAL_ARTIFACT_ROOTS"] = os.pathsep.join(
             (str(external), str(tmp_path / "other")),
         )
+        env["MOLT_PREFER_EXTERNAL_ARTIFACTS"] = "1"
+        env["MOLT_EXTERNAL_MIN_FREE_GB"] = "0"
         expected = external / "tmp" / "harness_memory_guard"
     elif root_kind == "queue":
         env["MOLT_EXT_ROOT"] = str(repo)

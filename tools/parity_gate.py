@@ -47,6 +47,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools import harness_memory_guard  # noqa: E402
+from molt.dx import scratch_dir  # noqa: E402
 from tools.compat import comparison as compat_comparison  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -591,7 +592,7 @@ def main() -> int:
     with harness_memory_guard.guarded_harness_scope(
         prefix="MOLT_CONFORMANCE",
         repo_root=REPO_ROOT,
-        artifact_root=REPO_ROOT / "tmp" / "parity_gate",
+        artifact_root=scratch_dir(REPO_ROOT, "parity_gate", guard_env),
         label="parity_gate",
         env=guard_env,
         limits=limits,

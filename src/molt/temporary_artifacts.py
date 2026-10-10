@@ -35,7 +35,9 @@ from molt.file_publication import (
     is_link_like,
     resolve_owned_path,
 )
-from molt.memory_guard_paths import memory_guard_state_root
+from molt.disk_capacity import require_scratch_capacity
+from molt.dx import scratch_dir
+from molt.memory_guard_paths import STATE_ROOT_ENV, memory_guard_state_root
 
 
 SCHEMA = "molt.guard-scratch.v1"
@@ -83,9 +85,14 @@ class GuardScratchLease:
 
 
 def scratch_root(repo_root: Path, environ: Mapping[str, str]) -> Path:
-    # A short root preserves Windows compiler/linker path budget. It follows the
-    # existing state-root projection, including proof-queue external roots.
-    return resolve_owned_path(memory_guard_state_root(repo_root, environ).parent / "gs")
+    # A short root preserves Windows compiler/linker path budget. A
+    # queue-issued guard state root carries its scratch beside it; otherwise
+    # guard scratch is run scratch and follows the selected scratch storage.
+    if environ.get(STATE_ROOT_ENV, "").strip():
+        return resolve_owned_path(
+            memory_guard_state_root(repo_root, environ).parent / "gs"
+        )
+    return resolve_owned_path(scratch_dir(repo_root, "gs", environ))
 
 
 def _generation(root: Path, token: str) -> Path:
@@ -277,10 +284,16 @@ class OwnedTemporaryDirectory:
 def acquire_guard_scratch(
     repo_root: Path, environ: Mapping[str, str]
 ) -> GuardScratchLease:
-    """Parent-only allocation; never recover ownership from child-writable data."""
+    """Parent-only allocation; never recover ownership from child-writable data.
+
+    Admission runs first: the run does not start unless the scratch volume
+    has the scratch budget free.
+    """
     token = environ["MOLT_MEMORY_GUARD_TOKEN"]
     marker = resolve_owned_path(Path(environ["MOLT_MEMORY_GUARD_MARKER"]))
-    generation = _generation(scratch_root(repo_root, environ), token)
+    root = scratch_root(repo_root, environ)
+    require_scratch_capacity([root], env=environ)
+    generation = _generation(root, token)
     generation.mkdir(parents=True)
     handle = _try_acquire_file_lock(resolve_owned_path(generation / "lock"))
     if handle is None:

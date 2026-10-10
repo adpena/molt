@@ -11,6 +11,7 @@ from typing import Mapping, MutableMapping
 
 from molt import disk_capacity
 from molt.build_state_layout import build_state_root
+from molt.dx import configured_artifact_root, scratch_dir, scratch_root
 from molt.exact_json import canonical_json_bytes, dumps_exact, loads_exact
 from molt.file_publication import durable_remove_path, is_link_like, resolve_owned_path
 from tools.proof_queue_pkg import cargo_output_layout
@@ -23,6 +24,14 @@ OUTPUT_KEYS = (
     "CARGO_TARGET_DIR",
     "MOLT_COMPAT_SCRATCH_ROOT",
 )
+
+
+def diff_custody_root(environment: Mapping[str, str], *, repo_root: Path) -> Path:
+    """Return differential custody: ``MOLT_DIFF_ROOT``, else run scratch."""
+    explicit = environment.get("MOLT_DIFF_ROOT", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    return scratch_dir(repo_root, "diff", environment)
 
 
 def keep_artifacts(environment: Mapping[str, str]) -> bool:
@@ -64,14 +73,13 @@ def _validate(
     custody_root: Path,
     environment: Mapping[str, str],
 ) -> Path:
-    if not environment.get("MOLT_EXT_ROOT", "").strip():
+    configured = configured_artifact_root(environment, relative_to=repo_root)
+    if configured is None:
         raise ValueError(
             "selected differential guest output requires canonical MOLT_EXT_ROOT"
         )
     root = Path(str(declaration["path"]))
-    artifact = resolve_owned_path(
-        Path(environment.get("MOLT_EXT_ROOT") or repo_root).expanduser()
-    )
+    artifact = resolve_owned_path(configured)
     state = environment.get("MOLT_BUILD_STATE_DIR", "").strip()
     if state:
         state_path = Path(state).expanduser()
@@ -82,7 +90,8 @@ def _validate(
                 "selected differential build state escaped canonical custody"
             )
     custody = resolve_owned_path(custody_root)
-    if not custody.is_relative_to(artifact):
+    run_scratch = resolve_owned_path(scratch_root(repo_root, environment))
+    if not (custody.is_relative_to(artifact) or custody.is_relative_to(run_scratch)):
         raise ValueError(
             "differential custody must remain under canonical artifact root"
         )
@@ -212,8 +221,7 @@ def admit(
 def enforce_child(
     environment: MutableMapping[str, str], *, repo_root: Path
 ) -> Path | None:
-    artifact = Path(environment.get("MOLT_EXT_ROOT") or repo_root)
-    custody = Path(environment.get("MOLT_DIFF_ROOT") or artifact / "tmp" / "diff")
+    custody = diff_custody_root(environment, repo_root=repo_root)
     root = selected_root(environment, repo_root=repo_root, custody_root=custody)
     if root is None:
         return None
@@ -266,10 +274,7 @@ class GuestOutputLease:
             durable_remove_path(self.path, retirement_scope=self.path.name)
             return None
         except (OSError, ValueError, RuntimeError) as error:
-            artifact = Path(environment.get("MOLT_EXT_ROOT") or repo_root)
-            custody = Path(
-                environment.get("MOLT_DIFF_ROOT") or artifact / "tmp" / "diff"
-            )
+            custody = diff_custody_root(environment, repo_root=repo_root)
             receipt = custody / "guest_output_cleanup_failures.jsonl"
             diagnostic = f"guest output cleanup failed at {self.path}: {error}"
             try:

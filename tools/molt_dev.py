@@ -73,7 +73,7 @@ The hazard inventory -> countermeasure map (the spec this file implements)
      container teardown — both deaths lose block-buffered output, leaving an
      EMPTY log, NO exit status, and no way to distinguish "killed" from
      "still running" after the fact)
-       -> `detached-run` double-forks + setsid with unbuffered IO and writes
+       -> `detached-run` starts a fresh setsid supervisor with unbuffered IO and writes
           an atomic state dir (pid / sid / cmd.json / run.log / rc). The
           companion `detached-verify` is the REQUIRED second tool call: it
           proves the daemon outlived the spawning call's teardown window

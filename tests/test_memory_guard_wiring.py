@@ -11,6 +11,7 @@ import pytest
 
 from tools import check_memory_guard_wiring
 from tools import memory_guard
+from molt import dx
 from molt import pytest_memory_guard_bootstrap
 from molt import pytest_memory_guard_config_plugin
 from molt import memory_guard_paths
@@ -615,10 +616,7 @@ def test_memory_guard_allocates_test_custody_env(
     )
 
 
-@pytest.mark.parametrize(
-    "selector",
-    ["MOLT_EXT_ROOT", "MOLT_EXTERNAL_ARTIFACT_ROOTS", "MOLT_MEMORY_GUARD_STATE_ROOT"],
-)
+@pytest.mark.parametrize("selector", ["MOLT_EXT_ROOT", "MOLT_MEMORY_GUARD_STATE_ROOT"])
 @pytest.mark.parametrize("worker", ["", "gw0"])
 def test_custody_root_transition_keeps_parent_child_and_reader_on_one_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selector: str, worker: str
@@ -990,113 +988,77 @@ def test_windows_pytest_tempdir_patch_keeps_xdist_given_basetemp_readable(
     assert (child / "receipt.txt").read_text(encoding="utf-8") == "readable"
 
 
-def test_windows_pytest_cache_dir_arg_uses_canonical_tmp_cache(
+def test_pytest_cache_dir_arg_uses_the_artifact_root_control_state(
     monkeypatch, tmp_path
 ) -> None:
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
-    )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
     args = ["tests/test_one.py", "-q"]
 
-    assert pytest_memory_guard_bootstrap.install_windows_pytest_cache_dir_arg(args)
-    assert args[-2:] == [
-        "-o",
-        f"cache_dir={tmp_path / 'artifact-root' / 'tmp' / 'pytest-cache'}",
-    ]
-    assert not pytest_memory_guard_bootstrap.install_windows_pytest_cache_dir_arg(args)
-
-
-def test_windows_pytest_cache_dir_arg_preserves_explicit_cache_policy(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
+    assert pytest_memory_guard_bootstrap.install_pytest_cache_dir_arg(args)
+    cache = (
+        tmp_path.resolve()
+        / "artifact-root"
+        / "tmp"
+        / "pytest-cache"
+        / dx.checkout_component(pytest_memory_guard_bootstrap.ROOT)
     )
+    assert args[-2:] == ["-o", f"cache_dir={cache}"]
+    assert not pytest_memory_guard_bootstrap.install_pytest_cache_dir_arg(args)
+
+
+def test_pytest_cache_dir_never_lands_in_the_checkout(monkeypatch) -> None:
+    # A plain clone's artifact root is the clone itself; its cache must move
+    # out of the tree on every platform.
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(pytest_memory_guard_bootstrap.ROOT))
+
+    cache = pytest_memory_guard_bootstrap.guarded_pytest_cache_dir()
+
+    root = pytest_memory_guard_bootstrap.ROOT.resolve()
+    assert root not in (cache, *cache.parents)
+
+
+def test_sibling_worktrees_keep_separate_pytest_caches(tmp_path) -> None:
+    family = tmp_path / "Molt"
+    first = family / "worktrees" / "one"
+    second = family / "worktrees" / "two"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+
+    caches = {dx.checkout_component(first), dx.checkout_component(second)}
+
+    assert len(caches) == 2
+    assert dx.checkout_component(first) == dx.checkout_component(first)
+
+
+def test_pytest_cache_dir_arg_preserves_explicit_cache_policy() -> None:
     explicit = ["-o", "cache_dir=custom-cache"]
     disabled = ["-p", "no:cacheprovider"]
 
-    assert not pytest_memory_guard_bootstrap.install_windows_pytest_cache_dir_arg(
-        explicit
-    )
+    assert not pytest_memory_guard_bootstrap.install_pytest_cache_dir_arg(explicit)
     assert explicit == ["-o", "cache_dir=custom-cache"]
-    assert not pytest_memory_guard_bootstrap.install_windows_pytest_cache_dir_arg(
-        disabled
-    )
+    assert not pytest_memory_guard_bootstrap.install_pytest_cache_dir_arg(disabled)
     assert disabled == ["-p", "no:cacheprovider"]
 
 
-def test_windows_pytest_cache_dir_config_uses_canonical_tmp_cache(
+def test_pytest_cache_dir_config_uses_the_artifact_root_control_state(
     monkeypatch, tmp_path
 ) -> None:
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
-    )
     monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifact-root"))
 
     class Config:
         _inicfg = {}
         _inicache = {"cache_dir": "old-cache"}
 
-    assert pytest_memory_guard_bootstrap.install_windows_pytest_cache_dir_config(
+    assert pytest_memory_guard_bootstrap.install_pytest_cache_dir_config(
         Config,
         ["tests/test_one.py", "-q"],
     )
     value = Config._inicfg["cache_dir"]
-    assert value.value == str(tmp_path / "artifact-root" / "tmp" / "pytest-cache")
+    assert Path(value.value).parent == (
+        tmp_path.resolve() / "artifact-root" / "tmp" / "pytest-cache"
+    )
     assert value.origin == "override"
     assert "cache_dir" not in Config._inicache
-
-
-def test_windows_pytest_artifact_base_skips_unhealthy_external_candidate(
-    monkeypatch, tmp_path
-) -> None:
-    unhealthy = tmp_path / "unhealthy" / "Molt" / "tmp"
-    healthy = tmp_path / "healthy" / "Molt" / "tmp"
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap,
-        "_default_windows_pytest_artifact_roots",
-        lambda: (unhealthy, healthy),
-    )
-
-    def fake_accepts_child_dirs(path: Path, *, create_dirs: bool) -> bool:
-        del create_dirs
-        return path != unhealthy
-
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap,
-        "_artifact_root_accepts_child_dirs",
-        fake_accepts_child_dirs,
-    )
-
-    assert pytest_memory_guard_bootstrap._windows_pytest_artifact_base() == healthy
-
-
-def test_windows_pytest_artifact_base_uses_configured_external_candidates(
-    monkeypatch, tmp_path
-) -> None:
-    artifact_root = tmp_path / "configured" / "Molt"
-    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
-    monkeypatch.setenv("MOLT_EXTERNAL_ARTIFACT_ROOTS", str(artifact_root))
-
-    assert pytest_memory_guard_bootstrap._windows_pytest_artifact_base() == (
-        artifact_root / "tmp"
-    )
-
-
-def test_windows_pytest_artifact_base_accepts_explicit_scratch_root(
-    monkeypatch, tmp_path
-) -> None:
-    monkeypatch.setattr(
-        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
-    )
-    artifact_root = tmp_path / "artifact-root"
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact_root))
-
-    assert pytest_memory_guard_bootstrap._windows_pytest_artifact_base() == (
-        artifact_root / "tmp"
-    )
 
 
 def test_pytest_user_temp_root_matches_pytest_tmpdir_authority(tmp_path) -> None:
@@ -1144,7 +1106,13 @@ def test_windows_pytest_custody_roots_prepare_readable_defaults(
     assert temproot.is_dir()
     assert any(temproot.iterdir())
     assert (
-        tmp_path / "artifact-root" / "tmp" / "pytest-cache" / "v" / "cache"
+        tmp_path
+        / "artifact-root"
+        / "tmp"
+        / "pytest-cache"
+        / dx.checkout_component(pytest_memory_guard_bootstrap.ROOT)
+        / "v"
+        / "cache"
     ).is_dir()
 
 
@@ -1208,7 +1176,13 @@ def test_windows_pytest_custody_roots_preserve_explicit_temproot(
     assert explicit.is_dir()
     assert any(explicit.iterdir())
     assert (
-        tmp_path / "artifact-root" / "tmp" / "pytest-cache" / "v" / "cache"
+        tmp_path
+        / "artifact-root"
+        / "tmp"
+        / "pytest-cache"
+        / dx.checkout_component(pytest_memory_guard_bootstrap.ROOT)
+        / "v"
+        / "cache"
     ).is_dir()
 
 
@@ -1259,7 +1233,7 @@ def test_pytest_autoload_disable_requires_explicit_guard_config_plugin() -> None
     try:
         pytest_memory_guard_bootstrap.validate_pytest_guardable_env(
             {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
-            args=("-c", str(REPO_ROOT / "tmp" / "pytest.ini")),
+            args=("-c", str(REPO_ROOT / "untrusted" / "pytest.ini")),
         )
     except SystemExit:
         pass

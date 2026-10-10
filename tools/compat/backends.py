@@ -58,6 +58,7 @@ from molt.llvm_toolchain import (
     LlvmToolchainConfigError,
     verify_available_llvm_toolchain,
 )
+from molt.dx import scratch_dir
 from molt.target_python import TargetPythonVersion, _parse_target_python_version
 from molt.wasm_artifact import wasm_runtime_manifest_path
 from tools.compat import diff_output_layout, test_policy
@@ -625,9 +626,7 @@ def _cross_scratch_root(environment: Mapping[str, str]) -> Path:
     if raw:
         root = Path(raw).expanduser()
     else:
-        ext_root = environment.get("MOLT_EXT_ROOT", "").strip()
-        base = Path(ext_root).expanduser() if ext_root else _REPO_ROOT
-        root = base / "tmp" / "compat_backends"
+        root = scratch_dir(_REPO_ROOT, "compat_backends", environment)
     root.mkdir(parents=True, exist_ok=True)
     return root
 

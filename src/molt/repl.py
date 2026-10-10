@@ -26,6 +26,7 @@ from collections.abc import Sequence
 from typing import Any, Optional, cast
 
 from molt import process_guard
+from molt.dx import scratch_dir
 
 
 # Python keywords and builtins for tab completion
@@ -140,16 +141,8 @@ def _wrap_for_repl(source: str, state_vars: set[str]) -> str:
     return "\n".join(lines)
 
 
-def _repl_project_root() -> Path:
-    raw_root = os.environ.get("MOLT_EXT_ROOT")
-    root = Path(raw_root).expanduser() if raw_root else Path.cwd()
-    if not root.is_absolute():
-        root = Path.cwd() / root
-    return root.resolve()
-
-
 def _repl_tmp_dir(project_root: Path) -> Path:
-    tmp_dir = project_root / "tmp" / "repl"
+    tmp_dir = scratch_dir(project_root, "repl")
     tmp_dir.mkdir(parents=True, exist_ok=True)
     return tmp_dir
 
@@ -244,7 +237,8 @@ def run_repl(
         # Wrap for REPL execution
         wrapped = _wrap_for_repl(source, state_vars)
 
-        project_root = _repl_project_root()
+        # Snippets run in the user's directory; their source is scratch.
+        project_root = Path.cwd().resolve()
         tmp_dir = _repl_tmp_dir(project_root)
 
         # Compile and run via molt under the shared process guard.

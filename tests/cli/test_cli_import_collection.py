@@ -11811,8 +11811,10 @@ def test_backend_ir_lease_streams_json_without_bytes_helper(
         ),
     )
 
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
     lease_path = cli._write_backend_ir_lease(
-        tmp_path,
+        tmp_path / "project",
         {
             "functions": [
                 {
@@ -11824,7 +11826,7 @@ def test_backend_ir_lease_streams_json_without_bytes_helper(
         },
     )
 
-    assert lease_path.parent == tmp_path / "tmp" / "backend-ir-leases"
+    assert lease_path.parent == artifacts.resolve() / "tmp" / "backend-ir-leases"
     payload = json.loads(lease_path.read_text(encoding="utf-8"))
     assert payload["functions"][0]["name"] == "main"
 
@@ -18554,6 +18556,8 @@ def test_build_one_shot_backend_compile_uses_ir_file_lease(
     backend_bin = tmp_path / "fake-backend"
     backend_bin.write_text("", encoding="utf-8")
 
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
@@ -18590,7 +18594,9 @@ def test_build_one_shot_backend_compile_uses_ir_file_lease(
     assert len(backend_inputs) == 1
     assert backend_inputs[0] is None
     assert len(backend_ir_files) == 1
-    assert backend_ir_files[0].parent == project / "tmp" / "backend-ir-leases"
+    assert backend_ir_files[0].parent == (
+        artifacts.resolve() / "tmp" / "backend-ir-leases"
+    )
     assert not backend_ir_files[0].exists()
 
 

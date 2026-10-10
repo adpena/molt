@@ -306,12 +306,15 @@ def test_run_wrangler_dry_run_uses_no_bundle_and_outdir(
         return subprocess.CompletedProcess(cmd, 0, "dry-run ok\n", "")
 
     monkeypatch.setattr(verify, "_run_command", fake_run)
+    # Dry-run output is scratch under the artifact root, never in the project.
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(artifacts))
 
     result = verify.run_wrangler_dry_run(
         wrangler="wrangler",
         bundle_root=bundle_root,
         wrangler_config=wrangler_config,
-        project_root=tmp_path,
+        project_root=tmp_path / "project",
         env={"TMPDIR": str(tmp_path / "tmp")},
         json_output=False,
         verbose=False,
@@ -325,7 +328,7 @@ def test_run_wrangler_dry_run_uses_no_bundle_and_outdir(
         "--dry-run",
         "--no-bundle",
         "--outdir",
-        str(tmp_path / "tmp" / "cloudflare-demo" / "session" / "dry-run"),
+        str(artifacts.resolve() / "tmp" / "cloudflare-demo" / "session" / "dry-run"),
         "--config",
         str(wrangler_config),
     ]

@@ -27,10 +27,9 @@ def default_diff_root() -> Path:
     raw = os.environ.get("MOLT_DIFF_ROOT", "").strip()
     if raw:
         return Path(raw).expanduser()
-    ext_root = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if ext_root:
-        return Path(ext_root).expanduser() / "tmp" / "diff"
-    return repo_root() / "tmp" / "diff"
+    from molt.dx import scratch_dir
+
+    return scratch_dir(repo_root(), "diff")
 
 
 def guard_root_from_args(args: argparse.Namespace) -> Path:
