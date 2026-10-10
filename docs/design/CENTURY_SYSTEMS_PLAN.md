@@ -315,6 +315,14 @@ Missing, stale, duplicate, waived, unevaluated, or indirectly inferred evidence
 evaluates false. A future validator may change implementation language, but not
 this predicate without a reviewed governance change and migration proof.
 
+`open_obligations` has two kinds of entry. The first kind is each aggregate
+obligation in `config/phase_exit_requirements.toml` whose requirement does not
+pass. The second kind is each finding that
+[the findings ledger](../agent/V1_HANDOFF_FINDINGS.md) holds open at the release
+commit. The release-exit bundle records this join, and its verifier reads the
+ledger blob at the bundle source commit through `tools/finding_status.py`. No
+phase file lists findings, so the ledger stays the one finding authority.
+
 The executable validator is `tools/phase_exit_manifest.py`: `assemble` projects
 a phase manifest from the typed release-exit bundle
 (`tools/release_exit_gate.py`), the exact verified-subset matrix, the legacy

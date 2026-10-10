@@ -61,7 +61,8 @@ their signal and delete them.
 
 The program is done only when all four hold. Release acceptance authorities:
 `config/phase_exit_requirements.toml`, `tools/phase_exit_manifest.py`,
-`tools/release_exit_gate.py`.
+`tools/release_exit_gate.py`, and the findings ledger through
+`tools/finding_status.py`. A release cannot pass while a ledger finding is open.
 
 - **E1 · WITNESS GREEN.** `collab/pact/pact_witness_kernel/field_solve.py` (numpy + scipy.ndimage) → Molt **WASM** → `candidate_outputs.npz` → `check_parity.py` **PASS**. Zero fakes, zero host-CPython/Pyodide fallback, executable ABI dispatch only, all ecosystem behavior through real custody primitives.
 - **E2 · PERF > CPython** on the claimed benchmarks: R3b/R4a numeric raw-lane + `spectral_norm` + the 54–67 portfolio, proven on `tools/perf_scoreboard`.

@@ -324,7 +324,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `suite-honesty` | 4 | 2 | no |
 | `ecosystem-compat` | 2 | 1 | no |
 | `tinygrad-upat-static-exec-registry` | 2 | 1 | no |
-| `docs-architecture` | 3 | 2 | no |
+| `docs-architecture` | 4 | 2 | no |
 | `dev-tooling` | 12 | 5 | no |
 | `rust-ffi-blocks` | 6 | 2 | no |
 | `rust-toolchain` | 10 | 2 | no |
@@ -337,7 +337,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `apparatus-a11` | 10 | 5 | no |
 | `apparatus-a8-a12-disk-reclaim` | 11 | 3 | no |
 | `import-symbol-gate` | 2 | 2 | no |
-| `phase-exit-manifest` | 6 | 2 | no |
+| `phase-exit-manifest` | 7 | 2 | no |
 | `public-contract` | 19 | 2 | no |
 
 ## Selection contract

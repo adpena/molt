@@ -9,10 +9,14 @@ schema = "molt.phase-exit-requirements.v1"
 # `evidence_role` starts with `e3_` are expanded from the exact verified-subset
 # matrix (tools/verified_subset.py matrix), one requirement per coordinate.
 #
-# `[[phase.obligation]]` rows are the ledger obligations the phase closes; an
-# obligation stays open until its `closed_by` requirement has a passing row.
-# The validator (tools/phase_exit_manifest.py) never waives, infers, or
-# defaults any of this: a missing field is a false predicate.
+# `[[phase.obligation]]` rows are the aggregate obligations the phase closes;
+# an obligation stays open until its `closed_by` requirement has a passing row.
+# Findings are not listed here. Every finding that the findings ledger
+# (docs/agent/V1_HANDOFF_FINDINGS.md) holds open at the release commit is also
+# an open obligation; the release-exit bundle carries that join, and an
+# obligation ID here may not use a finding ID. The validator
+# (tools/phase_exit_manifest.py) never waives, infers, or defaults any of this:
+# a missing field is a false predicate.
 
 [[phase]]
 id = "H0"

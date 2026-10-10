@@ -3750,6 +3750,7 @@ globs = [
   "docs/**/*.md",
   "tools/update_status_blocks.py",
   "tools/check_docs_architecture.py",
+  "tools/finding_status.py",
 ]
 gates = [
   "python3 tools/update_status_blocks.py --check",
@@ -4057,6 +4058,7 @@ name = "phase-exit-manifest"
 description = "Fixed CENTURY_SYSTEMS_PLAN §5 phase predicate (tools/phase_exit_manifest.py) and the registry-driven legacy_count authority (tools/legacy_inventory.py): teeth plus the live-registry checks."
 globs = [
   "tools/phase_exit_manifest.py",
+  "tools/finding_status.py",
   "tools/legacy_inventory.py",
   "config/phase_exit_requirements.toml",
   "config/legacy_inventory.toml",

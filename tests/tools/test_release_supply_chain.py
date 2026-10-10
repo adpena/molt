@@ -794,6 +794,7 @@ def release_evidence_inputs(
             "PASS",
             True,
             (),
+            (),
         ),
     )
     monkeypatch.setattr(
@@ -1616,10 +1617,13 @@ def test_release_workflow_uses_exact_input_cardinality_without_shell_listing() -
 @pytest.mark.parametrize(
     "report",
     [
-        release_exit_gate.ReleaseGateReport("b" * 40, "PASS", True, ()),
-        release_exit_gate.ReleaseGateReport("a" * 40, "FAIL", False, ()),
+        release_exit_gate.ReleaseGateReport("b" * 40, "PASS", True, (), ()),
+        release_exit_gate.ReleaseGateReport("a" * 40, "FAIL", False, (), ()),
         release_exit_gate.ReleaseGateReport(
-            "a" * 40, "PASS", True, ("tampered receipt",)
+            "a" * 40, "PASS", True, ("tampered receipt",), ()
+        ),
+        release_exit_gate.ReleaseGateReport(
+            "a" * 40, "FAIL", False, (), ("HF-7", "V1-3")
         ),
     ],
 )
@@ -1629,10 +1633,12 @@ def test_evidence_binding_rejects_other_source_failure_or_problems(
     monkeypatch.setattr(
         release_exit_gate, "verify_release_bundle", lambda *_a, **_k: report
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as exc_info:
         release_evidence.verify_release_exit_manifest(
             tmp_path / "release-exit.json", source_sha="a" * 40
         )
+    if report.open_findings:
+        assert "open findings: HF-7, V1-3" in str(exc_info.value)
 
 
 def test_no_release_version_can_admit_a_missing_semantic_bundle(tmp_path):

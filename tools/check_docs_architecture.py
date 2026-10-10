@@ -10,6 +10,15 @@ from urllib.parse import unquote, urlsplit
 
 from markdown_it import MarkdownIt
 
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
+
+bind_repository_imports(__file__)
+
+from tools import finding_status  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -408,47 +417,15 @@ def _check_local_markdown_links(errors: list[str]) -> None:
                 )
 
 
-# A ledger row's leading cell names its finding. "(was HF-n)" records a
-# renumbering of the same finding; any other parenthetical names a sub-part.
-LEDGER_ROW_ID_RE = re.compile(
-    r"^\| ((?:HF-F?|V1-)\d+(?: \([^)|]*\))?) \|", re.MULTILINE
-)
-LEDGER_RENUMBERING_RE = re.compile(r" \(was [^)]*\)$")
-LEDGER_FIXED_FROM_RE = re.compile(r"^\| HF-F\d+ \(was (HF-\d+)\) \|", re.MULTILINE)
-
-
-def _check_handoff_ledger_ids(errors: list[str]) -> None:
-    """Each finding ID names exactly one ledger row.
-
-    Parallel lanes allocate IDs independently, so a collision silently merges
-    two findings' history.
-    """
-    path = ROOT / "docs/agent/V1_HANDOFF_FINDINGS.md"
+def _check_handoff_ledger(errors: list[str]) -> None:
+    """Report the structural defects of the findings ledger projection."""
+    path = ROOT / finding_status.LEDGER_PATH
     if not path.exists():
         return
-    rows: dict[str, list[int]] = {}
-    text = _read_text(path)
-    for match in LEDGER_ROW_ID_RE.finditer(text):
-        line = text.count("\n", 0, match.start()) + 1
-        finding_id = LEDGER_RENUMBERING_RE.sub("", match.group(1))
-        rows.setdefault(finding_id, []).append(line)
-    for finding_id, lines in sorted(rows.items()):
-        if len(lines) > 1:
-            errors.append(
-                f"docs/agent/V1_HANDOFF_FINDINGS.md: finding {finding_id} names "
-                f"{len(lines)} rows (lines {', '.join(map(str, lines))}); give each "
-                "finding one ID"
-            )
-    # A merge from an older ledger brings back open rows that were fixed. A
-    # fixed row that closes only part of a finding says "(was part of HF-N)".
-    for match in LEDGER_FIXED_FROM_RE.finditer(text):
-        reopened = match.group(1)
-        if reopened in rows:
-            errors.append(
-                f"docs/agent/V1_HANDOFF_FINDINGS.md: {reopened} is open, but a "
-                f"fixed row says it was {reopened}; remove the resurrected row, or "
-                f'write "(was part of {reopened})" when the fix was partial'
-            )
+    errors.extend(
+        f"{finding_status.LEDGER_PATH}: {problem}"
+        for problem in finding_status.read_ledger(ROOT).problems
+    )
 
 
 def check_repo() -> list[str]:
@@ -461,7 +438,7 @@ def check_repo() -> list[str]:
     _check_support_story_refs(errors)
     _check_long_horizon_routing(errors)
     _check_foundation_portfolio_numbering(errors)
-    _check_handoff_ledger_ids(errors)
+    _check_handoff_ledger(errors)
     _check_local_markdown_links(errors)
     return errors
 
