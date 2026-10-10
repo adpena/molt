@@ -11755,7 +11755,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_thread_registry_register",
-        arity: 4,
+        arity: 3,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -11775,7 +11775,7 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     },
     RuntimeBoxedAbi {
         symbol: "molt_thread_spawn_shared",
-        arity: 4,
+        arity: 3,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {

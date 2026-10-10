@@ -476,8 +476,8 @@ pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
         let mut out_code: i32 = 0;
         let rc = unsafe { crate::molt_process_wait_host(state.process.handle, 0, &mut out_code) };
         if rc == 0 {
-            if let Some(publication) = state.process.publish_exit(out_code)
-                && let Some(future) = publication.wait_future
+            if state.process.publish_exit(out_code).is_some()
+                && let Some(future) = state.process.completion.claim_wait_future(_py)
             {
                 let _ = wake_await_waiters(_py, future.0);
             }
@@ -670,8 +670,8 @@ pub unsafe extern "C" fn molt_process_host_notify(handle: i64, exit_code: i32) {
                 return;
             }
             let handle_obj = &*(proc_ptr as *mut MoltProcessHandle);
-            if let Some(publication) = handle_obj.state.publish_exit(exit_code)
-                && let Some(future) = publication.wait_future
+            if handle_obj.state.publish_exit(exit_code).is_some()
+                && let Some(future) = handle_obj.state.completion.claim_wait_future(_py)
             {
                 let _ = wake_await_waiters(_py, future.0);
             }

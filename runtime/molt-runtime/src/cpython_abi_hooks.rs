@@ -1401,6 +1401,9 @@ unsafe extern "C" fn hook_foreign_new(c_ptr: usize) -> u64 {
 
 unsafe extern "C" fn hook_native_gc_allocate(address: usize) -> c_int {
     with_gil(|_py| {
+        if !admit_process_cpython_state(&_py) {
+            return -1;
+        }
         if crate::object::gc::native_gc_allocate(&_py, address) {
             0
         } else {

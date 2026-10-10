@@ -8062,7 +8062,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadSpawnShared,
         name: "thread_spawn_shared",
-        type_idx: 7,
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadTimeoutMax,
@@ -8087,7 +8087,7 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadRegistryRegister,
         name: "thread_registry_register",
-        type_idx: 7,
+        type_idx: 5,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ThreadRegistryForget,

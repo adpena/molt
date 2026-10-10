@@ -80,7 +80,7 @@ fn runtime_registers_one_canonical_pending_call_authority() {
     assert!(authority.contains("close_and_quiesce"));
     assert!(authority.contains("discard_pending_calls"));
     assert!(hooks_source_sets_typed_pending_error(&root));
-    assert!(runtime_init.contains("attach_runtime_execution_thread()"));
+    assert!(runtime_init.contains("attach_runtime_execution_thread("));
     assert!(runtime_init.contains("detach_runtime_execution_thread()"));
 }
 

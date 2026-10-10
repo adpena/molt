@@ -341,3 +341,269 @@ fn process_exit_covers_collection_before_pending_callbacks_with_or_without_lease
         );
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn joined_service_readiness_is_one_serialized_result() {
+    use super::RuntimeServiceWorkers;
+    use crate::state::runtime_state::RuntimeWorkerOrigin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let origin = RuntimeWorkerOrigin::new(crate::runtime_state(py));
+        let owner = RuntimeServiceWorkers::default();
+        let starts = AtomicUsize::new(0);
+        let (inside_tx, inside_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (returned_tx, returned_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let owner_ref = &owner;
+            let starts_ref = &starts;
+            let first = scope.spawn(move || {
+                owner_ref.start(origin, |_| {
+                    starts_ref.fetch_add(1, Ordering::SeqCst);
+                    inside_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(())
+                })
+            });
+            inside_rx.recv().unwrap();
+            let second = scope.spawn(|| {
+                let outcome = owner.start(origin, |_| {
+                    starts.fetch_add(1, Ordering::SeqCst);
+                    Err(std::io::Error::other("second startup must not execute"))
+                });
+                returned_tx.send(outcome.is_ok()).unwrap();
+            });
+            assert!(
+                returned_rx
+                    .recv_timeout(std::time::Duration::from_millis(25))
+                    .is_err()
+            );
+            release_tx.send(()).unwrap();
+            assert!(first.join().unwrap().is_ok());
+            second.join().unwrap();
+            assert!(returned_rx.recv().unwrap());
+        });
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        assert!(owner.join());
+        let failed = RuntimeServiceWorkers::default();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            failed.start(origin, |_| panic!("injected startup panic"))
+        }));
+        assert!(panic.is_err());
+        assert!(
+            failed
+                .start(origin, |_| panic!("failed startup retried"))
+                .is_err()
+        );
+        assert!(
+            failed.join(),
+            "failed startup without native children has no live handles"
+        );
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn admitted_joined_service_closes_without_dispatch() {
+    use crate::state::runtime_state::RuntimeWorkerOrigin;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let gil = crate::GilGuard::new();
+    let py = gil.token();
+    let state = crate::runtime_state(&py);
+    let origin = RuntimeWorkerOrigin::new(state);
+    let queue = Arc::new(crate::async_rt::scheduler::SleepQueue::new());
+    assert!(state.sleep_queue.set(Arc::clone(&queue)).is_ok());
+    let storage = Arc::downgrade(&queue);
+    let dispatched = Arc::new(AtomicBool::new(false));
+    let finished = Arc::new(AtomicBool::new(false));
+    let witness = Arc::clone(&dispatched);
+    let done = Arc::clone(&finished);
+    queue
+        .install_joined_test_worker(origin, false, move || {
+            let entry =
+                crate::concurrency::execution::RuntimeServiceExecutionGuard::try_enter(origin);
+            if entry.is_some() {
+                witness.store(true, Ordering::SeqCst);
+            }
+            done.store(true, Ordering::SeqCst);
+        })
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // Retain GIL: the actual service admission succeeds, while its callback
+    // cannot cross the execution boundary until shutdown releases GIL to join.
+    while state.thread_borrow_count() == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "service did not reach admission"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(active_runtime_execution_lease_count(), 1);
+    drop(queue);
+    assert_eq!(molt_runtime_shutdown(), 1);
+    assert!(finished.load(Ordering::SeqCst));
+    assert!(
+        !dispatched.load(Ordering::SeqCst),
+        "ordinary callback began after admission closed"
+    );
+    assert!(storage.upgrade().is_none());
+    assert_eq!(active_runtime_execution_lease_count(), 0);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn inflight_joined_service_finishes_under_retained_origin(foreign_c: bool) {
+    use crate::state::runtime_state::RuntimeWorkerOrigin;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    // A separate unjoined C owner must survive the service's genuine cleanup.
+    // The terminal child owns this parked thread until process reclamation.
+    if foreign_c {
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let foreign = std::thread::spawn(move || {
+            {
+                let _entry = RuntimeExecutionGuard::enter();
+            }
+            assert!(molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
+            ready_tx.send(()).unwrap();
+            loop {
+                std::thread::park();
+            }
+        });
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let _retained = std::mem::ManuallyDrop::new(foreign);
+    }
+    let finished = Arc::new(AtomicBool::new(false));
+    let storage = {
+        let entry = RuntimeExecutionGuard::enter_with_worker_cleanup();
+        let py = entry.token();
+        let state = crate::runtime_state(&py);
+        let origin = RuntimeWorkerOrigin::new(state);
+        let queue = Arc::new(crate::async_rt::scheduler::SleepQueue::new());
+        assert!(state.sleep_queue.set(Arc::clone(&queue)).is_ok());
+        let worker_queue = Arc::clone(&queue);
+        let done = Arc::clone(&finished);
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        queue
+            .install_joined_test_worker(origin, false, move || {
+                let work =
+                    crate::concurrency::execution::RuntimeServiceExecutionGuard::try_enter(origin)
+                        .unwrap();
+                // Nested direct acquisition inherits the existing service role.
+                let baseline = active_runtime_execution_lease_count();
+                assert_eq!(
+                    crate::state::runtime_state::try_acquire_runtime_execution_lease(true),
+                    Some(true)
+                );
+                assert_eq!(active_runtime_execution_lease_count(), baseline + 1);
+                crate::state::runtime_state::release_runtime_execution_lease();
+                let retained = unsafe { molt_cpython_abi::api::object::PyThreadState_Get() };
+                assert!(!retained.is_null());
+                {
+                    let _release = crate::GilReleaseGuard::suspend();
+                    ready_tx.send(()).unwrap();
+                    worker_queue.wait_for_test_stop();
+                    // First C Ensure on this fresh worker, while the outer GIL
+                    // release guard remains alive. The real owner is Finalizing
+                    // and joining us: reacquiring by dropping _release first would
+                    // hide the lifecycle-init/admission deadlock regression.
+                    assert!(crate::state::runtime_state::runtime_is_initialized());
+                    assert!(!crate::state::runtime_state::runtime_is_ready());
+                    assert!(!crate::gil_held());
+                    assert!(molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
+                    let count = active_runtime_execution_lease_count();
+                    let c_state = unsafe { molt_cpython_abi::api::object::PyGILState_Ensure() };
+                    assert!(crate::gil_held());
+                    assert_eq!(crate::state::runtime_state::runtime_state_for_gil().unwrap().identity(), origin.identity());
+                    assert_eq!(unsafe { molt_cpython_abi::api::object::PyThreadState_Get() }, retained);
+                    assert!(crate::state::runtime_state::current_thread_holds_runtime_service_execution_lease());
+                    assert_eq!(origin.state().thread_borrow_count(), 1);
+                    assert!(obj_from_bits(crate::molt_getrecursionlimit()).as_int().unwrap() > 0);
+                    assert_eq!(crate::runtime_state(&work.token()).identity(), origin.identity());
+                    assert_eq!(active_runtime_execution_lease_count(), count);
+                    unsafe { molt_cpython_abi::api::object::PyGILState_Release(c_state) };
+                    assert!(!crate::gil_held());
+                    assert!(molt_cpython_abi::api::object::runtime_execution_thread_is_attached());
+                    assert!(molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
+                    assert_eq!(active_runtime_execution_lease_count(), count);
+                    // Reacquire solely for observing identity; the matching guard
+                    // drops before _release restores the original execution lane.
+                    {
+                        let _observe = crate::GilGuard::new();
+                        assert_eq!(unsafe { molt_cpython_abi::api::object::PyThreadState_Get() }, retained);
+                    }
+
+                }
+                assert!(!crate::state::runtime_state::runtime_is_ready());
+                assert_eq!(
+                    crate::runtime_state(&work.token()).identity(),
+                    origin.identity()
+                );
+                assert!(current_thread_holds_runtime_execution_lease());
+                let count = active_runtime_execution_lease_count();
+                assert!(
+                    obj_from_bits(crate::molt_getrecursionlimit())
+                        .as_int()
+                        .unwrap()
+                        > 0
+                );
+                assert_eq!(active_runtime_execution_lease_count(), count);
+                done.store(true, Ordering::SeqCst);
+            })
+            .unwrap();
+        {
+            let _release = crate::GilReleaseGuard::suspend();
+            ready_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        }
+        Arc::downgrade(&queue)
+    };
+    assert_eq!(active_runtime_execution_lease_count(), 1);
+    assert_eq!(molt_runtime_shutdown(), u64::from(!foreign_c));
+    assert!(
+        finished.load(Ordering::SeqCst),
+        "joined cleanup must precede external-C refusal"
+    );
+    assert_eq!(storage.upgrade().is_some(), foreign_c);
+    assert_eq!(active_runtime_execution_lease_count(), 0);
+    if foreign_c {
+        assert_eq!(molt_runtime_init(), 0);
+        assert_eq!(molt_runtime_shutdown(), 0);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn joined_service_cannot_exit_own_runtime() {
+    use crate::state::runtime_state::RuntimeWorkerOrigin;
+    use std::sync::Arc;
+    let gil = crate::GilGuard::new();
+    let py = gil.token();
+    let state = crate::runtime_state(&py);
+    let origin = RuntimeWorkerOrigin::new(state);
+    let queue = Arc::new(crate::async_rt::scheduler::SleepQueue::new());
+    assert!(state.sleep_queue.set(Arc::clone(&queue)).is_ok());
+    queue
+        .install_joined_test_worker(origin, false, move || {
+            let _work =
+                crate::concurrency::execution::RuntimeServiceExecutionGuard::try_enter(origin)
+                    .unwrap();
+            // Exercise recursive ordinary entry as well: service role must survive.
+            let _nested = RuntimeExecutionGuard::enter();
+            crate::state::runtime_state::molt_runtime_exit(0);
+            panic!("service process exit returned");
+        })
+        .unwrap();
+    drop(gil);
+    // The child must terminate through ProcessExit; parent custody bounds hangs.
+    loop {
+        std::thread::park();
+    }
+}

@@ -12,8 +12,8 @@ use crate::audit::AuditArgs;
 use crate::builtins::numbers::int_bits_from_i64;
 use crate::*;
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -109,9 +109,9 @@ struct WorkItem {
 
 struct ThreadPoolState {
     sender: Sender<Option<WorkItem>>, // None = shutdown sentinel
-    _workers: Vec<thread::JoinHandle<()>>,
-    max_workers: usize,
-    shutdown: bool,
+    receiver: Receiver<Option<WorkItem>>,
+    workers: crate::state::lifecycle::RuntimeServiceWorkers,
+    shutdown: AtomicBool,
     pending: Arc<Mutex<HashMap<i64, SharedFuture>>>,
 }
 
@@ -120,8 +120,18 @@ struct ThreadPoolState {
 pub(crate) struct ConcurrentRuntimeState {
     next_pool_id: AtomicI64,
     next_future_id: AtomicI64,
-    pools: Mutex<HashMap<i64, ThreadPoolState>>,
+    pools: Mutex<HashMap<i64, Arc<ThreadPoolState>>>,
     futures: Mutex<HashMap<i64, SharedFuture>>,
+    // IDs are scheduling hints only; pools remains the sole lifetime owner.
+    stopped: Mutex<StoppedPools>,
+    stopped_pending: AtomicBool,
+}
+
+#[derive(Default)]
+struct StoppedPools {
+    ids: VecDeque<i64>,
+    #[cfg(not(target_arch = "wasm32"))]
+    reaping: bool,
 }
 
 impl ConcurrentRuntimeState {
@@ -131,6 +141,8 @@ impl ConcurrentRuntimeState {
             next_future_id: AtomicI64::new(1),
             pools: Mutex::new(HashMap::new()),
             futures: Mutex::new(HashMap::new()),
+            stopped: Mutex::new(StoppedPools::default()),
+            stopped_pending: AtomicBool::new(false),
         }
     }
 }
@@ -151,7 +163,7 @@ fn next_future_id(_py: &PyToken<'_>) -> i64 {
         .fetch_add(1, Ordering::Relaxed)
 }
 
-fn pool_registry(_py: &PyToken<'_>) -> &'static Mutex<HashMap<i64, ThreadPoolState>> {
+fn pool_registry(_py: &PyToken<'_>) -> &'static Mutex<HashMap<i64, Arc<ThreadPoolState>>> {
     &concurrent_state(_py).pools
 }
 
@@ -159,40 +171,208 @@ fn future_registry(_py: &PyToken<'_>) -> &'static Mutex<HashMap<i64, SharedFutur
     &concurrent_state(_py).futures
 }
 
+impl ThreadPoolState {
+    fn stop(&self) -> bool {
+        if !self.shutdown.swap(true, Ordering::AcqRel) {
+            for _ in 0..self.workers.count() {
+                let _ = self.sender.send(None);
+            }
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn schedule_stopped_pool(state: &ConcurrentRuntimeState, id: i64) {
+    let mut stopped = state.stopped.lock().unwrap();
+    stopped.ids.push_back(id);
+    state.stopped_pending.store(true, Ordering::Release);
+}
+
+/// A poll owns only one worklist ID. The map retains the actual pool until
+/// joins and callback-bearing queued-owner release both succeed. Reentrant
+/// polls do no work; unwind restores this ID for a later custody-held retry.
+#[cfg(not(target_arch = "wasm32"))]
+struct StoppedPoolPoll<'a> {
+    state: &'a ConcurrentRuntimeState,
+    id: i64,
+    retry: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for StoppedPoolPoll<'_> {
+    fn drop(&mut self) {
+        let mut stopped = self.state.stopped.lock().unwrap();
+        if self.retry {
+            stopped.ids.push_back(self.id);
+        }
+        stopped.reaping = false;
+        self.state
+            .stopped_pending
+            .store(!stopped.ids.is_empty(), Ordering::Release);
+    }
+}
+
+/// A FIFO round with at most eight native worker records and eight queued
+/// messages per hot poll. Cold create/shutdown budgets scale with worker count. Callback execution itself is not preempted. The
+/// empty path allocates nothing and reads one per-runtime pending flag; it is
+/// called at the existing eval-breaker and cold pool lifecycle operations,
+/// never at every ABI entry. Native completion is still proved by joining.
+pub(crate) fn concurrent_reap_stopped_pools(py: &PyToken<'_>) {
+    concurrent_reap_stopped_pools_budget(py, 8);
+}
+
+fn concurrent_reap_stopped_pools_budget(py: &PyToken<'_>, mut budget: usize) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use crate::state::lifecycle::RuntimeServiceJoinStatus;
+        let state = concurrent_state(py);
+        if !state.stopped_pending.load(Ordering::Acquire) {
+            return;
+        }
+        while budget != 0 && state.stopped_pending.load(Ordering::Acquire) {
+            let quantum = budget.min(8);
+            let id = {
+                let mut stopped = state.stopped.lock().unwrap();
+                if stopped.reaping {
+                    return;
+                }
+                let Some(id) = stopped.ids.pop_front() else {
+                    state.stopped_pending.store(false, Ordering::Release);
+                    return;
+                };
+                stopped.reaping = true;
+                id
+            };
+            let mut poll = StoppedPoolPoll {
+                state,
+                id,
+                retry: true,
+            };
+            let pool = state.pools.lock().unwrap().get(&id).cloned();
+            let Some(pool) = pool else {
+                // Explicit waiting shutdown may have consumed this queued ID.
+                poll.retry = false;
+                budget -= 1;
+                continue;
+            };
+            // The empty fast path above avoids even error-custody TLS work.
+            // Actual queued-owner destruction must preserve an in-flight exception.
+            molt_cpython_abi::api::errors::with_preserved_error(|| {
+                let (status, inspected) = pool.workers.reap_finished(quantum);
+                // Every turn costs at least one unit, including a stale/empty ID.
+                // Closed pools reserve the same quantum for queued-message cleanup.
+                budget -= if status == RuntimeServiceJoinStatus::Closed {
+                    quantum
+                } else {
+                    inspected.max(1)
+                };
+                match status {
+                    RuntimeServiceJoinStatus::Pending => {}
+                    RuntimeServiceJoinStatus::Failed => {
+                        // Preserve the original map owner/disposition, with no further
+                        // automatic attempts. Explicit shutdown still reports failure.
+                        poll.retry = false;
+                    }
+                    RuntimeServiceJoinStatus::Closed => {
+                        if release_stopped_pool_work_bounded(py, &pool, quantum) {
+                            state.pools.lock().unwrap().remove(&id);
+                            poll.retry = false;
+                        }
+                    }
+                }
+            });
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = (py, budget);
+}
+
+pub(crate) fn concurrent_stop_runtime_workers(state: &crate::state::RuntimeState) -> bool {
+    let pools = state.concurrent.pools.lock().unwrap();
+    for pool in pools.values() {
+        pool.stop();
+    }
+    !pools.is_empty()
+}
+
+pub(crate) fn concurrent_join_runtime_workers(state: &crate::state::RuntimeState) -> bool {
+    let pools: Vec<_> = state
+        .concurrent
+        .pools
+        .lock()
+        .unwrap()
+        .values()
+        .cloned()
+        .collect();
+    let mut closed = true;
+    for pool in pools {
+        closed &= pool.workers.join();
+    }
+    closed
+}
+
+fn release_stopped_pool_work(py: &PyToken<'_>, pool: &ThreadPoolState) {
+    while !release_stopped_pool_work_bounded(py, pool, 8) {}
+}
+
+fn release_stopped_pool_work_bounded(
+    py: &PyToken<'_>,
+    pool: &ThreadPoolState,
+    budget: usize,
+) -> bool {
+    for _ in 0..budget {
+        let Ok(message) = pool.receiver.try_recv() else {
+            return true;
+        };
+        if let Some(item) = message {
+            item.pending.lock().unwrap().remove(&item.future_id);
+            {
+                let mut future = item.future.lock().unwrap();
+                if matches!(future.outcome, FutureOutcome::Pending) {
+                    future.outcome = FutureOutcome::Cancelled;
+                }
+                future.completion.notify_all();
+            }
+            release_future_owners(py, &item.future, true);
+            dec_ref_bits(py, item.fn_bits);
+            dec_ref_bits(py, item.args_bits);
+        }
+    }
+    // All native workers joined before this drain. Submit refuses a stopped
+    // pool, including finalizer reentry, so no live producer can refill it.
+    pool.receiver.is_empty()
+}
+
 pub(crate) fn concurrent_clear_runtime_state(
-    _py: &PyToken<'_>,
+    py: &PyToken<'_>,
     state: &crate::state::RuntimeState,
 ) -> bool {
     crate::gil_assert();
-    let pools = {
-        let mut pools = state.concurrent.pools.lock().unwrap();
-        std::mem::take(&mut *pools)
-    };
-    let futures = {
-        let mut futures = state.concurrent.futures.lock().unwrap();
-        std::mem::take(&mut *futures)
-    };
-    // A drained registry is still reachable by finalizers and joined workers.
-    // Keep its identity sequence: stale handles must never alias new owners.
-    let changed = !pools.is_empty() || !futures.is_empty();
-    let mut workers = Vec::new();
-    for (_, mut pool) in pools {
-        if !pool.shutdown {
-            pool.shutdown = true;
-            for _ in 0..pool.max_workers {
-                let _ = pool.sender.send(None);
-            }
-        }
-        workers.extend(pool._workers);
-    }
-    if !workers.is_empty() {
+    concurrent_stop_runtime_workers(state);
+    let closed = {
         let _release = GilReleaseGuard::suspend();
-        for worker in workers {
-            let _ = worker.join();
-        }
+        concurrent_join_runtime_workers(state)
+    };
+    assert!(closed, "runtime executor workers failed; origin retained");
+    // Publish no detached root cohort until every native join succeeded.
+    {
+        let mut stopped = state.concurrent.stopped.lock().unwrap();
+        stopped.ids.clear();
+        state
+            .concurrent
+            .stopped_pending
+            .store(false, Ordering::Release);
+    }
+    let pools = std::mem::take(&mut *state.concurrent.pools.lock().unwrap());
+    let futures = std::mem::take(&mut *state.concurrent.futures.lock().unwrap());
+    let changed = !pools.is_empty() || !futures.is_empty();
+    for pool in pools.into_values() {
+        release_stopped_pool_work(py, &pool);
     }
     for future in futures.into_values() {
-        release_future_owners(_py, &future, true);
+        release_future_owners(py, &future, true);
     }
     changed
 }
@@ -203,14 +383,20 @@ pub(crate) fn concurrent_clear_runtime_state(
 // Python callable, then release and store the result.  This matches
 // CPython's ThreadPoolExecutor model.
 
-fn worker_loop(receiver: Receiver<Option<WorkItem>>) {
-    crate::state::run_runtime_worker(|| worker_loop_inner(receiver));
-}
-
-fn worker_loop_inner(receiver: Receiver<Option<WorkItem>>) {
+#[cfg(not(target_arch = "wasm32"))]
+fn worker_loop(
+    origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+    receiver: Receiver<Option<WorkItem>>,
+    sender: Sender<Option<WorkItem>>,
+) {
     while let Ok(Some(item)) = receiver.recv() {
-        let gil = GilGuard::new();
-        let token = gil.token();
+        let Some(execution) =
+            crate::concurrency::execution::RuntimeServiceExecutionGuard::try_enter(origin)
+        else {
+            assert!(sender.send(Some(item)).is_ok());
+            break;
+        };
+        let token = execution.token();
         let py = &token;
         item.pending.lock().unwrap().remove(&item.future_id);
         let cancelled = {
@@ -281,29 +467,66 @@ pub extern "C" fn molt_concurrent_threadpool_new(max_workers_bits: u64) -> u64 {
         {
             return error;
         }
-        let max_workers = to_i64(obj_from_bits(max_workers_bits)).unwrap_or(0).max(1) as usize;
-        let workers_capped = max_workers.min(512);
-
-        let (sender, receiver) = unbounded::<Option<WorkItem>>();
-        let mut handles = Vec::with_capacity(workers_capped);
-        for _ in 0..workers_capped {
-            let rx = receiver.clone();
-            let h = thread::spawn(move || worker_loop(rx));
-            handles.push(h);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = max_workers_bits;
+            raise_exception::<u64>(_py, "RuntimeError", "thread pools unsupported on wasm")
         }
-
-        let id = next_pool_id(_py);
-        pool_registry(_py).lock().unwrap().insert(
-            id,
-            ThreadPoolState {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let state = runtime_state(_py);
+            if !state.thread_borrow_admission_is_open() {
+                return raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    "runtime thread admission is closed",
+                );
+            }
+            let max_workers = to_i64(obj_from_bits(max_workers_bits)).unwrap_or(0).max(1) as usize;
+            let workers_capped = max_workers.min(512);
+            // Pay existing FIFO retirement debt in proportion to this cold
+            // operation's native-worker work, with a fixed hot safepoint cap.
+            concurrent_reap_stopped_pools_budget(_py, workers_capped * 2 + 8);
+            let (sender, receiver) = unbounded::<Option<WorkItem>>();
+            let pool = Arc::new(ThreadPoolState {
                 sender,
-                _workers: handles,
-                max_workers: workers_capped,
-                shutdown: false,
+                receiver,
+                workers: crate::state::lifecycle::RuntimeServiceWorkers::default(),
+                shutdown: AtomicBool::new(false),
                 pending: Arc::new(Mutex::new(HashMap::new())),
-            },
-        );
-        int_bits_from_i64(_py, id)
+            });
+            let id = next_pool_id(_py);
+            pool_registry(_py)
+                .lock()
+                .unwrap()
+                .insert(id, Arc::clone(&pool));
+            let origin = crate::state::runtime_state::RuntimeWorkerOrigin::new(state);
+            let started = pool.workers.start(origin, |handles| {
+                for index in 0..workers_capped {
+                    let rx = pool.receiver.clone();
+                    let tx = pool.sender.clone();
+                    handles.push(crate::state::lifecycle::RuntimeServiceWorker::spawn(
+                        origin,
+                        thread::Builder::new().name(format!("molt-executor-{index}")),
+                        move || worker_loop(origin, rx, tx),
+                    )?);
+                }
+                Ok(())
+            });
+            if let Err(error) = started {
+                // The unpublished public id remains in the same runtime owner;
+                // already-started workers and queued owners cannot outlive its join.
+                if pool.stop() {
+                    schedule_stopped_pool(concurrent_state(_py), id);
+                }
+                return raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    &format!("thread pool startup failed: {error}"),
+                );
+            }
+            int_bits_from_i64(_py, id)
+        }
     })
 }
 
@@ -314,6 +537,14 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
     args_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        #[cfg(not(target_arch = "wasm32"))]
+        if !runtime_state(_py).thread_borrow_admission_is_open() {
+            return raise_exception::<u64>(
+                _py,
+                "RuntimeError",
+                "runtime thread admission is closed",
+            );
+        }
         let pool_id = match to_i64(obj_from_bits(handle_bits)) {
             Some(v) => v,
             None => {
@@ -329,7 +560,7 @@ pub extern "C" fn molt_concurrent_threadpool_submit(
         let sent = {
             let map = pool_registry(_py).lock().unwrap();
             if let Some(pool) = map.get(&pool_id) {
-                if pool.shutdown {
+                if pool.shutdown.load(Ordering::Acquire) {
                     false
                 } else {
                     let item = WorkItem {
@@ -391,32 +622,38 @@ pub extern "C" fn molt_concurrent_threadpool_shutdown(
         let mut pending = HashMap::new();
 
         let pool = {
-            let mut pools = pool_registry(_py).lock().unwrap();
-            if let Some(pool) = pools.get_mut(&pool_id) {
+            let pools = pool_registry(_py).lock().unwrap();
+            let pool = pools.get(&pool_id).cloned();
+            if let Some(pool) = &pool {
                 if cancel_futures {
                     pending = std::mem::take(&mut *pool.pending.lock().unwrap());
                 }
-                if !pool.shutdown {
-                    pool.shutdown = true;
-                    for _ in 0..pool.max_workers {
-                        let _ = pool.sender.send(None);
-                    }
+                if pool.stop() {
+                    schedule_stopped_pool(concurrent_state(_py), pool_id);
                 }
             }
-            // Non-waiting shutdown closes admission, but runtime teardown still
-            // owns the join handles until every already-submitted job finishes.
-            if wait { pools.remove(&pool_id) } else { None }
+            pool
         };
-        // Cancel and invoke user callbacks only after releasing registry locks.
+        let retirement_budget = pool.as_ref().map_or(8, |pool| pool.workers.count() * 2 + 8);
         for (id, future) in pending {
             cancel_future(_py, &future, int_bits_from_i64(_py, id));
         }
-        if let Some(pool) = pool {
-            let _release = GilReleaseGuard::suspend();
-            for handle in pool._workers {
-                let _ = handle.join();
+        if wait && let Some(pool) = pool {
+            let closed = {
+                let _release = GilReleaseGuard::suspend();
+                pool.workers.join()
+            };
+            if !closed {
+                return raise_exception::<u64>(
+                    _py,
+                    "RuntimeError",
+                    "executor worker did not close; owner retained",
+                );
             }
+            release_stopped_pool_work(_py, &pool);
+            pool_registry(_py).lock().unwrap().remove(&pool_id);
         }
+        concurrent_reap_stopped_pools_budget(_py, retirement_budget);
         MoltObject::none().bits()
     })
 }
@@ -1010,6 +1247,9 @@ mod tests {
 
     extern "C" fn reentrant_done_callback(_callable_bits: u64) -> u64 {
         crate::with_gil_entry_nopanic!(py, {
+            // A completed future callback is still running on its pool worker.
+            // The canonical poll must preserve self-join refusal and custody.
+            crate::molt_async_work_poll_and_exception_pending();
             let id = REENTRANT_FUTURE.load(Ordering::Acquire);
             if let Some(future) = get_future(py, id) {
                 let unlocked = future.try_lock().is_ok();
@@ -1328,60 +1568,425 @@ mod tests {
         });
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn poll_until(py: &PyToken<'_>, done: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "executor retirement did not finish"
+            );
+            {
+                let _release = GilReleaseGuard::suspend();
+                std::thread::yield_now();
+            }
+            // Exercise the actual generated-code safepoint consumer.
+            assert_eq!(crate::molt_async_work_poll_and_exception_pending(), 0);
+            assert!(!exception_pending(py));
+        }
+    }
+
     #[test]
-    fn nonwaiting_shutdown_keeps_worker_join_custody_and_clear_releases_all_owners() {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn repeated_nonwaiting_executor_drops_reclaim_completed_pool_owners() {
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             crate::with_gil_entry_nopanic!(py, {
-                let state = runtime_state(py);
-                concurrent_clear_runtime_state(py, state);
-                CALLBACK_CALLS.store(0, Ordering::Release);
-                let callable = native_callable(py, retained_argument as *const ());
-                let callback = native_callable(py, owned_callback_result as *const ());
-                let payload = MoltObject::from_ptr(alloc_list(py, &[])).bits();
-                let baselines = [
-                    owner_count(callable),
-                    owner_count(callback),
-                    owner_count(payload),
-                ];
-                let pool = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
-                let future = molt_concurrent_threadpool_submit(pool, callable, payload);
-                molt_concurrent_future_add_done_callback(future, callback);
+                let state = concurrent_state(py);
+                let baseline = state.pools.lock().unwrap().len();
+                let mut previous: Option<std::sync::Weak<ThreadPoolState>> = None;
+                for _ in 0..24 {
+                    // Exceeds the old two cold polls' 16-record total budget.
+                    let handle = molt_concurrent_threadpool_new(MoltObject::from_int(33).bits());
+                    assert!(!exception_pending(py));
+                    if let Some(previous) = previous.take() {
+                        assert!(
+                            previous.upgrade().is_none(),
+                            "completed pool debt grew across public cycles"
+                        );
+                    }
+                    assert_eq!(state.pools.lock().unwrap().len(), baseline + 1);
+                    let id = to_i64(obj_from_bits(handle)).unwrap();
+                    let pool = state.pools.lock().unwrap().get(&id).cloned().unwrap();
+                    previous = Some(Arc::downgrade(&pool));
+                    molt_concurrent_threadpool_drop(handle);
+                    // Wait only for actual native completion, never run cleanup
+                    // polls: the next public create must repay completed debt.
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    while !pool.workers.finished_for_test() {
+                        assert!(std::time::Instant::now() < deadline);
+                        let _release = GilReleaseGuard::suspend();
+                        std::thread::yield_now();
+                    }
+                }
+                let final_pool = molt_concurrent_threadpool_new(MoltObject::from_int(33).bits());
+                assert!(previous.unwrap().upgrade().is_none());
                 molt_concurrent_threadpool_shutdown(
-                    pool,
-                    MoltObject::from_bool(false).bits(),
+                    final_pool,
+                    MoltObject::from_bool(true).bits(),
                     MoltObject::none().bits(),
                 );
-                {
-                    let pools = state.concurrent.pools.lock().unwrap();
-                    let pool = pools
-                        .get(&to_i64(obj_from_bits(pool)).unwrap())
-                        .expect("runtime retains nonwaiting pool");
-                    assert!(pool.shutdown);
-                    assert_eq!(pool._workers.len(), 1);
-                }
-                assert!(concurrent_clear_runtime_state(py, state));
-                assert_eq!(
-                    CALLBACK_CALLS.load(Ordering::Acquire),
-                    1,
-                    "clear joined the actual submitted callback"
-                );
-                assert_eq!(
-                    [
-                        owner_count(callable),
-                        owner_count(callback),
-                        owner_count(payload)
-                    ],
-                    baselines
-                );
-                assert!(
-                    !concurrent_clear_runtime_state(py, state),
-                    "owner drain reaches fixed point"
-                );
-                for bits in [callable, callback, payload] {
-                    dec_ref_bits(py, bits);
-                }
+                assert!(!exception_pending(py));
+                assert_eq!(state.pools.lock().unwrap().len(), baseline);
+                assert!(state.stopped.lock().unwrap().ids.is_empty());
+                assert!(!state.stopped_pending.load(Ordering::Acquire));
             });
         });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn controlled_pool(
+        py: &PyToken<'_>,
+        worker: impl FnOnce() + Send + 'static,
+    ) -> (i64, Arc<ThreadPoolState>) {
+        let (sender, receiver) = unbounded();
+        let pool = Arc::new(ThreadPoolState {
+            sender,
+            receiver,
+            workers: crate::state::lifecycle::RuntimeServiceWorkers::default(),
+            shutdown: AtomicBool::new(false),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+        });
+        let id = next_pool_id(py);
+        pool_registry(py)
+            .lock()
+            .unwrap()
+            .insert(id, Arc::clone(&pool));
+        let origin = crate::state::runtime_state::RuntimeWorkerOrigin::new(runtime_state(py));
+        pool.workers
+            .start(origin, |handles| {
+                handles.push(crate::state::lifecycle::RuntimeServiceWorker::spawn(
+                    origin,
+                    thread::Builder::new().name("molt-pool-reap-control".into()),
+                    worker,
+                )?);
+                Ok(())
+            })
+            .unwrap();
+        (id, pool)
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn blocking_shutdown_waits_for_canonical_reaper_join_disposition() {
+        use crate::state::lifecycle::{
+            SERVICE_JOIN_PAUSE, SERVICE_JOIN_WAITING, run_runtime_worker,
+        };
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                let handle = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
+                let id = to_i64(obj_from_bits(handle)).unwrap();
+                let pool = state_pool_for_test(py, id);
+                assert!(pool.stop());
+                schedule_stopped_pool(concurrent_state(py), id);
+                let origin =
+                    crate::state::runtime_state::RuntimeWorkerOrigin::new(runtime_state(py));
+                let (taken_tx, taken_rx) = std::sync::mpsc::channel();
+                let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+                let reaper = thread::spawn(move || {
+                    run_runtime_worker(origin, || {
+                        SERVICE_JOIN_PAUSE
+                            .with(|slot| *slot.borrow_mut() = Some((taken_tx, resume_rx)));
+                        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                        loop {
+                            let done = crate::with_gil_entry_nopanic!(py, {
+                                crate::molt_async_work_poll_and_exception_pending();
+                                !pool_registry(py).lock().unwrap().contains_key(&id)
+                            });
+                            if done {
+                                break;
+                            }
+                            assert!(std::time::Instant::now() < deadline);
+                            thread::yield_now();
+                        }
+                    })
+                });
+                {
+                    let _release = GilReleaseGuard::suspend();
+                    taken_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                let (waiting_tx, waiting_rx) = std::sync::mpsc::channel();
+                SERVICE_JOIN_WAITING.with(|slot| *slot.borrow_mut() = Some(waiting_tx));
+                let controller = thread::spawn(move || {
+                    run_runtime_worker(origin, || {
+                        let waiting = waiting_rx.recv_timeout(Duration::from_secs(5));
+                        // This acquisition independently proves the waiting public
+                        // shutdown has released GIL custody before disposition.
+                        let gil = crate::GilGuard::new();
+                        resume_tx.send(()).unwrap();
+                        drop(gil);
+                        waiting.is_ok()
+                    })
+                });
+                molt_concurrent_threadpool_shutdown(
+                    handle,
+                    MoltObject::from_bool(true).bits(),
+                    MoltObject::none().bits(),
+                );
+                let success = !exception_pending(py);
+                if !success {
+                    clear_exception(py);
+                }
+                let saw_wait = {
+                    let _release = GilReleaseGuard::suspend();
+                    reaper.join().unwrap();
+                    controller.join().unwrap()
+                };
+                assert!(
+                    saw_wait,
+                    "public shutdown returned before the in-progress join disposition"
+                );
+                assert!(success, "concurrent successful join became a RuntimeError");
+                assert!(!pool_registry(py).lock().unwrap().contains_key(&id));
+                assert!(pool.workers.join());
+            });
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn state_pool_for_test(py: &PyToken<'_>, id: i64) -> Arc<ThreadPoolState> {
+        pool_registry(py).lock().unwrap().get(&id).cloned().unwrap()
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn self_shutdown_refuses_even_when_another_joiner_owns_its_handle() {
+        use crate::state::lifecycle::SERVICE_JOIN_PAUSE;
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                let (pool_tx, pool_rx) = std::sync::mpsc::channel::<i64>();
+                let (result_tx, result_rx) = std::sync::mpsc::channel();
+                let (id, pool) = controlled_pool(py, move || {
+                    let id = pool_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    crate::with_gil_entry_nopanic!(py, {
+                        molt_concurrent_threadpool_shutdown(
+                            MoltObject::from_int(id).bits(),
+                            MoltObject::from_bool(true).bits(),
+                            MoltObject::none().bits(),
+                        );
+                        let refused = exception_pending(py);
+                        if refused {
+                            clear_exception(py);
+                        }
+                        result_tx.send(refused).unwrap();
+                    });
+                });
+                let join_pool = Arc::clone(&pool);
+                let (taken_tx, taken_rx) = std::sync::mpsc::channel();
+                let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+                let joiner = thread::spawn(move || {
+                    SERVICE_JOIN_PAUSE
+                        .with(|slot| *slot.borrow_mut() = Some((taken_tx, resume_rx)));
+                    join_pool.workers.join()
+                });
+                taken_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                pool_tx.send(id).unwrap();
+                let refused = {
+                    let _release = GilReleaseGuard::suspend();
+                    let refused = result_rx.recv_timeout(Duration::from_secs(5));
+                    resume_tx.send(()).unwrap();
+                    assert!(joiner.join().unwrap());
+                    refused.unwrap()
+                };
+                assert!(refused, "worker waited for its own extracted join handle");
+                molt_concurrent_threadpool_shutdown(
+                    MoltObject::from_int(id).bits(),
+                    MoltObject::from_bool(true).bits(),
+                    MoltObject::none().bits(),
+                );
+                assert!(!exception_pending(py));
+            });
+        });
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn nonwaiting_reaper_retains_inflight_owner_without_blocking_or_detaching() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+                let (release_tx, release_rx) = std::sync::mpsc::channel();
+                let (id, pool) = controlled_pool(py, move || {
+                    ready_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                });
+                ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                let weak = Arc::downgrade(&pool);
+                drop(pool);
+                molt_concurrent_threadpool_drop(MoltObject::from_int(id).bits());
+                for _ in 0..16 {
+                    assert_eq!(crate::molt_async_work_poll_and_exception_pending(), 0);
+                }
+                assert!(
+                    weak.upgrade().is_some(),
+                    "live native worker lost its registry owner"
+                );
+                assert_eq!(concurrent_state(py).stopped.lock().unwrap().ids.len(), 1);
+                release_tx.send(()).unwrap();
+                poll_until(py, || weak.upgrade().is_none());
+            });
+        });
+    }
+
+    #[test]
+    #[cfg(all(not(target_arch = "wasm32"), panic = "unwind"))]
+    fn nonwaiting_reaper_retains_failed_disposition_without_automatic_retries() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                let (id, pool) = controlled_pool(py, || {
+                    crate::test_support::with_expected_panic(|| {
+                        panic!("executor reap failure control")
+                    });
+                });
+                let weak = Arc::downgrade(&pool);
+                drop(pool);
+                molt_concurrent_threadpool_drop(MoltObject::from_int(id).bits());
+                let state = concurrent_state(py);
+                poll_until(py, || !state.stopped_pending.load(Ordering::Acquire));
+                assert!(
+                    weak.upgrade().is_some(),
+                    "failed worker disposition was discarded"
+                );
+                assert!(state.stopped.lock().unwrap().ids.is_empty());
+                for _ in 0..16 {
+                    assert_eq!(crate::molt_async_work_poll_and_exception_pending(), 0);
+                }
+                let retained = state.pools.lock().unwrap().get(&id).cloned().unwrap();
+                assert!(!retained.workers.join(), "failure was relabeled successful");
+                assert!(state.stopped.lock().unwrap().ids.is_empty());
+                drop(retained);
+                // This control panics only in the body; real terminal cleanup
+                // and native join have completed. Explicitly remove this test's
+                // failed disposition so a separate runtime teardown can finish.
+                state.pools.lock().unwrap().remove(&id);
+                assert!(weak.upgrade().is_none());
+            });
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    static RETIRE_FINALIZERS: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(not(target_arch = "wasm32"))]
+    static RETIRE_REENTRY_OK: AtomicBool = AtomicBool::new(false);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    extern "C" fn retirement_finalizer(_self: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let state = concurrent_state(py);
+            let unlocked = state.pools.try_lock().is_ok() && state.stopped.try_lock().is_ok();
+            if unlocked {
+                let result = crate::molt_async_work_poll_and_exception_pending();
+                RETIRE_REENTRY_OK.store(result == 0, Ordering::Release);
+            }
+            RETIRE_FINALIZERS.fetch_add(1, Ordering::AcqRel);
+            MoltObject::none().bits()
+        })
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn stopped_queue_reaping_is_bounded_and_finalizers_reenter_without_owner_locks() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                RETIRE_FINALIZERS.store(0, Ordering::Release);
+                RETIRE_REENTRY_OK.store(false, Ordering::Release);
+                let name = attr_name_bits_from_bytes(py, b"ExecutorRetireReentry").unwrap();
+                let class = molt_class_new(name);
+                dec_ref_bits(py, name);
+                molt_class_set_base(class, builtin_classes(py).object);
+                let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+                unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
+                let method = native_callable(py, retirement_finalizer as *const ());
+                let key = attr_name_bits_from_bytes(py, b"__del__").unwrap();
+                molt_set_attr_name(class, key, method);
+                dec_ref_bits(py, key);
+                dec_ref_bits(py, method);
+                let payload = unsafe { crate::alloc_instance_for_class(py, class_ptr) };
+                assert!(obj_from_bits(payload).as_ptr().is_some());
+                let callable = native_callable(py, retained_argument as *const ());
+                let baseline = owner_count(callable);
+                let handle = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
+                let id = to_i64(obj_from_bits(handle)).unwrap();
+                let pool = pool_registry(py).lock().unwrap().get(&id).cloned().unwrap();
+                let weak = Arc::downgrade(&pool);
+                for _ in 0..20 {
+                    let future = molt_concurrent_threadpool_submit(handle, callable, payload);
+                    molt_concurrent_future_drop(future);
+                }
+                dec_ref_bits(py, payload);
+                // Main still owns GIL, so no callable can have run. Closure
+                // returns the claimed item to the pool, then joins normally.
+                runtime_state(py).close_thread_borrow_admission();
+                molt_concurrent_threadpool_drop(handle);
+                assert!(pool.workers.join());
+                drop(pool);
+                assert_eq!(RETIRE_FINALIZERS.load(Ordering::Acquire), 0);
+                assert_eq!(crate::molt_async_work_poll_and_exception_pending(), 0);
+                assert_eq!(
+                    RETIRE_FINALIZERS.load(Ordering::Acquire),
+                    0,
+                    "one poll drained an unbounded queued cohort"
+                );
+                assert!(weak.upgrade().is_some());
+                poll_until(py, || weak.upgrade().is_none());
+                assert_eq!(RETIRE_FINALIZERS.load(Ordering::Acquire), 1);
+                assert!(RETIRE_REENTRY_OK.load(Ordering::Acquire));
+                assert_eq!(owner_count(callable), baseline);
+                dec_ref_bits(py, callable);
+                dec_ref_bits(py, class);
+            });
+        });
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn nonwaiting_shutdown_reaps_queued_owners_and_preserves_callback_outcomes() {
+        for close_origin in [false, true] {
+            crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+                crate::with_gil_entry_nopanic!(py, {
+                    let state = runtime_state(py);
+                    concurrent_clear_runtime_state(py, state);
+                    CALLBACK_CALLS.store(0, Ordering::Release);
+                    let callable = native_callable(py, retained_argument as *const ());
+                    let callback = native_callable(py, owned_callback_result as *const ());
+                    let payload = MoltObject::from_ptr(alloc_list(py, &[])).bits();
+                    let baselines = [
+                        owner_count(callable),
+                        owner_count(callback),
+                        owner_count(payload),
+                    ];
+                    let pool = molt_concurrent_threadpool_new(MoltObject::from_int(1).bits());
+                    let id = to_i64(obj_from_bits(pool)).unwrap();
+                    let weak =
+                        Arc::downgrade(state.concurrent.pools.lock().unwrap().get(&id).unwrap());
+                    let future = molt_concurrent_threadpool_submit(pool, callable, payload);
+                    molt_concurrent_future_add_done_callback(future, callback);
+                    molt_concurrent_threadpool_drop(pool);
+                    // Future drop leaves the worker's pending callback owners
+                    // intact; completion/reaping must retire them exactly once.
+                    molt_concurrent_future_drop(future);
+                    if close_origin {
+                        state.close_thread_borrow_admission();
+                    }
+                    poll_until(py, || weak.upgrade().is_none());
+                    assert_eq!(
+                        CALLBACK_CALLS.load(Ordering::Acquire),
+                        usize::from(!close_origin)
+                    );
+                    assert_eq!(
+                        [
+                            owner_count(callable),
+                            owner_count(callback),
+                            owner_count(payload)
+                        ],
+                        baselines
+                    );
+                    assert!(!concurrent_clear_runtime_state(py, state));
+                    for bits in [callable, callback, payload] {
+                        dec_ref_bits(py, bits);
+                    }
+                });
+            });
+        }
     }
 
     #[test]
@@ -1435,6 +2040,117 @@ mod tests {
                 let true_bits = MoltObject::from_bool(true).bits();
                 let false_bits = MoltObject::from_bool(false).bits();
                 let _ = molt_concurrent_threadpool_shutdown(new_pool, true_bits, false_bits);
+            });
+        });
+    }
+
+    #[test]
+    #[cfg(any(windows, target_os = "linux"))]
+    #[ignore = "real-runtime lifecycle cost probe; run exact retained image through cargo_test_binary_runner"]
+    fn lifecycle_cost_probe() {
+        use molt_cpython_abi::l7_attestation::{
+            CALIBRATION_TARGET_NS, MINIMUM_SAMPLE_NS, SAMPLE_COUNT, calibrate_timed_iterations,
+            enforce_current_thread_affinity, normalized_affinity_mask, summarize_samples,
+        };
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        fn measure(name: &str, mut operation: impl FnMut()) -> serde_json::Value {
+            for _ in 0..64 {
+                operation();
+            }
+            let mut batch = |iterations: usize| {
+                let started = Instant::now();
+                for _ in 0..iterations {
+                    operation();
+                }
+                started.elapsed().as_nanos()
+            };
+            let iterations = calibrate_timed_iterations(64, &mut batch);
+            let elapsed: Vec<u128> = (0..SAMPLE_COUNT)
+                .map(|_| {
+                    let ns = batch(iterations);
+                    assert!(
+                        ns >= MINIMUM_SAMPLE_NS,
+                        "lifecycle sample below timing floor"
+                    );
+                    ns
+                })
+                .collect();
+            let samples: Vec<f64> = elapsed
+                .iter()
+                .map(|ns| *ns as f64 / iterations as f64)
+                .collect();
+            let summary = summarize_samples(&samples);
+            serde_json::json!({
+                "name": name,
+                "iterations_per_sample": iterations,
+                "sample_count": SAMPLE_COUNT,
+                "calibration_target_ns": CALIBRATION_TARGET_NS,
+                "minimum_sample_ns": MINIMUM_SAMPLE_NS,
+                "elapsed_ns": elapsed,
+                "ns_per_operation": samples,
+                "summary": {
+                    "median_ns_per_operation": summary.median,
+                    "cv": summary.cv,
+                    "robust_cv": summary.robust_cv,
+                },
+            })
+        }
+
+        assert!(
+            !cfg!(debug_assertions),
+            "lifecycle cost probe requires an optimized image"
+        );
+        let mask = std::env::var("MOLT_L7_AFFINITY_MASK")
+            .expect("lifecycle cost probe requires MOLT_L7_AFFINITY_MASK");
+        let affinity = enforce_current_thread_affinity(&mask);
+        // One origin surrounds all warmup, calibration and samples. Per-cycle
+        // runtime transactions would measure setup and hide retained owners.
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                assert!(!exception_pending(py));
+                assert!(unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+                assert!(pool_registry(py).lock().unwrap().is_empty());
+                let empty = measure("empty_public_async_safepoint", || {
+                    assert_eq!(
+                        black_box(crate::molt_async_work_poll_and_exception_pending()),
+                        0
+                    );
+                });
+                assert!(!exception_pending(py));
+                assert!(unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+                let one = MoltObject::from_int(1).bits();
+                let yes = MoltObject::from_bool(true).bits();
+                let no = MoltObject::from_bool(false).bits();
+                let pool = measure("one_worker_pool_create_and_waiting_shutdown", || {
+                    let handle = black_box(molt_concurrent_threadpool_new(one));
+                    assert!(to_i64(obj_from_bits(handle)).is_some_and(|id| id > 0));
+                    assert!(!exception_pending(py));
+                    assert_eq!(
+                        black_box(molt_concurrent_threadpool_shutdown(handle, yes, no)),
+                        MoltObject::none().bits(),
+                    );
+                    assert!(!exception_pending(py));
+                });
+                assert!(pool_registry(py).lock().unwrap().is_empty());
+                assert!(unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+                println!(
+                    "LIFECYCLE_COST_PROBE={}",
+                    serde_json::json!({
+                        "schema_version": 1,
+                        "kind": "runtime_lifecycle_cost_probe",
+                        "debug_assertions": cfg!(debug_assertions),
+                        "host": { "os": std::env::consts::OS, "arch": std::env::consts::ARCH },
+                        "affinity_mask": normalized_affinity_mask(affinity),
+                        "timing_scope": "loop inclusive, including semantic checks; one fresh runtime outside all samples",
+                        "worker_cost_scope": "combined public creation, origin admission, native startup and waiting shutdown; one worker, no submitted jobs",
+                        "layout_bytes": {"pool_owner": std::mem::size_of::<ThreadPoolState>(), "concurrent_state": std::mem::size_of::<ConcurrentRuntimeState>()},
+                        "allocation_metrics": false,
+                        "performance_claim": false,
+                        "cases": [empty, pool],
+                    })
+                );
             });
         });
     }

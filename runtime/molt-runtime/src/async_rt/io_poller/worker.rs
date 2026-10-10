@@ -1,10 +1,9 @@
 use super::*;
 
-pub(super) fn io_worker(poller: Arc<IoPoller>) {
-    crate::state::run_runtime_worker(|| io_worker_inner(poller));
-}
-
-fn io_worker_inner(poller: Arc<IoPoller>) {
+pub(super) fn io_worker(
+    origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+    poller: Arc<IoPoller>,
+) {
     loop {
         if !poller.running.load(AtomicOrdering::Acquire) {
             break;
@@ -15,6 +14,20 @@ fn io_worker_inner(poller: Arc<IoPoller>) {
             .lock()
             .unwrap()
             .poll(&mut events, Some(Duration::from_millis(250)));
+        if !poller.running.load(AtomicOrdering::Acquire) {
+            break;
+        }
+        if events.is_empty() {
+            continue;
+        }
+        // Claim execution before detaching raw waiter pointers. Cancellation
+        // and GC may retire an individual future while the worker waits for GIL.
+        let Some(execution) =
+            crate::concurrency::execution::RuntimeServiceExecutionGuard::try_enter(origin)
+        else {
+            break;
+        };
+        let py = execution.token();
         if !poller.running.load(AtomicOrdering::Acquire) {
             break;
         }
@@ -76,13 +89,10 @@ fn io_worker_inner(poller: Arc<IoPoller>) {
         }
         drop(events);
         if !ready_futures.is_empty() {
-            // Record readiness before taking the GIL so polling threads can observe
-            // ready masks even if wake propagation is temporarily delayed.
+            // Raw waiter access and wake propagation share admitted GIL custody.
             for (future, mask, _, _) in &ready_futures {
                 poller.mark_ready(*future, *mask);
             }
-            let gil = GilGuard::new();
-            let py = gil.token();
             for (future, mask, socket_id, debug_fd) in ready_futures {
                 let waiter_count = wake_await_waiters(&py, future.0);
                 if trace_io_poller() {

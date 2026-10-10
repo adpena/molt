@@ -32,6 +32,14 @@ LIFECYCLE = (
 )
 DISCOVERY = "tests::pending_diagnostic_prints_and_retires_original_error_after_summary_encoding_failure"
 DISCOVERY_CHILD = "tests::pending_diagnostic_child"
+ISOLATE_OWNER = (
+    "concurrency::isolates::bootstrap_failure_tests::"
+    "failed_isolate_preserves_state_and_blocks_process_retirement"
+)
+THREAD_ADMISSION = (
+    "concurrency::isolates::bootstrap_failure_tests::"
+    "native_thread_admission_and_origin_retirement"
+)
 TRACE_CALLARGS = "trace_callargs_emits_builder_lifecycle_logs"
 TRACE_BIND_IC = "trace_call_bind_ic_emits_hit_log"
 TRACE_BIND_META = "trace_function_bind_meta_emits_summary"
@@ -168,6 +176,95 @@ CONTRACT[(DISCOVERY, "render-and-drain")] = {
         "[molt-cpython-abi] PyErr_Print: \\ud800\n"
         "===MOLT_DISCOVERY_EXC: no pending exception on NULL return\n"
     ),
+    "exit_code": 0,
+    "completes": True,
+}
+for _mode in ("successful", "failed", "thread-state"):
+    CONTRACT[(ISOLATE_OWNER, _mode)] = {
+        "role": "isolate-owner-lifetime",
+        "child": ISOLATE_OWNER,
+        "args": ["--exact", ISOLATE_OWNER, *SERIAL],
+        "stdout": (
+            f"\nrunning 1 test\ntest {ISOLATE_OWNER} ... "
+            f"isolate owner lifetime verified: {_mode}\n"
+            "ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; "
+            "0 measured; 41 filtered out; finished in 0.00s\n\n"
+        ),
+        "stderr": (
+            "MOLT_ISOLATE_TEARDOWN_PANIC: retaining failed isolate at 0x123; process shutdown remains closed\n"
+            "molt runtime shutdown refused: 1 active execution lease(s) remain live\n"
+            if _mode != "successful"
+            else ""
+        ),
+        "exit_code": 0,
+        "completes": True,
+    }
+for _mode in (
+    "delayed-isolate",
+    "delayed-shared",
+    "cancel-before-start",
+    "spawn-failure-shared",
+    "spawn-failure-bytes",
+    "spawn-failure-isolate",
+    "nested-shared",
+    "shared-call-identity",
+    "shared-payload-panic",
+    "shared-cleanup-panic",
+    "joined-service-inflight",
+    "joined-service-admitted",
+    "joined-service-primary",
+    "joined-service-isolate",
+    "joined-service-partial-start",
+    "joined-service-failed-join",
+    "joined-service-cleanup-panic",
+    "joined-service-foreign-c",
+    "joined-service-exit",
+    "exit-with-pending-isolate",
+):
+    _terminal = _mode in {"exit-with-pending-isolate", "joined-service-exit"}
+    CONTRACT[(THREAD_ADMISSION, _mode)] = {
+        "role": "native-thread-admission",
+        "child": THREAD_ADMISSION,
+        "args": ["--exact", THREAD_ADMISSION, *SERIAL],
+        "stdout": f"\nrunning 1 test\ntest {THREAD_ADMISSION} ... "
+        + (
+            f"native thread lifetime verified: {_mode}\n"
+            "ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; "
+            "0 measured; 41 filtered out; finished in 0.00s\n\n"
+            if not _terminal
+            else ""
+        ),
+        "stderr": (
+            "molt runtime process exit refused: 1 active execution lease(s) remain live\n"
+            if _terminal
+            else ""
+        ),
+        "exit_code": 1 if _terminal else 0,
+        "completes": not _terminal,
+    }
+CONTRACT[(THREAD_ADMISSION, "joined-service-failed-join")]["stderr"] = (
+    "molt runtime lifecycle failed: runtime teardown refused: joined service workers failed; origin retained\n"
+)
+CONTRACT[(THREAD_ADMISSION, "joined-service-cleanup-panic")]["stderr"] = (
+    "molt runtime lifecycle failed: runtime teardown refused: joined service workers failed; origin retained\n"
+)
+CONTRACT[(THREAD_ADMISSION, "joined-service-foreign-c")]["stderr"] = (
+    "molt runtime lifecycle failed: assertion `left == right` failed: runtime teardown refused: foreign retained PyThreadState owners remain live\n  left: 2\n right: 1\n"
+)
+CONTRACT[(THREAD_ADMISSION, "joined-service-exit")]["stderr"] = (
+    "molt runtime process exit refused: joined service callback cannot retire its own runtime\n"
+)
+CONTRACT[(THREAD_ADMISSION, "process-service-timeout")] = {
+    "role": "native-thread-admission",
+    "child": THREAD_ADMISSION,
+    "args": ["--exact", THREAD_ADMISSION, *SERIAL],
+    "stdout": (
+        f"\nrunning 1 test\ntest {THREAD_ADMISSION} ... "
+        "native thread lifetime verified: process-service-timeout\n"
+        "ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; "
+        "0 measured; 41 filtered out; finished in 0.00s\n\n"
+    ),
+    "stderr": "molt runtime lifecycle failed: runtime teardown refused: process workers remain live or failed; origin retained\n",
     "exit_code": 0,
     "completes": True,
 }

@@ -1744,7 +1744,7 @@ pub extern "C" fn molt_gc_garbage() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gc_freeze() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        crate::object::gc::freeze_tracked_registry();
+        crate::object::gc::freeze_tracked_registry(_py);
         MoltObject::none().bits()
     })
 }
@@ -1752,7 +1752,7 @@ pub extern "C" fn molt_gc_freeze() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gc_unfreeze() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        crate::object::gc::unfreeze_tracked_registry();
+        crate::object::gc::unfreeze_tracked_registry(_py);
         MoltObject::none().bits()
     })
 }
@@ -1760,7 +1760,7 @@ pub extern "C" fn molt_gc_unfreeze() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_gc_get_freeze_count() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let count = i64::try_from(crate::object::gc::permanent_generation_count())
+        let count = i64::try_from(crate::object::gc::permanent_generation_count(_py))
             .unwrap_or_else(|_| std::process::abort());
         MoltObject::from_int(count).bits()
     })

@@ -4795,7 +4795,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_thread_spawn_shared",
         symbol: "molt_thread_spawn_shared",
-        arity: 4,
+        arity: 3,
         defaults: &[],
     },
     IntrinsicSpec {
@@ -4867,7 +4867,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_thread_registry_register",
         symbol: "molt_thread_registry_register",
-        arity: 4,
+        arity: 3,
         defaults: &[],
     },
     IntrinsicSpec {

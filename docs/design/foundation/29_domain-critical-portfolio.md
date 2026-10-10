@@ -26,7 +26,7 @@ The audit covers molt at commit `fef48ecb0` (branch `main`). The runtime crate t
 
 **Refcount ordering.** `runtime/molt-codegen-abi/src/lib.rs` owns `MoltRefCount` beside `MoltFlags` through one generated implementation and separate custody policies. Refcounts use `Cell<u32>` under deterministic GIL and wasm32 and `AtomicU32` under explicit native free-threading, retaining the acquire fence on drop-to-zero. Native flags stay atomic for pre-GIL scheduler access. Backend/runtime link witnesses bind the exact mode, so cached generated objects cannot mix contracts.
 
-**threading module.** `/Users/adpena/Projects/molt/src/molt/stdlib/threading.py:1-100+` — real threading backed by ~55 Rust intrinsics (`molt_thread_spawn_shared`, `molt_lock_new/acquire/release`, `molt_rlock_*`, `molt_condition_*`, `molt_event_*`, `molt_semaphore_*`, `molt_barrier_*`, `molt_local_*`). Thread spawning uses `/Users/adpena/Projects/molt/runtime/molt-runtime/src/concurrency/isolates.rs` which calls `std::thread::spawn`, acquires the GIL in the worker via `GilGuard::new()`, and dispatches the Python callable through `call_callable1`. The GIL is released during the call if the callable releases it explicitly. The thread registry (`THREAD_REGISTRY: Lazy<Mutex<ThreadRegistry>>`) tracks threads by token.
+**threading module.** `/Users/adpena/Projects/molt/src/molt/stdlib/threading.py:1-100+` — real threading backed by ~55 Rust intrinsics (`molt_thread_spawn_shared`, `molt_lock_new/acquire/release`, `molt_rlock_*`, `molt_condition_*`, `molt_event_*`, `molt_semaphore_*`, `molt_barrier_*`, `molt_local_*`). Thread spawning uses `/Users/adpena/Projects/molt/runtime/molt-runtime/src/concurrency/isolates.rs` which calls `std::thread::spawn`, acquires the GIL in the worker via `GilGuard::new()`, and dispatches the Python callable through `call_callable1`. The GIL is released during the call if the callable releases it explicitly. The lazy per-RuntimeState thread registry tracks display metadata by live native handle identity; the handle itself retains the admitted callable payload.
 
 **concurrent.futures.** `/Users/adpena/Projects/molt/runtime/molt-runtime/src/builtins/concurrent.rs` — `ThreadPoolExecutor` is real: crossbeam-channel unbounded work queue, `std::thread::spawn` workers that acquire the GIL to run the Python callable, `SharedFuture` (`Arc<Mutex<FutureState>>`). Real OS threads, real Python callables dispatched.
 
@@ -438,3 +438,9 @@ Sources:
 - [FastAPI Engine: Inside Uvicorn ASGI server](https://leapcell.io/blog/uvicorn-performance-python-asgi)
 - [Zero-Copy Data Sharing with DLPack](https://apxml.com/courses/advanced-jax/chapter-5-jax-interoperability-custom-operations/zero-copy-dlpack)
 - [zoneinfo – IANA time zone support (Python docs)](https://docs.python.org/3/library/zoneinfo.html)
+
+Shared native thread calls use handle-owned payload identity; `threading.Thread`
+and `_thread.start_new_thread` share that protocol without independent Python
+token counters. Runtime metadata belongs to the originating RuntimeState. See
+[the GC ownership contract](generational_gc_authority.md#shared-native-thread-call-identity)
+for lifetime and failure semantics.

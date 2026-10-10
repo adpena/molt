@@ -772,7 +772,9 @@ fn c_error_bootstrap_admits_type_only_before_constructor_allocation() {
         // transaction would register full hooks and erase the pre-init boundary.
         object::prepare_runtime_thread_state_lifetime();
         object::arm_runtime_thread_state_lifetime();
-        let _initializing = object::RuntimeInitializationThreadStateGuard::enter();
+        let _initializing = object::RuntimeInitializationThreadStateGuard::enter(
+            std::ptr::from_ref(&_callbacks).expose_provenance(),
+        );
         molt_cpython_abi::bridge::molt_cpython_abi_init();
         if mode == "partial" {
             let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;

@@ -50,8 +50,6 @@ pub(crate) use block_wait::block_on_wait_spec;
 use block_wait::{BLOCK_ON_MAX_WAIT, BLOCK_ON_MIN_SLEEP, BlockOnWaitSpec, block_on_poll_timeout};
 
 mod sleep_queue;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use sleep_queue::sleep_worker;
 pub(crate) use sleep_queue::{
     SleepQueue, instant_from_monotonic_secs, monotonic_now_nanos, monotonic_now_secs,
 };
@@ -176,13 +174,28 @@ impl Drop for MoltTask {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+struct SchedulerWorkerQueue {
+    worker: Worker<MoltTask>,
+    injector: Arc<Injector<MoltTask>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for SchedulerWorkerQueue {
+    fn drop(&mut self) {
+        while let Some(task) = self.worker.pop() {
+            self.injector.push(task);
+        }
+    }
+}
+
 pub struct MoltScheduler {
     injector: Arc<Injector<MoltTask>>,
     running: Arc<AtomicBool>,
     deferred: Arc<Mutex<DeferredQueue>>,
     epoch: Arc<AtomicU64>,
     #[cfg(not(target_arch = "wasm32"))]
-    worker_handles: Mutex<Vec<thread::JoinHandle<()>>>,
+    worker_handles: crate::state::lifecycle::RuntimeServiceWorkers,
 }
 
 #[derive(Default)]
@@ -235,38 +248,41 @@ impl DeferredQueue {
 
 impl MoltScheduler {
     pub fn new() -> Self {
-        #[cfg(target_arch = "wasm32")]
-        let num_threads = 0usize;
-        #[cfg(not(target_arch = "wasm32"))]
-        let num_threads = async_worker_threads();
-        let injector = Arc::new(Injector::new());
-        let deferred = Arc::new(Mutex::new(DeferredQueue::default()));
-        let epoch = Arc::new(AtomicU64::new(0));
-        let mut workers: Vec<Worker<MoltTask>> = Vec::new();
-        let mut stealers = Vec::new();
-        let running = Arc::new(AtomicBool::new(true));
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut worker_handles = Vec::new();
-
-        for _ in 0..num_threads {
-            workers.push(Worker::new_fifo());
-        }
-
-        for w in &workers {
-            stealers.push(w.stealer());
-        }
-
-        for (i, worker) in workers.into_iter().enumerate() {
+        Self {
+            injector: Arc::new(Injector::new()),
+            running: Arc::new(AtomicBool::new(true)),
+            deferred: Arc::new(Mutex::new(DeferredQueue::default())),
+            epoch: Arc::new(AtomicU64::new(0)),
             #[cfg(not(target_arch = "wasm32"))]
-            {
-                let injector_clone = Arc::clone(&injector);
-                let deferred_clone = Arc::clone(&deferred);
-                let epoch_clone = Arc::clone(&epoch);
-                let stealers_clone = stealers.clone();
-                let running_clone = Arc::clone(&running);
+            worker_handles: crate::state::lifecycle::RuntimeServiceWorkers::default(),
+        }
+    }
 
-                let handle = thread::spawn(move || {
-                    crate::state::run_runtime_worker(|| {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn start_workers(
+        &self,
+        origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+    ) -> std::io::Result<()> {
+        self.worker_handles.start(origin, |handles| {
+            let workers: Vec<Worker<MoltTask>> = (0..async_worker_threads())
+                .map(|_| Worker::new_fifo())
+                .collect();
+            let stealers: Vec<_> = workers.iter().map(Worker::stealer).collect();
+            for (i, worker) in workers.into_iter().enumerate() {
+                let injector_clone = Arc::clone(&self.injector);
+                let deferred_clone = Arc::clone(&self.deferred);
+                let epoch_clone = Arc::clone(&self.epoch);
+                let stealers_clone = stealers.clone();
+                let running_clone = Arc::clone(&self.running);
+                handles.push(crate::state::lifecycle::RuntimeServiceWorker::spawn(
+                    origin,
+                    thread::Builder::new().name(format!("molt-scheduler-{i}")),
+                    move || {
+                        let local = SchedulerWorkerQueue {
+                            worker,
+                            injector: Arc::clone(&injector_clone),
+                        };
+                        let worker = &local.worker;
                         if async_trace_enabled() {
                             eprintln!("molt async trace: worker_start idx={}", i);
                         }
@@ -281,13 +297,23 @@ impl MoltScheduler {
                             }
 
                             if let Some(task) = worker.pop() {
-                                Self::execute_task(task, &injector_clone);
+                                Self::execute_worker_task(
+                                    origin,
+                                    task,
+                                    &injector_clone,
+                                    &running_clone,
+                                );
                                 continue;
                             }
 
-                            match injector_clone.steal_batch_and_pop(&worker) {
+                            match injector_clone.steal_batch_and_pop(worker) {
                                 crossbeam_deque::Steal::Success(task) => {
-                                    Self::execute_task(task, &injector_clone);
+                                    Self::execute_worker_task(
+                                        origin,
+                                        task,
+                                        &injector_clone,
+                                        &running_clone,
+                                    );
                                     continue;
                                 }
                                 crossbeam_deque::Steal::Retry => continue,
@@ -300,9 +326,14 @@ impl MoltScheduler {
                                     continue;
                                 }
                                 if let crossbeam_deque::Steal::Success(task) =
-                                    stealer.steal_batch_and_pop(&worker)
+                                    stealer.steal_batch_and_pop(worker)
                                 {
-                                    Self::execute_task(task, &injector_clone);
+                                    Self::execute_worker_task(
+                                        origin,
+                                        task,
+                                        &injector_clone,
+                                        &running_clone,
+                                    );
                                     stolen = true;
                                     break;
                                 }
@@ -320,20 +351,32 @@ impl MoltScheduler {
                                 thread::yield_now();
                             }
                         }
-                    })
-                });
-                worker_handles.push(handle);
+                    },
+                )?);
             }
-        }
+            Ok(())
+        })
+    }
 
-        Self {
-            injector,
-            running,
-            deferred,
-            epoch,
-            #[cfg(not(target_arch = "wasm32"))]
-            worker_handles: Mutex::new(worker_handles),
+    #[cfg(not(target_arch = "wasm32"))]
+    fn execute_worker_task(
+        origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+        task: MoltTask,
+        injector: &Injector<MoltTask>,
+        running: &AtomicBool,
+    ) {
+        let Some(_execution) =
+            crate::concurrency::execution::RuntimeServiceExecutionGuard::try_enter(origin)
+        else {
+            injector.push(task);
+            running.store(false, AtomicOrdering::Release);
+            return;
+        };
+        if !running.load(AtomicOrdering::Acquire) {
+            injector.push(task);
+            return;
         }
+        Self::execute_task(task, injector);
     }
 
     pub fn enqueue(&self, _py: &PyToken<'_>, task: MoltTask) {
@@ -436,31 +479,45 @@ impl MoltScheduler {
         }
     }
 
-    pub fn shutdown(&self) {
-        self.running.swap(false, AtomicOrdering::SeqCst);
+    pub(crate) fn stop(&self) {
+        self.running.store(false, AtomicOrdering::Release);
+    }
+
+    pub(crate) fn join(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let handles = {
-                let mut guard = self.worker_handles.lock().unwrap();
-                std::mem::take(&mut *guard)
-            };
-            for handle in handles {
-                let _ = handle.join();
-            }
+            self.worker_handles.join()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            true
         }
     }
 
-    pub(crate) fn clear_stopped_queue(&self) {
+    pub fn shutdown(&self) {
+        self.stop();
+        assert!(
+            self.join(),
+            "runtime scheduler worker failed; origin retained"
+        );
+    }
+
+    pub(crate) fn clear_stopped_queue(&self) -> bool {
         assert!(!self.running.load(AtomicOrdering::Acquire));
         let deferred = std::mem::take(&mut *self.deferred.lock().unwrap());
+        let mut changed = !deferred.entries.is_empty();
         drop(deferred);
         loop {
             match self.injector.steal() {
-                crossbeam_deque::Steal::Success(task) => drop(task),
+                crossbeam_deque::Steal::Success(task) => {
+                    changed = true;
+                    drop(task);
+                }
                 crossbeam_deque::Steal::Retry => continue,
                 crossbeam_deque::Steal::Empty => break,
             }
         }
+        changed
     }
 
     fn execute_task(task: MoltTask, _injector: &Injector<MoltTask>) {

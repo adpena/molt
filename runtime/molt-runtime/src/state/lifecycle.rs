@@ -172,54 +172,115 @@ pub(crate) fn runtime_teardown_for_process_exit(_py: &PyToken<'_>, state: &Runti
 }
 
 fn shutdown_started_runtime_workers(_py: &PyToken<'_>, state: &RuntimeState) {
-    let scheduler_started = state.scheduler_started.load(AtomicOrdering::Acquire);
-    let sleep_queue_started = state.sleep_queue_started.load(AtomicOrdering::Acquire);
-    let io_poller_started = state.io_poller_started.load(AtomicOrdering::Acquire);
+    // Only inspect published owners: teardown must never initialize a service.
+    let scheduler = state.scheduler.get();
+    let timer = state.sleep_queue.get();
+    let poller = state.io_poller.get();
     #[cfg(not(target_arch = "wasm32"))]
-    let thread_pool_started = state.thread_pool_started.load(AtomicOrdering::Acquire);
+    let pool = state.thread_pool.get();
+    if let Some(scheduler) = scheduler {
+        scheduler.stop();
+    }
+    if let Some(timer) = timer {
+        timer.stop();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(poller) = poller {
+        poller.stop();
+    }
     #[cfg(target_arch = "wasm32")]
-    let thread_pool_started = false;
-
-    if scheduler_started || sleep_queue_started || io_poller_started || thread_pool_started {
-        trace_shutdown("workers_shutdown_start");
+    if let Some(poller) = poller {
+        poller.shutdown();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(pool) = pool {
+        pool.stop();
+    }
+    let executors = crate::builtins::concurrent::concurrent_stop_runtime_workers(state);
+    let any = scheduler.is_some() || timer.is_some() || poller.is_some() || executors;
+    #[cfg(not(target_arch = "wasm32"))]
+    let any = any || pool.is_some();
+    if !any {
+        return;
+    }
+    trace_shutdown("workers_shutdown_start");
+    let closed = {
         let _release = GilReleaseGuard::suspend();
-        if scheduler_started {
-            trace_shutdown("scheduler_shutdown_start");
-            state.scheduler().shutdown();
-            trace_shutdown("scheduler_shutdown_done");
+        let mut closed = true;
+        if let Some(scheduler) = scheduler {
+            closed &= scheduler.join();
         }
-        if sleep_queue_started {
-            trace_shutdown("sleep_queue_shutdown_start");
-            state.sleep_queue().shutdown(_py);
-            trace_shutdown("sleep_queue_shutdown_done");
-        }
-        if io_poller_started {
-            trace_shutdown("io_poller_shutdown_start");
-            state.io_poller().shutdown();
-            trace_shutdown("io_poller_shutdown_done");
+        if let Some(timer) = timer {
+            closed &= timer.join();
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if thread_pool_started && let Some(pool) = state.thread_pool.get() {
-            trace_shutdown("thread_pool_shutdown_start");
-            pool.shutdown();
-            trace_shutdown("thread_pool_shutdown_done");
+        if let Some(poller) = poller {
+            closed &= poller.join();
         }
-        trace_shutdown("workers_shutdown_done");
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(pool) = pool {
+            closed &= pool.join();
+        }
+        closed &= crate::builtins::concurrent::concurrent_join_runtime_workers(state);
+        closed
+    };
+    // Reacquire GIL before reporting failure. Every joined disposition and
+    // unfinished handle remains in its published owner; no root was detached.
+    assert!(
+        closed,
+        "runtime teardown refused: joined service workers failed; origin retained"
+    );
+    trace_shutdown("workers_shutdown_done");
+}
+
+fn clear_stopped_runtime_worker_queues(py: &PyToken<'_>, state: &RuntimeState) -> bool {
+    let mut changed = false;
+    if let Some(scheduler) = state.scheduler.get() {
+        changed |= scheduler.clear_stopped_queue();
     }
-    // Worker-local entries have been returned to the injector. The GIL has
-    // been reacquired; no queue mutex is held while queued owners are released.
-    if scheduler_started {
-        state.scheduler().clear_stopped_queue();
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(pool) = state.thread_pool.get() {
+        changed |= pool.clear_stopped_queue(py);
     }
+    #[cfg(target_arch = "wasm32")]
+    let _ = py;
+    changed
 }
 
 fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: RuntimeTeardownMode) {
     crate::gil_assert();
+    // Close before any callback or root mutation. A delayed shared worker has
+    // already reserved its origin heap and requires that whole owner to remain.
+    #[cfg(not(target_arch = "wasm32"))]
+    state.close_thread_borrow_admission();
     // Own callback execution from the first collector/pending-call callback
     // through the callback-free release tail. A public caller may already own
     // an ordinary lease; raw GIL or C-extension context alone is insufficient.
     let _custody = crate::concurrency::execution::ShutdownDrainExecutionCustody::enter_if_needed();
     trace_shutdown("start");
+    // Close process-service launch and prove every retained OS worker finished
+    // before collection or callbacks can retire their task/stream owners.
+    shutdown_started_runtime_workers(_py, state);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        state.assert_thread_borrows_drained();
+        if crate::state::runtime_state::owns_process_cpython_state(state) {
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_execution_attachment_count(),
+                usize::from(molt_cpython_abi::api::object::runtime_execution_thread_is_attached()),
+                "runtime teardown refused: foreign runtime execution attachments remain live"
+            );
+            assert_eq!(
+                molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
+                usize::from(
+                    molt_cpython_abi::api::object::current_thread_has_retained_runtime_state()
+                ),
+                "runtime teardown refused: foreign retained PyThreadState owners remain live"
+            );
+        }
+    }
+    trace_shutdown("drain_process_registry");
+    state.process_registry.drain_for_teardown();
     if mode == RuntimeTeardownMode::ProcessExit {
         crate::object::ops::profile_dump_with_gil(_py);
         // Pre-teardown peak-live canary, not the post-teardown true-leak gauge.
@@ -236,9 +297,7 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
         trace_shutdown("finish_pending_calls");
         finish_pending_calls_for_teardown(_py);
     }
-    shutdown_started_runtime_workers(_py, state);
-    trace_shutdown("drain_process_registry");
-    state.process_registry.drain_for_teardown();
+    clear_stopped_runtime_worker_queues(_py, state);
     trace_shutdown("clear_concurrent_runtime_state");
     concurrent_clear_runtime_state(_py, state);
     #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
@@ -292,7 +351,7 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
         // The completed drain has dropped the record and emptied runtime TLS.
         // Projection release can publish fresh owners, so repeat both domains
         // before advancing module retirement or destroying class metadata.
-        if retirement.retire_projections() {
+        if retirement.retire_projections(_py) {
             continue;
         }
         if !modules.advance() {
@@ -395,7 +454,8 @@ fn clear_runtime_callback_roots(
     state: &RuntimeState,
     modules: &mut ModuleRetirement<'_, '_>,
 ) -> bool {
-    let mut changed = concurrent_clear_runtime_state(py, state);
+    let mut changed = clear_stopped_runtime_worker_queues(py, state);
+    changed |= concurrent_clear_runtime_state(py, state);
     changed |= clear_task_state(py, state);
     changed |= signal_clear_state(py, state);
     changed |= clear_thread_context(py);
@@ -613,29 +673,309 @@ fn clear_code_slots(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     changed
 }
 
-pub(crate) fn clear_worker_thread_state(_py: &PyToken<'_>) {
+pub(crate) fn clear_worker_thread_state(_py: &PyToken<'_>) -> bool {
     crate::gil_assert();
-    clear_thread_local_state(_py);
+    clear_thread_local_state(_py)
 }
 
-struct RuntimeWorkerCleanup;
+/// Existing service fields own this handle set. Publication precedes native
+/// startup; one mutex serializes New -> Ready/Failed, so no caller can consume
+/// partial readiness. Joins release the mutex and retain their failure payload.
+#[derive(Default)]
+pub(crate) struct RuntimeServiceWorkers {
+    inner: std::sync::Mutex<RuntimeServiceWorkerState>,
+    joined: std::sync::Condvar,
+}
 
-impl Drop for RuntimeWorkerCleanup {
-    fn drop(&mut self) {
-        if crate::state::runtime_state::runtime_state_for_gil().is_none() {
-            return;
+#[derive(Default)]
+struct RuntimeServiceWorkerState {
+    start: RuntimeServiceStart,
+    workers: Vec<RuntimeServiceWorker>,
+    // Successfully joined prefix; bounded reaping never rescans old records.
+    #[cfg(not(target_arch = "wasm32"))]
+    reap_cursor: usize,
+}
+
+#[derive(Default)]
+enum RuntimeServiceStart {
+    #[default]
+    New,
+    Ready,
+    Failed(String),
+}
+
+pub(crate) struct RuntimeServiceWorker {
+    handle: Option<std::thread::JoinHandle<()>>,
+    // Retain the target identity after taking its handle: a worker must still
+    // refuse to wait for itself when a concurrent join owns that handle.
+    joining: Option<std::thread::ThreadId>,
+    panic: Option<Box<dyn std::any::Any + Send + 'static>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RuntimeServiceJoinStatus {
+    Closed,
+    Pending,
+    Failed,
+}
+
+impl RuntimeServiceWorkers {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn start(
+        &self,
+        origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+        start: impl FnOnce(&mut Vec<RuntimeServiceWorker>) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        match &inner.start {
+            RuntimeServiceStart::Ready => return Ok(()),
+            RuntimeServiceStart::Failed(reason) => {
+                return Err(std::io::Error::other(reason.clone()));
+            }
+            RuntimeServiceStart::New => {}
         }
-        let gil = GilGuard::new();
-        clear_worker_thread_state(&gil.token());
+        let outcome = if origin.state().thread_borrow_admission_is_open() {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                start(&mut inner.workers)
+            })) {
+                Ok(outcome) => outcome,
+                Err(panic) => {
+                    inner.start =
+                        RuntimeServiceStart::Failed("runtime service startup panicked".into());
+                    // Publish failure before unwinding; preserve partially
+                    // spawned handles without poisoning the retained owner.
+                    drop(inner);
+                    std::panic::resume_unwind(panic)
+                }
+            }
+        } else {
+            Err(std::io::Error::other("runtime service admission is closed"))
+        };
+        inner.start = match &outcome {
+            Ok(()) => RuntimeServiceStart::Ready,
+            Err(error) => RuntimeServiceStart::Failed(error.to_string()),
+        };
+        outcome
+    }
+
+    /// One take/join/record transaction for blocking shutdown and bounded
+    /// reaping. Never hold either the owner mutex or GIL across native joining:
+    /// even is_finished does not replace the actual TLS-completion join.
+    fn join_worker(&self, index: usize, wait: bool) -> RuntimeServiceJoinStatus {
+        let handle = loop {
+            let mut inner = self.inner.lock().unwrap();
+            let worker = &mut inner.workers[index];
+            if worker.panic.is_some() {
+                return RuntimeServiceJoinStatus::Failed;
+            }
+            if let Some(target) = worker.joining {
+                if !wait || target == std::thread::current().id() {
+                    return RuntimeServiceJoinStatus::Pending;
+                }
+                drop(inner);
+                {
+                    // Recheck after releasing custody to avoid a lost notify.
+                    // Drop the owner mutex before restoring the caller's GIL.
+                    let _release = crate::gil_held().then(GilReleaseGuard::suspend);
+                    #[cfg(all(test, not(target_arch = "wasm32")))]
+                    SERVICE_JOIN_WAITING.with(|slot| {
+                        if let Some(ready) = slot.borrow_mut().take() {
+                            ready.send(()).unwrap();
+                        }
+                    });
+                    let inner = self.inner.lock().unwrap();
+                    drop(
+                        self.joined
+                            .wait_while(inner, |inner| inner.workers[index].joining.is_some())
+                            .unwrap(),
+                    );
+                }
+                continue;
+            }
+            let Some(handle) = worker.handle.as_ref() else {
+                return RuntimeServiceJoinStatus::Closed;
+            };
+            if handle.thread().id() == std::thread::current().id()
+                || (!wait && !handle.is_finished())
+            {
+                return RuntimeServiceJoinStatus::Pending;
+            }
+            worker.joining = Some(handle.thread().id());
+            break worker.handle.take().unwrap();
+        };
+        let outcome = {
+            let _release = crate::gil_held().then(GilReleaseGuard::suspend);
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                #[cfg(all(test, not(target_arch = "wasm32")))]
+                SERVICE_JOIN_PAUSE.with(|slot| {
+                    if let Some((ready, proceed)) = slot.borrow_mut().take() {
+                        // A failed test rendezvous must still consume the real
+                        // native join, never detach its extracted handle.
+                        if ready.send(()).is_ok() {
+                            let _ = proceed.recv_timeout(std::time::Duration::from_secs(5));
+                        }
+                    }
+                });
+                handle.join()
+            }))
+        };
+        let mut inner = self.inner.lock().unwrap();
+        let worker = &mut inner.workers[index];
+        worker.panic = match outcome {
+            Ok(result) => result.err(),
+            Err(panic) => Some(panic),
+        };
+        worker.joining = None;
+        self.joined.notify_all();
+        if worker.panic.is_some() {
+            RuntimeServiceJoinStatus::Failed
+        } else {
+            RuntimeServiceJoinStatus::Closed
+        }
+    }
+
+    /// Stop/queue owners close work first. All dispositions stay published,
+    /// including concurrent joins, self-join refusals and native panics.
+    pub(crate) fn join(&self) -> bool {
+        let count = {
+            let inner = self.inner.lock().unwrap();
+            let caller = std::thread::current().id();
+            // Refuse before joining any sibling: two members concurrently
+            // shutting down their owner must never join one another first.
+            if inner.workers.iter().any(|worker| {
+                worker.joining == Some(caller)
+                    || worker
+                        .handle
+                        .as_ref()
+                        .is_some_and(|handle| handle.thread().id() == caller)
+            }) {
+                return false;
+            }
+            inner.workers.len()
+        };
+        let mut closed = true;
+        for index in 0..count {
+            closed &= self.join_worker(index, true) == RuntimeServiceJoinStatus::Closed;
+        }
+        closed
+    }
+
+    /// Inspect at most `budget` records. A pending prefix retains the whole
+    /// owner until a later poll; a failed prefix is terminal, never auto-retried.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn reap_finished(&self, budget: usize) -> (RuntimeServiceJoinStatus, usize) {
+        let mut inspected = 0;
+        for _ in 0..budget {
+            let index = {
+                let inner = self.inner.lock().unwrap();
+                if inner.reap_cursor == inner.workers.len() {
+                    return (RuntimeServiceJoinStatus::Closed, inspected);
+                }
+                inner.reap_cursor
+            };
+            inspected += 1;
+            match self.join_worker(index, false) {
+                RuntimeServiceJoinStatus::Closed => {
+                    let mut inner = self.inner.lock().unwrap();
+                    if inner.reap_cursor == index {
+                        inner.reap_cursor += 1;
+                    }
+                }
+                other => return (other, inspected),
+            }
+        }
+        let inner = self.inner.lock().unwrap();
+        let status = if inner.reap_cursor == inner.workers.len() {
+            RuntimeServiceJoinStatus::Closed
+        } else {
+            RuntimeServiceJoinStatus::Pending
+        };
+        (status, inspected)
+    }
+
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn finished_for_test(&self) -> bool {
+        self.inner.lock().unwrap().workers.iter().all(|worker| {
+            worker.joining.is_none()
+                && worker
+                    .handle
+                    .as_ref()
+                    .is_none_or(std::thread::JoinHandle::is_finished)
+        })
+    }
+
+    pub(crate) fn count(&self) -> usize {
+        self.inner.lock().unwrap().workers.len()
     }
 }
 
-/// Run a worker that may enter Python with deterministic TLS cleanup on both
-/// normal return and unwind. The stack guard is independent of TLS destructor
-/// order and re-raises the original panic after cleanup.
-pub(crate) fn run_runtime_worker<R>(worker: impl FnOnce() -> R) -> R {
-    let _cleanup = RuntimeWorkerCleanup;
-    worker()
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    pub(crate) static SERVICE_JOIN_PAUSE: std::cell::RefCell<Option<(
+        std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>
+    )>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static SERVICE_JOIN_WAITING: std::cell::RefCell<Option<
+        std::sync::mpsc::Sender<()>
+    >> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RuntimeServiceWorker {
+    pub(crate) fn spawn(
+        origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+        builder: std::thread::Builder,
+        worker: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<Self> {
+        let handle = builder.spawn(move || run_runtime_worker(origin, worker))?;
+        Ok(Self {
+            handle: Some(handle),
+            joining: None,
+            panic: None,
+        })
+    }
+}
+
+/// A retained service join owner permits destruction, including Finalizing,
+/// without admitting ordinary work or keeping a permanent execution lease.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn run_runtime_worker<R>(
+    origin: crate::state::runtime_state::RuntimeWorkerOrigin,
+    worker: impl FnOnce() -> R,
+) -> R {
+    origin.install();
+    touch_tls_guard();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(worker));
+    let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let gil = GilGuard::new();
+        let _custody =
+            crate::concurrency::execution::ShutdownDrainExecutionCustody::for_retained_worker(
+                origin,
+            );
+        molt_cpython_abi::api::object::detach_runtime_execution_thread();
+        molt_cpython_abi::api::object::clear_runtime_execution_thread_state(|| {
+            clear_worker_thread_state(&gil.token())
+        });
+    }));
+    match (outcome, cleanup) {
+        (Ok(value), Ok(())) => {
+            crate::state::clear_thread_runtime_state();
+            value
+        }
+        (Err(panic), Ok(())) => {
+            crate::state::clear_thread_runtime_state();
+            std::panic::resume_unwind(panic)
+        }
+        (Ok(value), Err(panic)) => {
+            std::mem::forget(value);
+            std::panic::resume_unwind(panic)
+        }
+        (Err(original), Err(cleanup)) => {
+            // Failure retains origin TLS and the enclosing handle owner. A
+            // second panic payload destructor cannot replace the first cause.
+            std::mem::forget(cleanup);
+            std::panic::resume_unwind(original)
+        }
+    }
 }
 
 fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
@@ -1003,16 +1343,55 @@ fn clear_special_cache(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
 }
 
 #[cfg(test)]
-mod shutdown_tests;
+pub(crate) mod shutdown_tests;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{
         THREAD_LOCAL_DROP_TEST_TRACE, clear_interned_names, clear_special_cache,
         clear_worker_thread_state,
     };
     use crate::{MoltObject, alloc_string, runtime_state};
     use std::sync::atomic::Ordering;
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn service_member_refuses_before_joining_an_earlier_live_sibling() {
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+        let owner = Arc::new(super::RuntimeServiceWorkers::default());
+        let (release_tx, release_rx) = mpsc::channel();
+        let earlier = std::thread::spawn(move || {
+            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        let (start_tx, start_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let member_owner = Arc::clone(&owner);
+        let member = std::thread::spawn(move || {
+            start_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            result_tx.send(member_owner.join()).unwrap();
+        });
+        {
+            let mut inner = owner.inner.lock().unwrap();
+            for handle in [earlier, member] {
+                inner.workers.push(super::RuntimeServiceWorker {
+                    handle: Some(handle),
+                    joining: None,
+                    panic: None,
+                });
+            }
+        }
+        start_tx.send(()).unwrap();
+        let result_before_sibling_release = result_rx.recv_timeout(Duration::from_secs(2));
+        // Always settle both real native handles, including the regression case.
+        release_tx.send(()).unwrap();
+        assert!(owner.join());
+        assert_eq!(
+            result_before_sibling_release.unwrap(),
+            false,
+            "service member joined an earlier sibling before refusing itself"
+        );
+    }
 
     #[test]
     fn task_root_retirement_never_reuses_live_runtime_handle_identities() {
@@ -1077,6 +1456,97 @@ mod tests {
     static REENTRANT_CONTEXT_RELEASES: std::sync::atomic::AtomicUsize =
         std::sync::atomic::AtomicUsize::new(0);
 
+    static REENTRANT_CONTEXT_PUBLISH_C: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    static REENTRANT_CONTEXT_C_PUBLICATIONS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    static JOINED_SERVICE_ORIGIN: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn install_joined_service_control(
+        py: &crate::PyToken<'_>,
+        panic_worker: bool,
+        partial_start: bool,
+        cleanup_panic: bool,
+    ) -> std::sync::Weak<crate::async_rt::scheduler::SleepQueue> {
+        let state = runtime_state(py);
+        let origin = crate::state::runtime_state::RuntimeWorkerOrigin::new(state);
+        JOINED_SERVICE_ORIGIN.store(origin.identity(), Ordering::SeqCst);
+        REENTRANT_CONTEXT_RELEASES.store(0, Ordering::SeqCst);
+        REENTRANT_CONTEXT_C_PUBLICATIONS.store(0, Ordering::SeqCst);
+        REENTRANT_CONTEXT_PUBLISH_C.store(true, Ordering::SeqCst);
+        let queue = std::sync::Arc::new(crate::async_rt::scheduler::SleepQueue::new());
+        assert!(state.sleep_queue.set(std::sync::Arc::clone(&queue)).is_ok());
+        let worker_queue = std::sync::Arc::clone(&queue);
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let outcome = queue.install_joined_test_worker(origin, partial_start, move || {
+            {
+                let work =
+                    crate::concurrency::execution::RuntimeServiceExecutionGuard::try_enter(origin)
+                        .unwrap();
+                assert_eq!(runtime_state(&work.token()).identity(), origin.identity());
+                assert_eq!(origin.state().thread_borrow_count(), 1);
+                assert!(
+                    crate::state::runtime_state::current_thread_holds_runtime_execution_lease()
+                );
+            }
+            assert_eq!(origin.state().thread_borrow_count(), 0);
+            // Preserve real callback-bearing TLS for terminal worker cleanup.
+            {
+                let entry = crate::concurrency::RuntimeExecutionGuard::enter();
+                let py = entry.token();
+                let class = reentrant_context_class(&py);
+                REENTRANT_CONTEXT_CLASS.store(class, Ordering::SeqCst);
+                publish_context_binding(&py, class);
+                crate::dec_ref_bits(&py, class);
+                // Production per-work entry retires its C record. Preserve a
+                // runtime TLS owner only, so the ordinary foreign-C-owner
+                // shutdown refusal cannot mask terminal service cleanup.
+                molt_cpython_abi::api::object::detach_runtime_execution_thread();
+                molt_cpython_abi::api::object::clear_runtime_execution_thread_state(|| false);
+            }
+            ready_tx.send(()).unwrap();
+            worker_queue.wait_for_test_stop();
+            assert!(
+                crate::concurrency::execution::RuntimeServiceExecutionGuard::try_enter(origin)
+                    .is_none()
+            );
+            if cleanup_panic {
+                assert!(
+                    cfg!(panic = "unwind"),
+                    "cleanup panic control requires unwind"
+                );
+                #[cfg(panic = "unwind")]
+                crate::concurrency::execution::inject_shutdown_drain_drop_panic();
+            }
+            if panic_worker {
+                panic!("injected joined service worker panic");
+            }
+        });
+        assert_eq!(outcome.is_err(), partial_start);
+        if partial_start {
+            // Failed readiness must persist; no second creator may retry.
+            assert!(queue.start_worker(origin).is_err());
+        }
+        {
+            let _release = crate::GilReleaseGuard::suspend();
+            ready_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        }
+        std::sync::Arc::downgrade(&queue)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn assert_joined_service_control_drained() {
+        assert_eq!(REENTRANT_CONTEXT_RELEASES.load(Ordering::SeqCst), 2);
+        assert_eq!(REENTRANT_CONTEXT_C_PUBLICATIONS.load(Ordering::SeqCst), 1);
+        JOINED_SERVICE_ORIGIN.store(0, Ordering::SeqCst);
+    }
+
     fn publish_context_binding(py: &crate::PyToken<'_>, class: u64) {
         let class_ptr = crate::obj_from_bits(class)
             .as_ptr()
@@ -1095,40 +1565,71 @@ mod tests {
     }
 
     extern "C" fn repopulate_context_binding(_self: u64) -> u64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        if JOINED_SERVICE_ORIGIN.load(Ordering::SeqCst) != 0 {
+            assert!(crate::concurrency::execution::current_thread_holds_shutdown_drain_custody());
+            assert!(!crate::state::runtime_state::current_thread_holds_runtime_execution_lease());
+            assert_eq!(
+                crate::state::runtime_state::runtime_state_for_gil()
+                    .unwrap()
+                    .identity(),
+                JOINED_SERVICE_ORIGIN.load(Ordering::SeqCst)
+            );
+        }
         crate::with_gil_entry_nopanic!(py, {
             if REENTRANT_CONTEXT_RELEASES.fetch_add(1, Ordering::SeqCst) == 0 {
+                if REENTRANT_CONTEXT_PUBLISH_C.load(Ordering::SeqCst) {
+                    if !molt_cpython_abi::api::object::current_thread_has_retained_runtime_state() {
+                        // The runtime callback deliberately enters the absent C
+                        // domain through its existing attachment owner, then
+                        // leaves it detached for the outer fixed-point drain.
+                        assert!(
+                            molt_cpython_abi::api::object::attach_runtime_execution_thread(
+                                runtime_state(py).identity()
+                            )
+                        );
+                        molt_cpython_abi::api::object::detach_runtime_execution_thread();
+                    }
+                    let dict = unsafe { molt_cpython_abi::api::sys::PyThreadState_GetDict() };
+                    assert!(!dict.is_null());
+                    REENTRANT_CONTEXT_C_PUBLICATIONS.fetch_add(1, Ordering::SeqCst);
+                }
                 publish_context_binding(py, REENTRANT_CONTEXT_CLASS.load(Ordering::SeqCst));
             }
             MoltObject::none().bits()
         })
     }
 
+    fn reentrant_context_class(py: &crate::PyToken<'_>) -> u64 {
+        let name = crate::attr_name_bits_from_bytes(py, b"ReentrantContextDefault").unwrap();
+        let class = crate::molt_class_new(name);
+        crate::dec_ref_bits(py, name);
+        crate::molt_class_set_base(class, crate::builtin_classes(py).object);
+        let class_ptr = crate::obj_from_bits(class).as_ptr().unwrap();
+        unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
+        let method = crate::builtins::functions::alloc_runtime_function_obj(
+            py,
+            crate::builtins::functions::runtime_fn_addr(
+                "repopulate_context_binding",
+                repopulate_context_binding as *const (),
+            ),
+            1,
+        );
+        assert!(!method.is_null());
+        let key = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
+        let method = MoltObject::from_ptr(method).bits();
+        crate::molt_set_attr_name(class, key, method);
+        crate::dec_ref_bits(py, key);
+        crate::dec_ref_bits(py, method);
+        assert!(!crate::exception_pending(py));
+        class
+    }
+
     #[test]
     fn callback_root_drain_revisits_context_bindings_repopulated_by_real_finalizers() {
         crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
             crate::with_gil_entry_nopanic!(py, {
-                let name =
-                    crate::attr_name_bits_from_bytes(py, b"ReentrantContextDefault").unwrap();
-                let class = crate::molt_class_new(name);
-                crate::dec_ref_bits(py, name);
-                crate::molt_class_set_base(class, crate::builtin_classes(py).object);
-                let class_ptr = crate::obj_from_bits(class).as_ptr().unwrap();
-                unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
-                let method = crate::builtins::functions::alloc_runtime_function_obj(
-                    py,
-                    crate::builtins::functions::runtime_fn_addr(
-                        "repopulate_context_binding",
-                        repopulate_context_binding as *const (),
-                    ),
-                    1,
-                );
-                assert!(!method.is_null());
-                let key = crate::attr_name_bits_from_bytes(py, b"__del__").unwrap();
-                let method = MoltObject::from_ptr(method).bits();
-                crate::molt_set_attr_name(class, key, method);
-                crate::dec_ref_bits(py, key);
-                crate::dec_ref_bits(py, method);
-                assert!(!crate::exception_pending(py));
+                let class = reentrant_context_class(py);
                 REENTRANT_CONTEXT_CLASS.store(class, Ordering::SeqCst);
                 REENTRANT_CONTEXT_RELEASES.store(0, Ordering::SeqCst);
                 publish_context_binding(py, class);
@@ -1157,7 +1658,51 @@ mod tests {
         });
     }
 
+    #[test]
+    fn worker_end_revisits_runtime_and_c_finalizer_publication() {
+        crate::test_support::RuntimeTestTransaction::with_trusted_fresh_runtime(|| {
+            for (initial_c_record, publish_c) in
+                [(true, false), (true, true), (false, false), (false, true)]
+            {
+                std::thread::spawn(move || {
+                    let entry = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+                    let py = entry.token();
+                    let class = reentrant_context_class(&py);
+                    REENTRANT_CONTEXT_CLASS.store(class, Ordering::SeqCst);
+                    REENTRANT_CONTEXT_RELEASES.store(0, Ordering::SeqCst);
+                    REENTRANT_CONTEXT_C_PUBLICATIONS.store(0, Ordering::SeqCst);
+                    REENTRANT_CONTEXT_PUBLISH_C.store(publish_c, Ordering::SeqCst);
+                    publish_context_binding(&py, class);
+                    if !initial_c_record {
+                        // Remove only the empty C domain. The real runtime
+                        // finalizers below still require repeated TLS cleanup.
+                        molt_cpython_abi::api::object::detach_runtime_execution_thread();
+                        molt_cpython_abi::api::object::clear_runtime_execution_thread_state(|| false);
+                        assert!(!molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
+                    }
+                    drop(entry);
+                    // Observe before native TLS destructors or another entry
+                    // could hide an unfinished cleanup pass in either domain.
+                    assert_eq!(REENTRANT_CONTEXT_RELEASES.load(Ordering::SeqCst), 2);
+                    assert_eq!(REENTRANT_CONTEXT_C_PUBLICATIONS.load(Ordering::SeqCst), usize::from(publish_c));
+                    assert!(!molt_cpython_abi::api::object::current_thread_has_retained_runtime_state());
+                    assert!(crate::CONTEXT_STACK.with(|stack| stack.borrow().is_empty()));
+                    let entry = crate::concurrency::RuntimeExecutionGuard::enter_with_worker_cleanup();
+                    let py = entry.token();
+                    assert!(!crate::builtins::contextvars::clear_thread_context(&py));
+                    crate::dec_ref_bits(&py, class);
+                    REENTRANT_CONTEXT_CLASS.store(0, Ordering::SeqCst);
+                    REENTRANT_CONTEXT_PUBLISH_C.store(false, Ordering::SeqCst);
+                }).join().unwrap();
+            }
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn traced_worker(should_panic: bool) -> (std::thread::Result<()>, Vec<&'static str>) {
+        let origin = crate::with_gil_entry_nopanic!(py, {
+            crate::state::runtime_state::RuntimeWorkerOrigin::new(crate::runtime_state(py))
+        });
         let (id_tx, id_rx) = std::sync::mpsc::channel();
         let (go_tx, go_rx) = std::sync::mpsc::channel();
         let (stage_tx, stage_rx) = std::sync::mpsc::channel();
@@ -1165,7 +1710,7 @@ mod tests {
             id_tx.send(std::thread::current().id()).unwrap();
             go_rx.recv().unwrap();
             crate::test_support::with_expected_panic(|| {
-                super::run_runtime_worker(|| {
+                super::run_runtime_worker(origin, || {
                     crate::with_gil_entry_nopanic!(_py, {
                         let _ = crate::runtime_state(_py);
                         if should_panic {
@@ -1188,6 +1733,7 @@ mod tests {
         (result, stage_rx.try_iter().collect())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn assert_runtime_worker_released_ic_tls(stages: &[&'static str]) {
         assert_eq!(
             stages
@@ -1200,6 +1746,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn normal_worker_releases_ic_tls_before_key_destruction() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         let (result, stages) = traced_worker(false);
@@ -1208,6 +1755,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn panicking_worker_does_not_double_panic_during_tls_cleanup() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         let (result, stages) = traced_worker(true);

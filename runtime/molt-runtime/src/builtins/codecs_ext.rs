@@ -164,19 +164,25 @@ mod error_handler_tests {
             (handler_bits, handler_ptr as usize, baseline)
         });
 
-        let worker = std::thread::spawn(move || {
-            crate::state::run_runtime_worker(|| {
-                crate::with_gil_entry_nopanic!(_py, {
-                    let name_ptr = alloc_string(_py, b"molt-test-runtime-wide-handler");
-                    let name_bits = MoltObject::from_ptr(name_ptr).bits();
-                    let looked_up = molt_codecs_lookup_error(name_bits);
-                    assert_eq!(looked_up, handler_bits);
-                    dec_ref_bits(_py, looked_up);
-                    dec_ref_bits(_py, name_bits);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let origin = crate::with_gil_entry_nopanic!(py, {
+                crate::state::runtime_state::RuntimeWorkerOrigin::new(runtime_state(py))
+            });
+            let worker = std::thread::spawn(move || {
+                crate::state::run_runtime_worker(origin, || {
+                    crate::with_gil_entry_nopanic!(_py, {
+                        let name_ptr = alloc_string(_py, b"molt-test-runtime-wide-handler");
+                        let name_bits = MoltObject::from_ptr(name_ptr).bits();
+                        let looked_up = molt_codecs_lookup_error(name_bits);
+                        assert_eq!(looked_up, handler_bits);
+                        dec_ref_bits(_py, looked_up);
+                        dec_ref_bits(_py, name_bits);
+                    });
                 });
             });
-        });
-        worker.join().unwrap();
+            worker.join().unwrap();
+        }
 
         crate::with_gil_entry_nopanic!(_py, {
             let removed = runtime_state(_py)

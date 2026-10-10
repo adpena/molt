@@ -47,8 +47,6 @@ TIMEOUT_MAX: float = _require_intrinsic("molt_thread_timeout_max")()
 error = RuntimeError
 """The standard _thread.error exception type (alias for RuntimeError)."""
 
-# Internal token counter for thread spawning.
-_THREAD_TOKEN_COUNTER: int = 0
 
 # ---------------------------------------------------------------------------
 # __all__
@@ -235,11 +233,6 @@ def allocate_lock() -> LockType:
 allocate = allocate_lock
 
 
-def _next_thread_token() -> int:
-    global _THREAD_TOKEN_COUNTER
-    _THREAD_TOKEN_COUNTER += 1
-    return _THREAD_TOKEN_COUNTER
-
 
 def start_new_thread(
     function: object,
@@ -261,8 +254,7 @@ def start_new_thread(
         raise TypeError("3rd arg must be a dict")
     if kwargs is None:
         kwargs = {}
-    token = _next_thread_token()
-    handle = _thread_spawn_shared_intrinsic(token, function, args, kwargs)
+    handle = _thread_spawn_shared_intrinsic(function, args, kwargs)
     ident = _thread_ident_intrinsic(handle)
     if ident is None:
         raise RuntimeError("thread started without publishing an identity")

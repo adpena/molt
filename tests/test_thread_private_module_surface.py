@@ -87,7 +87,7 @@ def _rlock_drop(handle):
     _State.rlocks.pop(handle, None)
 
 
-def _thread_spawn_shared(token, fn, args, kwargs):
+def _thread_spawn_shared(fn, args, kwargs):
     _State.next_thread += 1
     fn(*args, **kwargs)
     return _State.next_thread

@@ -1550,8 +1550,10 @@ mod park_tests {
             let far = object(py, b"far");
             let ready = object(py, b"cross-thread");
             let _ = molt_event_loop_call_later(handle, seconds(30.0), far);
+            let origin =
+                crate::state::runtime_state::RuntimeWorkerOrigin::new(crate::runtime_state(py));
             let publisher = std::thread::spawn(move || {
-                crate::state::run_runtime_worker(|| {
+                crate::state::run_runtime_worker(origin, || {
                     std::thread::sleep(Duration::from_millis(50));
                     let _ = molt_event_loop_call_soon(handle, ready);
                 })
@@ -1594,8 +1596,10 @@ mod park_tests {
             // field captured separately by the closure. The caller's task
             // reference stays live until the worker has joined.
             let scheduled = super::super::scheduler::MoltTask::new(py, crate::ptr_from_bits(task));
+            let origin =
+                crate::state::runtime_state::RuntimeWorkerOrigin::new(crate::runtime_state(py));
             let waker = std::thread::spawn(move || {
-                crate::state::run_runtime_worker(|| {
+                crate::state::run_runtime_worker(origin, || {
                     std::thread::sleep(Duration::from_millis(50));
                     crate::with_gil_entry_nopanic!(worker_py, {
                         assert!(enqueue_loop_task(worker_py, handle, scheduled).is_ok());

@@ -2223,10 +2223,11 @@ mod delivery_tests {
             let sigint = libc::SIGINT;
             let old = install(py, sigint, HANDLER_DEFAULT_INT);
             assert_eq!(signal_set_interrupt(sigint as i64), 0);
+            let origin = crate::state::runtime_state::RuntimeWorkerOrigin::new(runtime_state(py));
             let observed = {
                 let _released = crate::GilReleaseGuard::suspend();
-                std::thread::spawn(|| {
-                    crate::state::run_runtime_worker(|| {
+                std::thread::spawn(move || {
+                    crate::state::run_runtime_worker(origin, || {
                         crate::with_gil_entry_nopanic!(worker, {
                             let dispatched = signal_safepoint(worker);
                             (dispatched, exception_pending(worker), signal_owner_thread())

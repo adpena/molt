@@ -2515,7 +2515,9 @@ fn public_gil_boundary_does_not_steal_nested_molt_custody() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     assert_eq!(crate::c_api::molt_init(), 0);
     crate::with_gil_entry_nopanic!(_py, {
-        molt_cpython_abi::api::object::attach_runtime_execution_thread();
+        molt_cpython_abi::api::object::attach_runtime_execution_thread(
+            crate::runtime_state(_py).identity(),
+        );
         assert_eq!(crate::c_api::molt_gil_acquire(), 0);
         assert_eq!(crate::c_api::molt_gil_release(), 0);
         assert!(crate::concurrency::gil::gil_held());

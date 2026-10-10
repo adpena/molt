@@ -110,10 +110,10 @@ fn stream_try_reserve_queued_bytes(stream: &MoltStream, len: usize) -> bool {
     if len == 0 {
         return true;
     }
+    let mut budget = stream.queue_budget.lock().unwrap();
     if stream.closed.load(AtomicOrdering::Acquire) {
         return false;
     }
-    let mut budget = stream.queue_budget.lock().unwrap();
     if !stream_can_reserve_bytes(budget.queued_bytes, len, stream.max_queued_bytes) {
         budget.blocked_sends = budget.blocked_sends.saturating_add(1);
         return false;
@@ -153,7 +153,11 @@ pub(crate) fn stream_release_queued_bytes(stream: &MoltStream, len: usize) {
 }
 
 pub(crate) fn stream_close_local(stream: &MoltStream) {
+    // Closing and the budget wait predicate share one mutex. Otherwise close
+    // can notify after the predicate check but before the worker starts waiting.
+    let budget = stream.queue_budget.lock().unwrap();
     stream.closed.store(true, AtomicOrdering::Release);
+    drop(budget);
     stream.queue_budget_cvar.notify_all();
 }
 
@@ -848,6 +852,72 @@ mod stream_tests {
         assert_eq!(second, vec![2u8; 1]);
         stream_release_queued_bytes(stream, second.len());
         unsafe { molt_stream_drop(stream_bits) };
+    }
+
+    #[test]
+    fn stream_close_preserves_budget_handoff_and_wakes_blocked_sender() {
+        let _test = crate::test_support::RuntimeTestTransaction::new();
+        let stream_bits = stream_new_with_byte_budget(0, STREAM_MIN_MAX_QUEUED_BYTES);
+        let stream = unsafe { &*(ptr_from_bits(stream_bits) as *mut MoltStream) };
+        let original = vec![7u8; STREAM_MIN_MAX_QUEUED_BYTES];
+        assert!(super::stream_enqueue_bytes(stream, original.clone()).is_ok());
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let stream = unsafe { &*(ptr_from_bits(stream_bits) as *mut MoltStream) };
+            done_tx
+                .send(stream_enqueue_bytes_blocking(stream, vec![8]))
+                .unwrap();
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let budget = loop {
+            let budget = stream.queue_budget.lock().unwrap();
+            if budget.blocked_sends != 0 {
+                break budget;
+            }
+            drop(budget);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sender did not reach budget wait"
+            );
+            thread::yield_now();
+        };
+        // Hold the actual predicate mutex across a competing close. A close
+        // which can publish without this handoff can lose the waiter's notify.
+        let (started_tx, started_rx) = mpsc::channel();
+        let (closed_tx, closed_rx) = mpsc::channel();
+        let closer = thread::spawn(move || {
+            let stream = unsafe { &*(ptr_from_bits(stream_bits) as *mut MoltStream) };
+            started_tx.send(()).unwrap();
+            super::stream_close_local(stream);
+            closed_tx.send(()).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let closed_without_budget = closed_rx.recv_timeout(Duration::from_millis(50)).is_ok();
+        drop(budget);
+        if !closed_without_budget {
+            closed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        closer.join().unwrap();
+        let refused = done_rx.recv_timeout(Duration::from_secs(2));
+        if refused.is_err() {
+            // Cleanup a failing implementation before its independent outcome
+            // assertion; this notification cannot satisfy the recorded oracle.
+            stream.queue_budget_cvar.notify_all();
+        }
+        worker.join().unwrap();
+        let preserved = stream.receiver.try_recv().unwrap();
+        let extra = stream.receiver.try_recv();
+        stream_release_queued_bytes(stream, preserved.len());
+        let accepts_after_close = super::stream_try_reserve_queued_bytes(stream, 1);
+        unsafe { molt_stream_drop(stream_bits) };
+        assert!(
+            !closed_without_budget,
+            "close bypassed the byte-budget handoff"
+        );
+        assert!(!refused.unwrap());
+        assert_eq!(preserved, original);
+        assert!(extra.is_err());
+        assert!(!accepts_after_close);
     }
 
     #[test]

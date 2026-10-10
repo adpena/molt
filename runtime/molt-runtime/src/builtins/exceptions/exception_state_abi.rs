@@ -426,6 +426,9 @@ fn service_async_work(_py: &PyToken<'_>) -> bool {
     // Automatic resource failure is retained as pending GC pressure and
     // telemetry rather than being confused with a user exception.
     let _ = unsafe { crate::object::gc::collect_pending(_py) };
+    // Bounded retirement uses its own cheap empty check and preserves pending
+    // errors only when it actually releases callback-bearing queued owners.
+    crate::builtins::concurrent::concurrent_reap_stopped_pools(_py);
     let drain_failed =
         molt_cpython_abi::api::pending_calls::make_pending_calls_at_runtime_safepoint() != 0;
     drain_failed || exception_pending(_py)
