@@ -258,9 +258,7 @@ def test_required_profiles_expand_before_the_package_allowlist_check() -> None:
     assert missing_package_capabilities(["net"], grants, policy, "client") == [
         "net.bind"
     ]
-    sockets_only = missing_package_capabilities(
-        ["net"], grants, policy, "sockets_only"
-    )
+    sockets_only = missing_package_capabilities(["net"], grants, policy, "sockets_only")
     assert "net.socket" not in sockets_only
     assert {"net.bind", "net.connect", "net.listen"} <= set(sockets_only)
     assert missing_package_capabilities(["fs.write"], grants, policy, None) == [

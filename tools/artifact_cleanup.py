@@ -452,11 +452,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for root in (cache_roots(repo_root) if result.returncode == 0 else ())
     ]
     returncode = next(
-        (
-            prune.returncode
-            for _root, prune in cache_results
-            if prune.returncode != 0
-        ),
+        (prune.returncode for _root, prune in cache_results if prune.returncode != 0),
         result.returncode,
     )
     if args.json:
