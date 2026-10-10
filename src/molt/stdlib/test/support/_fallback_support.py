@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 from typing import Any
 import contextlib
@@ -13,8 +12,6 @@ import os
 import sys
 import time
 import unittest
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 class _AlwaysEq:
@@ -237,5 +234,3 @@ __all__ = [
     "use_resources",
     "verbose",
 ]
-
-globals().pop("_require_intrinsic", None)

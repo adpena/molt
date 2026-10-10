@@ -8,9 +8,6 @@ import reprlib
 import sys
 import traceback
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 import asyncio.constants as constants
 
@@ -28,5 +25,3 @@ __all__ = [
     "sys",
     "traceback",
 ]
-
-globals().pop("_require_intrinsic", None)

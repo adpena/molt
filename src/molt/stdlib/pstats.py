@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
-_MOLT_IMPORT_SMOKE_RUNTIME_READY()
-
 
 class Stats:
     def __init__(self, *_args, **_kwargs) -> None:
@@ -20,5 +15,3 @@ class Stats:
 
 
 __all__ = ["Stats"]
-
-globals().pop("_require_intrinsic", None)

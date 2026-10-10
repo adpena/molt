@@ -15,11 +15,6 @@ use molt_runtime_core::prelude::*;
 // Unicode version
 // ---------------------------------------------------------------------------
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_unicodedata_runtime_ready() -> u64 {
-    MoltObject::from_bool(true).bits()
-}
-
 // ---------------------------------------------------------------------------
 // General category helpers
 // ---------------------------------------------------------------------------

@@ -4,10 +4,6 @@ from __future__ import annotations
 
 import os
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_require_intrinsic("molt_capabilities_has")
-
 
 class accumulate:
     pass
@@ -169,6 +165,3 @@ def dyld_find(name: str, executable_path: str | None = None, env: dict | None = 
 
 def framework_find(name: str):
     return name
-
-
-globals().pop("_require_intrinsic", None)

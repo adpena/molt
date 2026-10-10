@@ -461,11 +461,6 @@ fn iter_next_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<(u64, bool)> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_stdlib_probe() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_types_coroutine(func_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         if !crate::builtins::callable::is_callable_impl(_py, func_bits) {

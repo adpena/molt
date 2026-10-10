@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 if TYPE_CHECKING:
     from .protocols import BaseProtocol
@@ -118,5 +115,3 @@ __all__ = [
     "Transport",
     "WriteTransport",
 ]
-
-globals().pop("_require_intrinsic", None)

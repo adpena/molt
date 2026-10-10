@@ -20,8 +20,6 @@ def molt_typing(monkeypatch: pytest.MonkeyPatch):
         return lock.acquire(blocking, timeout)
 
     def require_intrinsic(name: str):
-        if name == "molt_stdlib_probe":
-            return None
         if name == "molt_generic_alias_new":
             return lambda origin, args: types.GenericAlias(origin, args)
         if name == "molt_typing_type_param":

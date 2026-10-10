@@ -547,18 +547,6 @@ pub extern "C" fn molt_logging_file_handler_emit(
     })
 }
 
-// ─── copy.replace intrinsic ─────────────────────────────────────────────────
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_copy_replace(obj_bits: u64, changes_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        // copy.replace creates a modified shallow copy.
-        // For Molt's supported types, apply changes dict on top of a shallow copy.
-        let _ = changes_bits; // changes are applied Python-side
-        crate::builtins::copy_mod::molt_copy_copy(obj_bits)
-    })
-}
-
 // ─── pprint format/isreadable/isrecursive with context ──────────────────────
 
 #[unsafe(no_mangle)]
@@ -798,23 +786,6 @@ pub extern "C" fn molt_shlex_quote(text_bits: u64) -> u64 {
             return MoltObject::none().bits();
         }
         MoltObject::from_ptr(out_ptr).bits()
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_shlex_split(text_bits: u64, whitespace_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(text) = string_obj_to_owned(obj_from_bits(text_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "shlex.split argument must be str");
-        };
-        let Some(whitespace) = string_obj_to_owned(obj_from_bits(whitespace_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "shlex.split whitespace must be str");
-        };
-        let parts = match shlex_split_impl(&text, &whitespace, true, false, "#", true, "") {
-            Ok(parts) => parts,
-            Err(msg) => return raise_exception::<_>(_py, "ValueError", &msg),
-        };
-        alloc_string_list(_py, &parts)
     })
 }
 
@@ -1539,54 +1510,4 @@ pub extern "C" fn molt_compileall_compile_path(
         }
         MoltObject::from_bool(success).bits()
     })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_logging_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_wsgiref_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zipapp_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_zlib_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_xmlrpc_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_tomllib_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_trace_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_subprocess_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_symtable_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_import_smoke_runtime_ready() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(true).bits() })
 }

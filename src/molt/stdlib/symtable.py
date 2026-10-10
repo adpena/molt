@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import ast
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_SYMTABLE_RUNTIME_READY = _require_intrinsic("molt_symtable_runtime_ready")
 
 _FUNCTION_NODE_TYPES = tuple(
     cls
@@ -148,7 +145,6 @@ def _build_function_table(
 
 
 def symtable(code: str, filename: str, compile_type: str) -> _SymbolTable:
-    _MOLT_SYMTABLE_RUNTIME_READY()
     if not isinstance(code, str):
         raise TypeError("code must be str")
     if not isinstance(filename, str):
@@ -175,5 +171,3 @@ def symtable(code: str, filename: str, compile_type: str) -> _SymbolTable:
 
 
 __all__ = ["symtable"]
-
-globals().pop("_require_intrinsic", None)

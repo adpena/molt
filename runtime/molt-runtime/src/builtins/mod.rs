@@ -34,7 +34,6 @@ pub(crate) mod functions_logging;
 pub(crate) mod functions_pickle;
 pub(crate) mod functions_re;
 pub(crate) mod functions_stat;
-pub(crate) mod functions_textwrap;
 pub(crate) mod functools;
 pub(crate) mod inspect;
 pub(crate) mod io;

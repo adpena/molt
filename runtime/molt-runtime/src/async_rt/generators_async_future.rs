@@ -744,44 +744,6 @@ pub unsafe extern "C" fn molt_promise_set_result(future_bits: u64, result_bits: 
     }
 }
 
-/// # Safety
-/// - `future_bits` must be a valid pointer to a Molt promise future.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_promise_set_exception(future_bits: u64, exc_bits: u64) -> u64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            let Some(task_ptr) = resolve_task_ptr(future_bits) else {
-                return raise_exception::<_>(_py, "TypeError", "object is not awaitable");
-            };
-            let _header = header_from_obj_ptr(task_ptr);
-            if crate::object::object_poll_fn(task_ptr) != promise_poll_fn_addr() {
-                return raise_exception::<_>(_py, "TypeError", "object is not a promise");
-            }
-            if crate::object::object_state(task_ptr) != 0 {
-                return MoltObject::none().bits();
-            }
-            let payload_ptr = task_ptr as *mut u64;
-            *payload_ptr = exc_bits;
-            inc_ref_bits(_py, exc_bits);
-            crate::object::object_set_state(task_ptr, 2);
-            if async_trace_enabled() || promise_trace_enabled() {
-                eprintln!(
-                    "molt async trace: promise_set_exception task=0x{:x}",
-                    task_ptr as usize
-                );
-            }
-            let waiter_count = wake_await_waiters(_py, task_ptr);
-            if async_trace_enabled() || promise_trace_enabled() {
-                eprintln!(
-                    "molt async trace: promise_wake task=0x{:x} waiters={}",
-                    task_ptr as usize, waiter_count
-                );
-            }
-            MoltObject::none().bits()
-        })
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_async_sleep(delay_bits: u64, result_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {

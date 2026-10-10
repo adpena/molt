@@ -24,7 +24,6 @@ _molt_configparser_remove_section = _require_intrinsic(
     "molt_configparser_remove_section"
 )
 _molt_configparser_remove_option = _require_intrinsic("molt_configparser_remove_option")
-_molt_configparser_write = _require_intrinsic("molt_configparser_write")
 _molt_configparser_drop = _require_intrinsic("molt_configparser_drop")
 _molt_configparser_write_string = _require_intrinsic("molt_configparser_write_string")
 _molt_configparser_get_raw = _require_intrinsic("molt_configparser_get_raw")

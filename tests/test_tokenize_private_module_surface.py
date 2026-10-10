@@ -16,11 +16,7 @@ import sys
 from tests.stdlib_intrinsic_registry import install_registry
 
 
-calls = []
-
 install_registry({{
-    "molt_import_smoke_runtime_ready": lambda: calls.append("import_ready"),
-    "molt_tokenize_runtime_ready": lambda: calls.append("ready"),
     "molt_tokenize_scan": lambda source: [
         (1, "x", (1, 0), (1, 1), source.splitlines()[0]),
         (4, "\\n", (1, 1), (1, 2), source.splitlines()[0]),
@@ -51,8 +47,7 @@ for name, type_name, is_callable in rows:
 
 checks = {{
     "behavior": (
-        calls == ["import_ready", "ready"]
-        and _private.TokenInfo is tokenize.TokenInfo
+        _private.TokenInfo is tokenize.TokenInfo
         and _private.tokenize is tokenize.tokenize
         and tokens[0].type == _private.ENCODING
         and tokens[1].type == _private.NAME

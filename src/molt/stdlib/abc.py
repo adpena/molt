@@ -20,7 +20,6 @@ from _abc import (
     _reset_caches,
 )
 
-_MOLT_ABC_BOOTSTRAP = _require_intrinsic("molt_abc_bootstrap")
 _MOLT_ABC_UPDATE_ABSTRACTMETHODS = _require_intrinsic("molt_abc_update_abstractmethods")
 
 classmethod = _builtins.classmethod
@@ -198,7 +197,6 @@ class ABC(metaclass=ABCMeta):
     __slots__ = ()
 
 
-del _MOLT_ABC_BOOTSTRAP
 del _MOLT_ABC_UPDATE_ABSTRACTMETHODS
 
 globals().pop("_require_intrinsic", None)

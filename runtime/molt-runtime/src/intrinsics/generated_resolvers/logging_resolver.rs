@@ -34,11 +34,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             crate::molt_logging_config_stop_listening as *const (),
         )),
         #[cfg(feature = "stdlib_logging")]
-        "molt_logging_runtime_ready" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_logging_runtime_ready",
-            crate::molt_logging_runtime_ready as *const (),
-        )),
-        #[cfg(feature = "stdlib_logging")]
         "molt_logging_file_handler_emit" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_logging_file_handler_emit",
             crate::molt_logging_file_handler_emit as *const (),

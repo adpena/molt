@@ -6,9 +6,6 @@ from typing import Any
 
 import hashlib as _hashlib
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_require_intrinsic("molt_capabilities_has")
 
 _GIL_MINSIZE = 2048
 implementation = "molt"
@@ -90,5 +87,3 @@ __all__ = [
     "shake_128",
     "shake_256",
 ]
-
-globals().pop("_require_intrinsic", None)

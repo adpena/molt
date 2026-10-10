@@ -15,9 +15,6 @@ def cast(_tp, value):  # type: ignore[override]
     return value
 
 
-_require_intrinsic("molt_stdlib_probe")
-
-
 def _require_callable_intrinsic(name: str):
     value = _require_intrinsic(name)
     if not callable(value):
@@ -25,9 +22,6 @@ def _require_callable_intrinsic(name: str):
     return value
 
 
-_molt_weakref_get = _require_callable_intrinsic("molt_weakref_get")
-_molt_weakref_callback = _require_callable_intrinsic("molt_weakref_callback")
-_molt_weakref_peek = _require_callable_intrinsic("molt_weakref_peek")
 _molt_weakref_finalize_track = _require_callable_intrinsic(
     "molt_weakref_finalize_track"
 )

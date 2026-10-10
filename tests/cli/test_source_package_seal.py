@@ -367,7 +367,8 @@ def test_seal_commit_recovery_reclaims_partially_deleted_candidate(
     with monkeypatch.context() as faults:
 
         def partial_remove(path, *args, **kwargs):
-            if path.parent == commit.candidate_root.parent:
+            # Deletion may use the extended-length spelling on Windows.
+            if Path(path).parent.samefile(commit.candidate_root.parent):
                 (path / "source-package-seal.json").unlink()
                 raise OSError("injected after candidate manifest unlink")
             return real_remove(path, *args, **kwargs)

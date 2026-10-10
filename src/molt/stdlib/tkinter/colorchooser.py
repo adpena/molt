@@ -3,7 +3,6 @@
 from _intrinsics import require_intrinsic as _require_intrinsic
 from tkinter import commondialog as _commondialog
 
-_MOLT_TK_COMMONDIALOG_SHOW = _require_intrinsic("molt_tk_commondialog_show")
 _molt_tk_hex_to_rgb = _require_intrinsic("molt_tk_hex_to_rgb")
 
 Dialog = _commondialog.Dialog

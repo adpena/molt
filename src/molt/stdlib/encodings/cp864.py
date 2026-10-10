@@ -695,9 +695,3 @@ encoding_map = {
     0xFEFB: 0x009D,  #  ARABIC LIGATURE LAM WITH ALEF ISOLATED FORM
     0xFEFC: 0x009E,  #  ARABIC LIGATURE LAM WITH ALEF FINAL FORM
 }
-
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
-
-globals().pop("_require_intrinsic", None)

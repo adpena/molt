@@ -1171,57 +1171,6 @@ pub extern "C" fn molt_sys_excepthook_write(text_bits: u64) -> u64 {
 // 8. Tier-0 gaps for click / trio / httpx support
 // ---------------------------------------------------------------------------
 
-/// `sys.argv` → list[str]
-///
-/// Returns the process command-line arguments.  The Python wrapper stores this
-/// as the canonical `sys.argv` list on first access.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_argv() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        crate::object::ops_sys::with_process_argv(_py, |args| {
-            let mut bits_vec: Vec<u64> = Vec::with_capacity(args.len());
-            for arg in args {
-                let ptr = alloc_string(_py, arg);
-                if ptr.is_null() {
-                    for &bits in &bits_vec {
-                        dec_ref_bits(_py, bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-                bits_vec.push(MoltObject::from_ptr(ptr).bits());
-            }
-            let ptr = alloc_list(_py, &bits_vec);
-            for &bits in &bits_vec {
-                dec_ref_bits(_py, bits);
-            }
-            if ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(ptr).bits()
-            }
-        })
-    })
-}
-
-/// `sys.modules` → dict[str, module]
-///
-/// Returns an empty dict that the Python wrapper seeds with the actual module
-/// cache.  The real `sys.modules` dict lives on the Python side and is
-/// synchronised through `molt_module_import`.  This intrinsic provides the
-/// initial empty dict so that the `sys` module object has a `modules`
-/// attribute at bootstrap time.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_sys_modules() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let dict_ptr = alloc_dict_with_pairs(_py, &[]);
-        if dict_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(dict_ptr).bits()
-        }
-    })
-}
-
 /// `sys.path` → list[str]
 ///
 /// Returns the initial module search path derived from explicit Molt module

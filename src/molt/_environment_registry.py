@@ -110,36 +110,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "developer",
-      "default": "1",
-      "kind": "bool",
-      "owner": "tools/harness_memory_guard.py",
-      "root_fallback": "MOLT_STALE_ORPHAN_CLEANUP",
-      "suffix": "_STALE_ORPHAN_CLEANUP",
-      "summary": "Whether a guarded command first drains stale orphaned Molt process groups; set 0 only for a deliberate investigation.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "3600",
-      "kind": "float",
-      "owner": "tools/harness_memory_guard.py",
-      "root_fallback": "MOLT_STALE_ORPHAN_SEC",
-      "suffix": "_STALE_ORPHAN_SEC",
-      "summary": "Age in seconds after which an orphaned Molt process group counts as stale for the preflight drain.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "900",
-      "kind": "float",
-      "owner": "tools/harness_memory_guard.py",
-      "root_fallback": "MOLT_STALE_PYTEST_SEC",
-      "suffix": "_STALE_PYTEST_SEC",
-      "summary": "Age in seconds after which an orphaned pytest-style process group counts as stale for the preflight drain.",
-      "values": []
-    },
-    {
-      "audience": "developer",
       "default": "",
       "kind": "float",
       "owner": "tools/harness_memory_guard.py",

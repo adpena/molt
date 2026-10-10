@@ -7,10 +7,6 @@ from typing import Any
 import hashlib as _hashlib
 import hmac as _hmac
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_require_intrinsic("molt_capabilities_has")
-
 
 class UnknownHashError(ValueError):
     pass
@@ -105,6 +101,3 @@ __all__ = [
     "compute_sha512",
     "new",
 ]
-
-
-globals().pop("_require_intrinsic", None)

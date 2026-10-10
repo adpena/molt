@@ -6,9 +6,10 @@ import ast
 from pathlib import Path
 
 from molt.stdlib_intrinsic_policy import (
-    STDLIB_PROBE_INTRINSIC,
     intrinsic_names_from_source,
+    stdlib_module_intrinsic_facts,
 )
+from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 from tools.stdlib_full_coverage_manifest import (
     STDLIB_FULLY_COVERED_MODULES,
     STDLIB_REQUIRED_INTRINSICS_BY_MODULE,
@@ -55,9 +56,13 @@ def test_low_level_weakref_module_owns_native_type_facade_without_cycle() -> Non
 
 
 def test_weakref_full_coverage_contract_tracks_only_facade_intrinsic_loads() -> None:
-    source = (ROOT / "src/molt/stdlib/weakref.py").read_text(encoding="utf-8")
+    facts = stdlib_module_intrinsic_facts(
+        "weakref",
+        ROOT / "src/molt/stdlib/weakref.py",
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
     required = set(STDLIB_REQUIRED_INTRINSICS_BY_MODULE["weakref"])
-    assert required == intrinsic_names_from_source(source) - {STDLIB_PROBE_INTRINSIC}
+    assert required == facts.intrinsic_use.used
     assert required.isdisjoint(
         {
             "molt_weakref_count",

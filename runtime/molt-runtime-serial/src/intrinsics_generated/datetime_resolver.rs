@@ -6,10 +6,6 @@ pub fn resolve_symbol_with(
     runtime_fn_addr: fn(&str, *const ()) -> u64,
 ) -> Option<u64> {
     match symbol {
-        "molt_datetime_runtime_ready" => Some(runtime_fn_addr(
-            "molt_runtime_serial::datetime::molt_datetime_runtime_ready",
-            crate::datetime::molt_datetime_runtime_ready as *const (),
-        )),
         "molt_datetime_ctime" => Some(runtime_fn_addr(
             "molt_runtime_serial::datetime::molt_datetime_ctime",
             crate::datetime::molt_datetime_ctime as *const (),
@@ -65,10 +61,6 @@ pub fn resolve_symbol_with(
         "molt_datetime_isoweekday" => Some(runtime_fn_addr(
             "molt_runtime_serial::datetime::molt_datetime_isoweekday",
             crate::datetime::molt_datetime_isoweekday as *const (),
-        )),
-        "molt_datetime_local_utcoffset" => Some(runtime_fn_addr(
-            "molt_runtime_serial::datetime::molt_datetime_local_utcoffset",
-            crate::datetime::molt_datetime_local_utcoffset as *const (),
         )),
         "molt_datetime_now_local" => Some(runtime_fn_addr(
             "molt_runtime_serial::datetime::molt_datetime_now_local",
@@ -169,10 +161,6 @@ pub fn resolve_symbol_with(
         "molt_datetime_date_repr" => Some(runtime_fn_addr(
             "molt_runtime_serial::datetime::molt_datetime_date_repr",
             crate::datetime::molt_datetime_date_repr as *const (),
-        )),
-        "molt_datetime_datetime_repr" => Some(runtime_fn_addr(
-            "molt_runtime_serial::datetime::molt_datetime_datetime_repr",
-            crate::datetime::molt_datetime_datetime_repr as *const (),
         )),
         "molt_datetime_format_time" => Some(runtime_fn_addr(
             "molt_runtime_serial::datetime::molt_datetime_format_time",

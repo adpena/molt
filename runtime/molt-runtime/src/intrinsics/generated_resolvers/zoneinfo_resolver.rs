@@ -4,11 +4,6 @@
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
         #[cfg(feature = "stdlib_zoneinfo")]
-        "molt_zoneinfo_runtime_ready" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_zoneinfo_runtime_ready",
-            crate::molt_zoneinfo_runtime_ready as *const (),
-        )),
-        #[cfg(feature = "stdlib_zoneinfo")]
         "molt_zoneinfo_available_timezones" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_zoneinfo_available_timezones",
             crate::molt_zoneinfo_available_timezones as *const (),

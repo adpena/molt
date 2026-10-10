@@ -63,10 +63,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_sys_getprofile",
             crate::molt_sys_getprofile as *const (),
         )),
-        "molt_sys_bootstrap_payload" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_sys_bootstrap_payload",
-            crate::molt_sys_bootstrap_payload as *const (),
-        )),
         "molt_sys_stdin" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_sys_stdin",
             crate::molt_sys_stdin as *const (),
@@ -202,14 +198,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_sys_excepthook_write" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_sys_excepthook_write",
             crate::molt_sys_excepthook_write as *const (),
-        )),
-        "molt_sys_argv" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_sys_argv",
-            crate::molt_sys_argv as *const (),
-        )),
-        "molt_sys_modules" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_sys_modules",
-            crate::molt_sys_modules as *const (),
         )),
         "molt_sys_path" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_sys_path",
