@@ -939,6 +939,28 @@ def test_root_env_keeps_explicit_roots_and_pinned_sessions(
     assert pinned["MOLT_SESSION_ID"] == "shard-a"
 
 
+def test_root_env_gives_a_plain_clone_its_own_unscoped_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
+    clone = tmp_path / "src" / "clone"
+    clone.mkdir(parents=True)
+    generated = {"MOLT_SESSION_ID": "pytest-41", "MOLT_SESSION_ID_GENERATED": "1"}
+
+    env = RunContext(clone.resolve()).root_env(generated)
+
+    # A plain clone is its own artifact root and builds in its own target,
+    # as a developer run does, but never under a generated session.
+    assert env["MOLT_EXT_ROOT"] == str(clone.resolve())
+    assert env["CARGO_TARGET_DIR"] == str(clone.resolve() / "target")
+    # Differential scratch still leaves the checkout.
+    for key in ("MOLT_DIFF_ROOT", "MOLT_DIFF_TMPDIR"):
+        path = Path(env[key])
+        assert clone.resolve() not in (path, *path.parents), (key, path)
+
+
 def test_configured_artifact_root_is_none_when_unset_or_blank(tmp_path: Path) -> None:
     assert dx.configured_artifact_root({}, relative_to=tmp_path) is None
     assert dx.configured_artifact_root(
