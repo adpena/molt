@@ -72,6 +72,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct tools/ script execution
     import harness_memory_guard  # type: ignore
 
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
+from molt.dx import project_cargo_target_dir  # noqa: E402
 
 # ── Known-good frontier baselines (the committed authority) ───────────────────
 # Each entry encodes the EXPECTED far frontier a clean, all-fixes-landed tree
@@ -506,10 +507,13 @@ def run_wasm_confirm(witness_command: list[str]) -> int:
     modules instead of re-lowering them.
     """
     repo = repo_root()
+    # Both live in the checkout's Cargo target as the CLI resolves it
+    # (molt.dx.project_cargo_target_dir), outside the tree under a run context.
+    target = project_cargo_target_dir(repo, os.environ)
     cache_root = os.environ.get(
-        "MOLT_WITNESS_CACHE", str(repo / "target" / "witness-warm-cache")
+        "MOLT_WITNESS_CACHE", str(target / "witness-warm-cache")
     )
-    ctx_log = str(repo / "target" / "witness-lowering-ctx.jsonl")
+    ctx_log = str(target / "witness-lowering-ctx.jsonl")
     Path(cache_root).mkdir(parents=True, exist_ok=True)
     env = _env_for_drive()
     # (a) Persistent, shared, content-addressed frontend-lowering cache: a fresh

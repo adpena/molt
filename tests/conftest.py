@@ -105,18 +105,24 @@ def no_ambient_guard_caps(monkeypatch: pytest.MonkeyPatch) -> None:
 def developer_host_context(monkeypatch: pytest.MonkeyPatch) -> None:
     """Resolve paths as a developer host with no ambient run context does.
 
-    A hosted job exports the custody root for the whole job, and every test
-    session enters the Molt roots and session of its run context
+    A hosted job exports the custody root for the whole job, a workflow may
+    request external artifacts for every step (``MOLT_PREFER_EXTERNAL_ARTIFACTS``),
+    and every test session enters the Molt roots and session of its run context
     (``molt.dx.MOLT_ROOT_ENV_KEYS``). A test that builds a synthetic project,
     patches ``subprocess`` or asserts default roots would test that context
     instead. Tool caches (UV_*, TMPDIR, PYTHONPYCACHEPREFIX) stay, so child
     `uv run` calls keep their environment and write nothing into the checkout.
     """
-    from molt.dx import GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV, MOLT_ROOT_ENV_KEYS
+    from molt.dx import (
+        DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
+        GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
+        MOLT_ROOT_ENV_KEYS,
+    )
 
     for key in (
         GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV,
         *MOLT_ROOT_ENV_KEYS,
+        *DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
         "MOLT_SESSION_ID",
         "MOLT_SESSION_ID_GENERATED",
     ):
