@@ -976,8 +976,12 @@ probe: lexical parent traversal, verbatim trailing-dot/space components,
 non-DOS/non-UNC or malformed verbatim namespaces, and ambiguous or unavailable
 entry spelling. Admitted Windows extended-prefix projections must retain the
 original entry. These are proof-custody capability limits; ordinary compiler
-selection preserves its selected path and traversal. Optional driver spelling
-normalization cannot turn a valid product path into a proof-admission failure.
+selection preserves its selected path and traversal. Windows custody looks up
+real entries, so it cannot spell an absent file; POSIX custody is lexical. An
+owner that refuses an absent file takes it through
+`process_image_capture.custody_file` and gives the same typed refusal on every
+host. Optional driver spelling normalization cannot turn a valid product path
+into a proof-admission failure.
 Native Windows execution and lookup cost require their own qualification.
 
 Cargo build-script header discovery is independent of Rust linker selection.
