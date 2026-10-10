@@ -1039,7 +1039,11 @@ def test_github_job_timeout_covers_resource_aware_dag_envelope() -> None:
         command
         for command in PLAN.commands
         if command.id
-        in {"native.integration.bench-cli", "native.integration.capability-manifest"}
+        in {
+            "native.integration.bench-cli",
+            "native.integration.capability-manifest",
+            "native.integration.cli-smoke",
+        }
     ]
     native_build_seconds = sum(
         int(command.data["timeout_seconds"]) for command in native_builds
@@ -1452,14 +1456,11 @@ def test_wasm_e2e_commands_bind_complete_child_toolchain_closure() -> None:
     freestanding = by_id["wasm.test.freestanding-e2e"]
     parity = by_id["wasm.test.finally-pending-observer-parity"]
 
-    assert freestanding.argv[-2:] == (
-        "tests/test_wasm_freestanding.py::test_freestanding_produces_no_wasi_imports",
-        "tests/test_wasm_freestanding.py::test_freestanding_binary_is_valid_wasm",
-    )
+    assert freestanding.argv[-1] == "tests/test_wasm_freestanding.py"
     assert {"python", "uv", "rustc", "cargo", "wasm-ld", "wasm-tools"}.issubset(
         PLAN.required_toolchains(freestanding)
     )
-    assert parity.argv[-1].endswith("test_finally_pending_observer_native_wasm_parity")
+    assert parity.argv[-1] == "tests/test_finally_pending_observer_parity.py"
     assert {"clang", "lld-link", "wasm-ld", "wasm-tools"}.issubset(
         PLAN.required_toolchains(parity)
     )
@@ -4841,7 +4842,6 @@ def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
         "wasm.compile.hello",
         "wasm.compile.comprehension",
         "wasm.compile.sieve",
-        "wasm.test.freestanding-e2e",
     ):
         selected = {
             command.id
@@ -4855,8 +4855,10 @@ def test_wasm_runtime_and_host_prerequisites_follow_actual_consumers():
         for command in proof_plan._topological_commands(PLAN, command_id=split)
     } == {split, "wasm.build.backend", "wasm.build.split-runtime-release"}
     # The split artifact and browser VFS consumers execute Node, with no native
-    # precompile request. The native consumers below retain their host producer.
+    # precompile request. The native consumers below retain their host producer;
+    # the freestanding file's `--precompile` test is one of them.
     for name in (
+        "wasm.test.freestanding-e2e",
         "wasm.run.hello",
         "wasm.run.comprehension",
         "wasm.run.sieve",
@@ -4891,6 +4893,7 @@ def test_native_c_obligation_is_declared_only_for_confirmed_c_builders():
         "runtime.cost.candidate",
         "native.integration.bench-cli",
         "native.integration.capability-manifest",
+        "native.integration.cli-smoke",
         "llvm.test.differential",
         "llvm.build.backend",
         "mlir.test.backend",
