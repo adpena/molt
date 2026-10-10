@@ -408,10 +408,12 @@ def _report_checkout_target_leaks(session) -> None:  # type: ignore[no-untyped-d
         return
     session.exitstatus = pytest.ExitCode.TESTS_FAILED
     lines = [
-        f"This session wrote Cargo or build state into the checkout: {ROOT}",
+        f"Cargo or build state appeared in the checkout during this session: {ROOT}",
         *(f"  {entry}" for entry in leaks),
         "Tests build where a developer run does (molt.dx.RunContext.root_env); "
         "find the test that cleared or bypassed the run context (HF-114).",
+        "Every session that shares the checkout reports the same entries: a "
+        "proof-plan family runs its commands in parallel.",
     ]
     reporter = session.config.pluginmanager.get_plugin("terminalreporter")
     if reporter is None:
