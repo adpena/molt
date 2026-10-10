@@ -692,8 +692,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     runtime_class_borrowed: Some(fake_runtime_class_borrowed),
     take_pending_exception: fake_take_pending_exception,
     clear_pending_exception: fake_clear_pending_exception,
-    with_preserved_pending_exception: molt_cpython_abi::hooks::STUB_HOOKS
-        .with_preserved_pending_exception,
+    with_saved_pending_exception: molt_cpython_abi::hooks::STUB_HOOKS.with_saved_pending_exception,
     ..molt_cpython_abi::hooks::STUB_HOOKS
 };
 

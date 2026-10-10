@@ -260,7 +260,7 @@ pub(crate) fn wrapper_construct(
     let result = wrapper_initialize(py, kind, instance, args, keywords);
     dec_ref_bits(py, result);
     if exception_pending(py) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, instance));
+        dec_ref_bits(py, instance);
         MoltObject::none().bits()
     } else {
         instance

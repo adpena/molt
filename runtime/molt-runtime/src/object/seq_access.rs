@@ -35,9 +35,7 @@ impl PinnedSequenceItem<'_, '_> {
 
 impl Drop for PinnedSequenceItem<'_, '_> {
     fn drop(&mut self) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            dec_ref_bits(self.py, self.bits);
-        });
+        dec_ref_bits(self.py, self.bits);
     }
 }
 
@@ -68,11 +66,9 @@ impl std::ops::Deref for PinnedSequenceSnapshot<'_, '_> {
 
 impl Drop for PinnedSequenceSnapshot<'_, '_> {
     fn drop(&mut self) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            for &bits in self.values.iter() {
-                dec_ref_bits(self.py, bits);
-            }
-        });
+        for &bits in self.values.iter() {
+            dec_ref_bits(self.py, bits);
+        }
     }
 }
 
@@ -283,9 +279,7 @@ impl std::ops::Deref for PinnedTuple<'_, '_> {
 
 impl Drop for PinnedTuple<'_, '_> {
     fn drop(&mut self) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            dec_ref_bits(self.py, self.bits);
-        });
+        dec_ref_bits(self.py, self.bits);
     }
 }
 

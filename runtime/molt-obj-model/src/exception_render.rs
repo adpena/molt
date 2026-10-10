@@ -7,28 +7,21 @@
 use crate::{
     ExceptionLayoutKind, ExceptionStrSlot, ExceptionTypedField, MAX_EXCEPTION_TYPED_FIELDS,
 };
-use std::mem::ManuallyDrop;
-
-/// An adapter-owned reference with bulk cleanup under one error-preservation
-/// boundary. Release every value in iterator order, retaining ordinary Drop for
-/// individual owners and any values left behind by an unwinding cleanup.
-pub trait ExceptionRenderOwned: Sized {
-    fn release_all(values: impl Iterator<Item = Self>);
-}
 
 /// Fields are owned only when requested. Missing physical fields remain distinct
-/// from Python None. Field order preserves cleanup of args, typed fields, class.
-pub struct ExceptionRenderSnapshot<V: ExceptionRenderOwned> {
+/// from Python None. Declaration-order Drop retires args, typed fields, class,
+/// including during unwinding; adapters use ordinary semantic owners.
+pub struct ExceptionRenderSnapshot<V> {
     pub args: Option<V>,
     pub fields: [Option<V>; MAX_EXCEPTION_TYPED_FIELDS],
-    pub class: ManuallyDrop<V>,
+    pub class: V,
     pub layout: ExceptionLayoutKind,
     pub start: isize,
     pub end: isize,
     pub unicode_object_present: bool,
 }
 
-impl<V: ExceptionRenderOwned> ExceptionRenderSnapshot<V> {
+impl<V> ExceptionRenderSnapshot<V> {
     fn field(&self, field: ExceptionTypedField) -> Option<&V> {
         self.layout
             .field_policies()
@@ -38,27 +31,12 @@ impl<V: ExceptionRenderOwned> ExceptionRenderSnapshot<V> {
     }
 }
 
-impl<V: ExceptionRenderOwned> Drop for ExceptionRenderSnapshot<V> {
-    fn drop(&mut self) {
-        // The mandatory class owner moves exactly once into the cleanup
-        // iterator. Its ordinary Drop remains available if cleanup unwinds.
-        let class = unsafe { ManuallyDrop::take(&mut self.class) };
-        V::release_all(
-            self.args
-                .take()
-                .into_iter()
-                .chain(self.fields.iter_mut().filter_map(Option::take))
-                .chain(std::iter::once(class)),
-        );
-    }
-}
-
 /// The representation boundary, not a second rendering policy. Owned references
-/// must preserve both raised-error channels when released, including after a
-/// callback fails. Borrowed values remain valid through their snapshot owner.
+/// retire ordinarily, keeping operation errors visible to native deallocators.
+/// Borrowed values remain valid through their snapshot owner.
 pub trait ExceptionRenderContext {
     type Object: Copy;
-    type Owned: ExceptionRenderOwned;
+    type Owned;
 
     fn borrow(value: &Self::Owned) -> Self::Object;
     fn capture(
@@ -318,15 +296,9 @@ fn os_str<C: ExceptionRenderContext>(context: &C, object: C::Object) -> Option<C
 
 /// Keep both callback results alive through final formatting and release in
 /// evaluation order. The fixed pair does not allocate a reference-holder vector.
-struct UnicodeResults<V: ExceptionRenderOwned> {
+struct UnicodeResults<V> {
     reason: Option<V>,
     encoding: Option<V>,
-}
-
-impl<V: ExceptionRenderOwned> Drop for UnicodeResults<V> {
-    fn drop(&mut self) {
-        V::release_all(self.reason.take().into_iter().chain(self.encoding.take()));
-    }
 }
 
 fn unicode_str<C: ExceptionRenderContext>(

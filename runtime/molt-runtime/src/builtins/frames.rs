@@ -1194,7 +1194,13 @@ pub(crate) fn frame_stack_trace_payload_prepend_bits(
     }
 }
 
-pub(crate) fn traceback_payload_to_traceback_bits(_py: &PyToken<'_>, payload_bits: u64) -> u64 {
+/// Return an owned traceback, or `Some(None)` when the payload has no Python
+/// frames. Failure returns `None` with its own error selected; an incoming
+/// error is restored only after successful materialization.
+pub(crate) fn traceback_payload_to_traceback_bits(
+    _py: &PyToken<'_>,
+    payload_bits: u64,
+) -> Option<u64> {
     let mut payload_entries: Vec<FrameEntry> = Vec::new();
     let mut current_bits = payload_bits;
     while !obj_from_bits(current_bits).is_none() {
@@ -1210,66 +1216,79 @@ pub(crate) fn traceback_payload_to_traceback_bits(_py: &PyToken<'_>, payload_bit
         }
     }
     if payload_entries.is_empty() {
-        return MoltObject::none().bits();
+        return Some(MoltObject::none().bits());
     }
-    let snapshot = FrameStackSnapshot::retained(_py, payload_entries);
-    inc_ref_bits(_py, current_bits);
-    unsafe {
-        let Some(frames) = build_frame_chain(_py, &snapshot.entries) else {
-            dec_ref_bits(_py, current_bits);
-            return MoltObject::none().bits();
-        };
-        let mut next_bits = current_bits;
-        let mut built_any = false;
-        let mut frames_built: u64 = 0;
-        for (frame_bits, line) in frames.iter().rev().copied() {
-            let Some(tb_bits) = alloc_traceback_obj(_py, frame_bits, line, next_bits) else {
-                if !obj_from_bits(next_bits).is_none() {
-                    dec_ref_bits(_py, next_bits);
+    let mut result = None;
+    crate::builtins::exceptions::with_saved_raised_exception(_py, || {
+        result = (|| {
+            let snapshot = FrameStackSnapshot::retained(_py, payload_entries);
+            inc_ref_bits(_py, current_bits);
+            unsafe {
+                let Some(frames) = build_frame_chain(_py, &snapshot.entries) else {
+                    dec_ref_bits(_py, current_bits);
+                    return None;
+                };
+                let mut next_bits = current_bits;
+                let mut built_any = false;
+                let mut frames_built: u64 = 0;
+                for (frame_bits, line) in frames.iter().rev().copied() {
+                    let Some(tb_bits) = alloc_traceback_obj(_py, frame_bits, line, next_bits)
+                    else {
+                        if !obj_from_bits(next_bits).is_none() {
+                            dec_ref_bits(_py, next_bits);
+                        }
+                        for (bits, _) in frames.iter().copied() {
+                            dec_ref_bits(_py, bits);
+                        }
+                        return None;
+                    };
+                    if !obj_from_bits(next_bits).is_none() {
+                        dec_ref_bits(_py, next_bits);
+                    }
+                    next_bits = tb_bits;
+                    built_any = true;
+                    frames_built += 1;
                 }
                 for (bits, _) in frames.iter().copied() {
                     dec_ref_bits(_py, bits);
                 }
-                return MoltObject::none().bits();
-            };
-            if !obj_from_bits(next_bits).is_none() {
-                dec_ref_bits(_py, next_bits);
+                if !built_any || obj_from_bits(next_bits).is_none() {
+                    if !obj_from_bits(next_bits).is_none() {
+                        dec_ref_bits(_py, next_bits);
+                    }
+                    return Some(MoltObject::none().bits());
+                }
+                if profile_enabled(_py) {
+                    TRACEBACK_BUILD_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
+                    TRACEBACK_BUILD_FRAMES.fetch_add(frames_built, AtomicOrdering::Relaxed);
+                }
+                Some(next_bits)
             }
-            next_bits = tb_bits;
-            built_any = true;
-            frames_built += 1;
+        })();
+        if result.is_none() && !exception_pending(_py) {
+            raise_exception::<()>(_py, "MemoryError", "traceback materialization failed");
         }
-        for (bits, _) in frames.iter().copied() {
-            dec_ref_bits(_py, bits);
-        }
-        if !built_any || obj_from_bits(next_bits).is_none() {
-            if !obj_from_bits(next_bits).is_none() {
-                dec_ref_bits(_py, next_bits);
-            }
-            return MoltObject::none().bits();
-        }
-        if profile_enabled(_py) {
-            TRACEBACK_BUILD_COUNT.fetch_add(1, AtomicOrdering::Relaxed);
-            TRACEBACK_BUILD_FRAMES.fetch_add(frames_built, AtomicOrdering::Relaxed);
-        }
-        next_bits
-    }
+        result.is_some()
+    });
+    result
 }
 
-pub(crate) fn exception_materialize_traceback_bits(_py: &PyToken<'_>, exc_ptr: *mut u8) -> u64 {
+/// Return the borrowed published traceback. Absence and failure are distinct,
+/// including while the caller is observing an already raised exception.
+pub(crate) fn exception_materialize_traceback_bits(
+    _py: &PyToken<'_>,
+    exc_ptr: *mut u8,
+) -> Option<u64> {
     crate::gil_assert();
     unsafe {
         if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
-            return MoltObject::none().bits();
+            return Some(MoltObject::none().bits());
         }
         let trace_bits = crate::exception_trace_bits(exc_ptr);
         if !traceback_payload_is_lazy(trace_bits) {
-            return trace_bits;
+            return Some(trace_bits);
         }
-        let materialized_bits = traceback_payload_to_traceback_bits(_py, trace_bits);
-        if obj_from_bits(materialized_bits).is_none() {
-            return MoltObject::none().bits();
-        }
+        let materialized_bits = traceback_payload_to_traceback_bits(_py, trace_bits)?;
         let published = crate::builtins::exceptions::exception_publish_field_slot(
             _py,
             exc_ptr,
@@ -1277,10 +1296,7 @@ pub(crate) fn exception_materialize_traceback_bits(_py: &PyToken<'_>, exc_ptr: *
             materialized_bits,
         );
         dec_ref_bits(_py, materialized_bits);
-        if !published {
-            return MoltObject::none().bits();
-        }
-        materialized_bits
+        published.then_some(materialized_bits)
     }
 }
 

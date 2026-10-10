@@ -1257,12 +1257,13 @@ pub struct RuntimeHooks {
     /// projecting it into the C domain.
     pub clear_pending_exception: unsafe extern "C" fn(),
     /// Invoke `callback(context)` exactly once, synchronously, with the runtime
-    /// raised state detached on the stack, then restore that exact owner.
-    /// Emergency errors need no heap instance; handled state stays live.
-    /// The callback must not unwind across C and must drain cleanup errors
-    /// before returning. Neither callback nor context may escape this call.
-    pub with_preserved_pending_exception: unsafe extern "C" fn(
-        callback: unsafe extern "C" fn(context: *mut std::ffi::c_void),
+    /// raised state detached on the stack. Status 0 restores the exact incoming
+    /// owner; status -1 retains the callback failure and ordinarily retires the
+    /// incoming owner under it. Emergency errors need no heap instance; handled
+    /// state stays live. Success must leave no callback error. The callback must
+    /// not unwind across C; neither callback nor context may escape this call.
+    pub with_saved_pending_exception: unsafe extern "C" fn(
+        callback: unsafe extern "C" fn(context: *mut std::ffi::c_void) -> std::os::raw::c_int,
         context: *mut std::ffi::c_void,
     ),
     /// Return the runtime's active handled exception (`sys.exception()`) as an
@@ -1411,7 +1412,7 @@ pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
 // domains are ABI even when the pointer-sized table layout is unchanged.
 // Version 61 adds the sole Context owner and cold static-shell admission.
 // Version 62 moves Unicode percent formatting to the sole runtime engine.
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 62;
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 63;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -2465,8 +2466,8 @@ unsafe extern "C" fn stub_handled_exception_get() -> OwnedHandleResult {
     OwnedHandleResult::missing()
 }
 unsafe extern "C" fn stub_clear_pending_exception() {}
-unsafe extern "C" fn stub_with_preserved_pending_exception(
-    callback: unsafe extern "C" fn(*mut std::ffi::c_void),
+unsafe extern "C" fn stub_with_saved_pending_exception(
+    callback: unsafe extern "C" fn(*mut std::ffi::c_void) -> std::os::raw::c_int,
     context: *mut std::ffi::c_void,
 ) {
     unsafe { callback(context) };
@@ -2735,7 +2736,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     type_is_subtype: stub_type_is_subtype,
     take_pending_exception: stub_take_pending_exception,
     clear_pending_exception: stub_clear_pending_exception,
-    with_preserved_pending_exception: stub_with_preserved_pending_exception,
+    with_saved_pending_exception: stub_with_saved_pending_exception,
     handled_exception_get: stub_handled_exception_get,
     handled_exception_set: stub_handled_exception_set,
     native_gc_allocate: None,

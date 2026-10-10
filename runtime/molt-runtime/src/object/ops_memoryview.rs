@@ -59,7 +59,7 @@ pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
                 if pointer.is_null() {
                     return raise_exception(_py, "TypeError", "invalid native buffer exporter");
                 }
-                let lease = match molt_cpython_abi::api::memory::MemoryViewLease::acquire(
+                let lease = match crate::object::foreign::RuntimeBufferLease::acquire(
                     pointer,
                     molt_cpython_abi::abi_types::PyBUF_FULL_RO,
                     molt_cpython_abi::api::buffer::PyObject_GetBuffer,

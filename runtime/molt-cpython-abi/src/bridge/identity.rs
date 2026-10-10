@@ -208,9 +208,7 @@ impl RuntimeValue {
 impl Drop for RuntimeValue {
     fn drop(&mut self) {
         if self.owned {
-            crate::api::errors::with_preserved_error(|| unsafe {
-                (crate::hooks::hooks_or_stubs().dec_ref)(self.bits);
-            });
+            unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(self.bits) };
         }
     }
 }

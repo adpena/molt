@@ -179,6 +179,7 @@ impl<'a> PublicationBuildGuard<'a> {
     }
 
     fn resolve(&mut self, success: bool) -> bool {
+        let requested_success = success;
         self.resolved = true;
         let prepare = PUBLICATION_BUILD_STACK.with(|stack| {
             let mut stack = stack.borrow_mut();
@@ -213,11 +214,14 @@ impl<'a> PublicationBuildGuard<'a> {
                 self.index == 0 && !stack.rolling_back,
             )
         });
+        if !success && requested_success {
+            unsafe { ensure_result_error(c"recursive ABI view publication failed") };
+        }
         if commit {
             self.bridge.commit_publication_component(self.index);
         }
         if outermost {
-            crate::api::errors::with_preserved_error(|| self.bridge.finish_publication_stack());
+            self.bridge.finish_publication_stack();
         }
         success
     }
@@ -897,124 +901,130 @@ impl ObjectBridge {
     /// (including normalized error objects) have already committed and survive.
     /// No allocation is required after failure: the DFS records own retirement.
     pub(super) fn finish_publication_stack(&self) {
-        PUBLICATION_BUILD_STACK.with(|stack| {
-            let mut stack = stack.borrow_mut();
-            assert!(stack.active.is_empty());
-            stack.rolling_back = true;
-        });
-        let mut closed = 0;
-        let mut drained = 0;
-        loop {
-            let next = PUBLICATION_BUILD_STACK.with(|stack| {
+        let frames = crate::api::errors::with_preserved_error(|| {
+            PUBLICATION_BUILD_STACK.with(|stack| {
                 let mut stack = stack.borrow_mut();
-                // Close every sibling before the first decref. Callbacks may
-                // append frames; each appended frame is closed/drained once.
-                while closed < stack.frames.len() {
-                    let frame = &mut stack.frames[closed];
-                    if !frame.committed {
-                        frame.aborting = true;
-                    }
-                    closed += 1;
-                }
-                while drained < stack.frames.len() {
-                    let frame = &mut stack.frames[drained];
-                    drained += 1;
-                    if !frame.committed && !frame.edges_cleared {
-                        frame.edges_cleared = true;
-                        return Some((frame.bridge, frame.bits, frame.pointer));
-                    }
-                }
-                None
+                assert!(stack.active.is_empty());
+                stack.rolling_back = true;
             });
-            let Some((bridge, bits, pointer)) = next else {
-                break;
-            };
-            if pointer.is_null() {
-                continue;
-            }
-            let bridge = unsafe { &*bridge };
-            let entry = {
-                let mut handle = bridge.handle_shard(bits).lock();
-                let entry = handle
-                    .to_py
-                    .get_mut(&bits)
-                    .expect("rollback lost a pinned view");
-                assert_eq!(entry.view.py_obj(), pointer);
-                &raw mut **entry
-            };
-            // The runtime GIL and Building state exclude other users. Keep all
-            // entries in both identity maps, with their C pins, until every
-            // owned edge has been broken. Internal decrefs therefore still use
-            // canonical lifecycle custody and can never free a sibling view.
-            unsafe {
-                (*entry).view.release_owned_items_with(|edge, mirrored| {
-                    if mirrored {
-                        bridge.projection_unadopt_owned_ref(edge);
+            let mut closed = 0;
+            let mut drained = 0;
+            loop {
+                let next = PUBLICATION_BUILD_STACK.with(|stack| {
+                    let mut stack = stack.borrow_mut();
+                    // Close every sibling before the first decref. Callbacks may
+                    // append frames; each appended frame is closed/drained once.
+                    while closed < stack.frames.len() {
+                        let frame = &mut stack.frames[closed];
+                        if !frame.committed {
+                            frame.aborting = true;
+                        }
+                        closed += 1;
                     }
-                    bridge.decref_publication_reference(edge);
+                    while drained < stack.frames.len() {
+                        let frame = &mut stack.frames[drained];
+                        drained += 1;
+                        if !frame.committed && !frame.edges_cleared {
+                            frame.edges_cleared = true;
+                            return Some((frame.bridge, frame.bits, frame.pointer));
+                        }
+                    }
+                    None
                 });
-            }
-        }
-        let end = PUBLICATION_BUILD_STACK.with(|stack| stack.borrow().frames.len());
-        for index in 0..end {
-            let candidate = PUBLICATION_BUILD_STACK.with(|stack| {
-                let stack = stack.borrow();
-                let frame = &stack.frames[index];
-                (!frame.committed && !frame.pointer.is_null()).then_some((
-                    frame.bridge,
-                    frame.bits,
-                    frame.pointer,
-                ))
-            });
-            let Some((bridge, bits, pointer)) = candidate else {
-                continue;
-            };
-            let bridge = unsafe { &*bridge };
-            // Every private incoming owner must be in this retiring component.
-            // Check while the allocation and canonical identity are still live;
-            // a leftover mirror would become a dangling pointer after removal.
-            assert_eq!(
-                bridge.mirrored_c_refcount(pointer.addr()),
-                0,
-                "retiring projection still has an incoming mirrored owner"
-            );
-            let (mut address, mut handle) = bridge.lock_address_then_handle(pointer.addr(), bits);
-            let mut entry = handle
-                .to_py
-                .remove(&bits)
-                .expect("projection retirement identity disappeared");
-            assert_eq!(entry.view.py_obj(), pointer);
-            entry.publication = PublicationState::Retiring;
-            address.from_py.remove(&pointer.addr());
-            address.direct_molt_py.remove(&pointer.addr());
-            drop(handle);
-            drop(address);
-            PUBLICATION_BUILD_STACK
-                .with(|stack| stack.borrow_mut().frames[index].retired = Some(entry));
-        }
-        // Clear all old view marks before permitting a retry to publish a new
-        // identity. Every old allocation is still alive and already edge-free.
-        for index in 0..end {
-            let bits = PUBLICATION_BUILD_STACK.with(|stack| {
-                let stack = stack.borrow();
-                stack.frames[index].retired.as_ref().map(|entry| entry.bits)
-            });
-            if let Some(bits) = bits {
+                let Some((bridge, bits, pointer)) = next else {
+                    break;
+                };
+                if pointer.is_null() {
+                    continue;
+                }
+                let bridge = unsafe { &*bridge };
+                let entry = {
+                    let mut handle = bridge.handle_shard(bits).lock();
+                    let entry = handle
+                        .to_py
+                        .get_mut(&bits)
+                        .expect("rollback lost a pinned view");
+                    assert_eq!(entry.view.py_obj(), pointer);
+                    &raw mut **entry
+                };
+                // The runtime GIL and Building state exclude other users. Keep all
+                // entries in both identity maps, with their C pins, until every
+                // owned edge has been broken. Internal decrefs therefore still use
+                // canonical lifecycle custody and can never free a sibling view.
                 unsafe {
-                    (crate::hooks::hooks_or_stubs().try_mark_abi_view)(bits, 0);
+                    (*entry).view.release_owned_items_with(|edge, mirrored| {
+                        if mirrored {
+                            bridge.projection_unadopt_owned_ref(edge);
+                        }
+                        bridge.decref_publication_reference(edge);
+                    });
                 }
             }
-        }
-        let mut frames = PUBLICATION_BUILD_STACK.with(|stack| {
-            let mut stack = stack.borrow_mut();
-            assert!(stack.active.is_empty());
-            stack.rolling_back = false;
-            std::mem::take(&mut stack.frames)
+            let end = PUBLICATION_BUILD_STACK.with(|stack| stack.borrow().frames.len());
+            for index in 0..end {
+                let candidate = PUBLICATION_BUILD_STACK.with(|stack| {
+                    let stack = stack.borrow();
+                    let frame = &stack.frames[index];
+                    (!frame.committed && !frame.pointer.is_null()).then_some((
+                        frame.bridge,
+                        frame.bits,
+                        frame.pointer,
+                    ))
+                });
+                let Some((bridge, bits, pointer)) = candidate else {
+                    continue;
+                };
+                let bridge = unsafe { &*bridge };
+                // Every private incoming owner must be in this retiring component.
+                // Check while the allocation and canonical identity are still live;
+                // a leftover mirror would become a dangling pointer after removal.
+                assert_eq!(
+                    bridge.mirrored_c_refcount(pointer.addr()),
+                    0,
+                    "retiring projection still has an incoming mirrored owner"
+                );
+                let (mut address, mut handle) =
+                    bridge.lock_address_then_handle(pointer.addr(), bits);
+                let mut entry = handle
+                    .to_py
+                    .remove(&bits)
+                    .expect("projection retirement identity disappeared");
+                assert_eq!(entry.view.py_obj(), pointer);
+                entry.publication = PublicationState::Retiring;
+                address.from_py.remove(&pointer.addr());
+                address.direct_molt_py.remove(&pointer.addr());
+                drop(handle);
+                drop(address);
+                PUBLICATION_BUILD_STACK
+                    .with(|stack| stack.borrow_mut().frames[index].retired = Some(entry));
+            }
+            // Clear all old view marks before permitting a retry to publish a new
+            // identity. Every old allocation is still alive and already edge-free.
+            for index in 0..end {
+                let bits = PUBLICATION_BUILD_STACK.with(|stack| {
+                    let stack = stack.borrow();
+                    stack.frames[index].retired.as_ref().map(|entry| entry.bits)
+                });
+                if let Some(bits) = bits {
+                    unsafe {
+                        (crate::hooks::hooks_or_stubs().try_mark_abi_view)(bits, 0);
+                    }
+                }
+            }
+            let mut frames = PUBLICATION_BUILD_STACK.with(|stack| {
+                let mut stack = stack.borrow_mut();
+                assert!(stack.active.is_empty());
+                stack.rolling_back = false;
+                std::mem::take(&mut stack.frames)
+            });
+            // Drop physical allocations only after the whole component is detached.
+            for frame in &mut frames {
+                drop(frame.retired.take());
+            }
+            frames
         });
-        // Drop physical allocations only after the whole component is detached.
-        for frame in &mut frames {
-            drop(frame.retired.take());
-        }
+        // Consumed semantic roots retire after structural rollback has restored
+        // the selected failure. The existing DFS vector owns both phases.
         for frame in frames {
             if frame.committed || frame.pointer.is_null() {
                 continue;
@@ -1290,9 +1300,9 @@ impl ObjectBridge {
         &self,
         bits: AbiHandle,
         pointer: *mut PyTypeObject,
-        mro: crate::api::refcount::OwnedPyObject,
-    ) -> Option<crate::api::refcount::OwnedPyObject> {
-        use crate::api::refcount::{OwnedPyObject, Py_INCREF};
+        mro: crate::api::refcount::ProtectedPyObject,
+    ) -> Option<crate::api::refcount::ProtectedPyObject> {
+        use crate::api::refcount::{ProtectedPyObject, Py_INCREF};
         use crate::api::sequences::{PyTuple_GetItem, PyTuple_New, PyTuple_SetItem, PyTuple_Size};
         unsafe {
             let count = PyTuple_Size(mro.as_ptr());
@@ -1308,7 +1318,7 @@ impl ObjectBridge {
             if head == pointer.cast() {
                 return Some(mro);
             }
-            let physical = OwnedPyObject::from_owned(PyTuple_New(count));
+            let physical = ProtectedPyObject::from_owned(PyTuple_New(count));
             if physical.as_ptr().is_null() {
                 return None;
             }
@@ -1341,26 +1351,33 @@ impl ObjectBridge {
         pointer: *mut PyTypeObject,
         mirrored: bool,
     ) -> bool {
-        use crate::api::refcount::OwnedPyObject;
-        use crate::hooks::TypeMetadataField;
+        use crate::api::refcount::ProtectedPyObject;
+        use crate::hooks::{DecodedHandleResult, TypeMetadataField};
         unsafe {
-            let _view_owner = OwnedPyObject::from_borrowed(pointer.cast());
+            let _view_owner = crate::api::refcount::OwnedPyObject::from_borrowed(pointer.cast());
+            // Structural metadata has explicit status and is valid with an
+            // incoming error. Callback-result validation belongs to the public
+            // operation converters, not these retained field projections.
+            let project = |field| match (crate::hooks::hooks_or_stubs().type_metadata)(bits, field)
+                .decode()
+            {
+                DecodedHandleResult::Ok(value) => self.owned_handle_to_pyobj(value),
+                DecodedHandleResult::Missing | DecodedHandleResult::Error => std::ptr::null_mut(),
+            };
             let heap = if mirrored {
                 self.managed_type_storage(pointer).flatten()
             } else {
                 crate::abi_types::process_heap_type_storage(pointer)
             };
-            let mut values: [OwnedPyObject; 5] =
-                std::array::from_fn(|_| OwnedPyObject::from_owned(std::ptr::null_mut()));
+            let mut values: [ProtectedPyObject; 5] =
+                std::array::from_fn(|_| ProtectedPyObject::from_owned(std::ptr::null_mut()));
             let mut fields = [std::ptr::null_mut(); 5];
             let mut count = 0;
             for (field, destination) in [
                 (TypeMetadataField::Bases, &raw mut (*pointer).tp_bases),
                 (TypeMetadataField::Mro, &raw mut (*pointer).tp_mro),
             ] {
-                let value = OwnedPyObject::from_owned(self.owned_result_to_pyobj(
-                    (crate::hooks::hooks_or_stubs().type_metadata)(bits, field),
-                ));
+                let value = ProtectedPyObject::from_owned(project(field));
                 if value.as_ptr().is_null() {
                     ensure_result_error(c"type metadata projection is missing");
                     return false;
@@ -1381,9 +1398,7 @@ impl ObjectBridge {
                     (TypeMetadataField::Name, &raw mut (*heap).ht_name),
                     (TypeMetadataField::QualName, &raw mut (*heap).ht_qualname),
                 ] {
-                    values[count] = OwnedPyObject::from_owned(self.owned_result_to_pyobj(
-                        (crate::hooks::hooks_or_stubs().type_metadata)(bits, field),
-                    ));
+                    values[count] = ProtectedPyObject::from_owned(project(field));
                     if values[count].as_ptr().is_null() {
                         ensure_result_error(c"type metadata projection is missing");
                         return false;
@@ -1392,16 +1407,17 @@ impl ObjectBridge {
                     count += 1;
                 }
             }
-            let dictionary =
-                self.borrowed_result_to_borrowed_pyobj((crate::hooks::hooks_or_stubs()
-                    .type_dict_borrowed)(
-                    bits
-                ));
+            let dictionary = match (crate::hooks::hooks_or_stubs().type_dict_borrowed)(bits)
+                .decode()
+            {
+                DecodedHandleResult::Ok(dictionary) => self.handle_to_borrowed_pyobj(dictionary),
+                DecodedHandleResult::Missing | DecodedHandleResult::Error => std::ptr::null_mut(),
+            };
             if dictionary.is_null() {
                 ensure_result_error(c"type dictionary projection is missing");
                 return false;
             }
-            values[count] = OwnedPyObject::from_borrowed(dictionary);
+            values[count] = ProtectedPyObject::from_borrowed(dictionary);
             fields[count] = &raw mut (*pointer).tp_dict;
             count += 1;
             let mut shell_name = OwnedTypeName(std::ptr::null_mut());
@@ -1460,7 +1476,7 @@ impl ObjectBridge {
             if !committed {
                 ensure_result_error(c"type projection identity changed before publication");
             }
-            crate::api::errors::with_preserved_error(|| {
+            let retire = || {
                 for root in if committed { previous } else { acquired } {
                     if mirrored {
                         self.projection_decref(root);
@@ -1468,7 +1484,12 @@ impl ObjectBridge {
                         crate::api::refcount::Py_XDECREF(root);
                     }
                 }
-            });
+            };
+            if committed {
+                retire();
+            } else {
+                crate::api::errors::with_preserved_error(retire);
+            }
             committed
         }
     }
@@ -1488,36 +1509,41 @@ impl ObjectBridge {
             return ptr;
         }
         if let Some(ptr) = unsafe { self.published_pyobj(bits, owned) } {
-            if owned {
-                unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
-            }
             if ptr.is_null() {
                 unsafe {
                     ensure_result_error(c"ABI publication is rolling back");
                 }
             }
+            if owned {
+                unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
+            }
             return ptr;
         }
 
-        // A cold physical view may materialize fields or a type namespace.
-        // Incoming errors belong to the caller, not to those result hooks.
-        // Preserve them across the complete publication and rollback, without
-        // re-entering this decision through a possibly partial bootstrap hook.
+        // Cold preparation can materialize a namespace or traceback. Its
+        // explicit failure must replace the incoming error, including runtime
+        // emergency state; successful preparation restores the exact owner.
         let publish = || unsafe { self.publish_cold_pyobj(bits, owned) };
         if crate::api::errors::raised_error_pending() {
-            crate::api::errors::with_preserved_error(publish)
+            crate::api::errors::with_saved_error(|| {
+                let pointer = publish();
+                if pointer.is_null() {
+                    Err(crate::ErrorIndicatorSet)
+                } else {
+                    Ok(pointer)
+                }
+            })
+            .unwrap_or(std::ptr::null_mut())
         } else {
             publish()
         }
     }
 
-    /// Publish under the caller's runtime GIL and error-preservation boundary.
+    /// Publish under the caller's runtime GIL and fallible preparation boundary.
     pub(super) unsafe fn publish_cold_pyobj(&self, bits: AbiHandle, owned: bool) -> *mut PyObject {
         let Some(build_guard) = PublicationBuildGuard::enter(self, bits) else {
             if owned {
-                crate::api::errors::with_preserved_error(|| unsafe {
-                    (crate::hooks::hooks_or_stubs().dec_ref)(bits);
-                });
+                unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
             }
             return std::ptr::null_mut();
         };
@@ -1540,22 +1566,24 @@ impl ObjectBridge {
                 // view alive until its recursive component commits or unwinds.
                 (unsafe { self.build_pyobj_entry(bits, pinned_refs, has_non_view_runtime_owner) })
             else {
-                crate::api::errors::with_preserved_error(|| unsafe {
-                    (crate::hooks::hooks_or_stubs().dec_ref)(bits)
-                });
-                drop(build_guard);
                 unsafe {
-                    ensure_result_error(c"managed runtime handle could not build an ABI view")
-                };
+                    ensure_result_error(c"managed runtime handle could not build an ABI view");
+                    (crate::hooks::hooks_or_stubs().dec_ref)(bits);
+                }
+                drop(build_guard);
                 return std::ptr::null_mut();
             };
             match self.insert_managed_entry(bits, entry) {
                 Ok(()) => build_guard.inserted(raw_ptr),
                 Err((_, ManagedEntryRejection::Occupied)) => {
+                    let published = unsafe { self.published_pyobj(bits, owned) };
+                    if published.is_some_and(|ptr| ptr.is_null()) {
+                        unsafe { ensure_result_error(c"ABI publication is rolling back") };
+                    }
                     if !owned {
                         unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
                     }
-                    if let Some(ptr) = unsafe { self.published_pyobj(bits, owned) } {
+                    if let Some(ptr) = published {
                         if owned {
                             unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
                         }
@@ -1567,11 +1595,11 @@ impl ObjectBridge {
                     continue;
                 }
                 Err((_, rejection)) => {
-                    crate::api::errors::with_preserved_error(|| unsafe {
+                    unsafe {
+                        rejection.set_error();
                         (crate::hooks::hooks_or_stubs().dec_ref)(bits);
-                    });
+                    }
                     drop(build_guard);
-                    unsafe { rejection.set_error() };
                     return std::ptr::null_mut();
                 }
             }
@@ -1584,10 +1612,10 @@ impl ObjectBridge {
                 || !self.refresh_exception_view(bits)
                 || !self.refresh_memoryview_view(bits)
             {
-                drop(build_guard);
                 unsafe {
                     ensure_result_error(c"managed runtime handle could not populate an ABI view")
                 };
+                drop(build_guard);
                 return std::ptr::null_mut();
             }
             if !build_guard.finish() {
@@ -1625,9 +1653,7 @@ impl ObjectBridge {
         match result.decode() {
             crate::hooks::DecodedHandleResult::Ok(bits) => {
                 if crate::api::errors::raised_error_pending() {
-                    crate::api::errors::with_preserved_error(|| unsafe {
-                        (crate::hooks::hooks_or_stubs().dec_ref)(bits)
-                    });
+                    unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
                     unsafe {
                         crate::api::errors::replace_current_with_system_error(
                             "runtime owned-result hook returned a value with an exception set",
@@ -1818,11 +1844,16 @@ impl ObjectBridge {
         } else {
             false
         };
-        crate::api::errors::with_preserved_error(|| {
+        let retire = || {
             for pointer in staged {
                 unsafe { self.projection_decref(pointer) };
             }
-        });
+        };
+        if committed {
+            retire();
+        } else {
+            crate::api::errors::with_preserved_error(retire);
+        }
         if !committed {
             unsafe { ensure_result_error(c"method field publication failed") };
         }
@@ -1865,16 +1896,15 @@ impl ObjectBridge {
     ) -> *mut PyObject {
         let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
         let Some(build_guard) = PublicationBuildGuard::enter(self, bits) else {
-            crate::api::errors::with_preserved_error(|| unsafe {
-                (crate::hooks::hooks_or_stubs().dec_ref)(bits);
-            });
+            unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
             return std::ptr::null_mut();
         };
         let release_entry = |entry: &mut BridgeEntry| {
+            unsafe { ensure_result_error(c"C callable field publication failed") };
             crate::api::errors::with_preserved_error(|| unsafe {
                 entry.view.release_owned_items();
-                (crate::hooks::hooks_or_stubs().dec_ref)(bits);
-            })
+            });
+            unsafe { (crate::hooks::hooks_or_stubs().dec_ref)(bits) };
         };
         let edges = [
             (object.func.m_self, true),
@@ -1950,8 +1980,8 @@ impl ObjectBridge {
                 }
             }
             Err((mut entry, rejection)) => {
-                release_entry(&mut entry);
                 unsafe { rejection.set_error() };
+                release_entry(&mut entry);
                 std::ptr::null_mut()
             }
         }
@@ -2180,7 +2210,7 @@ impl ObjectBridge {
         // transaction drains the appended closed frames; their pins keep every
         // allocation alive in the meantime.
         if drain_now {
-            crate::api::errors::with_preserved_error(|| self.finish_publication_stack());
+            self.finish_publication_stack();
         }
     }
 }

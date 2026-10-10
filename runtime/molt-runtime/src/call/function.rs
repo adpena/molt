@@ -2609,7 +2609,7 @@ pub(crate) enum ArgumentTransfer {
 
 /// Moved argument references that no entry has taken over yet. A failure
 /// before entry, or a borrowing C callback's return, releases each exactly
-/// once in frame order without replacing either pending error channel.
+/// once in frame order with ordinary native deallocator error visibility.
 struct PendingMove<'a, 'py> {
     py: &'a PyToken<'py>,
     args: &'a [u64],
@@ -2624,11 +2624,9 @@ impl PendingMove<'_, '_> {
 
 impl Drop for PendingMove<'_, '_> {
     fn drop(&mut self) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            for &bits in self.args {
-                crate::dec_ref_bits(self.py, bits);
-            }
-        });
+        for &bits in self.args {
+            crate::dec_ref_bits(self.py, bits);
+        }
     }
 }
 

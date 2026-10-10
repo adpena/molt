@@ -274,7 +274,7 @@ pub unsafe extern "C" fn PyList_SET_ITEM(op: *mut PyObject, i: Py_ssize_t, v: *m
     }
     unsafe { crate::api::refcount::Py_XINCREF(old) };
     if unsafe { PyList_SetItem(op, i, v) } < 0 {
-        unsafe { crate::api::errors::release_preserving_error(&[old]) };
+        unsafe { crate::api::refcount::Py_XDECREF(old) };
     }
 }
 
@@ -313,7 +313,7 @@ pub unsafe extern "C" fn PyList_SetItem(
     };
     let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
     if !GLOBAL_BRIDGE.commit_list_view_partial(list_bits) {
-        unsafe { crate::api::errors::release_preserving_error(&[v]) };
+        unsafe { crate::api::refcount::Py_XDECREF(v) };
         return -1;
     }
     let value = if v.is_null() {
@@ -321,7 +321,7 @@ pub unsafe extern "C" fn PyList_SetItem(
     } else {
         let Some(value) = (unsafe { RuntimeValue::acquire_edge(v) }) else {
             unsafe {
-                crate::api::errors::release_preserving_error(&[v]);
+                crate::api::refcount::Py_XDECREF(v);
                 if crate::api::errors::PyErr_Occurred().is_null() {
                     crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_SystemError)
@@ -340,7 +340,7 @@ pub unsafe extern "C" fn PyList_SetItem(
         .map_or(MoltObject::none().bits(), RuntimeValue::bits);
     if !unsafe { GLOBAL_BRIDGE.prepare_list_set_stolen_ref(v) } {
         drop(value);
-        unsafe { crate::api::errors::release_preserving_error(&[v]) };
+        unsafe { crate::api::refcount::Py_XDECREF(v) };
         return -1;
     }
     let h = hooks_or_stubs();
@@ -358,7 +358,7 @@ pub unsafe extern "C" fn PyList_SetItem(
     let Some(old_bits) = old_bits else {
         unsafe { GLOBAL_BRIDGE.cancel_list_set_stolen_ref(v) };
         drop(value);
-        unsafe { crate::api::errors::release_preserving_error(&[v]) };
+        unsafe { crate::api::refcount::Py_XDECREF(v) };
         // OOB: CPython Py_XDECREFs the stolen reference, then IndexError.
         unsafe {
             if crate::api::errors::PyErr_Occurred().is_null() {
@@ -596,7 +596,7 @@ pub(crate) unsafe fn native_call_args(items: &[*mut PyObject]) -> *mut PyObject 
 /// runtime-backed managed views and are retired by the bridge before `tp_dealloc`
 /// dispatch; only subclass storage allocated by its type reaches this function.
 pub unsafe extern "C" fn molt_tuple_subtype_dealloc(op: *mut PyObject) {
-    crate::api::errors::with_preserved_error(|| unsafe {
+    unsafe {
         let Some(deallocation) = crate::api::typeobj::NativeDeallocation::storage(op) else {
             return;
         };
@@ -607,7 +607,7 @@ pub unsafe extern "C" fn molt_tuple_subtype_dealloc(op: *mut PyObject) {
             crate::api::refcount::Py_CLEAR(pointer);
         }
         deallocation.finish();
-    });
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -865,7 +865,7 @@ pub unsafe extern "C" fn PyTuple_SET_ITEM(op: *mut PyObject, i: Py_ssize_t, v: *
     }
     unsafe { crate::api::refcount::Py_XINCREF(old) };
     if unsafe { tuple_set_item(op, i, v, false) } < 0 {
-        unsafe { crate::api::errors::release_preserving_error(&[old]) };
+        unsafe { crate::api::refcount::Py_XDECREF(old) };
     }
 }
 
@@ -944,7 +944,7 @@ unsafe fn tuple_set_item(
     } else {
         let Some(value) = (unsafe { RuntimeValue::acquire_edge(v) }) else {
             unsafe {
-                crate::api::errors::release_preserving_error(&[v]);
+                crate::api::refcount::Py_XDECREF(v);
                 if crate::api::errors::PyErr_Occurred().is_null() {
                     crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_SystemError)
@@ -967,7 +967,7 @@ unsafe fn tuple_set_item(
     if !in_bounds {
         drop(value);
         unsafe {
-            crate::api::errors::release_preserving_error(&[v]);
+            crate::api::refcount::Py_XDECREF(v);
             if is_tuple {
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_IndexError)
@@ -995,7 +995,7 @@ unsafe fn tuple_set_item(
     drop(value);
     let Some(old_bits) = old_bits else {
         // `prepared` consumes the stolen C reference on this error path.
-        crate::api::errors::with_preserved_error(|| drop(prepared));
+        drop(prepared);
         if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
             unsafe { crate::api::errors::PyErr_BadInternalCall() };
         }
@@ -1046,7 +1046,7 @@ struct ComparisonItem(*mut PyObject);
 
 impl Drop for ComparisonItem {
     fn drop(&mut self) {
-        unsafe { crate::api::errors::release_preserving_error(&[self.0]) };
+        unsafe { crate::api::refcount::Py_XDECREF(self.0) };
     }
 }
 

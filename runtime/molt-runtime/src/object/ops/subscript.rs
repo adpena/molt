@@ -4,7 +4,6 @@ use crate::object::memoryview::{
     memoryview_adjust_format, memoryview_assign_slice, memoryview_is_index_key,
     memoryview_read_item_at, memoryview_slice, memoryview_write_item_at,
 };
-use molt_cpython_abi::api::errors::with_preserved_error;
 
 #[cfg(test)]
 mod comparison_consumer_tests;
@@ -57,7 +56,7 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                         crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__getitem__")
                     {
                         let result = call_callable1(_py, method, key_bits);
-                        with_preserved_error(|| dec_ref_bits(_py, method));
+                        dec_ref_bits(_py, method);
                         return result;
                     }
                     if exception_pending(_py) {
@@ -751,9 +750,9 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                         ) {
                             exception_stack_push();
                             let res = call_callable1(_py, call_bits, key_bits);
-                            with_preserved_error(|| dec_ref_bits(_py, call_bits));
+                            dec_ref_bits(_py, call_bits);
                             if exception_pending(_py) {
-                                with_preserved_error(|| dec_ref_bits(_py, res));
+                                dec_ref_bits(_py, res);
                                 exception_stack_pop(_py);
                                 return MoltObject::none().bits();
                             }
@@ -787,9 +786,9 @@ fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negati
                             dec_ref_bits(_py, name_bits);
                             exception_stack_push();
                             let res = call_callable1(_py, call_bits, key_bits);
-                            with_preserved_error(|| dec_ref_bits(_py, call_bits));
+                            dec_ref_bits(_py, call_bits);
                             if exception_pending(_py) {
-                                with_preserved_error(|| dec_ref_bits(_py, res));
+                                dec_ref_bits(_py, res);
                                 exception_stack_pop(_py);
                                 return MoltObject::none().bits();
                             }
@@ -980,10 +979,8 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                         crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__setitem__")
                     {
                         let result = call_callable2(_py, method, key_bits, val_bits);
-                        with_preserved_error(|| {
-                            dec_ref_bits(_py, method);
-                            dec_ref_bits(_py, result);
-                        });
+                        dec_ref_bits(_py, method);
+                        dec_ref_bits(_py, result);
                         return if exception_pending(_py) {
                             MoltObject::none().bits()
                         } else {
@@ -1566,10 +1563,8 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                         crate::builtins::attr::lookup_special_method(_py, obj_bits, b"__delitem__")
                     {
                         let result = call_callable1(_py, method, key_bits);
-                        with_preserved_error(|| {
-                            dec_ref_bits(_py, method);
-                            dec_ref_bits(_py, result);
-                        });
+                        dec_ref_bits(_py, method);
+                        dec_ref_bits(_py, result);
                         return if exception_pending(_py) {
                             MoltObject::none().bits()
                         } else {

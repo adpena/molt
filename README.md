@@ -3,8 +3,10 @@
 Molt is an optimizing Python-to-native and WebAssembly compiler with a Rust-owned
 runtime and explicit compatibility boundaries.
 
-Molt is under active development, not a drop-in replacement for CPython. It targets
-an expanding verified subset without a hidden host-Python fallback. Language,
+Molt is under active development, not a drop-in replacement for CPython. Its Python
+contract limits excessive dynamism to preserve efficient compilation and standalone
+execution. Verification records which configurations have passed conformance;
+incomplete implementation does not narrow that contract. Language,
 stdlib, third-party package support, and native/WASM parity remain incomplete;
 see [current status](docs/spec/STATUS.md) before choosing a workload.
 
@@ -38,7 +40,8 @@ defines test selection, source-change checks, and the exact cross-target pass la
 
 ## Project Contract
 
-- CPython `>=3.12` parity target within the verified subset.
+- CPython `>=3.12` parity target within the declared Python contract, governed by
+  version-pinned CPython source and applicable official PEPs.
   Current target-version policies are `3.12`, `3.13`, and `3.14`; accepting a
   version policy does not certify every feature on that version. The Python
   running the CLI must be at least the selected target minor; see

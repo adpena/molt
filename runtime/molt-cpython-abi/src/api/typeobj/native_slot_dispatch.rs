@@ -838,11 +838,14 @@ unsafe fn declaring_numeric_call<const SLOT: c_int>(
         if key.as_ptr().is_null() {
             return ptr::null_mut();
         }
-        let descriptor = type_namespace_lookup_with_bridge(
+        let descriptor = match type_namespace_lookup_with_bridge(
             &crate::bridge::GLOBAL_BRIDGE,
             declaring,
             key.as_ptr(),
-        );
+        ) {
+            Ok(descriptor) => descriptor,
+            Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
+        };
         if descriptor.is_null() {
             if errors::PyErr_Occurred().is_null() {
                 errors::PyErr_SetString(
@@ -886,20 +889,20 @@ unsafe fn numeric_operand_admitted<const TAG: u8>(value: *mut PyObject) -> bool 
 
 /// Existing managed values keep their original C identity. A genuine foreign
 /// numeric prefix uses the same callback-free storage projection as comparison.
-unsafe fn native_numeric_argument(value: *mut PyObject) -> OwnedPyObject {
+unsafe fn native_numeric_argument(value: *mut PyObject) -> crate::api::refcount::OwnedPyObject {
     unsafe {
         match crate::bridge::observe_pyobject(value) {
             Some(crate::bridge::ResolvedPyObject::ManagedMolt(_)) => {
-                return OwnedPyObject::from_borrowed(value);
+                return crate::api::refcount::OwnedPyObject::from_borrowed(value);
             }
             Some(crate::bridge::ResolvedPyObject::Foreign) => {}
-            None => return OwnedPyObject::from_owned(ptr::null_mut()),
+            None => return crate::api::refcount::OwnedPyObject::from_owned(ptr::null_mut()),
         }
         match numbers::numeric_native_value(value) {
-            Some(value) => OwnedPyObject::from_owned(
+            Some(value) => crate::api::refcount::OwnedPyObject::from_owned(
                 crate::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(value.into_owned_bits()),
             ),
-            None => OwnedPyObject::from_owned(ptr::null_mut()),
+            None => crate::api::refcount::OwnedPyObject::from_owned(ptr::null_mut()),
         }
     }
 }
@@ -907,14 +910,18 @@ unsafe fn native_numeric_argument(value: *mut PyObject) -> OwnedPyObject {
 /// A raw float/complex slot can be selected through a right operand or modulus.
 /// Admit its left carrier through the declared conversion, never __float__ or
 /// __complex__ on the operand's dynamic class.
-unsafe fn numeric_declaring_receiver<const TAG: u8>(value: *mut PyObject) -> OwnedPyObject {
+unsafe fn numeric_declaring_receiver<const TAG: u8>(
+    value: *mut PyObject,
+) -> crate::api::refcount::OwnedPyObject {
     unsafe {
         let value = native_numeric_argument(value);
         if value.as_ptr().is_null() {
             return value;
         }
         if TAG == MoltTypeTag::Float as u8 && numbers::PyFloat_Check(value.as_ptr()) == 0 {
-            return OwnedPyObject::from_owned(declaring_numeric_call::<{ ts::Py_nb_float }>(
+            return crate::api::refcount::OwnedPyObject::from_owned(declaring_numeric_call::<
+                { ts::Py_nb_float },
+            >(
                 &raw mut PyLong_Type,
                 &[value.as_ptr()],
             ));
@@ -925,7 +932,9 @@ unsafe fn numeric_declaring_receiver<const TAG: u8>(value: *mut PyObject) -> Own
             } else {
                 &raw mut PyFloat_Type
             };
-            let real = OwnedPyObject::from_owned(declaring_numeric_call::<{ ts::Py_nb_float }>(
+            let real = crate::api::refcount::OwnedPyObject::from_owned(declaring_numeric_call::<
+                { ts::Py_nb_float },
+            >(
                 declaring,
                 &[value.as_ptr()],
             ));
@@ -934,9 +943,11 @@ unsafe fn numeric_declaring_receiver<const TAG: u8>(value: *mut PyObject) -> Own
             }
             let real_value = numbers::PyFloat_AsDouble(real.as_ptr());
             if !errors::PyErr_Occurred().is_null() {
-                return OwnedPyObject::from_owned(ptr::null_mut());
+                return crate::api::refcount::OwnedPyObject::from_owned(ptr::null_mut());
             }
-            return OwnedPyObject::from_owned(numbers::PyComplex_FromDoubles(real_value, 0.0));
+            return crate::api::refcount::OwnedPyObject::from_owned(
+                numbers::PyComplex_FromDoubles(real_value, 0.0),
+            );
         }
         value
     }
@@ -1009,11 +1020,11 @@ unsafe extern "C" fn native_number_power<const TAG: u8>(
             return ptr::null_mut();
         }
         let modulus = if modulus.is_null() || modulus == &raw mut Py_None {
-            OwnedPyObject::from_borrowed(&raw mut Py_None)
+            crate::api::refcount::OwnedPyObject::from_borrowed(&raw mut Py_None)
         } else if numbers::PyLong_Check(modulus) != 0 {
             native_numeric_argument(modulus)
         } else {
-            OwnedPyObject::from_borrowed(modulus)
+            crate::api::refcount::OwnedPyObject::from_borrowed(modulus)
         };
         if modulus.as_ptr().is_null() {
             return ptr::null_mut();

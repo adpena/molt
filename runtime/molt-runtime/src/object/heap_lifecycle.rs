@@ -81,7 +81,7 @@ pub(crate) enum DetachedResource {
     Websocket(u64),
     Native(super::native_handle::DetachedNativeHandle),
     Foreign(usize),
-    NativeBuffer(molt_cpython_abi::api::memory::MemoryViewLease),
+    NativeBuffer(crate::object::foreign::RuntimeBufferLease),
     FileHandle {
         identity: usize,
         handle: *mut super::MoltFileHandle,
@@ -231,10 +231,16 @@ impl DetachedEdgeSink {
                         crate::dec_ref_bits(py, row.key);
                     }
                 }
-                DetachedResource::RuntimeView(view) => drop(view),
+                DetachedResource::RuntimeView(view) => {
+                    crate::object::foreign::retire_native_reference(|| drop(view));
+                }
                 DetachedResource::ListProjection(projection) => drop(projection),
-                DetachedResource::OwnedCFields(fields) => drop(fields),
-                DetachedResource::TypeProjection(fields) => drop(fields),
+                DetachedResource::OwnedCFields(fields) => {
+                    super::foreign::retire_native_reference(|| drop(fields))
+                }
+                DetachedResource::TypeProjection(fields) => {
+                    crate::object::foreign::retire_native_reference(|| drop(fields));
+                }
                 DetachedResource::IoSocket(bits) => {
                     crate::io_wait_release_detached_resource(py, bits)
                 }
@@ -1131,7 +1137,7 @@ pub(crate) unsafe fn try_clear_cycle_edges(py: &PyToken<'_>, ptr: *mut u8) -> i3
         return -1;
     };
     let status = unsafe { try_clear_cycle_edges_with_sink(py, ptr, &mut sink) };
-    molt_cpython_abi::api::errors::with_preserved_error(|| sink.release_all(py));
+    sink.release_all(py);
     status
 }
 

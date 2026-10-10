@@ -241,7 +241,9 @@ impl<'a, 'py> UnraisableTransaction<'a, 'py> {
             Some(RaisedSnapshot::None) | None => Ok(()),
         };
         discard_current_raised(self.py);
-        release_raised(self.py, &mut self.reporting);
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            release_raised(self.py, &mut self.reporting);
+        });
         let handled_restored = self.resolve_original();
         self.armed = false;
         assert!(
@@ -281,7 +283,9 @@ impl Drop for UnraisableTransaction<'_, '_> {
         }
         if !std::thread::panicking() {
             discard_current_raised(self.py);
-            release_raised(self.py, &mut self.reporting);
+            molt_cpython_abi::api::errors::with_preserved_error(|| {
+                release_raised(self.py, &mut self.reporting);
+            });
             let handled_restored = resolve_handled(self.py, &mut self.handled);
             resolve_raised(self.py, &mut self.raised);
             self.armed = false;
@@ -301,7 +305,9 @@ impl Drop for UnraisableTransaction<'_, '_> {
             discard_current_raised(self.py);
         }));
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            release_raised(self.py, &mut self.reporting);
+            molt_cpython_abi::api::errors::with_preserved_error(|| {
+                release_raised(self.py, &mut self.reporting);
+            });
         }));
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = resolve_handled(self.py, &mut self.handled);
@@ -318,8 +324,12 @@ impl Drop for UnraisableTransaction<'_, '_> {
             }));
         }
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            release_raised(self.py, &mut self.reporting);
-            release_raised(self.py, &mut self.raised);
+            molt_cpython_abi::api::errors::with_preserved_error(|| {
+                release_raised(self.py, &mut self.reporting);
+            });
+            molt_cpython_abi::api::errors::with_preserved_error(|| {
+                release_raised(self.py, &mut self.raised);
+            });
         }));
         self.armed = self.handled.is_some() || self.reporting.is_some() || self.raised.is_some();
     }

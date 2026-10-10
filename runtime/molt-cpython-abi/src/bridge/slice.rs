@@ -78,11 +78,16 @@ impl ObjectBridge {
         }
         // No bridge locks cross a decref. On success these are the displaced
         // mirrors; on rollback these are exactly the successfully staged ones.
-        crate::api::errors::with_preserved_error(|| {
+        let retire = || {
             for pointer in staged {
                 unsafe { self.projection_decref(pointer) };
             }
-        });
+        };
+        if committed {
+            retire();
+        } else {
+            crate::api::errors::with_preserved_error(retire);
+        }
         committed
     }
 }

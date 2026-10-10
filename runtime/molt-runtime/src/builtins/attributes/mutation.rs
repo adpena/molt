@@ -203,11 +203,26 @@ impl<'a, 'gil> TypeMutation<'a, 'gil> {
     /// retain that order while publishing the runtime epoch at their own commit.
     pub(crate) unsafe fn invalidate_native(&mut self) -> bool {
         unsafe {
-            if self
-                .native
-                .as_mut()
-                .is_none_or(|native| native.publish() == 0)
-            {
+            let Some(native) = self.native.as_mut() else {
+                return true;
+            };
+            struct PublicationRetirement<'a>(&'a mut molt_cpython_abi::bridge::RuntimeTypeMutation);
+            impl Drop for PublicationRetirement<'_> {
+                fn drop(&mut self) {
+                    crate::object::foreign::retire_native_reference(|| self.0.retire_published());
+                }
+            }
+            // Declared outside the saved-error scope: restoration runs before
+            // this guard on both return and unwind, before caller displaced
+            // owners. Prepared declaration/registry pins stay in the transaction.
+            let retirement = PublicationRetirement(native);
+            let status = if exception_pending(self.py) {
+                molt_cpython_abi::api::errors::with_preserved_error(|| retirement.0.publish())
+            } else {
+                retirement.0.publish()
+            };
+            drop(retirement);
+            if status == 0 {
                 true
             } else {
                 crate::cpython_abi_hooks::propagate_native_failure(
@@ -222,7 +237,7 @@ impl<'a, 'gil> TypeMutation<'a, 'gil> {
 
 impl Drop for TypeMutation<'_, '_> {
     fn drop(&mut self) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| drop(self.native.take()));
+        crate::object::foreign::retire_native_reference(|| drop(self.native.take()));
     }
 }
 
@@ -383,10 +398,8 @@ unsafe fn mutate_class_namespace(
             crate::object::class_refresh_declared_finalizer_flag(py, class_ptr);
         }
         let published = publication.publish();
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            drop(retired);
-            drop(publication);
-        });
+        drop(retired);
+        drop(publication);
         published
     }
 }
@@ -404,7 +417,7 @@ unsafe fn mutate_class_physical_dictionary(
         if let Some(value) = value {
             let result = crate::object::field_storage::set_item_deferred(py, class, name, value);
             let applied = result.is_ok();
-            molt_cpython_abi::api::errors::with_preserved_error(|| drop(result));
+            drop(result);
             return applied;
         }
         let Ok(Some(dictionary)) = crate::object::field_storage::current_dictionary(py, class)
@@ -420,10 +433,8 @@ unsafe fn mutate_class_physical_dictionary(
             name,
         );
         let applied = retired.is_some();
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            drop(retired);
-            dec_ref_bits(py, dictionary);
-        });
+        drop(retired);
+        dec_ref_bits(py, dictionary);
         applied
     }
 }
@@ -1744,7 +1755,7 @@ fn explicit_mutation_admitted(
             dec_ref_bits(py, class);
             return false;
         };
-        let _class_owner = crate::PtrDropGuard::preserving(class_ptr);
+        let _class_owner = crate::PtrDropGuard::new(class_ptr);
         let foreign = object_type_id(class_ptr) == TYPE_ID_FOREIGN
             || (object_type_id(class_ptr) == TYPE_ID_TYPE
                 && class_mro_view(py, class_ptr).iter().any(|base| {

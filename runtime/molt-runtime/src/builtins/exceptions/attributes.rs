@@ -130,7 +130,12 @@ pub extern "C" fn molt_exception_member_get(descriptor: u64, instance: u64) -> u
                     };
                     bits
                 }
-                Field::Traceback => crate::exception_materialize_traceback_bits(py, object),
+                Field::Traceback => {
+                    let Some(bits) = crate::exception_materialize_traceback_bits(py, object) else {
+                        return MoltObject::none().bits();
+                    };
+                    bits
+                }
                 Field::Context => exception_context_bits(object),
                 Field::Cause => exception_cause_bits(object),
                 Field::SuppressContext => exception_suppress_bits(object),

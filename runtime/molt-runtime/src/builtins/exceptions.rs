@@ -1800,18 +1800,29 @@ pub(crate) unsafe fn exception_commit_snapshot_unchecked(
 /// with a pending error. A failed publication never exposes the released tuple.
 pub(crate) fn exception_materialized_args_bits(_py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
     let raw_bits = unsafe { exception_args_bits(ptr) };
-    let tuple_ptr = if exception_args_is_lazy_single(raw_bits) {
-        let payload_bits = unsafe { exception_args_payload_bits(ptr) };
-        alloc_tuple(_py, &[payload_bits])
-    } else if obj_from_bits(raw_bits).is_none() || raw_bits == 0 {
-        alloc_tuple(_py, &[])
-    } else {
+    if !exception_args_is_lazy_single(raw_bits)
+        && !obj_from_bits(raw_bits).is_none()
+        && raw_bits != 0
+    {
         return Some(raw_bits);
-    };
-    if tuple_ptr.is_null() {
-        if !exception_pending(_py) {
-            raise_exception::<()>(_py, "MemoryError", "exception args allocation failed");
+    }
+    let mut tuple_ptr = std::ptr::null_mut();
+    with_saved_raised_exception(_py, || {
+        tuple_ptr = if exception_args_is_lazy_single(raw_bits) {
+            let payload_bits = unsafe { exception_args_payload_bits(ptr) };
+            alloc_tuple(_py, &[payload_bits])
+        } else {
+            alloc_tuple(_py, &[])
+        };
+        if tuple_ptr.is_null() {
+            if !exception_pending(_py) {
+                raise_exception::<()>(_py, "MemoryError", "exception args allocation failed");
+            }
+            return false;
         }
+        true
+    });
+    if tuple_ptr.is_null() {
         return None;
     }
     let new_bits = MoltObject::from_ptr(tuple_ptr).bits();
@@ -4475,10 +4486,20 @@ pub extern "C" fn molt_exception_add_note(self_bits: u64, note_bits: u64) -> u64
             return raise_exception::<u64>(_py, "TypeError", "add_note expects exception instance");
         }
         let note_obj = obj_from_bits(note_bits);
-        if note_obj
-            .as_ptr()
-            .is_none_or(|ptr| unsafe { object_type_id(ptr) } != TYPE_ID_STRING)
-        {
+        let is_string = note_obj.as_ptr().is_some_and(|ptr| unsafe {
+            match object_type_id(ptr) {
+                TYPE_ID_STRING => true,
+                crate::TYPE_ID_FOREIGN => {
+                    molt_cpython_abi::api::strings::PyUnicode_Check(
+                        std::ptr::with_exposed_provenance_mut(
+                            crate::object::foreign::foreign_ptr_from_obj(ptr),
+                        ),
+                    ) != 0
+                }
+                _ => false,
+            }
+        });
+        if !is_string {
             let note_type = type_name(_py, note_obj);
             let msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
                 format!("add_note() argument must be str, not {note_type}")
@@ -4517,16 +4538,44 @@ pub extern "C" fn molt_exception_add_note(self_bits: u64, note_bits: u64) -> u64
             }
         };
         dec_ref_bits(_py, name);
-        if obj_from_bits(list_bits)
-            .as_ptr()
-            .is_none_or(|ptr| unsafe { object_type_id(ptr) } != TYPE_ID_LIST)
-        {
+        let list_ptr = obj_from_bits(list_bits).as_ptr();
+        let native_list = list_ptr.and_then(|ptr| unsafe {
+            (object_type_id(ptr) == crate::TYPE_ID_FOREIGN).then(|| {
+                std::ptr::with_exposed_provenance_mut::<molt_cpython_abi::abi_types::PyObject>(
+                    crate::object::foreign::foreign_ptr_from_obj(ptr),
+                )
+            })
+        });
+        let is_list = list_ptr.is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_LIST })
+            || native_list.is_some_and(|ptr| unsafe {
+                molt_cpython_abi::api::sequences::PyList_Check(ptr) != 0
+            });
+        if !is_list {
             dec_ref_bits(_py, list_bits);
             return raise_exception::<u64>(
                 _py,
                 "TypeError",
                 "Cannot add note: __notes__ is not a list",
             );
+        }
+        if let Some(native_list) = native_list {
+            unsafe {
+                let note =
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(note_bits);
+                let status = if note.is_null() {
+                    -1
+                } else {
+                    molt_cpython_abi::api::sequences::PyList_Append(native_list, note)
+                };
+                if status < 0 {
+                    crate::cpython_abi_hooks::propagate_native_failure(
+                        _py,
+                        "exception note append",
+                    );
+                }
+            }
+            dec_ref_bits(_py, list_bits);
+            return MoltObject::none().bits();
         }
         let result = crate::object::ops_list::molt_list_append(list_bits, note_bits);
         dec_ref_bits(_py, list_bits);

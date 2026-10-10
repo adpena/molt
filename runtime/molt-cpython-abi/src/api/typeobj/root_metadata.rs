@@ -171,7 +171,7 @@ unsafe fn set_native_namespace_metadata(
             );
             return -1;
         }
-        let incoming = OwnedPyObject::from_borrowed(value);
+        let incoming = crate::api::refcount::OwnedPyObject::from_borrowed(value);
         let abstract_type = if field == Field::AbstractMethods && !value.is_null() {
             let truth = object::PyObject_IsTrue(value);
             if truth < 0 {
@@ -181,16 +181,17 @@ unsafe fn set_native_namespace_metadata(
         } else {
             false
         };
-        let dictionary = OwnedPyObject::from_owned(PyType_GetDict(tp));
+        let dictionary = crate::api::refcount::OwnedPyObject::from_owned(PyType_GetDict(tp));
         if dictionary.as_ptr().is_null() {
             return -1;
         }
-        let key =
-            OwnedPyObject::from_owned(strings::PyUnicode_FromString(if field == Field::Doc {
+        let key = crate::api::refcount::ProtectedPyObject::from_owned(
+            strings::PyUnicode_FromString(if field == Field::Doc {
                 c"__doc__".as_ptr()
             } else {
                 c"__abstractmethods__".as_ptr()
-            }));
+            }),
+        );
         if key.as_ptr().is_null() {
             return -1;
         }
@@ -336,7 +337,7 @@ pub unsafe fn native_type_attribute_set(
                 if result.is_null() {
                     -1
                 } else {
-                    errors::release_preserving_error(&[result]);
+                    crate::api::refcount::Py_DECREF(result);
                     0
                 }
             }
@@ -371,7 +372,9 @@ pub(crate) unsafe extern "C" fn type_setattro(
         }
         // CPython type_setattro canonicalizes string subclasses here. Normal
         // user overrides and raw GenericSetAttr keep their original name object.
-        let name = OwnedPyObject::from_owned(strings::PyUnicode_FromObject(name));
+        let name = crate::api::refcount::ProtectedPyObject::from_owned(
+            strings::PyUnicode_FromObject(name),
+        );
         if name.as_ptr().is_null() {
             return -1;
         }
@@ -397,8 +400,8 @@ unsafe fn native_type_namespace_mutation(
     value: *mut PyObject,
 ) -> c_int {
     unsafe {
-        let _type_owner = OwnedPyObject::from_borrowed(tp.cast());
-        let incoming = OwnedPyObject::from_borrowed(value);
+        let _type_owner = crate::api::refcount::OwnedPyObject::from_borrowed(tp.cast());
+        let incoming = crate::api::refcount::OwnedPyObject::from_borrowed(value);
         let meta = crate::bridge::semantic_type(tp.cast());
         if meta.is_null() {
             return -1;
@@ -411,7 +414,7 @@ unsafe fn native_type_namespace_mutation(
         if let Some(status) = crate::api::descriptor::set(descriptor.as_ptr(), tp.cast(), value) {
             return status;
         }
-        let dictionary = OwnedPyObject::from_owned(PyType_GetDict(tp));
+        let dictionary = crate::api::refcount::OwnedPyObject::from_owned(PyType_GetDict(tp));
         if dictionary.as_ptr().is_null() {
             return -1;
         }
@@ -464,7 +467,7 @@ unsafe fn set_native_name(tp: *mut PyTypeObject, field: Field, value: *mut PyObj
         if strings::PyUnicode_Check(value) == 0 {
             return reject_type_layout(c"type name must be a string");
         }
-        let name = OwnedPyObject::from_borrowed(value);
+        let name = crate::api::refcount::OwnedPyObject::from_borrowed(value);
         let Some(heap) = heap_type_storage(tp) else {
             return reject_type_layout(c"type name mutation requires proven heap storage");
         };
@@ -496,7 +499,7 @@ unsafe fn set_native_name(tp: *mut PyTypeObject, field: Field, value: *mut PyObj
             std::mem::replace(&mut (*heap).ht_qualname, name.into_ptr())
         };
         PyType_Modified(tp);
-        errors::release_preserving_error(&[old]);
+        crate::api::refcount::Py_XDECREF(old);
         0
     }
 }
@@ -550,7 +553,7 @@ unsafe fn native_annotation(
         if !write && (*tp).tp_flags & Py_TPFLAGS_HEAPTYPE == 0 {
             return missing_annotation(field);
         }
-        let dictionary = OwnedPyObject::from_owned(PyType_GetDict(tp));
+        let dictionary = crate::api::refcount::OwnedPyObject::from_owned(PyType_GetDict(tp));
         let dict = dictionary.as_ptr();
         if dict.is_null() {
             return ptr::null_mut();
@@ -573,7 +576,7 @@ unsafe fn native_annotation(
             }
             // Retain the incoming alias and every displaced namespace value
             // until PyType_Modified has committed, including partial failures.
-            let incoming = OwnedPyObject::from_borrowed(value);
+            let incoming = crate::api::refcount::OwnedPyObject::from_borrowed(value);
             let _retired = [
                 c"__annotations__",
                 c"__annotations_cache__",
@@ -681,7 +684,9 @@ unsafe fn native_annotation(
                 return ptr::null_mut();
             }
             if PyCallable_Check(annotate.as_ptr()) != 0 {
-                let format = OwnedPyObject::from_owned(crate::api::numbers::PyLong_FromLong(1));
+                let format = crate::api::refcount::ProtectedPyObject::from_owned(
+                    crate::api::numbers::PyLong_FromLong(1),
+                );
                 if format.as_ptr().is_null() {
                     return ptr::null_mut();
                 }

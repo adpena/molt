@@ -31,7 +31,7 @@ use crate::{
     molt_callargs_new, molt_callargs_push_pos, molt_exception_kind, molt_exception_last,
     molt_getattr_builtin, molt_int_from_obj, molt_is_callable, obj_from_bits, object_type_id,
     ptr_from_bits, raise_exception, runtime_state, set_add_in_place, string_bytes, string_len,
-    string_obj_to_owned, to_i64, type_name, type_of_bits,
+    string_obj_to_owned, type_name, type_of_bits,
 };
 
 mod execution;
@@ -2328,13 +2328,11 @@ pub(crate) fn reconcile_extension_publication(py: &PyToken<'_>, name: &str, bits
         }
     };
     let table = crate::builtins::module_table::publish_extension_result(py, name, bits);
-    molt_cpython_abi::api::errors::with_preserved_error(|| {
-        for old in private.into_iter().chain(std::iter::once(table)) {
-            if old != 0 {
-                dec_ref_bits(py, old);
-            }
+    for old in private.into_iter().chain(std::iter::once(table)) {
+        if old != 0 {
+            dec_ref_bits(py, old);
         }
-    });
+    }
 }
 
 #[unsafe(no_mangle)]

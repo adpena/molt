@@ -251,11 +251,9 @@ unsafe fn publish(
                     dictionary
                 },
             );
-            molt_cpython_abi::api::errors::with_preserved_error(|| {
-                if dictionary != 0 {
-                    dec_ref_bits(py, dictionary);
-                }
-            });
+            if dictionary != 0 {
+                dec_ref_bits(py, dictionary);
+            }
             if let Err(message) = result {
                 if !exception_pending(py) {
                     raise_exception::<()>(py, "SystemError", message);
@@ -270,11 +268,9 @@ unsafe fn publish(
             missing_bits(py)
         };
         if exception_pending(py) {
-            molt_cpython_abi::api::errors::with_preserved_error(|| {
-                if dictionary != 0 {
-                    dec_ref_bits(py, dictionary);
-                }
-            });
+            if dictionary != 0 {
+                dec_ref_bits(py, dictionary);
+            }
             return false;
         }
         let previous = instance_dict_bits(object);
@@ -288,15 +284,13 @@ unsafe fn publish(
             **slot = missing;
         }
         debug::fields(py, "inline_retired", object, dictionary, &fields);
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            for (_, _, value) in fields {
-                dec_ref_bits(py, value);
-            }
-            if previous != 0 {
-                debug::dictionary(py, "previous_release", object, previous, None, None);
-                dec_ref_bits(py, previous);
-            }
-        });
+        for (_, _, value) in fields {
+            dec_ref_bits(py, value);
+        }
+        if previous != 0 {
+            debug::dictionary(py, "previous_release", object, previous, None, None);
+            dec_ref_bits(py, previous);
+        }
         true
     }
 }
@@ -411,7 +405,7 @@ unsafe fn materialize_with_pairs(
         }
         let bits = MoltObject::from_ptr(dict).bits();
         if exception_pending(py) {
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, bits));
+            dec_ref_bits(py, bits);
             return None;
         }
         debug::dictionary(py, "materialize_staged", object, bits, None, None);
@@ -484,7 +478,7 @@ pub(crate) unsafe fn set_item_deferred<'a, 'py>(
             Some(name),
             Some(value),
         );
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, dictionary));
+        dec_ref_bits(py, dictionary);
         if result.is_err() && !exception_pending(py) {
             raise_exception::<()>(py, "MemoryError", "instance dictionary insertion failed");
         }
@@ -501,7 +495,7 @@ pub(crate) unsafe fn set_item(py: &PyToken<'_>, object: *mut u8, name: u64, valu
             return;
         }
         let result = set_item_deferred(py, object, name, value);
-        molt_cpython_abi::api::errors::with_preserved_error(|| drop(result));
+        drop(result);
     }
 }
 

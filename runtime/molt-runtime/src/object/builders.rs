@@ -472,8 +472,9 @@ impl PtrDropGuard {
         }
     }
 
-    /// Callback-capable temporary owners must not replace a pending operation
-    /// error when their release reenters Python or a foreign deallocator.
+    /// Explicitly suppress release-time errors for projection rollback or
+    /// cleanup. Ordinary semantic owners use `new` so native deallocators
+    /// can observe the active exception.
     pub(crate) fn preserving(ptr: *mut u8) -> Self {
         let mut guard = Self::new(ptr);
         guard.preserve_error = true;
@@ -2392,7 +2393,7 @@ impl<'a, 'py> PinnedMemoryViewStorage<'a, 'py> {
             return Err(());
         }
         inc_ref_bits(py, storage.base_bits);
-        let base_guard = PtrDropGuard::preserving(
+        let base_guard = PtrDropGuard::new(
             obj_from_bits(storage.base_bits)
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
@@ -2524,12 +2525,12 @@ impl<'a, 'py> PinnedMemoryViewStorage<'a, 'py> {
 
 impl Drop for PinnedMemoryViewStorage<'_, '_> {
     fn drop(&mut self) {
-        // Native leases and pointer guards already preserve pending errors.
-        // The counted owner needs the same rule when a callback aborted slicing.
+        // Retire the counted export before the descriptor fields, preserving
+        // ordinary native release visibility even when slicing failed.
         if let Some(owner) = self.owner.take()
             && owner.owner_bits() != 0
         {
-            molt_cpython_abi::api::errors::with_preserved_error(|| drop(owner));
+            drop(owner);
         }
     }
 }

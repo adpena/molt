@@ -747,7 +747,7 @@ pub(crate) struct FunctionMetadataPublication<'a, 'py> {
 impl Drop for FunctionMetadataPublication<'_, '_> {
     fn drop(&mut self) {
         let displaced = self.displaced.take();
-        molt_cpython_abi::api::errors::with_preserved_error(|| drop(displaced));
+        drop(displaced);
     }
 }
 

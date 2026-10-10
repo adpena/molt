@@ -197,7 +197,7 @@ pub(crate) extern "C" fn string_mod_slot(value: u64, args: u64) -> u64 {
         inc_ref_bits(py, value);
         let text = unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) };
         let rendered = string_percent_format_impl(py, text, value, args);
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, value));
+        dec_ref_bits(py, value);
         let Some(rendered) = rendered else {
             return MoltObject::none().bits();
         };
@@ -259,7 +259,7 @@ fn dict_binary(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
     }
     molt_dict_update(result, right);
     if exception_pending(py) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, result));
+        dec_ref_bits(py, result);
         MoltObject::none().bits()
     } else {
         result

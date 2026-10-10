@@ -505,7 +505,7 @@ pub unsafe extern "C" fn PyModule_AddObject(
     if rc == 0 {
         // The runtime module has acquired its own edge. Consume precisely the
         // native C reference stolen by this API, never an extra view anchor.
-        unsafe { crate::api::errors::release_preserving_error(&[value]) };
+        unsafe { crate::api::refcount::Py_XDECREF(value) };
     }
     rc
 }
@@ -518,7 +518,7 @@ pub unsafe extern "C" fn PyModule_Add(
     value: *mut PyObject,
 ) -> c_int {
     let rc = unsafe { PyModule_AddObjectRef(module, name, value) };
-    unsafe { crate::api::errors::release_preserving_error(&[value]) };
+    unsafe { crate::api::refcount::Py_XDECREF(value) };
     rc
 }
 
@@ -747,7 +747,7 @@ unsafe fn add_module_functions(
                 break;
             }
             rc = PyModule_AddObjectRef(module, (*cursor).ml_name, function);
-            crate::api::errors::release_preserving_error(&[function]);
+            crate::api::refcount::Py_DECREF(function);
             if rc != 0 {
                 break;
             }
@@ -783,7 +783,7 @@ unsafe fn module_from_def_and_slots(
             if slot.slot == PY_MOD_CREATE {
                 if slot.value.is_null() {
                     set_module_system_error("Py_mod_create slot is NULL");
-                    crate::api::errors::release_preserving_error(&[name]);
+                    crate::api::refcount::Py_XDECREF(name);
                     return ptr::null_mut();
                 }
                 type CreateFn = unsafe extern "C" fn(
@@ -793,7 +793,7 @@ unsafe fn module_from_def_and_slots(
                 let create: CreateFn = std::mem::transmute(slot.value);
                 module = validate_module_pointer_result(create(spec, def), "Py_mod_create slot");
                 if module.is_null() {
-                    crate::api::errors::release_preserving_error(&[name]);
+                    crate::api::refcount::Py_XDECREF(name);
                     return ptr::null_mut();
                 }
                 break;
@@ -805,7 +805,7 @@ unsafe fn module_from_def_and_slots(
         module = unsafe { PyModule_NewObject(name) };
     }
     if module.is_null() {
-        unsafe { crate::api::errors::release_preserving_error(&[name]) };
+        unsafe { crate::api::refcount::Py_XDECREF(name) };
         return ptr::null_mut();
     }
     // Both the default constructor and Py_mod_create use the qualified spec
@@ -813,7 +813,7 @@ unsafe fn module_from_def_and_slots(
     // A custom creator owns its module's __name__; it need not equal spec.name.
     // CPython still gives methods the spec name, without rewriting that module.
     let result = unsafe { finish_module_creation(module, def, false, name) };
-    unsafe { crate::api::errors::release_preserving_error(&[name]) };
+    unsafe { crate::api::refcount::Py_XDECREF(name) };
     result
 }
 
@@ -939,19 +939,19 @@ unsafe fn finish_module_creation(
     name: *mut PyObject,
 ) -> *mut PyObject {
     if unsafe { register_module_capi(module, def, attach_legacy_state) } != 0 {
-        unsafe { crate::api::errors::release_preserving_error(&[module]) };
+        unsafe { crate::api::refcount::Py_XDECREF(module) };
         return ptr::null_mut();
     }
     // Malformed or unsupported methods fail module creation atomically
     // instead of publishing a partial method table.
     let m_methods = unsafe { (*def).m_methods };
     if !m_methods.is_null() && unsafe { add_module_functions(module, m_methods, name) } != 0 {
-        unsafe { crate::api::errors::release_preserving_error(&[module]) };
+        unsafe { crate::api::refcount::Py_XDECREF(module) };
         return ptr::null_mut();
     }
     let doc = unsafe { (*def).m_doc };
     if !doc.is_null() && unsafe { PyModule_SetDocString(module, doc) } < 0 {
-        unsafe { crate::api::errors::release_preserving_error(&[module]) };
+        unsafe { crate::api::refcount::Py_XDECREF(module) };
         return ptr::null_mut();
     }
     module

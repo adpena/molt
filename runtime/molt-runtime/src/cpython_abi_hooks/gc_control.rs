@@ -31,7 +31,7 @@ impl PinnedGcSnapshot<'_, '_> {
 
 impl Drop for PinnedGcSnapshot<'_, '_> {
     fn drop(&mut self) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| unsafe {
+        crate::object::foreign::retire_native_reference(|| unsafe {
             for edge in self.edges.drain(..) {
                 if edge.kind == molt_cpython_abi::NativeGcEdgeKind::ManagedHandle as u8 {
                     crate::dec_ref_bits(self.py, edge.value);

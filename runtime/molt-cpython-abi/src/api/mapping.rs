@@ -407,7 +407,7 @@ unsafe fn dict_merge_from_mapping(
     }
     let n = unsafe { crate::api::sequences::PyList_Size(keys) };
     if n < 0 {
-        unsafe { crate::api::errors::release_preserving_error(&[keys]) };
+        unsafe { crate::api::refcount::Py_XDECREF(keys) };
         return -1;
     }
     let mut rc = 0;
@@ -486,36 +486,44 @@ pub unsafe extern "C" fn PyDict_GetItemWithError(
     key: *mut PyObject,
 ) -> *mut PyObject {
     unsafe { dict_get_with_hash(op, key, crate::hooks::DictHashSource::Compute, 0) }
+        .unwrap_or(ptr::null_mut())
 }
 
-unsafe fn dict_get_with_hash(
+/// Preserve the producer's distinction between a missing key and failure even
+/// when this lookup is part of observing an already pending exception.
+pub(crate) unsafe fn dict_get_with_hash(
     op: *mut PyObject,
     key: *mut PyObject,
     hash_source: crate::hooks::DictHashSource,
     hash: i64,
-) -> *mut PyObject {
+) -> Result<*mut PyObject, crate::ErrorIndicatorSet> {
     if key.is_null() {
         bad_dict_argument();
-        return ptr::null_mut();
+        return Err(crate::ErrorIndicatorSet);
     }
     let Some(dict_bits) = require_dict(op) else {
-        return ptr::null_mut();
+        return Err(crate::ErrorIndicatorSet);
     };
     let Some(key_value) = (unsafe { RuntimeValue::acquire(key) }) else {
         let _ = crate::api::errors::transfer_runtime_pending_to_current();
-        return ptr::null_mut();
+        return Err(crate::ErrorIndicatorSet);
     };
     let h = hooks_or_stubs();
-    let result = unsafe {
-        GLOBAL_BRIDGE.borrowed_result_to_borrowed_pyobj((h.dict_get)(
-            dict_bits,
-            key_value.bits(),
-            hash_source,
-            hash,
-        ))
-    };
-    crate::api::errors::with_preserved_error(|| drop(key_value));
-    result
+    match unsafe { (h.dict_get)(dict_bits, key_value.bits(), hash_source, hash) }.decode() {
+        crate::hooks::DecodedHandleResult::Ok(bits) => {
+            let pointer = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(bits) };
+            if pointer.is_null() {
+                Err(crate::ErrorIndicatorSet)
+            } else {
+                Ok(pointer)
+            }
+        }
+        crate::hooks::DecodedHandleResult::Missing => Ok(ptr::null_mut()),
+        crate::hooks::DecodedHandleResult::Error => {
+            unsafe { crate::api::errors::check_native_status(-1, "dictionary lookup") };
+            Err(crate::ErrorIndicatorSet)
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -531,21 +539,16 @@ pub unsafe extern "C" fn PyDict_GetItemRef(
     unsafe {
         *result = ptr::null_mut();
     }
-    let value = unsafe { PyDict_GetItemWithError(op, key) };
-    if value.is_null() {
-        // CPython: NULL + pending exception is an error (-1); NULL with no
-        // exception is genuine absence (0). The prior code collapsed both to 0.
-        if !crate::api::errors::transfer_runtime_pending_to_current() {
-            0
-        } else {
-            -1
+    match unsafe { dict_get_with_hash(op, key, crate::hooks::DictHashSource::Compute, 0) } {
+        Err(crate::ErrorIndicatorSet) => -1,
+        Ok(value) if value.is_null() => 0,
+        Ok(value) => {
+            unsafe {
+                crate::api::refcount::Py_INCREF(value);
+                *result = value;
+            }
+            1
         }
-    } else {
-        unsafe {
-            crate::api::refcount::Py_INCREF(value);
-            *result = value;
-        }
-        1
     }
 }
 
@@ -584,6 +587,7 @@ pub unsafe extern "C" fn _PyDict_GetItem_KnownHash(
     hash: crate::abi_types::Py_hash_t,
 ) -> *mut PyObject {
     unsafe { dict_get_with_hash(op, key, crate::hooks::DictHashSource::Supplied, hash as i64) }
+        .unwrap_or(ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
@@ -910,7 +914,7 @@ pub(crate) unsafe fn mapping_op(op: crate::hooks::DictOp, object: *mut PyObject)
         return ptr::null_mut();
     };
     let result = unsafe { dispatch_dict_op(op, value.bits()) };
-    crate::api::errors::with_preserved_error(|| drop(value));
+    drop(value);
     result
 }
 

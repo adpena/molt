@@ -938,7 +938,7 @@ pub(crate) struct MemoryView {
     pub(crate) shape_ptr: *mut Vec<isize>,
     pub(crate) strides_ptr: *mut Vec<isize>,
     pub(crate) exports: buffer_exports::BufferExports,
-    pub(crate) native_lease: Option<molt_cpython_abi::api::memory::MemoryViewLease>,
+    pub(crate) native_lease: Option<crate::object::foreign::RuntimeBufferLease>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

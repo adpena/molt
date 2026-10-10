@@ -739,25 +739,19 @@ fn update_wrapper_members(
                 if !update {
                     let value = crate::molt_get_attr_name(wrapped, name);
                     if exception_pending(py) {
-                        molt_cpython_abi::api::errors::with_preserved_error(|| {
-                            dec_ref_bits(py, value)
-                        });
+                        dec_ref_bits(py, value);
                         if crate::builtins::attr::clear_attribute_error_if_pending(py) {
                             return Ok(());
                         }
                         return Err(molt_runtime_core::ErrorIndicatorSet);
                     }
                     let result = molt_set_attr_name(wrapper, name, value);
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(py, result);
-                        dec_ref_bits(py, value);
-                    });
+                    dec_ref_bits(py, result);
+                    dec_ref_bits(py, value);
                 } else {
                     let target = crate::molt_get_attr_name(wrapper, name);
                     if exception_pending(py) {
-                        molt_cpython_abi::api::errors::with_preserved_error(|| {
-                            dec_ref_bits(py, target)
-                        });
+                        dec_ref_bits(py, target);
                         return Err(molt_runtime_core::ErrorIndicatorSet);
                     }
                     let Some(update_name) = attr_name_bits_from_bytes(py, b"update") else {
@@ -765,14 +759,10 @@ fn update_wrapper_members(
                         return Err(molt_runtime_core::ErrorIndicatorSet);
                     };
                     let method = crate::molt_get_attr_name(target, update_name);
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(py, update_name);
-                        dec_ref_bits(py, target);
-                    });
+                    dec_ref_bits(py, update_name);
+                    dec_ref_bits(py, target);
                     if exception_pending(py) {
-                        molt_cpython_abi::api::errors::with_preserved_error(|| {
-                            dec_ref_bits(py, method)
-                        });
+                        dec_ref_bits(py, method);
                         return Err(molt_runtime_core::ErrorIndicatorSet);
                     }
                     let missing = crate::missing_bits(py);
@@ -782,14 +772,10 @@ fn update_wrapper_members(
                     }
                     if !exception_pending(py) {
                         let result = unsafe { crate::call_callable1(py, method, source) };
-                        molt_cpython_abi::api::errors::with_preserved_error(|| {
-                            dec_ref_bits(py, result)
-                        });
+                        dec_ref_bits(py, result);
                     }
-                    molt_cpython_abi::api::errors::with_preserved_error(|| {
-                        dec_ref_bits(py, source);
-                        dec_ref_bits(py, method);
-                    });
+                    dec_ref_bits(py, source);
+                    dec_ref_bits(py, method);
                 }
                 if exception_pending(py) {
                     Err(molt_runtime_core::ErrorIndicatorSet)
@@ -797,12 +783,12 @@ fn update_wrapper_members(
                     Ok(())
                 }
             })();
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, name));
+            dec_ref_bits(py, name);
             outcome?;
         }
         Ok(())
     })();
-    molt_cpython_abi::api::errors::with_preserved_error(|| drop(iterator));
+    drop(iterator);
     outcome
 }
 
@@ -825,7 +811,7 @@ pub extern "C" fn molt_functools_update_wrapper(
             b"__wrapped__",
         );
         let result = molt_set_attr_name(wrapper_bits, name, wrapped_bits);
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, result));
+        dec_ref_bits(py, result);
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
@@ -1962,12 +1948,12 @@ fn singledispatch_resolve_for_type(
     }
     let mut resolved = state.default_func;
     for &(reg_type, reg_func) in &state.registry {
-        if issubclass_runtime(_py, type_bits, reg_type) {
+        let Some(matched) = issubclass_runtime(_py, type_bits, reg_type) else {
+            return MoltObject::none().bits();
+        };
+        if matched {
             resolved = reg_func;
             break;
-        }
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
         }
     }
     state.dispatch_cache.insert(type_bits, resolved);
@@ -2960,7 +2946,7 @@ mod tests {
                 let error = kwd_mark_error_identity(py);
                 // Dropping the remaining state under the error exercises all
                 // field owners, including accumulate's unchanged prior total.
-                unsafe { molt_runtime_core::ffi::__molt_runtime_release_owned_value(iter) };
+                unsafe { molt_runtime_core::ffi::__molt_runtime_release_protected_value(iter) };
                 assert!(crate::exception_pending(py));
                 assert_eq!(kwd_mark_error_identity(py), error);
                 crate::clear_exception(py);
@@ -3556,7 +3542,7 @@ mod tests {
                 assert!(crate::exception_pending(py), "partial input {mode}");
                 let error = kwd_mark_error_identity(py);
                 for bits in [consumer, outer, source] {
-                    unsafe { molt_runtime_core::ffi::__molt_runtime_release_owned_value(bits) };
+                    unsafe { molt_runtime_core::ffi::__molt_runtime_release_protected_value(bits) };
                 }
                 assert_eq!(kwd_mark_error_identity(py), error);
                 crate::clear_exception(py);
@@ -3585,7 +3571,7 @@ mod tests {
                 }
                 assert_kwd_mark_memory_error(py);
                 let error = kwd_mark_error_identity(py);
-                unsafe { molt_runtime_core::ffi::__molt_runtime_release_owned_value(consumer) };
+                unsafe { molt_runtime_core::ffi::__molt_runtime_release_protected_value(consumer) };
                 assert_eq!(kwd_mark_error_identity(py), error);
                 crate::clear_exception(py);
                 assert_eq!(

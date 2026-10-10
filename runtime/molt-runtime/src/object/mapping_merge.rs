@@ -58,7 +58,7 @@ pub(crate) fn output_as_list(
 ) -> Option<u64> {
     use molt_cpython_abi::api::errors::with_preserved_error;
     if exception_pending(py) {
-        with_preserved_error(|| dec_ref_bits(py, output));
+        dec_ref_bits(py, output);
         return None;
     }
     if type_of_bits(py, output) == builtin_classes(py).list {
@@ -86,16 +86,14 @@ pub(crate) fn output_as_list(
             .concat();
             crate::builtins::exceptions::raise_exception_bytes::<()>(py, "TypeError", &message);
         }
-        with_preserved_error(|| {
-            dec_ref_bits(py, exception);
-            dec_ref_bits(py, output);
-        });
+        with_preserved_error(|| dec_ref_bits(py, exception));
+        dec_ref_bits(py, output);
         return None;
     }
-    with_preserved_error(|| dec_ref_bits(py, output));
+    dec_ref_bits(py, output);
     let first = first.unwrap();
     let list = unsafe { super::ops::list_from_iter_bits(py, first.bits()) };
-    with_preserved_error(|| drop(first));
+    drop(first);
     list
 }
 
@@ -157,7 +155,7 @@ pub(crate) unsafe fn apply(
             return MergeOutcome::NotMapping;
         };
         let output = call_callable0(py, method);
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, method));
+        dec_ref_bits(py, method);
         let Some(keys) = output_as_list(py, source, b"keys", output) else {
             return MergeOutcome::Error;
         };

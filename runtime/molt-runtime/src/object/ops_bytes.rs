@@ -38,7 +38,7 @@ use super::ops::parse_codec_arg;
 pub(crate) fn bytes_contains_builtin(py: &PyToken<'_>, container: u64, needle: u64) -> u64 {
     use molt_cpython_abi::{
         abi_types::PyBUF_SIMPLE,
-        api::{buffer::PyObject_GetBuffer, memory::MemoryViewLease, refcount::OwnedPyObject},
+        api::{buffer::PyObject_GetBuffer, refcount::ProtectedPyObject},
         bridge::GLOBAL_BRIDGE,
     };
     let has_index = crate::builtins::numbers::index_integral_payload_bits(needle).is_some()
@@ -89,22 +89,26 @@ pub(crate) fn bytes_contains_builtin(py: &PyToken<'_>, container: u64, needle: u
             let hay = std::slice::from_raw_parts(bytes_data(hay_ptr), bytes_len(hay_ptr));
             return MoltObject::from_bool(bytes_find_impl(hay, needle) >= 0).bits();
         }
-        let object = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(needle));
+        let object =
+            ProtectedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(needle));
         if object.as_ptr().is_null() {
             crate::cpython_abi_hooks::propagate_native_failure(py, "membership buffer projection");
             return MoltObject::none().bits();
         }
-        let lease =
-            match MemoryViewLease::acquire(object.as_ptr(), PyBUF_SIMPLE, PyObject_GetBuffer) {
-                Ok(lease) => lease,
-                Err(molt_cpython_abi::ErrorIndicatorSet) => {
-                    crate::cpython_abi_hooks::propagate_native_failure(
-                        py,
-                        "membership buffer acquisition",
-                    );
-                    return MoltObject::none().bits();
-                }
-            };
+        let lease = match crate::object::foreign::RuntimeBufferLease::acquire(
+            object.as_ptr(),
+            PyBUF_SIMPLE,
+            PyObject_GetBuffer,
+        ) {
+            Ok(lease) => lease,
+            Err(molt_cpython_abi::ErrorIndicatorSet) => {
+                crate::cpython_abi_hooks::propagate_native_failure(
+                    py,
+                    "membership buffer acquisition",
+                );
+                return MoltObject::none().bits();
+            }
+        };
         let view = &*lease.descriptor();
         if view.len < 0 || (view.len != 0 && view.buf.is_null()) {
             return raise_exception(py, "BufferError", "invalid membership buffer span");
@@ -1521,7 +1525,7 @@ fn bytes_collect_from_iter(
             return Some(None);
         };
         let byte = bytes_item_to_u8(_py, item, kind);
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, item));
+        dec_ref_bits(_py, item);
         byte.map(Some)
     })
 }
@@ -1548,7 +1552,8 @@ fn collect_byte_items(
 /// Native iterator custody adapts the existing linked slot protocol to the
 /// same byte collector as managed iteration. No copied sequence algorithm.
 fn native_bytes_iterable(py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> Option<Vec<u8>> {
-    use molt_cpython_abi::api::{abstract_number, errors, object, refcount::OwnedPyObject};
+    use crate::object::foreign::NativeObjectOwner;
+    use molt_cpython_abi::api::{abstract_number, errors, object};
     let native =
         unsafe { crate::object::foreign::foreign_ptr_from_obj(obj_from_bits(bits).as_ptr()?) };
     let source = std::ptr::with_exposed_provenance_mut(native);
@@ -1569,7 +1574,7 @@ fn native_bytes_iterable(py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> Op
         crate::cpython_abi_hooks::propagate_native_failure(py, "bytes native iterator acquisition");
         return None;
     }
-    let iterator = unsafe { OwnedPyObject::from_owned(iterator) };
+    let iterator = unsafe { NativeObjectOwner::from_owned(iterator) };
     let capacity = if matches!(kind, BytesCtorKind::Bytes) {
         let hint = unsafe { object::PyObject_LengthHint(source, 64) };
         if hint < 0 {
@@ -1589,7 +1594,7 @@ fn native_bytes_iterable(py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> Op
             crate::cpython_abi_hooks::propagate_native_failure(py, "bytes native iteration");
             return None;
         }
-        let item = unsafe { OwnedPyObject::from_owned(item) };
+        let item = unsafe { NativeObjectOwner::from_owned(item) };
         let value =
             unsafe { abstract_number::PyNumber_AsSsize_t(item.as_ptr(), std::ptr::null_mut()) };
         if value == -1 && !unsafe { errors::PyErr_Occurred() }.is_null() {
@@ -1767,9 +1772,9 @@ fn bytes_from_obj_impl(
             unsafe { crate::builtins::attr::lookup_special_method(py, bits, b"__bytes__") };
         if let Some(method) = method {
             let result = unsafe { call_callable0(py, method) };
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, method));
+            dec_ref_bits(py, method);
             if exception_pending(py) {
-                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, result));
+                dec_ref_bits(py, result);
                 return MoltObject::none().bits();
             }
             let valid = obj_from_bits(result).as_ptr().is_some_and(|ptr| unsafe {
@@ -1804,7 +1809,7 @@ fn bytes_from_obj_impl(
                 "TypeError",
                 &format!("__bytes__ returned non-bytes (type {name})"),
             );
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, result));
+            dec_ref_bits(py, result);
             return failure;
         }
         if exception_pending(py) {

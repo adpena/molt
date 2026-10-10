@@ -29,14 +29,13 @@ if str(TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOLS_ROOT))
 
 import run_l7_numeric_attestation as l7  # noqa: E402
-from molt.memory_guard_paths import active_guard_marker_dir  # noqa: E402
+from molt.memory_guard_paths import (  # noqa: E402
+    active_guard_marker_dir,
+    harness_guard_artifact_dir,
+)
 
 DEFAULT_OUTPUT = (
     REPO_ROOT / "logs" / "benchmarks" / "sequence_container_attestation" / "latest.json"
-)
-CAPSULE_ACTIVE_DIR = active_guard_marker_dir(REPO_ROOT)
-CAPSULE_ARCHIVE_DIR = (
-    REPO_ROOT / "logs" / "benchmarks" / "sequence_container_attestation" / "custody"
 )
 PREFIX = "SEQUENCE_CONTAINER_ATTESTATION="
 CASE_NAMES = (
@@ -226,7 +225,15 @@ def _validate_payload(
 
 def _capsule_paths(run_nonce: str, run_index: int) -> tuple[Path, Path]:
     name = f"sequence-container-{run_nonce}-run-{run_index:02d}.json"
-    return CAPSULE_ACTIVE_DIR / name, CAPSULE_ARCHIVE_DIR / name
+    # Resolve the effective custody environment at execution, not module import.
+    # Both paths follow the same disk control-state root, preserving atomic moves.
+    return (
+        active_guard_marker_dir(REPO_ROOT) / name,
+        harness_guard_artifact_dir(REPO_ROOT)
+        / "sequence_container_attestation"
+        / "custody"
+        / name,
+    )
 
 
 def _aggregate(attestations: list[dict[str, Any]]) -> dict[str, Any]:

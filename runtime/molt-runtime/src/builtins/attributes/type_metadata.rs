@@ -1,7 +1,8 @@
 //! Runtime-owned object/type data descriptors, installed in every builtin cohort.
 //! Managed receivers never cross the C ABI. Foreign receivers delegate storage.
+use crate::object::foreign::NativeObjectOwner;
 use molt_cpython_abi::abi_types::PyObject;
-use molt_cpython_abi::api::refcount::OwnedPyObject;
+use molt_cpython_abi::api::refcount::ProtectedPyObject;
 
 pub(crate) unsafe fn read(py: &PyToken<'_>, receiver: u64, field: Field) -> u64 {
     unsafe {
@@ -9,7 +10,7 @@ pub(crate) unsafe fn read(py: &PyToken<'_>, receiver: u64, field: Field) -> u64 
             && object_type_id(ptr) == crate::TYPE_ID_FOREIGN
         {
             let raw = crate::object::foreign::foreign_ptr_from_obj(ptr) as *mut PyObject;
-            let value = OwnedPyObject::from_owned(
+            let value = NativeObjectOwner::from_owned(
                 molt_cpython_abi::api::typeobj::native_type_attribute_get(
                     raw,
                     field,
@@ -99,7 +100,7 @@ pub(crate) unsafe fn write(
             let raw = crate::object::foreign::foreign_ptr_from_obj(ptr) as *mut PyObject;
             let incoming = value.map(|bits| {
                 inc_ref_bits(py, bits);
-                OwnedPyObject::from_owned(
+                ProtectedPyObject::from_owned(
                     molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits),
                 )
             });
@@ -301,7 +302,7 @@ unsafe fn write_namespace_metadata(
             // The dictionary is committed before releasing its old owner. Do
             // not move release across the descriptor's observable C invalidation.
             class_bump_layout_version(class);
-            molt_cpython_abi::api::errors::with_preserved_error(|| drop(retired));
+            drop(retired);
             if field == Field::AbstractMethods {
                 publication.publish();
                 if exception_pending(py) {
@@ -375,20 +376,14 @@ unsafe fn update_annotations_namespace(
         if changed {
             class_bump_layout_version(class);
         }
-        molt_cpython_abi::api::errors::with_preserved_error(|| drop(retired));
+        drop(retired);
         let mut published = true;
         if changed {
             let publication = publication.as_mut().expect("prepared annotation mutation");
-            if exception_pending(py) {
-                molt_cpython_abi::api::errors::with_preserved_error(|| {
-                    published = publication.publish();
-                });
-            } else {
-                published = publication.publish();
-            }
+            published = publication.publish();
         }
+        drop(publication);
         molt_cpython_abi::api::errors::with_preserved_error(|| {
-            drop(publication);
             for name in names {
                 dec_ref_bits(py, name);
             }
@@ -452,7 +447,7 @@ pub(crate) unsafe fn read_type_annotations(
                     MoltObject::from_ptr(dict).bits()
                 }
             };
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, annotate));
+            dec_ref_bits(py, annotate);
             result
         } else {
             let dict = alloc_dict_with_pairs(py, &[]);
@@ -462,7 +457,7 @@ pub(crate) unsafe fn read_type_annotations(
             MoltObject::from_ptr(dict).bits()
         };
         if exception_pending(py) {
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, result));
+            dec_ref_bits(py, result);
             return None;
         }
         if obj_from_bits(result)
@@ -474,11 +469,11 @@ pub(crate) unsafe fn read_type_annotations(
                 type_name(py, obj_from_bits(result))
             );
             raise_exception::<()>(py, "TypeError", &message);
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, result));
+            dec_ref_bits(py, result);
             return None;
         }
         if !update_annotations_namespace(py, class, &[(cache_key, Some(result))]) {
-            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, result));
+            dec_ref_bits(py, result);
             return None;
         }
         Some(result)

@@ -1096,16 +1096,20 @@ def test_list_rejection_type_separates_stability_from_invalid_counts(rejection):
 
 
 @pytest.mark.parametrize("component", ["numeric", "list"])
+@pytest.mark.parametrize("runner_error", [False, True])
 def test_cost_owner_does_not_turn_lost_custody_into_continuable_evidence(
-    tmp_path, monkeypatch, component
+    tmp_path, monkeypatch, component, runner_error
 ):
     from tools import run_candidate_runtime_costs as candidate
 
     l7 = candidate.l7
     owner = l7 if component == "numeric" else candidate.lists
     source = {"git_commit": SHA, "git_dirty": False}
-    monkeypatch.setattr(owner, "CAPSULE_ACTIVE_DIR", tmp_path / "active")
-    monkeypatch.setattr(owner, "CAPSULE_ARCHIVE_DIR", tmp_path / "custody")
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    monkeypatch.setattr(owner, "REPO_ROOT", source_root)
+    state_root = tmp_path / "external" / "memory_guard"
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(state_root))
     monkeypatch.setattr(
         owner, "secrets", SimpleNamespace(token_hex=lambda _count: NONCE)
     )
@@ -1132,6 +1136,8 @@ def test_cost_owner_does_not_turn_lost_custody_into_continuable_evidence(
 
     def measure(argv, **kwargs):
         calls.append(argv)
+        if runner_error:
+            raise RuntimeError("fixture measurement failure")
         # A successful child code cannot erase unresolved descendant custody.
         return l7.perf_calibration.RunMeasurement(
             returncode=0,
@@ -1145,7 +1151,8 @@ def test_cost_owner_does_not_turn_lost_custody_into_continuable_evidence(
         )
 
     monkeypatch.setattr(l7.perf_calibration, "run_and_measure", measure)
-    with pytest.raises(RuntimeError, match="rc=0 timeout=False") as caught:
+    message = "fixture measurement failure" if runner_error else "rc=0 timeout=False"
+    with pytest.raises(RuntimeError, match=message) as caught:
         if component == "numeric":
             l7._run_component(
                 "runtime_bigint",
@@ -1170,9 +1177,13 @@ def test_cost_owner_does_not_turn_lost_custody_into_continuable_evidence(
     assert not isinstance(caught.value, l7.EvidenceRejected)
     assert len(calls) == 1
 
-    capsules = list((tmp_path / "custody").glob("*.json"))
+    capsules = list((tmp_path / "external" / "harness_memory_guard").rglob("*.json"))
     assert len(capsules) == 1
-    assert json.loads(capsules[0].read_text(encoding="utf-8"))["status"] == "failed"
+    retained = json.loads(capsules[0].read_text(encoding="utf-8"))
+    assert retained["status"] == ("runner_error" if runner_error else "failed")
+    assert Path(retained["evidence_path"]) == capsules[0]
+    assert not list((state_root / "active").glob("*.json"))
+    assert not list(source_root.rglob("*"))
 
 
 @pytest.mark.parametrize(
@@ -1255,7 +1266,6 @@ def test_candidate_list_pre_refusal_revalidates_source_before_continuation(
     from tools import run_candidate_runtime_costs as candidate
 
     l7 = candidate.l7
-    lists = candidate.lists
     source = {"git_commit": SHA, "git_dirty": False}
     snapshots = iter(
         [source, {**source, "git_commit": "changed"} if source_changed else source]
@@ -1271,8 +1281,9 @@ def test_candidate_list_pre_refusal_revalidates_source_before_continuation(
         "_build_test_executable",
         lambda *args, **kwargs: (tmp_path / "image", {"artifact_fingerprint": SHA}),
     )
-    monkeypatch.setattr(lists, "CAPSULE_ACTIVE_DIR", tmp_path / "active")
-    monkeypatch.setattr(lists, "CAPSULE_ARCHIVE_DIR", tmp_path / "custody")
+    monkeypatch.setenv(
+        "MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "external" / "memory_guard")
+    )
     monkeypatch.setattr(
         l7.perf_calibration,
         "measure_quiescence",
@@ -1401,3 +1412,90 @@ def test_runtime_allocation_scope_excludes_unobserved_native_libc_traffic() -> N
         "all_native_allocations"
     )
     assert runner._schema_errors(bundle, schema, root=schema)
+
+
+@pytest.mark.parametrize("component", ["numeric", "list"])
+def test_attestation_capsules_follow_effective_external_custody_after_import(
+    tmp_path, monkeypatch, component
+):
+    from tools import run_candidate_runtime_costs as candidate
+
+    owner = candidate.l7 if component == "numeric" else candidate.lists
+    source = tmp_path / "source"
+    source.mkdir()
+    monkeypatch.setattr(owner, "REPO_ROOT", source)
+    previous = None
+    for directory in ("first", "second"):
+        external = tmp_path / directory
+        monkeypatch.setenv(
+            "MOLT_MEMORY_GUARD_STATE_ROOT", str(external / "memory_guard")
+        )
+        active, archive = (
+            owner._capsule_paths(NONCE, "runtime_bigint", 1)
+            if component == "numeric"
+            else owner._capsule_paths(NONCE, 1)
+        )
+        assert active.parent == external / "memory_guard" / "active"
+        assert archive.is_relative_to(external / "harness_memory_guard")
+        assert archive.is_absolute()
+        assert archive != previous
+        previous = archive
+    assert not list(source.rglob("*"))
+
+
+def test_numeric_completed_run_retains_absolute_external_capsule(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    external = tmp_path / "external"
+    monkeypatch.setattr(runner, "REPO_ROOT", source)
+    monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(external / "memory_guard"))
+    config = runner.COMPONENTS["runtime_bigint"]
+    process, attestations = _component_fixture("runtime_bigint", config, 1)
+    build = process["runner"]["build"]
+    monkeypatch.setattr(
+        runner,
+        "_build_test_executable",
+        lambda *args, **kwargs: (external / "image", build),
+    )
+    monkeypatch.setattr(
+        runner.perf_calibration,
+        "measure_quiescence",
+        lambda: runner.perf_calibration.Quiescence(
+            True, 0.1, 0.025, 0, "literal quiet"
+        ),
+    )
+    monkeypatch.setattr(
+        runner.perf_calibration,
+        "run_and_measure",
+        lambda *args, **kwargs: runner.perf_calibration.RunMeasurement(
+            returncode=0,
+            child_returncode=0,
+            elapsed_s=0.01,
+            peak_rss_bytes=1024,
+            peak_job_commit_bytes=2048,
+            stdout=config["prefix"] + json.dumps(attestations[0]),
+            stderr="",
+        ),
+    )
+    process, observed = runner._run_component(
+        "runtime_bigint",
+        config,
+        runs=1,
+        timeout=300.0,
+        schema=runner._load_schema(),
+        source=_snapshot(),
+        rustc="rustc fixture",
+        cargo_lock_sha256=SHA,
+        run_nonce=NONCE,
+        max_measured_rss_bytes=None,
+        affinity_mask="0x1",
+    )
+    assert observed == attestations
+    retained = Path(process["runs"][0]["capsule_path"])
+    assert retained.is_absolute()
+    assert retained.is_relative_to(external / "harness_memory_guard")
+    capsule = json.loads(retained.read_text(encoding="utf-8"))
+    assert capsule["status"] == "completed"
+    assert Path(capsule["evidence_path"]) == retained
+    assert not list((external / "memory_guard" / "active").glob("*.json"))
+    assert not list(source.rglob("*"))

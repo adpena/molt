@@ -2085,17 +2085,13 @@ unsafe fn bytearray_copy_buffer(op: *mut PyObject, view: *mut crate::abi_types::
         < 0
     {
         if status >= 0 {
-            crate::api::errors::with_preserved_error(|| unsafe {
-                crate::api::buffer::PyBuffer_Release(view)
-            });
+            unsafe { crate::api::buffer::PyBuffer_Release(view) };
         }
         return false;
     }
     if unsafe { (*view).len < 0 || ((*view).len != 0 && (*view).buf.is_null()) } {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
-        crate::api::errors::with_preserved_error(|| unsafe {
-            crate::api::buffer::PyBuffer_Release(view)
-        });
+        unsafe { crate::api::buffer::PyBuffer_Release(view) };
         return false;
     }
     true
@@ -2113,9 +2109,7 @@ pub unsafe extern "C" fn PyByteArray_FromObject(op: *mut PyObject) -> *mut PyObj
             return ptr::null_mut();
         }
         let result = unsafe { PyByteArray_FromStringAndSize(view.buf.cast(), view.len) };
-        crate::api::errors::with_preserved_error(|| unsafe {
-            crate::api::buffer::PyBuffer_Release(&mut view)
-        });
+        unsafe { crate::api::buffer::PyBuffer_Release(&mut view) };
         return result;
     }
     // Non-buffer inputs retain Python bytearray's integer/iterable conversion.
@@ -2139,9 +2133,7 @@ pub unsafe extern "C" fn PyByteArray_Concat(
         return ptr::null_mut();
     }
     if !unsafe { bytearray_copy_buffer(right, &mut second) } {
-        crate::api::errors::with_preserved_error(|| unsafe {
-            crate::api::buffer::PyBuffer_Release(&mut first)
-        });
+        unsafe { crate::api::buffer::PyBuffer_Release(&mut first) };
         return ptr::null_mut();
     }
     let result = if let Some(len) = first.len.checked_add(second.len) {
@@ -2178,10 +2170,10 @@ pub unsafe extern "C" fn PyByteArray_Concat(
     } else {
         unsafe { crate::api::errors::PyErr_NoMemory() }
     };
-    crate::api::errors::with_preserved_error(|| unsafe {
+    unsafe {
         crate::api::buffer::PyBuffer_Release(&mut second);
         crate::api::buffer::PyBuffer_Release(&mut first);
-    });
+    };
     result
 }
 
@@ -2410,7 +2402,7 @@ pub unsafe extern "C" fn molt_bytearray_dealloc(op: *mut PyObject) {
     let Some(obj) = (unsafe { foreign_bytearray_layout(op) }) else {
         return;
     };
-    crate::api::errors::with_preserved_error(|| unsafe {
+    unsafe {
         let Some(deallocation) = crate::api::typeobj::NativeDeallocation::storage(op) else {
             return;
         };
@@ -2418,7 +2410,7 @@ pub unsafe extern "C" fn molt_bytearray_dealloc(op: *mut PyObject) {
         (*obj).ob_start = ptr::null_mut();
         crate::api::memory::PyMem_Free(bytes.cast());
         deallocation.finish();
-    });
+    }
 }
 
 #[cfg(test)]

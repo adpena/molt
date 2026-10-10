@@ -59,7 +59,7 @@ pub(super) unsafe fn allocate(
         unsafe { errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
-    let _owner = unsafe { refcount::OwnedPyObject::from_borrowed(owner.cast()) };
+    let _owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(owner.cast()) };
     let name_object = unsafe { strings::PyUnicode_InternFromString(name) };
     if name_object.is_null() {
         return ptr::null_mut();
@@ -85,7 +85,7 @@ pub(super) unsafe fn publish(object: *mut PyObject) -> *mut PyObject {
     if unsafe { memory::PyObject_GC_IsTracked(object) } == 0 || pending() {
         unsafe {
             system_error(c"native descriptor GC publication failed");
-            errors::release_preserving_error(&[object]);
+            refcount::Py_DECREF(object);
         }
         ptr::null_mut()
     } else {
@@ -165,7 +165,11 @@ pub(super) unsafe extern "C" fn clear(object: *mut PyObject) -> c_int {
             std::mem::replace(&mut (*header).d_qualname, ptr::null_mut()),
         ]
     };
-    unsafe { errors::release_preserving_error(&edges) };
+    unsafe {
+        for &object in &edges {
+            crate::api::refcount::Py_XDECREF(object);
+        }
+    };
     0
 }
 
@@ -366,7 +370,7 @@ pub(super) unsafe extern "C" fn qualname(object: *mut PyObject, _: *mut c_void) 
                 type_error("<descriptor>.__objclass__.__qualname__ is not a unicode object")
             },
         };
-        unsafe { errors::release_preserving_error(&[type_name]) };
+        unsafe { refcount::Py_XDECREF(type_name) };
         if rendered.is_null() {
             return ptr::null_mut();
         }

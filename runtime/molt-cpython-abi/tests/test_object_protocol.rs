@@ -684,14 +684,17 @@ fn physical_method_vectorcall_restores_scratch_and_handles_inline_spill_and_fail
 
 thread_local! {
     static METHOD_RETIRED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static METHOD_EXPECTED_ERROR: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static METHOD_WRONG_ERROR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 unsafe extern "C" fn method_operand_finalizer(object: *mut PyObject) {
     METHOD_RETIRED.set(METHOD_RETIRED.get() + 1);
     unsafe {
-        molt_cpython_abi::api::errors::PyErr_SetString(
-            (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast(),
-            c"operand finalizer must not replace caller error".as_ptr(),
-        );
+        let error = molt_cpython_abi::api::errors::PyErr_GetRaisedException();
+        if error.addr() != METHOD_EXPECTED_ERROR.get() {
+            METHOD_WRONG_ERROR.set(true);
+        }
+        molt_cpython_abi::api::errors::PyErr_SetRaisedException(error);
         drop(Box::from_raw(object));
     }
 }
@@ -724,8 +727,14 @@ fn physical_method_retirement_preserves_pending_error_across_operand_finalizers(
         assert!(!original.is_null());
         errors::PyErr_SetRaisedException(original);
         METHOD_RETIRED.set(0);
+        METHOD_EXPECTED_ERROR.set(original.addr());
+        METHOD_WRONG_ERROR.set(false);
         refcount::Py_DECREF(method);
         assert_eq!(METHOD_RETIRED.get(), 2);
+        assert!(
+            !METHOD_WRONG_ERROR.get(),
+            "both operands see the exact caller error"
+        );
         let preserved = errors::PyErr_GetRaisedException();
         assert_eq!(preserved, original);
         refcount::Py_DECREF(preserved);

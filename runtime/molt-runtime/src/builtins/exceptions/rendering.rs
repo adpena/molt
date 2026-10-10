@@ -5,8 +5,8 @@ use super::*;
 use molt_obj_model::{
     ExceptionStrSlot,
     exception_render::{
-        ExceptionRenderContext, ExceptionRenderOwned, ExceptionRenderSnapshot,
-        render_exception_repr, render_exception_str,
+        ExceptionRenderContext, ExceptionRenderSnapshot, render_exception_repr,
+        render_exception_str,
     },
 };
 
@@ -147,17 +147,6 @@ fn invoke(py: &PyToken<'_>, object: u64, slot: Option<ExceptionStrSlot>) -> u64 
     result.map_or(MoltObject::none().bits(), ExceptionValue::into_bits)
 }
 
-impl ExceptionRenderOwned for ExceptionValue<'_, '_> {
-    fn release_all(values: impl Iterator<Item = Self>) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            for value in values {
-                let py = value.py;
-                dec_ref_bits(py, value.into_bits());
-            }
-        });
-    }
-}
-
 struct ManagedRender<'a, 'py>(&'a PyToken<'py>);
 
 impl ManagedRender<'_, '_> {
@@ -223,7 +212,7 @@ impl<'a, 'py> ExceptionRenderContext for ManagedRender<'a, 'py> {
         let mut snapshot = ExceptionRenderSnapshot {
             args,
             fields: std::array::from_fn(|_| None),
-            class: std::mem::ManuallyDrop::new(self.retain(unsafe { object_class_bits(pointer) })),
+            class: self.retain(unsafe { object_class_bits(pointer) }),
             layout,
             start: 0,
             end: 0,

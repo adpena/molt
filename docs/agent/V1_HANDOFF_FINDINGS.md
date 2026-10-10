@@ -32,6 +32,14 @@ after its complete consumer family is integrated and its stated acceptance
 evidence passes; retain its stable ID, integrated repair and explicit unverified
 coordinates. Consolidation must preserve every requirement and machine-consumed ID.
 
+The [Python contract](../spec/areas/compat/contracts/verified_subset_contract.md)
+bounds excessive dynamism that obstructs efficient compilation and standalone
+execution. It does not shrink to the currently passing tests. CPython source and
+applicable official PEPs govern admitted semantics; missing support, incorrect
+behavior, performance defects and unverified cells remain release obligations.
+Verification records evidence for that scope. Its development-side checks do
+not add unnecessary work to emitted binaries.
+
 This closure standard applies retrospectively to every earlier finding,
 including the historical fixed rows below. A landed repair does not establish
 closure of its bug family. Closure requires a failure-mechanism search through
@@ -49,60 +57,93 @@ newer Windows invocation/custody, R6 admission, cache-validation and intrinsic
 retirement changes. Other committed branches and private runtime/measurement
 capsules retain their source custody; their existence is not release acceptance.
 
-The current runtime ownership candidate at `1dc113335` compiles the full
-Linux/aarch64 default-feature release-output test image. Fresh exact-image
-qualification passes 33 of 36 selected cases, including every managed/native
-exception-rendering case, isolate rendering, lifecycle failure retention and
-encoding kernel oracle. Two tests fail; the remaining case passes its runtime
-assertions but its descendant output is ambiguous. Seven existing isolated gate
-children pass. The parallel run's raw summary reports 1,276 passes, 473 failures
-and four ignores; nested child output invalidates complete result accounting, so
-these counts do not qualify the gate. Runtime and performance acceptance remain
-blocked, and Windows/macOS process cells remain unverified.
+The runtime ownership candidate remains unqualified. The earlier optimized
+Linux/aarch64 image passes 33 of 36 selected cases, including managed/native
+exception rendering, isolate rendering, lifecycle failure retention and the
+encoding kernel oracle. Two cases fail; one has ambiguous descendant output.
+Nested child output also invalidates complete parallel accounting. The corrected
+receipt and inert-process fixture family passes 227 checks with one platform
+skip. Both newly selected isolated semantic cases pass; the gate now distinguishes
+nine isolated semantic children from seven development probes. The successor
+full-runtime build stops in test compilation: eight test closures pass an owned
+token where a borrow is required, and four calls use the wrong C API module.
+These fixture errors and two unused production imports are corrected; successor
+compilation and full execution remain required. Windows/macOS process cells
+remain unverified.
 
-The bounded follow-up identifies three concrete shared causes: real inert-process
-fixtures override their builder's null streams with inherited output; a slice
-fixture consumes only the C channel after a managed callback raises; and a shared
-assertion helper assumes native exceptions use managed storage. The candidate
-corrects all affected process callers, uses the public raised-error API with
-failure-safe fixture ownership, and reuses the existing representation-aware
-exception diagnostic. Receipt validation stays strict and its cohort passes 227
-checks with one platform skip. Four ignored runtime cases also expose an
-incomplete gate inventory: two are development probes and two require isolated
-semantic execution. Both semantic cases pass against the retained image with
-closed guards; the corrected gate now selects nine isolated semantic children
-and explicitly classifies all seven development probes. The successor full
-gate still requires actual execution.
+Standalone Linux/aarch64 ABI execution reports 759 passes, two failures and one
+explicit developer timing probe ignored, with complete native custody and no
+violations. One failed fixture unlawfully replaces the pending exception inside
+a native deallocator; its replacement must observe and restore the exact error
+through the public API. The other failure is an obsolete source-spelling count;
+existing behavioral lifetime controls own that invariant. Neither failure is
+waived, and replacement consumer execution remains required.
 
-The text-transport failure is localized to C percent formatting of a noncached
-integer. The C API's duplicate formatter still assumes immediate numeric storage,
-while the canonical runtime formatter owns arbitrary-width integers, Python text
-and callback semantics. The integrated successor deletes the duplicate parser
-and moves the complete hook family to ABI 62. Independent source review and
-70 CPython reference rows pass; real runtime and standalone ABI execution remain
-required. The same authority migration exposed shared numeric callback-result rejection of
-valid native integer and float objects. Validation, warning behavior, owned
-result extraction and public exact-object identity must move together across
-int/index/float constructors and scalar consumers. Pure managed-storage probes
-remain unchanged so arithmetic dispatch cannot bypass native subtype methods.
-Numeric results and descriptor-bound native callables must retire with the
-pending exception visible to contract-valid C deallocators, as CPython does.
-This includes shared numeric slots, bytes, formatting and length-hint invocation.
-Explicit cleanup suppression and
-Python finalizer shielding retain their separate contracts. A native deallocator
-may save and restore that exact exception through the public C API; the shared
-foreign-object retirement boundary must transfer it back to the runtime before
-runtime consumers resume. These ownership and error-channel repairs remain
-unqualified until their real native callback controls and full consumers pass.
-This numeric repair is part of the current unit and is not an accepted exception.
-The name-publication assertion passes in fresh and bounded warm processes; its
-parallel failure remains unqualified until earlier fixture failures no longer
-leave owners alive. No retry, relaxed oracle or ignored semantic case can replace
-successful complete consumer execution.
+The C percent-formatting repair deletes the duplicate parser and migrates its
+complete versioned hook family, reusing the runtime formatter for arbitrary-width
+integers, Python text and callbacks. Independent source review and 70 CPython
+reference rows pass. Native integer/float validation, warning behavior, owned
+extraction and exact-object identity also move together across constructors and
+scalar consumers. Pure managed-storage probes remain unchanged so arithmetic
+cannot bypass native subtype methods.
+
+The resulting family review exposes a broader ownership-policy defect: ordinary
+semantic temporaries use error-suppressing release guards. This includes C
+callback results, retained call arguments, descriptors, iterators, parsing
+cleanup, runtime-core value owners and the HTTP release bridge. A retained
+container reference can become the last owner when a callback removes the
+original edge. Default drop, early return and unwind must therefore implement
+the same declared retirement policy. CPython source is the oracle for each
+operation's error visibility and release order; cleanup naming alone does not
+justify suppression.
+
+The assembled correction uses static ownership policies with ordinary semantic
+release, explicitly protected suppression/projection and completed native-to-runtime
+error custody. Policies add no payload, dynamic dispatch or emitted validation.
+The migration must classify every affected producer and consumer, delete the
+ambiguous replaced release authority, and retain explicit finalizer, unraisable,
+rollback and handled-exception contracts where their semantics require protection.
+Raised-state replacement must publish the selected next error before retiring
+the old value. Normalization preserves CPython's distinct constructor and input
+retirement phases. Its typed field producers must distinguish actual operation
+failure from an already pending error; a status-correct consumer cannot compensate
+for a producer that rejects all pending state. Independent native controls must
+exercise both incoming C and runtime errors, sole ownership, callback reentry,
+exact pending-error identity and traceback, release ordering, early exits and
+unchanged output on failure. No source census or green isolated helper qualifies
+this migration. Complete standalone/runtime consumers, applicable satellite and
+target cells, and performance measurements remain required before landing.
+
+The same exception review identifies two concrete conformance obligations in
+this family. Cold ABI-view publication must preserve an incoming error only on
+success; a failed projection must retain its new failure, including an
+allocation-free runtime emergency error. CPython's SetObject constructor-failure
+path also formats and attaches a normalization note while the constructor error
+is detached, including the original argument's repr side effects. Those note
+semantics now share the existing exception-note and formatting authorities in
+the assembled source. The saved-error hook and every provider/consumer migrate
+together; obsolete hook and renderer contracts are absent from the integrated
+Rust source. Actual standalone and full-runtime execution remain required.
+The source includes sole-owner native controls for failure visibility, cold
+publication rollback, successful-note input retirement and callback-mutated
+traceback restoration; parsing and source review do not qualify those controls.
+
+The note-consumer audit also exposes a shared collection-storage gap under
+V1-27: `ListRead` admits genuine native `PyListObject` storage and subtypes, but
+mutation APIs require a managed runtime list handle. This includes append,
+insert, item/slice assignment, sort and reverse, plus their slot and extension
+consumers. A native list installed as `__notes__` therefore cannot use the
+existing append authority. Complete the shared physical-list mutation,
+allocation and GC lifecycle owner across those consumers, including callback
+reentry, stolen-reference rules and failure atomicity. Managed views own Rust
+vectors; native storage requires its own declared allocator protocol and cannot
+inherit managed clear/deallocation slots. A notes-only mutation implementation
+or success on managed lists does not close this native cell.
 
 The existing L7 attestation now includes managed int/float conversion and both
 runtime/C percent-format entries, with six literal-result witnesses and unchanged
-measurement loops. All 105 runner checks pass. Allocation metadata explicitly
+measurement loops. All 110 runner checks pass, including success and failure
+archive placement through the canonical external guard owner. Allocation metadata explicitly
 limits observations to Rust global mimalloc traffic; native libc allocations
 remain unobserved. Exact baseline/candidate compilation and measurements are
 pending, including legitimate output placement and configuration compatibility;
@@ -140,8 +181,10 @@ and three intrinsic exports are retired through every generated consumer.
 CPython protocol and guarded surface controls pass. The registered encoder
 callback regression is retained separately under V1-18; current fixed kernels
 still reject registered names on invalid input. Native typed exception fields
-now reuse the existing tuple, integer and C string predicate authorities, while
-snapshot cleanup keeps one error-preservation scope in original release order.
+now reuse the existing tuple, integer and C string predicate authorities. Their
+semantic snapshot owners are part of the ordinary-retirement migration above;
+projection and field-publication transactions must keep their distinct policies
+without hiding the pending error during displaced semantic-owner retirement.
 Raw native Unicode/bytes payload transport remains an explicit existing ABI
 frontier. These semantic repairs change shipped runtime behavior; regression
 and receipt machinery remains development-only. The shared rendering and kernel repairs have focused runtime evidence; compiled
@@ -162,7 +205,10 @@ output placement. Relative payload outputs and the collector's own clear/write
 operations must migrate together through one external output owner. The current
 native consumer lane now uses the existing differential root and captured JSON
 stdout; the remaining declared-output consumers are not qualified for immutable
-queue execution.
+queue execution. Numeric/list performance archives now follow the existing
+external guard owner, including their CI collector; their explicit bundle output
+remains caller-selected. This bounded migration does not qualify the broader
+candidate-cost or declared-output queue families.
 
 Windows development-tool identity now derives the interpreter architecture
 from CPython sysconfig rather than querying host WMI. The focused runtime
@@ -1269,7 +1315,7 @@ none is accepted as release debt or as a reason to weaken the declared matrix.
 |----|---------|----------|-----------|
 | HF-02 | asyncio: creating a `Task` for a coroutine whose body raises (`asyncio.create_task(boom())`, `ensure_future(boom(), loop=loop)`) fails at construction with "'Task' object has no attribute '_coro'"; tasks over non-raising coroutines are fine, as are `Task(loop=)` and `loop.create_task` over them. `asyncio_cancellation_lifecycle.py` fails natively from its `gather-error` section on. `Task.__init__` (src/molt/stdlib/asyncio/tasks.py) also writes `__dict__["_coro"]` as a workaround, which did not help. | Native differential on Windows (probe: `create_task(boom())` where `async def boom(): raise ValueError`). | Get a traceback of the AttributeError with a native build of that probe; suspect the runner starting eagerly and failing the task before `__init__` finishes, or task ownership around `_task_registry_set` / `molt_task_register_token_owned`. Then delete the `__dict__` workaround. |
 | HF-04 | Historical native scientific schema-4 seals are rejected by schema-7 admission; the NumPy/SciPy witness seals must be reproduced under the current contract before E1. | PR 116 body; `docs/agent/E1_REMAINING_FRONTIER_MAP.md`. | `molt extension produce-set` under schema 7, then `pact-witness-acceptance`. |
-| HF-06 | Linux runtime test binaries still abort at a non-unwinding C boundary; a signal-race diagnostic is interleaved with shutdown but does not establish the cause. Newly exercised runtime partitions also fail nine ownership, frame/exception, GC teardown, sequence-slot, direct-entry and class-publication oracles. Source inspection identifies one production numeric-family defect: the managed C-API in-place path invokes ordinary binary dispatch without consulting in-place slots. | Historical CI 37409089984 identified runtime/callback/frontier aborts. The matching 73c706e21 hosted tree in CI 37639601137 again records a runtime SIGABRT and incomplete libtest accounting; its now-independent IR/WASM/runtime partition finishes with 744 passing, nine failing and two ignored cases. Those failures are distinct current evidence, not a passing default-runtime receipt. Unverified HF-06 work remains preserved as [handoff-patches/HF-06-runtime-abort-wip.patch](handoff-patches/HF-06-runtime-abort-wip.patch), commit b9af2260c on base 40cf7c069. | Map and repair the complete generation/owner/exception and callback families against declared CPython source and independent semantic oracles; reconcile preserved work before implementation. No panic or resume_unwind may escape a non-unwinding C boundary. Preserve original errors and exact owner cleanup; do not adjust expected counts or clear pending errors to conceal unexplained ownership. Reproduce and qualify actual Linux abort/teardown, all exposed runtime cases and applicable native/WASM/concurrency cells, with bounded failure diagnostics and measured lifecycle costs. Current source review identifies a separate numeric production defect: three unary/binary/power slot dispatchers select a physical carrier type instead of the method declaring type; truth delegates to unary. The complete declaring-owner correction is integrated in the current candidate, with literal raw/public unary, binary, power and truth controls. Fixture repairs use existing owner guards across success and intentional unwind, retain exact integer class/value oracles, and replace the frame allocation-count quota with zero-budget failure, every-denied-ordinal owner preservation and first-success checks. The original-name projection oracle remains strict and now identifies the failing phase. Actual corrected runtime execution, projection repair and SIGSEGV qualification remain open. Do not count the serial terminal-bootstrap cascade as independent primary failures or attribute the parallel SIGSEGV to the intentionally caught unwind without causal evidence. |
+| HF-06 | Linux runtime test binaries still abort at a non-unwinding C boundary; a signal-race diagnostic is interleaved with shutdown but does not establish the cause. Newly exercised runtime partitions also fail nine ownership, frame/exception, GC teardown, sequence-slot, direct-entry and class-publication oracles. Source inspection identifies one production numeric-family defect: the managed C-API in-place path invokes ordinary binary dispatch without consulting in-place slots. | Historical CI 37409089984 identified runtime/callback/frontier aborts. The matching 73c706e21 hosted tree in CI 37639601137 again records a runtime SIGABRT and incomplete libtest accounting; its now-independent IR/WASM/runtime partition finishes with 744 passing, nine failing and two ignored cases. Those failures are distinct current evidence, not a passing default-runtime receipt. Unverified HF-06 work remains preserved in commit `b9af2260cee4e3f1a1cebe53a6107d3a8780d873` on base `40cf7c069`; the original machine handoff also retains `HF-06-runtime-abort-wip.patch`. | Map and repair the complete generation/owner/exception and callback families against declared CPython source and independent semantic oracles; reconcile preserved work before implementation. No panic or resume_unwind may escape a non-unwinding C boundary. Preserve original errors and exact owner cleanup; do not adjust expected counts or clear pending errors to conceal unexplained ownership. Reproduce and qualify actual Linux abort/teardown, all exposed runtime cases and applicable native/WASM/concurrency cells, with bounded failure diagnostics and measured lifecycle costs. Current source review identifies a separate numeric production defect: three unary/binary/power slot dispatchers select a physical carrier type instead of the method declaring type; truth delegates to unary. The complete declaring-owner correction is integrated in the current candidate, with literal raw/public unary, binary, power and truth controls. Fixture repairs use existing owner guards across success and intentional unwind, retain exact integer class/value oracles, and replace the frame allocation-count quota with zero-budget failure, every-denied-ordinal owner preservation and first-success checks. The original-name projection oracle remains strict and now identifies the failing phase. Actual corrected runtime execution, projection repair and SIGSEGV qualification remain open. Do not count the serial terminal-bootstrap cascade as independent primary failures or attribute the parallel SIGSEGV to the intentionally caught unwind without causal evidence. |
 | HF-07 | The macOS Seatbelt/ptrace leaf backend advertises availability, but its pre-entry image claim is unqualified: a blocked-SIGTRAP/re-exec negative counted one exec while two images executed. Declared-tree and inventory-tree execution remain refused. `/usr/bin/cc` also starts an `xcrun` chain that the sealed image policy must cover. | Queue-portability and native-receipts reports plus the finite macOS arm64 blocked-signal/re-exec negative, 2026-10-06. | Refuse unproven execution cells in the canonical capability contract. Establish independently verified pre-entry creation and image custody, signal behavior and supervisor-death closure before enabling them; an entitlement or a positive preflight alone does not prove admission. Seal the actual `xcrun` chain and qualify each applicable closure mode with independent controls. This is developer proof apparatus, not a macOS compiler/runtime support ban. |
 | HF-79 | No builtin call inside a function is specialized. Since 6cf681a1c (2026-09-17), `python_binding_flow.py` creates every function and lambda scope with `activation_namespace_stable=False` and an entry state that invalidates all members, so each global or builtin name read in a function is an activation lookup of unknown identity. The frontend then lowers `len(xs)`, `isinstance(x, int)`, `ord(s[i])` and `print(...)` to `module_get_global` plus `call_func`, and `for i in range(n)` to a generic `iter`/`iter_next` loop instead of a counted loop. The refusal is sound, because any importer can rebind `mod.len` or `builtins.len` before the function runs, but nothing recovers the fast path. The same conservatism applies at module scope after any import or user call: `from helpers import imported` followed later by `alias = alpha` leaves `alias` without a provable callable identity, even when `def alpha` directly precedes it. `molt_module_get_global` (`runtime/molt-runtime/src/builtins/modules.rs`) also allocates an owned `String` for the name on every call, even with tracing off. | IR probes on 2026-10-09 give the same result on origin/main 49d857d61 and the integrator stack. The 16 frontend fusion tests in HF-73 encode the pre-2026-09-17 lowering. No benchmark record exists after 2026-09-17 (`bench/results`), so the slowdown is unmeasured. | (1) Measure the `bench/` corpus natively against a build that treats function scopes as stable, to size the loss. (2) Make the runtime lookup non-allocating on the hit path. (3) Re-admit specialization behind a runtime guard, as CPython 3.12's `LOAD_GLOBAL_BUILTIN` does: give module globals and the builtins namespace a binding version (or per-name shadow bits) that every insert, delete and rebind updates; in a function whose module source never binds the name, emit one guard and the specialized op, with the dynamic call as the guarded fallback. This touches the binding authority, TIR, every backend and the runtime, so it lands as one change with native and WASM differential proof. |
 | HF-120 | `molt.gpu.tensor.tensor_take_rows` (embedding lookup, `nn.Embedding`) copies each row in a Python loop, while its siblings `tensor_concat_first_dim` and `tensor_scatter_rows` call their runtime intrinsics through `_resolve_optional_intrinsic`. The runtime still exports `molt_gpu_tensor__tensor_take_rows` (`molt-gpu-runtime/src/tensor_runtime/tensor_methods.rs`; WASM `host_exports`), but nothing has called it since 295b8bdba (2026-04-22, a benchmark commit that gives no reason). HF-F106 kept the intrinsic for this decision. | Reference scan, 2026-10-09 (HF-F106 lane). | Measure the Python loop against the intrinsic on a representative embedding shape, check the intrinsic against `tensor_take_rows` semantics (negative rows, `allow_negative=False`, dtype and shape) with a differential test, then wire it through the optional-intrinsic pattern or delete it with its manifest row, host export and helpers. |

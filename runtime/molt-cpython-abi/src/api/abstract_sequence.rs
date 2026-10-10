@@ -404,7 +404,11 @@ impl MaterializedPointers {
 
 impl Drop for MaterializedPointers {
     fn drop(&mut self) {
-        unsafe { crate::api::errors::release_preserving_error(&self.pointers) };
+        unsafe {
+            for &object in &self.pointers {
+                crate::api::refcount::Py_XDECREF(object);
+            }
+        };
     }
 }
 
@@ -509,7 +513,7 @@ pub(crate) unsafe fn materialize_iterable_pointers(
         if out.pointers.try_reserve(1).is_err() {
             unsafe {
                 crate::api::errors::PyErr_NoMemory();
-                crate::api::errors::release_preserving_error(&[item]);
+                crate::api::refcount::Py_XDECREF(item);
             }
             return None;
         }

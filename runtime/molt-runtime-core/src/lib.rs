@@ -466,7 +466,7 @@ pub mod ffi {
         pub fn molt_dec_ref_obj(bits: u64);
 
         /// Release a temporary without replacing either pending-error channel.
-        pub fn __molt_runtime_release_owned_value(bits: u64);
+        pub fn __molt_runtime_release_protected_value(bits: u64);
 
         /// Batched inc-ref: adds `count` to the refcount in one atomic op.
         /// Returns `bits` unchanged (for chaining).
@@ -713,19 +713,50 @@ pub fn rt_dec_ref(bits: u64) {
     unsafe { ffi::molt_dec_ref_obj(bits) }
 }
 
+/// Static retirement policy for one live owned runtime value.
+///
+/// # Safety
+/// Implementations must consume exactly one reference while the caller holds
+/// the runtime GIL. Immediate values require no release.
+pub unsafe trait RuntimeValueRelease {
+    unsafe fn release(bits: u64);
+}
+
+/// Ordinary semantic retirement preserves native deallocator error visibility.
+pub enum RuntimeReferenceRelease {}
+unsafe impl RuntimeValueRelease for RuntimeReferenceRelease {
+    #[inline]
+    unsafe fn release(bits: u64) {
+        rt_dec_ref(bits);
+    }
+}
+
+/// Explicit cleanup that suppresses errors produced while releasing an owner.
+pub enum ProtectedRuntimeReferenceRelease {}
+unsafe impl RuntimeValueRelease for ProtectedRuntimeReferenceRelease {
+    #[inline]
+    unsafe fn release(bits: u64) {
+        unsafe { ffi::__molt_runtime_release_protected_value(bits) };
+    }
+}
+
+pub type OwnedRuntimeValue<'py> = RuntimeValueOwner<'py, RuntimeReferenceRelease>;
+pub type ProtectedRuntimeValue<'py> = RuntimeValueOwner<'py, ProtectedRuntimeReferenceRelease>;
+
 /// One runtime value owned under the caller's GIL custody. Immediate values,
 /// including positive zero (raw bits zero), follow the same ownership contract.
 #[repr(transparent)]
-pub struct OwnedRuntimeValue<'py> {
+pub struct RuntimeValueOwner<'py, P: RuntimeValueRelease> {
     bits: u64,
-    _py: std::marker::PhantomData<&'py PyToken>,
+    _py: std::marker::PhantomData<(&'py PyToken, P)>,
 }
 
-impl<'py> OwnedRuntimeValue<'py> {
+impl<'py, P: RuntimeValueRelease> RuntimeValueOwner<'py, P> {
     /// Adopt exactly one owned reference returned by a runtime operation.
     ///
     /// # Safety
     /// `bits` must be a live value whose reference is transferred to this guard.
+    #[inline]
     pub unsafe fn from_owned_bits(_py: &'py PyToken, bits: u64) -> Self {
         Self {
             bits,
@@ -733,6 +764,7 @@ impl<'py> OwnedRuntimeValue<'py> {
         }
     }
 
+    #[inline]
     pub fn retain(_py: &'py PyToken, bits: u64) -> Self {
         rt_inc_ref(bits);
         Self {
@@ -741,6 +773,7 @@ impl<'py> OwnedRuntimeValue<'py> {
         }
     }
 
+    #[inline]
     pub fn bits(&self) -> u64 {
         self.bits
     }
@@ -748,11 +781,13 @@ impl<'py> OwnedRuntimeValue<'py> {
     /// Borrow handles without allocating a second collection. The transparent
     /// representation has only the u64 payload; the token remains a lifetime
     /// and !Send/!Sync proof, including for empty collections.
+    #[inline]
     pub fn as_bits_slice(values: &[Self]) -> &[u64] {
         unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), values.len()) }
     }
 
     /// Transfer this reference to a result, field, or another owner.
+    #[inline]
     pub fn into_bits(self) -> u64 {
         let bits = self.bits;
         std::mem::forget(self);
@@ -760,11 +795,19 @@ impl<'py> OwnedRuntimeValue<'py> {
     }
 }
 
-impl Drop for OwnedRuntimeValue<'_> {
+impl<P: RuntimeValueRelease> Drop for RuntimeValueOwner<'_, P> {
+    #[inline]
     fn drop(&mut self) {
-        unsafe { ffi::__molt_runtime_release_owned_value(self.bits) };
+        unsafe { P::release(self.bits) };
     }
 }
+
+const _: () = {
+    assert!(std::mem::size_of::<OwnedRuntimeValue<'static>>() == std::mem::size_of::<u64>());
+    assert!(std::mem::align_of::<OwnedRuntimeValue<'static>>() == std::mem::align_of::<u64>());
+    assert!(std::mem::size_of::<ProtectedRuntimeValue<'static>>() == std::mem::size_of::<u64>());
+    assert!(std::mem::align_of::<ProtectedRuntimeValue<'static>>() == std::mem::align_of::<u64>());
+};
 
 /// A runtime operation failed with its Python error indicator set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1084,10 +1127,10 @@ pub mod prelude {
     pub use crate::with_gil_entry_body;
     pub use crate::{
         CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, OwnedBridgeHandleSnapshot,
-        OwnedRuntimeValue, PyToken, bits_from_ptr, bridge_owned_handle_snapshot,
-        bridge_owned_u8_buffer, bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec,
-        bridge_owned_u64_buffer, bridge_owned_u64_to_vec, iter_next_owned, obj_from_bits,
-        opaque_handle_bits, opaque_handle_ptr_from_bits, ptr_from_bits,
+        OwnedRuntimeValue, ProtectedRuntimeValue, PyToken, bits_from_ptr,
+        bridge_owned_handle_snapshot, bridge_owned_u8_buffer, bridge_owned_u8_to_string_lossy,
+        bridge_owned_u8_to_vec, bridge_owned_u64_buffer, bridge_owned_u64_to_vec, iter_next_owned,
+        obj_from_bits, opaque_handle_bits, opaque_handle_ptr_from_bits, ptr_from_bits,
     };
 
     // Safe runtime wrappers

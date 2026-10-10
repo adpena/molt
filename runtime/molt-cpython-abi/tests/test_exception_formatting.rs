@@ -6,7 +6,7 @@ mod support;
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::api::{errors, object, refcount, strings};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
-use molt_cpython_abi::hooks::BorrowedHandleResult;
+use molt_cpython_abi::hooks::{BorrowedHandleResult, PendingExceptionClass};
 use molt_lang_obj_model::MoltObject;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -14,6 +14,36 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 // Python-codepoint encodings, independent of the implementation's text view.
 static CLASS_ANCHORS: [u64; 2] = [0; 2];
 static FAIL_NEXT_TEXT_ALLOC: AtomicBool = AtomicBool::new(false);
+static EMERGENCY_NEXT_TEXT_ALLOC: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    static EMERGENCY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+unsafe extern "C" fn runtime_pending() -> std::ffi::c_int {
+    EMERGENCY.with(|state| i32::from(state.get()))
+}
+
+unsafe extern "C" fn runtime_pending_class() -> PendingExceptionClass {
+    if EMERGENCY.with(std::cell::Cell::get) {
+        PendingExceptionClass::EmergencyMemoryError
+    } else {
+        PendingExceptionClass::None
+    }
+}
+
+unsafe extern "C" fn runtime_clear_pending() {
+    EMERGENCY.with(|state| state.set(false));
+}
+
+unsafe extern "C" fn runtime_with_saved_pending(
+    callback: unsafe extern "C" fn(*mut std::ffi::c_void) -> std::ffi::c_int,
+    context: *mut std::ffi::c_void,
+) {
+    let incoming = EMERGENCY.with(|state| state.replace(false));
+    if unsafe { callback(context) } == 0 {
+        EMERGENCY.with(|state| state.set(incoming));
+    }
+}
 static NON_UTF8_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 static REENTER_TEXT_ALLOC: AtomicBool = AtomicBool::new(false);
 static REJECT_TEXT_CLASS: AtomicBool = AtomicBool::new(false);
@@ -64,6 +94,10 @@ unsafe extern "C" fn text_runtime_class(bits: u64) -> BorrowedHandleResult {
 }
 
 unsafe extern "C" fn text_alloc(data: *const u8, length: usize) -> u64 {
+    if EMERGENCY_NEXT_TEXT_ALLOC.swap(false, Ordering::SeqCst) {
+        EMERGENCY.with(|state| state.set(true));
+        return 0;
+    }
     if REENTER_TEXT_ALLOC.load(Ordering::SeqCst) {
         if DIAGNOSTIC_REENTRIES.fetch_add(1, Ordering::SeqCst) >= 64 {
             unsafe { errors::PyErr_SetNone((&raw mut PyExc_LookupError).cast()) };
@@ -118,6 +152,10 @@ fn text_ingress_and_publication_preserve_allocation_failures() {
     hooks.classify_heap = Some(text_classify);
     hooks.runtime_class_borrowed = Some(text_runtime_class);
     hooks.dec_ref = text_release;
+    hooks.exception_pending = runtime_pending;
+    hooks.pending_exception_class = runtime_pending_class;
+    hooks.clear_pending_exception = runtime_clear_pending;
+    hooks.with_saved_pending_exception = runtime_with_saved_pending;
     let _abi_test = support::enter_abi_test(hooks);
     unsafe {
         for (index, class) in [&raw mut PyType_Type, &raw mut PyUnicode_Type]
@@ -264,6 +302,25 @@ fn text_ingress_and_publication_preserve_allocation_failures() {
             }
         }
         let callback_slots = ResetCallbackErrorSlots;
+        // An allocation-free runtime failure cannot be captured as an
+        // OwnedCError. It must supersede both incoming channels without being
+        // projected, drained, or replaced by the incoming C exception.
+        for incoming_runtime in [false, true] {
+            errors::PyErr_SetRaisedException(object::Py_NewRef(original));
+            EMERGENCY.with(|state| state.set(incoming_runtime));
+            EMERGENCY_NEXT_TEXT_ALLOC.store(true, Ordering::SeqCst);
+            errors::PyErr_SetString((&raw mut PyExc_ValueError).cast(), c"emergency".as_ptr());
+            assert!(EMERGENCY.with(std::cell::Cell::get));
+            assert!(errors::take_current_error().is_none());
+            assert_eq!(
+                errors::PyErr_Occurred(),
+                (&raw mut PyExc_MemoryError).cast()
+            );
+            assert!(errors::PyErr_GetRaisedException().is_null());
+            assert!(EMERGENCY.with(std::cell::Cell::get));
+            errors::PyErr_Clear();
+        }
+
         CALLBACK_ERROR.store(original.addr(), Ordering::SeqCst);
         for returns_text in [false, true] {
             RETURN_TEXT_WITH_ERROR.store(returns_text, Ordering::SeqCst);

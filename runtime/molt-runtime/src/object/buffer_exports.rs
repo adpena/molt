@@ -302,11 +302,7 @@ pub(crate) fn release_owner(py: &PyToken<'_>, owner: u64) {
 /// destruction). Used by explicit release and by the heap lifecycle sink.
 pub(crate) unsafe fn detach_memoryview_owner(
     ptr: *mut u8,
-) -> (
-    u64,
-    u64,
-    Option<molt_cpython_abi::api::memory::MemoryViewLease>,
-) {
+) -> (u64, u64, Option<crate::object::foreign::RuntimeBufferLease>) {
     unsafe {
         let view = &mut *super::memoryview_ptr(ptr);
         let owner = std::mem::replace(&mut view.owner_bits, 0);

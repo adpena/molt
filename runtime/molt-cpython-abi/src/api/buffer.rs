@@ -176,7 +176,7 @@ pub unsafe fn with_buffer_descriptor<T>(
     struct Release(*mut Py_buffer);
     impl Drop for Release {
         fn drop(&mut self) {
-            crate::api::errors::with_preserved_error(|| unsafe { PyBuffer_Release(self.0) });
+            unsafe { PyBuffer_Release(self.0) };
         }
     }
     let mut view: Py_buffer = unsafe { std::mem::zeroed() };

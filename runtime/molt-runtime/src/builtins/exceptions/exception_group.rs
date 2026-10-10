@@ -14,14 +14,6 @@ use molt_cpython_abi::{
 
 use super::storage::{ExceptionStorage, ExceptionValue as Owned, native_owned_value};
 
-fn release(py: &PyToken<'_>, bits: u64) {
-    if exception_pending(py) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, bits));
-    } else {
-        dec_ref_bits(py, bits);
-    }
-}
-
 /// Raise unless a callee already published the failure.
 fn fail<T: ExceptionSentinel>(py: &PyToken<'_>, kind: &str, message: &str) -> T {
     if exception_pending(py) {
@@ -457,7 +449,7 @@ fn exception_group_construct(py: &PyToken<'_>, message: u64, exceptions: u64) ->
         )
     };
     if exception_pending(py) {
-        release(py, result);
+        dec_ref_bits(py, result);
         return None;
     }
     Some(result)
@@ -564,7 +556,7 @@ impl GroupMatcher {
             Self::Predicate(predicate) => {
                 let result = unsafe { call_callable1(py, predicate, exc) };
                 if exception_pending(py) {
-                    release(py, result);
+                    dec_ref_bits(py, result);
                     return None;
                 }
                 let result = Owned::adopt(py, result);
@@ -688,13 +680,13 @@ unsafe fn exception_group_subset<'a, 'py>(
     let name = Owned::adopt(py, name);
     let derive = crate::molt_get_attr_name(orig, name.bits());
     if exception_pending(py) {
-        release(py, derive);
+        dec_ref_bits(py, derive);
         return None;
     }
     let derive = Owned::adopt(py, derive);
     let derived = unsafe { call_callable1(py, derive.bits(), excs.bits()) };
     if exception_pending(py) {
-        release(py, derived);
+        dec_ref_bits(py, derived);
         return None;
     }
     let derived = Owned::adopt(py, derived);
@@ -756,7 +748,7 @@ unsafe fn exception_group_copy_metadata(
     };
     if exception_pending(py) {
         if let Some(notes) = notes {
-            release(py, notes);
+            dec_ref_bits(py, notes);
         }
         return None;
     }
@@ -774,7 +766,7 @@ unsafe fn exception_group_copy_metadata(
     let copy = Owned::adopt(py, copy);
     drop(notes);
     let result = crate::builtins::attributes::molt_set_attr_name(derived, name, copy.bits());
-    release(py, result);
+    dec_ref_bits(py, result);
     (!exception_pending(py)).then_some(())
 }
 

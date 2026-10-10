@@ -324,7 +324,7 @@ fn resolve_format_field(
         if state.mapping_mode {
             let bits = molt_index(kwargs_bits, key_bits);
             if exception_pending(py) {
-                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, bits));
+                dec_ref_bits(py, bits);
                 return None;
             }
             bits
@@ -346,7 +346,7 @@ fn resolve_format_field(
             value
         }
     };
-    let mut current_owner = PtrDropGuard::preserving(
+    let mut current_owner = PtrDropGuard::new(
         obj_from_bits(current_bits)
             .as_ptr()
             .unwrap_or(std::ptr::null_mut()),
@@ -379,7 +379,7 @@ fn resolve_format_field(
         } else {
             molt_index(current_bits, key_bits)
         };
-        current_owner = PtrDropGuard::preserving(
+        current_owner = PtrDropGuard::new(
             obj_from_bits(current_bits)
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
@@ -411,7 +411,7 @@ fn format_field(
         keywords: kwargs_bits,
     } = arguments;
     let mut value_bits = resolve_format_field(py, field.field_name, args, kwargs_bits, state)?;
-    let mut value_owner = PtrDropGuard::preserving(
+    let mut value_owner = PtrDropGuard::new(
         obj_from_bits(value_bits)
             .as_ptr()
             .unwrap_or(std::ptr::null_mut()),
@@ -432,7 +432,7 @@ fn format_field(
                 return raise_exception(py, "ValueError", &message);
             }
         };
-        value_owner = PtrDropGuard::preserving(
+        value_owner = PtrDropGuard::new(
             obj_from_bits(value_bits)
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
@@ -453,7 +453,7 @@ fn format_field(
             recursion_depth - 1,
         )?
         .into_bits(py);
-        expanded_owner = Some(PtrDropGuard::preserving(
+        expanded_owner = Some(PtrDropGuard::new(
             obj_from_bits(expanded_bits)
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
@@ -487,7 +487,7 @@ fn format_field(
     let formatted_bits = molt_format_builtin(value_bits, spec_bits);
     drop(spec_owner);
     let result = if exception_pending(py) {
-        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, formatted_bits));
+        dec_ref_bits(py, formatted_bits);
         None
     } else {
         match out.append_output(FormatOutput::OwnedString(formatted_bits), final_piece) {
@@ -524,11 +524,11 @@ pub extern "C" fn molt_string_format_method(
         // Immutable receiver and tuple storage remain pinned across every
         // lookup/conversion/format callback; no infallible snapshot copies.
         inc_ref_bits(py, self_bits);
-        let _self_owner = PtrDropGuard::preserving(self_ptr);
+        let _self_owner = PtrDropGuard::new(self_ptr);
         inc_ref_bits(py, args_bits);
-        let _args_owner = PtrDropGuard::preserving(args_ptr);
+        let _args_owner = PtrDropGuard::new(args_ptr);
         inc_ref_bits(py, kwargs_bits);
-        let _kwargs_owner = PtrDropGuard::preserving(
+        let _kwargs_owner = PtrDropGuard::new(
             obj_from_bits(kwargs_bits)
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),
@@ -564,9 +564,9 @@ pub extern "C" fn molt_string_format_map(self_bits: u64, mapping_bits: u64) -> u
             return raise_exception(py, "TypeError", "format_map requires a string");
         };
         inc_ref_bits(py, self_bits);
-        let _self_owner = PtrDropGuard::preserving(self_ptr);
+        let _self_owner = PtrDropGuard::new(self_ptr);
         inc_ref_bits(py, mapping_bits);
-        let _mapping_owner = PtrDropGuard::preserving(
+        let _mapping_owner = PtrDropGuard::new(
             obj_from_bits(mapping_bits)
                 .as_ptr()
                 .unwrap_or(std::ptr::null_mut()),

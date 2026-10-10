@@ -311,6 +311,10 @@ impl TupleDictArguments {
 
 impl Drop for TupleDictArguments {
     fn drop(&mut self) {
-        unsafe { crate::api::errors::release_preserving_error(&[self.tuple, self.dict]) };
+        unsafe {
+            for &object in &[self.tuple, self.dict] {
+                crate::api::refcount::Py_XDECREF(object);
+            }
+        };
     }
 }

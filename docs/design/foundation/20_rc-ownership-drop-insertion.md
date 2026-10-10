@@ -269,17 +269,23 @@ field handles once for their whole operation, including every repeated advance
 and reentrant field retirement. Runtime `OwnedIterator` passes its existing
 owner, so the adapter adds no per-item iterator retain/release transaction.
 
-`OwnedRuntimeValue` is a transparent one-word handle with
-`PhantomData<&PyToken>`: the GIL token constrains lifetime and thread affinity
-without adding a pointer to each collected item. The runtime GIL token embeds
+`RuntimeValueOwner` is a transparent one-word handle with a static release
+policy and `PhantomData<&PyToken>`: the GIL token constrains lifetime and thread
+affinity without adding a pointer to each collected item. The runtime GIL token embeds
 the zero-sized core token at both native and WASM `GilGuard::token` boundaries
 and exposes a safe borrowed `core_token`; runtime consumers never synthesize
 custody per item. Its borrowed bits slice does
 not allocate or retain; `into_bits` transfers the guard's reference to a result
-or field. Guard release crosses the private
-`__molt_runtime_release_owned_value` bridge and uses the existing
-`errors::with_preserved_error` transaction. Managed and native pending errors,
-including an empty error state, survive Python or foreign cleanup callbacks.
+or field. `OwnedRuntimeValue` uses ordinary reference release: a native
+deallocator observes the current exception and must preserve it, as in CPython.
+The foreign retirement boundary completes native-to-runtime error custody before
+the caller resumes. `ProtectedRuntimeValue` is reserved for explicitly classified
+suppression or projection transactions using `errors::with_preserved_error`;
+those transactions detach and restore both channels, including an empty state.
+Static policy selection adds no owner payload or per-release dynamic branch.
+The same policy applies to ordinary scope exit, early return and unwind. A
+reference borrowed from a container can become the last owner if a callback
+removes the container's edge; borrowing does not justify protected release.
 Compiler refcount operations retain their existing effect and custody contracts.
 
 Mutable iterator fields publish their new state and acquire any caller result

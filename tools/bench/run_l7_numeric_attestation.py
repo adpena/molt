@@ -35,7 +35,10 @@ if str(TOOLS_ROOT) not in sys.path:
 import harness_memory_guard  # noqa: E402
 import perf_calibration  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
-from molt.memory_guard_paths import active_guard_marker_dir  # noqa: E402
+from molt.memory_guard_paths import (  # noqa: E402
+    active_guard_marker_dir,
+    harness_guard_artifact_dir,
+)
 from molt.temporary_artifacts import SCRATCH_ENV  # noqa: E402
 
 try:
@@ -50,10 +53,6 @@ SCHEMA_PATH = (
 )
 DEFAULT_OUTPUT = (
     REPO_ROOT / "logs" / "benchmarks" / "l7_numeric_attestation" / "latest.json"
-)
-CAPSULE_ACTIVE_DIR = active_guard_marker_dir(REPO_ROOT)
-CAPSULE_ARCHIVE_DIR = (
-    REPO_ROOT / "logs" / "benchmarks" / "l7_numeric_attestation" / "custody"
 )
 BUNDLE_SCHEMA_VERSION = 5
 CHILD_SCHEMA_VERSION = 3
@@ -900,7 +899,15 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
 
 def _capsule_paths(nonce: str, component: str, run: int) -> tuple[Path, Path]:
     name = f"l7-{nonce}-{component}-run-{run:02d}.json"
-    return CAPSULE_ACTIVE_DIR / name, CAPSULE_ARCHIVE_DIR / name
+    # Resolve the effective custody environment at execution, not module import.
+    # Both paths follow the same disk control-state root, preserving atomic moves.
+    return (
+        active_guard_marker_dir(REPO_ROOT) / name,
+        harness_guard_artifact_dir(REPO_ROOT)
+        / "l7_numeric_attestation"
+        / "custody"
+        / name,
+    )
 
 
 def _run_component(
@@ -1041,7 +1048,7 @@ def _run_component(
                 "attestation_sha256": _sha256_bytes(canonical),
                 "quiescence_before": before,
                 "quiescence_after": after,
-                "capsule_path": str(archived_capsule.relative_to(REPO_ROOT)),
+                "capsule_path": str(archived_capsule),
             }
         )
     elapsed = [float(row["elapsed_ms"]) for row in run_rows]

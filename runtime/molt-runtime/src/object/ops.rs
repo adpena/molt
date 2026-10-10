@@ -30,8 +30,8 @@ pub(crate) use crate::object::ops_hash::{
 // Re-export encoding functions for backward compatibility with crate::object::ops::* paths
 pub(crate) use crate::object::ops_encoding::{
     DecodeTextError, EncodeError, decode_bytes_text, decode_error_byte, decode_error_range,
-    encode_string_with_errors, encoding_kind_name, is_surrogate,
-    normalize_encoding, unicode_escape,
+    encode_string_with_errors, encoding_kind_name, is_surrogate, normalize_encoding,
+    unicode_escape,
 };
 
 mod ascii_bytes;
@@ -1446,10 +1446,10 @@ pub extern "C" fn molt_inc_ref_obj(bits: u64) {
     })
 }
 
-/// Release a callback-capable temporary while preserving both the runtime and
+/// Explicitly protected cleanup preserves both the runtime and
 /// native pending-error channels through their existing shared transaction.
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_runtime_release_owned_value(bits: u64) {
+pub extern "C" fn __molt_runtime_release_protected_value(bits: u64) {
     if !obj_from_bits(bits).is_ptr() {
         return;
     }

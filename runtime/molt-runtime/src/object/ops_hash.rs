@@ -752,18 +752,11 @@ fn hash_unhashable(_py: &PyToken<'_>, obj: MoltObject) -> i64 {
 /// `hash_from_dunder`, whose molt-side dict/attr lookup cannot see the C
 /// `tp_hash` and wrongly reported `unhashable type` — the numpy.dtypes
 /// registration frontier (`PyDict_SetItem(dict, <DType class>, ...)`).
-unsafe fn hash_foreign(_py: &PyToken<'_>, obj: MoltObject, ptr: *mut u8) -> i64 {
+unsafe fn hash_foreign(_py: &PyToken<'_>, ptr: *mut u8) -> i64 {
     let c_ptr = unsafe { crate::object::foreign::foreign_ptr_from_obj(ptr) };
     let h = unsafe { molt_cpython_abi::bridge::molt_foreign_hash(c_ptr) };
     if h == -1 {
-        // The C `tp_hash` failed (e.g. a genuinely-unhashable foreign type). The
-        // slot left its exception pending; surface a molt exception if the bridge
-        // has not already, so the caller propagates rather than masking it.
-        if !exception_pending(_py) {
-            let name = type_name(_py, obj);
-            let msg = format!("unhashable type: '{name}'");
-            return raise_exception::<i64>(_py, "TypeError", &msg);
-        }
+        crate::cpython_abi_hooks::propagate_native_failure(_py, "native hash");
         return 0;
     }
     h as i64
@@ -953,7 +946,7 @@ pub(crate) fn hash_bits_signed(_py: &PyToken<'_>, bits: u64) -> i64 {
                 // A foreign C-extension object hashes by its OWN `tp_hash`
                 // (via the ABI bridge → CPython `PyObject_Hash`), never molt's
                 // dunder path — molt cannot see the C hash slot.
-                return hash_foreign(_py, obj, ptr);
+                return hash_foreign(_py, ptr);
             }
             if type_id == TYPE_ID_STRING {
                 return hash_string(_py, ptr);

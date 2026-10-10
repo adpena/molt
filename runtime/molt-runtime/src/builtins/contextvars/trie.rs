@@ -156,7 +156,7 @@ fn merge_pairs(
         return bitmap(py, am | bm, 0, &values);
     }
     let child = merge_pairs(py, a, b, shift + 5)?;
-    let _guard = PtrDropGuard::preserving(ptr(child));
+    let _guard = PtrDropGuard::new(ptr(child));
     bitmap(py, 0, am, &[child])
 }
 fn merge_bucket(
@@ -174,7 +174,7 @@ fn merge_bucket(
         return bitmap(py, b, a, &[key, value, root]);
     }
     let child = merge_bucket(py, root, old_hash, key, value, hash, shift + 5)?;
-    let _guard = PtrDropGuard::preserving(ptr(child));
+    let _guard = PtrDropGuard::new(ptr(child));
     bitmap(py, 0, a, &[child])
 }
 /// Returns an owned new root, leaving the old root unchanged on every failure.
@@ -239,7 +239,7 @@ fn insert(py: &PyToken<'_>, root: u64, key: u64, value: u64, hash: u32, shift: u
                 (key, value, hash),
                 shift + 5,
             )?;
-            let _guard = PtrDropGuard::preserving(ptr(child));
+            let _guard = PtrDropGuard::new(ptr(child));
             let ci = rank(b.children, mask);
             let data_len = nd * 2 - 2;
             std::ptr::copy_nonoverlapping(words(p), values.as_mut_ptr(), i);
@@ -265,7 +265,7 @@ fn insert(py: &PyToken<'_>, root: u64, key: u64, value: u64, hash: u32, shift: u
             let i = nd * 2 + rank(b.children, mask);
             let old = *words(p).add(i);
             let child = insert(py, old, key, value, hash, shift + 5)?;
-            let _guard = PtrDropGuard::preserving(ptr(child));
+            let _guard = PtrDropGuard::new(ptr(child));
             if child == old {
                 return Some(retain(py, root));
             }
@@ -362,7 +362,7 @@ fn remove(py: &PyToken<'_>, root: u64, key: u64, hash: u32, shift: u32) -> Optio
         let i = nd * 2 + ci;
         let old = *words(p).add(i);
         let child = remove(py, old, key, hash, shift + 5)?;
-        let _guard = (child != 0).then(|| PtrDropGuard::preserving(ptr(child)));
+        let _guard = (child != 0).then(|| PtrDropGuard::new(ptr(child)));
         if child == old {
             return Some(retain(py, root));
         }

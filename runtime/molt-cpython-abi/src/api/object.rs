@@ -438,7 +438,6 @@ unsafe fn lookup_optional_special(
     o: *mut PyObject,
     name: *const c_char,
 ) -> Result<Option<crate::api::refcount::OwnedPyObject>, crate::ErrorIndicatorSet> {
-    use crate::api::refcount::OwnedPyObject;
     if name.is_null() {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return Err(crate::ErrorIndicatorSet);
@@ -447,7 +446,7 @@ unsafe fn lookup_optional_special(
     if name.is_null() {
         return Err(crate::ErrorIndicatorSet);
     }
-    let name = unsafe { OwnedPyObject::from_owned(name) };
+    let name = unsafe { crate::api::refcount::ProtectedPyObject::from_owned(name) };
     unsafe { lookup_type_special(o, name.as_ptr()) }
 }
 
@@ -504,7 +503,7 @@ unsafe fn lookup_type_special_descriptor(
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return Err(crate::ErrorIndicatorSet);
     }
-    let receiver = unsafe { OwnedPyObject::from_borrowed(o) };
+    let receiver = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(o) };
     let tp = unsafe { crate::bridge::semantic_type(o) };
     if tp.is_null() {
         if !exception_already_pending() {
@@ -699,7 +698,10 @@ unsafe fn generic_getattr_with_optional_dict(
     if !inst_dict.is_null() {
         let _dict_owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(inst_dict) };
         let mut result = ptr::null_mut();
-        match unsafe { crate::api::mapping::PyDict_GetItemRef(inst_dict, name, &raw mut result) } {
+        let status =
+            unsafe { crate::api::mapping::PyDict_GetItemRef(inst_dict, name, &raw mut result) };
+        drop(_dict_owner);
+        match status {
             1 => return result,
             -1 => {
                 unsafe { crate::api::descriptor::suppress_attribute_error(suppress, result) };
@@ -1219,6 +1221,7 @@ unsafe fn foreign_generic_setattr(
             }
             let _dict_owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(d) };
             let rc = unsafe { crate::api::mapping::PyDict_DelItem(d, name) };
+            drop(_dict_owner);
             if rc < 0
                 && unsafe {
                     crate::api::errors::PyErr_ExceptionMatches(
@@ -1410,7 +1413,7 @@ pub unsafe extern "C" fn PyObject_Print(
             c"backslashreplace".as_ptr(),
         )
     };
-    unsafe { crate::api::errors::release_preserving_error(&[rendered]) };
+    unsafe { crate::api::refcount::Py_XDECREF(rendered) };
     if encoded.is_null() {
         return -1;
     }
@@ -1423,7 +1426,7 @@ pub unsafe extern "C" fn PyObject_Print(
     } else {
         -1
     };
-    unsafe { crate::api::errors::release_preserving_error(&[encoded]) };
+    unsafe { crate::api::refcount::Py_XDECREF(encoded) };
     if rc < 0 { -1 } else { 0 }
 }
 
@@ -1635,7 +1638,7 @@ pub unsafe extern "C" fn PyObject_LengthHint(
         }
         return length;
     }
-    let _receiver = unsafe { OwnedPyObject::from_borrowed(o) };
+    let _receiver = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(o) };
     let tp = unsafe { (*o).ob_type };
     if tp.is_null() {
         unsafe { errors::PyErr_BadInternalCall() };
@@ -2172,9 +2175,7 @@ pub unsafe extern "C" fn PyIter_Next(iter: *mut PyObject) -> *mut PyObject {
             return result;
         }
         // The normal completion payload belongs to Send; Next discards it.
-        crate::api::errors::with_preserved_error(|| unsafe {
-            crate::api::refcount::Py_XDECREF(result)
-        });
+        unsafe { crate::api::refcount::Py_XDECREF(result) };
         return ptr::null_mut();
     }
     let tp = unsafe { (*iter).ob_type };
@@ -3071,9 +3072,13 @@ struct VectorcallOwnedArgs {
 impl Drop for VectorcallOwnedArgs {
     fn drop(&mut self) {
         unsafe {
-            crate::api::errors::release_preserving_error(&self.stack[1..]);
-            crate::api::errors::release_preserving_error(&self.keys);
-            crate::api::errors::release_preserving_error(&[self.names]);
+            for &object in &self.stack[1..] {
+                crate::api::refcount::Py_XDECREF(object);
+            }
+            for &object in &self.keys {
+                crate::api::refcount::Py_XDECREF(object);
+            }
+            crate::api::refcount::Py_XDECREF(self.names);
         }
     }
 }
@@ -3262,7 +3267,7 @@ pub unsafe extern "C" fn PyObject_VectorcallDict(
         return ptr::null_mut();
     }
     let result = unsafe { PyObject_Call(callable, argstuple, kwargs) };
-    unsafe { crate::api::errors::release_preserving_error(&[argstuple]) };
+    unsafe { crate::api::refcount::Py_XDECREF(argstuple) };
     result
 }
 
@@ -3423,14 +3428,16 @@ pub(crate) unsafe fn classinfo_match(
         None => -1,
     };
     crate::api::errors::transfer_runtime_pending_to_current();
-    crate::api::errors::with_preserved_error(|| unsafe {
+    unsafe {
         (hooks.dec_ref)(value_bits);
         if let Some(class_bits) = class_bits {
             (hooks.dec_ref)(class_bits);
         }
-    });
-    if unsafe { crate::api::errors::check_native_status(result, "class protocol query") } < 0 {
-        return -1;
+    }
+    // This query is also valid while admitting an already raised exception.
+    // Its typed producer distinguishes failure from the caller's prior state.
+    if result < 0 {
+        unsafe { crate::api::errors::check_native_status(result, "class protocol query") };
     }
     result
 }
@@ -3731,7 +3738,9 @@ pub unsafe extern "C" fn molt_cfunction_dealloc(op: *mut PyObject) {
         ptr::null_mut()
     };
     unsafe {
-        crate::api::errors::release_preserving_error(&[self_, module, class]);
+        for &object in &[self_, module, class] {
+            crate::api::refcount::Py_XDECREF(object);
+        }
         if is_method {
             drop(Box::from_raw(
                 op.cast::<crate::abi_types::PyCMethodObject>(),
@@ -3803,7 +3812,9 @@ pub unsafe extern "C" fn molt_method_dealloc(op: *mut PyObject) {
     unsafe {
         let function = std::mem::replace(&mut (*method).im_func, ptr::null_mut());
         let receiver = std::mem::replace(&mut (*method).im_self, ptr::null_mut());
-        crate::api::errors::release_preserving_error(&[function, receiver]);
+        for &object in &[function, receiver] {
+            crate::api::refcount::Py_XDECREF(object);
+        }
         drop(Box::from_raw(method));
     }
 }
@@ -3901,9 +3912,7 @@ pub unsafe extern "C" fn PyCMethod_New(
             return unsafe { cfunction_construction_error() };
         }
         if exception_already_pending() {
-            crate::api::errors::with_preserved_error(|| unsafe {
-                (hooks_or_stubs().dec_ref)(bits);
-            });
+            unsafe { (hooks_or_stubs().dec_ref)(bits) };
             return unsafe { cfunction_construction_error() };
         }
         handle = Some(bits);
@@ -3991,14 +4000,14 @@ pub unsafe extern "C" fn PyMethod_New(func: *mut PyObject, self_: *mut PyObject)
         }
         let Some(bits) = GLOBAL_BRIDGE.managed_handle_for_pyobj(method) else {
             unsafe {
-                crate::api::errors::release_preserving_error(&[method]);
+                crate::api::refcount::Py_DECREF(method);
                 crate::api::errors::PyErr_BadInternalCall();
             }
             return ptr::null_mut();
         };
         if !GLOBAL_BRIDGE.refresh_method_view_with_origins(bits, Some([func, self_])) {
             unsafe {
-                crate::api::errors::release_preserving_error(&[method]);
+                crate::api::refcount::Py_DECREF(method);
             }
             return ptr::null_mut();
         }
@@ -5406,7 +5415,7 @@ pub unsafe extern "C" fn PyObject_ASCII(o: *mut PyObject) -> *mut PyObject {
     let Some(bytes) = (unsafe { crate::api::strings::unicode_bytes(repr) }) else {
         unsafe {
             crate::api::errors::PyErr_BadArgument();
-            crate::api::errors::release_preserving_error(&[repr]);
+            crate::api::refcount::Py_XDECREF(repr);
         }
         return ptr::null_mut();
     };
@@ -5416,12 +5425,12 @@ pub unsafe extern "C" fn PyObject_ASCII(o: *mut PyObject) -> *mut PyObject {
     let Some(text) = crate::api::strings::PythonStringBytes::from_bytes(bytes) else {
         unsafe {
             crate::api::errors::PyErr_BadArgument();
-            crate::api::errors::release_preserving_error(&[repr]);
+            crate::api::refcount::Py_XDECREF(repr);
         }
         return ptr::null_mut();
     };
     let escaped = crate::api::strings::ascii_escape(text);
-    unsafe { crate::api::errors::release_preserving_error(&[repr]) };
+    unsafe { crate::api::refcount::Py_XDECREF(repr) };
     unsafe { crate::api::strings::unicode_from_python_bytes(&escaped) }
 }
 

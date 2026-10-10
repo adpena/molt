@@ -84,10 +84,10 @@ reading the table tail; only the exact current layout permits a complete vtable
 read. Rejected short or unaligned producer tables do not acquire runtime state.
 `RUNTIME_HOOKS_ABI_VERSION` versions callback signatures and argument domains
 as well as table layout. A signature or policy change increments that version
-even when the table size is unchanged. Version 53 introduces commit/publication/retirement callbacks
-for dictionary mutation and the three-way attribute mutation policy;
-version 52 producers must be rebuilt. Version 53 also includes exact-class latched
-abstract state in `TypeMetadataField::SemanticFlags`. Its complete domain is
+even when the table size is unchanged. Dictionary mutation uses
+commit/publication/retirement callbacks and the three-way attribute mutation
+policy. `TypeMetadataField::SemanticFlags` includes exact-class latched abstract
+state. Its complete domain is
 `TYPE_SEMANTIC_FLAGS_MASK`: HEAPTYPE, IMMUTABLETYPE, BASETYPE and IS_ABSTRACT.
 Static binding replaces that whole domain, including across runtime restarts;
 physical readiness, protocol and GC flags remain C-owned. Both runtime producers
@@ -96,7 +96,7 @@ and test stubs use the canonical version constant.
 ### Unicode percent formatting
 
 `PyUnicode_Format` enters the runtime's declaring `str.__mod__` operation through
-`RuntimeHooks::unicode_format` (hook ABI version 62). The runtime percent parser,
+`RuntimeHooks::unicode_format`. The runtime percent parser,
 arbitrary-width integer conversions, width/precision validation, Python text
 writer and callback cleanup are the single formatting authority. The explicit
 C API bypasses a string subtype's `__mod__` override. Managed inputs remain
@@ -397,7 +397,8 @@ dispatcher. External ingress acquires execution custody before the admitted
 trampoline; already-admitted positional calls keep the generated native/WASM
 transport. Each path owns one recursion/invocation guard. C arguments remain
 borrowed: moved operands stay locally owned through the callback and release
-in frame order while preserving both exact error channels. Dynamic-load diagnostics describe
+in frame order with the pending error visible to native deallocators, which must
+preserve its exact identity. Dynamic-load diagnostics describe
 the shared initialization transaction, not an inferred raw PyInit return;
 the pending C exception retains the actual failure.
 
@@ -429,27 +430,45 @@ restores both exact channels independently, including allocation-free emergency
 runtime errors; it does not project C views or materialize lazy tracebacks.
 The synchronous cleanup hook keeps ownership on the caller and runtime stacks,
 drains cleanup errors, and restores both channels before resuming a Rust panic.
-Numeric operation temporaries use ordinary reference retirement: native
-deallocators can observe the pending error and must preserve its exact identity.
+Fallible preparation uses the same saved-state authority with explicit completion:
+success restores the incoming state, while failure retains the new error and
+retires the displaced owner. This includes allocation-free runtime emergency
+errors; preparing a C exception projection is not required to preserve them.
+Semantic operation temporaries use ordinary reference retirement: native
+`tp_dealloc` callbacks can observe the pending error and must preserve its exact
+identity. Python `__del__` and `tp_finalize` execution retain their explicit
+saved-error boundary; a native deallocator is not itself that boundary.
 Runtime native-reference retirement completes a C raised-error roundtrip through
 the existing transfer authority before its caller resumes, for both foreign
-wrappers and directly owned C results. Managed finalizers retain their existing
-error-preservation boundary. Payload-only projections and explicitly shielded
-cleanup retain the detached-channel policy.
+wrappers and directly owned C results. Payload-only projections and explicitly shielded
+cleanup retain the detached-channel policy. The shared `PyObjectOwner` selects
+this policy statically: `OwnedPyObject` performs ordinary C release,
+`ProtectedPyObject` performs explicitly shielded release, and the runtime's
+`NativeObjectOwner` completes native-to-runtime error custody. Each contains
+only its owned pointer. Scope exit, early return and unwind use the same policy;
+explicit release points preserve CPython's observable order when scope order
+differs. A retained argument, descriptor, iterator or container element may
+become the last owner during callback reentry and remains a semantic owner.
 Type-special descriptor binding, public method calls and generated native slot
 invocation use the same ordinary retirement rule for semantic callable and
-result owners. Internal receiver/type/name projections remain protected. The
-Boolean slot preserves the callable through result validation for Python
+result and retained input owners. Borrowing, registry membership, caching, or
+incomplete construction does not itself authorize error suppression. Protected
+projection requires an explicit non-raising transaction and independent semantic
+owners through its complete lifetime. Publication restores its selected error
+before retiring displaced semantic owners, including on unwind. The Boolean slot preserves the callable through result validation for Python
 3.12/3.13; Python 3.14 retires it when the call completes. Generated length
 conversion retains the private index result through scalar extraction while
 retiring the original result at the conversion boundary. Hash validation uses
 the balanced Python 3.13+ wrong-result release order on every target; Molt does
 not reproduce the reference leak present in the pinned Python 3.12 source.
 Printing and unraisable reporting consume the same selected raised error as
-fetching it. Native finalizers, clear callbacks and type watchers detach both
-outer channels before executing or reporting callback failures. Cold C-view
-publication uses the same preservation boundary; cached views retain their
-direct path. Builtin exception rendering slots inherit from the shared schema
+fetching it. Python finalizers, collector-owned clear callbacks and type watchers
+detach both outer channels before executing or reporting callback failures;
+public clear operations retain ordinary native error visibility. Cold C-view
+publication consumes typed producer status independently of an incoming error.
+Fallible lazy preparation preserves incoming state only on success; rollback
+uses its explicit suppression boundary. Cached views retain their direct path.
+Builtin exception rendering slots inherit from the shared schema
 before namespace readiness so readiness failures can themselves be formatted.
 The same schema declares managed wrapper descriptors independently in every
 runtime. C slots and managed descriptors share the rendering algorithms in
@@ -473,6 +492,15 @@ the exact class. These rules remain distinct from callback-free exception
 handler matching and physical receiver admission. All normalization entries
 share bounded recursion and preserve constructor failures; unavailable bootstrap
 allocation cannot turn an arbitrary input into a normalized exception.
+`PyErr_SetObject` alone adds the selected CPython version's normalization-failure
+note. It detaches the constructor failure, formats the original input's repr
+with the upstream fallback rules, retires that input, invokes the immutable
+`BaseException.add_note` descriptor and restores the original failure. Note
+preparation may run callbacks that change the failure's class or traceback;
+final publication reads current metadata through public instance transfer.
+The note consumer shares the existing attribute and list mutation authorities.
+[PEP 678](https://peps.python.org/pep-0678/) defines exception notes; the pinned
+CPython implementation supplies this C-API normalization sequence.
 First C exposure of a heap exception class still requires fallible bridge
 storage. If that publication fails, the original runtime exception remains
 pending but its C type query can return NULL; universal allocation-free error
@@ -863,10 +891,11 @@ This layout fact is inherited by native metatypes. Default type writes use the c
 transaction; normal mutation selects its paired slot or metaclass override before
 entering that transaction. Default type mutation bypasses metaclass overrides.
 Deletion has an explicit presence bit, so float
-+0.0 remains a value. Temporary operand owners preserve original exceptions.
++0.0 remains a value. Temporary operands use ordinary semantic retirement.
 Pickle BUILD dictionary state updates the actual __dict__; only its slot state
 invokes setattr. update_wrapper propagates assignment failures and retires
-iterator/name/value owners through the same exception-preserving boundary.
+iterator/name/value owners with the pending exception visible, through the same
+ordinary retirement authority.
 
 The named mutation primitive carries the original admitted name object through
 normal overrides, descriptors, and raw dictionary hash/equality. Byte entrypoints

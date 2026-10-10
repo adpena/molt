@@ -183,13 +183,14 @@ unsafe extern "C" fn numeric_pending_class() -> molt_cpython_abi::hooks::Pending
 unsafe extern "C" fn numeric_clear_pending() {
     NUMERIC_RUNTIME_PENDING.with(|value| value.set(0));
 }
-unsafe extern "C" fn numeric_preserve_pending(
-    callback: unsafe extern "C" fn(*mut c_void),
+unsafe extern "C" fn numeric_save_pending(
+    callback: unsafe extern "C" fn(*mut c_void) -> std::os::raw::c_int,
     context: *mut c_void,
 ) {
     let incoming = NUMERIC_RUNTIME_PENDING.with(|value| value.replace(0));
-    unsafe { callback(context) };
-    NUMERIC_RUNTIME_PENDING.with(|value| value.set(incoming));
+    if unsafe { callback(context) } == 0 {
+        NUMERIC_RUNTIME_PENDING.with(|value| value.set(incoming));
+    }
 }
 // The ordinary fixture class anchors intentionally expose native C class
 // semantics. This bounded probe selects the managed subtype callback for the
@@ -352,7 +353,7 @@ fn init() -> support::AbiTestThreadStateTransaction {
     hooks.exception_pending = numeric_exception_pending;
     hooks.pending_exception_class = numeric_pending_class;
     hooks.clear_pending_exception = numeric_clear_pending;
-    hooks.with_preserved_pending_exception = numeric_preserve_pending;
+    hooks.with_saved_pending_exception = numeric_save_pending;
     let transaction = support::enter_abi_test(hooks);
     support::fake_runtime::prepare_class_bindings();
     NUMERIC_ADOPTIONS.with(|calls| calls.set(0));
@@ -1864,15 +1865,18 @@ unsafe extern "C" fn owned_index_slot_result(_object: *mut PyObject) -> *mut PyO
     SLOT_RESULT.with(|value| value.replace(0)) as *mut PyObject
 }
 
+thread_local! {
+    static INDEX_RESULT_ERROR: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 unsafe extern "C" fn index_result_finalizer(_object: *mut PyObject) {
     INDEX_RESULT_FINALIZERS.with(|count| count.set(count.get() + 1));
-    // A C finalizer may leave an error. Extraction must preserve its own error.
+    // A legal native deallocator sees and restores the exact extraction error.
     unsafe {
-        molt_cpython_abi::api::errors::PyErr_SetString(
-            (&raw mut molt_cpython_abi::abi_types::PyExc_LookupError).cast(),
-            c"index result finalizer".as_ptr(),
-        )
-    };
+        let error = molt_cpython_abi::api::errors::PyErr_GetRaisedException();
+        INDEX_RESULT_ERROR.with(|seen| seen.set(error.addr()));
+        molt_cpython_abi::api::errors::PyErr_SetRaisedException(error);
+    }
 }
 
 #[test]
@@ -2040,6 +2044,7 @@ fn private_index_consumers_extract_wide_subtypes_without_exact_materialization()
         (*class.tp_as_number.cast::<PyNumberMethods>()).nb_index =
             owned_index_slot_result as *const () as *mut c_void;
         INDEX_RESULT_FINALIZERS.with(|count| count.set(0));
+        INDEX_RESULT_ERROR.with(|seen| seen.set(0));
         assert_eq!(numbers::PyLong_AsLongLong(object_ptr), -1);
         assert_eq!(SLOT_RESULT.with(Cell::get), 0);
         assert_eq!(INDEX_RESULT_FINALIZERS.with(Cell::get), 1);
@@ -2050,7 +2055,10 @@ fn private_index_consumers_extract_wide_subtypes_without_exact_materialization()
             1
         );
         assert_eq!(result.ob_base.ob_refcnt, 0);
-        errors::PyErr_Clear();
+        let error = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert!(!error.as_ptr().is_null());
+        assert_eq!(INDEX_RESULT_ERROR.with(Cell::get), error.as_ptr().addr());
+        drop(error);
         drop(args);
         assert_eq!(object.ob_refcnt, 1);
     });

@@ -74,9 +74,15 @@ this page explains them and never restates their content.
 
 ## Explicit exclusions
 
-Compiled binaries do not support unrestricted `exec`/`eval`/`compile`, runtime
-monkeypatching, or unrestricted reflection, and never fall back to a host
-Python installation. These are design boundaries of the product, not gaps.
+The [Python contract](areas/compat/contracts/verified_subset_contract.md)
+distinguishes intended semantic scope from verified implementation. Its
+[dynamic-semantics policy](areas/compat/contracts/dynamic_execution_policy_contract.md)
+restricts unrestricted `exec`/`eval`/`compile`, arbitrary runtime monkeypatching
+and reflection that obstruct efficient compilation. Scoped mutation and
+introspection retain their admitted Python semantics. Missing implementations,
+conformance failures and performance defects remain release obligations; they
+do not create exclusions. Compiled binaries never fall back to a host Python
+installation.
 
 ## Changing the contract
 
