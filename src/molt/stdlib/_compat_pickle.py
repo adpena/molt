@@ -1,8 +1,5 @@
 """Compatibility tables for CPython's `_compat_pickle`."""
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 IMPORT_MAPPING = {
     "BaseHTTPServer": "http.server",
@@ -432,6 +429,3 @@ __all__ = [
     "REVERSE_IMPORT_MAPPING",
     "REVERSE_NAME_MAPPING",
 ]
-
-
-globals().pop("_require_intrinsic", None)

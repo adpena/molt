@@ -137,7 +137,6 @@ install_registry({{
     "molt_stat_isport": lambda mode: False,
     "molt_stat_iswht": lambda mode: False,
     "molt_stat_filemode": lambda mode: "mode",
-    "molt_stdlib_probe": lambda: None,
     "molt_capabilities_trusted": lambda: True,
     "molt_capabilities_require": lambda cap: None,
     "molt_signal_signal": lambda sig, handler: 0,

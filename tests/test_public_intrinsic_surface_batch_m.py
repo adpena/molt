@@ -50,7 +50,6 @@ install_registry({{
     "molt_cmath_isnan": lambda r, i: False,
     "molt_cmath_isclose": lambda ar, ai, br, bi: True,
     "molt_cmath_constants": lambda: (math.pi, math.e, math.tau, math.inf, 0.0, math.inf, math.nan, 0.0, math.nan),
-    "molt_zoneinfo_runtime_ready": lambda: None,
     "molt_zoneinfo_new": lambda key: {{"key": key}},
     "molt_zoneinfo_drop": lambda handle: None,
     "molt_zoneinfo_key": lambda handle: handle["key"],

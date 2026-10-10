@@ -6,9 +6,6 @@ from types import TracebackType
 import enum
 import typing
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 import asyncio.events as events
 import asyncio.exceptions as exceptions
@@ -54,5 +51,3 @@ __all__ = [
     "timeout",
     "timeout_at",
 ]
-
-globals().pop("_require_intrinsic", None)

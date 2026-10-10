@@ -1,11 +1,9 @@
 """Intrinsic-backed compatibility surface for CPython's `_py_warnings`."""
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 import sys
 import warnings as _warnings_mod
 
-_require_intrinsic("molt_warnings_warn")
 
 WarningMessage = _warnings_mod._WarningRecord
 catch_warnings = _warnings_mod._CatchWarnings
@@ -37,5 +35,3 @@ __all__ = [
     "warn",
     "warn_explicit",
 ]
-
-globals().pop("_require_intrinsic", None)

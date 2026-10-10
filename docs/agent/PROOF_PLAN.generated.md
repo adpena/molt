@@ -14,7 +14,7 @@ Index mode executes the captured staged generator with its staged manifest, poli
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 337 |
+| Hashed executable authority inputs | 1 | 338 |
 | Local path rules | 35 | 43 |
 | Unique local commands | 73 | 98 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -43,7 +43,7 @@ GitHub job budgets cover the deterministic command-deadline DAG projection plus 
 
 | Family | Tiers | Required | Executor | Timeout | Commands | Reserve | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---:|---|---|---|---:|
-| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2640 s | 120 s | 840 s | `repository-policy` | none | `docs-gates` needs none | 1 |
+| `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 2340 s | 120 s | 1140 s | `repository-policy` | none | `docs-gates` needs none | 1 |
 | `wasm` | pr, main | yes | `github-job` | 263 min | 15600 s | 180 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 23 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 16 min | 900 s | 60 s | 0 s | `python-static` | none | `python-static` needs `classify-changes` | 10 |
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 41 min | 2400 s per cell | 60 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
@@ -206,7 +206,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.canonicalization` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.call-fact-coverage` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.release-supply-chain` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 900 s | `repository-policy` | 0 |
-| `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 900 s | `repository-policy` | 5 |
+| `repository.docs-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 600 s | `repository-policy` | 5 |
 | `repository.tooling-tests` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 900 s | `repository-policy` | 0 |
 | `repository.agent-coordination` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 600 s | `repository-policy` | 0 |
 | `wasm.build.backend` | `wasm` | `linux-x86_64-py312-wasm-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |

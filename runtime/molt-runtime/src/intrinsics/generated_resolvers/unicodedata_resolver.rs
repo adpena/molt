@@ -4,11 +4,6 @@
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
         #[cfg(feature = "stdlib_text")]
-        "molt_unicodedata_runtime_ready" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_unicodedata_runtime_ready",
-            crate::molt_unicodedata_runtime_ready as *const (),
-        )),
-        #[cfg(feature = "stdlib_text")]
         "molt_unicodedata_bidirectional" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_unicodedata_bidirectional",
             crate::molt_unicodedata_bidirectional as *const (),

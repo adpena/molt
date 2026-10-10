@@ -12,20 +12,6 @@ fn asyncio_has_process_capability(_py: &PyToken<'_>) -> bool {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_require_ssl_transport_support() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if !asyncio_has_net_capability(_py) {
-            return raise_exception::<u64>(
-                _py,
-                "PermissionError",
-                "missing net capability for asyncio SSL transport",
-            );
-        }
-        MoltObject::none().bits()
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_ssl_transport_orchestrate(
     operation_bits: u64,
     ssl_bits: u64,

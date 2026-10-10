@@ -880,7 +880,9 @@ def test_sentinel_publishes_live_request_ancestry_before_termination(
     )
     sentinel._tree_tracker = module.memory_guard.ProcessTreeTracker(100)
     monkeypatch.setattr(
-        sentinel, "_record_skipped_protected_groups", lambda samples: None
+        sentinel,
+        "_record_skipped_protected_groups",
+        lambda samples, *, within_pids: None,
     )
     sentinel.scan_once()
     assert not samples

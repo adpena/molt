@@ -246,14 +246,14 @@ def test_const_str_resolver_name_is_a_requirement() -> None:
 
 
 def test_core_and_resolver_only_symbols_are_not_requirements() -> None:
-    # ``molt_stdlib_probe`` is a core ungated intrinsic; resolver-only features
+    # ``molt_capabilities_has`` is a core ungated intrinsic; resolver-only features
     # (e.g. importlib_resources) are not link-affecting. Neither is a requirement.
     functions = [
         {
             "name": "molt_main",
             "params": [],
             "ops": [
-                _builtin_func("v1", "molt_stdlib_probe"),
+                _builtin_func("v1", "molt_capabilities_has"),
                 _const_str("v2", "molt_importlib_resources_reader_contents_from_roots"),
                 _const_str("v3", "just a normal string"),
                 _builtin_func("v4", "molt_list_append"),
@@ -354,7 +354,7 @@ def test_refusal_silent_when_reaching_only_core_intrinsics() -> None:
         {
             "name": "molt_main",
             "params": [],
-            "ops": [_builtin_func("v1", "molt_stdlib_probe")],
+            "ops": [_builtin_func("v1", "molt_capabilities_has")],
         }
     ]
     assert (

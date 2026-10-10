@@ -12,7 +12,11 @@ import pytest
 
 from tests.process_guard_common import install_module_view, run_custody_subject_process
 
-from tools.proof_queue_pkg import execution_custody, supervisor_custody
+from tools.proof_queue_pkg import (
+    execution_custody,
+    supervisor_custody,
+    windows_createprocess,
+)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="CPython POSIX exec-path contract")
@@ -134,6 +138,648 @@ def test_python_hook_broker_matches_cpython_child_path_selection(
         str(selected_directory / name) if found else None
     ), decisions
     assert bool(receipt["violations"]) is not found
+
+
+# The Microsoft CreateProcessW documentation is the oracle for this table; the
+# Windows test below checks the same model against real CreateProcessW.
+_APP, _CWD = "C:\\Python", "C:\\work"
+_SYSTEM, _WINDOWS = "C:\\Windows\\System32", "C:\\Windows"
+_UNDETERMINABLE = "undeterminable"
+
+
+def _createprocess_image(
+    monkeypatch: pytest.MonkeyPatch,
+    files: dict[str, str],
+    *,
+    application: str | None = None,
+    command: str | None = None,
+    path: str | None = "C:\\tools",
+    searches_cwd: bool = True,
+) -> str | None:
+    entries = {location.casefold(): kind for location, kind in files.items()}
+    monkeypatch.setattr(
+        windows_createprocess,
+        "_entry_kind",
+        lambda location: entries.get(location.casefold()),
+    )
+    search = windows_createprocess.CallerSearch(
+        image_directory=_APP,
+        current_directory=_CWD,
+        path=path,
+        searches_current_directory=searches_cwd,
+        system_directory=_SYSTEM,
+        windows_directory=_WINDOWS,
+    )
+    try:
+        return windows_createprocess.createprocess_image(application, command, search)
+    except windows_createprocess.LaunchUndeterminable:
+        return _UNDETERMINABLE
+
+
+def test_createprocess_model_searches_the_documented_order(monkeypatch) -> None:
+    # Image directory, current directory, system, 16-bit system, Windows, PATH.
+    order = [
+        f"{_APP}\\tool.exe",
+        f"{_CWD}\\tool.exe",
+        f"{_SYSTEM}\\tool.exe",
+        f"{_WINDOWS}\\System\\tool.exe",
+        f"{_WINDOWS}\\tool.exe",
+        "C:\\tools\\tool.exe",
+    ]
+    for index, expected in enumerate(order):
+        files = dict.fromkeys(order[index:], "file")
+        assert _createprocess_image(monkeypatch, files, command="tool") == expected
+    # NoDefaultCurrentDirectoryInExePath removes the current directory for a
+    # name without a backslash.
+    files = dict.fromkeys(order[1:], "file")
+    assert (
+        _createprocess_image(monkeypatch, files, command="tool", searches_cwd=False)
+        == order[2]
+    )
+    # The child's PATH and cwd never reach the model, so nothing found is None.
+    assert _createprocess_image(monkeypatch, {}, command="tool") is None
+
+
+@pytest.mark.parametrize(
+    ("files", "launch", "expected"),
+    [
+        # Only .exe is appended to a name without an extension; PATHEXT has no role.
+        (
+            {
+                "C:\\tools\\tool.com": "file",
+                "C:\\tools\\tool": "file",
+                "D:\\more\\tool.exe": "file",
+            },
+            {"command": "tool", "path": "C:\\tools;D:\\more"},
+            "D:\\more\\tool.exe",
+        ),
+        (
+            {"C:\\tools\\tool.com": "file"},
+            {"command": "tool.com"},
+            "C:\\tools\\tool.com",
+        ),
+        (
+            {"C:\\tools\\tool.exe": "file"},
+            {"command": "tool --flag"},
+            "C:\\tools\\tool.exe",
+        ),
+        # lpApplicationName is completed from the current directory, never searched.
+        ({"C:\\tools\\tool.exe": "file"}, {"application": "tool.exe"}, None),
+        (
+            {f"{_CWD}\\tool.exe": "file"},
+            {"application": "tool.exe", "command": "x"},
+            f"{_CWD}\\tool.exe",
+        ),
+        (
+            {"D:\\abs\\tool.exe": "file"},
+            {"application": "D:\\abs\\tool.exe"},
+            "D:\\abs\\tool.exe",
+        ),
+        # A quoted module name ends at the quote; an unquoted one is tried
+        # prefix by prefix, as in the documented "c:\program files" example.
+        (
+            {"C:\\Program Files\\x\\tool.exe": "file"},
+            {"command": '"C:\\Program Files\\x\\tool.exe" --flag'},
+            "C:\\Program Files\\x\\tool.exe",
+        ),
+        (
+            {"C:\\Program Files\\x\\tool.exe": "file"},
+            {"command": "C:\\Program Files\\x\\tool.exe --flag"},
+            "C:\\Program Files\\x\\tool.exe",
+        ),
+        # The example appends .exe to a path; the text says it does not. Both
+        # readings run a different image here, so custody refuses.
+        (
+            {"C:\\Program.exe": "file", "C:\\Program Files\\x\\tool.exe": "file"},
+            {"command": "C:\\Program Files\\x\\tool.exe --flag"},
+            _UNDETERMINABLE,
+        ),
+        ({"C:\\x\\tool.exe": "file"}, {"command": "C:\\x\\tool"}, "C:\\x\\tool.exe"),
+        ({"C:\\x\\tool": "file"}, {"command": "C:\\x\\tool"}, "C:\\x\\tool"),
+        (
+            {"C:\\x\\tool": "file", "C:\\x\\tool.exe": "file"},
+            {"command": "C:\\x\\tool"},
+            _UNDETERMINABLE,
+        ),
+        (
+            {"C:\\bin\\tool.exe": "file"},
+            {"command": "\\bin\\tool.exe"},
+            "C:\\bin\\tool.exe",
+        ),
+        (
+            {"\\\\srv\\share\\tool.exe": "file"},
+            {"command": "\\\\srv\\share\\tool.exe"},
+            "\\\\srv\\share\\tool.exe",
+        ),
+        # A relative name with a separator: searched, or completed from the
+        # current directory. Custody admits only an image both readings allow.
+        (
+            {f"{_CWD}\\sub\\tool.exe": "file"},
+            {"command": "sub\\tool.exe"},
+            f"{_CWD}\\sub\\tool.exe",
+        ),
+        (
+            {"C:\\tools\\sub\\tool.exe": "file"},
+            {"command": "sub\\tool.exe"},
+            "C:\\tools\\sub\\tool.exe",
+        ),
+        (
+            {f"{_APP}\\sub\\tool.exe": "file", f"{_CWD}\\sub\\tool.exe": "file"},
+            {"command": "sub\\tool.exe"},
+            _UNDETERMINABLE,
+        ),
+        ({f"{_CWD}\\tool.exe": "file"}, {"command": "./tool"}, f"{_CWD}\\tool.exe"),
+        # Undocumented PATH entries refuse only when they could hold the image.
+        (
+            {f"{_CWD}\\tool.exe": "file"},
+            {"command": "tool", "path": "C:\\tools;;D:\\more", "searches_cwd": False},
+            _UNDETERMINABLE,
+        ),
+        (
+            {f"{_CWD}\\rel\\tool.exe": "file"},
+            {"command": "tool", "path": "rel;D:\\more"},
+            _UNDETERMINABLE,
+        ),
+        (
+            {"C:\\quoted\\tool.exe": "file"},
+            {"command": "tool", "path": '"C:\\quoted";D:\\more'},
+            _UNDETERMINABLE,
+        ),
+        (
+            {"D:\\more\\tool.exe": "file"},
+            {"command": "tool", "path": 'C:\\tools;;rel;"C:\\quoted";D:\\more'},
+            "D:\\more\\tool.exe",
+        ),
+        # A directory that shadows the name stops the documented search.
+        (
+            {f"{_APP}\\tool.exe": "other", "C:\\tools\\tool.exe": "file"},
+            {"command": "tool"},
+            _UNDETERMINABLE,
+        ),
+    ],
+)
+def test_createprocess_model_matches_the_documented_cases(
+    monkeypatch, files, launch, expected
+) -> None:
+    assert _createprocess_image(monkeypatch, files, **launch) == expected
+
+
+@pytest.mark.parametrize(
+    "launch",
+    [
+        {"command": "C:tool.exe"},
+        {"command": "\\\\?\\C:\\x\\tool.exe"},
+        {"command": "\\\\.\\pipe\\tool"},
+        {"command": "..\\tool.exe"},
+        {"command": "sub\\..\\tool.exe"},
+        {"command": "tool.exe:stream"},
+        {"command": "to*l"},
+        {"command": "tool."},
+        {"command": '"C:\\unterminated'},
+        {"command": " tool"},
+        {"command": ""},
+        {"application": "C:relative.exe"},
+        {},
+    ],
+)
+def test_createprocess_model_refuses_names_it_cannot_resolve(monkeypatch, launch):
+    files = {f"{_CWD}\\tool.exe": "file", "C:\\tools\\tool.exe": "file"}
+    assert _createprocess_image(monkeypatch, files, **launch) == _UNDETERMINABLE
+
+
+_WINDOWS_LAUNCH_PAYLOAD = r"""
+import ctypes, json, os, subprocess, sys
+from ctypes import wintypes
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+kernel32.OpenProcess.restype = wintypes.HANDLE
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel32.QueryFullProcessImageNameW.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)
+]
+kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+CREATE_SUSPENDED = 0x4
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def image_of(pid):
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        size = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return buffer.value
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+results = []
+for case in json.loads(sys.argv[1]):
+    saved = {name: os.environ.get(name) for name in case["environ"]}
+    for name, value in case["environ"].items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+    for name, value in case["putenv"].items():
+        os.putenv(name, value)
+    try:
+        process = subprocess.Popen(
+            case["args"],
+            executable=case["executable"],
+            env=case["env"],
+            cwd=case["cwd"],
+            creationflags=CREATE_SUSPENDED,
+        )
+    except OSError as exc:
+        results.append({"error": type(exc).__name__})
+    else:
+        try:
+            results.append({"image": image_of(process.pid)})
+        finally:
+            process.kill()
+            process.wait()
+    for name, value in saved.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+    for name in case["putenv"]:
+        os.putenv(name, os.environ[name])
+print(json.dumps(results))
+"""
+
+
+@pytest.mark.skipif(os.name != "nt", reason="real Windows CreateProcessW oracle")
+def test_python_hook_broker_admits_the_image_createprocess_runs(tmp_path: Path):
+    # Each launch runs twice through the same Popen call: once plain, so
+    # Windows itself names the image, and once under the real hook and broker.
+    # A suspended child never runs, and the kernel reports its mapped image.
+    import shutil
+
+    source = Path(sys.executable).resolve(strict=True)
+    directory = {
+        name: tmp_path / name
+        for name in (
+            "caller-cwd",
+            "child-cwd",
+            "caller-path",
+            "child-path",
+            "live-path",
+            "peb-path",
+            "spaced dir",
+        )
+    }
+    for path in directory.values():
+        path.mkdir()
+    (directory["caller-path"] / "sub").mkdir()
+
+    def image(where: str, name: str) -> Path:
+        path = directory[where] / name
+        shutil.copyfile(source, path)
+        return path
+
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("MOLT_PROOF_CHILD_CUSTODY")
+        and name.casefold() != "nodefaultcurrentdirectoryinexepath"
+    }
+    environment["PATH"] = str(directory["caller-path"])
+    probe = run_custody_subject_process(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            "import _winapi; print(_winapi.GetModuleFileName(0))",
+        ],
+        env=environment,
+        cwd=directory["caller-cwd"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    caller_image = Path(probe.stdout.strip())
+
+    def case(name, args, real, *, expect="admit", decoys=(), allow=None, **launch):
+        return {
+            "id": name,
+            "args": args,
+            "executable": launch.get("executable"),
+            "env": launch.get("env"),
+            "cwd": str(launch["cwd"]) if "cwd" in launch else None,
+            "environ": launch.get("environ", {}),
+            "putenv": launch.get("putenv", {}),
+            "expect": expect,
+            "real": None if real is None else str(real),
+            "decoys": [str(path) for path in decoys],
+            "allow": [str(path) for path in (allow if allow is not None else [real])],
+        }
+
+    child_env = {"PATH": str(directory["child-path"])}
+    path_no_extension = image("caller-path", "hf137k.exe")
+    ambiguous_image = image("caller-path", "hf137l.exe")
+    ambiguous_bare = image("caller-path", "hf137l")
+    subdirectory_image = image("caller-path", "sub\\hf137o.exe")
+    cases = [
+        # The child's PATH holds a decoy; Windows searches the caller's PATH.
+        case(
+            "child-path",
+            ["hf137a"],
+            image("caller-path", "hf137a.exe"),
+            decoys=[image("child-path", "hf137a.exe")],
+            env=child_env,
+            cwd=directory["child-cwd"],
+        ),
+        # Admitting the child-PATH decoy would let the real image run unadmitted.
+        case(
+            "child-path-decoy-allowed",
+            ["hf137b"],
+            image("caller-path", "hf137b.exe"),
+            expect="deny",
+            decoys=[decoy := image("child-path", "hf137b.exe")],
+            allow=[decoy],
+            env=child_env,
+            cwd=directory["child-cwd"],
+        ),
+        # Windows searches the caller's current directory, not the child's cwd.
+        case(
+            "child-cwd",
+            ["hf137c"],
+            image("caller-cwd", "hf137c.exe"),
+            decoys=[image("child-cwd", "hf137c.exe")],
+            env={"PATH": "."},
+            cwd=directory["child-cwd"],
+        ),
+        # Windows appends only .exe; PATHEXT would select the .com first.
+        case(
+            "pathext",
+            ["hf137d"],
+            image("caller-path", "hf137d.exe"),
+            decoys=[image("caller-path", "hf137d.com")],
+        ),
+        # The caller's image directory precedes every other directory.
+        case(
+            "image-directory",
+            ["python"],
+            caller_image,
+            decoys=[image("caller-path", "python.exe")],
+        ),
+        # PATH is read when the launch happens, through os.environ ...
+        case(
+            "live-path",
+            ["hf137e"],
+            image("live-path", "hf137e.exe"),
+            decoys=[image("caller-path", "hf137e.exe")],
+            environ={"PATH": str(directory["live-path"])},
+        ),
+        # ... or set by os.putenv, which os.environ never sees.
+        case(
+            "putenv-path",
+            ["hf137f"],
+            image("peb-path", "hf137f.exe"),
+            decoys=[image("caller-path", "hf137f.exe")],
+            putenv={"PATH": str(directory["peb-path"])},
+        ),
+        case(
+            "no-default-current-directory",
+            ["hf137g"],
+            image("caller-path", "hf137g.exe"),
+            decoys=[image("caller-cwd", "hf137g.exe")],
+            environ={"NoDefaultCurrentDirectoryInExePath": "1"},
+        ),
+        # lpApplicationName is completed from the caller's current directory.
+        case(
+            "application-name",
+            ["hf137-argv0"],
+            image("caller-cwd", "hf137h.exe"),
+            decoys=[
+                image("child-cwd", "hf137h.exe"),
+                image("child-path", "hf137h.exe"),
+            ],
+            executable="hf137h.exe",
+            env=child_env,
+            cwd=directory["child-cwd"],
+        ),
+        case(
+            "quoted-absolute",
+            [str(spaced := image("spaced dir", "hf137i.exe")), "x"],
+            spaced,
+        ),
+        case("string-command", "hf137j --flag", image("caller-path", "hf137j.exe")),
+        case(
+            "dot-relative",
+            [".\\hf137m.exe"],
+            image("caller-cwd", "hf137m.exe"),
+            decoys=[image("child-cwd", "hf137m.exe")],
+            cwd=directory["child-cwd"],
+        ),
+        # Microsoft's text says Windows does not append .exe to a name with a
+        # path; its own example appends it. This launch records which one runs.
+        case(
+            "path-without-extension",
+            [str(path_no_extension.with_suffix(""))],
+            path_no_extension,
+        ),
+        case(
+            "dot-relative-without-extension",
+            ["./hf137n"],
+            image("caller-cwd", "hf137n.exe"),
+        ),
+        case(
+            "path-without-extension-ambiguous",
+            [str(ambiguous_bare)],
+            None,
+            expect="undeterminable",
+            allow=[ambiguous_bare, ambiguous_image],
+        ),
+        # Searched, or completed from the current directory: either is safe.
+        case(
+            "relative-subdirectory",
+            ["sub\\hf137o.exe"],
+            subdirectory_image,
+            expect="either",
+        ),
+    ]
+    policy = {
+        "schema": execution_custody.CHILD_POLICY_SCHEMA,
+        "descendants": "declared-toolchains",
+        "allowed": [
+            {
+                "toolchain": "python",
+                "path": execution_custody._norm(path),
+                "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+            }
+            for path in sorted({path for row in cases for path in row["allow"]})
+        ],
+    }
+    arguments = json.dumps(cases)
+    oracle_run = run_custody_subject_process(
+        [sys.executable, "-I", "-S", "-c", _WINDOWS_LAUNCH_PAYLOAD, arguments],
+        env=environment,
+        cwd=directory["caller-cwd"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert oracle_run.returncode == 0, oracle_run.stderr
+    oracle = json.loads(oracle_run.stdout)
+    server = execution_custody.ChildCustodyEventServer("python", policy)
+    custody_environment = {
+        **environment,
+        execution_custody.CHILD_POLICY_ENV: json.dumps(policy),
+        **server.environment(),
+    }
+    bootstrap = Path(execution_custody.__file__).with_name(
+        "python_custody_bootstrap.py"
+    )
+    with server:
+        custody_run = run_custody_subject_process(
+            [
+                sys.executable,
+                bootstrap,
+                "command",
+                "0",
+                _WINDOWS_LAUNCH_PAYLOAD,
+                arguments,
+            ],
+            env=custody_environment,
+            cwd=directory["caller-cwd"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    assert custody_run.returncode == 0, custody_run.stderr
+    observed = json.loads(custody_run.stdout)
+    receipt = server.receipt()
+    assert receipt["broker_complete"] is True, receipt
+    decisions = [
+        row for row in receipt["events"] if row.get("event") == "child-process"
+    ]
+    table = [
+        {
+            "case": row["id"],
+            "expect": row["expect"],
+            "real": row["real"],
+            "oracle": truth,
+            "decision": decision,
+            "observed": seen,
+        }
+        for row, truth, decision, seen in zip(cases, oracle, decisions, observed)
+    ]
+    detail = json.dumps(table, indent=1)
+    assert len(decisions) == len(observed) == len(oracle) == len(cases), detail
+
+    def same(left: object, right: object) -> bool:
+        return (
+            isinstance(left, str)
+            and isinstance(right, str)
+            and os.path.samefile(left, right)
+        )
+
+    for row, truth, decision, seen in zip(cases, oracle, decisions, observed):
+        resolved = decision["resolved"]
+        # An admitted launch runs exactly the admitted image, or nothing.
+        if decision["admitted"]:
+            assert same(seen.get("image"), resolved) or (
+                row["expect"] == "either" and "error" in seen and seen == truth
+            ), detail
+        else:
+            assert seen == {"error": "PermissionError"}, detail
+        assert not any(same(resolved, decoy) for decoy in row["decoys"]), detail
+        if row["expect"] in {"admit", "deny"}:
+            # Windows itself runs the expected image, and custody names it.
+            assert same(truth.get("image"), row["real"]), detail
+            assert same(resolved, row["real"]), detail
+            assert decision["admitted"] is (row["expect"] == "admit"), detail
+        elif row["expect"] == "undeterminable":
+            assert resolved is None, detail
+            assert decision["reason"].startswith("identity-unavailable:"), detail
+        else:
+            assert truth == seen or same(truth.get("image"), resolved), detail
+
+
+@pytest.mark.skipif(os.name != "nt", reason="libuv Windows executable search")
+def test_node_selection_names_the_image_libuv_runs(tmp_path: Path) -> None:
+    # The Node hook launches the broker's selection. libuv runs a path as named
+    # only when the name has an extension; it appends .com or .exe otherwise.
+    import shutil
+
+    node_path = shutil.which("node")
+    if node_path is None:
+        pytest.skip("node is unavailable")
+    node = Path(node_path).resolve(strict=True)
+    bare, suffixed = tmp_path / "hf137node", tmp_path / "hf137node.exe"
+    for path in (bare, suffixed):
+        shutil.copyfile(node, path)
+    script = (
+        "const r=require('child_process').spawnSync(process.argv[1],"
+        "['-e','process.stdout.write(process.execPath)'],{encoding:'utf8'});"
+        "process.stdout.write(JSON.stringify("
+        "{stdout:r.stdout,error:r.error?r.error.message:null}));"
+    )
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("MOLT_PROOF_CHILD_CUSTODY") and name != "NODE_OPTIONS"
+    }
+    plain = run_custody_subject_process(
+        [node, "-e", script, str(bare)],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    oracle = json.loads(plain.stdout)
+    assert os.path.samefile(oracle["stdout"], suffixed), oracle
+
+    # Admitting the extensionless file would let libuv run the .exe beside it.
+    policy = {
+        "schema": execution_custody.CHILD_POLICY_SCHEMA,
+        "descendants": "declared-toolchains",
+        "allowed": [
+            {
+                "toolchain": "node",
+                "path": execution_custody._norm(bare),
+                "sha256": hashlib.sha256(bare.read_bytes()).hexdigest(),
+            }
+        ],
+    }
+    server = execution_custody.ChildCustodyEventServer("node", policy)
+    hook = Path(execution_custody.__file__).with_name("node_child_custody.cjs")
+    custody_environment = {
+        **environment,
+        execution_custody.CHILD_POLICY_ENV: json.dumps(policy),
+        **server.environment(),
+        "NODE_OPTIONS": f"--no-global-search-paths --require={hook}",
+    }
+    with server:
+        guarded = run_custody_subject_process(
+            [node, "-e", script, str(bare)],
+            env=custody_environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    receipt = server.receipt()
+    decisions = [
+        row for row in receipt["events"] if row.get("event") == "child-process"
+    ]
+    assert len(decisions) == 1, receipt
+    assert decisions[0]["admitted"] is False, receipt
+    assert "has no extension" in decisions[0]["reason"], receipt
+    assert guarded.returncode != 0, guarded
+    assert "has no extension" in guarded.stderr, guarded
 
 
 def test_python_payload_cannot_replace_private_audit_enforcement(
@@ -258,12 +904,14 @@ def test_derived_child_admission_reuses_supervisor_provenance(tmp_path: Path):
     escaped_image.write_bytes(image.read_bytes())
     server = execution_custody.ChildCustodyEventServer(None, policy)
     with server:
-        admitted = server._decide_child({"requested": str(image)})
+        # The Node hook launches the broker's selection, so an absolute
+        # selection is the image on every host.
+        admitted = server._decide_child({"requested": str(image)}, "node")
         assert admitted["admitted"] is True
         assert admitted["derived_role"] == role
         assert admitted["resolved"] == str(image.resolve())
         assert admitted["sha256"] == hashlib.sha256(image.read_bytes()).hexdigest()
-        denied = server._decide_child({"requested": str(escaped_image)})
+        denied = server._decide_child({"requested": str(escaped_image)}, "node")
         assert denied["admitted"] is False
 
 
@@ -288,7 +936,9 @@ def test_derived_child_admission_rejects_symlink_escape(tmp_path: Path):
         ],
     )
     with execution_custody.ChildCustodyEventServer(None, policy) as server:
-        assert server._decide_child({"requested": str(link)})["admitted"] is False
+        assert (
+            server._decide_child({"requested": str(link)}, "node")["admitted"] is False
+        )
 
 
 @pytest.mark.parametrize("changed_field", [None, "path", "sha256", "roles", "class"])
@@ -496,7 +1146,9 @@ def test_python_path_and_cargo_hook_launches_share_native_environment_custody(tm
     # The recorded allowance binds bytes, rather than granting a directory.
     hook_tool.write_bytes(b"replacement")
     with execution_custody.ChildCustodyEventServer("python", policy) as changed:
-        assert not changed._decide_child({"requested": str(hook_tool)})["admitted"]
+        assert not changed._decide_child({"requested": str(hook_tool)}, "python")[
+            "admitted"
+        ]
 
 
 @pytest.mark.parametrize(

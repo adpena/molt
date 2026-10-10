@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 import contextlib
 import functools
@@ -10,8 +9,6 @@ import importlib
 import re
 import sys
 import warnings
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 
 def import_deprecated(name: str):
@@ -212,5 +209,3 @@ __all__ = [
     "import_deprecated",
     "save_restore_warnings_filters",
 ]
-
-globals().pop("_require_intrinsic", None)

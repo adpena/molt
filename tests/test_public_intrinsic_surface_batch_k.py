@@ -27,7 +27,6 @@ def _load_module(name, path_text):
 
 
 install_registry({{
-    "molt_import_smoke_runtime_ready": lambda: None,
     "molt_token_payload_312": lambda: {{
         "_payload_schema": "molt.token_payload.312.v1",
         "_python_minor": "3.12",

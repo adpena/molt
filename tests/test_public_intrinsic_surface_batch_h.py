@@ -55,7 +55,6 @@ def _file_open_ex(path, mode, buffering, encoding, errors, newline, closefd, ope
 
 
 install_registry({{
-    "molt_stdlib_probe": lambda: None,
     "molt_file_open_ex": _file_open_ex,
     "molt_path_exists": lambda path: path == "foo.py",
     "molt_path_isabs": lambda path: False,

@@ -5,12 +5,9 @@ from __future__ import annotations
 import sys as _sys
 
 import _intrinsics as _stdlib_intrinsics
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 _intrinsics = _stdlib_intrinsics
 
-_require_intrinsic("molt_stdlib_probe")
-_MOLT_STDLIB_CAP_HAS = _require_intrinsic("molt_capabilities_has")
 
 _modules = getattr(_sys, "modules", None)
 if isinstance(_modules, dict):
@@ -133,6 +130,3 @@ __all__ = [
     "sre_constants",
     "sre_parse",
 ]
-
-
-globals().pop("_require_intrinsic", None)

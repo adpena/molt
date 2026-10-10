@@ -232,6 +232,7 @@
     "tools/proof_queue_pkg/python_child_custody.py",
     "tools/proof_queue_pkg/python_custody_bootstrap.py",
     "tools/proof_queue_pkg/target_derived_toolchains.py",
+    "tools/proof_queue_pkg/windows_createprocess.py",
     "src/molt/source_extension_link_inputs.py",
     "src/molt/cli/source_extension_invocation.py",
     "src/molt/cli/source_extension_compiler_inputs.py",
@@ -339,7 +340,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "1b1db778211969d64ac3c74d2c6a0b49cdced89379644083f1a48cea9d873002",
+  "authority_sha256": "1b8b2507d0e365a816a3b0f49181abef2d969e5ceb7ad5600041c30d964c81a0",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2568,7 +2569,7 @@
         "pr",
         "main"
       ],
-      "timeout_seconds": 900,
+      "timeout_seconds": 600,
       "toolchains": [
         "python",
         "uv",
@@ -4733,9 +4734,6 @@
         "tests/test_platform_toolchain.py",
         "tests/test_posixsubprocess_private_module_surface.py",
         "tests/test_prefix_cache.py",
-        "tests/test_private_intrinsic_helper_surface_batch_a.py",
-        "tests/test_private_intrinsic_helper_surface_batch_b.py",
-        "tests/test_private_intrinsic_helper_surface_batch_c.py",
         "tests/test_process_guard.py",
         "tests/test_process_guard_common.py",
         "tests/test_proto.py",
@@ -4822,10 +4820,6 @@
         "tests/test_stdlib_zipfile_metadata_submodules.py",
         "tests/test_struct.py",
         "tests/test_struct_private_module_surface.py",
-        "tests/test_stub_surface_batch_au.py",
-        "tests/test_stub_surface_batch_aw.py",
-        "tests/test_stub_surface_batch_ax.py",
-        "tests/test_stub_surface_batch_ay.py",
         "tests/test_suggestions_private_module_surface.py",
         "tests/test_surface_process_guard.py",
         "tests/test_table_drift_gate.py",
@@ -5101,9 +5095,6 @@
         "tests/test_platform_toolchain.py",
         "tests/test_posixsubprocess_private_module_surface.py",
         "tests/test_prefix_cache.py",
-        "tests/test_private_intrinsic_helper_surface_batch_a.py",
-        "tests/test_private_intrinsic_helper_surface_batch_b.py",
-        "tests/test_private_intrinsic_helper_surface_batch_c.py",
         "tests/test_process_guard.py",
         "tests/test_process_guard_common.py",
         "tests/test_proto.py",
@@ -5190,10 +5181,6 @@
         "tests/test_stdlib_zipfile_metadata_submodules.py",
         "tests/test_struct.py",
         "tests/test_struct_private_module_surface.py",
-        "tests/test_stub_surface_batch_au.py",
-        "tests/test_stub_surface_batch_aw.py",
-        "tests/test_stub_surface_batch_ax.py",
-        "tests/test_stub_surface_batch_ay.py",
         "tests/test_suggestions_private_module_surface.py",
         "tests/test_surface_process_guard.py",
         "tests/test_table_drift_gate.py",
@@ -6833,13 +6820,13 @@
       },
       "repository_policy": {
         "budget_seconds": 3600,
-        "critical_path_seconds": 1800,
-        "headroom_seconds": 840,
+        "critical_path_seconds": 1500,
+        "headroom_seconds": 1140,
         "job_reserve_seconds": 120,
-        "projected_makespan_seconds": 2640,
-        "required_job_seconds": 2760,
+        "projected_makespan_seconds": 2340,
+        "required_job_seconds": 2460,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2220
+          "repository-policy": 2145
         }
       },
       "rust": {

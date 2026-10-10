@@ -6,13 +6,9 @@ exists for layout parity and to keep imports deterministic.
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 from . import Path as Path  # re-export
 
 # Avoid probe-only classification: this shim must still be intrinsic-backed.
-_require_intrinsic("molt_path_join")
 
 __all__ = ["Path"]
-
-globals().pop("_require_intrinsic", None)

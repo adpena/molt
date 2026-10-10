@@ -1312,11 +1312,6 @@ def test_guarded_completed_process_starts_default_repo_sentinel(monkeypatch) -> 
     )
     monkeypatch.setattr(harness_memory_guard, "_sentinel_active", lambda: False)
     monkeypatch.setattr(
-        harness_memory_guard,
-        "_prune_stale_repo_processes",
-        lambda **kwargs: (),
-    )
-    monkeypatch.setattr(
         harness_memory_guard.memory_guard,
         "run_guarded",
         fake_run_guarded,
@@ -2701,7 +2696,7 @@ def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
             pgid=self_pid,
             rss_kb=64,
             command=f"{tmp_path}/.venv/bin/python -m pytest",
-            started_at_ns=self_pid,
+            started_at_ns=1_000,
         ),
         owned_pgid: harness_memory_guard.memory_guard.ProcessSample(
             pid=owned_pgid,
@@ -2709,7 +2704,7 @@ def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
             pgid=owned_pgid,
             rss_kb=5 * 1024 * 1024,
             command=f"{tmp_path}/target/dev-fast/molt-backend --owned",
-            started_at_ns=owned_pgid,
+            started_at_ns=2_000,
         ),
         peer_pgid: harness_memory_guard.memory_guard.ProcessSample(
             pid=peer_pgid,
@@ -2717,7 +2712,7 @@ def test_repo_process_sentinel_scopes_automatic_kills_to_current_tree(
             pgid=peer_pgid,
             rss_kb=6 * 1024 * 1024,
             command=f"{tmp_path}/target/dev-fast/molt-backend --peer",
-            started_at_ns=peer_pgid,
+            started_at_ns=3_000,
         ),
     }
     _patch_guard_operation(
@@ -2849,7 +2844,7 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
         pgid=self_pid,
         rss_kb=64,
         command=f"{tmp_path}/.venv/bin/python -m pytest",
-        started_at_ns=self_pid,
+        started_at_ns=1_000,
     )
     sample_sets = [
         {
@@ -2860,7 +2855,7 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
                 pgid=owned_pgid,
                 rss_kb=100,
                 command=f"{tmp_path}/target/dev-fast/molt-backend --warming",
-                started_at_ns=owned_pgid,
+                started_at_ns=2_000,
             ),
         },
         {
@@ -2871,7 +2866,7 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
                 pgid=owned_pgid,
                 rss_kb=5 * 1024 * 1024,
                 command=f"{tmp_path}/target/dev-fast/molt-backend --warming",
-                started_at_ns=owned_pgid,
+                started_at_ns=2_000,
             ),
             peer_pgid: harness_memory_guard.memory_guard.ProcessSample(
                 pid=peer_pgid,
@@ -2879,7 +2874,7 @@ def test_repo_process_sentinel_keeps_reparented_observed_child_in_scope(
                 pgid=peer_pgid,
                 rss_kb=6 * 1024 * 1024,
                 command=f"{tmp_path}/target/dev-fast/molt-backend --peer",
-                started_at_ns=peer_pgid,
+                started_at_ns=3_000,
             ),
         },
     ]
@@ -3265,11 +3260,6 @@ def test_auto_repo_sentinel_does_not_exit_drain(monkeypatch, tmp_path: Path) -> 
         lambda env: tmp_path,
     )
     monkeypatch.setattr(harness_memory_guard, "_sentinel_active", lambda: False)
-    monkeypatch.setattr(
-        harness_memory_guard,
-        "_prune_stale_repo_processes",
-        lambda **kwargs: (),
-    )
     limits = harness_memory_guard.HarnessMemoryLimits(
         enabled=True,
         max_process_rss_gb=2,
@@ -3289,116 +3279,40 @@ def test_auto_repo_sentinel_does_not_exit_drain(monkeypatch, tmp_path: Path) -> 
     assert captured["suppress_auto_guard"] is False
 
 
-def test_auto_repo_sentinel_preflight_requires_explicit_owned_custody(
+def test_auto_repo_sentinel_takes_no_preflight_census(
     monkeypatch,
     tmp_path: Path,
     capsys,
 ) -> None:
-    group = harness_memory_guard.process_sentinel.ProcessGroup(
-        pgid=555,
-        matched=True,
-        samples=(
-            harness_memory_guard.memory_guard.ProcessSample(
-                pid=555,
-                ppid=1,
-                pgid=555,
-                rss_kb=100,
-                command="molt-backend --daemon",
-                elapsed_sec=4000,
-            ),
-        ),
-    )
-    terminated: list[int] = []
-    sentinel_calls: list[dict[str, object]] = []
-    process_group_calls: list[dict[str, object]] = []
+    """A guard about to launch owns nothing, so it neither samples nor signals.
 
-    @contextlib.contextmanager
-    def fake_repo_process_sentinel(**kwargs):  # type: ignore[no-untyped-def]
-        sentinel_calls.append(kwargs)
-        yield object()
-
-    def fake_process_groups(*args, **kwargs):  # type: ignore[no-untyped-def]
-        process_group_calls.append(dict(kwargs))
-        if kwargs.get("owned_pids") == frozenset():
-            return []
-        return [group]
-
-    _patch_guard_operation(
-        monkeypatch,
-        harness_memory_guard.memory_guard,
-        "sample_processes",
-        lambda: {},
-    )
-    _patch_guard_operation(
-        monkeypatch,
-        harness_memory_guard.process_sentinel,
-        "process_groups",
-        fake_process_groups,
-    )
-    _patch_guard_operation(
-        monkeypatch,
-        harness_memory_guard.process_sentinel,
-        "terminate_group",
-        _record_terminated_pgids(terminated),
-    )
-    monkeypatch.setattr(
-        harness_memory_guard,
-        "repo_process_sentinel",
-        fake_repo_process_sentinel,
-    )
-    monkeypatch.setattr(
-        harness_memory_guard,
-        "_artifact_root_from_env",
-        lambda env: tmp_path,
-    )
-    monkeypatch.setattr(harness_memory_guard, "_sentinel_active", lambda: False)
-    monkeypatch.setattr(harness_memory_guard, "_utc_timestamp", lambda: "now")
-    limits = harness_memory_guard.HarnessMemoryLimits(
-        enabled=True,
-        max_process_rss_gb=2,
-        max_total_rss_gb=3,
-        max_global_rss_gb=4,
-        poll_interval=0.001,
-    )
-
-    with harness_memory_guard._auto_repo_sentinel(
-        prefix="MOLT_BUILD",
-        env={
-            "MOLT_BUILD_STALE_ORPHAN_CLEANUP": "1",
-            "MOLT_BUILD_STALE_ORPHAN_SEC": "3600",
-        },
-        limits=limits,
-    ):
-        pass
-
-    assert terminated == []
-    assert sentinel_calls
-    assert process_group_calls
-    assert process_group_calls[0]["owned_pids"] == frozenset()
-    err = capsys.readouterr().err
-    assert "stale orphaned Molt process group" not in err
-    assert not (tmp_path / "memory_guard" / "molt_build_stale_preflight.jsonl").exists()
-
-
-def test_auto_repo_sentinel_ignores_reused_host_pgid_without_molt_identity(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    reused_pgid = 271828
-    sample = harness_memory_guard.memory_guard.ProcessSample(
-        pid=reused_pgid,
+    The host holds a stale orphaned Molt daemon group and a reused host PGID.
+    Entering the per-command sentinel must not read the process table or
+    signal either group: cross-session cleanup stays an operator action.
+    """
+    stale_daemon = harness_memory_guard.memory_guard.ProcessSample(
+        pid=555,
         ppid=1,
-        pgid=reused_pgid,
-        rss_kb=8 * 1024 * 1024,
-        command=(
-            "/System/Library/Frameworks/CoreServices.framework/Versions/A/"
-            "Frameworks/Metadata.framework/Versions/A/Support/"
-            "mdworker_shared -s mdworker"
-        ),
+        pgid=555,
+        rss_kb=100,
+        command=f"{tmp_path}/target/release-fast/molt-backend --daemon",
         elapsed_sec=4000,
     )
+    reused_host_pgid = harness_memory_guard.memory_guard.ProcessSample(
+        pid=271828,
+        ppid=1,
+        pgid=271828,
+        rss_kb=8 * 1024 * 1024,
+        command="mdworker_shared -s mdworker",
+        elapsed_sec=4000,
+    )
+    sample_calls: list[str] = []
     terminated: list[int] = []
     sentinel_calls: list[dict[str, object]] = []
+
+    def sample_processes():  # type: ignore[no-untyped-def]
+        sample_calls.append("sample")
+        return {555: stale_daemon, 271828: reused_host_pgid}
 
     @contextlib.contextmanager
     def fake_repo_process_sentinel(**kwargs):  # type: ignore[no-untyped-def]
@@ -3409,7 +3323,7 @@ def test_auto_repo_sentinel_ignores_reused_host_pgid_without_molt_identity(
         monkeypatch,
         harness_memory_guard.memory_guard,
         "sample_processes",
-        lambda: {reused_pgid: sample},
+        sample_processes,
     )
     _patch_guard_operation(
         monkeypatch,
@@ -3438,17 +3352,57 @@ def test_auto_repo_sentinel_ignores_reused_host_pgid_without_molt_identity(
 
     with harness_memory_guard._auto_repo_sentinel(
         prefix="MOLT_BUILD",
-        env={
-            "MOLT_BUILD_STALE_ORPHAN_CLEANUP": "1",
-            "MOLT_BUILD_STALE_ORPHAN_SEC": "3600",
-        },
+        env={},
         limits=limits,
     ):
         pass
 
-    assert terminated == []
     assert sentinel_calls
-    assert not (tmp_path / "memory_guard" / "molt_build_stale_preflight.jsonl").exists()
+    assert sample_calls == []
+    assert terminated == []
+    assert "stale orphaned Molt process group" not in capsys.readouterr().err
+    assert not list((tmp_path / "memory_guard").glob("*stale_preflight*"))
+
+
+@pytest.mark.parametrize("drain_on_exit", [False, True])
+def test_repo_sentinel_takes_a_baseline_census_only_when_it_drains(
+    monkeypatch, tmp_path: Path, drain_on_exit: bool
+) -> None:
+    """Only the exit drain reads the entry baseline, so only a drain pays it."""
+    calls: list[str] = []
+
+    def sample_processes():  # type: ignore[no-untyped-def]
+        calls.append("sample")
+        return {}
+
+    _patch_guard_operation(
+        monkeypatch,
+        harness_memory_guard.memory_guard,
+        "sample_processes",
+        sample_processes,
+    )
+    limits = harness_memory_guard.HarnessMemoryLimits(
+        enabled=True,
+        max_process_rss_gb=2,
+        max_total_rss_gb=3,
+        max_global_rss_gb=4,
+        poll_interval=60.0,
+    )
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="unit-baseline",
+        limits=limits,
+        drain_on_exit=drain_on_exit,
+        drain_until_clean_sec=0,
+        drain_max_runtime_sec=0.1,
+        suppress_auto_guard=False,
+    )
+
+    with sentinel:
+        entered = list(calls)
+
+    assert entered == (["sample"] if drain_on_exit else [])
 
 
 def test_repo_process_sentinel_remembers_observed_child_groups(

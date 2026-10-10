@@ -23,11 +23,6 @@ unsafe extern "C" {
     fn windows_mktime64(tm: *mut libc::tm) -> libc::time_t;
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_datetime_runtime_ready() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, MoltObject::from_bool(true).bits())
-}
-
 // ---------------------------------------------------------------------------
 // Calendar helper types
 // ---------------------------------------------------------------------------
@@ -2050,41 +2045,6 @@ fn localtime_to_epoch_from_local(
     }
 }
 
-/// Return the current local UTC offset in seconds (east of UTC).
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_datetime_local_utcoffset() -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-            match localtime_to_parts(now as libc::time_t) {
-                Ok((_, _, _, _, _, _, utcoff)) => MoltObject::from_int(utcoff).bits(),
-                Err(_) => MoltObject::from_int(0).bits(),
-            }
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-            let offset_west = time_local_offset_host(now);
-            if offset_west == i64::MIN {
-                return raise_exception::<u64>(
-                    _py,
-                    "OSError",
-                    "localtime failed: timezone information unavailable",
-                );
-            }
-            let utcoff = -offset_west;
-            MoltObject::from_int(utcoff).bits()
-        }
-    })
-}
-
 // ===========================================================================
 // 6. Hashing
 //
@@ -3006,67 +2966,6 @@ pub extern "C" fn molt_datetime_time_repr(
             format!("datetime.time({}, {}, {})", h, m, s)
         } else {
             format!("datetime.time({}, {})", h, m)
-        };
-        string_bits(_py, &result)
-    })
-}
-
-/// datetime.__repr__()
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_datetime_datetime_repr(
-    y_bits: u64,
-    mo_bits: u64,
-    d_bits: u64,
-    h_bits: u64,
-    mi_bits: u64,
-    s_bits: u64,
-    us_bits: u64,
-) -> u64 {
-    molt_runtime_core::with_gil_entry!(_py, {
-        let y = match unpack_i64(_py, y_bits, "year") {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let mo = match unpack_i64(_py, mo_bits, "month") {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let d = match unpack_i64(_py, d_bits, "day") {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let h = match unpack_i64(_py, h_bits, "hour") {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let mi = match unpack_i64(_py, mi_bits, "minute") {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let s = match unpack_i64(_py, s_bits, "second") {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let us = match unpack_i64(_py, us_bits, "microsecond") {
-            Ok(v) => v,
-            Err(e) => return e,
-        };
-        let result = if us != 0 {
-            format!(
-                "datetime.datetime({}, {}, {}, {}, {}, {}, {})",
-                y, mo, d, h, mi, s, us
-            )
-        } else if s != 0 {
-            format!(
-                "datetime.datetime({}, {}, {}, {}, {}, {})",
-                y, mo, d, h, mi, s
-            )
-        } else if mi != 0 {
-            format!("datetime.datetime({}, {}, {}, {}, {})", y, mo, d, h, mi)
-        } else if h != 0 {
-            format!("datetime.datetime({}, {}, {}, {})", y, mo, d, h)
-        } else {
-            format!("datetime.datetime({}, {}, {})", y, mo, d)
         };
         string_bits(_py, &result)
     })

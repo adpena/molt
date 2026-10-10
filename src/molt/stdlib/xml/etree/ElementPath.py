@@ -56,17 +56,6 @@
 # you, if needed.
 ##
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
-_MOLT_IMPORT_SMOKE_RUNTIME_READY()
-del _MOLT_IMPORT_SMOKE_RUNTIME_READY
-
-# Probe call keeping this module inside the intrinsic-backed stdlib gate.
-# The XPath compiler itself is pure Python; the runtime intrinsic surface
-# is exercised through xml.etree.ElementTree.
-_require_intrinsic("molt_stdlib_probe")
-del _require_intrinsic
 
 import re
 

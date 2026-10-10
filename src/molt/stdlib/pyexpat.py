@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_IMPORT_SMOKE_RUNTIME_READY = _require_intrinsic("molt_import_smoke_runtime_ready")
-
 
 class _Parser:
     def Parse(self, _data: bytes | str, _isfinal: bool = False) -> int:
@@ -13,10 +9,7 @@ class _Parser:
 
 
 def ParserCreate(*_args, **_kwargs) -> _Parser:
-    _MOLT_IMPORT_SMOKE_RUNTIME_READY()
     return _Parser()
 
 
 __all__ = ["ParserCreate"]
-
-globals().pop("_require_intrinsic", None)

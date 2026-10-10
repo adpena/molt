@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-_MOLT_STDLIB_PROBE = _require_intrinsic("molt_stdlib_probe")
 _MOLT_TYPING_PRIVATE_PAYLOAD = _require_intrinsic("molt_typing_private_payload")
 
 

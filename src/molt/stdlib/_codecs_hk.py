@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 import codecs as _py_codecs
-
-_require_intrinsic("molt_capabilities_has")
 
 
 class MultibyteCodec:
@@ -24,6 +21,3 @@ class MultibyteCodec:
 
 def getcodec(name):
     return MultibyteCodec(str(name))
-
-
-globals().pop("_require_intrinsic", None)

@@ -8,9 +8,6 @@ import sys
 from typing import Any, Callable
 from urllib.parse import urlsplit, unquote
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_WSGIREF_RUNTIME_READY = _require_intrinsic("molt_wsgiref_runtime_ready")
 
 StartResponse = Callable[
     [str, list[tuple[str, str]], Any | None], Callable[[bytes], None]
@@ -202,5 +199,3 @@ def make_server(
 
 
 __all__ = ["WSGIServer", "WSGIRequestHandler", "make_server"]
-
-globals().pop("_require_intrinsic", None)

@@ -18,9 +18,14 @@ from tools.proof_queue_pkg import (
     supervisor_custody,
     toolchain_capture,
 )
+from tests.executable_test_support import custody_spelling
 from tests.process_guard_common import install_module_view
 
 
+# An explicit selector (CLANG_PATH, LLVM_CONFIG_PATH, RUSTFMT, RUSTDOC) passes
+# through proof custody, so the product binds and probes its custody spelling.
+# A driver found through PATH or `llvm-config --bindir` keeps the spelling of
+# the directory that selected it. Image rows always carry custody spelling.
 def _tool(root: Path, name: str) -> Path:
     path = root / (name + (".exe" if os.name == "nt" else ""))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -50,7 +55,7 @@ def test_explicit_bindgen_driver_wins_without_discovery(tmp_path, monkeypatch):
         cwd=tmp_path,
         env={"CLANG_PATH": str(driver), "PATH": str(ambient.parent)},
     )
-    assert updates == {"CLANG_PATH": str(driver)}
+    assert updates == {"CLANG_PATH": custody_spelling(driver)}
     assert receipt["source"] == "CLANG_PATH"
     assert receipt["available"] is True
     assert receipt["probes"] == []
@@ -86,7 +91,7 @@ def test_bindgen_selector_uses_exact_llvm_config_bindir(tmp_path, monkeypatch):
     def run(command, **kwargs):
         calls.append(list(command))
         assert kwargs["cwd"] == tmp_path
-        assert command == [str(config), "--bindir"]
+        assert command == [custody_spelling(config), "--bindir"]
         return subprocess.CompletedProcess(command, 0, str(driver.parent) + "\n", "")
 
     monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
@@ -94,9 +99,12 @@ def test_bindgen_selector_uses_exact_llvm_config_bindir(tmp_path, monkeypatch):
         cwd=tmp_path,
         env={"LLVM_CONFIG_PATH": str(config), "PATH": str(ambient.parent)},
     )
-    assert updates == {"CLANG_PATH": str(driver), "LLVM_CONFIG_PATH": str(config)}
+    assert updates == {
+        "CLANG_PATH": str(driver),
+        "LLVM_CONFIG_PATH": custody_spelling(config),
+    }
     assert receipt["source"] == "llvm-config --bindir"
-    assert calls == [[str(config), "--bindir"]]
+    assert calls == [[custody_spelling(config), "--bindir"]]
     assert receipt["probes"][0]["stdout"] == str(driver.parent) + "\n"
 
 
@@ -264,10 +272,10 @@ def test_bindgen_inputs_survive_filter_and_selected_driver_reaches_supervisor(
     _, fixed = supervisor_custody._supervisor_fixed_images({}, identities, [str(cargo)])
     selected = [row for row in fixed if row["role"] == "env:CLANG_PATH"]
     assert len(selected) == 1
-    assert selected[0]["path"] == str(driver)
+    assert selected[0]["path"] == custody_spelling(driver)
     assert selected[0]["sha256"] == command_identity._hash_file(driver)
-    assert str(unrelated) not in {row["path"] for row in fixed}
-    assert str(prefixed) not in {row["path"] for row in fixed}
+    assert custody_spelling(unrelated) not in {row["path"] for row in fixed}
+    assert custody_spelling(prefixed) not in {row["path"] for row in fixed}
     driver.write_bytes(b"changed driver")
     after = execution_environment._execution_environment_executable_identities(
         env, cwd=tmp_path
@@ -294,7 +302,7 @@ def test_bindgen_binding_normalizes_environment_case_without_duplicate_keys(
         contract,
         cwd=tmp_path,
     )
-    assert env == {hook: str(driver), "CARGO": str(cargo)}
+    assert env == {hook: custody_spelling(driver), "CARGO": str(cargo)}
     assert contract["override_names"] == [hook]
 
 
@@ -511,8 +519,8 @@ def test_environment_image_projection_keeps_selection_and_resolved_paths(tmp_pat
     )
     _, images = supervisor_custody._supervisor_fixed_images({}, identities, [str(root)])
     assert {row["path"] for row in images if row["role"] == f"env:{key}"} == {
-        str(selected),
-        str(resolved),
+        custody_spelling(selected),
+        custody_spelling(resolved),
     }
 
 
@@ -541,7 +549,7 @@ def test_bindgen_formatter_is_an_optional_shared_executable_input(
     env, receipt = toolchain_capture.select_cargo_build_tool_environment(
         cwd=tmp_path, env={"RUSTFMT": str(formatter)}
     )
-    assert env == {"RUSTFMT": str(formatter)}
+    assert env == {"RUSTFMT": custody_spelling(formatter)}
     assert receipt["formatter_available"] is True
     identities = execution_environment._execution_environment_executable_identities(
         env, cwd=tmp_path
@@ -580,7 +588,7 @@ def test_bindgen_rustup_formatter_is_bound_to_actual_selected_binary(
         cwd=tmp_path, env={"RUSTFMT": str(formatter)}
     )
     assert updates["RUSTFMT"] == str(content)
-    assert calls == [[str(rustup), "which", "rustfmt"]]
+    assert calls == [[custody_spelling(rustup), "which", "rustfmt"]]
 
 
 def test_relative_bindgen_formatter_does_not_adopt_invocation_cwd(
@@ -622,7 +630,8 @@ def test_missing_rustup_formatter_component_preserves_optional_vs_explicit_polic
         assert updates == {}
         assert receipt["formatter_available"] is False
         (diagnostic,) = receipt["probes"]
-    assert diagnostic["argv"] == [str(rustup), "which", "rustfmt"]
+    selector = custody_spelling(rustup) if explicit else str(rustup)
+    assert diagnostic["argv"] == [selector, "which", "rustfmt"]
     assert diagnostic["returncode"] == 1
     assert diagnostic["stderr"] == "component not installed\n"
 
@@ -723,7 +732,7 @@ def test_cargo_documentation_tool_reaches_exact_image_custody(
         contract,
         cwd=tmp_path,
     )
-    assert env["RUSTDOC"] == str(documenter)
+    assert env["RUSTDOC"] == custody_spelling(documenter)
     assert contract["build_tool_selection"]["rustdoc_required"] is True
     assert contract["build_tool_selection"]["rustdoc_available"] is True
     assert set(contract["passed_names"]) == set(env)
@@ -737,8 +746,8 @@ def test_cargo_documentation_tool_reaches_exact_image_custody(
         {}, identities, [str(cargo)]
     )
     admitted = [row for row in images if row["role"] == "env:RUSTDOC"]
-    assert len(admitted) == 1 and admitted[0]["path"] == str(documenter)
-    assert str(unrelated) not in {row["path"] for row in images}
+    assert len(admitted) == 1 and admitted[0]["path"] == custody_spelling(documenter)
+    assert custody_spelling(unrelated) not in {row["path"] for row in images}
     documenter.write_bytes(b"changed documenter")
     assert (
         identities
@@ -757,11 +766,16 @@ def test_documenter_direct_hook_collapses_shadowed_cargo_hook(tmp_path, monkeypa
         env={"RUSTDOC": str(selected), "CARGO_BUILD_RUSTDOC": str(shadowed)},
         rustdoc_required=True,
     )
-    assert updates == {"RUSTDOC": str(selected), "CARGO_BUILD_RUSTDOC": str(selected)}
+    assert updates == {
+        "RUSTDOC": custody_spelling(selected),
+        "CARGO_BUILD_RUSTDOC": custody_spelling(selected),
+    }
     identities = execution_environment._execution_environment_executable_identities(
         updates, cwd=tmp_path
     )
-    assert {row["executable"]["path"] for row in identities.values()} == {str(selected)}
+    assert {row["executable"]["path"] for row in identities.values()} == {
+        custody_spelling(selected)
+    }
 
 
 @pytest.mark.parametrize("explicit", [False, True])
@@ -801,7 +815,8 @@ def test_documenter_proxy_binds_selected_component_in_cargo_context(
         cwd=tmp_path,
     )
     assert env["RUSTDOC"] == str(actual)
-    assert calls == [[str(rustup), "which", "rustdoc"]]
+    selector = custody_spelling(rustup) if explicit else str(rustup)
+    assert calls == [[selector, "which", "rustdoc"]]
 
 
 def test_required_documenter_missing_never_degrades_to_late_custody_failure(

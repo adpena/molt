@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from molt.exact_json import loads_exact
-from tools.proof_queue_pkg import process_image_capture
+from tools.proof_queue_pkg import process_image_capture, windows_createprocess
 
 from tools.proof_queue_pkg.python_child_custody import (
     CHILD_POLICY_ENV as CHILD_POLICY_ENV,
@@ -1022,6 +1022,7 @@ class ChildCustodyEventServer:
         saw_start = False
         saw_end = False
         last_sequence = 0
+        runtime: object = None
         try:
             with connection, connection.makefile("rb") as stream:
                 for raw_line in stream:
@@ -1071,7 +1072,7 @@ class ChildCustodyEventServer:
                         ):
                             raise ValueError("child custody sequence is not monotonic")
                         last_sequence = sequence
-                        decision = self._decide_child(payload)
+                        decision = self._decide_child(payload, runtime)
                         decision["connection_id"] = connection_id
                         with self._lock:
                             self._events.append(decision)
@@ -1118,24 +1119,28 @@ class ChildCustodyEventServer:
         elif not saw_end:
             self._record_error("child custody connection has no terminal handshake")
 
-    def _decide_child(self, intent: Mapping[str, object]) -> dict[str, object]:
-        token = intent.get("requested")
-        path_env = intent.get("path")
-        path_ext = intent.get("path_ext")
-        child_env = (
-            {
-                "PATH": path_env,
-                **({"PATHEXT": path_ext} if isinstance(path_ext, str) else {}),
-            }
-            if isinstance(path_env, str)
-            else None
+    def _decide_child(
+        self, intent: Mapping[str, object], runtime: object
+    ) -> dict[str, object]:
+        """Admit the image a hook's launch runs, judged by the declared policy.
+
+        The hook's runtime and this host select one launch model. A Python
+        hook cannot choose its image, so on Windows the broker predicts
+        CreateProcessW from the caller's facts; on POSIX CPython searches the
+        child's PATH from the child's cwd. The Node hook runs the broker's
+        selection itself, so its selection is the image on every host.
+        """
+        predicts_createprocess = runtime == "python" and os.name == "nt"
+        token = (
+            windows_createprocess.requested_module(intent)
+            if predicts_createprocess
+            else intent.get("requested")
         )
-        child_cwd = intent.get("cwd")
         try:
-            path = _resolve_child_executable(
-                token,
-                child_env,
-                child_cwd if isinstance(child_cwd, str) else None,
+            path = (
+                _windows_python_launch_image(intent)
+                if predicts_createprocess
+                else _intent_child_executable(intent)
             )
         except (OSError, ValueError) as exc:
             return {
@@ -1417,8 +1422,49 @@ class ExecutionCustodySession:
         }
 
 
+def _windows_python_launch_image(intent: Mapping[str, object]) -> Path | None:
+    image = windows_createprocess.intent_image(intent)
+    return None if image is None else process_image_capture.custody_path(Path(image))
+
+
+def _intent_child_executable(intent: Mapping[str, object]) -> Path | None:
+    path_env = intent.get("path")
+    path_ext = intent.get("path_ext")
+    child_env = (
+        {
+            "PATH": path_env,
+            **({"PATHEXT": path_ext} if isinstance(path_ext, str) else {}),
+        }
+        if isinstance(path_env, str)
+        else None
+    )
+    child_cwd = intent.get("cwd")
+    return _resolve_child_executable(
+        intent.get("requested"),
+        child_env,
+        child_cwd if isinstance(child_cwd, str) else None,
+    )
+
+
 def _resolve_child_executable(
     token: object, child_env: object = None, child_cwd: object = None
+) -> Path | None:
+    """Search the child's PATH from the child's cwd, as an exec-path launch does.
+
+    This is the image of a POSIX CPython launch, and the image the Node hook
+    runs on every host, because it launches the broker's selection. It is not
+    a Windows Python launch: see ``windows_createprocess``.
+    """
+    path = _search_child_executable(token, child_env, child_cwd)
+    if path is not None and os.name == "nt" and not path.suffix:
+        # libuv runs a selected path as named only when its name has an
+        # extension; otherwise it appends .com or .exe and runs another file.
+        raise ValueError(f"Windows child image {str(path)!r} has no extension")
+    return path
+
+
+def _search_child_executable(
+    token: object, child_env: object, child_cwd: object
 ) -> Path | None:
     if isinstance(token, bytes):
         token = os.fsdecode(token)

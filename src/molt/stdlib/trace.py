@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_TRACE_RUNTIME_READY = _require_intrinsic("molt_trace_runtime_ready")
-
 
 class Trace:
     def __init__(
@@ -20,7 +16,6 @@ class Trace:
         outfile: object | None = None,
         timing: bool = False,
     ) -> None:
-        _MOLT_TRACE_RUNTIME_READY()
         self.count = bool(count)
         self.trace = bool(trace)
         self.countfuncs = bool(countfuncs)
@@ -36,5 +31,3 @@ class Trace:
 
 
 __all__ = ["Trace"]
-
-globals().pop("_require_intrinsic", None)

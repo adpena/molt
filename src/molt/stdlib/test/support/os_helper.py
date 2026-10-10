@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 from collections.abc import Iterator
 import contextlib
@@ -11,7 +10,6 @@ import shutil
 import tempfile
 import unittest
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 # TODO(stdlib-parity, owner:stdlib, milestone:SL3, priority:P3, status:planned): expand os_helper coverage for file, path, and process helpers used by CPython tests.
 
@@ -147,5 +145,3 @@ __all__ = [
     "temp_dir",
     "unlink",
 ]
-
-globals().pop("_require_intrinsic", None)

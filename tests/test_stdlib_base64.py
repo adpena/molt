@@ -10,7 +10,6 @@ import pytest
 # the process registry only for that import. A registry left installed
 # would answer molt_capabilities_has for every later test on the worker.
 _FAKE_INTRINSICS: dict[str, object] = {}
-_FAKE_INTRINSICS.setdefault("molt_stdlib_probe", lambda: True)
 _FAKE_INTRINSICS.setdefault("molt_capabilities_has", lambda _name=None: True)
 _FAKE_INTRINSICS.setdefault(
     "molt_codecs_encode",

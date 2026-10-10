@@ -728,7 +728,9 @@ def test_producer_prior_retirement_failure_preserves_current_live_transaction(
         with monkeypatch.context() as faults:
 
             def fail_prior_reclamation(path, **kwargs):
-                assert path == retired
+                # Deletion may use the extended-length spelling on Windows;
+                # the oracle is the directory entry, not its spelling.
+                assert Path(path).samefile(retired)
                 raise OSError("injected prior residue reclamation failure")
 
             faults.setattr(file_deletion.shutil, "rmtree", fail_prior_reclamation)

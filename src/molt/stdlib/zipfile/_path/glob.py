@@ -7,7 +7,6 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 import re
 import sys as _sys
 
-_require_intrinsic("molt_capabilities_has")
 _MOLT_ZIPFILE_PATH_TRANSLATE_GLOB = _require_intrinsic(
     "molt_zipfile_path_translate_glob"
 )

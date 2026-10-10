@@ -99,10 +99,9 @@ from tools.memory_guard_core.memory_limits import (  # noqa: E402
     _float_env as _float_env,
     _gb_from_bytes as _gb_from_bytes,
     _linux_meminfo_bytes as _linux_meminfo_bytes,
-    _parse_darwin_vm_stat_available_bytes as _parse_darwin_vm_stat_available_bytes,
     DARWIN_AVAILABLE_PAGE_ROWS as DARWIN_AVAILABLE_PAGE_ROWS,
-    darwin_vm_stat_text as darwin_vm_stat_text,
-    parse_darwin_vm_stat as parse_darwin_vm_stat,
+    darwin_available_bytes as darwin_available_bytes,
+    darwin_vm_pages as darwin_vm_pages,
     _prefixed_names as _prefixed_names,
     adaptive_memory_budget as adaptive_memory_budget,
     available_memory_bytes as available_memory_bytes,
@@ -134,7 +133,6 @@ from tools.memory_guard_core.sample_records import (  # noqa: E402
     _stream_sample_payload as _stream_sample_payload,
 )
 from tools.memory_guard_core.cargo_quarantine import (  # noqa: E402
-    DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP as DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP,
     CargoIncrementalQuarantine as CargoIncrementalQuarantine,
     CargoIncrementalObservation as CargoIncrementalObservation,
     observe_owned_incremental_state as observe_owned_incremental_state,
@@ -153,7 +151,6 @@ from tools.memory_guard_core.cargo_quarantine import (  # noqa: E402
     _command_invokes_cargo_build_state as _command_invokes_cargo_build_state,
     _command_tokens as _command_tokens,
     _effective_guard_cwd as _effective_guard_cwd,
-    _prune_cargo_incremental_quarantine as _prune_cargo_incremental_quarantine,
     _quarantine_cargo_incremental_state as _quarantine_cargo_incremental_state,
     _samples_include_cargo_build_state as _samples_include_cargo_build_state,
     _token_executable_name as _token_executable_name,
@@ -335,13 +332,17 @@ def _temporary_artifact_descendant_closure(
     sampling_telemetry: GuardSamplingTelemetry | None,
     termination_reports: Sequence[GuardTerminationReport],
     probe_grace: float,
+    final_samples: Mapping[int, ProcessSample] | None = None,
 ) -> tuple[bool, dict[str, object]]:
     """Return non-actuating evidence that no guarded child can still use scratch.
 
     Windows Job accounting is exact.  The POSIX authority is intentionally
     named as sampled process-group custody: it combines the guard's complete
-    observation history with a final process-group liveness probe and a fresh
+    observation history with a final process-group liveness probe and a
     process-table observation after the existing cleanup boundary.
+    ``final_samples`` is the post-exit observation when cleanup signalled
+    nothing after it, so it already lies past that boundary; None samples
+    afresh.
     """
 
     if proc is None:
@@ -422,7 +423,8 @@ def _temporary_artifact_descendant_closure(
     evidence["root_pgid"] = root_pgid
     evidence["root_process_group_closed"] = group_closed
     try:
-        final_samples = sampler()
+        if final_samples is None:
+            final_samples = sampler()
         remaining_tracked = tuple(sorted(tracker.update(final_samples)))
         root_group_members = tuple(
             sorted(
@@ -1950,6 +1952,7 @@ def run_guarded(
         stdout: str | bytes = "" if text else b""
         stderr: str | bytes = "" if text else b""
         orphaned_process_groups: tuple[int, ...] = ()
+        post_exit_samples: Mapping[int, ProcessSample] | None = None
         try:
             if proc.returncode is None and not guard_interrupted:
                 try:
@@ -1984,13 +1987,20 @@ def run_guarded(
                 transfer_receipted_daemon_instances(sampler())
             if cleanup_orphans and not guard_interrupted:
                 try:
+                    # One observation after the root's exit serves every
+                    # cleanup decision, and the closure proof, until the
+                    # guard signals a process. A signal retires it.
+                    post_exit_samples = sampler()
                     tracked_orphans = cleanup_tracked_orphans(
                         proc.pid,
                         tracker=tracker,
                         sampler=sampler,
+                        samples=post_exit_samples,
                         grace=0.25,
                         root_reaped=proc.returncode is not None,
                     )
+                    if tracked_orphans.termination_reports:
+                        post_exit_samples = None
                     termination_reports.extend(
                         _validated_termination_reports(
                             tracked_orphans.termination_reports,
@@ -2003,8 +2013,11 @@ def run_guarded(
                             baseline_pgids=baseline_pgids,
                             tracker=tracker,
                             sampler=sampler,
+                            samples=post_exit_samples,
                             grace=0.25,
                         )
+                        if repo_orphans.termination_reports:
+                            post_exit_samples = None
                         termination_reports.extend(
                             _validated_termination_reports(
                                 repo_orphans.termination_reports,
@@ -2018,6 +2031,7 @@ def run_guarded(
                     # authorize PID/group cleanup, and it must not rewrite the
                     # healthy child's return code.  Record the custody gap and
                     # leave the Job Object/orphan reaper as the safety net.
+                    post_exit_samples = None
                     record_transient_sampling_failure(
                         exc,
                         attempt_already_counted=False,
@@ -2165,6 +2179,7 @@ def run_guarded(
                 sampling_telemetry=final_sampling_telemetry,
                 termination_reports=termination_reports,
                 probe_grace=termination_wait_s,
+                final_samples=post_exit_samples,
             )
         )
         if suite_custody_transfers:

@@ -1629,7 +1629,6 @@ def _materialize_import_plan(
     namespace_module_names: set[str] = set()
     generated_module_source_paths: dict[str, str] = {}
     module_graph_operation_counts = {
-        **prepared_module_graph.intrinsic_source_operation_counts,
         "native_support_iterations": 0,
         "native_support_slice_requests": 0,
         "native_support_slice_cache_hits": 0,
@@ -2160,17 +2159,6 @@ def _prepare_entry_module_graph(
         module_reasons,
         "core_required",
     )
-    intrinsic_source_operation_counts: dict[str, int] = {}
-    intrinsic_enforced = _module_stdlib_policy._enforce_intrinsic_stdlib(
-        module_graph,
-        stdlib_root,
-        json_output,
-        target_python=target_python,
-        project_root=project_root,
-        operation_counts=intrinsic_source_operation_counts,
-    )
-    if intrinsic_enforced is not None:
-        return None, intrinsic_enforced
     # Runtime-feature availability is decided by REACHABILITY, not whole-file
     # import-graph presence. The old coarse profile gate was deleted because it
     # forced a feature the instant a module appeared anywhere in the static graph,
@@ -2238,9 +2226,6 @@ def _prepare_entry_module_graph(
         ]
     )
     return _PreparedEntryModuleGraph(
-        intrinsic_source_operation_counts=MappingProxyType(
-            intrinsic_source_operation_counts
-        ),
         project_root=project_root,
         capability_config_digest=capability_config_digest,
         image_scope=image_scope,

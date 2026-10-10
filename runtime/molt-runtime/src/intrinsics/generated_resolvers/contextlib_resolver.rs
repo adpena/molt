@@ -49,22 +49,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_contextlib_chdir_exit",
             crate::molt_contextlib_chdir_exit as *const (),
         )),
-        "molt_contextlib_asyncgen_cm_new" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_contextlib_asyncgen_cm_new",
-            crate::molt_contextlib_asyncgen_cm_new as *const (),
-        )),
-        "molt_contextlib_asyncgen_cm_drop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_contextlib_asyncgen_cm_drop",
-            crate::molt_contextlib_asyncgen_cm_drop as *const (),
-        )),
-        "molt_contextlib_asyncgen_cm_aenter" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_contextlib_asyncgen_cm_aenter",
-            crate::molt_contextlib_asyncgen_cm_aenter as *const (),
-        )),
-        "molt_contextlib_asyncgen_cm_aexit" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_contextlib_asyncgen_cm_aexit",
-            crate::molt_contextlib_asyncgen_cm_aexit as *const (),
-        )),
         "molt_contextlib_generator_enter" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_contextlib_generator_enter",
             crate::molt_contextlib_generator_enter as *const (),
@@ -111,10 +95,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
                 crate::molt_contextlib_exitstack_push_callback as *const (),
             ))
         }
-        "molt_contextlib_exitstack_pop" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_contextlib_exitstack_pop",
-            crate::molt_contextlib_exitstack_pop as *const (),
-        )),
         "molt_contextlib_exitstack_pop_all" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_contextlib_exitstack_pop_all",
             crate::molt_contextlib_exitstack_pop_all as *const (),

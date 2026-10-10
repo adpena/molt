@@ -7,7 +7,6 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 import os as _os
 
-_require_intrinsic("molt_stdlib_probe")
 _MOLT_IMPORTLIB_IMPORT_MODULE = _require_intrinsic("molt_importlib_import_module")
 _MOLT_IMPORTLIB_INVALIDATE_CACHES = _require_intrinsic(
     "molt_importlib_invalidate_caches"

@@ -10,9 +10,6 @@ import warnings
 import weakref
 from typing import TYPE_CHECKING, Any, Iterable
 
-from _intrinsics import require_intrinsic as _require_intrinsic
-
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 from asyncio import (
     FlowControlMixin,
@@ -732,5 +729,3 @@ __all__ = [
     "warnings",
     "weakref",
 ]
-
-globals().pop("_require_intrinsic", None)

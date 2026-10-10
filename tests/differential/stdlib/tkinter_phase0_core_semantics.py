@@ -265,7 +265,6 @@ def _probe_headless_stubbed_semantics(
         "_MOLT_TK_CALL": tk_module._MOLT_TK_CALL,
         "_MOLT_TK_BIND_COMMAND": tk_module._MOLT_TK_BIND_COMMAND,
         "_MOLT_TK_UNBIND_COMMAND": tk_module._MOLT_TK_UNBIND_COMMAND,
-        "_MOLT_TK_DESTROY_WIDGET": tk_module._MOLT_TK_DESTROY_WIDGET,
         "_MOLT_TK_LAST_ERROR": tk_module._MOLT_TK_LAST_ERROR,
     }
     old_gui_gate = tkinter_module._require_gui_window_capability
@@ -344,7 +343,6 @@ def _probe_headless_stubbed_semantics(
         tk_module._MOLT_TK_CALL = _tk_call
         tk_module._MOLT_TK_BIND_COMMAND = _tk_bind_command
         tk_module._MOLT_TK_UNBIND_COMMAND = _tk_unbind_command
-        tk_module._MOLT_TK_DESTROY_WIDGET = lambda _app=None, _widget=None: None
         tk_module._MOLT_TK_LAST_ERROR = (
             lambda app=None: None if app is None else app.get("last_error")
         )
@@ -920,7 +918,6 @@ def _probe_ttk_treeview_headless_semantics(
         "_MOLT_TK_CALL": tk_module._MOLT_TK_CALL,
         "_MOLT_TK_BIND_COMMAND": tk_module._MOLT_TK_BIND_COMMAND,
         "_MOLT_TK_UNBIND_COMMAND": tk_module._MOLT_TK_UNBIND_COMMAND,
-        "_MOLT_TK_DESTROY_WIDGET": tk_module._MOLT_TK_DESTROY_WIDGET,
         "_MOLT_TK_LAST_ERROR": tk_module._MOLT_TK_LAST_ERROR,
     }
     old_gui_gate = tkinter_module._require_gui_window_capability
@@ -1041,7 +1038,6 @@ def _probe_ttk_treeview_headless_semantics(
         tk_module._MOLT_TK_CALL = _tk_call
         tk_module._MOLT_TK_BIND_COMMAND = _tk_bind_command
         tk_module._MOLT_TK_UNBIND_COMMAND = _tk_unbind_command
-        tk_module._MOLT_TK_DESTROY_WIDGET = lambda _app=None, _widget=None: None
         tk_module._MOLT_TK_LAST_ERROR = (
             lambda app=None: None if app is None else app.get("last_error")
         )

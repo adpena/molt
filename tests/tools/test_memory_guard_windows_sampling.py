@@ -130,24 +130,44 @@ def test_sample_processes_posix_missing_ps_is_typed_failure(monkeypatch) -> None
         module.sample_processes_posix()
 
 
-def test_darwin_sampler_never_shells_out_and_types_enumeration_failure(
-    monkeypatch,
-) -> None:
-    class FakeAuthority:
-        def pids(self) -> list[int]:
-            raise OSError("proc_listallpids failed")
+def _darwin_row(
+    *, ppid: int, pgid: int, started_at_ns: int, command: str, uid: int = 501
+) -> process_model._DarwinKernelProcRow:
+    return process_model._DarwinKernelProcRow(
+        status=2,
+        ppid=ppid,
+        pgid=pgid,
+        started_at_ns=started_at_ns,
+        command=command,
+        uid=uid,
+    )
 
-    def forbidden_run(*args, **kwargs):  # noqa: ANN002, ANN003
-        raise AssertionError("Darwin sampler must not shell out to ps")
 
+def _install_fake_darwin_authority(monkeypatch, authority: object) -> None:
     monkeypatch.setattr(process_model.sys, "platform", "darwin")
-    monkeypatch.setattr(process_model.subprocess, "run", forbidden_run)
     monkeypatch.setattr(
         process_model,
         "_darwin_process_authority_cache",
         process_model._DARWIN_PROCESS_AUTHORITY_UNSET,
     )
-    monkeypatch.setattr(process_model, "_load_darwin_process_authority", FakeAuthority)
+    monkeypatch.setattr(
+        process_model, "_load_darwin_process_authority", lambda: authority
+    )
+    monkeypatch.setattr(process_model, "_darwin_viewer_uid", lambda: 501)
+
+
+def test_darwin_sampler_never_shells_out_and_types_enumeration_failure(
+    monkeypatch,
+) -> None:
+    class FakeAuthority:
+        def kernel_table(self) -> dict[int, process_model._DarwinKernelProcRow]:
+            raise OSError("KERN_PROC_ALL read failed")
+
+    def forbidden_run(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("Darwin sampler must not shell out to ps")
+
+    _install_fake_darwin_authority(monkeypatch, FakeAuthority())
+    monkeypatch.setattr(process_model.subprocess, "run", forbidden_run)
 
     with pytest.raises(
         windows_snapshot.ProcessSnapshotError, match="Darwin process enumeration failed"
@@ -155,37 +175,30 @@ def test_darwin_sampler_never_shells_out_and_types_enumeration_failure(
         process_custody.sample_processes_posix()
 
 
-def test_darwin_sampler_sizes_every_listed_pid_and_withholds_foreign_rss(
+def test_darwin_sampler_sizes_readable_rows_and_withholds_foreign_ones(
     monkeypatch,
 ) -> None:
+    worker = _darwin_row(ppid=100, pgid=200, started_at_ns=1_000, command="node")
+    # A system daemon: the kernel table lists it, its detail is root's.
+    daemon = _darwin_row(ppid=1, pgid=300, started_at_ns=5_000, command="mds", uid=0)
+
     class FakeAuthority:
-        def pids(self) -> list[int]:
-            return [200, 300]
+        def kernel_table(self) -> dict[int, process_model._DarwinKernelProcRow]:
+            return {200: worker, 300: daemon}
 
         def resident_kb(self, pid: int) -> int | None:
-            return 64 if pid == 200 else None
+            assert pid == 200, "a withheld row is never sized"
+            return 64
 
-        def metadata(self, pid: int) -> tuple[int, int, int, str] | None:
-            return (100, pid, 1_000, "node") if pid == 200 else None
-
-        def kernel_row(self, pid: int) -> process_model._DarwinKernelProcRow | None:
-            # A system daemon: libproc withholds it, the kernel table lists it.
-            if pid != 300:
-                raise AssertionError("libproc-described pids never read kern.proc")
-            return process_model._DarwinKernelProcRow(
-                status=2, ppid=1, pgid=300, started_at_ns=5_000, command="mds"
-            )
+        def kernel_row(self, pid: int) -> process_model._DarwinKernelProcRow:
+            assert pid == 200, "a withheld row binds no argv"
+            return worker
 
         def argv(self, pid: int) -> tuple[str, ...] | None:
-            return ("node", "worker.js") if pid == 200 else None
+            assert pid == 200, "a withheld row binds no argv"
+            return ("node", "worker.js")
 
-    monkeypatch.setattr(process_model.sys, "platform", "darwin")
-    monkeypatch.setattr(
-        process_model,
-        "_darwin_process_authority_cache",
-        process_model._DARWIN_PROCESS_AUTHORITY_UNSET,
-    )
-    monkeypatch.setattr(process_model, "_load_darwin_process_authority", FakeAuthority)
+    _install_fake_darwin_authority(monkeypatch, FakeAuthority())
 
     samples = process_custody.sample_processes_posix()
 
@@ -201,30 +214,25 @@ def test_darwin_sampler_sizes_every_listed_pid_and_withholds_foreign_rss(
 
 def test_darwin_process_authority_binds_once_for_all_pid_reads(monkeypatch) -> None:
     class FakeAuthority:
-        def metadata(self, pid: int) -> tuple[int, int, int, str]:
-            return (1, pid, 123_000, "node")
+        def kernel_row(self, pid: int) -> process_model._DarwinKernelProcRow:
+            return _darwin_row(ppid=1, pgid=pid, started_at_ns=123_000, command="node")
 
-        def command(self, pid: int) -> str:
-            return f"node codex-{pid}.js"
+        def argv(self, pid: int) -> tuple[str, ...]:
+            return ("node", f"codex-{pid}.js")
 
     authority = FakeAuthority()
     loads: list[None] = []
-    monkeypatch.setattr(process_model.sys, "platform", "darwin")
-    monkeypatch.setattr(
-        process_model,
-        "_darwin_process_authority_cache",
-        process_model._DARWIN_PROCESS_AUTHORITY_UNSET,
-    )
+    _install_fake_darwin_authority(monkeypatch, authority)
     monkeypatch.setattr(
         process_model,
         "_load_darwin_process_authority",
         lambda: loads.append(None) or authority,
     )
 
-    assert process_model._darwin_proc_metadata(7) == (1, 7, 123_000, "node")
-    assert process_model._darwin_proc_command(7) == "node codex-7.js"
-    assert process_model._darwin_proc_metadata(8) == (1, 8, 123_000, "node")
-    assert process_model._darwin_proc_command(8) == "node codex-8.js"
+    assert process_model._darwin_proc_started_at_ns(7) == 123_000
+    assert process_model._darwin_proc_argv(7) == ("node", "codex-7.js")
+    assert process_model._darwin_proc_started_at_ns(8) == 123_000
+    assert process_model._darwin_proc_argv(8) == ("node", "codex-8.js")
     assert loads == [None]
 
 
@@ -237,9 +245,7 @@ def test_darwin_process_authority_retains_one_library_binding_set(
         argtypes = None
         restype = None
 
-    libproc = SimpleNamespace(
-        proc_pidinfo=FakeFunction(), proc_listallpids=FakeFunction()
-    )
+    libproc = SimpleNamespace(proc_pidinfo=FakeFunction())
     libsystem = SimpleNamespace(sysctl=FakeFunction())
     loads: list[str] = []
 
@@ -263,6 +269,7 @@ def test_darwin_process_authority_retains_one_library_binding_set(
     assert first is not None
     assert first.libproc is libproc
     assert first.libsystem is libsystem
+    assert first.kinfo.size == process_model._DARWIN_KINFO_PROC_SIZE
     assert loads == [
         "/usr/lib/libproc.dylib",
         "/usr/lib/libSystem.B.dylib",
@@ -272,79 +279,70 @@ def test_darwin_process_authority_retains_one_library_binding_set(
 def test_darwin_cached_authority_preserves_bound_command_and_identity(
     monkeypatch,
 ) -> None:
-    class FakeAuthority:
-        metadata_calls = 0
-        command_calls = 0
+    row = _darwin_row(ppid=100, pgid=200, started_at_ns=987_654_321_000, command="node")
 
-        def metadata(self, pid: int) -> tuple[int, int, int, str]:
+    class FakeAuthority:
+        kernel_row_calls = 0
+        argv_calls = 0
+
+        def kernel_table(self) -> dict[int, process_model._DarwinKernelProcRow]:
+            return {200: row}
+
+        def resident_kb(self, pid: int) -> int:
+            return 64
+
+        def kernel_row(self, pid: int) -> process_model._DarwinKernelProcRow:
             assert pid == 200
-            self.metadata_calls += 1
-            return (100, 200, 987_654_321_000, "node")
+            self.kernel_row_calls += 1
+            return row
 
         def argv(self, pid: int) -> tuple[str, ...]:
             assert pid == 200
-            self.command_calls += 1
+            self.argv_calls += 1
             return ("node", "/usr/local/lib/node_modules/@openai/codex/bin/codex.js")
 
     authority = FakeAuthority()
-    monkeypatch.setattr(process_model.sys, "platform", "darwin")
-    monkeypatch.setattr(
-        process_model,
-        "_darwin_process_authority_cache",
-        process_model._DARWIN_PROCESS_AUTHORITY_UNSET,
-    )
-    monkeypatch.setattr(
-        process_model,
-        "_load_darwin_process_authority",
-        lambda: authority,
-    )
-    monkeypatch.setattr(process_model, "_darwin_proc_table", lambda: {200: 64})
+    _install_fake_darwin_authority(monkeypatch, authority)
 
     sample = process_model.sample_processes_posix()[200]
 
     assert sample.ppid == 100
     assert sample.pgid == 200
     assert sample.started_at_ns == 987_654_321_000
+    assert (authority.argv_calls, authority.kernel_row_calls) == (0, 0)
     assert process_model.is_host_control_plane_process(sample)
-    assert authority.metadata_calls == 2
-    assert authority.command_calls == 1
+    assert process_model.is_host_control_plane_process(sample)
+    assert (authority.argv_calls, authority.kernel_row_calls) == (1, 1)
 
 
 def test_darwin_cached_authority_keeps_reuse_fail_closed(monkeypatch) -> None:
-    class FakeAuthority:
-        def __init__(self) -> None:
-            self.metadata_rows = iter(
-                (
-                    (100, 200, 111_000, "node"),
-                    (4, 200, 222_000, "node"),
-                )
-            )
+    sampled = _darwin_row(ppid=100, pgid=200, started_at_ns=111_000, command="node")
+    reused = _darwin_row(ppid=4, pgid=200, started_at_ns=222_000, command="node")
 
-        def metadata(self, pid: int) -> tuple[int, int, int, str]:
+    class FakeAuthority:
+        def kernel_table(self) -> dict[int, process_model._DarwinKernelProcRow]:
+            return {200: sampled}
+
+        def resident_kb(self, pid: int) -> int:
+            return 64
+
+        def kernel_row(self, pid: int) -> process_model._DarwinKernelProcRow:
             assert pid == 200
-            return next(self.metadata_rows)
+            return reused
 
         def argv(self, pid: int) -> tuple[str, ...]:
             assert pid == 200
             return ("node", "/usr/local/lib/node_modules/@openai/codex/bin/codex.js")
 
-    monkeypatch.setattr(process_model.sys, "platform", "darwin")
-    monkeypatch.setattr(
-        process_model,
-        "_darwin_process_authority_cache",
-        process_model._DARWIN_PROCESS_AUTHORITY_UNSET,
-    )
-    monkeypatch.setattr(
-        process_model,
-        "_load_darwin_process_authority",
-        FakeAuthority,
-    )
-    monkeypatch.setattr(process_model, "_darwin_proc_table", lambda: {200: 64})
+    _install_fake_darwin_authority(monkeypatch, FakeAuthority())
 
     sample = process_model.sample_processes_posix()[200]
 
-    assert sample.ppid == 0
-    assert sample.started_at_ns is None
+    # The reused pid's argv never binds to the sampled instance.
+    assert sample.argv == ()
+    assert sample.command == "node"
+    assert not process_model.is_host_control_plane_process(sample)
+    assert (sample.ppid, sample.started_at_ns) == (100, 111_000)
 
 
 def test_sample_processes_windows_uses_injected_snapshot_authority(monkeypatch) -> None:

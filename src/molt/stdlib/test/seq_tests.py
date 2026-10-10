@@ -2,7 +2,6 @@
 Tests common to tuple, list and UserList.UserList
 """
 
-from _intrinsics import require_intrinsic as _require_intrinsic
 
 import pickle
 import sys
@@ -10,7 +9,6 @@ import unittest
 from itertools import chain
 from typing import TYPE_CHECKING, Any
 
-_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 if TYPE_CHECKING:
     from . import support
@@ -478,6 +476,3 @@ class CommonTest(unittest.TestCase):
     def test_free_after_iterating(self):
         support.check_free_after_iterating(self, iter, self.type2test)
         support.check_free_after_iterating(self, reversed, self.type2test)
-
-
-globals().pop("_require_intrinsic", None)

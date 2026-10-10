@@ -72,7 +72,6 @@ _MOLT_DEQUE_ROTATE = _require_intrinsic("molt_deque_rotate")
 _MOLT_DEQUE_SETITEM = _require_intrinsic("molt_deque_setitem")
 
 # --- defaultdict intrinsics ---
-_MOLT_DEFAULTDICT_COPY = _require_intrinsic("molt_defaultdict_copy")
 _MOLT_DEFAULTDICT_DROP = _require_intrinsic("molt_defaultdict_drop")
 _MOLT_DEFAULTDICT_FACTORY = _require_intrinsic("molt_defaultdict_factory")
 _MOLT_DEFAULTDICT_MISSING_METHOD = _require_intrinsic("molt_defaultdict_missing_method")
@@ -918,7 +917,6 @@ class Counter(dict):
             if other_count < count:
                 self[elem] = other_count
         return self._keep_positive()
-
 
 
 # ---------------------------------------------------------------------------

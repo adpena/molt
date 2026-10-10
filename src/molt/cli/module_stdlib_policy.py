@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import functools
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Mapping
 from pathlib import Path
 
 from molt.cli.config_resolution import (
@@ -9,26 +9,7 @@ from molt.cli.config_resolution import (
     DEFAULT_STDLIB_PROFILE,
 )
 from molt.cli import module_resolution as _module_resolution
-from molt.cli import module_graph_cache as _module_graph_cache
-from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
-from molt.cli.output import fail as _fail
 from molt.source_root import compiler_source_root
-from molt.target_python import TargetPythonVersion
-from molt import stdlib_intrinsic_policy as _stdlib_intrinsic_policy
-
-_INTRINSIC_CALL_NAMES = _stdlib_intrinsic_policy.INTRINSIC_CALL_NAMES
-_STDLIB_POLICY_GATE_STATUS = _stdlib_intrinsic_policy.STATUS_POLICY_GATE
-_STDLIB_PROBE_INTRINSIC = _stdlib_intrinsic_policy.STDLIB_PROBE_INTRINSIC
-_classify_stdlib_module_statuses = (
-    _stdlib_intrinsic_policy.classify_stdlib_module_statuses
-)
-_is_fail_closed_import_policy_gate = (
-    _stdlib_intrinsic_policy.is_fail_closed_import_policy_gate
-)
-_stdlib_module_intrinsic_status = (
-    _stdlib_intrinsic_policy.stdlib_module_intrinsic_status
-)
-_stdlib_module_static_imports = _stdlib_intrinsic_policy.stdlib_module_static_imports
 
 
 @functools.lru_cache(maxsize=8)
@@ -62,73 +43,6 @@ def _stdlib_allowlist() -> set[str]:
     # Only parsing is cached. Root selection and policy bytes stay live,
     # including same-size edits with restored modification timestamps.
     return set(_stdlib_allowlist_cached(spec_path.read_text(encoding="utf-8")))
-
-
-@_source_tree_fingerprint_transaction()
-def _enforce_intrinsic_stdlib(
-    module_graph: dict[str, Path],
-    stdlib_root: Path,
-    json_output: bool,
-    *,
-    target_python: TargetPythonVersion,
-    project_root: Path | None = None,
-    operation_counts: MutableMapping[str, int] | None = None,
-) -> int | None:
-    missing: list[str] = []
-    probe_only: list[str] = []
-    stdlib_root = stdlib_root.resolve()
-    stdlib_modules: dict[str, Path] = {}
-    for name, path in module_graph.items():
-        if not path or not path.suffix == ".py":
-            continue
-        try:
-            path.resolve().relative_to(stdlib_root)
-        except ValueError:
-            continue
-        stdlib_modules[name] = path
-    classification = _classify_stdlib_module_statuses(
-        stdlib_modules,
-        target_python=target_python,
-        facts_provider=(
-            functools.partial(
-                _module_graph_cache._stdlib_intrinsic_source_facts,
-                project_root,
-                target_python=target_python,
-                operation_counts=operation_counts,
-            )
-            if project_root is not None
-            else None
-        ),
-    )
-    for name, status in classification.statuses.items():
-        if status == "python-only":
-            missing.append(name)
-        elif status == "probe-only":
-            probe_only.append(name)
-    if not missing:
-        return None
-    missing.sort()
-    probe_only.sort()
-    message = (
-        "Intrinsic-only stdlib enforcement failed. These modules are Python-only "
-        "and must be lowered to Rust intrinsics (or become thin intrinsic wrappers):\n"
-        + "\n".join(f"  - {name}" for name in missing)
-    )
-    unresolved_missing = [
-        site
-        for site in classification.unresolved_imports_payload()
-        if site["module"] in missing
-    ]
-    if unresolved_missing:
-        message += "\nUnresolved imports cannot establish intrinsic support:"
-        for site in unresolved_missing:
-            message += f"\n  - {site['module']}: {site['path']}:{site['line']}"
-    if probe_only:
-        message += (
-            "\n\nProbe-only modules in this build (thin wrappers + policy gate only):\n"
-            + "\n".join(f"  - {name}" for name in probe_only)
-        )
-    return _fail(message, json_output, command="build")
 
 
 _CORE_STDLIB_MODULES_FULL = (

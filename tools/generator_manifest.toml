@@ -483,8 +483,8 @@ tool = "tools/gen_stdlib_stubs.py"
 outputs = []
 # A stub is an admitted parity gap: the structural audit counts it, and
 # lowering the module replaces the file, so the set changes with every lowering.
-output_family = "src/molt/stdlib stub files (every file carrying gen_stdlib_stubs.STUB_MARKER, plus a stub for each union module Molt lacks)"
-source = "tools/stdlib_module_union.py + tools/generator_io.py"
+output_family = "src/molt/stdlib stub files (every module whose __getattr__ raises the gap error, per stdlib_intrinsic_policy.is_stdlib_stub_source, plus a stub for each union module Molt lacks)"
+source = "tools/stdlib_module_union.py + tools/generator_io.py + src/molt/stdlib_intrinsic_policy.py"
 upstream_generators = ["tools/gen_stdlib_module_union.py"]
 check_mode = true
 check_command = "tools/gen_stdlib_stubs.py --check"

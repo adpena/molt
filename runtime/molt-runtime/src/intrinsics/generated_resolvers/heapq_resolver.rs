@@ -23,14 +23,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_heapq_heappushpop",
             crate::molt_heapq_heappushpop as *const (),
         )),
-        "molt_heapq_heapify_max" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_heapq_heapify_max",
-            crate::molt_heapq_heapify_max as *const (),
-        )),
-        "molt_heapq_heappop_max" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_heapq_heappop_max",
-            crate::molt_heapq_heappop_max as *const (),
-        )),
         "molt_heapq_nsmallest" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_heapq_nsmallest",
             crate::molt_heapq_nsmallest as *const (),

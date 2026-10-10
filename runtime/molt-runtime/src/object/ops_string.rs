@@ -1738,13 +1738,6 @@ pub extern "C" fn molt_string_swapcase(hay_bits: u64) -> u64 {
     })
 }
 
-/// Source string-repeat intrinsic shares normal numeric/reflected dispatch
-/// and the sequence index protocol with canonical multiplication.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_str_repeat(str_bits: u64, count_bits: u64) -> u64 {
-    crate::object::ops_arith::molt_mul(str_bits, count_bits)
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_capitalize(hay_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
