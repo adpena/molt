@@ -339,7 +339,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "abb0582b1b02da5d9c3bff66338258ccee4d1730dfb02e2e2cd6246b33dd4ec5",
+  "authority_sha256": "5611a651c875085d7639141e8cb38a853585be53d62ef581233fd66a97c2d7c2",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -8658,15 +8658,15 @@
       "executable": "node",
       "name": "node",
       "setup_evidence": [
-        "config/tool_releases.toml::version = \"26.10.0\"",
+        "config/tool_releases.toml::version = \"26.11.1\"",
         ".github/actions/setup-project/action.yml::uses: actions/setup-node@",
         ".github/workflows/formal.yml::node-version: pinned"
       ],
-      "setup_value": "26.10.0",
+      "setup_value": "26.11.1",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^v26\\.10\\.0$"
+      "version_pattern": "^v26\\.11\\.1$"
     },
     {
       "content_path_command": [
