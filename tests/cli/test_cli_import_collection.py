@@ -29595,6 +29595,7 @@ def test_compile_with_backend_daemon_fails_fast_when_daemon_dies_mid_request(
 
 def test_compile_with_backend_daemon_reports_missing_output_in_result(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     def _fake_request(
         socket_path: Path,
@@ -29625,7 +29626,7 @@ def test_compile_with_backend_daemon_reports_missing_output_in_result(
     result = _compile_with_backend_daemon_non_wasm(
         Path("/tmp/fake.sock"),
         ir={"functions": []},
-        backend_output=Path("/tmp/definitely-missing-output.o"),
+        backend_output=tmp_path / "definitely-missing-output.o",
         target_triple=None,
         cache_key=None,
         function_cache_key=None,
