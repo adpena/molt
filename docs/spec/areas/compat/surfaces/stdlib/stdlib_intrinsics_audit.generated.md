@@ -4,20 +4,25 @@
 **Owner:** stdlib + runtime
 
 ## Policy
-- Compiled binaries must not execute Python stdlib implementations.
-- Every stdlib module must be backed by Rust intrinsics (Python files are allowed only as thin, intrinsic-forwarding wrappers).
-- Modules without intrinsic implementation or proven intrinsic-owned support are forbidden in compiled builds and must raise immediately until fully lowered.
-- Pure forwarding facades inherit support only from all resolved intrinsic implementation owners, regardless of module spelling; forwarding cycles alone cannot establish support. This classification is not runtime conformance evidence.
+- Every stdlib module and submodule has exactly one status, derived from its own source and its proven imports by `src/molt/stdlib_intrinsic_policy.py`.
+- Intrinsic status rests on the intrinsics a module reads, not on the ones it requires. A module reads an intrinsic when it loads or exports the module-level name bound to it, requires it inside a function or class body, consumes it in an expression, or another stdlib module imports that private binding by name.
+- A requirement nothing reads is a gate failure, never backing: a discarded `_require_intrinsic(...)` statement or a private binding no module loads. Intrinsics that exist only to make a module count (readiness anchors) are not admitted.
+- `intrinsic-backed`: reads intrinsics and is attested as full CPython 3.12+ coverage. `intrinsic-partial`: reads intrinsics without that attestation, or carries a stdlib progress marker.
+- `intrinsic-support`: a private fragment its intrinsic owner imports, or a pure forwarding facade whose every resolved owner is intrinsic-backed. Forwarding cycles alone cannot establish support.
+- `python-compiled`: reads no intrinsic. Molt compiles the module's Python source into the binary like application code. This is an admitted implementation, not debt; a module moves to intrinsics when a measured win or a missing host capability requires it.
+- `stub`: the generated stand-in for a module Molt has not lowered (`tools/gen_stdlib_stubs.py`). Any attribute raises the canonical gap error. Stubs are debt under a ratchet.
+- `policy-gate`: a fail-closed namespace reservation whose only statement raises `ImportError`; it needs an explicit allowlist entry.
+- This classification is not runtime conformance evidence.
 - Each audit scan reports all failed gates. `--json-out` preserves diagnostics on failure and marks incomplete analysis explicitly; `--update-doc` publishes this document only after all gates pass.
 
 ## Progress Summary (Generated)
 - Total audited modules: `949`
-- `intrinsic-backed`: `41`
-- `intrinsic-partial`: `906`
-- `intrinsic-support`: `2`
+- `intrinsic-backed`: `39`
+- `intrinsic-partial`: `338`
+- `intrinsic-support`: `4`
+- `python-compiled`: `213`
+- `stub`: `355`
 - `policy-gate`: `0`
-- `probe-only`: `0`
-- `python-only`: `0`
 
 ## Priority Lowering Queue (Generated)
 ### P0 queue (Phase 2: concurrency substrate)
@@ -56,7 +61,7 @@
 - `pickle`: `intrinsic-partial`
 - `enum`: `intrinsic-partial`
 - `ipaddress`: `intrinsic-partial`
-- `encodings`: `intrinsic-partial`
+- `encodings`: `python-compiled`
 - `ssl`: `intrinsic-partial`
 - `subprocess`: `intrinsic-partial`
 - `concurrent.futures`: `intrinsic-partial`
@@ -77,13 +82,11 @@
 - `_opcode`
 - `_opcode_metadata`
 - `_operator`
-- `_pickle`
 - `_queue`
 - `ast`
 - `binascii`
 - `colorsys`
 - `contextlib`
-- `difflib`
 - `email.quoprimime`
 - `encodings.quopri_codec`
 - `fractions`
@@ -108,149 +111,59 @@
 - `weakref`
 
 ### Intrinsic-backed modules (partial lowering pending)
-- `_aix_support`
-- `_android_support`
-- `_apple_support`
 - `_ast`
-- `_ast_unparse`
-- `_blake2`
 - `_bz2`
-- `_codecs_cn`
-- `_codecs_hk`
-- `_codecs_iso2022`
-- `_codecs_jp`
-- `_codecs_kr`
-- `_codecs_tw`
-- `_colorize`
-- `_compat_pickle`
 - `_compatibility_errors`
 - `_compression`
 - `_contextvars`
-- `_crypt`
-- `_ctypes`
-- `_curses`
-- `_curses_panel`
 - `_datetime`
-- `_dbm`
 - `_decimal`
 - `_elementtree`
 - `_frozen_importlib`
 - `_frozen_importlib_external`
 - `_functools`
-- `_gdbm`
-- `_hashlib`
-- `_heapq`
-- `_hmac`
 - `_imp`
-- `_interpchannels`
-- `_interpqueues`
-- `_interpreters`
 - `_intrinsics`
 - `_io`
-- `_ios_support`
 - `_locale`
 - `_lsprof`
 - `_lzma`
 - `_markupbase`
-- `_md5`
-- `_msi`
-- `_multibytecodec`
 - `_multiprocessing`
-- `_osx_support`
-- `_overlapped`
-- `_posixshmem`
 - `_posixsubprocess`
-- `_py_abc`
-- `_py_warnings`
 - `_pydatetime`
 - `_pydecimal`
 - `_pyio`
 - `_pylong`
-- `_pyrepl`
-- `_pyrepl.__main__`
-- `_pyrepl._minimal_curses`
-- `_pyrepl._module_completer`
-- `_pyrepl._threading_handler`
-- `_pyrepl.base_eventqueue`
-- `_pyrepl.commands`
-- `_pyrepl.completing_reader`
-- `_pyrepl.console`
-- `_pyrepl.curses`
-- `_pyrepl.fancy_termios`
-- `_pyrepl.historical_reader`
-- `_pyrepl.input`
-- `_pyrepl.keymap`
-- `_pyrepl.main`
-- `_pyrepl.pager`
-- `_pyrepl.reader`
-- `_pyrepl.readline`
-- `_pyrepl.simple_interact`
-- `_pyrepl.terminfo`
-- `_pyrepl.trace`
-- `_pyrepl.types`
-- `_pyrepl.unix_console`
-- `_pyrepl.unix_eventqueue`
-- `_pyrepl.utils`
-- `_pyrepl.windows_console`
-- `_pyrepl.windows_eventqueue`
-- `_random`
-- `_remote_debugging`
-- `_scproxy`
-- `_sha1`
-- `_sha2`
-- `_sha3`
 - `_signal`
 - `_sitebuiltins`
 - `_socket`
 - `_sqlite3`
-- `_sre`
-- `_ssl`
-- `_stat`
 - `_statistics`
 - `_string`
 - `_strptime`
-- `_struct`
-- `_suggestions`
-- `_symtable`
-- `_sysconfig`
 - `_thread`
-- `_threading_local`
 - `_tkinter`
 - `_tokenize`
 - `_tracemalloc`
-- `_types`
 - `_typing`
 - `_uuid`
-- `_warnings`
 - `_weakref`
-- `_winapi`
-- `_wmi`
 - `_zoneinfo`
-- `_zstd`
 - `abc`
-- `aifc`
-- `annotationlib`
-- `antigravity`
 - `argparse`
 - `array`
 - `asyncio`
 - `asyncio.__main__`
 - `asyncio.base_events`
-- `asyncio.base_futures`
-- `asyncio.base_subprocess`
 - `asyncio.base_tasks`
-- `asyncio.constants`
 - `asyncio.coroutines`
 - `asyncio.events`
 - `asyncio.exceptions`
-- `asyncio.format_helpers`
 - `asyncio.futures`
-- `asyncio.graph`
 - `asyncio.locks`
-- `asyncio.log`
 - `asyncio.mixins`
 - `asyncio.proactor_events`
-- `asyncio.protocols`
 - `asyncio.queues`
 - `asyncio.runners`
 - `asyncio.selector_events`
@@ -263,13 +176,10 @@
 - `asyncio.threads`
 - `asyncio.timeouts`
 - `asyncio.tools`
-- `asyncio.transports`
 - `asyncio.trsock`
 - `asyncio.unix_events`
 - `asyncio.windows_events`
-- `asyncio.windows_utils`
 - `atexit`
-- `audioop`
 - `base64`
 - `bdb`
 - `bisect`
@@ -277,83 +187,40 @@
 - `bz2`
 - `cProfile`
 - `calendar`
-- `cgi`
-- `cgitb`
-- `chunk`
 - `cmath`
 - `cmd`
 - `code`
 - `codecs`
 - `codeop`
 - `collections`
-- `collections.abc`
 - `compileall`
-- `compression`
 - `compression._common`
 - `compression._common._streams`
-- `compression.bz2`
-- `compression.gzip`
-- `compression.lzma`
-- `compression.zlib`
-- `compression.zstd`
-- `compression.zstd._zstdfile`
-- `concurrent`
 - `concurrent.futures`
 - `concurrent.futures._base`
-- `concurrent.futures.interpreter`
 - `concurrent.futures.process`
 - `concurrent.futures.thread`
-- `concurrent.interpreters`
-- `concurrent.interpreters._crossinterp`
-- `concurrent.interpreters._queues`
 - `configparser`
 - `contextvars`
 - `copy`
 - `copyreg`
-- `crypt`
 - `csv`
 - `ctypes`
-- `ctypes._aix`
-- `ctypes._endian`
-- `ctypes._layout`
-- `ctypes.macholib`
-- `ctypes.macholib.dyld`
-- `ctypes.macholib.dylib`
-- `ctypes.macholib.framework`
-- `ctypes.util`
-- `ctypes.wintypes`
 - `curses`
-- `curses.ascii`
-- `curses.has_key`
-- `curses.panel`
-- `curses.textpad`
 - `dataclasses`
 - `datetime`
 - `dbm`
 - `dbm.dumb`
-- `dbm.gnu`
-- `dbm.ndbm`
-- `dbm.sqlite3`
 - `decimal`
 - `dis`
-- `doctest`
 - `email`
 - `email._encoded_words`
-- `email._header_value_parser`
-- `email._parseaddr`
 - `email._policybase`
-- `email.base64mime`
 - `email.charset`
-- `email.contentmanager`
-- `email.encoders`
-- `email.errors`
-- `email.feedparser`
 - `email.generator`
 - `email.header`
 - `email.headerregistry`
-- `email.iterators`
 - `email.message`
-- `email.mime`
 - `email.mime.application`
 - `email.mime.audio`
 - `email.mime.base`
@@ -365,9 +232,297 @@
 - `email.parser`
 - `email.policy`
 - `email.utils`
-- `encodings`
-- `encodings._win_cp_codecs`
 - `encodings.aliases`
+- `encodings.punycode`
+- `encodings.uu_codec`
+- `ensurepip`
+- `enum`
+- `errno`
+- `faulthandler`
+- `fcntl`
+- `filecmp`
+- `fileinput`
+- `fnmatch`
+- `ftplib`
+- `gc`
+- `genericpath`
+- `getopt`
+- `getpass`
+- `gettext`
+- `glob`
+- `grp`
+- `gzip`
+- `heapq`
+- `html`
+- `html.entities`
+- `html.parser`
+- `http`
+- `http.client`
+- `http.cookiejar`
+- `http.cookies`
+- `http.server`
+- `imaplib`
+- `importlib`
+- `importlib._abc`
+- `importlib.abc`
+- `importlib.machinery`
+- `importlib.metadata`
+- `importlib.metadata._adapters`
+- `importlib.metadata._collections`
+- `importlib.metadata._functools`
+- `importlib.metadata._itertools`
+- `importlib.metadata._meta`
+- `importlib.metadata._text`
+- `importlib.metadata.diagnose`
+- `importlib.readers`
+- `importlib.resources`
+- `importlib.resources._adapters`
+- `importlib.resources._common`
+- `importlib.resources._functional`
+- `importlib.resources._itertools`
+- `importlib.resources._legacy`
+- `importlib.resources.abc`
+- `importlib.resources.readers`
+- `importlib.resources.simple`
+- `importlib.simple`
+- `importlib.util`
+- `inspect`
+- `io`
+- `ipaddress`
+- `json`
+- `json.__main__`
+- `json.decoder`
+- `json.encoder`
+- `json.tool`
+- `keyword`
+- `linecache`
+- `locale`
+- `logging`
+- `logging.config`
+- `logging.handlers`
+- `lzma`
+- `mailbox`
+- `marshal`
+- `mimetypes`
+- `mmap`
+- `modulefinder`
+- `multiprocessing`
+- `multiprocessing._core`
+- `multiprocessing.connection`
+- `multiprocessing.context`
+- `multiprocessing.dummy`
+- `multiprocessing.dummy.connection`
+- `multiprocessing.forkserver`
+- `multiprocessing.heap`
+- `multiprocessing.managers`
+- `multiprocessing.pool`
+- `multiprocessing.popen_fork`
+- `multiprocessing.popen_forkserver`
+- `multiprocessing.popen_spawn_posix`
+- `multiprocessing.process`
+- `multiprocessing.queues`
+- `multiprocessing.reduction`
+- `multiprocessing.resource_sharer`
+- `multiprocessing.resource_tracker`
+- `multiprocessing.shared_memory`
+- `multiprocessing.sharedctypes`
+- `multiprocessing.spawn`
+- `multiprocessing.synchronize`
+- `multiprocessing.util`
+- `netrc`
+- `numbers`
+- `optparse`
+- `os`
+- `pathlib`
+- `pathlib._abc`
+- `pathlib._local`
+- `pathlib._os`
+- `pdb`
+- `pickle`
+- `pickletools`
+- `pkgutil`
+- `platform`
+- `plistlib`
+- `poplib`
+- `posix`
+- `posixpath`
+- `pprint`
+- `profile`
+- `pstats`
+- `pty`
+- `pwd`
+- `py_compile`
+- `pyclbr`
+- `pydoc`
+- `pydoc_data`
+- `pyexpat`
+- `queue`
+- `random`
+- `re`
+- `re._compiler`
+- `re._constants`
+- `re._parser`
+- `readline`
+- `reprlib`
+- `resource`
+- `rlcompleter`
+- `runpy`
+- `sched`
+- `shelve`
+- `shlex`
+- `shutil`
+- `signal`
+- `site`
+- `smtplib`
+- `socketserver`
+- `sqlite3`
+- `sqlite3.__main__`
+- `sqlite3.dbapi2`
+- `sqlite3.dump`
+- `sre_compile`
+- `sre_constants`
+- `sre_parse`
+- `ssl`
+- `stat`
+- `statistics`
+- `string`
+- `string.templatelib`
+- `stringprep`
+- `subprocess`
+- `symtable`
+- `sys`
+- `syslog`
+- `tabnanny`
+- `tarfile`
+- `tempfile`
+- `termios`
+- `threading`
+- `timeit`
+- `tkinter`
+- `tkinter.__main__`
+- `tkinter._support`
+- `tkinter.colorchooser`
+- `tkinter.commondialog`
+- `tkinter.dialog`
+- `tkinter.dnd`
+- `tkinter.filedialog`
+- `tkinter.font`
+- `tkinter.messagebox`
+- `tkinter.scrolledtext`
+- `tkinter.simpledialog`
+- `tkinter.tix`
+- `tkinter.ttk`
+- `tkinter.widgets`
+- `token`
+- `tokenize`
+- `tomllib`
+- `trace`
+- `traceback`
+- `tracemalloc`
+- `tty`
+- `typing`
+- `typing_extensions`
+- `unicodedata`
+- `unittest`
+- `unittest.async_case`
+- `unittest.mock`
+- `unittest.signals`
+- `urllib.error`
+- `urllib.parse`
+- `urllib.request`
+- `urllib.response`
+- `urllib.robotparser`
+- `uuid`
+- `venv`
+- `wave`
+- `webbrowser`
+- `xml`
+- `xml.etree`
+- `xml.etree.ElementInclude`
+- `xml.etree.ElementPath`
+- `xml.etree.ElementTree`
+- `xml.etree.cElementTree`
+- `zipfile`
+- `zipfile.__main__`
+- `zipfile._path`
+- `zipfile._path.glob`
+- `zipimport`
+- `zlib`
+- `zoneinfo`
+
+### Intrinsic-owned support fragments and forwarding facades
+- `_pyio_text`
+- `_weakrefset`
+- `email._header_value_parser`
+- `multiprocessing._api_surface`
+
+### Compiled pure-Python modules
+- `_blake2`
+- `_codecs_cn`
+- `_codecs_hk`
+- `_codecs_iso2022`
+- `_codecs_jp`
+- `_codecs_kr`
+- `_codecs_tw`
+- `_compat_pickle`
+- `_ctypes`
+- `_hashlib`
+- `_heapq`
+- `_hmac`
+- `_md5`
+- `_multibytecodec`
+- `_pickle`
+- `_py_abc`
+- `_py_warnings`
+- `_random`
+- `_sha1`
+- `_sha2`
+- `_sha3`
+- `_ssl`
+- `_struct`
+- `_threading_local`
+- `_types`
+- `_warnings`
+- `asyncio.base_futures`
+- `asyncio.base_subprocess`
+- `asyncio.constants`
+- `asyncio.format_helpers`
+- `asyncio.graph`
+- `asyncio.log`
+- `asyncio.protocols`
+- `asyncio.transports`
+- `asyncio.windows_utils`
+- `collections.abc`
+- `compression`
+- `compression.bz2`
+- `compression.gzip`
+- `compression.lzma`
+- `compression.zlib`
+- `concurrent`
+- `ctypes._aix`
+- `ctypes._endian`
+- `ctypes.macholib`
+- `ctypes.macholib.dyld`
+- `ctypes.macholib.dylib`
+- `ctypes.macholib.framework`
+- `ctypes.util`
+- `ctypes.wintypes`
+- `curses.ascii`
+- `curses.has_key`
+- `curses.panel`
+- `curses.textpad`
+- `dbm.ndbm`
+- `difflib`
+- `doctest`
+- `email._parseaddr`
+- `email.base64mime`
+- `email.contentmanager`
+- `email.encoders`
+- `email.errors`
+- `email.feedparser`
+- `email.iterators`
+- `email.mime`
+- `encodings`
 - `encodings.ascii`
 - `encodings.base64_codec`
 - `encodings.big5`
@@ -467,7 +622,6 @@
 - `encodings.oem`
 - `encodings.palmos`
 - `encodings.ptcp154`
-- `encodings.punycode`
 - `encodings.raw_unicode_escape`
 - `encodings.rot_13`
 - `encodings.shift_jis`
@@ -485,36 +639,114 @@
 - `encodings.utf_7`
 - `encodings.utf_8`
 - `encodings.utf_8_sig`
-- `encodings.uu_codec`
 - `encodings.zlib_codec`
-- `ensurepip`
+- `importlib._bootstrap`
+- `importlib._bootstrap_external`
+- `json.scanner`
+- `molt.stdlib`
+- `multiprocessing.popen_spawn_win32`
+- `pathlib.types`
+- `re._casefix`
+- `test`
+- `test.list_tests`
+- `test.seq_tests`
+- `test.support`
+- `test.support._fallback_support`
+- `test.support.import_helper`
+- `test.support.os_helper`
+- `test.support.warnings_helper`
+- `test.tokenizedata`
+- `test.tokenizedata.badsyntax_3131`
+- `test.tokenizedata.badsyntax_pep3120`
+- `textwrap`
+- `tkinter.constants`
+- `urllib`
+- `warnings`
+- `wsgiref`
+- `wsgiref.headers`
+- `wsgiref.simple_server`
+- `wsgiref.util`
+- `xmlrpc`
+- `xmlrpc.client`
+- `xmlrpc.server`
+- `zipapp`
+
+### Generated stubs (not lowered)
+- `_aix_support`
+- `_android_support`
+- `_apple_support`
+- `_ast_unparse`
+- `_colorize`
+- `_crypt`
+- `_curses`
+- `_curses_panel`
+- `_dbm`
+- `_gdbm`
+- `_interpchannels`
+- `_interpqueues`
+- `_interpreters`
+- `_ios_support`
+- `_msi`
+- `_osx_support`
+- `_overlapped`
+- `_posixshmem`
+- `_pyrepl`
+- `_pyrepl.__main__`
+- `_pyrepl._minimal_curses`
+- `_pyrepl._module_completer`
+- `_pyrepl._threading_handler`
+- `_pyrepl.base_eventqueue`
+- `_pyrepl.commands`
+- `_pyrepl.completing_reader`
+- `_pyrepl.console`
+- `_pyrepl.curses`
+- `_pyrepl.fancy_termios`
+- `_pyrepl.historical_reader`
+- `_pyrepl.input`
+- `_pyrepl.keymap`
+- `_pyrepl.main`
+- `_pyrepl.pager`
+- `_pyrepl.reader`
+- `_pyrepl.readline`
+- `_pyrepl.simple_interact`
+- `_pyrepl.terminfo`
+- `_pyrepl.trace`
+- `_pyrepl.types`
+- `_pyrepl.unix_console`
+- `_pyrepl.unix_eventqueue`
+- `_pyrepl.utils`
+- `_pyrepl.windows_console`
+- `_pyrepl.windows_eventqueue`
+- `_remote_debugging`
+- `_scproxy`
+- `_sre`
+- `_stat`
+- `_suggestions`
+- `_symtable`
+- `_sysconfig`
+- `_winapi`
+- `_wmi`
+- `_zstd`
+- `aifc`
+- `annotationlib`
+- `antigravity`
+- `audioop`
+- `cgi`
+- `cgitb`
+- `chunk`
+- `compression.zstd`
+- `compression.zstd._zstdfile`
+- `concurrent.futures.interpreter`
+- `concurrent.interpreters`
+- `concurrent.interpreters._crossinterp`
+- `concurrent.interpreters._queues`
+- `crypt`
+- `ctypes._layout`
+- `dbm.gnu`
+- `dbm.sqlite3`
+- `encodings._win_cp_codecs`
 - `ensurepip.__main__`
 - `ensurepip._uninstall`
-- `enum`
-- `errno`
-- `faulthandler`
-- `fcntl`
-- `filecmp`
-- `fileinput`
-- `fnmatch`
-- `ftplib`
-- `gc`
-- `genericpath`
-- `getopt`
-- `getpass`
-- `gettext`
-- `glob`
-- `grp`
-- `gzip`
-- `heapq`
-- `html`
-- `html.entities`
-- `html.parser`
-- `http`
-- `http.client`
-- `http.cookiejar`
-- `http.cookies`
-- `http.server`
 - `idlelib`
 - `idlelib.__main__`
 - `idlelib.autocomplete`
@@ -640,43 +872,6 @@
 - `idlelib.window`
 - `idlelib.zoomheight`
 - `idlelib.zzdummy`
-- `imaplib`
-- `importlib`
-- `importlib._abc`
-- `importlib._bootstrap`
-- `importlib._bootstrap_external`
-- `importlib.abc`
-- `importlib.machinery`
-- `importlib.metadata`
-- `importlib.metadata._adapters`
-- `importlib.metadata._collections`
-- `importlib.metadata._functools`
-- `importlib.metadata._itertools`
-- `importlib.metadata._meta`
-- `importlib.metadata._text`
-- `importlib.metadata.diagnose`
-- `importlib.readers`
-- `importlib.resources`
-- `importlib.resources._adapters`
-- `importlib.resources._common`
-- `importlib.resources._functional`
-- `importlib.resources._itertools`
-- `importlib.resources._legacy`
-- `importlib.resources.abc`
-- `importlib.resources.readers`
-- `importlib.resources.simple`
-- `importlib.simple`
-- `importlib.util`
-- `inspect`
-- `io`
-- `ipaddress`
-- `json`
-- `json.__main__`
-- `json.decoder`
-- `json.encoder`
-- `json.scanner`
-- `json.tool`
-- `keyword`
 - `lib2to3`
 - `lib2to3.__main__`
 - `lib2to3.btm_matcher`
@@ -750,173 +945,30 @@
 - `lib2to3.pygram`
 - `lib2to3.pytree`
 - `lib2to3.refactor`
-- `linecache`
-- `locale`
-- `logging`
-- `logging.config`
-- `logging.handlers`
-- `lzma`
-- `mailbox`
 - `mailcap`
-- `marshal`
-- `mimetypes`
-- `mmap`
-- `modulefinder`
-- `molt.stdlib`
 - `msilib`
 - `msilib.schema`
 - `msilib.sequence`
 - `msilib.text`
 - `msvcrt`
-- `multiprocessing`
-- `multiprocessing._api_surface`
-- `multiprocessing._core`
-- `multiprocessing.connection`
-- `multiprocessing.context`
-- `multiprocessing.dummy`
-- `multiprocessing.dummy.connection`
-- `multiprocessing.forkserver`
-- `multiprocessing.heap`
-- `multiprocessing.managers`
-- `multiprocessing.pool`
-- `multiprocessing.popen_fork`
-- `multiprocessing.popen_forkserver`
-- `multiprocessing.popen_spawn_posix`
-- `multiprocessing.popen_spawn_win32`
-- `multiprocessing.process`
-- `multiprocessing.queues`
-- `multiprocessing.reduction`
-- `multiprocessing.resource_sharer`
-- `multiprocessing.resource_tracker`
-- `multiprocessing.shared_memory`
-- `multiprocessing.sharedctypes`
-- `multiprocessing.spawn`
-- `multiprocessing.synchronize`
-- `multiprocessing.util`
-- `netrc`
 - `nis`
 - `nntplib`
 - `nt`
 - `ntpath`
 - `nturl2path`
-- `numbers`
-- `optparse`
-- `os`
 - `ossaudiodev`
-- `pathlib`
-- `pathlib._abc`
-- `pathlib._local`
-- `pathlib._os`
-- `pathlib.types`
-- `pdb`
-- `pickle`
-- `pickletools`
 - `pipes`
-- `pkgutil`
-- `platform`
-- `plistlib`
-- `poplib`
-- `posix`
-- `posixpath`
-- `pprint`
-- `profile`
-- `pstats`
-- `pty`
-- `pwd`
-- `py_compile`
-- `pyclbr`
-- `pydoc`
-- `pydoc_data`
 - `pydoc_data.module_docs`
 - `pydoc_data.topics`
-- `pyexpat`
-- `queue`
-- `random`
-- `re`
-- `re._casefix`
-- `re._compiler`
-- `re._constants`
-- `re._parser`
-- `readline`
-- `reprlib`
-- `resource`
-- `rlcompleter`
-- `runpy`
-- `sched`
-- `shelve`
-- `shlex`
-- `shutil`
-- `signal`
-- `site`
-- `smtplib`
 - `sndhdr`
-- `socketserver`
 - `spwd`
-- `sqlite3`
-- `sqlite3.__main__`
-- `sqlite3.dbapi2`
-- `sqlite3.dump`
-- `sre_compile`
-- `sre_constants`
-- `sre_parse`
-- `ssl`
-- `stat`
-- `statistics`
-- `string`
-- `string.templatelib`
-- `stringprep`
-- `subprocess`
 - `sunau`
-- `symtable`
-- `sys`
 - `sysconfig`
 - `sysconfig.__main__`
-- `syslog`
-- `tabnanny`
-- `tarfile`
 - `telnetlib`
-- `tempfile`
-- `termios`
-- `test`
-- `test.list_tests`
-- `test.seq_tests`
-- `test.support`
-- `test.support._fallback_support`
-- `test.support.import_helper`
-- `test.support.os_helper`
-- `test.support.warnings_helper`
-- `test.tokenizedata`
-- `test.tokenizedata.badsyntax_3131`
-- `test.tokenizedata.badsyntax_pep3120`
-- `textwrap`
-- `threading`
-- `timeit`
-- `tkinter`
-- `tkinter.__main__`
-- `tkinter._support`
-- `tkinter.colorchooser`
-- `tkinter.commondialog`
-- `tkinter.constants`
-- `tkinter.dialog`
-- `tkinter.dnd`
-- `tkinter.filedialog`
-- `tkinter.font`
-- `tkinter.messagebox`
-- `tkinter.scrolledtext`
-- `tkinter.simpledialog`
-- `tkinter.tix`
-- `tkinter.ttk`
-- `tkinter.widgets`
-- `token`
-- `tokenize`
-- `tomllib`
 - `tomllib._parser`
 - `tomllib._re`
 - `tomllib._types`
-- `trace`
-- `traceback`
-- `tracemalloc`
-- `tty`
 - `turtle`
 - `turtledemo`
 - `turtledemo.__main__`
@@ -939,46 +991,23 @@
 - `turtledemo.tree`
 - `turtledemo.two_canvases`
 - `turtledemo.yinyang`
-- `typing`
-- `typing_extensions`
-- `unicodedata`
-- `unittest`
 - `unittest.__main__`
 - `unittest._log`
-- `unittest.async_case`
 - `unittest.case`
 - `unittest.loader`
 - `unittest.main`
-- `unittest.mock`
 - `unittest.result`
 - `unittest.runner`
-- `unittest.signals`
 - `unittest.suite`
 - `unittest.util`
-- `urllib`
-- `urllib.error`
-- `urllib.parse`
-- `urllib.request`
-- `urllib.response`
-- `urllib.robotparser`
 - `uu`
-- `uuid`
-- `venv`
 - `venv.__main__`
-- `warnings`
-- `wave`
-- `webbrowser`
 - `winreg`
 - `winsound`
-- `wsgiref`
 - `wsgiref.handlers`
-- `wsgiref.headers`
-- `wsgiref.simple_server`
 - `wsgiref.types`
-- `wsgiref.util`
 - `wsgiref.validate`
 - `xdrlib`
-- `xml`
 - `xml.dom`
 - `xml.dom.NodeFilter`
 - `xml.dom.domreg`
@@ -987,11 +1016,6 @@
 - `xml.dom.minidom`
 - `xml.dom.pulldom`
 - `xml.dom.xmlbuilder`
-- `xml.etree`
-- `xml.etree.ElementInclude`
-- `xml.etree.ElementPath`
-- `xml.etree.ElementTree`
-- `xml.etree.cElementTree`
 - `xml.parsers`
 - `xml.parsers.expat`
 - `xml.sax`
@@ -1000,46 +1024,27 @@
 - `xml.sax.handler`
 - `xml.sax.saxutils`
 - `xml.sax.xmlreader`
-- `xmlrpc`
-- `xmlrpc.client`
-- `xmlrpc.server`
-- `zipapp`
-- `zipfile`
-- `zipfile.__main__`
-- `zipfile._path`
-- `zipfile._path.glob`
-- `zipimport`
-- `zlib`
-- `zoneinfo`
 - `zoneinfo._common`
 - `zoneinfo._tzpath`
 - `zoneinfo._zoneinfo`
 
-### Intrinsic-owned support fragments and forwarding facades
-- `_pyio_text`
-- `_weakrefset`
-
 ### Fail-closed policy-gate modules
-
-### Probe-only modules (thin wrappers + policy gate only)
-
-### Python-only modules (intrinsic missing)
 
 ## Core Lane Gate
 - Required lane: `tests/differential/basic/CORE_TESTS.txt` (import closure).
-- Gate rule: core-lane imports must be intrinsic-implemented (`intrinsic-backed`, `intrinsic-partial`, or `intrinsic-support`) or an explicitly allowlisted fail-closed `policy-gate`, with zero `probe-only` and zero `python-only` modules.
+- Gate rule: by default the core-lane import closure must be implemented (`intrinsic-backed`, `intrinsic-partial`, `intrinsic-support` or `python-compiled`), with zero `stub` and zero `policy-gate` modules; `--allow-status` narrows or widens the set.
 - Enforced by: `python3 tools/check_core_lane_lowering.py`.
 
 ## Bootstrap Gate
 - Strict roots: `builtins`, `sys`, `types`, `importlib`, `importlib.machinery`, `importlib.util`
-- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be intrinsic-implemented (`intrinsic-backed`, `intrinsic-partial`, or `intrinsic-support`); fail-closed `policy-gate` modules are not intrinsic implementations.
+- Gate rule: when strict roots are present, each strict root and its full transitive stdlib import closure must be implemented (`intrinsic-backed`, `intrinsic-partial`, `intrinsic-support` or `python-compiled`); a `stub` or `policy-gate` module implements nothing.
 - Required modules: `__future__`, `_abc`, `_collections_abc`, `_weakrefset`, `abc`, `collections.abc`, `copy`, `copyreg`, `dataclasses`, `keyword`, `linecache`, `re`, `reprlib`, `types`, `typing`, `warnings`, `weakref`
-- Gate rule: required bootstrap modules that are present must be intrinsic-implemented (`intrinsic-backed`, `intrinsic-partial`, or `intrinsic-support`); fail-closed `policy-gate` modules are not bootstrap support.
+- Gate rule: required bootstrap modules that are present must be implemented; a `stub` or `policy-gate` module is not bootstrap support.
 
 ## Critical Strict-Import Gate
 - Optional strict mode: `python3 tools/check_stdlib_intrinsics.py --critical-allowlist`.
 - Critical roots: `re`, `socket`, `threading`, `asyncio`, `pathlib`, `time`, `traceback`, `sys`, `os`
-- Gate rule: for each listed root currently intrinsic-implemented, every transitive stdlib import in its closure must also be intrinsic-implemented.
+- Gate rule: each listed root must be implemented, and so must every transitive stdlib import in its closure.
 - Strict root rule: no optional intrinsic loaders and no try/except import fallback paths (applies to all listed roots, including `intrinsic-partial`).
 
 ## Intrinsic-Backed Fallback Gate
@@ -1055,21 +1060,21 @@
 - Enforced modules: `json`
 - Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
 
-## Zero Non-Intrinsic Gate
-- Global rule: stdlib classification must have zero `probe-only` modules and zero `python-only` modules.
-- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
+## Unread Intrinsic Gate
+- Global rule: every intrinsic a stdlib module requires must be read (see Policy). A discarded requirement or a private binding no module loads fails the gate; delete it.
+- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (every mode).
 
-## Intrinsic-Partial Ratchet Gate
-- Global rule: `intrinsic-partial` count must be less than or equal to the ratchet budget and trend to zero.
-- Ratchet source: `tools/stdlib_intrinsics_ratchet.json` (`max_intrinsic_partial`).
-- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
+## Ratchet Gate
+- Global rule: the `intrinsic-partial` and `stub` counts must each stay at or below their ratchet budget and trend to zero.
+- Ratchet source: `tools/stdlib_intrinsics_ratchet.json` (`max_intrinsic_partial`, `max_stub`).
+- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (every mode).
 
 ## Full-Coverage Attestation Rule
-- Global rule: any module/submodule not explicitly attested as full CPython 3.12+ API/PEP coverage is classified as `intrinsic-partial`.
+- Global rule: any intrinsic-reading module/submodule not explicitly attested as full CPython 3.12+ API/PEP coverage is classified as `intrinsic-partial`.
 - `intrinsic-support` modules are owned implementation fragments or proven pure forwarding facades of intrinsic implementations; they are not full-coverage attestations.
 - Attestation source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_FULLY_COVERED_MODULES`).
 - Full-coverage intrinsic contract source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_REQUIRED_INTRINSICS_BY_MODULE`).
-- Gate rule: each attested full-coverage module must stay `intrinsic-backed`, declare its required intrinsic set, and wire every declared intrinsic in-module.
+- Gate rule: each attested full-coverage module must stay `intrinsic-backed` or `python-compiled`, declare its required intrinsic set (empty for `python-compiled`), and read every declared intrinsic.
 - This rule applies to all stdlib modules and submodules.
 
 ## CPython Top-Level Union Gate
@@ -1087,4 +1092,5 @@
 - Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
 
 ## Backlog Focus
-- Replace remaining `python-only` stdlib modules with Rust intrinsics and remove Python implementations; see the audit lists above.
+- Lower each `stub` module, and bring each `intrinsic-partial` module to attested full coverage; see the audit lists above.
+- Move a `python-compiled` module to intrinsics only for a measured performance win or a host capability Python cannot reach.

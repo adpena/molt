@@ -24,8 +24,14 @@ STATUS_INTRINSIC = "intrinsic-backed"
 STATUS_INTRINSIC_PARTIAL = "intrinsic-partial"
 STATUS_INTRINSIC_SUPPORT = "intrinsic-support"
 STATUS_POLICY_GATE = "policy-gate"
-STATUS_PROBE_ONLY = "probe-only"
-STATUS_PYTHON_ONLY = "python-only"
+# Molt compiles the module's own Python source; it reads no intrinsic.
+STATUS_PYTHON_COMPILED = "python-compiled"
+# A generated stand-in for a module Molt has not lowered (tools/gen_stdlib_stubs.py).
+STATUS_STUB = "stub"
+# The canonical gap error every generated stub raises; the stub generator owns it.
+STDLIB_STUB_MARKER = (
+    "is not fully lowered yet; only an intrinsic-first stub is available."
+)
 
 INTRINSIC_CALL_NAMES = frozenset(
     {
@@ -41,7 +47,6 @@ INTRINSIC_CALL_NAMES = frozenset(
     }
 )
 LAZY_INTRINSIC_CALL_NAMES = frozenset({"_lazy_intrinsic"})
-STDLIB_PROBE_INTRINSIC = "molt_stdlib_probe"
 
 
 def is_fail_closed_import_policy_gate(text: str | bytes) -> bool:
@@ -85,6 +90,23 @@ def _call_name(node: ast.expr) -> str | None:
     return None
 
 
+def _required_intrinsic_name(node: ast.Call) -> str | None:
+    """The literal ``molt_*`` name a loader call requires, if it names one."""
+    if _call_name(node.func) not in INTRINSIC_CALL_NAMES | LAZY_INTRINSIC_CALL_NAMES:
+        return None
+    first: ast.expr | None = None
+    if node.args:
+        first = node.args[0]
+    else:
+        for keyword in node.keywords:
+            if keyword.arg == "name":
+                first = keyword.value
+                break
+    if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
+        return None
+    return first.value if first.value.startswith("molt_") else None
+
+
 def intrinsic_names_from_source(source: str | bytes) -> frozenset[str]:
     try:
         tree = ast.parse(source)
@@ -94,28 +116,12 @@ def intrinsic_names_from_source(source: str | bytes) -> frozenset[str]:
 
 
 def _intrinsic_names_from_tree(tree: ast.Module) -> frozenset[str]:
-
-    intrinsic_names: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        call_name = _call_name(node.func)
-        if call_name not in INTRINSIC_CALL_NAMES | LAZY_INTRINSIC_CALL_NAMES:
-            continue
-        first: ast.expr | None = None
-        if node.args:
-            first = node.args[0]
-        else:
-            for keyword in node.keywords:
-                if keyword.arg == "name":
-                    first = keyword.value
-                    break
-        if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
-            continue
-        name = first.value
-        if name.startswith("molt_"):
-            intrinsic_names.add(name)
-    return frozenset(intrinsic_names)
+    return frozenset(
+        name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (name := _required_intrinsic_name(node)) is not None
+    )
 
 
 def module_required_intrinsic_names(path: Path) -> frozenset[str]:
@@ -126,37 +132,163 @@ def module_required_intrinsic_names(path: Path) -> frozenset[str]:
     return intrinsic_names_from_source(source)
 
 
-def stdlib_module_intrinsic_status_from_source(
-    source: str | bytes, path_name: str
+@dataclass(frozen=True)
+class StdlibIntrinsicBinding:
+    """A private module-level name bound to an intrinsic, unread in its module."""
+
+    name: str
+    intrinsic: str
+    line: int
+
+
+@dataclass(frozen=True)
+class StdlibModuleIntrinsicUse:
+    """The intrinsics a module reads, and the requirements it never reads.
+
+    A module reads a requirement when it loads or exports (public name or
+    ``__all__`` entry) the module-level name bound to it, requires it inside a
+    function or class body, or consumes it in an expression. A requirement
+    whose value a statement discards is not a read, and neither is a private
+    module-level binding the module never loads. Another module can still
+    import such a binding by name, so classification decides it over the
+    whole graph.
+    """
+
+    used: frozenset[str]
+    unread_bindings: tuple[StdlibIntrinsicBinding, ...]
+    discarded: tuple[tuple[str, int], ...]
+
+
+def _module_all_names(tree: ast.Module) -> frozenset[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in node.targets
+        ):
+            value = node.value
+        elif (
+            isinstance(node, (ast.AnnAssign, ast.AugAssign))
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "__all__"
+        ):
+            value = node.value
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "__all__"
+        ):
+            value = ast.Tuple(elts=list(node.args), ctx=ast.Load())
+        if value is None:
+            continue
+        names.update(
+            item.value
+            for item in ast.walk(value)
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)
+        )
+    return frozenset(names)
+
+
+def _intrinsic_use_from_tree(tree: ast.Module) -> StdlibModuleIntrinsicUse:
+    parents: dict[ast.AST, ast.AST] = {}
+    loads: set[str] = set()
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            loads.add(node.id)
+    exported = _module_all_names(tree)
+
+    def at_module_scope(node: ast.AST) -> bool:
+        scope = parents.get(node)
+        while scope is not None:
+            if isinstance(
+                scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+            ):
+                return False
+            scope = parents.get(scope)
+        return True
+
+    used: set[str] = set()
+    unread: list[StdlibIntrinsicBinding] = []
+    discarded: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _required_intrinsic_name(node)
+        if name is None:
+            continue
+        parent = parents.get(node)
+        if isinstance(parent, ast.Expr):
+            discarded.append((name, node.lineno))
+            continue
+        if (
+            isinstance(parent, (ast.Assign, ast.AnnAssign))
+            and parent.value is node
+            and at_module_scope(parent)
+        ):
+            targets = (
+                parent.targets if isinstance(parent, ast.Assign) else [parent.target]
+            )
+            if all(isinstance(target, ast.Name) for target in targets):
+                bound = [cast(ast.Name, target).id for target in targets]
+                if any(
+                    binding in loads
+                    or not binding.startswith("_")
+                    or binding in exported
+                    for binding in bound
+                ):
+                    used.add(name)
+                else:
+                    unread.extend(
+                        StdlibIntrinsicBinding(binding, name, node.lineno)
+                        for binding in bound
+                    )
+                continue
+        used.add(name)
+    return StdlibModuleIntrinsicUse(
+        frozenset(used),
+        tuple(sorted(unread, key=lambda item: (item.line, item.name))),
+        tuple(sorted(discarded, key=lambda item: (item[1], item[0]))),
+    )
+
+
+def _is_generated_stub_tree(tree: ast.Module) -> bool:
+    """The generator's stub: a module ``__getattr__`` raising the gap error."""
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or node.name != "__getattr__":
+            continue
+        for raised in ast.walk(node):
+            if (
+                isinstance(raised, ast.Raise)
+                and isinstance(raised.exc, ast.Call)
+                and _call_name(raised.exc.func) == "RuntimeError"
+                and any(
+                    isinstance(arg, ast.Constant)
+                    and isinstance(arg.value, str)
+                    and STDLIB_STUB_MARKER in arg.value
+                    for arg in raised.exc.args
+                )
+            ):
+                return True
+    return False
+
+
+def _stdlib_module_intrinsic_status_from_tree(
+    tree: ast.Module, path_name: str, use: StdlibModuleIntrinsicUse
 ) -> str:
+    """The status a module's own source proves, before graph relationships."""
     if path_name == "_intrinsics.py":
         return STATUS_INTRINSIC
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return STATUS_PYTHON_ONLY
-    return _stdlib_module_intrinsic_status_from_tree(tree, path_name)
-
-
-def _stdlib_module_intrinsic_status_from_tree(tree: ast.Module, path_name: str) -> str:
-    if path_name == "_intrinsics.py":
+    if _is_generated_stub_tree(tree):
+        return STATUS_STUB
+    if use.used:
         return STATUS_INTRINSIC
-    intrinsic_names = _intrinsic_names_from_tree(tree)
-    if not intrinsic_names:
-        if _is_fail_closed_import_policy_gate_tree(tree):
-            return STATUS_POLICY_GATE
-        return STATUS_PYTHON_ONLY
-    if intrinsic_names == {STDLIB_PROBE_INTRINSIC}:
-        return STATUS_PROBE_ONLY
-    return STATUS_INTRINSIC
-
-
-def stdlib_module_intrinsic_status(path: Path) -> str:
-    try:
-        source = path.read_bytes()
-    except Exception:
-        return STATUS_PYTHON_ONLY
-    return stdlib_module_intrinsic_status_from_source(source, path.name)
+    if _is_fail_closed_import_policy_gate_tree(tree):
+        return STATUS_POLICY_GATE
+    return STATUS_PYTHON_COMPILED
 
 
 @dataclass(frozen=True)
@@ -196,14 +328,17 @@ class StdlibModuleImportEvidence:
     """Intrinsic relationships are evidence, not runtime graph admission.
 
     Only individually resolved sites contribute proven edges. Unresolved sites
-    remain explicit obligations and cannot promote a Python-only module or a
-    private support fragment through a guessed package or runtime catalog.
+    remain explicit obligations and cannot promote a compiled Python module or
+    a private support fragment through a guessed package or runtime catalog.
+    ``private_imports`` holds each resolved ``from owner import _name`` as
+    ``(owner, _name)``: the reads another module makes of a private binding.
     """
 
     source_path: Path
     proven_modules: frozenset[str]
     unresolved_sites: tuple[tuple[int, StaticImportRequest, StaticImportPlan], ...]
     facade: StdlibFacadeEvidence | None
+    private_imports: frozenset[tuple[str, str]]
 
 
 @dataclass(frozen=True)
@@ -212,12 +347,23 @@ class StdlibModuleIntrinsicFacts:
 
     status: str
     import_evidence: StdlibModuleImportEvidence
+    intrinsic_use: StdlibModuleIntrinsicUse
 
 
 @dataclass(frozen=True)
 class StdlibIntrinsicClassification:
+    """Graph-closed statuses, and the intrinsic reads that decided them.
+
+    ``used_intrinsics`` holds what each module reads, including private
+    bindings another module imports. ``unused_bindings`` and
+    ``discarded_requirements`` are requirements nothing reads.
+    """
+
     statuses: Mapping[str, str]
     import_evidence: Mapping[str, StdlibModuleImportEvidence]
+    used_intrinsics: Mapping[str, frozenset[str]]
+    unused_bindings: Mapping[str, tuple[StdlibIntrinsicBinding, ...]]
+    discarded_requirements: Mapping[str, tuple[tuple[str, int], ...]]
 
     def facades_payload(self) -> list[dict[str, object]]:
         return [
@@ -393,8 +539,9 @@ def stdlib_module_intrinsic_facts(
         if isinstance(source, bytes)
         else source.encode("utf-8", errors="surrogatepass")
     ).hexdigest()
+    use = _intrinsic_use_from_tree(tree)
     return StdlibModuleIntrinsicFacts(
-        _stdlib_module_intrinsic_status_from_tree(tree, path.name),
+        _stdlib_module_intrinsic_status_from_tree(tree, path.name, use),
         _stdlib_module_import_evidence_from_tree(
             module_name,
             path,
@@ -402,6 +549,7 @@ def stdlib_module_intrinsic_facts(
             source_digest=source_digest,
             target_python=target_python,
         ),
+        use,
     )
 
 
@@ -437,6 +585,7 @@ def _stdlib_module_import_evidence_from_tree(
     import_flow = bindings.module_import_flow
     facade_imports = _pure_facade_imports(tree)
     facade_bindings: list[StdlibFacadeBinding] = []
+    private_imports: set[tuple[str, str]] = set()
 
     def contexts_for(node: ast.AST) -> tuple[ModuleImportContext, ...]:
         contexts = tuple(
@@ -476,21 +625,31 @@ def _stdlib_module_import_evidence_from_tree(
                 ),
             ),
         )
-        if facade_imports is not None and node in facade_imports:
-            # Resolve the owner request itself. A fromlist candidate such as
-            # weakref.WeakSet is not evidence that WeakSet is an owner module.
-            owner_plan = plan_static_import_request(
-                StaticImportRequest.statement(node.module or "", level=node.level),
-                contexts_for(node),
-            )
-            owner = (
-                owner_plan.modules[0]
-                if len(owner_plan.modules) == 1
-                and not owner_plan.errors
-                and not owner_plan.requires_runtime
-                and not owner_plan.requires_runtime_execution
-                else None
-            )
+        is_facade_import = facade_imports is not None and node in facade_imports
+        private_names = [
+            alias.name
+            for alias in node.names
+            if alias.name.startswith("_") and alias.name != "*"
+        ]
+        if not is_facade_import and not private_names:
+            continue
+        # Resolve the owner request itself. A fromlist candidate such as
+        # weakref.WeakSet is not evidence that WeakSet is an owner module.
+        owner_plan = plan_static_import_request(
+            StaticImportRequest.statement(node.module or "", level=node.level),
+            contexts_for(node),
+        )
+        owner = (
+            owner_plan.modules[0]
+            if len(owner_plan.modules) == 1
+            and not owner_plan.errors
+            and not owner_plan.requires_runtime
+            and not owner_plan.requires_runtime_execution
+            else None
+        )
+        if owner is not None:
+            private_imports.update((owner, name) for name in private_names)
+        if is_facade_import:
             facade_bindings.extend(
                 StdlibFacadeBinding(
                     alias.asname or alias.name, owner, alias.name, node.lineno
@@ -506,6 +665,7 @@ def _stdlib_module_import_evidence_from_tree(
             if facade_imports is not None
             else None
         ),
+        frozenset(private_imports),
     )
 
 
@@ -552,12 +712,37 @@ def _is_intrinsic_status(status: str | None) -> bool:
 
 def _closed_intrinsic_statuses(
     module_graph: Mapping[str, Path],
-    statuses: Mapping[str, str],
-    *,
-    import_evidence: Mapping[str, StdlibModuleImportEvidence],
+    facts: Mapping[str, StdlibModuleIntrinsicFacts],
 ) -> StdlibIntrinsicClassification:
-    closed = dict(statuses)
-    evidence_by_module = dict(import_evidence)
+    closed = {name: fact.status for name, fact in facts.items()}
+    evidence_by_module = {name: fact.import_evidence for name, fact in facts.items()}
+    # A private binding its own module never loads is still read when another
+    # module imports it by name (asyncio submodules import the package's
+    # intrinsic bindings; collections imports _collections._count_elements).
+    imported_private: dict[str, set[str]] = {}
+    for evidence in evidence_by_module.values():
+        for owner, name in evidence.private_imports:
+            imported_private.setdefault(owner, set()).add(name)
+    used_intrinsics: dict[str, frozenset[str]] = {}
+    unused_bindings: dict[str, tuple[StdlibIntrinsicBinding, ...]] = {}
+    discarded: dict[str, tuple[tuple[str, int], ...]] = {}
+    for module_name, fact in facts.items():
+        use = fact.intrinsic_use
+        imported = imported_private.get(module_name, set())
+        used = set(use.used)
+        unused: list[StdlibIntrinsicBinding] = []
+        for binding in use.unread_bindings:
+            if binding.name in imported:
+                used.add(binding.intrinsic)
+            else:
+                unused.append(binding)
+        used_intrinsics[module_name] = frozenset(used)
+        if unused:
+            unused_bindings[module_name] = tuple(unused)
+        if use.discarded:
+            discarded[module_name] = use.discarded
+        if used and closed[module_name] == STATUS_PYTHON_COMPILED:
+            closed[module_name] = STATUS_INTRINSIC
     for module_name, evidence in evidence_by_module.items():
         facade = evidence.facade
         if facade is None:
@@ -591,7 +776,7 @@ def _closed_intrinsic_statuses(
         for module_name, imports in imports_by_module.items():
             if _is_intrinsic_status(closed.get(module_name)):
                 continue
-            if closed.get(module_name) != STATUS_PYTHON_ONLY:
+            if closed.get(module_name) != STATUS_PYTHON_COMPILED:
                 continue
             facade = evidence_by_module[module_name].facade
             if facade is not None:
@@ -636,7 +821,11 @@ def _closed_intrinsic_statuses(
                 closed[module_name] = STATUS_INTRINSIC_SUPPORT
                 changed = True
     return StdlibIntrinsicClassification(
-        MappingProxyType(closed), MappingProxyType(evidence_by_module)
+        MappingProxyType(closed),
+        MappingProxyType(evidence_by_module),
+        MappingProxyType(used_intrinsics),
+        MappingProxyType(unused_bindings),
+        MappingProxyType(discarded),
     )
 
 
@@ -657,8 +846,4 @@ def classify_stdlib_module_statuses(
         for module_name, path in module_graph.items()
         if path and path.suffix == ".py"
     }
-    return _closed_intrinsic_statuses(
-        module_graph,
-        {name: fact.status for name, fact in facts.items()},
-        import_evidence={name: fact.import_evidence for name, fact in facts.items()},
-    )
+    return _closed_intrinsic_statuses(module_graph, facts)
