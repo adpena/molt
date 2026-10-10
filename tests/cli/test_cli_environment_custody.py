@@ -191,10 +191,16 @@ def test_codegen_selection_projects_into_a_copy() -> None:
 
     assert base == {"MOLT_PORTABLE": "0", "MOLT_WASM_PROFILE": "full", "OTHER": "x"}
     # Unset optional fields keep the caller's value: MOLT_PORTABLE=0 still
-    # opts in to host-CPU code.
-    assert default == {**base, "MOLT_BACKEND": "cranelift"}
+    # opts in to host-CPU code. The backend's debug directory is always named.
+    debug_dir = default["MOLT_DEBUG_ARTIFACT_DIR"]
+    assert default == {
+        **base,
+        "MOLT_BACKEND": "cranelift",
+        "MOLT_DEBUG_ARTIFACT_DIR": debug_dir,
+    }
     assert chosen == {
         "MOLT_BACKEND": "llvm",
+        "MOLT_DEBUG_ARTIFACT_DIR": debug_dir,
         "MOLT_PORTABLE": "1",
         "MOLT_WASM_PROFILE": "pure",
         "MOLT_TYPE_GATE": "1",
@@ -232,6 +238,9 @@ def test_daemon_requests_carry_the_selection_not_the_process_environment(
     # carry them, or a warm daemon falls back to Cranelift.
     assert (env["MOLT_BACKEND"], env["MOLT_WASM_PROFILE"]) == ("llvm", "pure")
     assert "MOLT_BACKEND" not in os.environ
+    # The daemon writes debug artifacts where the CLI says (HF-111).
+    assert Path(env["MOLT_DEBUG_ARTIFACT_DIR"]).is_absolute()
+    assert "MOLT_EXT_ROOT" not in env
 
 
 def test_luau_layout_leaves_the_chunk_size_to_the_frontend(
