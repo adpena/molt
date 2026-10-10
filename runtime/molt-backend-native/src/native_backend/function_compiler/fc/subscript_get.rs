@@ -138,9 +138,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                     {
                         builder.use_var(var)
                     } else {
-                        let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
-                        let shifted = builder.ins().ishl_imm(masked, 16);
-                        let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                        let obj_ptr = unbox_ptr_value(builder, *obj);
                         let storage_ptr =
                             builder
                                 .ins()
@@ -182,9 +180,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                         builder.use_var(var)
                     } else {
                         // Len not cached yet (data was cached in a prior op).
-                        let masked = builder.ins().band_imm(*obj, POINTER_MASK as i64);
-                        let shifted = builder.ins().ishl_imm(masked, 16);
-                        let obj_ptr = builder.ins().sshr_imm(shifted, 16);
+                        let obj_ptr = unbox_ptr_value(builder, *obj);
                         let storage_ptr =
                             builder
                                 .ins()

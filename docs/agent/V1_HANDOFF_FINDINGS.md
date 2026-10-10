@@ -57,7 +57,7 @@ hash test; macOS reports two raw-child-stream timeout failures; WASM reports a
 observer parity failure. These remain assigned to their existing release
 obligations. The current integration does not claim to close those failures.
 
-The successor repairs the import/sequence/dictionary allocation-denial fixtures
+The successor landed at `df5226c5f` and repairs the import/sequence/dictionary allocation-denial fixtures
 through the real emergency C-API channel. All three changed tests pass in
 independent Linux/aarch64 dev-fast micro-runtime processes, as does the sparse
 dictionary snapshot ownership control. Native C build custody is now declared
@@ -81,8 +81,13 @@ descendants: WASM backend, pass, and ownership-contract cohorts pass 305, 946,
 and 286 tests respectively. The full partition still fails because
 `object::accessors::tests::frame_storage_collects_inline_and_dictionary_cycles_before_scope_exit`
 segfaults. A fresh-process exact replay reproduces that crash without an RSS
-violation. This is a runtime ownership/GC exit blocker, not a green runtime
-qualification; the sealed image and failure evidence are retained for diagnosis.
+violation. Exact-image fault tracing locates the crash before collection: native
+pointer decoding sign-extends a valid Linux/AArch64 stack address whose bit 47
+is set. The runtime's decoder and six native-codegen sites share this defect.
+The unsigned 48-bit address correction, all-profile wide-address rejection,
+complete native consumer migration and incompatible-artifact ABI witness update
+are under qualification. The sealed failing image and fault evidence remain
+retained; the broad runtime partition is not yet qualified.
 Main CI `38060603040` also reports macOS runtime lifecycle cascades. Seven serial
 lifecycle children pass, but unnamed-worker teardown panics leave the parallel
 runtime failure's cause unresolved. Neither result qualifies the preserved GC,

@@ -130,7 +130,7 @@ impl SimpleBackend {
                         Self::import_runtime_func_id_split(module, import_ids, MOLT_INC_REF_OBJ);
                     let local_inc_ref_obj =
                         module.declare_func_in_func(inc_ref_obj_callee, builder.func);
-                    let task_ptr = unbox_ptr_value(&mut builder, task_obj, &nbc);
+                    let task_ptr = unbox_ptr_value(&mut builder, task_obj);
 
                     let mut offset = layout.payload_base_offset(GENERATOR_CONTROL_BYTES);
                     if has_closure {
