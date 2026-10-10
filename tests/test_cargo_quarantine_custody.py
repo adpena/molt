@@ -6,6 +6,7 @@ passes are not native credit. Darwin filesystem recovery still defers unknown.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from pathlib import Path
@@ -1835,17 +1836,15 @@ def test_darwin_native_argv_decoder_preserves_boundaries_and_raw_bytes():
         return 0
 
     def unused(*_args: object) -> int:
-        raise AssertionError("argv decoding must not enumerate or size processes")
+        raise AssertionError("argv decoding must not size processes")
 
     authority = model._DarwinProcessAuthority(
         ctypes=ctypes,
         libproc=None,
         libsystem=None,
-        proc_bsd_info_type=object,
         proc_task_info_type=object,
-        kinfo_proc_type=object,
-        proc_pidinfo=lambda *_args: 0,
-        proc_listallpids=unused,
+        kinfo=None,
+        proc_pidinfo=unused,
         sysctl=sysctl,
     )
     assert authority.argv(7) == tuple(
@@ -1866,15 +1865,23 @@ def test_darwin_sampler_to_cargo_observer_preserves_native_authority(
         101: ("/toolchain with 'quotes'/rustc", "-C", f"incremental={incremental}", ""),
     }
     metadata = {100: (1, 100, 1000, "cargo"), 101: (100, 101, 2000, "rustc")}
-    calls = {100: 0, 101: 0}
+    rows = {
+        pid: model._DarwinKernelProcRow(
+            status=2,
+            ppid=ppid,
+            pgid=pgid,
+            started_at_ns=born,
+            command=name,
+            uid=501,
+        )
+        for pid, (ppid, pgid, born, name) in metadata.items()
+    }
 
-    def birth(pid):
-        calls[pid] += 1
-        row = metadata[pid]
-        if calls[pid] == 2 and failure == (
-            "cargo_reuse" if pid == 100 else "rustc_reuse"
-        ):
-            return (*row[:2], row[2] + 1, row[3])
+    def later_row(pid):
+        # The kernel row read after argv: a reused pid names a later birth.
+        row = rows[pid]
+        if failure == ("cargo_reuse" if pid == 100 else "rustc_reuse"):
+            return dataclasses.replace(row, started_at_ns=row.started_at_ns + 1)
         return row
 
     class Authority:
@@ -1885,8 +1892,10 @@ def test_darwin_sampler_to_cargo_observer_preserves_native_authority(
 
     install_module_view(monkeypatch, "sys", sys, model, platform="darwin")
     monkeypatch.setattr(model, "_darwin_process_authority_cache", Authority())
-    monkeypatch.setattr(model, "_darwin_proc_metadata", birth)
-    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {100: 64, 101: 64})
+    monkeypatch.setattr(model, "_darwin_proc_table", lambda: dict(rows))
+    monkeypatch.setattr(model, "_darwin_proc_kernel_row", later_row)
+    monkeypatch.setattr(model, "_darwin_proc_resident_kb", lambda _pid: 64)
+    monkeypatch.setattr(model, "_darwin_viewer_uid", lambda: 501)
     samples = model.sample_processes_posix()
     identities = {pid: model.ProcessIdentity(row[2]) for pid, row in metadata.items()}
     observed = cargo.observe_owned_incremental_state(samples, set(samples), identities)
@@ -1899,11 +1908,13 @@ def test_darwin_sampler_to_cargo_observer_preserves_native_authority(
         assert cargo._samples_include_cargo_build_state(samples, set(samples))
     else:
         assert not observed
-        if failure == "denied":
-            assert all(
-                sample.argv == () and sample.started_at_ns is None
-                for sample in samples.values()
-            )
+        reused = {"cargo_reuse": 100, "rustc_reuse": 101}.get(failure)
+        # Argv that is denied, or read after the pid was reused, binds nothing;
+        # the sampled kernel identity stays the instance the table described.
+        for pid, sample in samples.items():
+            if failure == "denied" or pid == reused:
+                assert sample.argv == ()
+            assert sample.started_at_ns == metadata[pid][2]
 
 
 def test_linux_native_sampler_preserves_argv_without_flattening(tmp_path):

@@ -33,8 +33,6 @@ TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
 DEFAULT_COMMAND_PROFILE_MAX_MB = 16.0
 TERMINATED_PGID_TTL_SEC = 60.0
-DEFAULT_STALE_ORPHAN_SEC = process_sentinel.DEFAULT_STALE_ORPHAN_SEC
-DEFAULT_STALE_PYTEST_SEC = process_sentinel.DEFAULT_STALE_PYTEST_SEC
 HARD_RSS_LIMIT_GB = memory_guard.DEFAULT_HARD_MAX_RSS_GB - 0.001
 HARD_GLOBAL_RSS_LIMIT_GB = memory_guard.DEFAULT_HARD_MAX_GLOBAL_RSS_GB - 0.001
 HARD_CHILD_RLIMIT_GB = memory_guard.DEFAULT_HARD_MAX_CHILD_RLIMIT_GB - 0.001
@@ -1018,64 +1016,6 @@ def _append_guarded_command_profile(
     return path, None
 
 
-def _stale_orphan_cleanup_enabled(
-    prefix: str,
-    env: Mapping[str, str] | None,
-) -> bool:
-    source = _effective_env(env)
-    normalized = _normalize_prefix(prefix)
-    return _env_bool(
-        source,
-        [f"{normalized}_STALE_ORPHAN_CLEANUP", "MOLT_STALE_ORPHAN_CLEANUP"],
-        default=True,
-    )
-
-
-def _stale_seconds_from_env(
-    prefix: str,
-    env: Mapping[str, str] | None,
-    *,
-    suffix: str,
-    default: float,
-) -> float | None:
-    source = _effective_env(env)
-    normalized = _normalize_prefix(prefix)
-    value = _env_float_optional(
-        source,
-        [f"{normalized}_{suffix}", f"MOLT_{suffix}"],
-    )
-    if value is None:
-        value = default
-    return value if value > 0 else None
-
-
-def _stale_cleanup_message(
-    violation: process_sentinel.SentinelViolation,
-    *,
-    killed_at: str,
-) -> str:
-    age = (
-        "unknown"
-        if violation.oldest_elapsed_sec is None
-        else f"{violation.oldest_elapsed_sec:.0f}s"
-    )
-    stale_sec = (
-        "unknown" if violation.stale_sec is None else f"{violation.stale_sec:.0f}s"
-    )
-    return (
-        "memory_guard: stale orphaned Molt process group detected before "
-        "guarded command; terminated it to prevent accumulated build/test "
-        "processes: "
-        f"killed_at={killed_at} pgid={violation.pgid} "
-        f"age={age} threshold={stale_sec} reason={violation.reason} "
-        f"pids={','.join(str(pid) for pid in violation.pids)} "
-        f"command={violation.command}\n"
-        "memory_guard: next action: inspect the matching sentinel JSONL event "
-        "and prior logs; if the process was intentional, rerun it under an "
-        "active suite sentinel or raise MOLT_STALE_ORPHAN_SEC.\n"
-    )
-
-
 def _repo_sentinel_repro_payload(
     *,
     command: str,
@@ -1107,122 +1047,6 @@ def _repo_sentinel_repro_payload(
     return payload
 
 
-def _prune_stale_repo_processes(
-    *,
-    prefix: str,
-    env: Mapping[str, str] | None,
-    limits: HarnessMemoryLimits,
-) -> tuple[process_sentinel.SentinelViolation, ...]:
-    if not _stale_orphan_cleanup_enabled(prefix, env):
-        return ()
-    stale_orphan_sec = _stale_seconds_from_env(
-        prefix,
-        env,
-        suffix="STALE_ORPHAN_SEC",
-        default=DEFAULT_STALE_ORPHAN_SEC,
-    )
-    stale_pytest_sec = _stale_seconds_from_env(
-        prefix,
-        env,
-        suffix="STALE_PYTEST_SEC",
-        default=DEFAULT_STALE_PYTEST_SEC,
-    )
-    if stale_orphan_sec is None and stale_pytest_sec is None:
-        return ()
-    samples = memory_guard.sample_processes()
-    # CANONICAL: the preflight terminates ONLY under explicit guard custody, like
-    # the continuous sentinel (commit aa3133ed0 "Require explicit custody for repo
-    # sentinel termination"). A guard about to launch a command owns nothing yet,
-    # and repo-scope heuristics match parent shells, Codex/Claude helpers, and
-    # unrelated processes that merely reference the repo path on their command
-    # line (e.g. `powershell -Command "... python -m molt build <repo>..."`).
-    # Signalling those repeatedly killed the operator's Codex CLI parents. With an
-    # empty owned set there are ZERO kill candidates, so the preflight can never
-    # terminate a process it cannot prove it owns. Cross-session cleanup is
-    # operator-driven via `molt clean --kill-processes`.
-    groups = process_sentinel.process_groups(
-        samples,
-        root=_REPO_ROOT,
-        self_pid=os.getpid(),
-        self_pgid=memory_guard._safe_getpgrp(),
-        owned_pids=set(),
-    )
-    accounted_rss_kb = sum(group.total_rss_kb for group in groups)
-    current_limits = limits.current_memory_limits(
-        env,
-        accounted_rss_kb=accounted_rss_kb,
-    )
-    violations = process_sentinel.find_violations(
-        groups,
-        max_process_kb=sys.maxsize,
-        max_group_kb=sys.maxsize,
-        max_global_kb=sys.maxsize,
-        stale_orphan_sec=stale_orphan_sec,
-        stale_pytest_sec=stale_pytest_sec,
-    )
-    if not violations:
-        return ()
-    label = f"{_label_from_prefix(prefix)}_stale_preflight"
-    events_path = _artifact_root_from_env(env) / "memory_guard" / f"{label}.jsonl"
-    terminated: list[process_sentinel.SentinelViolation] = []
-    for violation in violations:
-        if not _claim_terminated_pgid(violation.pgid):
-            continue
-        killed_at = _utc_timestamp()
-        _append_jsonl(
-            events_path,
-            {
-                "event": "repo_process_guard_stale_preflight",
-                "label": label,
-                "violation": process_sentinel.violation_payload(violation),
-                "repro": _repo_sentinel_repro_payload(
-                    command=violation.command,
-                    cwd=_REPO_ROOT,
-                    env=env,
-                    limits=limits,
-                    resolved_limits=current_limits,
-                    label=label,
-                    accounted_rss_kb=accounted_rss_kb,
-                ),
-                "killed_at": killed_at,
-                "kill_scope": "repo",
-                "killer_label": label,
-                "killer_pid": os.getpid(),
-                "killer_session_id": os.environ.get("MOLT_SESSION_ID", ""),
-                "victim_pgid": violation.pgid,
-                "victim_command": violation.command,
-                "owner_match_reason": "stale_orphan_repo_scope",
-                "scope_to_current_tree": False,
-                "claim_status": "claimed",
-                "termination": {
-                    "attempted": True,
-                    "signal": memory_guard.term_signal_payload(),
-                    "fallback_signal": memory_guard.fallback_kill_signal_payload(),
-                    "grace_sec": 0.25,
-                    "rss_triggered": False,
-                },
-                "action": (
-                    "terminated stale orphaned repo-scoped Molt process group "
-                    "before launching a guarded command"
-                ),
-            },
-        )
-        print(
-            _stale_cleanup_message(violation, killed_at=killed_at),
-            file=sys.stderr,
-            end="",
-        )
-        process_sentinel.terminate_group(
-            violation.pgid,
-            grace=0.25,
-            expected_identities=process_sentinel.process_group_expected_identities(
-                violation
-            ),
-        )
-        terminated.append(violation)
-    return tuple(terminated)
-
-
 @contextlib.contextmanager
 def _auto_repo_sentinel(
     *,
@@ -1233,7 +1057,6 @@ def _auto_repo_sentinel(
     if _sentinel_active() or _external_repo_sentinel_active(prefix, env):
         yield None
         return
-    _prune_stale_repo_processes(prefix=prefix, env=env, limits=limits)
     label = f"{_label_from_prefix(prefix)}_command"
     with repo_process_sentinel(
         repo_root=_REPO_ROOT,
@@ -1918,7 +1741,10 @@ class RepoProcessMemorySentinel:
                         os.environ[suite_custody.LEASE_ENV] = str(
                             self._daemon_suite_lease.path
                         )
-            self._baseline_pgids = self._current_group_pgids()
+            if self._drain_on_exit:
+                # Only the exit drain reads the baseline. A sentinel that does
+                # not drain takes no census until its first scan.
+                self._baseline_pgids = self._current_group_pgids()
             self._thread = threading.Thread(
                 target=self._run,
                 name=f"{self._label}-memory-sentinel",
@@ -2182,8 +2008,11 @@ class RepoProcessMemorySentinel:
     ) -> list[process_sentinel.ProcessGroup]:
         self._sample_observed_at_ns = time.monotonic_ns()
         samples = memory_guard.sample_processes()
-        self._record_skipped_protected_groups(samples)
         owned_pids = self._owned_pids_from_samples(samples)
+        self._record_skipped_protected_groups(
+            samples,
+            within_pids=owned_pids if self._scope_to_current_tree else None,
+        )
         known_process_identities = dict(self._observed_process_identities)
         groups = process_sentinel.process_groups(
             samples,
@@ -2204,6 +2033,8 @@ class RepoProcessMemorySentinel:
     def _record_skipped_protected_groups(
         self,
         samples: Mapping[int, memory_guard.ProcessSample],
+        *,
+        within_pids: set[int] | None,
     ) -> None:
         protected = process_sentinel.skipped_protected_process_groups(
             samples,
@@ -2211,6 +2042,7 @@ class RepoProcessMemorySentinel:
             self_pid=os.getpid(),
             self_pgid=memory_guard._safe_getpgrp(),
             known_process_identities=self._observed_process_identities,
+            within_pids=within_pids,
         )
         for group in protected:
             if not any(
