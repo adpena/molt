@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 
@@ -51,8 +53,6 @@ def test_default_pathspecs_cover_canonical_local_artifact_roots() -> None:
         "target/",
         "target-*",
         "tmp/",
-        ".molt_cache/",
-        ".molt_cache-*/",
         ".uv-cache/",
         ".uv-cache-*/",
         "bin/",
@@ -92,6 +92,131 @@ def test_extra_pathspecs_reject_stateful_roots() -> None:
             assert "stateful data" in str(exc)
         else:
             raise AssertionError(f"{pathspec} should have been rejected")
+
+
+def test_cache_roots_leave_git_clean_for_the_cache_pruner() -> None:
+    module = _load_artifact_cleanup()
+    defaults = set(module.default_pathspecs())
+
+    assert {".molt_cache/", ".molt_cache-*/", "runtime/molt-backend/.molt_cache/"} == set(
+        module.cache_pathspecs()
+    )
+    assert not defaults & set(module.cache_pathspecs())
+    for pathspec in [
+        ".molt_cache",
+        ".molt_cache-session/home",
+        "runtime/molt-backend/.molt_cache/wasm",
+    ]:
+        try:
+            module.validate_extra_pathspecs([pathspec])
+        except ValueError as exc:
+            assert "cache state" in str(exc)
+        else:
+            raise AssertionError(f"{pathspec} should have been rejected")
+
+
+def test_extra_pathspecs_reject_ancestors_of_protected_data() -> None:
+    module = _load_artifact_cleanup()
+
+    # git clean removes a whole tree, so `runtime` would reach the fuzz corpus.
+    for pathspec in ["runtime", "runtime/molt-runtime/fuzz", "tests/e2e"]:
+        try:
+            module.validate_extra_pathspecs([pathspec])
+        except ValueError as exc:
+            assert "stateful data" in str(exc)
+        else:
+            raise AssertionError(f"{pathspec} should have been rejected")
+    module.validate_extra_pathspecs(["runtime/molt-backend/tmp", "tests/harness/reports"])
+
+
+def test_cache_prune_command_drives_the_real_pruner(tmp_path: Path) -> None:
+    module = _load_artifact_cleanup()
+    cache = tmp_path / "cache"
+    (cache / "stale-entry").mkdir(parents=True)
+    (cache / "stale-entry" / "blob").write_bytes(b"x" * 1024)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"MOLT_HOME", "MOLT_CACHE", "MOLT_BIN"}
+    }
+
+    dry = subprocess.run(
+        module.build_cache_prune_command(apply=False, cache_root=cache),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    assert "removed.entries=1" in dry.stdout
+    assert (cache / "stale-entry").is_dir()
+
+    subprocess.run(
+        module.build_cache_prune_command(apply=True, cache_root=cache),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
+    assert not (cache / "stale-entry").exists()
+
+
+def test_main_prunes_checkout_cache_roots_after_git_clean(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    module = _load_artifact_cleanup()
+    cache = tmp_path / ".molt_cache"
+    cache.mkdir()
+    calls: list[list[str]] = []
+
+    def fake_guarded_completed_process(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout="removed.entries=0\n", stderr="")
+
+    monkeypatch.setattr(module, "cache_roots", lambda _root: (cache,))
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    rc = module.main(["--json"])
+
+    assert rc == 0
+    assert calls == [
+        module.build_git_clean_command(
+            apply=False, pathspecs=module.default_pathspecs()
+        ),
+        module.build_cache_prune_command(apply=False, cache_root=cache),
+    ]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["cache_prunes"] == [
+        {"cache_root": str(cache), "returncode": 0, "report": ["removed.entries=0"]}
+    ]
+
+
+def test_main_reports_a_failed_cache_prune(monkeypatch, capsys, tmp_path) -> None:
+    module = _load_artifact_cleanup()
+    cache = tmp_path / ".molt_cache"
+    cache.mkdir()
+
+    def fake_guarded_completed_process(cmd, **_kwargs):
+        if "molt_cache_prune.py" in " ".join(cmd):
+            return SimpleNamespace(returncode=3, stdout="", stderr="lock busy\n")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(module, "cache_roots", lambda _root: (cache,))
+    monkeypatch.setattr(
+        module.harness_memory_guard,
+        "guarded_completed_process",
+        fake_guarded_completed_process,
+    )
+
+    rc = module.main(["--json"])
+
+    assert rc == 3
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "error"
+    assert payload["errors"] == [f"cache prune failed for {cache}: lock busy"]
 
 
 def test_extra_pathspecs_reject_nonliteral_paths() -> None:
@@ -179,7 +304,14 @@ def test_main_dry_run_invokes_git_clean_without_process_kill(monkeypatch) -> Non
     assert calls[0]["prefix"] == "MOLT_DEV_CLEANUP"
     assert calls[0]["cwd"] == module.REPO_ROOT
     assert calls[0]["capture_output"] is False
-    assert calls[0]["env"]["MOLT_EXT_ROOT"] == str(module.REPO_ROOT)
+    # Cleanup runs under the canonical harness environment; a developer layout
+    # may place the artifact root outside the checkout, so compare with it.
+    assert (
+        calls[0]["env"]["MOLT_EXT_ROOT"]
+        == module.harness_memory_guard.canonical_harness_env(
+            None, repo_root=module.REPO_ROOT
+        )["MOLT_EXT_ROOT"]
+    )
 
 
 def test_main_json_reports_git_clean_entries(monkeypatch, capsys) -> None:
