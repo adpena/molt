@@ -1506,7 +1506,7 @@ def test_run_molt_build_only_preserves_explicit_molt_cache(
     assert explicit_cache.is_dir()
 
 
-def test_diff_root_defaults_to_repo_tmp_diff_when_ext_root_unset(
+def test_diff_root_stays_out_of_the_checkout_when_ext_root_unset(
     tmp_path: Path,
 ) -> None:
     module = _load_diff_module()
@@ -1519,7 +1519,9 @@ def test_diff_root_defaults_to_repo_tmp_diff_when_ext_root_unset(
         environment=environment,
     )
 
-    assert layout.diff_root == repo_root / "tmp" / "diff"
+    assert layout.diff_root.name == "diff"
+    assert not layout.diff_root.is_relative_to(repo_root.resolve())
+    assert not layout.tmp_root.is_relative_to(repo_root.resolve())
     assert environment == {}
 
 
@@ -1535,7 +1537,7 @@ def test_diff_root_defaults_to_ext_tmp_diff_when_ext_root_set(
         environment=environment,
     )
 
-    assert layout.diff_root == ext_root / "tmp" / "diff"
+    assert layout.diff_root == ext_root.resolve() / "tmp" / "diff"
     assert environment == {"MOLT_EXT_ROOT": str(ext_root)}
 
 
@@ -1551,7 +1553,7 @@ def test_diff_tmp_root_defaults_to_ext_tmp_when_unset(
         environment=environment,
     )
 
-    assert layout.tmp_root == ext_root / "tmp"
+    assert layout.tmp_root == ext_root.resolve() / "tmp"
 
 
 @pytest.fixture

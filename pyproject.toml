@@ -124,7 +124,7 @@ backend_daemon = true
 prefer_external_artifacts = true
 
 # Scratch (TMPDIR, MOLT_DIFF_ROOT, MOLT_DIFF_TMPDIR, ...) is owned by
-# molt.custody_layout, which keeps it out of the checkout; it is not templated.
+# molt.dx.scratch_root, which keeps it out of the checkout; it is not templated.
 [tool.molt.dx.env]
 MOLT_EXT_ROOT = "{artifact_root}"
 MOLT_CACHE = "{artifact_root}/.molt_cache"

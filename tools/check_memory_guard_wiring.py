@@ -602,9 +602,9 @@ SHELL_WRAPPER_CONTRACTS: tuple[TokenContract, ...] = (
         (
             "tools/guarded_exec.py",
             "MOLT_TEST_SUITE",
-            'mktemp -d "$ROOT/tmp/molt-check-XXXXXX"',
+            'molt_scratch_dir "$ROOT" molt-check',
         ),
-        "compile-check shell wrapper must enter guarded_exec and repo-local tmp",
+        "compile-check shell wrapper must enter guarded_exec and run scratch",
     ),
     TokenContract(
         "tests/parity/run_parity.sh",

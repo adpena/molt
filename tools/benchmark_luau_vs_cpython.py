@@ -43,14 +43,13 @@ if str(SRC_ROOT) not in sys.path:
 
 import harness_memory_guard  # noqa: E402
 import perf_authority  # noqa: E402
-from molt.dx import development_artifact_env  # noqa: E402
+from molt.dx import configured_artifact_root, development_artifact_env  # noqa: E402
 
 
-def _artifact_root() -> Path:
-    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return REPO_ROOT
+def _results_root() -> Path:
+    """Reports go to the tracked bench/results unless the operator names a root."""
+    base = configured_artifact_root(os.environ, relative_to=REPO_ROOT) or REPO_ROOT
+    return base / "bench" / "results"
 
 
 GENERATOR_SOURCE = """\
@@ -469,7 +468,7 @@ examples:
         # Default: use the built-in zone generator
         bench_files = []  # handled below
 
-    artifact_root = _artifact_root() / "bench" / "results"
+    artifact_root = _results_root()
     with tempfile.TemporaryDirectory(prefix="molt_luau_bench_") as tmp_dir:
         results: list[dict] = []
 

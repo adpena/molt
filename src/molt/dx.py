@@ -31,8 +31,16 @@ from molt.path_custody import (
 
 TEST_PYTHONS = ["3.12", "3.13", "3.14"]
 GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV = "MOLT_CI_EPHEMERAL_CUSTODY_ROOT"
+# The operator's artifact root. Only this module reads it: every other
+# consumer asks `configured_artifact_root` or `artifact_root`.
+ARTIFACT_ROOT_ENV = "MOLT_EXT_ROOT"
+# Run scratch storage: `disk` (the default, `<artifact root>/tmp`), `memory`
+# (Linux `/dev/shm`), or the absolute path of a memory-backed directory the
+# operator mounted (a macOS RAM disk). Molt never creates or mounts one.
+SCRATCH_STORAGE_ENV = "MOLT_SCRATCH_STORAGE"
+SHARED_MEMORY_ROOT = Path("/dev/shm")
 CANONICAL_ROOT_ENV_KEYS = (
-    "MOLT_EXT_ROOT",
+    ARTIFACT_ROOT_ENV,
     "CARGO_TARGET_DIR",
     "MOLT_DIFF_CARGO_TARGET_DIR",
     "MOLT_TARGET_ROOT",
@@ -48,8 +56,8 @@ CANONICAL_ROOT_ENV_KEYS = (
     "TMP",
     "TEMP",
 )
-# Scratch roots derive from molt.custody_layout.scratch_root, which keeps them
-# out of the checkout. Project configuration must not restate them.
+# Scratch roots derive from `scratch_root`, which keeps them out of the
+# checkout. Project configuration must not restate them.
 SCRATCH_ENV_KEYS = (
     "MOLT_DIFF_ROOT",
     "MOLT_DIFF_TMPDIR",
@@ -179,6 +187,17 @@ def uv_project_env_component(value: str) -> str:
     return component or "default"
 
 
+def checkout_component(source_root: Path) -> str:
+    """A short, stable path component that names one checkout.
+
+    Per-checkout state under a shared family root (a uv environment, a pytest
+    cache) keys on it, so sibling worktrees never share it.
+    """
+    source = source_root.expanduser().resolve()
+    digest = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[:12]
+    return f"{uv_project_env_component(source.name)[:24]}-{digest}"
+
+
 def stable_uv_project_env_dir(
     artifact_root: Path,
     *,
@@ -186,14 +205,9 @@ def stable_uv_project_env_dir(
     python: str,
     source_root: Path,
 ) -> Path:
-    source = source_root.expanduser().resolve()
-    source_digest = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[
-        :12
-    ]
-    source_name = uv_project_env_component(source.name)[:24]
     name = (
         f"{uv_project_env_component(purpose)}__py{uv_project_env_component(python)}"
-        f"__src-{source_name}-{source_digest}"
+        f"__src-{checkout_component(source_root)}"
     )
     return (artifact_root.expanduser().resolve() / "uv-project-envs" / name).resolve()
 
@@ -1057,7 +1071,7 @@ def select_external_artifact_root(
 ) -> Path | None:
     """Return the first healthy external artifact root, or None for repo-local."""
 
-    if env.get("MOLT_EXT_ROOT"):
+    if env.get(ARTIFACT_ROOT_ENV, "").strip():
         return None
     require_external = _requires_external_artifacts(env)
     if (
@@ -1131,6 +1145,192 @@ def require_external_artifact_root(
             f"Checked candidates: {candidates}"
         )
     return None
+
+
+def configured_artifact_root_text(env: Mapping[str, str] | None = None) -> str | None:
+    """Return the operator's ``MOLT_EXT_ROOT`` text exactly, or None when unset.
+
+    For cache keys on hot paths: it touches no filesystem. The cached consumer
+    anchors and resolves the value once per distinct key.
+    """
+
+    view = os.environ if env is None else env
+    raw = view.get(ARTIFACT_ROOT_ENV, "").strip()
+    return raw or None
+
+
+def configured_artifact_root(
+    env: Mapping[str, str] | None = None, *, relative_to: Path
+) -> Path | None:
+    """Return the operator's ``MOLT_EXT_ROOT``, resolved, or None when unset.
+
+    A relative value is anchored at ``relative_to``. Consumers with their own
+    non-checkout default (the user cache home) use this; consumers that need
+    the canonical root use `artifact_root`.
+    """
+
+    view = os.environ if env is None else env
+    raw = view.get(ARTIFACT_ROOT_ENV, "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = Path(relative_to) / path
+    return path.resolve()
+
+
+def _select_artifact_root(
+    source_root: Path,
+    env: Mapping[str, str],
+    custody: CheckoutCustody,
+    *,
+    prefer_external: bool,
+    create_dirs: bool,
+) -> Path:
+    if custody.source_only:
+        return custody.custody_root
+    return (
+        require_external_artifact_root(
+            source_root,
+            env,
+            create_dirs=create_dirs,
+            prefer_external=prefer_external,
+        )
+        or custody.custody_root
+    )
+
+
+def artifact_root(
+    repo_root: Path,
+    env: Mapping[str, str] | None = None,
+    *,
+    prefer_external: bool = False,
+) -> Path:
+    """Return the artifact root `RunContext.canonical_env` exports for a run.
+
+    That is ``MOLT_EXT_ROOT`` when set, else a healthy external root when the
+    caller or the environment asks for one, else the checkout custody root:
+    the family root of a checkout family, the clone itself for a plain clone.
+    It creates nothing.
+    """
+
+    source = Path(repo_root).expanduser().resolve()
+    view = os.environ if env is None else env
+    root = configured_artifact_root(view, relative_to=source)
+    if root is None:
+        root = _select_artifact_root(
+            source,
+            view,
+            checkout_custody(source, view, require_exists=False),
+            prefer_external=prefer_external,
+            create_dirs=False,
+        )
+    _require_external_path(ARTIFACT_ROOT_ENV, root, view, repo_root=source)
+    return root
+
+
+@dataclass(frozen=True, slots=True)
+class ScratchStorage:
+    """Where run scratch lives: disk, or an operator's memory-backed root."""
+
+    memory_root: Path | None = None
+
+    @property
+    def mode(self) -> Literal["disk", "memory"]:
+        return "disk" if self.memory_root is None else "memory"
+
+
+def scratch_storage(env: Mapping[str, str] | None = None) -> ScratchStorage:
+    """Parse ``MOLT_SCRATCH_STORAGE`` into the selected scratch storage."""
+
+    view = os.environ if env is None else env
+    raw = view.get(SCRATCH_STORAGE_ENV, "").strip()
+    if raw in {"", "disk"}:
+        return ScratchStorage()
+    if raw == "memory":
+        if not SHARED_MEMORY_ROOT.is_dir():
+            raise DxConfigError(
+                f"{SCRATCH_STORAGE_ENV}=memory uses {SHARED_MEMORY_ROOT}, which this "
+                "host does not have. Mount a RAM disk and set "
+                f"{SCRATCH_STORAGE_ENV} to its absolute path, or use disk."
+            )
+        return ScratchStorage(SHARED_MEMORY_ROOT.resolve())
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise DxConfigError(
+            f"{SCRATCH_STORAGE_ENV} must be disk, memory, or the absolute path of "
+            f"a memory-backed directory; got {raw!r}"
+        )
+    if not path.is_dir():
+        raise DxConfigError(
+            f"{SCRATCH_STORAGE_ENV} names {path}, which is not a directory. Molt "
+            "never creates or mounts a RAM disk; mount it first."
+        )
+    return ScratchStorage(path.resolve())
+
+
+def _scratch_root_for(
+    artifact: Path, source_root: Path, env: Mapping[str, str]
+) -> Path:
+    storage = scratch_storage(env)
+    if storage.memory_root is not None and host_path_is_within(
+        storage.memory_root, source_root
+    ):
+        raise DxConfigError(
+            f"{SCRATCH_STORAGE_ENV} must be outside the checkout: {storage.memory_root}"
+        )
+    return custody_layout.scratch_root(
+        artifact, source_root, memory_root=storage.memory_root
+    )
+
+
+def scratch_root(repo_root: Path, env: Mapping[str, str] | None = None) -> Path:
+    """Return the run scratch root for a checkout, never inside it.
+
+    Disk storage puts scratch at ``<artifact root>/tmp``; memory storage puts
+    it under the operator's memory-backed root. `RunContext.canonical_env`
+    exports the same root as ``TMPDIR``.
+    """
+
+    source = Path(repo_root).expanduser().resolve()
+    view = os.environ if env is None else env
+    return _scratch_root_for(artifact_root(source, view), source, view)
+
+
+def _purpose_parts(purpose: str) -> tuple[str, ...]:
+    parts = tuple(purpose.split("/"))
+    if not purpose or any(part in {"", ".", ".."} or "\\" in part for part in parts):
+        raise ValueError(f"scratch purpose must be a relative name: {purpose!r}")
+    return parts
+
+
+def scratch_dir(
+    repo_root: Path, purpose: str, env: Mapping[str, str] | None = None
+) -> Path:
+    """Return the scratch directory for one purpose, such as ``"bench"``.
+
+    ``purpose`` is a relative POSIX path of plain names. The directory follows
+    the selected scratch storage and is not created.
+    """
+
+    return scratch_root(repo_root, env).joinpath(*_purpose_parts(purpose))
+
+
+def control_state_dir(
+    repo_root: Path, purpose: str, env: Mapping[str, str] | None = None
+) -> Path:
+    """Return the directory for control state every process must agree on.
+
+    Locks, guard markers and build control stay in the artifact root's disk
+    scratch whatever scratch storage is selected, so a process with memory
+    scratch and one with disk scratch see the same locks and markers. The
+    directory is not created.
+    """
+
+    source = Path(repo_root).expanduser().resolve()
+    view = os.environ if env is None else env
+    disk_scratch = custody_layout.scratch_root(artifact_root(source, view), source)
+    return disk_scratch.joinpath(*_purpose_parts(purpose))
 
 
 def _backend_daemon_socket_root(env: Mapping[str, str]) -> Path:
@@ -1221,7 +1421,7 @@ def _ensure_sccache_wrapper(env: dict[str, str]) -> None:
 
 
 def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
-    artifact_root = Path(env["MOLT_EXT_ROOT"]).expanduser()
+    ext_root = Path(env[ARTIFACT_ROOT_ENV]).expanduser()
     env.setdefault(
         "MOLT_BACKEND_DAEMON_SOCKET_DIR",
         str(backend_daemon_socket_dir(repo_root, env)),
@@ -1231,12 +1431,12 @@ def _install_dx_defaults(repo_root: Path, env: dict[str, str]) -> None:
     # MOLT_USE_SCCACHE=1; cargo_execution also treats "auto" as off-on-Windows.
     env.setdefault("MOLT_USE_SCCACHE", "0" if os.name == "nt" else "1")
     env.setdefault("MOLT_DIFF_ALLOW_RUSTC_WRAPPER", "1")
-    env.setdefault("SCCACHE_DIR", str((artifact_root / ".sccache").resolve()))
+    env.setdefault("SCCACHE_DIR", str((ext_root / ".sccache").resolve()))
     env.setdefault("SCCACHE_CACHE_SIZE", DEFAULT_SCCACHE_CACHE_SIZE)
     env.setdefault("MOLT_CACHE_MAX_GB", DEFAULT_MOLT_CACHE_MAX_GB)
     env.setdefault("MOLT_CACHE_MAX_AGE_DAYS", DEFAULT_MOLT_CACHE_MAX_AGE_DAYS)
     _ensure_sccache_wrapper(env)
-    if _artifact_root_is_windows_exfat(artifact_root):
+    if _artifact_root_is_windows_exfat(ext_root):
         env.setdefault("UV_LINK_MODE", "copy")
 
 
@@ -1342,7 +1542,9 @@ class RunContext:
         explicit = env.get("UV_PROJECT_ENVIRONMENT", "").strip()
         if explicit:
             return self._resolve_env_path(explicit)
-        ext_root = self._resolve_env_path(env.get("MOLT_EXT_ROOT", str(self.root)))
+        ext_root = artifact_root(
+            self.root, env, prefer_external=self.prefer_external_artifacts
+        )
         return stable_uv_project_env_from_env(env, ext_root, self.root)
 
     def canonical_env(
@@ -1370,29 +1572,25 @@ class RunContext:
                         f"Use {GITHUB_ACTIONS_EPHEMERAL_ROOT_ENV} custody instead."
                     )
 
-        if "MOLT_EXT_ROOT" in forced or not env.get("MOLT_EXT_ROOT"):
-            if custody.source_only:
-                ext_root = custody.custody_root
-            else:
-                ext_root = (
-                    None
-                    if "MOLT_EXT_ROOT" in forced
-                    else require_external_artifact_root(
-                        self.root,
-                        env,
-                        create_dirs=create_dirs,
-                        prefer_external=self.prefer_external_artifacts,
-                    )
-                ) or custody.custody_root
+        if ARTIFACT_ROOT_ENV in forced:
+            ext_root = custody.custody_root
         else:
-            ext_root = self._resolve_env_path(env["MOLT_EXT_ROOT"])
+            ext_root = configured_artifact_root(
+                env, relative_to=self.root
+            ) or _select_artifact_root(
+                self.root,
+                env,
+                custody,
+                prefer_external=self.prefer_external_artifacts,
+                create_dirs=create_dirs,
+            )
         _require_external_path(
-            "MOLT_EXT_ROOT",
+            ARTIFACT_ROOT_ENV,
             ext_root,
             env,
             repo_root=self.root,
         )
-        env["MOLT_EXT_ROOT"] = str(ext_root)
+        env[ARTIFACT_ROOT_ENV] = str(ext_root)
 
         def install_default(key: str, value: Path | str) -> None:
             if key in forced or not env.get(key):
@@ -1430,9 +1628,9 @@ class RunContext:
         # it back to "0" wherever it actually enables sccache (mutually exclusive).
         install_default("CARGO_INCREMENTAL", "1")
         install_default("MOLT_CACHE", ext_root / ".molt_cache")
-        scratch_root = custody_layout.scratch_root(ext_root, self.root)
-        install_default("MOLT_DIFF_ROOT", scratch_root / "diff")
-        install_default("MOLT_DIFF_TMPDIR", scratch_root)
+        run_scratch = _scratch_root_for(ext_root, self.root, env)
+        install_default("MOLT_DIFF_ROOT", run_scratch / "diff")
+        install_default("MOLT_DIFF_TMPDIR", run_scratch)
         install_default("UV_CACHE_DIR", ext_root / ".uv-cache")
         install_default("UV_PROJECT_ENVIRONMENT", self.uv_project_env_dir(env))
         install_default("PIP_CACHE_DIR", ext_root / ".pip-cache")
@@ -1444,8 +1642,8 @@ class RunContext:
         raw_target_root = env.get("MOLT_TARGET_ROOT")
         if not raw_target_root:
             env["MOLT_TARGET_ROOT"] = str(default_toolchain_root)
-        install_default("PYTHONPYCACHEPREFIX", scratch_root / "pycache")
-        install_default("TMPDIR", scratch_root)
+        install_default("PYTHONPYCACHEPREFIX", run_scratch / "pycache")
+        install_default("TMPDIR", run_scratch)
         install_default("TMP", env["TMPDIR"])
         install_default("TEMP", env["TMPDIR"])
 
@@ -1572,11 +1770,12 @@ class DxProject:
             if not path.is_absolute():
                 path = self.root / path
             return path.resolve()
-        artifact_root = Path(env.get("MOLT_EXT_ROOT", str(self.root))).expanduser()
-        if not artifact_root.is_absolute():
-            artifact_root = self.root / artifact_root
-        artifact_root = artifact_root.resolve()
-        return stable_uv_project_env_from_env(env, artifact_root, self.root)
+        ext_root = artifact_root(
+            self.root,
+            env,
+            prefer_external=bool(self.load_config().get("prefer_external_artifacts")),
+        )
+        return stable_uv_project_env_from_env(env, ext_root, self.root)
 
     def project_python(self, env: Mapping[str, str] | None = None) -> Path:
         if env is not None:
@@ -1623,24 +1822,18 @@ class DxProject:
             env.pop(name, None)
         prefer_external = bool(dx.get("prefer_external_artifacts"))
         _drop_ambient_tmpdir(env, prefer_external=prefer_external)
-        if env.get("MOLT_EXT_ROOT"):
-            artifact_root = Path(env["MOLT_EXT_ROOT"]).expanduser()
-            if not artifact_root.is_absolute():
-                artifact_root = self.root / artifact_root
-            artifact_root = artifact_root.resolve()
-        else:
-            artifact_root = (
-                require_external_artifact_root(
-                    self.root,
-                    env,
-                    create_dirs=create_dirs,
-                    prefer_external=prefer_external,
-                )
-                or self.root
+        ext_root = configured_artifact_root(env, relative_to=self.root) or (
+            require_external_artifact_root(
+                self.root,
+                env,
+                create_dirs=create_dirs,
+                prefer_external=prefer_external,
             )
+            or self.root
+        )
         _require_external_path(
-            "MOLT_EXT_ROOT",
-            artifact_root,
+            ARTIFACT_ROOT_ENV,
+            ext_root,
             env,
             repo_root=self.root,
         )
@@ -1659,7 +1852,7 @@ class DxProject:
                     continue
                 value = raw_value.format(
                     root=str(self.root),
-                    artifact_root=str(artifact_root),
+                    artifact_root=str(ext_root),
                 )
                 if key in CANONICAL_ROOT_ENV_KEYS or key == "PYTHONPATH":
                     value = str(Path(value).expanduser().resolve())
@@ -1791,12 +1984,12 @@ def proof_scratch_root(repo_root: Path, env: Mapping[str, str] | None = None) ->
     """Where a tool run from ``repo_root`` may write its outputs.
 
     The proof queue gives every guarded run one fresh scratch root in
-    ``MOLT_PROOF_SCRATCH_ROOT``; a direct run uses the checkout custody root's
-    ``tmp``. Neither is under the source checkout, so a tool's outputs never
-    register as mutations of the inputs it is proven from.
+    ``MOLT_PROOF_SCRATCH_ROOT``; a direct run uses `scratch_root`. Neither is
+    under the source checkout, so a tool's outputs never register as
+    mutations of the inputs it is proven from.
     """
     source = os.environ if env is None else env
     scratch = str(source.get(PROOF_SCRATCH_ROOT_ENV, "")).strip()
     if scratch:
         return Path(scratch).expanduser().resolve()
-    return (checkout_custody(repo_root, env).custody_root / "tmp").resolve()
+    return scratch_root(repo_root, source)

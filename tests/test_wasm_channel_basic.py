@@ -1,8 +1,8 @@
 import tempfile
 from contextlib import contextmanager
-import os
 from pathlib import Path
 
+from molt.dx import scratch_root
 from tests.wasm_linked_runner import (
     build_wasm_linked,
     require_wasm_toolchain,
@@ -11,22 +11,18 @@ from tests.wasm_linked_runner import (
 
 
 @contextmanager
-def _work_dir(tmp_path: Path):
-    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if configured:
-        base = Path(configured).expanduser() / "tmp"
-        base.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=base, prefix="molt_wasm_channel_") as td:
-            yield Path(td)
-        return
-    yield tmp_path
+def _work_dir(root: Path):
+    base = scratch_root(root)
+    base.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=base, prefix="molt_wasm_channel_") as td:
+        yield Path(td)
 
 
-def test_wasm_channel_basic(tmp_path: Path) -> None:
+def test_wasm_channel_basic() -> None:
     require_wasm_toolchain()
 
     root = Path(__file__).resolve().parents[1]
-    with _work_dir(tmp_path) as work_dir:
+    with _work_dir(root) as work_dir:
         src = work_dir / "channel_basic.py"
         src.write_text(
             "from molt.concurrency import channel, _call_intrinsic\n"

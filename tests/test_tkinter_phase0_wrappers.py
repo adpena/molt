@@ -6,6 +6,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from molt.dx import scratch_dir
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
@@ -14,9 +16,7 @@ STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 def _run_probe(script: str) -> list[str]:
     rendered = script.replace("__STDLIB_ROOT__", repr(str(STDLIB_ROOT)))
     env = os.environ.copy()
-    tmp_root = (
-        Path(os.environ.get("MOLT_EXT_ROOT", REPO_ROOT)) / "tmp" / "tkinter-probes"
-    )
+    tmp_root = scratch_dir(REPO_ROOT, "tkinter-probes")
     tmp_root.mkdir(parents=True, exist_ok=True)
     probe_path: Path | None = None
     try:

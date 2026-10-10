@@ -207,7 +207,9 @@ def test_demo_bench_main_wraps_scenarios_in_repo_sentinel(
 
     def fake_repo_process_sentinel(**kwargs):
         assert kwargs["repo_root"] == demo_bench.ROOT
-        assert kwargs["artifact_root"] == demo_bench.ROOT / "tmp" / "bench" / "demo"
+        demo_scratch = kwargs["artifact_root"]
+        assert demo_scratch.parts[-2:] == ("bench", "demo")
+        assert not demo_scratch.is_relative_to(demo_bench.ROOT.resolve())
         assert kwargs["label"] == "demo_bench"
         return FakeSentinel()
 

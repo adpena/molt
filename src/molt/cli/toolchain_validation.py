@@ -29,6 +29,7 @@ from molt.cli.project_roots import (
 )
 from molt.cli import wasm_toolchain
 from molt.compiler_distribution import installed_compiler
+from molt.dx import scratch_dir
 
 from molt.cli.setup_readiness import (
     _canonical_env_defaults,
@@ -538,7 +539,7 @@ def _planned_validate_steps(
                 "--profile",
                 build_profile,
                 "--output",
-                str(root / "tmp" / "validate" / "luau-smoke" / "hello.luau"),
+                str(scratch_dir(root, "validate/luau-smoke") / "hello.luau"),
             ],
             root,
             "correctness",

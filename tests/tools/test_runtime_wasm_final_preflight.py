@@ -32,8 +32,12 @@ def test_planned_pair_uses_production_control_root(
     project = tmp_path / "project"
     target = tmp_path / "disposable" / "target"
     custody = tmp_path / "custody"
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "ambient-wrong-root"))
-    monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "ambient-wrong-state"))
+    ambient_roots = {
+        "MOLT_EXT_ROOT": str(tmp_path / "ambient-wrong-root"),
+        "MOLT_BUILD_STATE_DIR": str(tmp_path / "ambient-wrong-state"),
+    }
+    for name, value in ambient_roots.items():
+        monkeypatch.setenv(name, value)
     build_env = {
         "MOLT_EXT_ROOT": str(custody),
         "CARGO_TARGET_DIR": str(target),
@@ -97,8 +101,8 @@ def test_planned_pair_uses_production_control_root(
     assert pair["cargo_profile"] == (
         "wasm-release" if requested == "release" else requested
     )
-    assert os.environ["MOLT_EXT_ROOT"] == str(tmp_path / "ambient-wrong-root")
-    assert os.environ["MOLT_BUILD_STATE_DIR"] == str(tmp_path / "ambient-wrong-state")
+    # The planned build never rewrites the caller's ambient roots.
+    assert {name: os.environ.get(name) for name in ambient_roots} == ambient_roots
     assert ("MOLT_BUILD_STATE_DIR" in pair["required_env"]) is explicit_state
 
 

@@ -2966,6 +2966,306 @@ def probe_stdlib_raw_intrinsic_names(root: Path) -> list[Finding]:
     return findings
 
 
+# --- scratch and artifact-root authority (HF-F103, HF-F104) ------------------
+
+# Python that places scratch or artifacts. molt.dx owns the artifact root
+# (configured_artifact_root, artifact_root) and run scratch (scratch_root,
+# scratch_dir, control_state_dir); molt.custody_layout owns the path rule.
+_SCRATCH_AUTHORITY_ROOTS = ("src", "tools", "tests", "bench", "drivers", "deploy")
+# The stdlib and differential programs are guest code Molt compiles, not
+# Molt tooling.
+_SCRATCH_AUTHORITY_SKIP_PREFIXES = ("src/molt/stdlib/", "tests/differential/")
+_SCRATCH_AUTHORITY_OWNER = "src/molt/dx.py"
+_ARTIFACT_ROOT_ENV = "MOLT_EXT_ROOT"
+_ARTIFACT_ROOT_CONSTANT = "ARTIFACT_ROOT_ENV"
+_TMP_SEGMENT_RE = re.compile(r"tmp(?:[/\\\\]|$)")
+# Module constants and helpers that name a checkout in tests; a test's own
+# fixture roots (tmp_path, ext_root, ...) are not checkouts.
+_CHECKOUT_ROOT_NAMES = frozenset(
+    {"ROOT", "_ROOT", "REPO", "REPO_ROOT", "_REPO_ROOT", "MOLT_DIR", "MOLT_ROOT"}
+)
+_CHECKOUT_ROOT_CALLS = frozenset({"_repo_root", "repo_root", "compiler_source_root"})
+# Justified joins of "tmp" onto a base that is not a checkout or artifact root.
+# Keyed by (path, unparsed base expression). Each entry must still match a
+# site, so a removed site retires its exception.
+_SCRATCH_AUTHORITY_EXCEPTIONS: dict[tuple[str, str], str] = {
+    ("tools/proof_queue_pkg/runner.py", "logs_root"): (
+        "the proof queue's own per-run log root"
+    ),
+    ("tools/proof_queue_pkg/cargo_output_layout.py", "self.payload_root"): (
+        "the proof queue's own per-run payload root"
+    ),
+    ("tools/proof_queue_pkg/guarded_execution.py", "target.parent"): (
+        "the proof supervisor's own per-run target custody"
+    ),
+    ("tools/compile_progress.py", "output_root"): (
+        "the measurement run's own output root, already under scratch"
+    ),
+    ("tools/throughput_matrix.py", "case_root"): (
+        "one measured case's own root, already under scratch"
+    ),
+    ("tools/bench_backend_incremental.py", "case_root"): (
+        "one measured case's own root, already under scratch"
+    ),
+    ("tests/molt_diff.py", "output_root"): (
+        "one differential case's own output root, already under scratch"
+    ),
+    ("drivers/falcon/browser_webgpu/bench_hostfed.py", "target_root"): (
+        "inputs read from the Falcon application's documented layout"
+    ),
+}
+
+
+def _is_tmp_literal(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and _TMP_SEGMENT_RE.match(node.value) is not None
+    )
+
+
+def _call_name(func: ast.expr) -> str:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
+
+
+def _is_checkout_root_expr(node: ast.expr) -> bool:
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        return _call_name(node) in _CHECKOUT_ROOT_NAMES
+    if isinstance(node, ast.Call):
+        return _call_name(node.func) in _CHECKOUT_ROOT_CALLS
+    return False
+
+
+def _dx_bindings(tree: ast.AST) -> tuple[frozenset[str], frozenset[str]]:
+    """Names bound to ``molt.dx.ARTIFACT_ROOT_ENV`` and to ``molt.dx`` itself."""
+    constants: set[str] = set()
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "molt.dx":
+            constants.update(
+                alias.asname or alias.name
+                for alias in node.names
+                if alias.name == _ARTIFACT_ROOT_CONSTANT
+            )
+        elif isinstance(node, ast.ImportFrom) and node.module == "molt":
+            modules.update(
+                alias.asname or alias.name for alias in node.names if alias.name == "dx"
+            )
+        elif isinstance(node, ast.Import):
+            modules.update(
+                alias.asname
+                for alias in node.names
+                if alias.name == "molt.dx" and alias.asname
+            )
+    return frozenset(constants), frozenset(modules)
+
+
+def _is_artifact_root_key(
+    node: ast.expr, dx_bindings: tuple[frozenset[str], frozenset[str]]
+) -> bool:
+    constants, modules = dx_bindings
+    if isinstance(node, ast.Constant):
+        return node.value == _ARTIFACT_ROOT_ENV
+    if isinstance(node, ast.Name):
+        return node.id in constants
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == _ARTIFACT_ROOT_CONSTANT
+        and isinstance(node.value, ast.Name)
+        and node.value.id in modules
+    )
+
+
+def _is_ambient_environment(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "environ"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "os"
+    )
+
+
+def _tmp_join_base(node: ast.AST) -> ast.expr | None:
+    """The base a ``tmp`` scratch path is joined onto, or None."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return node.left if _is_tmp_literal(node.right) else None
+    if not isinstance(node, ast.Call) or not node.args:
+        return None
+    name = _call_name(node.func)
+    if name == "joinpath" and isinstance(node.func, ast.Attribute):
+        return node.func.value if _is_tmp_literal(node.args[0]) else None
+    if (
+        name == "join"
+        and len(node.args) >= 2
+        and _is_tmp_literal(node.args[1])
+        and isinstance(node.func, ast.Attribute)
+        and _call_name(node.func.value) == "path"
+    ):
+        return node.args[0]
+    if name in {"Path", "PurePath"} and len(node.args) == 1:
+        # A bare relative "tmp" resolves against the working directory.
+        return node.func if _is_tmp_literal(node.args[0]) else None
+    return None
+
+
+def _artifact_root_read(
+    node: ast.AST,
+    *,
+    ambient_only: bool,
+    dx_bindings: tuple[frozenset[str], frozenset[str]],
+) -> bool:
+    if (
+        isinstance(node, ast.Call)
+        and node.args
+        and _is_artifact_root_key(node.args[0], dx_bindings)
+    ):
+        name = _call_name(node.func)
+        if name == "getenv":
+            return True
+        if name in {"get", "setdefault"} and isinstance(node.func, ast.Attribute):
+            return not ambient_only or _is_ambient_environment(node.func.value)
+        return False
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.ctx, ast.Load)
+        and _is_artifact_root_key(node.slice, dx_bindings)
+    ):
+        return not ambient_only or _is_ambient_environment(node.value)
+    return False
+
+
+def _scratch_authority_sites(
+    tree: ast.AST, *, test_module: bool
+) -> list[tuple[int, str, str]]:
+    """(line, kind, base) for each bypass of the scratch and root authority.
+
+    Producer code may not join ``tmp`` onto any base nor read the artifact
+    root itself. A test may build fixtures under its own roots, so only a
+    join onto a checkout constant or an ambient ``os.environ`` read counts.
+    """
+    sites: list[tuple[int, str, str]] = []
+    dx_bindings = _dx_bindings(tree)
+    for node in ast.walk(tree):
+        base = _tmp_join_base(node)
+        if base is not None and (not test_module or _is_checkout_root_expr(base)):
+            sites.append((node.lineno, "tmp-join", ast.unparse(base)))
+        elif _artifact_root_read(
+            node, ambient_only=test_module, dx_bindings=dx_bindings
+        ):
+            sites.append((node.lineno, "artifact-root-read", _ARTIFACT_ROOT_ENV))
+    return sorted(sites)
+
+
+def _iter_scratch_authority_files(root: Path) -> list[Path]:
+    scope = _source_scope(root)
+    if scope is not None:
+        candidates = [
+            root / rel
+            for rel in sorted(scope)
+            if rel.endswith(".py") and rel.split("/", 1)[0] in _SCRATCH_AUTHORITY_ROOTS
+        ]
+    else:
+        candidates = [
+            path
+            for sub in _SCRATCH_AUTHORITY_ROOTS
+            if (root / sub).is_dir()
+            for path in _iter_pruned_files(root / sub, root, (".py",))
+        ]
+    return sorted(
+        (
+            path
+            for path in candidates
+            if path.is_file()
+            and not _is_excluded(path, root)
+            and not path.relative_to(root)
+            .as_posix()
+            .startswith(_SCRATCH_AUTHORITY_SKIP_PREFIXES)
+        ),
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
+
+
+@_audit_probe
+def probe_scratch_authority_bypasses(root: Path) -> list[Finding]:
+    """Code that derives ``<root>/tmp`` scratch or reads ``MOLT_EXT_ROOT``.
+
+    Scratch comes from ``molt.dx.scratch_dir``/``scratch_root`` (never in the
+    checkout, on the selected storage) and the artifact root from
+    ``molt.dx.artifact_root``/``configured_artifact_root``. A second
+    derivation writes into a plain clone or duplicates the family root's
+    caches. Justified exceptions live in ``_SCRATCH_AUTHORITY_EXCEPTIONS``;
+    an exception that matches no site is itself a finding. The ratchet
+    baseline is zero.
+    """
+    findings: list[Finding] = []
+    matched: set[tuple[str, str]] = set()
+    for path in _iter_scratch_authority_files(root):
+        rel = path.relative_to(root).as_posix()
+        if rel == _SCRATCH_AUTHORITY_OWNER:
+            continue
+        try:
+            text = _source_text(path)
+        except OSError:
+            continue
+        if (
+            "tmp" not in text
+            and _ARTIFACT_ROOT_ENV not in text
+            and (_ARTIFACT_ROOT_CONSTANT not in text)
+        ):
+            continue
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        test_module = rel.startswith("tests/") and path.name.startswith("test_")
+        sites = []
+        for line, kind, base in _scratch_authority_sites(tree, test_module=test_module):
+            key = (rel, base)
+            if kind == "tmp-join" and key in _SCRATCH_AUTHORITY_EXCEPTIONS:
+                matched.add(key)
+                continue
+            sites.append((line, kind, base))
+        if not sites:
+            continue
+        findings.append(
+            Finding(
+                probe="scratch_authority_bypass",
+                severity="high",
+                title=f"{len(sites)} scratch or artifact-root derivations",
+                location=f"{rel}:{sites[0][0]}",
+                detail=", ".join(
+                    f"L{line} {kind} {base}" for line, kind, base in sites[:8]
+                ),
+                suggested_action="take scratch from molt.dx.scratch_dir or "
+                "scratch_root and the artifact root from molt.dx.artifact_root "
+                "or configured_artifact_root",
+                class_retired="scratch-authority-bypass",
+                metric=len(sites),
+            )
+        )
+    if _source_scope(root) is None:
+        for rel, base in sorted(set(_SCRATCH_AUTHORITY_EXCEPTIONS) - matched):
+            if not (root / rel).is_file():
+                continue
+            findings.append(
+                Finding(
+                    probe="scratch_authority_bypass",
+                    severity="medium",
+                    title="stale scratch-authority exception",
+                    location=rel,
+                    detail=f"no tmp join onto {base} remains",
+                    suggested_action="delete the exception entry",
+                    class_retired="scratch-authority-bypass",
+                    metric=1,
+                )
+            )
+    return findings
+
+
 PROBES = (
     probe_semantic_fallthroughs,
     probe_large_source_files,
@@ -2982,6 +3282,7 @@ PROBES = (
     probe_process_wide_test_patches,
     probe_build_failure_test_skips,
     probe_stdlib_raw_intrinsic_names,
+    probe_scratch_authority_bypasses,
 )
 
 
@@ -3067,6 +3368,7 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     raw_intrinsic_names = [
         f for f in findings if f.probe == "stdlib_raw_intrinsic_name"
     ]
+    scratch_bypasses = [f for f in findings if f.probe == "scratch_authority_bypass"]
     kitchen_sink_files = float(len(kitchen_sink))
     max_kitchen_sink_structural_score = float(
         max((f.metric for f in kitchen_sink), default=0)
@@ -3118,6 +3420,9 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         ),
         "stdlib_raw_intrinsic_bindings": float(
             sum(int(f.metric) for f in raw_intrinsic_names)
+        ),
+        "scratch_authority_bypasses": float(
+            sum(int(f.metric) for f in scratch_bypasses)
         ),
     }
 

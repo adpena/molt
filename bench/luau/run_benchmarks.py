@@ -26,13 +26,15 @@ REPO_ROOT = BENCH_DIR.parent.parent
 TOOLS_ROOT = REPO_ROOT / "tools"
 SRC_ROOT = REPO_ROOT / "src"
 RESULTS_DIR = REPO_ROOT / "bench" / "results" / "luau"
-TMP_ROOT = REPO_ROOT / "tmp" / "bench" / "luau"
 DEFAULT_RESULTS_PATH = RESULTS_DIR / "results.json"
 
 sys.path.insert(0, str(TOOLS_ROOT))
 sys.path.insert(0, str(SRC_ROOT))
 
 import harness_memory_guard  # noqa: E402
+from molt.dx import scratch_dir  # noqa: E402
+
+TMP_ROOT = scratch_dir(REPO_ROOT, "bench/luau")
 import perf_authority  # noqa: E402
 from molt.dx import development_artifact_env  # noqa: E402
 
@@ -260,7 +262,7 @@ def main():
 
     with harness_memory_guard.repo_process_sentinel(
         repo_root=REPO_ROOT,
-        artifact_root=REPO_ROOT / "tmp" / "bench",
+        artifact_root=scratch_dir(REPO_ROOT, "bench"),
         label="luau_run_benchmarks",
         limits=limits,
     ):

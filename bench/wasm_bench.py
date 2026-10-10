@@ -29,7 +29,6 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = ROOT / "tools"
 SRC_ROOT = ROOT / "src"
 BENCH_RESULTS_DIR = ROOT / "bench" / "results"
-BENCH_TMP_ROOT = ROOT / "tmp" / "bench" / "wasm"
 DEFAULT_OUTPUT_PATH = BENCH_RESULTS_DIR / "wasm_baseline.json"
 
 # Make tools/ importable for wasm_optimize
@@ -39,7 +38,9 @@ if str(SRC_ROOT) not in sys.path:
 
 import harness_memory_guard  # noqa: E402
 import perf_authority  # noqa: E402
-from molt.dx import development_artifact_env  # noqa: E402
+from molt.dx import development_artifact_env, scratch_dir  # noqa: E402
+
+BENCH_TMP_ROOT = scratch_dir(ROOT, "bench/wasm")
 
 DEFAULT_PROGRAMS: list[str] = [
     "examples/hello.py",
@@ -463,7 +464,7 @@ def main() -> None:
     print(f"Running WASM benchmarks ({len(programs)} programs, {args.samples} samples)")
     with harness_memory_guard.repo_process_sentinel(
         repo_root=ROOT,
-        artifact_root=ROOT / "tmp" / "bench",
+        artifact_root=scratch_dir(ROOT, "bench"),
         label="wasm_bench",
         limits=limits,
     ):

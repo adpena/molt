@@ -1,8 +1,8 @@
 import tempfile
 from contextlib import contextmanager
-import os
 from pathlib import Path
 
+from molt.dx import scratch_root
 from tests.wasm_linked_runner import (
     build_wasm_linked,
     require_wasm_toolchain,
@@ -12,16 +12,9 @@ from tests.wasm_linked_runner import (
 
 @contextmanager
 def _work_dir(root: Path):
-    configured = os.environ.get("MOLT_EXT_ROOT", "").strip()
-    if configured:
-        base = Path(configured).expanduser() / "tmp"
-        base.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=base, prefix="molt_wasm_time_") as td:
-            yield Path(td)
-        return
-    fallback = root / "build" / "wasm"
-    fallback.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=fallback, prefix="molt_wasm_time_") as td:
+    base = scratch_root(root)
+    base.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=base, prefix="molt_wasm_time_") as td:
         yield Path(td)
 
 

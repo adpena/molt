@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from molt.dx import scratch_dir
 from molt.wasm_artifact import (
     read_wasm_callable_table_attestation,
     wasm_callable_table_manifest_summary,
@@ -65,7 +66,7 @@ def _logs_root(project_root: Path) -> Path:
 
 
 def _tmp_root(project_root: Path) -> Path:
-    return project_root / "tmp" / "cloudflare-demo"
+    return scratch_dir(project_root, "cloudflare-demo")
 
 
 def _write_text(path: Path, text: str) -> None:
