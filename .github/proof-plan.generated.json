@@ -340,7 +340,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "a6111bdfbcdae4d5cb816a003d0ab7622f6100d450133f2e03564d492abc3f1f",
+  "authority_sha256": "306fa4f7d7343580e33e979af952400ecdd1c206262325bca02ce3cb31e71433",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -5897,10 +5897,14 @@
         "generated_artifact_custody",
         "--test",
         "ir_contract_validation",
+        "--test",
+        "generated_object_abi_link",
         "-p",
         "molt-artifact-publish",
         "-p",
         "molt-codegen-abi",
+        "-p",
+        "molt-lang-obj-model",
         "-p",
         "molt-ir",
         "-p",
@@ -5924,6 +5928,9 @@
         "--test-threads=1"
       ],
       "cache_domain": "cargo-workspace",
+      "cargo_native_c_units": [
+        "target"
+      ],
       "cell": "linux-x86_64-rust-native-dev",
       "dependencies": [],
       "family": "rust",
@@ -5937,6 +5944,7 @@
       "timeout_budget": "integration",
       "timeout_seconds": 600,
       "toolchains": [
+        "rustc",
         "cargo",
         "lune",
         "node",
@@ -6185,6 +6193,9 @@
         "native-backend llvm"
       ],
       "cache_domain": "llvm-cargo",
+      "cargo_native_c_units": [
+        "target"
+      ],
       "cell": "linux-x86_64-py312-llvm-release-fast",
       "dependencies": [],
       "family": "llvm",
@@ -6227,6 +6238,9 @@
         "retired_operations_are_rejected_at_wire_isolated_and_checked_backend_boundaries"
       ],
       "cache_domain": "llvm-cargo",
+      "cargo_native_c_units": [
+        "target"
+      ],
       "cell": "linux-x86_64-py312-llvm-release-fast",
       "dependencies": [
         "llvm.build.backend"
@@ -6263,6 +6277,9 @@
         "--no-fail-fast"
       ],
       "cache_domain": "llvm-cargo",
+      "cargo_native_c_units": [
+        "target"
+      ],
       "cell": "linux-x86_64-py312-linker-release-fast",
       "dependencies": [
         "llvm.build.backend"
@@ -6303,6 +6320,9 @@
         "warnings"
       ],
       "cache_domain": "llvm-cargo",
+      "cargo_native_c_units": [
+        "target"
+      ],
       "cell": "linux-x86_64-py312-llvm-release-fast",
       "dependencies": [
         "llvm.build.backend"

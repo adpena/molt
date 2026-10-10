@@ -2791,6 +2791,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "wasm-ld"]
 
 [[command]]
 id = "rust.test.compiler-authorities"
+cargo_native_c_units = ["target"]
 family = "rust"
 cell = "linux-x86_64-rust-native-dev"
 tiers = ["pre-push", "pr", "main"]
@@ -2804,8 +2805,10 @@ dependencies = []
 # Retain Cargo unit timings in the run-owned target for critical-path profiling;
 # process-custody event sequence numbers are not wall-clock timestamps.
 # Pass and WASM libtests belong to their own partition, not repeated here.
-argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "--test", "ir_contract_validation", "-p", "molt-artifact-publish", "-p", "molt-codegen-abi", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--nocapture", "--test-threads=1"]
-toolchains = ["cargo", "lune", "node", "wasm-ld"]
+# Object-model identity and split ABI witnesses share this compiler contract.
+# Its Criterion dev dependency builds alloca target C even for libtests.
+argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "--test", "ir_contract_validation", "--test", "generated_object_abi_link", "-p", "molt-artifact-publish", "-p", "molt-codegen-abi", "-p", "molt-lang-obj-model", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--nocapture", "--test-threads=1"]
+toolchains = ["rustc", "cargo", "lune", "node", "wasm-ld"]
 
 [[command]]
 id = "rust.test.ir-wasm-runtime-authorities"
@@ -2896,6 +2899,7 @@ toolchains = ["rustc", "cargo"]
 
 [[command]]
 id = "llvm.build.backend"
+cargo_native_c_units = ["target"]
 family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["pre-push", "pr", "main", "scheduled"]
@@ -2908,6 +2912,7 @@ toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]
 id = "llvm.test.lowering"
+cargo_native_c_units = ["target"]
 family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["pre-push", "pr", "main", "scheduled"]
@@ -2922,6 +2927,7 @@ toolchains = ["rustc", "cargo", "clang", "llvm-config"]
 
 [[command]]
 id = "linker.test.generated-object-admission"
+cargo_native_c_units = ["target"]
 family = "llvm"
 cell = "linux-x86_64-py312-linker-release-fast"
 tiers = ["pre-push", "pr", "main", "scheduled"]
@@ -2934,6 +2940,7 @@ toolchains = ["rustc", "cargo", "clang", "llvm-config", "ld.lld"]
 
 [[command]]
 id = "llvm.clippy.backend"
+cargo_native_c_units = ["target"]
 family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
 tiers = ["pre-push", "pr", "main", "scheduled"]
