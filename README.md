@@ -95,7 +95,9 @@ Binary bundles require explicit dependency setup with
 `molt setup --install-cli-dependencies`; normal launches do not install or repair
 dependencies. Platform wheels use their pip environment. `molt doctor` identifies
 the active installation, runtime availability, and competing PATH entries.
-Source contributors use the checkout instructions below.
+Source contributors use the checkout instructions below. The compiler host must
+use CPython 3.12+; Python 3.14 hosts require 3.14.1 or newer. See the
+[host and target requirements](packaging/INSTALL.md#requirements).
 
 - Package and installer paths: see [docs/getting-started.md](docs/getting-started.md)
 - Packaging details: [packaging/README.md](packaging/README.md)

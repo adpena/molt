@@ -19,9 +19,15 @@ from molt.environment_registry import (
     check_process_environment,
 )
 from molt.process_guard import GuardInfrastructureError, guard_infrastructure_exit_code
+from molt.target_python import require_frontend_python
 
 
 def main(build_fn: Callable[..., int] | None = None) -> int:
+    try:
+        require_frontend_python()
+    except RuntimeError as exc:
+        print(f"molt: error: {exc}", file=sys.stderr)
+        return 2
     try:
         check_process_environment()
     except EnvironmentRegistryError as exc:
