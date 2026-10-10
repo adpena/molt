@@ -61,3 +61,22 @@ print(events)
 mocked = unittest.mock.AsyncMock(return_value=7)
 print(asyncio.run(mocked(1)), mocked.await_count)
 mocked.assert_awaited_once_with(1)
+
+
+# assertLogs and assertNoLogs import unittest._log (and logging) lazily; the
+# program itself never imports logging.
+class LogContexts(unittest.TestCase):
+    def test_no_logs(self):
+        with self.assertNoLogs("molt.quiet"):
+            pass
+
+    def test_missing_logs(self):
+        with self.assertRaises(AssertionError) as caught:
+            with self.assertLogs("molt.probe", level="INFO"):
+                pass
+        print(caught.exception)
+
+
+log_result = unittest.TestResult()
+unittest.defaultTestLoader.loadTestsFromTestCase(LogContexts).run(log_result)
+print(log_result.testsRun, len(log_result.failures), len(log_result.errors))
