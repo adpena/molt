@@ -269,7 +269,9 @@ def test_cargo_environment_pins_only_a_configured_sccache_cache(tmp_path):
     assert applied == (SCCACHE_INCREMENTAL_POLICY, SCCACHE_SERVER_TEMP_POLICY)
     assert {pinned[name] for name in ("TMPDIR", "TMP", "TEMP")} == {str(server_temp)}
     assert scratch_env["TMPDIR"] == scratch  # the caller's mapping is unchanged
-    assert not server_temp.exists()  # computing an environment creates nothing
+    # Every process given this environment can use its temp dir: the runtime
+    # rustc probe runs sccache without passing a Cargo launch boundary.
+    assert server_temp.is_dir()
 
     unconfigured = {**scratch_env}
     del unconfigured["SCCACHE_DIR"]
