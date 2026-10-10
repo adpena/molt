@@ -9,18 +9,16 @@ from types import ModuleType
 import pytest
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SRC_ROOT = REPO_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
-CAPSULE_PATH = REPO_ROOT / "tools" / "analysis_capsule.py"
-
-from molt.compiler_analysis.schema import (  # noqa: E402
+from molt.compiler_analysis.schema import (
     ALLOCATION_OWNERSHIP_CARRIER,
     SCHEMA_VERSION,
     SOURCE_SITE_CARRIER,
     TIR_BOUNDARY_CARRIER,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CAPSULE_PATH = REPO_ROOT / "tools" / "analysis_capsule.py"
 
 
 def _load_capsule() -> ModuleType:
@@ -727,3 +725,77 @@ def test_analysis_capsule_cli_writes_json(tmp_path: Path) -> None:
     payload = json.loads(out_path.read_text(encoding="utf-8"))
     assert payload["label"] == "unit"
     assert payload["analysis_tools"]["binary_size_analysis"]["present"] is True
+
+
+def test_native_capsule_retains_byte_denominator_unknown_and_unavailable_extents():
+    capsule = _load_capsule()
+    attribution = {
+        "schema_version": 1,
+        "method": "disjoint-file-intervals-v1",
+        "denominator": "file_bytes",
+        "denominator_bytes": 100,
+        "file_backed_section_bytes": 40,
+        "outside_sections_bytes": 60,
+        "overlapping_section_bytes": 4,
+        "conflicting_symbol_bytes": 2,
+        "category_bytes": {"outside_sections": 60, "unknown": 40},
+    }
+    native = {
+        "format": "native",
+        "path": "image",
+        "total_bytes": 100,
+        "sha256": "a" * 64,
+        "object_format": "macho",
+        "universal": False,
+        "attribution": attribution,
+        "symbol_extent_status": "unavailable-macho-nlist",
+        "symbol_category_counts": {"unknown": 1},
+        "top_50_symbols": [{"name": {"bytes": [255]}, "declared_size": None}],
+        "native_sections": [{"offset": 10, "size": 40}],
+        "native_slices": [
+            {"offset": 0, "size": 100, "format": "macho", "machine": 0x100000C}
+        ],
+        "tools": [{"sha256": "b" * 64}],
+        "name_authorities": [{"path": "Cargo.toml", "sha256": "c" * 64}],
+    }
+    result = capsule._summarize_binary(native, None)["size"]
+    assert result["attribution"] == attribution
+    assert result["symbol_extent_status"] == "unavailable-macho-nlist"
+    assert result["top_symbols"][0]["name"] == {"bytes": [255]}
+    assert result["native_sections"] == native["native_sections"]
+    assert result["native_slices"] == native["native_slices"]
+    assert result["tools"] == native["tools"]
+    assert result["name_authorities"] == native["name_authorities"]
+    assert "category_totals" not in result
+
+
+def test_native_capsule_rejects_retired_symbol_sum_artifact():
+    capsule = _load_capsule()
+    with pytest.raises(capsule.CapsuleError, match="regenerate"):
+        capsule._summarize_binary(
+            {
+                "format": "native",
+                "total_bytes": 100,
+                "symbol_total": 200,
+                "category_totals": {"user_code": 200},
+            },
+            None,
+        )
+
+
+def test_capsule_native_direct_consumer_preserves_explicit_scanner(
+    tmp_path, monkeypatch
+):
+    capsule = _load_capsule()
+    image = tmp_path / "image"
+    image.write_bytes(b"\x7fELF")
+    selected = tmp_path / "molt-backend"
+    calls = []
+
+    def inspect(path, *, scanner=None):
+        calls.append((path, scanner))
+        return {"format": "native", "total_bytes": 4}
+
+    monkeypatch.setattr(capsule.binary_size_analysis, "analyse_native", inspect)
+    assert capsule.analyze_binary(image, scanner=selected)["total_bytes"] == 4
+    assert calls == [(image, selected)]

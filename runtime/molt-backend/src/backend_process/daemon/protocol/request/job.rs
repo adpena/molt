@@ -8,6 +8,7 @@ use super::model::DaemonJobRequest;
 impl DaemonJobRequest {
     /// Caller keys identify IR/codegen inputs; transport kind is independently
     /// owned here so even equal caller keys cannot replay a different artifact.
+    #[cfg(any(test, feature = "native-backend", feature = "wasm-backend"))]
     pub(crate) fn artifact_cache_key(&self, key: &str) -> String {
         let key = key.trim();
         if key.is_empty() {

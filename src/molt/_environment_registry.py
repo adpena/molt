@@ -1100,7 +1100,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_BACKEND_STDIN_REQUEST_LIMIT_BYTES",
       "owner": "runtime/molt-backend/src/backend_process/io_limits/limits.rs",
-      "summary": "Maximum request payload bytes a one-shot molt-backend process reads from stdin; values below 1024 or non-numeric use 536870912 (512 MiB).",
+      "summary": "Maximum one-shot backend stdin request bytes; also bounds native artifact inspection input and complete JSON response separately. Oversized inspection fails without truncation. Values below 1024 or non-numeric use 536870912 (512 MiB).",
       "values": []
     },
     {

@@ -108,7 +108,7 @@ ordering the artifact, and gating the result** — not re-measuring.
 | **Native link driver** | `native_link_plan.py` + `native_link_command.py::_build_native_link_plan`; finalization in `build_results.py::_finalize_native_link_candidate` | target-specific dead stripping, export policy, validation, stripping, and atomic publication | No measured order-file / ordered-section policy for page-in locality yet; profile through the canonical link benchmark before changing it (§3.2) |
 | **Order-file generator (STUB)** | `runtime/molt-passes/src/tir/bolt.rs` `generate_order_file` (lines 124–136) | Writes a *placeholder* order file ("# Add function symbols in hot-to-cold order"); BOLT/`perf2bolt` (Linux) + Instruments (macOS) scaffolding exists | **The stub never emits real symbols** — this arc derives the startup-hot symbol order and feeds it to the linker (§3.2) |
 | **BOLT post-link** | `tools/bolt_optimize.sh` + `native_toolchain.py::_run_bolt_post_link` (`--bolt`) | Optional BOLT reordering of an existing binary (re-codesigns via `_atomic_copy_file(codesign=True)`) | The *opt-in heavyweight* path; this arc adds the *always-on lightweight* static startup order (§3.2) and reuses BOLT's reorder as the heavy tier |
-| **Binary-size audit** | `tools/binary_size_analysis.py`, `tools/output_startup_size_audit.py` (fresh-path aware), `tools/wasm_size_audit.py` | Section/symbol size attribution; fresh-path startup shape; WASM raw/gzip/brotli | The size arc's instruments — this arc *consumes* their output (smaller image ⇒ less page-in) and feeds the convergence (§6) |
+| **Binary-size audit** | `tools/binary_size_analysis.py`, `tools/output_startup_size_audit.py` (fresh-path aware), `tools/wasm_size_audit.py` | Disjoint native file/section accounting with explicit unknowns and unavailable Mach-O symbol extents; fresh-path startup shape; WASM raw/gzip/brotli | The size arc's instruments — this arc *consumes* their output (smaller image ⇒ less page-in) and feeds the convergence (§6) |
 | **Runtime-init trace** | `runtime/molt-runtime/src/state/runtime_state.rs` `molt_runtime_init` + `trace_runtime_init` (lines 668–818) | The 12-phase `MOLT_TRACE_RUNTIME_INIT` ladder (0.127 ms total); eager capability load (security-required, not deferrable) | No micro-budget guard so a future phase can't silently regress init (§3.4); confirms NO snapshot is warranted |
 | **WASM launch (host/JS)** | `wasm/run_wasm.js` (`new WebAssembly.Module(buffer)` ~4552, `WebAssembly.instantiate(runtimeBuffer/wasmBuffer)` ~5584/5612); `deploy/cloudflare/worker.js` (serves 13.4 MB `falcon-ocr.wasm`) | Eager compile + instantiate from a fully-downloaded buffer | No `compileStreaming`/`instantiateStreaming`; no compiled-`Module` cache across cold invokes (§3.3) |
 | **Cargo ship profiles** | `Cargo.toml` `[profile.release-output]` (opt-`z`, ThinLTO, cgu=16, debug=0, panic=abort, strip) | Memory-bounded shipping policy; exact staticlib is 63.67 MB before final dead stripping | The page-in lever remains *post-compile layout* after the measured profile correction (§3.2) |
@@ -645,8 +645,10 @@ the size arc are *the same fix viewed from two ends*:
 Together they retire the class completely: size shrinks the tail, ordering bounds
 the head, so cold-start page-in is *both* small *and* bounded-as-it-grows. **Cross-arc
 dependency:** 62 Phase 2's `StartupOrder` consumes the size arc's section-attribution
-(`binary_size_analysis.py`) to know which symbols are on the cold path vs the cold
-tail; the size arc consumes 62's first-launch budget to know its page-in win is real.
+(`binary_size_analysis.py`) alongside measured cold-path traces. Name attribution
+alone cannot identify startup reachability, and Mach-O symbol extents remain
+unavailable; the size arc consumes 62's first-launch budget to know its page-in win
+is real.
 Neither blocks the other (Phase 1 codesign is independent of size; Phase 2 ordering
 benefits from but doesn't require the size arc).
 
@@ -849,3 +851,6 @@ signing (the one-time tax), and the two-axis budget (the gate). Once those exist
 the entire family of artifact-growth cold-start surprises is gone, and the arc
 converges with the binary-size ladder: shrink the tail, bound the head, gate the
 residual — cold-start dominance that *stays* dominant as molt grows.
+
+Native size attribution, comparison capabilities and regular-artifact inspection
+use the canonical [binary size inspection contract](61_binary_size_and_output_optimization.md).
