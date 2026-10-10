@@ -404,7 +404,7 @@ def test_tool_release_lanes_run_the_pinned_release_first_on_path(
 ) -> None:
     import os
 
-    from molt import tool_releases
+    from molt import dx, tool_releases
     from tools.proof_queue_pkg import guarded_execution as ge
 
     assert "wasm-tools" in ge.tool_release_toolchains(PLAN)
@@ -429,13 +429,15 @@ def test_tool_release_lanes_run_the_pinned_release_first_on_path(
             asset=next(iter(requested.assets.values())),
         )
 
-    class Custody:
-        pass
-
-    Custody.toolchain_root = toolchain_root
+    custody = dx.CheckoutCustody(
+        source_root=tmp_path,
+        custody_root=tmp_path,
+        toolchain_root=toolchain_root,
+        kind="durable",
+    )
     monkeypatch.setattr(tool_releases, "provision_tool", provision)
     monkeypatch.setattr(
-        "molt.dx.checkout_custody", lambda root, env=None, **_kwargs: Custody()
+        "molt.dx.checkout_custody", lambda root, env=None, **_kwargs: custody
     )
     ambient = os.pathsep.join([str(tmp_path / "cargo-bin"), str(tmp_path / "other")])
     env, prefixes = ge.prefer_tool_release_prefixes(
