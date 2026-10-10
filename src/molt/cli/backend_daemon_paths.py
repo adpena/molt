@@ -4,12 +4,12 @@ from collections.abc import Callable
 import hashlib
 import os
 from pathlib import Path
-import re
+
+from molt.dx import session_artifact_component
 
 
 _BACKEND_DAEMON_SOCKET_BASENAME = "moltbd.ffffffffffffffff.sock"
 _UNIX_SOCKET_PATH_MAX_BYTES = 104
-_SIDECAR_LABEL_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def _unix_socket_path_exceeds_limit(path: Path, *, os_name: str | None = None) -> bool:
@@ -45,10 +45,6 @@ def _backend_daemon_socket_path_error(socket_path: Path) -> str:
         "Use a shorter path or set MOLT_BACKEND_DAEMON_SOCKET_DIR to a short local "
         "directory such as /tmp/molt-backend-daemon."
     )
-
-
-def _backend_daemon_sidecar_label(raw: str) -> str:
-    return _SIDECAR_LABEL_SAFE_RE.sub("-", raw).strip("._-")[:32]
 
 
 def _backend_daemon_paths(
@@ -93,7 +89,9 @@ def _backend_daemon_paths(
         )
         sidecar_suffix = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
         socket_path = socket_dir / f"moltbd.{sidecar_suffix}.sock"
-        sidecar_label = _backend_daemon_sidecar_label(session_id)
+        # The session label is the session's artifact component, the same one
+        # that backend_daemon_custody matches when it scans one session's daemons.
+        sidecar_label = session_artifact_component(session_id) if session_id else ""
     daemon_root = build_state_root / "backend_daemon"
     sidecar_stem = f"molt-backend.{cargo_profile}"
     if sidecar_label:

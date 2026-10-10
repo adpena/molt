@@ -128,7 +128,11 @@ internal implementation symbols.
 Build-capacity admission is synchronous and read-only, owned by
 `src/molt/disk_capacity.py`. Queue admission, guarded Cargo setup, generation
 acquisition, and the actual native/WASM Cargo execution consumer use this same
-threshold and receipt schema. The default minimum is 25 GiB; an explicit
+threshold and receipt schema. Every other launcher of a compiling Cargo command
+(`tools/guarded_exec.py`, which runs proof-plan Cargo commands, the IR verifier
+and the tool launchers) calls `molt.cargo_execution_policy.admit_cargo_build`
+before Cargo starts; a test fails when a module spells a compiling Cargo argv
+without it. The default minimum is 25 GiB; an explicit
 `MOLT_DISK_GUARD_HIGH_WATER_GB` must be positive and finite. Unknown capacity,
 invalid policy, or insufficient space rejects before launch with the measured
 path/free/required bytes. Tests inject measurements; pytest and cleanup-disable

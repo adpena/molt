@@ -22,6 +22,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from molt.process_guard import run_completed_command  # noqa: E402
 
 
@@ -345,6 +346,7 @@ def _run_with_evidence(
 ):
     stdout_path = run_dir / f"{stem}.stdout"
     stderr_path = run_dir / f"{stem}.stderr"
+    admit_cargo_build(command, cwd=ROOT, env=env)
     result = run_completed_command(
         command,
         cwd=ROOT,

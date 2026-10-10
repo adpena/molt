@@ -31,6 +31,7 @@ from tools import cargo_test_binary_runner as runner  # noqa: E402
 from tools import run_cargo_test_truth as truth  # noqa: E402
 from tools import runtime_descendant_receipts as descendants  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
+from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
 from tools.libtest_results import accounting_problem  # noqa: E402
 
 COMMANDS = CommandExecutor.for_file(__file__)
@@ -365,6 +366,7 @@ def main(argv: list[str] | None = None) -> int:
             check=True,
             encoding="utf-8",
         )
+        admit_cargo_build(command, cwd=ROOT, env=None)
         build = COMMANDS.run(
             command,
             cwd=ROOT,

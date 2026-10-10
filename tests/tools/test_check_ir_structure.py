@@ -590,3 +590,48 @@ def test_verifier_request_deadline_closes_a_wedged_owned_child() -> None:
     finally:
         verifier.close()
     assert time.monotonic() - started < 2.0
+
+
+def test_verifier_build_refused_below_the_capacity_floor_starts_no_cargo(
+    tmp_path, monkeypatch
+) -> None:
+    # HF-101: the verifier built molt-ir with 22 GiB free against the 25 GiB
+    # build floor because nothing admitted capacity before its Cargo build.
+    from molt import disk_capacity
+    import tools.rust_ir_verifier as rust_ir_verifier
+
+    launched: list[list[str]] = []
+    measured: list[object] = []
+    free_bytes = disk_capacity.DEFAULT_MINIMUM_HEADROOM_BYTES - 1
+
+    class _RecordingCommands:
+        def run(self, command, **_kwargs):
+            launched.append(list(command))
+
+    def measure(path):
+        measured.append(path)
+        return free_bytes
+
+    monkeypatch.setattr(rust_ir_verifier, "_COMMANDS", _RecordingCommands())
+    monkeypatch.setattr(disk_capacity, "_default_measure_free_bytes", measure)
+    monkeypatch.delenv(disk_capacity.DISK_GUARD_HIGH_WATER_ENV, raising=False)
+    env = {"CARGO_TARGET_DIR": str(tmp_path / "verifier-target")}
+
+    with pytest.raises(disk_capacity.DiskCapacityError):
+        rust_ir_verifier.verifier_binary(env=env)
+
+    assert launched == []
+    assert measured == [tmp_path]  # the target's nearest existing directory
+
+    # Every caller sees the refusal itself, never an IR format diagnostic.
+    close_process_local_verifier()
+    monkeypatch.setattr(rust_ir_verifier, "_verifier_environment", lambda: dict(env))
+    with pytest.raises(disk_capacity.DiskCapacityError):
+        verify_tir({"functions": []})
+    assert launched == []
+
+    # Control: with capacity admitted, the same request reaches Cargo.
+    free_bytes = disk_capacity.DEFAULT_MINIMUM_HEADROOM_BYTES
+    with pytest.raises(FileNotFoundError):  # the recording Cargo builds nothing
+        rust_ir_verifier.verifier_binary(env=env)
+    assert launched == [["cargo", "build", "-p", "molt-ir", "--bin", "molt-ir-verify"]]

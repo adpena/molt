@@ -699,7 +699,7 @@ Read these first instead of rediscovering project structure:
   `<MOLT_EXT_ROOT>/target` directory so warm Cargo incremental state survives
   across commands and work sessions. A caller-pinned `MOLT_SESSION_ID`
   (`--session-id` or an explicitly exported value before resolving RunContext)
-  opts into `<MOLT_EXT_ROOT>/target/sessions/<MOLT_SESSION_ID>` for perf,
+  opts into `<MOLT_EXT_ROOT>/target/sessions/<session component>` for perf,
   benchmark, test-shard, or other deliberate isolation lanes. Explicit
   `CARGO_TARGET_DIR` remains an operator-owned override.
 - DX defaults use the checkout-family custody root on every OS. Select another artifact root explicitly with `MOLT_EXTERNAL_ARTIFACT_ROOTS` or `MOLT_EXT_ROOT`, and tune capacity admission with `MOLT_EXTERNAL_MIN_FREE_GB`. Explicit `MOLT_TARGET_ROOT` remains authoritative; otherwise toolchains use the checkout custody root, independently of artifact capacity. RunContext chooses `UV_LINK_MODE=copy` from the actual exFAT filesystem capability unless explicitly configured. Drive letters, volume labels, and cloud-brand directory names do not establish custody.

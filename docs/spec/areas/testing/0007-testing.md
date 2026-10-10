@@ -137,7 +137,9 @@ as generated programs; a pass on one host cannot establish the whole matrix.
 `molt-diff` is a specialized tool that ensures Molt semantics match CPython. The current harness lives in `tests/molt_diff.py` and builds + runs binaries via `molt build` with `--build-profile dev` (Molt dev profile maps to Cargo `dev-fast` by default).
 
 ### 1.0 Performance + Memory Controls
-- **Parallelism**: auto-selected based on CPU and available memory (default budget: 2 GB/worker).
+- **Parallelism**: auto-selected: the CPU count, capped so that the jobs' per-job budgets fit the
+  process-tree budget. Every job runs in one tree, which the suite sentinel and the guard that
+  wraps the suite both bound (`tools/resource_pressure.py` `scheduler_max_jobs`).
   - Override with `--jobs <n>` or `MOLT_DIFF_MAX_JOBS=<n>`.
   - Tune memory budget with `MOLT_DIFF_MEM_PER_JOB_GB=<n>` or `MOLT_DIFF_MEMORY_AVAILABLE_GB=<n>`.
 - **Development memory supervision**: repository pytest entry points and
