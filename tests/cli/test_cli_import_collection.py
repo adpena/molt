@@ -10,7 +10,6 @@ import io
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
 import tarfile
@@ -4165,37 +4164,45 @@ def test_write_namespace_module_avoids_rewriting_identical_content(
 def test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes(
     tmp_path: Path,
 ) -> None:
-    sleeper = tmp_path / "sleeper.py"
-    sleeper.write_text(
-        "import time\ntime.sleep(5.0)\n",
-        encoding="utf-8",
-    )
+    """A child that keeps the captured streams open neither blocks the run
+    nor outlives it: the guard ends it once the command exits.
+
+    The parent exits right after it starts the child, so no periodic sample
+    can see the child under its parent. The guard must still find it (POSIX:
+    the census of the command's process group before the reap; Windows: the
+    Job) and close the tree, or the run fails as an infrastructure failure.
+    """
+    from tools.memory_guard_core.process_model import process_command_argv
+
+    marker = f"inherited-pipes-{tmp_path.name}"
     child_pid_file = tmp_path / "sleeper.pid"
     parent = tmp_path / "parent.py"
     parent.write_text(
         "import pathlib, subprocess, sys\n"
-        f"child = subprocess.Popen([sys.executable, {str(sleeper)!r}], stdout=sys.stdout, stderr=sys.stderr)\n"
+        "child = subprocess.Popen(\n"
+        f"    [sys.executable, '-c', 'import time; time.sleep(5.0)', {marker!r}],\n"
+        "    stdout=sys.stdout,\n"
+        "    stderr=sys.stderr,\n"
+        ")\n"
         f"pathlib.Path({str(child_pid_file)!r}).write_text(str(child.pid), encoding='utf-8')\n"
         "print('parent-done', flush=True)\n",
         encoding="utf-8",
     )
 
-    try:
-        start = time.perf_counter()
-        result = COMMAND_RUNTIME._run_subprocess_captured_to_tempfiles(
-            [sys.executable, str(parent)],
-            timeout=2.0,
-        )
-        elapsed = time.perf_counter() - start
-    finally:
-        if child_pid_file.exists():
-            child_pid = int(child_pid_file.read_text(encoding="utf-8"))
-            with contextlib.suppress(OSError):
-                os.kill(child_pid, signal.SIGTERM)
+    start = time.perf_counter()
+    result = COMMAND_RUNTIME._run_subprocess_captured_to_tempfiles(
+        [sys.executable, str(parent)],
+        timeout=2.0,
+    )
+    elapsed = time.perf_counter() - start
+    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
 
     assert result.returncode == 0
     assert "parent-done" in cli._subprocess_output_text(result.stdout)
     assert elapsed < 2.5
+    assert result.descendants_closed is True
+    argv = process_command_argv(child_pid)
+    assert argv is None or marker not in argv
 
 
 def test_build_module_lowering_metadata_precomputes_module_flags(

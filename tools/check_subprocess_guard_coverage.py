@@ -166,6 +166,13 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "the raw POSIX child is the ChildExecutionClock custody subject",
     ),
     AllowedRawSubprocessUse(
+        "tests/test_memory_guard_tool.py",
+        "test_process_group_probe_observes_an_exited_group_until_its_reap",
+        "Popen",
+        "a `pass` session leader stays an unreaped zombie until the test's "
+        "own timer reaps it; the kernel's group answer is the oracle",
+    ),
+    AllowedRawSubprocessUse(
         "tests/test_child_clock_custody.py",
         "test_actual_posix_owned_signal_keeps_child_reserved_until_reap",
         "process.terminate",
@@ -586,6 +593,13 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tools/memory_guard_core/process_custody.py",
+        "reserved_group_exit_census",
+        "os.killpg",
+        "memory guard signal-0 probe of the exited, still-unreaped root's own "
+        "group before its exit census; not signal authority",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard_core/process_custody.py",
         "_send_pid_signal_action",
         "os.kill",
         "memory guard watched-root and escaped-PID signal primitive",
@@ -708,12 +722,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "_run_split_worker_live._terminate_worker_tree",
         "os.killpg",
         "interactive wrangler live-worker probe force-closes its own child group",
-    ),
-    AllowedRawSubprocessUse(
-        "tests/cli/test_cli_import_collection.py",
-        "test_run_subprocess_captured_to_tempfiles_does_not_block_on_inherited_pipes",
-        "os.kill",
-        "bounded test cleanup for the subprocess pipe-drain regression child",
     ),
     AllowedRawSubprocessUse(
         "tools/uv_project_env.py",

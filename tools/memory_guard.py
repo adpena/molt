@@ -5,6 +5,7 @@ import argparse
 from collections.abc import Callable, Mapping, Sequence
 import contextlib
 from dataclasses import replace
+from functools import partial
 import json
 import os
 import platform
@@ -255,7 +256,9 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     process_group_exited_or_unobservable as process_group_exited_or_unobservable,
     process_identity as process_identity,
     protected_process_group_ids as protected_process_group_ids,
+    reserved_group_exit_census as reserved_group_exit_census,
     signal_payload as signal_payload,
+    take_child_exit_census as take_child_exit_census,
     term_signal_payload as term_signal_payload,
     terminate_verified_pid as terminate_verified_pid,
     termination_report_dispositions as termination_report_dispositions,
@@ -1070,7 +1073,18 @@ def run_guarded(
         if type(proc).__module__ == "subprocess":
             from tools.memory_guard_core.process_custody import ChildExecutionClock
 
-            child_clock = ChildExecutionClock(proc, child_launch_started)
+            # The census before the reap is exact only while the root leads
+            # its own group; tracked-orphan cleanup is its sole consumer.
+            root_pgid = child_process.pgid
+            child_clock = ChildExecutionClock(
+                proc,
+                child_launch_started,
+                exit_census=(
+                    partial(reserved_group_exit_census, root_pgid, sampler)
+                    if cleanup_orphans and root_pgid is not None
+                    else None
+                ),
+            )
         if guard_job is not None:
             # Start execution at the actual resume syscall, after suspended
             # assignment and thread discovery. Kernel custody remains intact.
@@ -1953,6 +1967,7 @@ def run_guarded(
         stderr: str | bytes = "" if text else b""
         orphaned_process_groups: tuple[int, ...] = ()
         post_exit_samples: Mapping[int, ProcessSample] | None = None
+        root_exit_census: dict[str, object] = {}
         try:
             if proc.returncode is None and not guard_interrupted:
                 try:
@@ -1978,6 +1993,16 @@ def run_guarded(
                         terminate_direct_child_handle(
                             reason=("post_loop_unreaped_child_direct_child_handle")
                         )
+            exit_census, exit_census_error = take_child_exit_census(proc)
+            if exit_census is not None and not guard_interrupted:
+                # A child orphaned between two samples is reparented at its
+                # parent's exit; only the census of the root's still-reserved
+                # group puts it under custody.
+                root_exit_census["admitted_pids"] = sorted(
+                    tracker.admit_reserved_group_members(exit_census)
+                )
+            if exit_census_error is not None:
+                root_exit_census["error"] = exit_census_error
             if (
                 cleanup_orphans
                 and not guard_interrupted
@@ -2182,6 +2207,8 @@ def run_guarded(
                 final_samples=post_exit_samples,
             )
         )
+        if root_exit_census:
+            scratch_closure_evidence["root_exit_census"] = root_exit_census
         if suite_custody_transfers:
             scratch_closure_evidence["suite_custody_transfers"] = (
                 suite_custody_transfers
