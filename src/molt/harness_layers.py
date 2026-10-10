@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Callable
 
 from molt.cargo_execution_policy import admit_cargo_build
 from molt.cargo_workspace import workspace_package_names
-from molt.dx import development_artifact_env
+from molt.dx import development_artifact_env, scratch_dir
 from molt.harness_report import LayerResult, LayerStatus
 from molt.process_guard import raise_for_guard_outcome
 from molt.source_root import compiler_source_root
@@ -87,7 +87,7 @@ def harness_repo_sentinel(
     resolved_limits = limits or harness_memory_limits()
     with guard.repo_process_sentinel(
         repo_root=project_root,
-        artifact_root=project_root / "tmp" / "harness",
+        artifact_root=scratch_dir(project_root, "harness"),
         label="molt_harness",
         limits=resolved_limits,
     ) as sentinel:
@@ -746,7 +746,7 @@ def run_layer_conformance(config: HarnessConfig) -> LayerResult:
             details="runner not found",
         )
 
-    tmp_root = config.project_root / "tmp"
+    tmp_root = scratch_dir(config.project_root, "harness")
     tmp_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix="molt_harness_conformance_",

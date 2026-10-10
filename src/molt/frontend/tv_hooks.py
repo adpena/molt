@@ -17,8 +17,8 @@ Usage from inside the mid-end (without modifying ``__init__.py``)::
 
 The dump directory defaults to ``$MOLT_TV_DIR`` if set, otherwise a
 fresh ``tempfile.mkdtemp`` under the canonical temp root
-(``$MOLT_DIFF_TMPDIR``, ``$TMPDIR``, ``$MOLT_EXT_ROOT/tmp``, or the
-repo-local ``tmp/`` directory).  The path is printed to stderr on
+(``$MOLT_DIFF_TMPDIR``, ``$TMPDIR``, or ``molt.dx.scratch_root``, which is
+never inside the checkout).  The path is printed to stderr on
 first use so external tooling can discover it.
 
 File naming convention::
@@ -74,10 +74,9 @@ def _temp_root(env: Mapping[str, str] | None = None) -> Path:
     explicit = env_view.get("MOLT_DIFF_TMPDIR") or env_view.get("TMPDIR")
     if explicit:
         return Path(explicit).expanduser()
-    ext_root = env_view.get("MOLT_EXT_ROOT")
-    if ext_root:
-        return Path(ext_root).expanduser() / "tmp"
-    return _REPO_ROOT / "tmp"
+    from molt.dx import scratch_root
+
+    return scratch_root(_REPO_ROOT, env_view)
 
 
 def tv_active() -> bool:

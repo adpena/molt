@@ -92,7 +92,9 @@ def test_run_repl_uses_memory_guard_and_canonical_tmp(
     assert calls[1]["cwd"] == tmp_path
     assert calls[1]["memory_guard_prefix"] == repl.REPL_MEMORY_GUARD_PREFIX
     assert calls[1]["timeout"] == 12.5
-    assert snippet_paths[0].parent == tmp_path / "tmp" / "repl"
+    # Snippet source is scratch: never written into the user's directory.
+    assert snippet_paths[0].parent.name == "repl"
+    assert not snippet_paths[0].is_relative_to(tmp_path.resolve())
     assert not snippet_paths[0].exists()
 
 

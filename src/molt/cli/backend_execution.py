@@ -24,6 +24,7 @@ from molt.backend_executable_names import (
 )
 from molt.build_state_layout import build_state_root
 from molt.compiler_distribution import installed_compiler
+from molt.dx import configured_artifact_root, scratch_dir
 from molt.exact_json import canonical_json_sha256
 from molt.file_publication import is_link_like, resolve_owned_path
 from molt.toolchain_identity import executable_content_identity
@@ -497,11 +498,9 @@ def _sweep_orphaned_backend_daemon_locks(
     ):
         # An explicit override cannot be inferred for another session.
         sessions_roots = [project_root / "target" / "sessions"]
-        artifact_raw = os.environ.get("MOLT_EXT_ROOT", "").strip()
-        if artifact_raw:
-            artifact = Path(artifact_raw).expanduser()
-            if artifact.is_absolute():
-                sessions_roots.append(artifact / "target" / "sessions")
+        artifact = configured_artifact_root(os.environ, relative_to=project_root)
+        if artifact is not None:
+            sessions_roots.append(artifact / "target" / "sessions")
         for sessions_root in dict.fromkeys(sessions_roots):
             try:
                 session_dirs = (
@@ -908,7 +907,7 @@ def _write_backend_ir_json_file(path: Path, ir: Mapping[str, Any]) -> None:
 
 
 def _write_backend_ir_lease(project_root: Path, ir: Mapping[str, Any]) -> Path:
-    lease_dir = project_root / "tmp" / "backend-ir-leases"
+    lease_dir = scratch_dir(project_root, "backend-ir-leases")
     lease_dir.mkdir(parents=True, exist_ok=True)
     lease_path = lease_dir / f"ir-{os.getpid()}-{uuid.uuid4().hex}.json"
     _write_backend_ir_json_file(lease_path, ir)
