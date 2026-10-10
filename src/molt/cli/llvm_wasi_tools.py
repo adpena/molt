@@ -10,7 +10,11 @@ from typing import Literal
 
 from molt.default_paths import executable_environment_value, expand_user_path
 
-from molt.dx import TOOLCHAINS_DIRNAME, selected_toolchain_contains
+from molt.dx import (
+    TOOLCHAINS_DIRNAME,
+    canonical_toolchain_root,
+    selected_toolchain_contains,
+)
 
 from molt.cli.command_runtime import _run_completed_command
 from molt.llvm_toolchain import LlvmToolchainConfigError, selected_wasi_sdk_installation
@@ -230,7 +234,18 @@ def _managed_llvm_bin_directories(
     ).strip()
     if raw_target_root:
         roots.append(Path(raw_target_root))
-    roots.extend(checkout / "target" for checkout in _source_checkout_roots())
+    # Each source checkout's default tool state (molt.dx): a worktree shares
+    # its checkout family's root and an installed compiler uses its Molt home.
+    # An explicit MOLT_TARGET_ROOT is already the selected root above.
+    defaults = {
+        name: value
+        for name, value in environment.items()
+        if name.casefold() != "molt_target_root"
+    }
+    roots.extend(
+        canonical_toolchain_root(checkout, defaults, require_exists=False)
+        for checkout in _source_checkout_roots()
+    )
 
     normalized_roots = tuple(
         map(os.fspath, _dedupe_search_directories(roots, environment=environment))

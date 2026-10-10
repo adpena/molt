@@ -531,12 +531,12 @@ def _bind_delegated_command(
             if normalized != "tools/guarded_exec.py":
                 raise ValueError("relative guarded_exec path is not canonical")
         exact[script_index] = str(guarded_exec_path)
-    elif mode == "module" and len(target_indices) == 2:
-        module_flag, module_name = (int(index) for index in target_indices)
-        if module_name != module_flag + 1:
+    elif mode == "module" and len(target_indices) in {1, 2}:
+        first, last = int(target_indices[0]), int(target_indices[-1])
+        if last - first + 1 != len(target_indices):
             raise ValueError("guarded_exec module authority is not contiguous")
-        exact[module_flag : module_name + 1] = [str(guarded_exec_path)]
-        delegated_index -= 1
+        exact[first : last + 1] = [str(guarded_exec_path)]
+        delegated_index -= len(target_indices) - 1
     else:
         raise ValueError("unknown guarded_exec invocation mode")
     delegated_path = (

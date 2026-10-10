@@ -190,7 +190,7 @@ def test_run_cmd_reports_a_guard_timeout_as_its_timeout_result(
 
     def fake_guarded_completed_process(args, **_kwargs):
         return harness_layers.harness_memory_guard.GuardedCompletedProcess(
-            args, 124, "", "", elapsed_s=12.0, child_stderr="", timed_out=True
+            args, 124, "", "", elapsed_s=12.0, timed_out=True, child_stderr=""
         )
 
     monkeypatch.setattr(

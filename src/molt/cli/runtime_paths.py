@@ -12,11 +12,7 @@ from molt.cli.config_resolution import (
     RUNTIME_STDLIB_PROFILE_TIERS,
 )
 from molt.default_paths import configured_artifact_root_text
-from molt.dx import (
-    development_artifact_env,
-    development_artifacts_requested,
-    session_scoped_target_dir,
-)
+from molt.dx import project_cargo_target_dir
 
 _RUNTIME_STDLIB_PROFILE_ALIASES = {
     profile: f"stdlib_{profile}" for profile in RUNTIME_STDLIB_PROFILE_TIERS
@@ -81,61 +77,27 @@ def _cargo_profile_dir(cargo_profile: str) -> str:
     return "debug" if cargo_profile == "dev" else cargo_profile
 
 
-@functools.lru_cache(maxsize=256)
-def _cargo_target_root_cached(
-    project_root_str: str,
-    cargo_target_override: str | None,
-    cwd_str: str,
-    session_id: str | None = None,
-) -> Path:
-    project_root = Path(project_root_str)
-    if not cargo_target_override:
-        return session_scoped_target_dir(project_root / "target", session_id)
-    path = Path(cargo_target_override).expanduser()
-    if not path.is_absolute():
-        path = (Path(cwd_str) / path).absolute()
-    return path
-
-
 def _cargo_target_root(project_root: Path) -> Path:
-    cargo_target_dir = os.environ.get("CARGO_TARGET_DIR")
-    if not cargo_target_dir and development_artifacts_requested(os.environ):
-        env = development_artifact_env(
-            project_root,
-            os.environ,
-            session_prefix="runtime",
-            session_id=_molt_session_id() or f"runtime-{os.getpid()}",
-            create_dirs=True,
-        )
-        cargo_target_dir = env.get("CARGO_TARGET_DIR")
-    return _cargo_target_root_cached(
-        os.fspath(project_root),
-        cargo_target_dir,
-        os.fspath(Path.cwd()),
-        _molt_session_id(),
-    )
+    """The Cargo target this process builds ``project_root`` into (molt.dx)."""
+    return project_cargo_target_dir(project_root, os.environ)
 
 
 @functools.lru_cache(maxsize=256)
 def _build_state_root_cached(
     project_root_str: str,
     build_state_override: str | None,
-    cargo_target_override: str | None,
-    cwd_str: str,
-    session_id: str | None = None,
+    cargo_target_str: str,
     artifact_root: str | None = None,
 ) -> Path:
-    project_root = Path(project_root_str)
-    target = _cargo_target_root_cached(
-        project_root_str, cargo_target_override, cwd_str, session_id
-    )
     environment = {}
     if build_state_override:
         environment["MOLT_BUILD_STATE_DIR"] = build_state_override
     if artifact_root:
         environment["MOLT_EXT_ROOT"] = artifact_root
     return build_state_root(
-        project_root=project_root, cargo_target=target, environment=environment
+        project_root=Path(project_root_str),
+        cargo_target=Path(cargo_target_str),
+        environment=environment,
     )
 
 
@@ -143,30 +105,20 @@ def _build_state_root(project_root: Path) -> Path:
     return _build_state_root_cached(
         os.fspath(project_root),
         os.environ.get("MOLT_BUILD_STATE_DIR"),
-        os.environ.get("CARGO_TARGET_DIR"),
-        os.fspath(Path.cwd()),
-        _molt_session_id(),
+        os.fspath(_cargo_target_root(project_root)),
         configured_artifact_root_text(os.environ),
     )
 
 
 @functools.lru_cache(maxsize=256)
 def _runtime_lib_path_cached(
-    project_root_str: str,
+    cargo_target_str: str,
     cargo_profile: str,
     target_triple: str | None,
     stdlib_profile: str | None,
-    cargo_target_override: str | None,
-    cwd_str: str,
-    session_id: str | None = None,
 ) -> Path:
     profile_dir = _cargo_profile_dir(cargo_profile)
-    target_root = _cargo_target_root_cached(
-        project_root_str,
-        cargo_target_override,
-        cwd_str,
-        session_id,
-    )
+    target_root = Path(cargo_target_str)
     archive_name = _runtime_lib_archive_name(stdlib_profile, target_triple)
     if target_triple:
         return target_root / target_triple / profile_dir / archive_name
@@ -180,13 +132,10 @@ def _runtime_lib_path(
     stdlib_profile: str | None = None,
 ) -> Path:
     return _runtime_lib_path_cached(
-        os.fspath(project_root),
+        os.fspath(_cargo_target_root(project_root)),
         cargo_profile,
         target_triple,
         stdlib_profile,
-        os.environ.get("CARGO_TARGET_DIR"),
-        os.fspath(Path.cwd()),
-        _molt_session_id(),
     )
 
 

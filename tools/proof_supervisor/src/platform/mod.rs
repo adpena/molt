@@ -1,8 +1,10 @@
-use crate::{CAPABILITY_SCHEMA, Capability, ClosureMode, EventJournal, Receipt, ValidatedPolicy};
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-use crate::{KernelAccounting, SupervisorState};
+use crate::{
+    Admission, CAPABILITY_SCHEMA, Capability, ClosureMode, EventJournal, Receipt, ValidatedPolicy,
+};
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+use crate::{BackendFailure, SupervisorState};
 use std::collections::BTreeMap;
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::time::Instant;
 
 #[cfg(target_os = "linux")]
@@ -12,27 +14,9 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
-/// Reuse the executable identity and mutation-token authority for retained inputs.
-pub(crate) fn opened_file_key(file: &std::fs::File) -> std::io::Result<crate::ImageCacheKey> {
-    #[cfg(target_os = "linux")]
-    return file
-        .metadata()
-        .map(|metadata| linux::linux_cache_key(&metadata));
-    #[cfg(target_os = "macos")]
-    return file
-        .metadata()
-        .map(|metadata| macos::macos_cache_key(&metadata));
-    #[cfg(target_os = "windows")]
-    return windows::windows_cache_key(file)
-        .map(|(_, key)| key)
-        .map_err(std::io::Error::other);
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    {
-        let _ = file;
-        Err(std::io::Error::other(
-            "opened-file identity unsupported on this platform",
-        ))
-    }
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn linux_test_custody() -> std::sync::MutexGuard<'static, ()> {
+    linux::TEST_WAIT_CUSTODY.lock().unwrap()
 }
 
 /// Environment that callers must capture and seal before any supervised launch.
@@ -52,7 +36,7 @@ pub fn capability(mode: ClosureMode) -> Capability {
     #[cfg(target_os = "macos")]
     return macos::capability(mode);
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    return unavailable(
+    return ineligible(
         mode,
         std::env::consts::OS,
         "unsupported",
@@ -61,17 +45,20 @@ pub fn capability(mode: ClosureMode) -> Capability {
 }
 
 pub fn capability_contract_is_valid(recorded: &Capability, mode: ClosureMode) -> bool {
-    if recorded.schema != CAPABILITY_SCHEMA || recorded.mode != mode {
+    if recorded.schema != CAPABILITY_SCHEMA
+        || recorded.mode != mode
+        || !recorded.admission.is_well_formed()
+    {
         return false;
     }
     #[cfg(target_os = "windows")]
-    return recorded == &capability(mode);
+    return planned_contract_is_valid(recorded, &capability(mode));
     #[cfg(target_os = "linux")]
     return recorded_linux_capability_contract_is_valid(recorded, mode);
     #[cfg(target_os = "macos")]
     return macos::capability_contract_is_valid(recorded, mode);
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    return recorded == &capability(mode);
+    return planned_contract_is_valid(recorded, &capability(mode));
 }
 
 /// The recorded Linux contract is independent of the verifier host. This
@@ -89,13 +76,21 @@ pub fn recorded_linux_capability_contract_is_valid(
         && recorded.pre_entry_process_create_authority
         && recorded.recursive_descendant_authority
         && recorded.required_environment.is_empty()
-        && if recorded.available {
-            recorded.reason.is_none()
-        } else {
-            recorded
-                .reason
-                .as_ref()
-                .is_some_and(|reason| !reason.is_empty())
+        && recorded.admission.is_well_formed()
+}
+
+/// Compare immutable backend facts without treating today's plan as evidence of
+/// a historical launch. Fixed refused plans cannot produce admitted receipts.
+#[allow(dead_code)]
+pub(super) fn planned_contract_is_valid(recorded: &Capability, planned: &Capability) -> bool {
+    let mut contract = recorded.clone();
+    contract.admission = planned.admission.clone();
+    contract == *planned
+        && recorded.admission.is_well_formed()
+        && match &planned.admission {
+            Admission::Ineligible { .. } => recorded.admission == planned.admission,
+            Admission::Eligible {} => !matches!(recorded.admission, Admission::Ineligible { .. }),
+            Admission::Admitted { .. } => false,
         }
 }
 
@@ -118,38 +113,33 @@ pub fn run(
     return windows::run(policy, _events, capability);
     #[cfg(target_os = "linux")]
     return linux::run(policy, _events, capability);
-    #[cfg(target_os = "macos")]
-    return macos::run(policy, _events, capability);
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
-        Receipt::rejected(
-            policy,
-            &capability,
-            capability
-                .reason
-                .clone()
-                .unwrap_or_else(|| "kernel backend unavailable".to_owned()),
-        )
+        let Admission::Ineligible { reason } = &capability.admission else {
+            unreachable!("platform without an admitted executor must refuse its plan");
+        };
+        Receipt::rejected(policy, &capability, reason.clone())
     }
 }
 
 #[allow(dead_code)]
-fn unavailable(mode: ClosureMode, platform: &str, backend: &str, reason: &str) -> Capability {
+fn ineligible(mode: ClosureMode, platform: &str, backend: &str, reason: &str) -> Capability {
     Capability {
         schema: CAPABILITY_SCHEMA.to_owned(),
         platform: platform.to_owned(),
         mode,
         backend: backend.to_owned(),
-        available: false,
+        admission: Admission::Ineligible {
+            reason: reason.to_owned(),
+        },
         pre_entry_exec_authority: false,
         pre_entry_process_create_authority: false,
         recursive_descendant_authority: false,
         required_environment: required_environment(),
-        reason: Some(reason.to_owned()),
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn run_backend(
     policy: &ValidatedPolicy,
     events: &mut EventJournal,
@@ -157,29 +147,34 @@ fn run_backend(
     supervise: impl FnOnce(
         &ValidatedPolicy,
         &mut EventJournal,
-    ) -> Result<Option<KernelAccounting>, String>,
+    ) -> Result<crate::NativeCustody, BackendFailure>,
 ) -> Receipt {
-    if !capability.available {
-        return Receipt::rejected(
-            policy,
-            &capability,
-            capability
-                .reason
-                .clone()
-                .unwrap_or_else(|| "kernel backend unavailable".to_owned()),
-        );
+    if let Admission::Ineligible { reason } = &capability.admission {
+        return Receipt::rejected(policy, &capability, reason.clone());
     }
+    assert_eq!(
+        capability.admission,
+        Admission::Eligible {},
+        "backend requires a prelaunch plan"
+    );
     let started = Instant::now();
     let mut receipt = Receipt::running(policy, &capability);
     match supervise(policy, events) {
-        Ok(kernel_accounting) => {
-            receipt.kernel_accounting = kernel_accounting;
+        Ok(native_custody) => {
+            receipt.native_custody = native_custody;
             receipt
                 .transition(SupervisorState::Draining)
                 .expect("valid drain transition");
         }
-        Err(error) => receipt.record_error(error),
+        Err(failure) => {
+            receipt.record_error(failure.cause);
+            for diagnostic in failure.cleanup {
+                receipt.record_error(diagnostic);
+            }
+            receipt.native_custody = failure.native_custody;
+        }
     }
+    receipt.journal_coverage = events.coverage().clone();
     match events.verified() {
         Ok(verified) => receipt.apply_verified_event_log(verified),
         Err(error) => receipt.record_error(error),
@@ -189,12 +184,13 @@ fn run_backend(
     }
     receipt.elapsed_ns = started.elapsed().as_nanos();
     let complete = receipt.error_count == 0
+        && matches!(receipt.capability.admission, Admission::Admitted { .. })
         && receipt.violation_count == 0
         && receipt.accounting.active_processes == 0
         && receipt.accounting.root_execs >= 1
         && receipt.root_exit_code.is_some()
         && receipt.accounting.process_creates == receipt.accounting.process_exits
-        && receipt.kernel_accounting_supports_complete();
+        && receipt.native_custody_supports_complete();
     receipt.finish(complete);
     receipt
 }

@@ -16,7 +16,6 @@ from molt.browser_asset_closure import (
 from molt.exact_json import (
     canonical_json_sha256,
     capture_exact,
-    encode_exact,
     loads_exact,
     read_exact,
 )
@@ -297,7 +296,7 @@ def prepare(
             execution_root.write_payload(
                 rootfs,
                 policy_path,
-                encode_exact(policy),
+                supervisor_custody.encode_supervisor_policy(policy),
                 executable=False,
             )
         )
@@ -412,8 +411,7 @@ def require_success(receipt: dict[str, Any]) -> None:
             type(receipt.get(key)) is not int
             for key in ("root_exit_code", "error_count", "violation_count")
         )
-        or receipt.get("complete") is not True
-        or receipt.get("state") != "COMPLETE"
+        or not supervisor_custody.supervisor_receipt_is_complete(receipt)
         or receipt.get("root_exit_code") != 0
         or receipt.get("error_count") != 0
         or receipt.get("violation_count") != 0
@@ -697,7 +695,7 @@ def validate(
         retained_receipt = _artifact_bytes(
             receipt,
             retained_files[execution["receipt"]],
-            max_bytes=65536,
+            max_bytes=supervisor_custody.SUPERVISOR_BUDGETS["receipt_bytes"],
             label="exported receipt",
         )
         descriptor = loads_exact(retained_receipt)["event_log"]

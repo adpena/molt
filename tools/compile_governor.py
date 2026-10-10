@@ -9,8 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, TextIO
 
-from molt.build_state_layout import build_state_root
-from molt.dx import cargo_target_dir_for_artifact_root
+from molt.build_state_layout import project_build_state_root
 from molt.file_locks import (
     _FileLockHandle,
     _release_file_lock,
@@ -100,20 +99,7 @@ def _guard_root(env: Mapping[str, str]) -> Path:
     if explicit:
         return Path(explicit).expanduser()
     project_root = Path(__file__).resolve().parents[1]
-    target = env.get("CARGO_TARGET_DIR")
-    target_root = (
-        Path(target).expanduser().absolute()
-        if target
-        else cargo_target_dir_for_artifact_root(
-            project_root, env.get("MOLT_SESSION_ID")
-        )
-    )
-    return (
-        build_state_root(
-            project_root=project_root, cargo_target=target_root, environment=env
-        )
-        / "compile_guard"
-    )
+    return project_build_state_root(project_root, env) / "compile_guard"
 
 
 def _count_active_compile_processes() -> int | None:

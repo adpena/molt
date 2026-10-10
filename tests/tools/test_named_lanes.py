@@ -16,7 +16,7 @@ from tools.proof_queue_pkg import pact
 
 ROOT = Path(__file__).resolve().parents[2]
 PLAN = proof_plan.ProofPlan.load()
-LANE_IDS = (
+PYTHON_LANE_IDS = (
     "pact.witness.acceptance.native",
     "pact.witness.acceptance.wasm",
     "pact.witness.oracle",
@@ -24,6 +24,7 @@ LANE_IDS = (
     "r6.target-version-parity.py313",
     "r6.target-version-parity.py314",
 )
+LANE_IDS = ("runtime.abi-fixture-authorities", *PYTHON_LANE_IDS)
 
 
 def test_registered_named_lanes_validate_and_are_distinct() -> None:
@@ -52,6 +53,22 @@ def test_named_lane_argv_is_admitted_with_a_declared_closure(lane_id: str) -> No
     assert closure["kind"] == "named-lane"
     assert closure["descendants"] == "declared-toolchains"
     assert set(lane.toolchains) <= set(closure["toolchains"])
+
+
+def test_abi_fixture_lane_declares_native_c_through_cargo_wrapping() -> None:
+    from tools.proof_queue_pkg.policy import _canonical_cargo_proof_command
+
+    lane = PLAN.named_lane("runtime.abi-fixture-authorities")
+    wrapped = _canonical_cargo_proof_command(list(lane.argv[1:]))
+    envelope = command_admission.envelope_for_command(wrapped)
+    assert envelope["cargo_native_c_units"] == ["target"]
+    assert envelope["delegated"]["cargo_native_c_units"] == ["target"]
+    assert {"cargo", "rustc", "python"} <= set(envelope["toolchains"])
+    spec = pact._named_lane_spec(lane.id)
+    assert spec["command"] == wrapped
+    assert "prepared_named_lane" not in spec
+    with pytest.raises(ValueError, match="has no Python payload"):
+        command_admission.prepared_named_lane_command(lane.id, Path("python"))
 
 
 def test_drifted_named_lane_argv_cannot_silently_become_a_leaf() -> None:
@@ -554,7 +571,7 @@ def test_disposable_named_override_is_refused_before_environment_provision(
         )
 
 
-@pytest.mark.parametrize("lane_id", LANE_IDS)
+@pytest.mark.parametrize("lane_id", PYTHON_LANE_IDS)
 def test_prepared_named_lane_keeps_exact_registered_payload_and_closure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane_id: str
 ) -> None:

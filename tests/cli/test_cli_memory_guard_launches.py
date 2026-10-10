@@ -28,6 +28,9 @@ def test_uv_lock_check_uses_build_memory_guard(
 ) -> None:
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
     (tmp_path / "uv.lock").write_text("# lock\n", encoding="utf-8")
+    # The lock-check cache lives in the project's Cargo target; a shared one
+    # would answer from an earlier run's identical fixture inputs.
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
     captured: dict[str, Any] = {}
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -50,6 +53,9 @@ def test_cargo_lock_check_uses_build_memory_guard(
 ) -> None:
     (tmp_path / "Cargo.toml").write_text("[workspace]\nmembers=[]\n", encoding="utf-8")
     (tmp_path / "Cargo.lock").write_text("# lock\n", encoding="utf-8")
+    # The lock-check cache lives in the project's Cargo target; a shared one
+    # would answer from an earlier run's identical fixture inputs.
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
     captured: dict[str, Any] = {}
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:

@@ -281,6 +281,17 @@ guard limits must not inherit that state: it uses the shared
 `tests/conftest.py`. Hosted custody itself has its own cases in
 `tests/test_dx_run_context.py`.
 
+That context resolves the real checkout as a bare clone, which is its own
+artifact and toolchain root. A test must not resolve or create roots for the
+real checkout under it, or pass the checkout a minimal environment that lacks
+the hosted contract: in CI the code under test then writes `target/`,
+`target-root/`, `.molt_cache/` or a uv environment into the checkout. Point the
+code at a scratch checkout (`tmp_path`), name the roots it creates, or, for a
+child that runs repository tooling on the real checkout, pass the session's
+run context back with the `checkout_run_context` fixture. To find such a
+test, run the family under `tools/hosted_ci_env.py` in a plain clone (not a
+checkout-family worktree, whose roots lie outside the tree).
+
 A host test that exercises Molt stdlib sources loads them by path, through
 `tests/stdlib_intrinsic_registry.py` or `tests/helpers/tinygrad_stdlib_loader.py`,
 or runs them in a child interpreter. It never puts `src/molt/stdlib` on the
