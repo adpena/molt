@@ -3161,9 +3161,10 @@ def _rebind_cached_python_identity(
     location = identity["location"]
     assert selection["location"] == location, "cached Python selection changed"
     assert isinstance(location, dict)
-    assert selection["prefix"] == location["prefix"]
-    assert selection["executable"] == location["selected_executable"]
-    assert selection["base_executable"] == location["base_executable"]
+    # The selection spells its paths through the one projection rule; on
+    # Windows that rule's custody coordinate differs from the reported one.
+    projected = command_identity.python_selection(location)
+    assert {key: selection[key] for key in projected} == projected
     selected_images = {row["role"]: row["sha256"] for row in identity["process_images"]}
     assert selection["executable_sha256"] == selected_images["selected-interpreter"]
     assert selection["base_executable_sha256"] == selected_images["base-interpreter"]
