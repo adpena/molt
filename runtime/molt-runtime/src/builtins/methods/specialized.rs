@@ -157,6 +157,24 @@ suspension_methods!(coroutine_wrapper_method_bits, COROUTINE_WRAPPER_METHOD_NAME
     "throw" => (MethodDescriptor, molt_coroutine_throw_method, variadic),
     "close" => (MethodDescriptor, molt_coroutine_close_method, 1),
 });
+// The async-generator operation awaitables share one protocol implementation;
+// each class keeps its own descriptors, as CPython's two types do.
+suspension_methods!(asyncgen_asend_method_bits, ASYNCGEN_ASEND_METHOD_NAMES, publish_asyncgen_asend_methods, async_generator_asend, {
+    "__await__" => (WrapperDescriptor, molt_asyncgen_awaitable_self, 1),
+    "__iter__" => (WrapperDescriptor, molt_asyncgen_awaitable_self, 1),
+    "__next__" => (WrapperDescriptor, molt_asyncgen_awaitable_next, 1),
+    "send" => (MethodDescriptor, molt_asyncgen_awaitable_send, 2),
+    "throw" => (MethodDescriptor, molt_asyncgen_awaitable_throw, variadic),
+    "close" => (MethodDescriptor, molt_asyncgen_awaitable_close, 1),
+});
+suspension_methods!(asyncgen_athrow_method_bits, ASYNCGEN_ATHROW_METHOD_NAMES, publish_asyncgen_athrow_methods, async_generator_athrow, {
+    "__await__" => (WrapperDescriptor, molt_asyncgen_awaitable_self, 1),
+    "__iter__" => (WrapperDescriptor, molt_asyncgen_awaitable_self, 1),
+    "__next__" => (WrapperDescriptor, molt_asyncgen_awaitable_next, 1),
+    "send" => (MethodDescriptor, molt_asyncgen_awaitable_send, 2),
+    "throw" => (MethodDescriptor, molt_asyncgen_awaitable_throw, variadic),
+    "close" => (MethodDescriptor, molt_asyncgen_awaitable_close, 1),
+});
 
 crate::builtins::methods::native_method_table!(asyncgen_method_bits, publish_asyncgen_methods, _py, name, [], {
 

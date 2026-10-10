@@ -377,11 +377,27 @@ pub(crate) fn is_native_python_awaitable_bits(bits: u64) -> bool {
     is_native_coroutine_bits(bits) || is_iterable_coroutine_bits(bits)
 }
 
+/// The async-generator operation awaitables (`async_generator_asend` and
+/// `async_generator_athrow`) are classed native poll futures. Their poll
+/// function is their identity; the class edge names them for Python.
+pub(crate) fn is_asyncgen_awaitable_bits(bits: u64) -> bool {
+    maybe_ptr_from_bits(bits).is_some_and(|ptr| unsafe {
+        object_type_id(ptr) == TYPE_ID_OBJECT
+            && crate::object::object_poll_fn(ptr) == asyncgen_poll_fn_addr()
+    })
+}
+
+/// `await` polls these futures directly: classless internal poll futures and
+/// the async-generator operation awaitables, whose `__await__` returns self.
+pub(crate) fn is_direct_await_future_bits(bits: u64) -> bool {
+    is_native_poll_future_bits(bits) || is_asyncgen_awaitable_bits(bits)
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_is_native_awaitable(val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         MoltObject::from_bool(
-            is_native_python_awaitable_bits(val_bits) || is_native_poll_future_bits(val_bits),
+            is_native_python_awaitable_bits(val_bits) || is_direct_await_future_bits(val_bits),
         )
         .bits()
     })
@@ -1090,9 +1106,11 @@ pub(crate) unsafe fn asyncgen_call_finalizer(py: &PyToken<'_>, ptr: *mut u8) {
 }
 
 fn asyncgen_running_message(op: i64) -> &'static str {
+    // CPython's asend type reports both of its operations as anext().
     match op {
-        ASYNCGEN_OP_ANEXT => "anext(): asynchronous generator is already running",
-        ASYNCGEN_OP_ASEND => "asend(): asynchronous generator is already running",
+        ASYNCGEN_OP_ANEXT | ASYNCGEN_OP_ASEND => {
+            "anext(): asynchronous generator is already running"
+        }
         ASYNCGEN_OP_ATHROW => "athrow(): asynchronous generator is already running",
         ASYNCGEN_OP_ACLOSE => "aclose(): asynchronous generator is already running",
         _ => "asynchronous generator is already running",
@@ -1106,6 +1124,118 @@ fn asyncgen_close_trace_enabled() -> bool {
     )
 }
 
+// Async-generator operation awaitable payload: the generator, the operation
+// word and the operation argument (send value, thrown exception or None).
+const ASYNCGEN_AWAITABLE_GEN: usize = 0;
+const ASYNCGEN_AWAITABLE_OP: usize = 1;
+const ASYNCGEN_AWAITABLE_ARG: usize = 2;
+const ASYNCGEN_AWAITABLE_SLOTS: usize = 3;
+/// Set on the operation word when a Python `throw()` arrives before the first
+/// step. The first poll then throws the stored argument into the generator in
+/// place of the operation's own first step, and keeps the operation's result
+/// rules (CPython's INIT-state `gen_throw`).
+const ASYNCGEN_OP_THROWN: i64 = 1 << 2;
+
+unsafe fn asyncgen_awaitable_slot(ptr: *mut u8, index: usize) -> u64 {
+    unsafe { *(ptr as *mut u64).add(index) }
+}
+
+unsafe fn asyncgen_awaitable_op(ptr: *mut u8) -> i64 {
+    unsafe {
+        to_i64(obj_from_bits(asyncgen_awaitable_slot(
+            ptr,
+            ASYNCGEN_AWAITABLE_OP,
+        )))
+        .unwrap_or(-1)
+    }
+}
+
+unsafe fn asyncgen_awaitable_set_op(ptr: *mut u8, op: i64) {
+    unsafe {
+        *(ptr as *mut u64).add(ASYNCGEN_AWAITABLE_OP) = MoltObject::from_int(op).bits();
+    }
+}
+
+unsafe fn asyncgen_awaitable_replace_arg(py: &PyToken<'_>, ptr: *mut u8, value: u64) {
+    inc_ref_bits(py, value);
+    unsafe {
+        crate::object::payload_refs::store_owned(
+            py,
+            ptr,
+            ASYNCGEN_AWAITABLE_ARG * std::mem::size_of::<u64>(),
+            value,
+        );
+    }
+}
+
+/// CPython's reuse diagnostic for a finished operation awaitable, named by
+/// its class: `async_generator_asend` or `async_generator_athrow`.
+pub(crate) fn asyncgen_awaitable_reuse_message(py: &PyToken<'_>, ptr: *mut u8) -> &'static str {
+    if unsafe { crate::object_class_bits(ptr) } == crate::builtin_classes(py).async_generator_asend
+    {
+        "cannot reuse already awaited __anext__()/asend()"
+    } else {
+        "cannot reuse already awaited aclose()/athrow()"
+    }
+}
+
+/// A Python `send(value)` with a non-None value before the first step. The
+/// asend family sends `value` in place of its own argument; the athrow family
+/// refuses it unless the first step will only report a closed or running
+/// generator, which CPython checks first. Returns false with an exception
+/// pending.
+///
+/// # Safety
+/// `ptr` must be a live async-generator operation awaitable.
+pub(crate) unsafe fn asyncgen_awaitable_prime_send(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    value: u64,
+) -> bool {
+    unsafe {
+        let op = asyncgen_awaitable_op(ptr);
+        if matches!(op, ASYNCGEN_OP_ANEXT | ASYNCGEN_OP_ASEND) {
+            asyncgen_awaitable_replace_arg(py, ptr, value);
+            asyncgen_awaitable_set_op(ptr, ASYNCGEN_OP_ASEND);
+            return true;
+        }
+        let reports_state =
+            maybe_ptr_from_bits(asyncgen_awaitable_slot(ptr, ASYNCGEN_AWAITABLE_GEN))
+                .filter(|&asyncgen| object_type_id(asyncgen) == TYPE_ID_ASYNC_GENERATOR)
+                .is_some_and(|asyncgen| {
+                    !obj_from_bits(asyncgen_running_bits(asyncgen)).is_none()
+                        || maybe_ptr_from_bits(asyncgen_gen_bits(asyncgen))
+                            .is_some_and(|generator| generator_closed(generator))
+                });
+        if reports_state {
+            return true;
+        }
+        raise_exception::<()>(
+            py,
+            "RuntimeError",
+            "can't send non-None value to a just-started coroutine",
+        );
+        false
+    }
+}
+
+/// A Python `throw()` before the first step: the first poll throws
+/// `arguments` (a throw carrier) into the generator.
+///
+/// # Safety
+/// `ptr` must be a live async-generator operation awaitable.
+pub(crate) unsafe fn asyncgen_awaitable_prime_throw(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    arguments: u64,
+) {
+    unsafe {
+        let op = asyncgen_awaitable_op(ptr) & !ASYNCGEN_OP_THROWN;
+        asyncgen_awaitable_replace_arg(py, ptr, arguments);
+        asyncgen_awaitable_set_op(ptr, op | ASYNCGEN_OP_THROWN);
+    }
+}
+
 unsafe fn asyncgen_future_new(
     _py: &PyToken<'_>,
     asyncgen_bits: u64,
@@ -1113,7 +1243,7 @@ unsafe fn asyncgen_future_new(
     arg_bits: u64,
 ) -> u64 {
     unsafe {
-        let payload = (3 * std::mem::size_of::<u64>()) as u64;
+        let payload = (ASYNCGEN_AWAITABLE_SLOTS * std::mem::size_of::<u64>()) as u64;
         let obj_bits = molt_future_new(asyncgen_poll_fn_addr(), payload);
         if obj_from_bits(obj_bits).is_none() {
             return obj_bits;
@@ -1121,10 +1251,29 @@ unsafe fn asyncgen_future_new(
         let Some(obj_ptr) = resolve_obj_ptr(obj_bits) else {
             return MoltObject::none().bits();
         };
+        let classes = crate::builtin_classes(_py);
+        let class_bits = if matches!(op_kind, ASYNCGEN_OP_ANEXT | ASYNCGEN_OP_ASEND) {
+            classes.async_generator_asend
+        } else {
+            classes.async_generator_athrow
+        };
+        if !crate::object::object_init_class_edge_unpublished(
+            _py,
+            obj_ptr,
+            class_bits,
+            crate::object::ClassEdgeOwnership::Owned,
+        ) {
+            dec_ref_bits(_py, obj_bits);
+            return raise_exception::<_>(
+                _py,
+                "SystemError",
+                "async generator awaitable class initialization failed",
+            );
+        }
         let payload_ptr = obj_ptr as *mut u64;
-        *payload_ptr = asyncgen_bits;
-        *payload_ptr.add(1) = MoltObject::from_int(op_kind).bits();
-        *payload_ptr.add(2) = arg_bits;
+        *payload_ptr.add(ASYNCGEN_AWAITABLE_GEN) = asyncgen_bits;
+        *payload_ptr.add(ASYNCGEN_AWAITABLE_OP) = MoltObject::from_int(op_kind).bits();
+        *payload_ptr.add(ASYNCGEN_AWAITABLE_ARG) = arg_bits;
         inc_ref_bits(_py, asyncgen_bits);
         inc_ref_bits(_py, arg_bits);
         obj_bits
@@ -1508,14 +1657,19 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
             }
             let _header = header_from_obj_ptr(obj_ptr);
             let payload_bytes = crate::object::object_payload_size(obj_ptr);
-            if payload_bytes < 3 * std::mem::size_of::<u64>() {
+            if payload_bytes < ASYNCGEN_AWAITABLE_SLOTS * std::mem::size_of::<u64>() {
                 return MoltObject::none().bits() as i64;
             }
-            let payload_ptr = obj_ptr as *mut u64;
-            let asyncgen_bits = *payload_ptr;
-            let op_bits = *payload_ptr.add(1);
-            let arg_bits = *payload_ptr.add(2);
-            let op = to_i64(obj_from_bits(op_bits)).unwrap_or(-1);
+            let asyncgen_bits = asyncgen_awaitable_slot(obj_ptr, ASYNCGEN_AWAITABLE_GEN);
+            let arg_bits = asyncgen_awaitable_slot(obj_ptr, ASYNCGEN_AWAITABLE_ARG);
+            let op_word = asyncgen_awaitable_op(obj_ptr);
+            // A primed throw keeps the operation's result rules.
+            let thrown = op_word >= 0 && (op_word & ASYNCGEN_OP_THROWN) != 0;
+            let op = if thrown {
+                op_word & !ASYNCGEN_OP_THROWN
+            } else {
+                op_word
+            };
             let Some(asyncgen_ptr) = maybe_ptr_from_bits(asyncgen_bits) else {
                 return raise_exception::<i64>(_py, "TypeError", "expected async generator");
             };
@@ -1551,7 +1705,8 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                 return raise_exception::<i64>(_py, "RuntimeError", asyncgen_running_message(op));
             }
             let pending_bits = asyncgen_pending_bits(asyncgen_ptr);
-            if !obj_from_bits(pending_bits).is_none()
+            if !thrown
+                && !obj_from_bits(pending_bits).is_none()
                 && matches!(op, ASYNCGEN_OP_ANEXT | ASYNCGEN_OP_ASEND)
             {
                 inc_ref_bits(_py, pending_bits);
@@ -1563,6 +1718,10 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
 
             let res_bits = if crate::object::object_state(obj_ptr) != 0 {
                 generator_resume_bits(_py, gen_bits)
+            } else if thrown {
+                // A Python throw() before the first step goes into the
+                // generator itself; the operation's own step never runs.
+                molt_generator_throw(gen_bits, arg_bits)
             } else {
                 match op {
                     ASYNCGEN_OP_ANEXT => {
@@ -1698,7 +1857,7 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                         generator_set_closed(_py, gen_ptr, true);
                         return MoltObject::none().bits() as i64;
                     }
-                    if !obj_from_bits(arg_bits).is_none() {
+                    if !thrown && !obj_from_bits(arg_bits).is_none() {
                         asyncgen_set_pending_bits(_py, asyncgen_ptr, arg_bits);
                         generator_set_slot(
                             _py,
@@ -1714,17 +1873,9 @@ pub unsafe extern "C" fn molt_asyncgen_poll(obj_bits: u64) -> i64 {
                     );
                 }
                 if done {
-                    match op {
-                        ASYNCGEN_OP_ANEXT | ASYNCGEN_OP_ASEND => {
-                            return raise_exception::<i64>(_py, "StopAsyncIteration", "");
-                        }
-                        ASYNCGEN_OP_ATHROW => {
-                            return MoltObject::none().bits() as i64;
-                        }
-                        _ => {
-                            return MoltObject::none().bits() as i64;
-                        }
-                    }
+                    // A generator that returns ends asend and athrow alike
+                    // with StopAsyncIteration (CPython's async_gen_unwrap_value).
+                    return raise_exception::<i64>(_py, "StopAsyncIteration", "");
                 }
                 return val_bits as i64;
             }
