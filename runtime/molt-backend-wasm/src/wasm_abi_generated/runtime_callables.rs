@@ -8629,24 +8629,9 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 2,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_concurrent_all_completed",
-        import: WasmRuntimeImport::ConcurrentAllCompleted,
-        arity: 0,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_concurrent_as_completed",
         import: WasmRuntimeImport::ConcurrentAsCompleted,
         arity: 2,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_concurrent_first_completed",
-        import: WasmRuntimeImport::ConcurrentFirstCompleted,
-        arity: 0,
-    },
-    RuntimeCallableImportSpec {
-        runtime_name: "molt_concurrent_first_exception",
-        import: WasmRuntimeImport::ConcurrentFirstException,
-        arity: 0,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_concurrent_future_add_done_callback",
@@ -15440,10 +15425,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_codecs_stream_writer_drop" => Some(WasmRuntimeImport::CodecsStreamWriterDrop),
         "molt_codecs_stream_writer_new" => Some(WasmRuntimeImport::CodecsStreamWriterNew),
         "molt_codecs_stream_writer_write" => Some(WasmRuntimeImport::CodecsStreamWriterWrite),
-        "molt_concurrent_all_completed" => Some(WasmRuntimeImport::ConcurrentAllCompleted),
         "molt_concurrent_as_completed" => Some(WasmRuntimeImport::ConcurrentAsCompleted),
-        "molt_concurrent_first_completed" => Some(WasmRuntimeImport::ConcurrentFirstCompleted),
-        "molt_concurrent_first_exception" => Some(WasmRuntimeImport::ConcurrentFirstException),
         "molt_concurrent_future_add_done_callback" => {
             Some(WasmRuntimeImport::ConcurrentFutureAddDoneCallback)
         }

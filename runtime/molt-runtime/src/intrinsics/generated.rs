@@ -9461,27 +9461,9 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         defaults: &[],
     },
     IntrinsicSpec {
-        name: "molt_concurrent_all_completed",
-        symbol: "molt_concurrent_all_completed",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
         name: "molt_concurrent_as_completed",
         symbol: "molt_concurrent_as_completed",
         arity: 2,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_concurrent_first_completed",
-        symbol: "molt_concurrent_first_completed",
-        arity: 0,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_concurrent_first_exception",
-        symbol: "molt_concurrent_first_exception",
-        arity: 0,
         defaults: &[],
     },
     IntrinsicSpec {
